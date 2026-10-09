@@ -5,8 +5,10 @@
 #            builds the C objects and package libraries ONCE, and hands both
 #            down as artifacts.
 #   suites   one matrix job PER SHARD, in parallel on their own runners.
-#   keepers  the static keepers and the seed check, on the prepared compiler
-#            — the train's.
+#   keepers  the static keepers, on the prepared compiler — the train's.
+#   seed-check  the committed seed builds this tree, ALONE on its own runner
+#            — a compiler build beside the two halves was what the runner's
+#            OOM killed (137), with nothing said.
 #   gate     the changed-file fmt and the packages' idioms.
 #   cache-attacks  the build cache attacked — the train's.
 #   test     the ONE required check name: an aggregate that passes iff every
@@ -31,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "leave empty for a whole train; `keepers` runs the keepers job alone"
+        description: "leave empty for a whole train; `keepers` runs the keepers and seed-check jobs alone"
         default: ""
 
 # The event is part of the group: a run asked for by hand on a ref never
@@ -214,37 +216,46 @@ jobs:
       # job rebuilds what prepare built from the same commit.
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
+      # measured against, and it is not the VM's published spec.
+      - name: room
+        run: |
+          echo "room: cpu=$(nproc)"
+          awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "room: memory total %d MB, available %d MB\n", t/1024, a/1024}' /proc/meminfo
+          printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
       # ONE LIST, the Makefile's. The keepers held to a clock run first, with
       # nothing beside them. Then its two halves run SIDE BY SIDE, each in its
       # own copy of the tree, so nothing one writes under build/ or beside a
       # package is the other's, and each takes its own build lock. Both run
       # to the end, and either refusing fails the job. Two, never three: a
       # third process on these four cores slowed every keeper and failed the
-      # clocked ones.
+      # clocked ones — and a third, the seed's compiler build, was what the
+      # runner's OOM killed (137), so it is its OWN job now (seed-check).
       #
-      # THE COMMITTED SEED STILL BUILDS THIS TREE, checked after the lighter
-      # half: it links against the runtime and compiles HEAD. No other job
-      # starts from the seed once a cached compiler exists, so a removed
-      # runtime symbol the seed names, or source the seed cannot read, is
-      # refused here before it can land.
+      # EACH HEAVY make PRINTS ITS PEAK (bash's %M, max RSS of the tree it
+      # waited on), so a runner grown past its memory is read from the log
+      # rather than inferred from a 137.
       - name: keepers
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
         run: |
           alone=0; a=0; b=0
-          make -s -o avra keepers-alone || alone=1
+          TIMEFORMAT='keepers-alone: peak %M KB'
+          time make -s -o avra keepers-alone || alone=1
           cp -a . ../keepers-b
           tb=$(date +%s)
-          (cd ../keepers-b && export AVRA_BUILD_LOCK=/tmp/avra-build-b.lock && s=0 && { make -s -o avra keepers-b || s=1; } && { t0=$(date +%s); make -s -o avra seed-check || s=1; echo "keepers: seed-check $(( $(date +%s) - t0 ))s"; } && exit $s) > ../keepers-b.log 2>&1 &
-          ta=$(date +%s); make -s -o avra keepers-a > keepers-a.log 2>&1 || a=1; cat keepers-a.log
+          (cd ../keepers-b && export AVRA_BUILD_LOCK=/tmp/avra-build-b.lock && s=0 && { make -s -o avra keepers-b || s=1; } && exit $s) > ../keepers-b.log 2>&1 &
+          ta=$(date +%s)
+          TIMEFORMAT='keepers-a: peak %M KB'
+          time make -s -o avra keepers-a > keepers-a.log 2>&1 || a=1; cat keepers-a.log
           echo "speed keepers-a $(( $(date +%s) - ta ))" >> speed.log
           wait $! || b=1
           echo "speed keepers-b $(( $(date +%s) - tb ))" >> speed.log
-          echo "::group::keepers-b and seed-check"; cat ../keepers-b.log; echo "::endgroup::"
+          echo "::group::keepers-b"; cat ../keepers-b.log; echo "::endgroup::"
           [ "$alone" = 0 ] || echo "::error::a keeper that runs alone refused"
           [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
-          [ "$b" = 0 ] || echo "::error::a keeper in the second half, or the seed check, refused"
+          [ "$b" = 0 ] || echo "::error::a keeper in the second half refused"
           exit $((alone + a + b))
 
       - name: speed baseline
@@ -270,6 +281,35 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-keepers-${{ github.sha }}
+  # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
+  # heaviest single keeper. It stands ALONE: run beside the two halves it was
+  # the third compiler process on one runner, and the OOM killed the whole
+  # keepers job (137) before anything could be said. No other job starts from
+  # the seed once a cached compiler exists, so a removed runtime symbol the
+  # seed names, or source the seed cannot read, is refused here before it can
+  # land — and now a refusal is that job's, not the keepers'.
+  seed-check:
+    needs: [prepare]
+    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      # Handed-down objects stand newer than this checkout's sources, so make
+      # rebuilds none of what prepare built from the same commit.
+      - name: built
+        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: seed check
+        run: |
+          TIMEFORMAT='seed-check: peak %M KB'
+          time make -s -o avra seed-check
   # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
   # clears the store it builds through, and it runs beside the gate.
   cache-attacks:
@@ -446,7 +486,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers, pr-keepers, flow-gate, cache-attacks, gate, suites]
+    needs: [prepare, keepers, seed-check, pr-keepers, flow-gate, cache-attacks, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
