@@ -18,7 +18,7 @@
 //! linear in the call graph. A held fn answers from its interface,
 //! where the bit is contract (`interface_form`): a callee that starts
 //! to wait moves its dependents' key.
-use core.{DeclId, DeclKind, ExprId, Stmt, fp, fp_list, rt_waits, flatten}
+use core.{DeclId, DeclKind, ExprId, FileId, Stmt, fp, fp_list, rt_waits, flatten}
 use features.{NameFacts, TypeFacts, FileView, Decls, CancelReach}
 use compiler.families.{Family}
 use @std.relation.engine.{Table, new_table}
@@ -47,17 +47,58 @@ impl Workspace {
         self.decls.clear_cancels(fns)
         self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
         // WHETHER THE PROGRAM LINKS A SCHEDULER: a member that SPAWNS,
-        // reads a waiting property, or calls a fn that parks. A call
-        // through a value is not enough — the value may be any fn, so
-        // it is every program's conservative bit and would link the
-        // scheduler for all of them. A program that links none emits no
-        // while check: it has no source to preempt and no row to call
-        // (the wasm target among them).
+        // reads a waiting property, or calls a fn that parks — or a
+        // wait written at a FILE's top level, which is the entry root
+        // and no declaration. A call through a value is not enough —
+        // the value may be any fn, so it is every program's
+        // conservative bit and would link the scheduler for all of
+        // them. A program that links none emits no while check: it has
+        // no source to preempt and no row to call (the wasm target
+        // among them). The bit rides the settled VALUE below, so a
+        // reader after a reuse reads what the fingerprint covers.
+        let links = fns.any((d) -> self.cancel_survey(d).waits().any((w) -> self.wait_links(w))) ||
+            self.roots_wait()
+        self.decls.record_schedulers(links)
+        self
+            .db
+            .settle(
+                k,
+                fp(
+                    1,
+                    [
+                        fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns]),
+                        if links { 1 } else { 0 },
+                    ],
+                ),
+            )
+        fns.length
+    }
+
+    /// Whether any file's TOP-LEVEL statements wait. A program's entry
+    /// root is no declaration, so a `spawn` or a waiting read written
+    /// at top level is invisible to the member survey; this reads every
+    /// file's own expressions, its declarations' waits among them
+    /// (already surveyed) changing no answer.
+    fn roots_wait() -> bool {
         self
             .decls
-            .record_schedulers(fns.any((d) -> self.cancel_survey(d).waits().any((w) -> self.wait_links(w))))
-        self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns])]))
-        fns.length
+            .all_files()
+            .any(
+                (fi) -> !self.is_held(fi.id) &&
+                    self.reads_as_source(fi.path) &&
+                    self.file_waits(fi.id).any((w: NodeWait) -> self.wait_links(w)),
+            )
+    }
+
+    /// Every wait in a file's expressions.
+    fn file_waits(f: FileId) -> List<NodeWait> {
+        let reader = WaitReader {
+            view: file_view(self.lang, self.parsed(f), self.decls, f),
+            names: self.resolved(f),
+            facts: self.folded(f),
+        }
+        let store = self.decls.store_of(f)
+        flatten([reader.node_waits(ExprId { index: i }) for i in 0..store.exprs.count()])
     }
 
     /// Whether a call to `d` may reach a cancel point.

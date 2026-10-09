@@ -68,6 +68,32 @@ fn walking() -> List<string> {
     ]
 }
 
+/// A program whose ONLY spawn and ONLY `while` are TOP-LEVEL: the entry
+/// root is no declaration, so the cancel pass must survey it for the
+/// scheduler link to be found, or the top-level `while` carries no check.
+fn top_level() -> List<string> {
+    [
+        "fn spinner(n: int) -> int { n }",
+        "let t = spawn spinner(3)",
+        "mut i = 0",
+        "while i < 3 { i = i + 1 }",
+        "let _ = t.await",
+        "i",
+    ]
+}
+
+/// The same, whose only top-level wait is a runtime row that parks.
+fn top_sleep() -> List<string> {
+    [
+        "extern fn avra_fiber_sleep(ms: int)",
+        "let t = spawn spinner(3)",
+        "avra_fiber_sleep(0)",
+        "mut i = 0",
+        "while i < 3 { i = i + 1 }",
+        "i",
+    ]
+}
+
 /// An `@unbroken` fn's own `while`, run as a task, `@std/meta` vendored.
 fn unbroken_ir() -> string {
     render_ir(
@@ -107,6 +133,14 @@ spec "compiler/lower — a checked `while` back-edge" {
     then "an `@unbroken` fn's own `while` carries no check" {
         in_text(unbroken_ir(), "rouse", "= flag tick") == 0 &&
             in_text(unbroken_ir(), "rouse", "call avra_tick_cold()") == 0
+    }
+    then "a top-level `while` in a program whose only spawn is top-level carries the check" {
+        times(ir(top_level()), "= flag tick") == 1 &&
+            times(ir(top_level()), "call avra_tick_cold()") == 1
+    }
+    then "a top-level park links the scheduler for a top-level `while`" {
+        times(ir(top_sleep()), "= flag tick") == 1 &&
+            times(ir(top_sleep()), "call avra_tick_cold()") == 1
     }
     then "the cold side is followed by the unwind test, so a cancelled task leaves" {
         in_body(spinning(), "spin", "= flag unwinding") >= 1

@@ -265,6 +265,56 @@ static void body_vdeadline_do(void) {
     avra_vtask_free(vt);
 }
 
+// A DUE TIMER FIRES AT A CHECKED BACK-EDGE: a task that computes and
+// never switches still lets a due timer's task run, so the cold side
+// fires the heap.
+static void body_tick_timer_do(void) {
+    avra_tick_wanted = 1;
+    avra_tick_armed();
+    void* timed = avra_task_at(1);
+    pause_ms(20);
+    __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);
+    avra_tick_cold();
+    CHECK(avra_task_done(timed) != 0, "a checked back-edge fires a due timer");
+    avra_rc_release(timed);
+    avra_tick_wanted = 0;
+    avra_tick_stood_down();
+}
+
+// A TASK THAT OPENS A SCOPE ARMS THE SOURCE although it never waits:
+// the scope's own opening stores `wanted`, so the source sets the tick
+// and the spinner hears its deadline. Without it the source stands down
+// and the spinner never ends.
+static void body_scope_arms_do(void) {
+    avra_tick_wanted = 0;
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    // the spawn arms the source; the scope's own opening must keep it wanted
+    void* b = spawn1(neighbour, 0);
+    int64_t scope = avra_fiber_within(20);
+    int64_t turns = 0;
+    while (!__atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED) && turns < 100000000) {
+        avra_tick_cold();
+        turns++;
+    }
+    CHECK(__atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED) != 0, "opening a scope arms the source and cuts the spinner");
+    avra_fiber_within_end(scope);
+    joined(b);
+    avra_tick_wanted = 0;
+    avra_tick_stood_down();
+}
+
+// A COMPILED BACK-EDGE INSIDE AN EVALUATED RUN STANDS STILL: the
+// evaluator's own task counts the turns, so a compiled check reached
+// from a host fn beside it must not consume the guest's tick.
+static void body_guest_do(void) {
+    avra_sched_run_begins();
+    __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);
+    for (int i = 0; i < 10; i++) avra_tick_cold();
+    CHECK(__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) == 1, "a compiled back-edge inside an evaluated run leaves the guest's tick");
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    avra_sched_run_ends();
+}
+
 // ── the store the source reads ──────────────────────────────────
 
 static volatile int g_running;
@@ -351,6 +401,9 @@ int main(void) {
     in_child("the store the source reads", body_wanted_do);
     in_child("the deadline a spinner is cut by", body_deadline_do);
     in_child("the evaluator's deadline cut", body_vdeadline_do);
+    in_child("a due timer at a checked back-edge", body_tick_timer_do);
+    in_child("a scope's own opening arms the source", body_scope_arms_do);
+    in_child("a compiled back-edge inside an evaluated run", body_guest_do);
     printf("tick: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }
