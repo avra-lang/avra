@@ -140,7 +140,7 @@ ROWS = {
 INERT_ROWS = re.compile(
     r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi)_\w+|avra_(debug|eputs|puts|"
     r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named|"
-    r"vgate_open|vgate_claim|gate_new|rc_release|task_at|task_done|task_cancel|"
+    r"vgate_open|vgate_claim|gate_new|rc_release|task_at|task_done|task_cancel|process_exit|"
     r"sched_seed|sched_settle|sched_run_begins|sched_run_ends|sched_guest_waits|clock_virtual)|"
     r"host|println)$")
 
