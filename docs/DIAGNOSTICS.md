@@ -2498,6 +2498,12 @@ error[type.extern_value]: an extern fn is not a value — it names a C symbol, n
 help: wrap it — `(x0: string) -> avra_host_is_dir(x0)`
 ```
 
+## flow.callback_pointer
+
+a callback under a cancel answers zero, and this one answers a pointer the C would follow
+
+No witness yet.
+
 ## type.host_fn
 
 a host fn defines the symbol its name spells — its seats and its answer are words and pointers a host hands over, plain
