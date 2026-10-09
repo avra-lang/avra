@@ -14,7 +14,7 @@
 //! bug"). `tools/codecs.py` is this file's OTHER surface: it refuses
 //! an encoder/decoder-shaped pair the tree carries that this registry
 //! does not name.
-use core.{DeclId, SeatMark, TypeId, Type, DeclKind, list_eq}
+use core.{SeatMark, TypeId, Type, DeclKind, list_eq}
 use features.{
     DeclFacts,
     AnnotationFact,
@@ -27,14 +27,17 @@ use features.{
     kind_word,
     Unsettled,
     Settlement,
+    DeclSig,
+    FnSig,
+    StructSig,
+    EnumSig,
+    NamedSig,
+    Lacked,
 }
-use diagnostics.{SourceFile, DiagFacts, Severity}
-use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
+use diagnostics.{SourceFile}
 use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
-use @std.text.{from_codepoint}
-use compiler.failures.{Raised}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
 
@@ -146,11 +149,11 @@ fn heap_from_wire_wire(raw: string) -> MetaHeap? {
     heap_from_wire(r)
 }
 
-// ── A FIXTURE WORKSPACE — the codecs that cross `TypeId`/`FileId`/
-// `DeclId` need a real `Decls`/`TypeRegistry` to intern into; this is
-// that one, and `codec_decl_exemplars` mints its file's declarations
-// so the id-writing codecs name a real `DeclId`. Its own verbs live on
-// `Workspace` (`style.free_state_verb`). ──
+// ── A FIXTURE WORKSPACE — the codecs that cross `TypeId`/`FileId`
+// need a real `Decls`/`TypeRegistry` to intern into; this is that
+// one, held to scalars and structural types so no declaration needs
+// admitting (`compiler/tests/fn_wire_marks_test.av`'s own shape). Its
+// own verbs live on `Workspace` (`style.free_state_verb`). ──
 
 fn codec_workspace() -> Workspace {
     new_workspace(
@@ -158,9 +161,8 @@ fn codec_workspace() -> Workspace {
             {
                 "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
                 "/w/src/main.av": "fn a() { 1 }\n",
-                "/w/src/other.av": "fn b() { 2 }\n",
             },
-            ["/w/avra.toml", "/w/src/main.av", "/w/src/other.av"],
+            ["/w/avra.toml", "/w/src/main.av"],
         ),
         "/w",
         avra(),
@@ -210,11 +212,12 @@ impl Workspace {
     }
 
     /// A handful of `Wanted` rows — `decl: null`/`sub: null`
-    /// throughout: `decl_wire`'s own round trip is exercised beside its
-    /// decoder (`interface.decl_wire/wire_decl`), so `sub_wire`'s nested
-    /// declaration ref is covered here only as far as its decoder never
-    /// runs (`sub_mark == "+"`) — `seat_wire`'s shape is exercised in
-    /// full through a seat carrying a real `TypeId`.
+    /// throughout: a real `DeclId` needs an admitted declaration this
+    /// fixture does not carry (`fn_wire_marks_test.av`'s own fixture
+    /// stops there too), so `sub_wire`/`decl_wire` are covered only as
+    /// far as their OWN decoder never runs (`sub_mark == "+"`) —
+    /// `seat_wire`'s shape is exercised in full through a seat
+    /// carrying a real `TypeId`.
     fn codec_wanted_exemplars() -> List<Wanted> {
         let i = self.decls.types.type(int)
         let seat = SeatValue {
@@ -253,89 +256,33 @@ impl Workspace {
         self.wanted_wire(a) == self.wanted_wire(b)
     }
 
-    /// The fixture's real declarations: `items` mints every row of the
-    /// file, so the id-writing codecs name a `DeclId` the program
-    /// itself made — a workspace with none would pass vacuously.
-    fn codec_decl_exemplars() -> List<DeclId> { self.items(self.file_id("/w/src/main.av")) }
-
-    fn codec_decl_labels() -> List<string> { [self.decls.decl(d).name for d in self.codec_decl_exemplars()] }
-
-    fn codec_same_decl(a: DeclId, b: DeclId) -> bool { self.decls.decl_wire(a) == self.decls.decl_wire(b) }
-
-    fn codec_raised_exemplars() -> List<Raised> {
-        let d = self.codec_decl_exemplars()[0]
+    /// One `DeclSig` of every variant. The `defaults` seat carries a
+    /// builtin declaration's real `DeclId` — builtins are admitted with
+    /// the language, so no fixture file is needed.
+    fn codec_sig_exemplars() -> List<DeclSig> {
+        let t = self.decls.types.type(int)
+        let s = self.decls.types.type(string)
+        let b = self.decls.types.type(bool)
+        let d = self.decls.builtin_decls()[0]
         [
-            Raised { owner: d, errors: [] },
-            Raised { owner: d, errors: [self.decls.types.type(int), self.decls.types.type(bool)] },
-        ]
-    }
-
-    fn codec_same_raised(a: Raised, b: Raised) -> bool {
-        self.decls.decl_wire(a.owner) == self.decls.decl_wire(b.owner) &&
-            list_eq(
-                a.errors,
-                b.errors,
-                (x, y) -> self.decls.type_wire(x) == self.decls.type_wire(y),
-            )
-    }
-
-    /// `Loc`s anchored to the fixture's real declarations: a loc with
-    /// no file, a span at its declaration's start, a span inside it,
-    /// and a cross-file span anchored in the other file.
-    fn codec_loc_exemplars() -> List<Loc> {
-        let a = self.codec_decl_exemplars().find((d) -> self.decls.decl(d).name == "a")!
-        let b = self
-            .items(self.file_id("/w/src/other.av"))
-            .find((d) -> self.decls.decl(d).name == "b")!
-        let sa = self.decls.decl_span(a)!
-        let sb = self.decls.decl_span(b)!
-        [
-            Loc { file: null, lo: 3, hi: 7 },
-            Loc { file: "/w/src/main.av", lo: sa.lo, hi: sa.lo },
-            Loc { file: "/w/src/main.av", lo: sa.lo + 1, hi: sa.hi },
-            Loc { file: "/w/src/other.av", lo: sb.lo, hi: sb.hi },
-        ]
-    }
-
-    fn codec_loc_labels() -> List<string> {
-        ["no file", "at its declaration's start", "inside its declaration", "cross-file"]
-    }
-
-    /// A `DiagFacts` bearing each loc shape, so the row's own `Loc`s
-    /// are exercised beside the pair's.
-    fn codec_diag_exemplars() -> List<DiagFacts> {
-        let at = self.codec_loc_exemplars()[2]
-        [
-            DiagFacts {
-                kind: "t.plain",
-                severity: Severity.Warning,
-                primary: Frame { label: null, loc: null },
-                secondary: [],
-                cause_lines: [],
-                message: "no source",
-                help: null,
-                suggestions: [],
-            },
-            DiagFacts {
-                kind: "t.rich",
-                severity: Severity.Error,
-                primary: Frame { label: "here", loc: at },
-                secondary: [Frame { label: null, loc: at }],
-                cause_lines: ["caused by: x"],
-                message: "a message",
-                help: "a help",
-                suggestions: [
-                    Suggestion {
-                        confidence: Confidence.High,
-                        description: "a fix",
-                        edits: [Edit { loc: at, replacement: "z" }],
+            DeclSig.Fn(FnSig { params: [t, s], ret: b }),
+            DeclSig
+                .Record(
+                    StructSig {
+                        names: ["a", "b"],
+                        types: [t, s],
+                        defaults: [null, d],
+                        lacking: [Lacked { field: "c", why: "not written" }],
+                        states: [false, true],
                     },
-                ],
-            },
+                ),
+            DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[], [t, b]] }),
+            DeclSig.Named(NamedSig { of: t }),
+            DeclSig.Alias(t),
         ]
     }
 
-    fn codec_diag_labels() -> List<string> { ["an unlocated warning", "an error with a frame and a fix"] }
+    fn codec_same_decl_sig(a: DeclSig, b: DeclSig) -> bool { self.decl_sig_wire(a) == self.decl_sig_wire(b) }
 }
 
 fn type_exemplar_labels() -> List<string> {
@@ -674,77 +621,7 @@ fn reach_labels() -> List<string> {
 
 fn same_text(a: string, b: string) -> bool { a == b }
 
-// ── The scalar family answers — `int`, `bool`, `string` and `bool?`
-// ride the `MetaVal` scalar wire (`scalar_wire.av`). ──
-
-fn int_wire_exemplars() -> List<int> { [0, 1, -1, 42, 9223372036854775807] }
-
-fn int_wire_labels() -> List<string> { ["zero", "one", "minus one", "forty-two", "the int ceiling"] }
-
-fn bool_wire_exemplars() -> List<bool> { [true, false] }
-
-fn bool_wire_labels() -> List<string> { ["true", "false"] }
-
-fn text_wire_exemplars() -> List<string> { ["", "a", from_codepoint(0), "two\nlines"] }
-
-fn text_wire_labels() -> List<string> { ["empty", "one character", "a NUL alone", "a newline inside"] }
-
-fn presence_wire_exemplars() -> List<bool?> { [null, true, false] }
-
-fn presence_wire_labels() -> List<string> { ["absent", "present true", "present false"] }
-
-fn same_opt_bool(a: bool?, b: bool?) -> bool {
-    (a == null) == (b == null) && (a == null || a! == b!)
-}
-
-// ── The `Loc` and `DiagFacts` wires — a span crosses anchored to its
-// declaration, its offsets relative to that declaration's start. ──
-
-fn same_loc(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
-
-fn same_loc_opt(a: Loc?, b: Loc?) -> bool {
-    (a == null) == (b == null) && (a == null || same_loc(a!, b!))
-}
-
-fn same_frame(a: Frame, b: Frame) -> bool { a.label == b.label && same_loc_opt(a.loc, b.loc) }
-
-fn same_frame_list(a: List<Frame>, b: List<Frame>) -> bool { list_eq(a, b, same_frame) }
-
-fn same_edit(a: Edit, b: Edit) -> bool { same_loc(a.loc, b.loc) && a.replacement == b.replacement }
-
-fn same_suggestion(a: Suggestion, b: Suggestion) -> bool {
-    a.confidence == b.confidence &&
-        a.description == b.description &&
-        list_eq(a.edits, b.edits, same_edit)
-}
-
-fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
-    a.kind == b.kind &&
-        a.severity == b.severity &&
-        same_frame(a.primary, b.primary) &&
-        same_frame_list(a.secondary, b.secondary) &&
-        list_eq(a.cause_lines, b.cause_lines, (x, y) -> x == y) &&
-        a.message == b.message &&
-        a.help == b.help &&
-        list_eq(a.suggestions, b.suggestions, same_suggestion)
-}
-
 // ── THE REGISTRY ─────────────────────────────────────────────────────
-
-/// The fixture workspace's declaration names — the receipt that the
-/// id-writing codecs name a real `DeclId` rather than an empty list.
-export fn codec_fixture_decl_names() -> List<string> { codec_workspace().codec_decl_labels() }
-
-/// The refusal law, exercised: a span no single declaration holds whole
-/// — one byte past its declaration's end — is refused, so a position
-/// that pointed outside its declaration never decodes to a moved one.
-export fn codec_loc_past_end_refused() -> bool {
-    let ws = codec_workspace()
-    let a = ws.codec_decl_exemplars().find((d) -> ws.decls.decl(d).name == "a")!
-    let sp = ws.decls.decl_span(a)!
-    let past = Loc { file: "/w/src/main.av", lo: sp.lo, hi: sp.hi + 1 }
-    ws.loc_of_wire(ws.loc_wire(past)) == null
-}
 
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
@@ -950,54 +827,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             same_string_list,
         ),
         derived(
-            "interface.decl_wire/wire_decl",
-            ws.codec_decl_exemplars(),
-            ws.codec_decl_labels(),
-            (d) -> ws.decls.decl_wire(d),
-            (w) -> ws.decl_from_ref(w),
-            (x, y) -> ws.codec_same_decl(x, y),
-        ),
-        derived(
-            "family.decls_wire/decls_of_wire",
-            [ws.codec_decl_exemplars()],
-            ["the file's declarations"],
-            (ds) -> ws.decls_wire(ds),
-            (w) -> ws.decls_of_wire(w),
-            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_decl(x, y)),
-        ),
-        derived(
-            "family.types_wire/types_of_wire",
-            [[], ws.codec_type_exemplars()],
-            ["empty", "every exemplar"],
-            (ts) -> ws.types_wire(ts),
-            (w) -> ws.types_of_wire(w),
-            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_type_shape(x, y)),
-        ),
-        derived(
-            "family.raised_wire/raised_of_wire",
-            ws.codec_raised_exemplars(),
-            ["one owner, no errors", "one owner, two errors"],
-            (r) -> ws.raised_wire(r),
-            (w) -> ws.raised_of_wire(w),
-            (x, y) -> ws.codec_same_raised(x, y),
-        ),
-        derived(
-            "codec.loc_wire/loc_of_wire",
-            ws.codec_loc_exemplars(),
-            ws.codec_loc_labels(),
-            (l) -> ws.loc_wire(l),
-            (b) -> ws.loc_of_wire(b),
-            same_loc,
-        ),
-        derived(
-            "codec.diag_facts_wire/diag_facts_of_wire",
-            ws.codec_diag_exemplars(),
-            ws.codec_diag_labels(),
-            (d) -> ws.diag_facts_wire(d),
-            (b) -> ws.diag_facts_of_wire(b),
-            same_diag_facts,
-        ),
-        derived(
             "interface.type_wire/read_type_wire",
             ws.codec_type_exemplars(),
             type_exemplar_labels(),
@@ -1006,36 +835,12 @@ export fn codec_pairs() -> List<CodecCheck> {
             (x, y) -> ws.codec_same_type_shape(x, y),
         ),
         derived(
-            "family.int_wire/int_of_wire",
-            int_wire_exemplars(),
-            int_wire_labels(),
-            int_wire,
-            int_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived(
-            "family.bool_wire/bool_of_wire",
-            bool_wire_exemplars(),
-            bool_wire_labels(),
-            bool_wire,
-            bool_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived(
-            "family.text_wire/text_of_wire",
-            text_wire_exemplars(),
-            text_wire_labels(),
-            text_wire,
-            text_of_wire,
-            (x, y) -> x == y,
-        ),
-        derived_total(
-            "family.presence_wire/presence_of_wire",
-            presence_wire_exemplars(),
-            presence_wire_labels(),
-            presence_wire,
-            presence_of_wire,
-            same_opt_bool,
+            "family.decl_sig_wire/decl_sig_of_wire",
+            ws.codec_sig_exemplars(),
+            ["fn", "record", "enum", "named", "alias"],
+            (s) -> ws.decl_sig_wire(s),
+            (w) -> ws.decl_sig_of_wire(w),
+            (x, y) -> ws.codec_same_decl_sig(x, y),
         ),
         dbrow_check(),
     ]
