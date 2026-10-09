@@ -1039,8 +1039,10 @@ fn lower_fn(
     // carries.
     let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
     mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross), checks)
-    // an `@unbroken` fn's own `while`s carry no back-edge check
-    lo.unbroken = a.view.decls.marks_unbroken(x.id)
+    // an `@unbroken` fn's own `while`s carry no back-edge check — the
+    // cancel pass already decided it: a fn that SPINS has one, and its
+    // bit is false for an `@unbroken` fn
+    lo.unbroken = !(a.view.decls.cancel_bits(x.id)?.spins ?? true)
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.mint_ty(pt) }
     lo.seeded()
