@@ -1911,6 +1911,14 @@ impl Workspace {
         let x = self.decls.decl(d)
         mut t = self.type_cx_for(x)
         let out = t.type_decl(x)
+        // A DECLARATION STILL EXPANDING HAS A RANGE THAT WILL GROW: a
+        // window typed now lacks the ids the expansion is about to add,
+        // so it answers this asker alone and is never memoized — the
+        // facts settle once the expansion has closed.
+        if self.db.active(key(Family.Expanded, x.file.index)) {
+            self.db.abandon(key(Family.Typed, d.index))
+            return out
+        }
         typed_of(
             self
                 .relation(Family.Typed)
@@ -1940,6 +1948,14 @@ impl Workspace {
             spoken = spoken.concat(facts.voices.list)
         }
         let folded_facts = out with { voices: Voices { list: by_position(spoken) } }
+        // AN EXPANSION STILL IN FLIGHT CAN SPLICE INTO A FILE'S ARENA:
+        // a window folded now lacks the nodes it is about to add, so it
+        // answers this asker alone and is never memoized — the fold
+        // settles once the expansion has closed.
+        if self.db.family_active(Family.Expanded.ordinal) {
+            self.db.abandon(key(Family.Folded, f.index))
+            return folded_facts
+        }
         // DERIVED, AND LAZY: `folded_facts` is entirely `absorb`ed
         // from each body's own `typed(d)`, already asked above — so
         // its own fingerprints, in the same order, are folded
