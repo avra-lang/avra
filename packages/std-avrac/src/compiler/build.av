@@ -38,7 +38,7 @@ use compiler.backend.{
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.memory.{sound_checked}
-use compiler.store.{Store, Stored, Keeping, node_key}
+use compiler.store.{Store, Stored, Keeping, node_key, store_with}
 use compiler.host.{no_target, read_manifest, Stamp, Read}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
@@ -190,7 +190,7 @@ impl Workspace {
 
     /// THE STORE THIS WORKSPACE READS AND KEEPS IN — the one door every derivation
     /// opens it by, so where its writes land is decided once.
-    fn opened_store() -> Store { Store { root: build_cache_root(self), keeping: self.keys.keeping.get() } }
+    fn opened_store() -> Store { store_with(build_cache_root(self), self.compiler_id(), self.keys.keeping.get()) }
 
     /// FROM HERE ON, AN INSPECTION: this workspace and every restart of it derive
     /// as a check does and keep what they learn in this process alone.
@@ -199,45 +199,18 @@ impl Workspace {
 
 /// WHERE A TREE'S ARTIFACTS LIVE — one place for the whole checkout, so a
 /// dependency's artifacts serve every package that reaches it, and it dies with
-/// the worktree. A STORE IS ONE COMPILER'S: every row is the work of the
-/// compiler that wrote it, so the store stands under that compiler's print and
-/// a new compiler reads none of an old one's — the build after a pass changed
-/// compiles every body with it.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its store's directory out.
+/// the worktree. ONE STORE FOR EVERY COMPILER (S2): the store's own header
+/// carries the producing compiler's print, and a record from another print is
+/// never read.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its cache's directory out.
 export fn build_cache_root(ws: Workspace) -> string {
-    if ws.keys.store_root.get() == "" {
-        let root = joined_path(stores_dir(ws), ws.compiler_id())
-        ws.keys.store_root.set(root)
-        mark_user(ws, root)
-    }
+    if ws.keys.store_root.get() == "" { ws.keys.store_root.set(stores_dir(ws)) }
     ws.keys.store_root.get()
 }
 
-/// THIS PROCESS REGISTERS ITS OWN USE OF A STORE, once, the moment it is
-/// first named — a file under `.users/`, named by this process's own pid
-/// (`avra_own_pid`), so a sweep elsewhere can ask `avra_pid_alive` of it
-/// rather than guess from a clock how long a build might still run.
-/// NOTHING REMOVES IT ON EXIT: a crash would leave it anyway, so the only
-/// honest test is liveness, checked where the mark is READ (`has_live_user`)
-/// — which is also where a dead one is pruned, since nothing else ever
-/// revisits a mark once it is written.
-// LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace and its store root in.
-fn mark_user(ws: Workspace, root: string) {
-    let _ = make_dirs(joined_path(root, ".users"))
-    let _ = ws.host.write(joined_path(joined_path(root, ".users"), "${avra_own_pid()}"), "")
-}
-
-/// Where a tree's stores stand, one a compiler.
+/// Where a tree's cache stands.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, a directory out.
 fn stores_dir(ws: Workspace) -> string { joined_path(tree_root(ws), ".avra-cache") }
-
-/// How many compilers' stores a tree keeps — the newest.
-const STORES_KEPT: int = 4
-
-/// A leftover directory an older build once named this way — kept out of
-/// the sweep so an upgrade does not delete it out from under a reader
-/// mid-run; nothing writes here any more (see `unnamed_print`).
-const LEGACY_UNNAMED_STORE: string = "shared"
 
 /// A SERIAL FOR THIS PROCESS ALONE — `now_ns()`'s own clock cannot be
 /// trusted to tell two calls apart (a wall clock's resolution is not a
@@ -303,19 +276,9 @@ fn unnamed_print() -> string {
 /// fmt.av's `fold_groups`, its one caller.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its compiler's print out.
 fn compiler_print(ws: Workspace) -> string {
-    let at? = ws.host.compiler else { return unnamed_print() }
-    let roll = joined_path(stores_dir(ws), "compilers")
-    // LICENSED compiler.host_asked_directly: the store's roll is read as it stands at this instant — a cell would answer what was read earlier
-    let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
     let digest? = ws.running_print() else { return unnamed_print() }
     let mode = ws.keys.build_mode.get()
-    let print = "${digest}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
-    rolled(
-        ws,
-        roll,
-        [line for line in lines if print_of(line) != print].concat(["${print}\t${at}"]),
-    )
-    print
+    "${digest}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
 }
 
 /// WHAT A KEPT BINARY LINKED BESIDE ITS SOURCES — the runtime archive and the
@@ -364,65 +327,11 @@ fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
 /// is kept apart from one made without.
 fn proof_mode() -> string { if sound_checked() { "+sound" } else { "" } }
 
-/// A roll line's print: its first field. A roll holds no empty line.
-fn print_of(line: string) -> string { line.split("\t")[0] }
-
 /// A binary's bytes as one digest — null when it cannot be read back. BLAKE3: the
-/// content hash that names the store directory and detects a stale store.
+/// content hash that names a kept object and detects a stale one.
 export fn digest_of_binary(at: string) -> string? {
     // LICENSED input.store_io: a binary's own bytes, read to name it for the store
     match read_bytes(at) { .Ok(bytes) -> digest_of_octets(bytes), .Err(_) -> null }
-}
-
-/// WHETHER A PID'S OWN MARK NAMES A PROCESS STILL RUNNING — a non-pid name
-/// under `.users/` answers false rather than refusing the sweep over it.
-fn user_pid_alive(name: string) -> bool {
-    let pid? = parse_int(name) else { return false }
-    avra_pid_alive(pid) == 1
-}
-
-/// WHETHER A STORE STILL HAS A LIVE USER, pruning every dead pid's mark
-/// first — the only place a mark is ever read again, so a crash's leftover
-/// is cleaned the first time this asks rather than kept forever. Asked of
-/// every store the sweep visits, kept or not, since a KEPT store is asked
-/// about on every future run too and its `.users/` would otherwise grow
-/// for as long as that compiler stays current.
-// LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace and a store directory in.
-fn has_live_user(ws: Workspace, store: string) -> bool {
-    let users = joined_path(store, ".users")
-    // LICENSED compiler.host_asked_directly: whether another process uses this store is asked of the disk at this instant, never of what was read earlier
-    if !ws.host.is_dir(users) { return false }
-    // LICENSED compiler.host_asked_directly: the users of this store are listed as they stand at this instant
-    let names = ws.host.list(users)
-    for name in names {
-        if !user_pid_alive(name) { let _ = remove(joined_path(users, name)) }
-    }
-    names.any(user_pid_alive(it))
-}
-
-/// The roll written back, cut to the newest stores — and everything else under
-/// the stores' directory swept: a store no roll line names is no compiler's,
-/// UNLESS a live process still has it open. THE WRITE-BACK IS STAGED AND
-/// RENAMED, never written in place — `staged_beside`/`published`, the same
-/// pair a kept binary crosses by, so a reader of `roll` meets the old lines
-/// or the new ones, never a half-written line a concurrent write left behind.
-/// A LOST UPDATE BETWEEN TWO WRITERS costs at most one roll entry, re-added
-/// the next time that compiler runs — harmless, and cheaper than a lock that
-/// could outlive a crashed holder.
-// LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace, a path and the lines in.
-fn rolled(ws: Workspace, roll: string, lines: List<string>) {
-    let kept = lines
-        .slice(if lines.length > STORES_KEPT { lines.length - STORES_KEPT } else { 0 }, lines.length)
-    let staged = staged_beside(roll)
-    let _ = ws.host.write(staged, joined(kept, "\n"))
-    let _ = published(staged, roll)
-    let named = [print_of(line) for line in kept].concat(["compilers", LEGACY_UNNAMED_STORE])
-    // LICENSED compiler.host_asked_directly: the stores that stand are listed at this instant — a sweep judges the disk, not a cell
-    for name in ws.host.list(stores_dir(ws)) {
-        let dir = joined_path(stores_dir(ws), name)
-        let live = has_live_user(ws, dir)
-        if !named.contains(name) && !live { let _ = avra_spawn_status("rm", ["-rf", dir]) }
-    }
 }
 
 /// THE CHECKOUT: the NEAREST ancestor holding a `.git` — a worktree's own
@@ -819,7 +728,7 @@ impl Workspace {
         Made {
             which: Owned.File(a.view.file),
             key: key,
-            obj: "${build_cache_root(self)}/${key}.o",
+            obj: "${build_cache_root(self)}/obj/${key}.o",
             source: path,
         }
     }
@@ -841,12 +750,14 @@ impl Workspace {
         Made,
         BuildError,
     > {
-        let bc = "${build_cache_root(self)}/${node_key(Stored.Obj, ["bc-scratch", "${now_ns()}"])}.bc"
+        let _ = make_dirs(joined_path(build_cache_root(self), "obj"))
+        // LICENSED input.scratch_name: a call-unique scratch name, never an input of what is built
+        let bc = "${build_cache_root(self)}/obj/${node_key(Stored.Obj, ["bc-scratch", "${now_ns()}"])}.bc"
         let key = if d.unlowered.is_empty() { self.bytes_keyed(full, bc, tools)? } else { asked }
         Made {
             which: Owned.Program,
             key: key,
-            obj: "${build_cache_root(self)}/${key}.o",
+            obj: "${build_cache_root(self)}/obj/${key}.o",
             source: "",
         }
     }
