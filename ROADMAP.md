@@ -3214,6 +3214,19 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — FLOW 03's `within`-end answer is unconsumed
+
+A `within` scope's end answers `I64` — whether the request that stood was
+this scope's own (`avra_fiber_within_end`, `runtime/avra_fiber.h`). The
+landing stores it in `Deferral.Landing`'s cell (`landed_scope`,
+`packages/std-avrac/src/compiler/lower/walk.av`) and nothing reads it:
+`within_epilogue` answers the body's own value, and the epilogue's own
+unwind path cannot land (its mark was popped). It earns its keep at the
+FLIP (FLOW 03 ladder 14), where the landing turns its unwind into
+`Err(TimedOut)` and this cell decides whether the timeout was the scope's.
+RECORDED TRIGGER: ladder 14 reads that cell; until then its store is the
+row's only consumer.
+
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
 ### Interim record — the tasks server was unreachable at landing
