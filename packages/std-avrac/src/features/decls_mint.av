@@ -300,6 +300,8 @@ impl Decls {
         // range is the empty 0..0
         mut lo: List<int> = filled(self.decl_count(), 0 - 1)
         mut hi: List<int> = filled(self.decl_count(), 0)
+        mut slo: List<int> = filled(self.decl_count(), 0 - 1)
+        mut shi: List<int> = filled(self.decl_count(), 0)
         mut exprs = side_table<DeclAt>("expr_owners", 0, store.exprs.count(), DeclAt { decl: null })
         // A SYNTHESIZED NODE HAS NO SPAN, AND A RANGE THAT SKIPS IT
         // STOPS SHORT OF IT. A desugaring is minted where it is used,
@@ -324,9 +326,27 @@ impl Decls {
             hi.set(owner.index, i + 1)
             exprs.set(i, DeclAt { decl: owner })
         }
+        // THE STATEMENTS MIRROR THE EXPRESSIONS, so the two windows agree on
+        // what a body owns. A NESTED DECLARATION IS NO OWNER, so its
+        // statements fall to the body that types them — the split the
+        // expression walk makes, made once more for the columns keyed by
+        // statement.
+        mut sowner = main
+        // LICENSED compiler.stmt_index_walk: scan the stmt index space for slo/shi ranges
+        for i in 0..store.stmts.count() {
+            let s = StmtId { index: i }
+            let sp: Span? = if self.spanned_stmt_of(f, s) != null { null } else { store.stmt_span(s) }
+            if sp != null { sowner = self.innermost(owners, sp!) ?? main }
+            if slo[sowner.index] < 0 { slo.set(sowner.index, i) }
+            shi.set(sowner.index, i + 1)
+        }
         for d in [o.d for o in owners].concat([main]) {
             let i = d.index
-            self.set_decl(i, self.decl(d) with { lo: started_at(lo[i]), hi: hi[i] })
+            self
+                .set_decl(
+                    i,
+                    self.decl(d) with { lo: started_at(lo[i]), hi: hi[i], stmt_lo: started_at(slo[i]), stmt_hi: shi[i] },
+                )
         }
         self.expr_owners.set_at(f.index, Cell.new(exprs))
     }
@@ -626,6 +646,8 @@ impl Decls {
             root: root,
             lo: 0,
             hi: 0,
+            stmt_lo: 0 - 1,
+            stmt_hi: 0,
             word: null,
             marks: [],
             home: home,
@@ -989,10 +1011,13 @@ impl Decls {
     ) -> List<DeclId> {
         let orig = self.decl(annotated)
         let bd = self.mint_wrap_body(f, orig, ann, original, at)
+        // THE WRAPPER SPLICES PAST THE ADMISSION, so the statement range
+        // `range_bodies` computed no longer holds: the repointed declaration
+        // falls back to whole-file until a range is computed for the splice.
         self
             .set_decl(
                 annotated.index,
-                self.decl(annotated) with { stmt: wrapper_stmt, root: wrapper_root, lo: wrapper_lo, hi: wrapper_hi },
+                self.decl(annotated) with { stmt: wrapper_stmt, root: wrapper_root, lo: wrapper_lo, hi: wrapper_hi, stmt_lo: 0 - 1, stmt_hi: 0 },
             )
         // A STMT-DRIVEN READER FINDS ITS DECL THROUGH `decl_of`, never
         // by re-deriving it from the decl's OWN `.stmt` field — typing
