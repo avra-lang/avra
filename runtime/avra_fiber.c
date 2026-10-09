@@ -2038,6 +2038,9 @@ static void fiber_cancelled(Fiber* f, int64_t by) {
 
 static void task_cancelled(void* task, int64_t by) {
     int64_t* cells = task_cells(task);
+    // The asker is kept on the task where a caught join reads it: a
+    // fiber task ends in `fiber_start` and never reaches `task_ended`.
+    cells[TASK_BY] = by;
     Fiber* f = (Fiber*)(uintptr_t)cells[TASK_FIBER];
     if (f) { fiber_cancelled(f, by); return; }
     if (cells[TASK_END] == END_LIVE) task_ended(task, END_CANCELLED, by);

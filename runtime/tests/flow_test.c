@@ -458,6 +458,7 @@ static void* cut_then_joins(void* self) {
     g_task = spawn1(sleeper, 10000);
     avra_rc_retain(g_task);
     void* r = avra_task_join(g_task);
+    g_byte_b = r == NULL;
     avra_rc_release(r);
     g_byte_a = avra_unwinding;
     avra_task_settle(g_task);
@@ -472,7 +473,7 @@ static void standing_join(void) {
     void* t = spawn1(cut_then_joins, 0);
     avra_fiber_sleep(2);
     avra_task_cancel(t);
-    CHECK(ended(t) == 2 && g_byte_a == 1, "a standing cancel cuts the join at once, the bit set");
+    CHECK(ended(t) == 2 && g_byte_a == 1 && g_byte_b == 1, "a standing cancel cuts the join at once, the bit set, no answer handed back");
     avra_rc_release(g_task);
     avra_clock_run_ends();
 }
@@ -560,11 +561,39 @@ static void caught_join_of_cancelled(void) {
     avra_task_cancel(t);
     void* box = avra_task_join_caught(t);
     CHECK(box != NULL, "a caught join of a cancelled task answers its `Cancelled` box");
-    CHECK(box && ((AvraArray*)box)->data[0] == 0, "whose `by` names the asking task");
-    CHECK(box && ((AvraArray*)box)->data[1] == 0, "and whose `at` is the site the task was spawned at");
+    CHECK(box && ((AvraArray*)box)->data[0] == 0, "whose `by` names main, the asking task");
+    // No writer records where a cancel was met yet, so `at` stands as
+    // the placeholder the boxing leaves it.
+    CHECK(box && ((AvraArray*)box)->data[1] == 0, "and whose `at` is still the placeholder zero");
     if (box) avra_rc_release(box);
     CHECK(avra_unwinding == 0, "and the caught join passed no cancel to the caller");
     avra_rc_release(t);
+    avra_clock_run_ends();
+}
+
+// A CAUGHT JOIN OF A SPAWNED TASK NAMES ITS ASKER: a cancel from a
+// task other than main records that task's id, never the default zero.
+static int64_t g_asker = 0;
+static void* catches_after_asking(void* self) {
+    (void)self;
+    g_asker = avra_task_id();
+    void* t = spawn1(a_sleeper, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    void* box = avra_task_join_caught(t);
+    g_byte_a = box != NULL && ((AvraArray*)box)->data[0] == g_asker;
+    if (box) avra_rc_release(box);
+    avra_rc_release(t);
+    return answer(0);
+}
+
+static void caught_join_names_its_asker(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    void* watcher = spawn1(catches_after_asking, 0);
+    ended(watcher);
+    CHECK(g_asker != 0 && g_byte_a == 1, "a spawned task's cancel names the asker, not the default zero");
     avra_clock_run_ends();
 }
 
@@ -2224,6 +2253,7 @@ int main(int argc, char** argv) {
     on_virtual_clock("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join);
     on_virtual_clock("a join of a cancelled task", join_of_cancelled);
     on_virtual_clock("a caught join of a cancelled task", caught_join_of_cancelled);
+    on_virtual_clock("a caught join names its asker", caught_join_names_its_asker);
     caught_join_of_answered();
     on_virtual_clock("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set);
     on_virtual_clock("every scope keeps its own limit", every_scope_its_own_limit);

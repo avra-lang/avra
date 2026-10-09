@@ -112,8 +112,9 @@ void* avra_task_at(int64_t at_ns);
 void avra_task_answer(void* task, void* v);
 // Records a cancel on the task and claims its set when nothing has —
 // a claim is never displaced: the task resumes on its arm and hears the
-// cancel at its next cancel point. A sleep and a descriptor park are
-// cut; a join is cut and traps. A fiberless task ends, unanswered.
+// cancel at its next cancel point. A sleep, a descriptor park and a
+// join are cut; a join passes the cancel on. A fiberless task ends,
+// unanswered.
 void avra_task_cancel(void* task);
 
 // A `within`'s scope opens on the calling task with its own limit, `ms`
