@@ -38,16 +38,46 @@ fn rev_of(name: string) -> int {
 
 /// The newest sealed body's path, or nothing when the store has none.
 export fn latest_body(dir: string) -> string? {
-    // LICENSED input.store_io: the store's own bodies, listed to find the newest
-    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
-    let bodies = [n for n in names if is_body(n)]
-    if bodies.is_empty() { return null }
-    mut best = 0 - 1
-    for n in bodies {
-        if rev_of(n) > best { best = rev_of(n) }
-    }
-    if best < 0 { return null }
+    let best = newest_rev(dir)
+    if best < 1 { return null }
     body_path(dir, best)
+}
+
+/// Every body file's name, whatever its revision.
+export fn all_body_names(dir: string) -> List<string> {
+    // LICENSED input.store_io: the store's own bodies, listed to seal the next
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [n for n in names if is_body(n)]
+}
+
+/// A body file's revision, `body-<rev>.pack`.
+export fn body_rev_of(name: string) -> int { rev_of(name) }
+
+/// The highest sealed revision, 0 when the store has none.
+fn newest_rev(dir: string) -> int {
+    mut best = 0
+    for name in all_body_names(dir) {
+        if rev_of(name) > best { best = rev_of(name) }
+    }
+    best
+}
+
+/// Every body, oldest revision first — a torn older body is still seen,
+/// and later revisions win as they merge.
+fn bodies_asc(dir: string) -> List<string> {
+    let names = all_body_names(dir)
+    mut max = 0
+    for name in names {
+        if rev_of(name) > max { max = rev_of(name) }
+    }
+    mut out: List<string> = []
+    mut rev = 1
+    while rev <= max {
+        let here = [n for n in names if rev_of(n) == rev]
+        out = out.concat([body_path(dir, rev) for _n in here])
+        rev = rev + 1
+    }
+    out
 }
 
 /// A payload behind its commit marker, so a torn body is one `read_frame` away.
@@ -66,7 +96,7 @@ fn framed(payload: Bytes) -> Bytes {
 export fn seal(pack: Pack) -> bool {
     let keys = sorted_by(pack.records.get().keys(), text_before)
     if keys.is_empty() { return false }
-    let rev = pack.rev.get() + 1
+    let rev = newest_rev(pack.dir) + 1
     let payload = body_payload(pack, keys, rev)
     let idx = idx_payload(keys, rev)
     if !wrote(idx_path(pack.dir, rev), idx) { return false }
@@ -164,15 +194,17 @@ fn hex_val(c: string) -> int { "0123456789abcdef".index_of(c) }
 /// Read the newest body into the pack — before the segments, so a later
 /// segment wins. A torn or foreign body is ignored, and says so once.
 export fn body_scan(pack: Pack) {
-    let at? = latest_body(pack.dir) else { return }
-    // LICENSED input.store_io: the store's own body, read to merge it
-    let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-    let r = reader(raw)
-    let payload? = read_frame(r) else {
-        torn_at(pack, 0)
-        return
+    for at in bodies_asc(pack.dir) {
+        // LICENSED input.store_io: the store's own body, read to merge it
+        let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+        let r = reader(raw)
+        let payload = read_frame(r)
+        if payload != null {
+            let _ = body_read(pack, payload!)
+        } else {
+            torn_at(pack, 0)
+        }
     }
-    let _ = body_read(pack, payload)
 }
 
 fn body_read(pack: Pack, payload: Bytes) -> bool {
