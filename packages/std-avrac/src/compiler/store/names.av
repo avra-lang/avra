@@ -1,0 +1,222 @@
+//! NAMES AND READ SETS — a body's two compression tables, both content
+//! shaped: a name is a position in a sorted front-coded table, a read set
+//! a position in a sorted table of name-id lists. Both are LOCAL to one
+//! body (S1): a name id means nothing outside the file that interns it.
+//!
+//! A NAME IS ITS TEXT. Interning sorts, so an id is a position a decoder
+//! recomputes from the bytes alone — no dense id leaks into a key, and a
+//! body read by another compiler agrees with the one that wrote it.
+//!
+//! A READ SET IS ITS MEMBERS. The same members intern once whatever their
+//! order, and the set's hash at a revision is a pure fold of the two, so
+//! every record holding the set shares one value (S5).
+use core.{inserted, sorted_by, text_before}
+use @std.relation.engine.{list_cell, map_cell}
+use @std.relation.stable.{reader, writer, stable_hasher, Reader}
+
+// ── The name table ──
+
+/// A body's names as a sorted, unique run. A name enters once: the table
+/// is complete before any record refers to it, and the ids written are
+/// the positions it settles at.
+export type Names = { texts: Cell<List<string>> }
+
+export fn names() -> Names {
+    let texts: Cell<List<string>> = Cell.new([])
+    Names { texts: texts }
+}
+
+impl Names {
+    /// How many names the body uses — the span of ids.
+    fn length() -> int { self.texts.get().length }
+
+    /// The name's position in byte order, inserting it when absent. Ids
+    /// after an insertion move; intern the whole set before recording one.
+    fn intern(text: string) -> int {
+        let at = self.at_or_after(text)
+        if at < self.length() && self.text_of(at) == text { return at }
+        self.texts.set(inserted(self.texts.get(), at, text))
+        at
+    }
+
+    /// The name's id, or nothing — a read, never an insert.
+    fn id_of(text: string) -> int? {
+        let at = self.at_or_after(text)
+        if at < self.length() && self.text_of(at) == text { return at }
+        null
+    }
+
+    fn text_of(id: int) -> string { self.texts.get()[id] }
+
+    /// THE FRONT-CODED TABLE: `count`, then each name as the byte prefix
+    /// it shares with the one before and the suffix past it. A run of
+    /// paths spends its shared bytes once.
+    fn encode() -> Bytes {
+        let ts = self.texts.get()
+        let w = writer()
+        w.count(ts.length)
+        mut prev = "".bytes()
+        for t in ts {
+            let b = t.bytes()
+            let shared = shared_prefix(prev, b)
+            w.varint(shared)
+            w.octets(b.slice(shared, b.length))
+            prev = b
+        }
+        w.bytes()
+    }
+
+    /// The first position whose name is not before `text` — the lower
+    /// bound, where an equal name already stands.
+    fn at_or_after(text: string) -> int {
+        let ts = self.texts.get()
+        mut lo = 0
+        mut hi = ts.length
+        while lo < hi {
+            let mid = (lo + hi) / 2
+            if text_before(ts[mid], text) { lo = mid + 1 } else { hi = mid }
+        }
+        lo
+    }
+}
+
+/// The table the bytes spell, or nothing when they are truncated, carry
+/// trailing octets, or front-code a prefix the run does not hold.
+export fn names_from(b: Bytes) -> Names? {
+    let r = reader(b)
+    let n? = read_count(r) else { return null }
+    let texts: Cell<List<string>> = Cell.new([])
+    mut prev = ""
+    for _k in 0..n {
+        let shared? = read_varint(r) else { return null }
+        let suffix? = read_octets(r) else { return null }
+        let suffix_text? = suffix.text() else { return null }
+        let prefix_bytes = prev.bytes()
+        if shared > prefix_bytes.length { return null }
+        let prefix? = prefix_bytes.slice(0, shared).text() else { return null }
+        let name = prefix + suffix_text
+        texts.push(name)
+        prev = name
+    }
+    if !r.done() { return null }
+    Names { texts: texts }
+}
+
+// ── Interned read sets ──
+
+/// A body's read sets: each a rising list of unique name ids, filed by
+/// its own members so the same set interns once.
+export type Sets = { members: Cell<List<List<int>>>, by_members: Cell<Map<string, int>> }
+
+export fn sets() -> Sets { sets_with(list_cell(), map_cell()) }
+
+// LICENSED compiler.free_state_verb: a CONSTRUCTOR — the two tables in, the sets out.
+fn sets_with(members: Cell<List<List<int>>>, by_members: Cell<Map<string, int>>) -> Sets {
+    Sets { members: members, by_members: by_members }
+}
+
+impl Sets {
+    fn length() -> int { self.members.get().length }
+
+    /// The set's id, inserting it when this run of members is new. The
+    /// order written is canonical, so `[2, 1]` and `[1, 2]` are one set.
+    fn intern(ids: List<int>) -> int {
+        let canon = canonical(ids)
+        let key = set_key(canon)
+        let found = self.by_members.get().get(key)
+        if found != null { return found! }
+        let id = self.length()
+        self.members.push(canon)
+        self.by_members.put(key, id)
+        id
+    }
+
+    fn members(id: int) -> List<int> { self.members.get()[id] }
+
+    /// ONE HASH PER SET PER REVISION (S5): a pure fold of the revision and
+    /// the members, so every record holding the set shares the value and a
+    /// reader recomputes it from the bytes.
+    fn hash_of(id: int, rev: int) -> int {
+        mut h = stable_hasher(0).int(rev)
+        for m in self.members(id) { h = h.int(m) }
+        h.finish()
+    }
+
+    /// Each set as its count, then its members rising by delta — a run of
+    /// nearby name ids costs one byte a member. Above the size cut §6.1
+    /// measures at M4, a Roaring bitmap would replace the deltas.
+    fn encode() -> Bytes {
+        let all = self.members.get()
+        let w = writer()
+        w.count(all.length)
+        for ms in all {
+            w.count(ms.length)
+            mut prev = 0
+            for m in ms {
+                w.varint(m - prev)
+                prev = m
+            }
+        }
+        w.bytes()
+    }
+}
+
+/// The sets the bytes spell, or nothing when they are truncated, carry
+/// trailing octets, or name a member before the id that precedes it.
+export fn sets_from(b: Bytes) -> Sets? {
+    let r = reader(b)
+    let n? = read_count(r) else { return null }
+    let members: Cell<List<List<int>>> = list_cell()
+    let by_members: Cell<Map<string, int>> = map_cell()
+    for _k in 0..n {
+        let count? = read_count(r) else { return null }
+        mut prev = 0
+        let ms: Cell<List<int>> = list_cell()
+        for _j in 0..count {
+            let delta? = read_varint(r) else { return null }
+            if delta < 0 { return null }
+            prev = prev + delta
+            ms.push(prev)
+        }
+        let canon = ms.get()
+        by_members.put(set_key(canon), members.get().length)
+        members.push(canon)
+    }
+    if !r.done() { return null }
+    sets_with(members, by_members)
+}
+
+// ── Shared shapes ──
+
+/// The bytes `a` and `b` share before they first differ.
+fn shared_prefix(a: Bytes, b: Bytes) -> int {
+    let n = if a.length < b.length { a.length } else { b.length }
+    (0..n).find((k) -> a.at(k) != b.at(k)) ?? n
+}
+
+/// Members rising, each once — a set's one spelling.
+fn canonical(ids: List<int>) -> List<int> {
+    let ordered = sorted_by(ids, int_before)
+    mut out: List<int> = []
+    for x in ordered {
+        if out.is_empty() || out.last()! != x { out.push(x) }
+    }
+    out
+}
+
+fn int_before(a: int, b: int) -> bool { a < b }
+
+/// The bytes one member list spells — the identity a set interns by.
+fn set_key(ms: List<int>) -> string { ["${i}" for i in ms].join(",") }
+
+fn read_count(r: Reader) -> int? {
+    match r.count() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+fn read_varint(r: Reader) -> int? {
+    match r.varint() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+fn read_octets(r: Reader) -> Bytes? {
+    match r.octets() { .Ok(v) -> v, .Err(_) -> null }
+}
