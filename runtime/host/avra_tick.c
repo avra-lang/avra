@@ -42,6 +42,7 @@ static struct timespec us_as_ts(int64_t us) {
 // would wake a park that has already been served.
 static void wake_drained(void) {
     char b;
+    // the clock: the tick is its own thread, not a task's wait
     while (read(g_wake[0], &b, 1) == 1) { }
 }
 
@@ -59,17 +60,20 @@ static void* tick_loop(void* self) {
             unwanted = 0;
             __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);
             struct timespec d = us_as_ts(avra_tick_us);
+            // the clock: the tick is its own thread, not a task's wait
             nanosleep(&d, NULL);
             wake_drained();
         } else if (++unwanted > TICK_PARK_PERIODS) {
             struct pollfd p = { .fd = g_wake[0], .events = POLLIN };
             __atomic_store_n(&g_parked, 1, __ATOMIC_RELAXED);
+            // the clock: the tick is its own thread, not a task's wait
             poll(&p, 1, -1);
             __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);
             wake_drained();
             unwanted = 0;
         } else {
             struct timespec d = us_as_ts(avra_tick_us);
+            // the clock: the tick is its own thread, not a task's wait
             nanosleep(&d, NULL);
             wake_drained();
         }

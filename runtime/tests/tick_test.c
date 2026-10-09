@@ -160,6 +160,34 @@ static void body_source_do(void) {
     pause_ms(120);
     CHECK(__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) == 0, "an unwanted source parks and stops ticking");
 
+    // A PARKED SOURCE WAKES ON A RE-ARM: the byte goes set again.
+    avra_tick = 0;
+    avra_tick_wanted = 1;
+    avra_tick_armed();
+    int rearmed = 0;
+    for (int i = 0; i < 200 && !rearmed; i++) {
+        if (__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) rearmed = 1;
+        else pause_ms(2);
+    }
+    CHECK(rearmed, "a parked source wakes on re-arm and sets the tick");
+
+    // THE PERIOD IS THE SETTING'S: a tick is not up before it is.
+    int64_t saved_us = avra_tick_us;
+    avra_tick_us = 400000;
+    avra_tick = 0;
+    avra_tick_wanted = 1;
+    avra_tick_armed();
+    int ticked = 0;
+    for (int i = 0; i < 200 && !ticked; i++) {
+        if (__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) ticked = 1;
+        else pause_ms(2);
+    }
+    CHECK(ticked, "the source sets a tick at all");
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    pause_ms(150);
+    CHECK(__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) == 0, "the source waits out its period before the next tick");
+    avra_tick_us = saved_us;
+
     // a forked child brings its own source up.
     avra_tick_wanted = 1;
     avra_tick_armed();
@@ -182,9 +210,35 @@ static void body_source_do(void) {
     avra_tick_wanted = 0;
 }
 
+// ── the store the source reads ──────────────────────────────────
+
+static volatile int g_running;
+static void* yield_forever(void* self) {
+    (void)self;
+    while (g_running) avra_fiber_yield();
+    return NULL;
+}
+
+// A SWITCH WITH ANOTHER TASK READY STORES `wanted`: the source reads it
+// to know there is preemption work, and a store that never happens
+// leaves the source parked while tasks run.
+static void body_wanted_do(void) {
+    avra_tick_wanted = 0;
+    g_running = 1;
+    void* a = spawn1(yield_forever, 0);
+    void* b = spawn1(yield_forever, 0);
+    avra_fiber_yield();
+    CHECK(__atomic_load_n(&avra_tick_wanted, __ATOMIC_RELAXED) == 1, "a switch with another task ready stores wanted");
+    g_running = 0;
+    joined(a);
+    joined(b);
+    avra_tick_wanted = 0;
+}
+
 int main(void) {
     in_child("the seeded draw", body_seeded_do);
     in_child("the hosted source", body_source_do);
+    in_child("the store the source reads", body_wanted_do);
     printf("tick: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

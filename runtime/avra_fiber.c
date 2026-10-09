@@ -1420,7 +1420,7 @@ void avra_fiber_overflowed(const Fiber* f) {
 __attribute__((noinline, cold))
 static void switched_to_fresh(Fiber* self, Fiber* next) {
     fiber_bound(next);
-    avra_tick_wanted = g_ready_head != NULL || g_timers_len != 0;
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1439,7 +1439,7 @@ static inline void switch_to(Fiber* next) {
     if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
     // PRECOMPTION WORK STANDS exactly while a task runs with others
     // ready or a deadline filed; the source stands down otherwise.
-    avra_tick_wanted = g_ready_head != NULL || g_timers_len != 0;
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1553,7 +1553,7 @@ static Fiber* next_with_world(void) {
         if (world_waited_virtually()) continue;
         int64_t wait = g_timers_len > 0 ? g_timers[0].at - now_ns() : -1;
         int held = g_parked_fds > 0;
-        avra_tick_wanted = 0;   // nothing runs: the source may park
+        __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);   // nothing runs: the source may park
         if (held) avra_clock_hold(1);
         poller_wait(g_timers_len > 0 && wait < 0 ? 0 : wait);
         if (held) avra_clock_hold(-1);
@@ -2357,7 +2357,7 @@ void avra_sched_seed(int64_t schedule) {
     // NO SOURCE, AND THE TICK IS HELD: every checked back-edge takes
     // its cold side, where the turn is drawn from the schedule.
     __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);
-    avra_tick_wanted = 0;
+    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);
     g_timer_until = 0;
     poll_counted();
 }

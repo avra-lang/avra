@@ -18,11 +18,14 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 
 out, flags, objects = sys.argv[1], sys.argv[2].split(), sys.argv[3:]
-FIBER, CLOCK, DOOR = "avra_fiber", "avra_runtime", "avra_door"
+FIBER, CLOCK, DOOR, HOST = "avra_fiber", "avra_runtime", "avra_door", "avra_tick"
 sources = {name: open(f"runtime/{name}.c").read() for name in (FIBER, CLOCK)}
 # THE DOOR'S HEADER is the scheduler's too: a break of it is written beside
 # an unbroken copy of the scheduler, whose include finds it first.
 sources[DOOR] = open(f"runtime/{DOOR}.h").read()
+# THE HOST'S THREAD lives in its own object, outside the runtime glob; a
+# break of it is written beside an unbroken copy of every runtime object.
+sources[HOST] = open(f"runtime/host/{HOST}.c").read()
 arm = platform.machine() in ("arm64", "aarch64")
 
 FLOOR = ('    "    b.lo 1f\\n"\n', '    "    nop\\n"\n') if arm else ('    "    jb 1f\\n"\n', '    "    nop\\n"\n')
@@ -125,7 +128,7 @@ MUTATIONS = [
     ("a poll in a seeded run hands the next switches to the fast path", "    g_polls++;\n    poll_counted();", "    g_polls++;\n    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;"),
     ("a settle leaves the order seeded", "    g_seeded = 0;\n    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    return g_choices;", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    return g_choices;"),
     ("the pick walks the whole queue", "enum { PICK_WINDOW = 16 };", "enum { PICK_WINDOW = 16384 };"),
-    ("a seeded run holds no tick", "    __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);\n    avra_tick_wanted = 0;\n    g_timer_until = 0;\n    poll_counted();", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    avra_tick_wanted = 0;\n    g_timer_until = 0;\n    poll_counted();"),
+    ("a seeded run holds no tick", "    __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);\n    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);\n    g_timer_until = 0;\n    poll_counted();", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);\n    g_timer_until = 0;\n    poll_counted();"),
     ("a seeded count never falls", "        if (--f->tick_turns > 0) return;\n        f->tick_turns = tick_turns_drawn();\n        avra_fiber_yield();", "        return;\n        f->tick_turns = tick_turns_drawn();\n        avra_fiber_yield();"),
     ("schedule 0 preempts like any other", "        if (g_schedule == 0) return;\n", ""),
     ("the seeded draw is not the schedule's", "    return (uint32_t)chosen(TICK_TURNS) + 1;", "    return 1;"),
@@ -148,6 +151,7 @@ MUTATIONS = [
     ("a virtual join heeds its task's deadline", "    waits_gate(f, task, 0, 0);\n    legacy_parked(f);\n    return host_waited(1);", "    waits_gate(f, task, 0, 0);\n    return host_waited(park_begun(f));"),
     ("a virtual join of an ended task parks", "    if (task_cells(task)[GATE_OPEN]) return 0;\n    alone(f);", "    alone(f);"),
     ("a run begins with its host's schedule", "    g_seeded = 0;\n    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    avra_clock_run_begins();", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    avra_clock_run_begins();"),
+    ("the scheduler never stores wanted", "    // PRECOMPTION WORK STANDS exactly while a task runs with others\n    // ready or a deadline filed; the source stands down otherwise.\n    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0, __ATOMIC_RELAXED);\n    g_current = next;", "    // PRECOMPTION WORK STANDS exactly while a task runs with others\n    // ready or a deadline filed; the source stands down otherwise.\n    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);\n    g_current = next;"),
     ("a run's end keeps its seed", "    g_seeded = outer.seeded;\n", ""),
     ("a run's end restarts the outer schedule's stream", "    g_seed_state = outer.state;\n", "    g_seed_state = (uint64_t)outer.schedule;\n"),
     ("a run's choices are counted as its host's", "    g_choices = outer.choices;\n", ""),
@@ -236,6 +240,13 @@ CLOCK_MUTATIONS = [
     ("a run begins with its host's holds", "    g_clock_outer[g_clock_runs++] = avra_clock;\n    avra_clock.held = 0;", "    g_clock_outer[g_clock_runs++] = avra_clock;"),
     ("a run's end keeps its clock", "    avra_clock = g_clock_outer[--g_clock_runs];", "    --g_clock_runs;"),
 ]
+# THE HOST'S OWN THREAD: each line the tick's contract stands on, broken
+# in the object outside the runtime glob.
+HOST_MUTATIONS = [
+    ("the source never sets the byte", "            __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);\n", ""),
+    ("the source ignores its period", "    if (us < 0) us = 0;\n", "    if (us < 0) us = 0;\n    us = 0;\n"),
+    ("a parked source is never woken", "        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();\n", ""),
+]
 TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
 BOUND = 60
 
@@ -245,9 +256,10 @@ for test in TESTS:
 
 # What a break of one file links beside it: every other object, and for
 # the clock's the scheduler built whole.
-ALL = [(FIBER, m) for m in MUTATIONS] + [(CLOCK, m) for m in CLOCK_MUTATIONS] + [(DOOR, m) for m in DOOR_MUTATIONS]
+ALL = [(FIBER, m) for m in MUTATIONS] + [(CLOCK, m) for m in CLOCK_MUTATIONS] + [(DOOR, m) for m in DOOR_MUTATIONS] + [(HOST, m) for m in HOST_MUTATIONS]
 subprocess.run(["cc", "-c", "-O2", *flags, "-Iruntime", "-o", f"{out}/{FIBER}.o", f"runtime/{FIBER}.c"], check=True)
-rest = {FIBER: objects, CLOCK: [o for o in objects if not o.endswith(f"/{CLOCK}.o")] + [f"{out}/{FIBER}.o"], DOOR: objects}
+rest = {FIBER: objects, CLOCK: [o for o in objects if not o.endswith(f"/{CLOCK}.o")] + [f"{out}/{FIBER}.o"], DOOR: objects,
+        HOST: [o for o in objects if not o.endswith(f"/{HOST}.o")] + [f"{out}/{FIBER}.o"]}
 
 
 def tried(numbered):

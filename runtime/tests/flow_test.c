@@ -1259,9 +1259,29 @@ static void* naps(void* self) {
     return answer(worst);
 }
 
+// Files a timer ALREADY DUE on an empty heap — the empty-to-filed edge
+// the window is zeroed at — and parks; answers the most turns of the
+// others before it woke.
+static void* naps_due_now(void* self) {
+    int64_t worst = 0;
+    for (int64_t i = 0; i < cap(self); i++) {
+        g_due_turn = 0;
+        g_due = now_ns();
+        avra_wait_until(now_ns(), 0, 0);
+        avra_wait_park();
+        int64_t late = g_due_turn ? g_turns - g_due_turn : 0;
+        g_due = 0;
+        if (late > worst) worst = late;
+    }
+    return answer(worst);
+}
+
 // Tasks that alternate a run of quick yields with a run of long slices:
 // a sleep is heard within AVRA_TIMER_TURNS or one tick, plus one round of
-// them, however the quick run before it went — counted in turns.
+// them, however the quick run before it went; a timer filed ALREADY DUE
+// on an empty heap is heard at the next switch, a round of them at most
+// — the window's zeroing at the empty-to-filed edge is what arms that
+// read. Counted in turns.
 static void timers_heard_within_the_window_among_bursts(void) {
     static const int shapes[2][3] = { { 8, 100, 8 }, { 2, 300, 40 } };
     for (int s = 0; s < 2; s++) {
@@ -1273,6 +1293,13 @@ static void timers_heard_within_the_window_among_bursts(void) {
         g_stop = 1;
         for (int i = 0; i < workers; i++) joined(w[i]);
         CHECK(worst <= avra_sched_timer_turns() + workers + 2, s == 0 ? "twenty sleeps among eight bursting tasks are each heard within AVRA_TIMER_TURNS or one tick, plus a round" : "twenty sleeps among two bursting tasks are each heard within AVRA_TIMER_TURNS or one tick, plus a round");
+
+        g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+        for (int i = 0; i < workers; i++) w[i] = spawn1(works_in_bursts, 0);
+        int64_t at_once = joined(spawn1(naps_due_now, 20));
+        g_stop = 1;
+        for (int i = 0; i < workers; i++) joined(w[i]);
+        CHECK(at_once >= 0 && at_once <= workers + 2, s == 0 ? "a sleep already due among eight bursting tasks is heard within a round of them, not a window later" : "a sleep already due among two bursting tasks is heard within a round of them, not a window later");
     }
 }
 

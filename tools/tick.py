@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OBJECT = os.path.join(ROOT, "build", "avra_tick.o")
@@ -47,6 +48,8 @@ ALLOWED = {
 # A thread in the scheduler's own files is the door D7 closes.
 THREAD = re.compile(r"\b(pthread_|thrd_|__thread\b|_Thread_local\b|thread_local\b)")
 
+# `nm -u` prints only undefined symbols. GNU types each `U` beside its
+# name; Mach-O prints the bare name alone. Both are read.
 NM = ["nm", "-u"]
 
 
@@ -57,10 +60,14 @@ def undefined(path):
     names = []
     for line in out.stdout.splitlines():
         parts = line.split()
-        if not parts or parts[0] != "U":
+        if not parts:
             continue
-        name = parts[-1].lstrip("_")
-        names.append(name)
+        # GNU: `U name`, an address sometimes before the type field.
+        if parts[0] == "U" or (len(parts) >= 2 and parts[1] == "U"):
+            names.append(parts[-1].lstrip("_"))
+        # Mach-O: the bare name alone, `nm -u` having no type field.
+        elif len(parts) == 1:
+            names.append(parts[0].lstrip("_"))
     return names
 
 
@@ -105,6 +112,23 @@ def threads_check():
     return 0
 
 
+def built_fixture():
+    """A tiny REAL object that calls `malloc`, so the self-test reads
+    `nm`'s own output rather than a list written beside it. Answers its
+    path and the names the parser saw, or (None, None) when it cannot
+    build."""
+    cc = os.environ.get("CC", "cc")
+    at = tempfile.mkdtemp(prefix="tick-fixture-")
+    src = os.path.join(at, "malloc_user.c")
+    obj = os.path.join(at, "malloc_user.o")
+    with open(src, "w") as f:
+        f.write("#include <stdlib.h>\nvoid* leak(void) { return malloc(8); }\n")
+    built = subprocess.run([cc, "-O0", "-c", "-o", obj, src], capture_output=True, text=True)
+    if built.returncode != 0:
+        return None, None
+    return obj, undefined(obj)
+
+
 def self_test():
     ok = True
     def check(what, got, want):
@@ -119,9 +143,18 @@ def self_test():
     check("pthread is a thread", bool(THREAD.search("pthread_create(&t, 0, f, 0)")), True)
     check("__thread is a thread", bool(THREAD.search("static __thread int x;")), True)
     check("a word containing thread is not", bool(THREAD.search("a threadsafe name")), False)
+    # THE PARSING SURFACE: a real object's undefined `malloc` is read
+    # and refused. A parser that reads no name after `nm` fails here.
+    _, names = built_fixture()
+    if names is None:
+        ok = False
+        print("tick self-test: the real-object fixture does not build")
+    else:
+        check("a real object's undefined malloc is read", "malloc" in names, True)
+        check("a real object's malloc is refused", "malloc" in refused(names), True)
     if not ok:
         return 1
-    print("tick self-test: 5 fixture(s) held")
+    print("tick self-test: 7 fixture(s) held")
     return 0
 
 
@@ -133,6 +166,8 @@ def main():
     if "--self-test" in args:
         if self_test() != 0:
             return 1
+        if args == ["--self-test"]:
+            return 0
     verb = args[0]
     if verb == "object":
         return object_check(OBJECT)
