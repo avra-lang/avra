@@ -205,16 +205,26 @@ impl Workspace {
     }
 
     /// Whether one wait LINKS A SCHEDULER: a spawn, a waiting property,
-    /// or a call to a fn the pass settled as parking — a runtime row by
-    /// its column among them. A call through a value does not — any
-    /// program has one, and it says nothing about this program's rows.
-    /// Read AFTER the pass settled, when every member's bit is set.
+    /// or a call to a fn whose OWN body parks — a member by its settled
+    /// bit, a runtime row by its column. A call to a bodiless
+    /// declaration, or through a value, does not: it may be any fn, and
+    /// it says nothing about this program's rows. Read AFTER the pass
+    /// settled, when every member's bit is set.
     fn wait_links(w: NodeWait) -> bool {
         match w {
-            .Calls(g, _) -> self.reach_of(g).parks,
+            .Calls(g, _) -> self.call_links(g),
             .Spawns or .Reads(_) -> true,
             .Value -> false,
         }
+    }
+
+    /// Whether a call to `g` runs a body that parks: a runtime row by its
+    /// column, a member or held fn by its settled bit, anything else no.
+    fn call_links(g: DeclId) -> bool {
+        let x = self.decls.decl(g)
+        if x.external { return rt_waits(x.name) }
+        if self.cancel_member(g) || self.is_held(x.file) { return self.decls.cancel_bits(g)?.parks ?? false }
+        false
     }
 
     fn wait_spins(w: NodeWait) -> bool {
