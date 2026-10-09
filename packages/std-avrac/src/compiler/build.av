@@ -393,6 +393,7 @@ impl Workspace {
         self.keys.build_mode.set(mode)
         self.keys.compiler_id.set("")
         self.keys.store_root.set("")
+        self.keys.object_keys.set({})
     }
 }
 
@@ -738,7 +739,7 @@ impl Workspace {
     fn read_okey(store: Store, path: string) -> string {
         let parts = self.key_parts_cached(store, self.module_path_of(path), path)
         let now = [self.gathered_set(g, self.file_id(path)) for g in self.gatherings(path)]
-        if fields_wire(now) == fields_wire(parts.gathered) { self.held_okey(store, path) } else { key_of_parts(parts with { gathered: now }) }
+        if fields_wire(now) == fields_wire(parts.gathered) { self.held_okey(store, path) } else { node_key(Stored.Obj, [self.compiler_id(), key_of_parts(parts with { gathered: now })]) }
     }
 
     /// THE PROGRAM'S MODULE AS AN OBJECT: keyed by its own bytes when it was lowered
@@ -823,6 +824,7 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
             joined(d.lowered.code_hashes, "\n"),
             tools.opt,
             tools.runtime,
+            tools.mode(),
         ],
     )
 }

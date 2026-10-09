@@ -313,7 +313,13 @@ fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> s
     let key = "${m.text()}\t${path}"
     let known: string? = ws.keys.object_keys.get().get(key)
     if known != null { return known! }
-    let made = key_of_parts(ws.key_parts_cached(store, m, path))
+    // THE BUILD MODE JOINS: one store serves every compiler AND every target, so a
+    // host object and a wasm object for one source must not share a key. `built_for`
+    // clears this table, since a mode that moved leaves every key stale.
+    let made = node_key(
+        Stored.Obj,
+        [ws.compiler_id(), key_of_parts(ws.key_parts_cached(store, m, path))],
+    )
     ws.keys.object_keys.put(key, made)
     made
 }
