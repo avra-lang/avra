@@ -25,13 +25,17 @@ spec "features/tasks" {
         }
         then "a `within` lowers as a one-turn loop whose end is its landing" {
             let text = render_ir(
-                ir_of("type Lim = { ms: int }\nlet x = within Lim { ms: 5 } { 7 }\nx"),
+                ir_of(
+                    "type Lim = { ms: int }\n" +
+                        "fn spin() -> int {\n    mut i = 0\n    while i < 3 { i = i + 1 }\n    i\n}\n" +
+                        "let x = within Lim { ms: 5 } { spin() }\nx",
+                ),
             )
             text.contains("call avra_fiber_within(") &&
                 text.contains("call avra_fiber_within_end(") &&
                 text.contains("flag unwinding") &&
                 text.contains("loop {") &&
-                text.contains("break 0")
+                landing_arm_jumps(text)
         }
         then "a list of tasks awaits in order" {
             shown(
@@ -127,6 +131,16 @@ spec "features/tasks" {
                 flows()
         }
     }
+}
+
+/// Whether the first flag-read region in `text` jumps to its landing —
+/// the arm `unwinds()` fills when the inside of a `within` meets an
+/// unwind.
+fn landing_arm_jumps(text: string) -> bool {
+    let parts = text.split("flag unwinding")
+    if parts.length < 2 { return false }
+    let close = parts[1].index_of("} else")
+    close >= 0 && parts[1].substring(0, close).contains("break 0")
 }
 
 /// Whether the clock moves: it reads a later instant within a million
