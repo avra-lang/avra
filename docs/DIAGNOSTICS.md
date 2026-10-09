@@ -33,7 +33,7 @@ the parse needed a token that is not there
 ```
 
 ```
-error[parse.expected]: expected `component`, COMPONENT, PKG, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
+error[parse.expected]: expected `component`, COMPONENT, PKG, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
   ╭─[witness.av:1:1]
 1 │ }
   · ┬

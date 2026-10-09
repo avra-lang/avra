@@ -9,6 +9,7 @@ fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Spawn(body) -> cx.task_spawn(cx.shape_at(e), task_box(cx, body)),
+        .Within(limit, body) -> within_reg(cx, limit, body),
         rest -> cx.lower_defect(e, "a foreign node reached the task lowering"),
     }
 }
@@ -16,27 +17,22 @@ fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 /// The body lowers inside the scope its deadline arms, and the scope
 /// ENDS through the frame — so a `return` or a `?` out of the body
 /// runs it, exactly as a `defer` there would.
-fn within_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    match cx.view.store.expr(e) {
-        .Within(limit, body) -> {
-            cx.scope_enter()
-            let scope = cx.fiber_within(Type.Int, cx.reg_of(limit))
-            cx
-                .call_at_exit(
-                    DirectCall {
-                        callee: "avra_fiber_within_end",
-                        host: true,
-                        args: [scope],
-                        ret: cx.type(void),
-                    },
-                    false,
-                )
-            let r = cx.reg_of(body)
-            cx.scope_exit(r)
-            r
-        },
-        rest -> cx.lower_defect(e, "a foreign node reached the task lowering"),
-    }
+fn within_reg(mut cx: LowerCx, limit: ExprId, body: ExprId) -> Reg {
+    cx.scope_enter()
+    let scope = cx.fiber_within(Type.Int, cx.reg_of(limit))
+    cx
+        .call_at_exit(
+            DirectCall {
+                callee: "avra_fiber_within_end",
+                host: true,
+                args: [scope],
+                ret: cx.type(void),
+            },
+            false,
+        )
+    let r = cx.reg_of(body)
+    cx.scope_exit(r)
+    r
 }
 
 /// The closure the task runs: `body`'s captures, and its task lift.
