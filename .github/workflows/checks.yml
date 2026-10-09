@@ -232,24 +232,29 @@ jobs:
       # clocked ones — and a third, the seed's compiler build, was what the
       # runner's OOM killed (137), so it is its OWN job now (seed-check).
       #
-      # EACH HEAVY make PRINTS ITS PEAK (bash's %M, max RSS of the tree it
-      # waited on), so a runner grown past its memory is read from the log
-      # rather than inferred from a 137.
+      # EACH HEAVY make PRINTS ITS PEAK (max RSS of the tree it waited on,
+      # read from `getrusage`), so a runner grown past its memory is read
+      # from the log rather than inferred from a 137.
       - name: keepers
-        shell: bash
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
         run: |
           alone=0; a=0; b=0
-          TIMEFORMAT='keepers-alone: peak %M KB'
-          time make -s -o avra keepers-alone || alone=1
+          # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
+          # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
+          # skipped with "time: not found". The peak is read from the finished
+          # tree's rusage, which needs nothing from the shell.
+          peak() {
+            peak_label="$1"; shift
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+          }
+          peak keepers-alone make -s -o avra keepers-alone || alone=1
           cp -a . ../keepers-b
           tb=$(date +%s)
-          (cd ../keepers-b && export AVRA_BUILD_LOCK=/tmp/avra-build-b.lock && s=0 && { make -s -o avra keepers-b || s=1; } && exit $s) > ../keepers-b.log 2>&1 &
+          (cd ../keepers-b && export AVRA_BUILD_LOCK=/tmp/avra-build-b.lock && s=0 && { peak keepers-b make -s -o avra keepers-b || s=1; } && exit $s) > ../keepers-b.log 2>&1 &
           ta=$(date +%s)
-          TIMEFORMAT='keepers-a: peak %M KB'
-          time make -s -o avra keepers-a > keepers-a.log 2>&1 || a=1; cat keepers-a.log
+          peak keepers-a make -s -o avra keepers-a > keepers-a.log 2>&1 || a=1; cat keepers-a.log
           echo "speed keepers-a $(( $(date +%s) - ta ))" >> speed.log
           wait $! || b=1
           echo "speed keepers-b $(( $(date +%s) - tb ))" >> speed.log
@@ -308,10 +313,8 @@ jobs:
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
       - name: seed check
-        shell: bash
         run: |
-          TIMEFORMAT='seed-check: peak %M KB'
-          time make -s -o avra seed-check
+          python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
   # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
   # clears the store it builds through, and it runs beside the gate.
   cache-attacks:
