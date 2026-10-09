@@ -25,7 +25,7 @@
 //! warm re-run skips its parse and its print both — only a file that
 //! moved, or one this compiler has never seen, pays for either.
 use @std.cli.{CliResult, Runnable, command, flag, arg}
-use @std.io.{write_text, is_dir}
+use @std.io.{write_text}
 use @std.avrac.compiler.{Workspace, Phase, phase_total}
 use @std.avrac.compiler.store.{Store}
 use @std.avrac.core.{FileId, digest_of, joined, distinct, sorted_texts}
@@ -153,8 +153,8 @@ fn walk_summary(t: Tally, write: bool) -> string {
 }
 
 fn expanded_groups(asked: List<string>) -> List<Group> {
-    dir_groups([p for p in asked if is_dir(p)])
-        .concat(loose_groups([p for p in asked if !is_dir(p)]))
+    dir_groups([p for p in asked if is_a_dir(p)])
+        .concat(loose_groups([p for p in asked if !is_a_dir(p)]))
 }
 
 fn dir_groups(dirs: List<string>) -> List<Group> {
@@ -184,7 +184,7 @@ fn package_roots_under(dir: string) -> List<string> {
 fn roots_from(dir: string, names: List<string>) -> List<string> {
     if names.is_empty() { return [] }
     let path = joined_path(dir, names[0])
-    let heads = if is_dir(path) { package_roots_under(path) } else { [] }
+    let heads = if is_a_dir(path) { package_roots_under(path) } else { [] }
     heads.concat(roots_from(dir, names.slice(1, names.length)))
 }
 
@@ -240,7 +240,7 @@ fn fold_groups(groups: List<Group>, write: bool, shared_id: string? = null, seen
 }
 
 fn workspace_for(root: string) -> Workspace {
-    if is_dir(root) { root_workspace(root) } else { lone(root) }
+    if is_a_dir(root) { root_workspace(root) } else { lone(root) }
 }
 
 enum Outcome { Canonical, Differs, Refused }
