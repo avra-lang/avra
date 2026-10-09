@@ -724,10 +724,9 @@ impl Workspace {
     fn bytes_keyed(full: Lowered, bc: string, tools: Toolchain) -> Result<string, BuildError> {
         let broke = emit_closed(full, bc, Owned.Program, tools.target)
         if broke != null { fail BuildError.EmitFailed(broke!) }
-        match read_bytes(bc) {
-            .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", digest_of_octets(bytes), tools.opt, tools.runtime])),
-            .Err(_) -> .Err(BuildError.ModuleUnreadable(bc)),
-        }
+        // LICENSED compiler.host_asked_directly: the module's bytes are read as they stand at this instant
+        let bytes? = self.host.spared_octets(bc).as_octets() else { return .Err(BuildError.ModuleUnreadable(bc)) }
+        .Ok(node_key(Stored.Obj, ["entry", digest_of_octets(bytes), tools.opt, tools.runtime]))
     }
 
     /// THE BUILD: every object the program links — the read files' and the program's

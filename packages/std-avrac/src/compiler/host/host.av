@@ -11,7 +11,12 @@ use @std.io.{env}
 /// byte), or the host's own refusal.
 export enum Beneath { Text(text: string), Missing, Linked, NotText(at: int), Refused(why: string) }
 
-export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, env: fn(string) -> string?, print: fn() -> string?, tool: fn(string) -> Stamp?, std_root: string? = null, cwd: string = "", compiler: string? = null }
+/// What an octet read found: the file's bytes, nothing, or that the host
+/// would not give them — the text seam's `Beneath` without the not-text
+/// cause, since every file is octets.
+export enum Octet { Bytes(octets: Bytes), Missing, Refused(why: string) }
+
+export type Host = { exists: fn(string) -> bool, peek: fn(string) -> Beneath, refused: fn(string) -> void, beneath: fn(string, string) -> Beneath, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, stamp: fn(string) -> int?, reads_ahead: fn(int) -> void, env: fn(string) -> string?, print: fn() -> string?, tool: fn(string) -> Stamp?, octets: fn(string) -> Octet = no_octets, std_root: string? = null, cwd: string = "", compiler: string? = null }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -46,6 +51,17 @@ impl Host {
             .NotText(_) -> withheld(path, "not text"),
             .Linked -> withheld(path, "linked"),
             .Refused(_) -> withheld(path, "refused"),
+        }
+    }
+
+    /// A file as octets, through the door: what stands at `path`, links
+    /// followed — its octets, nothing, or the host's refusal in its own
+    /// words. Never the end of the run.
+    fn spared_octets(path: string) -> Read {
+        match (self.octets)(path) {
+            .Bytes(octets) -> Read.Octets(path, octets),
+            .Missing -> Read.Octets(path, null),
+            .Refused(why) -> Read.Refused(InputName { kind: .Octets, key: path }, why),
         }
     }
 
@@ -119,6 +135,7 @@ export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: s
         env: unset,
         print: no_print,
         tool: no_tool,
+        octets: (p: string) -> memory_octets(held, normalized(joined_path(cwd, p))),
         cwd: cwd,
     }
 }
@@ -127,6 +144,12 @@ export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: s
 fn memory_beneath(held: Cell<Map<string, string>>, at: string) -> Beneath {
     let text? = held.get().get(at) else { return Beneath.Missing }
     Beneath.Text(text)
+}
+
+/// The table's text at `at`, as its octets — nothing where no name stands.
+fn memory_octets(held: Cell<Map<string, string>>, at: string) -> Octet {
+    let text? = held.get().get(at) else { return Octet.Missing }
+    Octet.Bytes(text.bytes())
 }
 
 /// The process's own environment: a variable's value, none when it is
@@ -138,6 +161,9 @@ export fn no_print() -> string? { null }
 
 /// A host on whose path no tool stands.
 export fn no_tool(_word: string) -> Stamp? { null }
+
+/// A host that gives no octets: every read is absent.
+fn no_octets(_path: string) -> Octet { Octet.Missing }
 
 /// A host whose environment holds no variable.
 export fn unset(_name: string) -> string? { null }
