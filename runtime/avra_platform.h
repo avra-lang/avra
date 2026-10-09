@@ -40,5 +40,8 @@
 // the scheduler (D7).
 void avra_tick_armed(void);
 void avra_tick_stood_down(void);
+// How many times a cold arm has read the process id. A test holds the hot
+// arm to reading none: the count stands still across it.
+uint64_t avra_tick_pid_reads(void);
 
 #endif
