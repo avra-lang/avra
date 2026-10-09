@@ -46,9 +46,7 @@ use features.{
 use features.enums.{answering_arms, binders}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
-use @std.relation.{relation}
 use @std.meta.{Subject}
-use @std.relation.db.{Db as RelDb, new_db}
 
 /// What every bound hole shares: the file a rule reads, and the two
 /// pass tables a fact comes from — one per analysis, never copied or
@@ -1058,37 +1056,29 @@ fn enclosing_decl_scanned(view: FileView, at: At) -> DeclId? {
 
 // ── the assign-roots index: `write_roots`' per-file cache ──
 
-/// One statement's own assignment root, filed once per file: the
-/// declaration whose body holds the write, and the root its place
-/// (or its writing method's receiver) targets — `@index owner` answers
-/// `write_roots`' whole-file walk with one lookup.
-@relation
-type AssignRoot = { @local @index owner: DeclId, @local root: ExprId }
-
 /// Every assign root filed under `at`'s own enclosing declaration —
 /// `write_roots`' bound, read from the file's index instead of a
 /// fresh arena walk.
 fn assign_roots_at(view: FileView, at: At) -> List<ExprId> {
     let d? = enclosing_decl(view, at) else { return [] }
-    [r.root for r in AssignRoot.by_owner(view.assign_roots(), d)]
+    view.assign_roots().get("${d.index}") ?? []
 }
 
-/// This file's assignment roots, one row per statement whose target
-/// has a place root: built once, from the WHOLE ARENA — never
-/// `view.stmts` (the file's TOP LEVEL alone), since an assignment
-/// almost always nests inside a fn's body — and cached on `view`
+/// This file's assignment roots, the roots a declaration's own statements
+/// write to keyed by its index: built once, from the WHOLE ARENA — never
+/// `view.stmts` (the file's TOP LEVEL alone), since an assignment almost
+/// always nests inside a fn's body — and cached on `view`
 /// (`FileView.assign_roots`), never rewalked per local or param.
-fn filed_assign_roots(view: FileView) -> RelDb {
-    let db = new_db()
-    for s in view.store.stmt_ids() { file_assign_root(db, view, s) }
-    db
-}
-
-fn file_assign_root(db: RelDb, view: FileView, s: StmtId) {
-    let t? = view.store.assign_target(s) else { return }
-    let root? = view.store.place_root(t) else { return }
-    let d? = enclosing_decl(view, At.Stmt(s)) else { return }
-    let _ = AssignRoot.insert(db, owner: d, root: root)
+fn filed_assign_roots(view: FileView) -> Map<string, List<ExprId>> {
+    mut out: Map<string, List<ExprId>> = {}
+    for s in view.store.stmt_ids() {
+        let t? = view.store.assign_target(s) else { continue }
+        let root? = view.store.place_root(t) else { continue }
+        let d? = enclosing_decl(view, At.Stmt(s)) else { continue }
+        let owner = "${d.index}"
+        out.set(owner, (out.get(owner) ?? []).concat([root]))
+    }
+    out
 }
 
 // ── pure(): a registry over Expr, folded through kids_at ──
