@@ -1,11 +1,12 @@
 //! THE DISK HOST: the workspace's questions answered by this machine's
 //! disk, environment and running binary — the door's body on the CLI's side.
 use @std.avrac.compiler.{digest_of_binary}
-use @std.avrac.compiler.host.{Host, Beneath, Stamp, process_env}
+use @std.avrac.compiler.host.{Host, Beneath, Octet, Stamp, process_env}
 use @std.path.{dir_of, joined_path, file_name}
 use @std.process.{tool, exit, Exit}
 use @std.io.{
     read_text,
+    read_bytes,
     write_text,
     exists,
     is_dir,
@@ -34,6 +35,7 @@ fn disk_host() -> Host {
         env: process_env,
         print: own_print,
         tool: disk_tool,
+        octets: (p: string) -> disk_octets(p),
         std_root: std_root(),
         cwd: env("PWD") ?? ".",
         compiler: own_binary(),
@@ -81,6 +83,16 @@ fn refusal_spoken(path: string) {
 
 /// The disk's whole-file read, links followed.
 fn disk_text(path: string) -> Result<string, IoError> { read_text(path) }
+
+/// The disk's octets at a path, links followed: the bytes, nothing where
+/// none stand, or the disk's refusal in its own words.
+fn disk_octets(path: string) -> Octet {
+    match read_bytes(path) {
+        .Ok(bytes) -> Octet.Bytes(bytes),
+        .Err(.NotFound(_)) -> Octet.Missing,
+        .Err(e) -> Octet.Refused(e.describe().message),
+    }
+}
 
 /// What stands at a path on the disk, links followed — and never the
 /// end of the run.

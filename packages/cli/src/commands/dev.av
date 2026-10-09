@@ -24,7 +24,7 @@ use @std.http.server.{server}
 use @std.http.files.{Files, directory}
 use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
 use @std.net.{Bell, Listener}
-use @std.io.{IoError, read_bytes, read_text, stamp}
+use @std.io.{IoError, read_text, stamp}
 use @std.io.watch.{Watch, watch}
 use @std.path.{joined_path, file_name}
 use @std.process.{Tool, tool, cmd, inherited}
@@ -391,9 +391,12 @@ impl Page {
             .Err(e) -> { return .Err(e.describe().message) },
         }
         if status_of_exit(o.exit) != 0 { return .Err([o.out.stdout.trim(), o.out.stderr.trim()].filter(it != "").join("\n")) }
-        match read_bytes(o.out.stdout.trim().split("\n").last() ?? "") {
-            .Ok(module) -> module,
-            .Err(e) -> .Err(e.describe().message),
+        let module_path = o.out.stdout.trim().split("\n").last() ?? ""
+        // LICENSED compiler.host_asked_directly: the module a build just wrote is read as it stands at this instant
+        match disk_host().octets(module_path) {
+            .Bytes(module) -> module,
+            .Missing -> .Err(IoError.NotFound(module_path).describe().message),
+            .Refused(why) -> .Err(why),
         }
     }
 

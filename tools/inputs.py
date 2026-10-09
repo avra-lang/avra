@@ -142,8 +142,8 @@ INERT_ROWS = re.compile(
 # A read through the filesystem seam: behind `Host`, not yet an input —
 # called as a member, as a field's value (`(host.beneath)(…)`), or on
 # the line under a chain that ends in `host`.
-HOSTED = re.compile(r"\bhost\.(read|exists|beneath|list|is_dir|stamp)\)?\(")
-CHAINED = re.compile(r"^\s*\.(read|exists|beneath|list|is_dir|stamp)\)?\(")
+HOSTED = re.compile(r"\bhost\.(read|exists|beneath|list|is_dir|stamp|octets)\)?\(")
+CHAINED = re.compile(r"^\s*\.(read|exists|beneath|list|is_dir|stamp|octets)\)?\(")
 
 SEG = r"[a-z_][a-z_0-9]*"
 USE = re.compile(r"^use\s+@std\.(" + SEG + r")((?:\." + SEG + r")*)\.(\{[^}]*\}|[A-Za-z_][A-Za-z_0-9]*)", re.M | re.S)
