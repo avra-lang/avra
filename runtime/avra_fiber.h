@@ -193,6 +193,10 @@ int64_t avra_vtask_unwinding(int64_t t);
 // from the schedule as a compiled back-edge. Answers 1 when the
 // evaluator must yield, 0 when the task goes on.
 int64_t avra_vtask_tick_cold(int64_t t);
+
+// The task's unwind bit, as the evaluator sets it: a wait that cuts in a
+// virtual task raises it the way the switch raises a compiled task's.
+void avra_vtask_set_unwinding(int64_t t, int64_t v);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 int64_t avra_vtask_within_end(int64_t t, int64_t id);
 // The shield's row pair, on the virtual task `t` — the same policy a

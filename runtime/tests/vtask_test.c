@@ -94,6 +94,19 @@ static void joins(void) {
     avra_vtask_free(j);
 }
 
+// The byte pair on a virtual task: the enter saves and clears, the leave
+// ORs the saved bit back, so a bit raised inside the shield stands.
+static void shield_bytes(void) {
+    int64_t t = avra_vtask_new();
+    avra_vtask_set_unwinding(t, 1);
+    avra_vtask_shield_enter(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "the shield clears a virtual task's saved bit");
+    avra_vtask_set_unwinding(t, 1);
+    avra_vtask_shield_leave(t);
+    CHECK(avra_vtask_unwinding(t) == 1, "and the leave keeps a bit raised inside");
+    avra_vtask_free(t);
+}
+
 // A `within` opened while a virtual task runs shielded: its own limit
 // alone cuts the wait, and a task cancel does not.
 static void shields(void) {
@@ -140,6 +153,7 @@ static void run_deadlocked(void) {
 
 int main(void) {
     joins();
+    shield_bytes();
     shields();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
