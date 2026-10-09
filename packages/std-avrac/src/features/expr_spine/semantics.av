@@ -1,6 +1,6 @@
 //! The spine's dispatch: typing rules live in check.av, lowering
 //! rules in lower.av.
-use core.{Expr, ExprId, TypeId, Reg}
+use core.{Expr, ExprId, TypeId, Reg, Ins}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
 
 use core.expr.{IntLit, FloatLit, Ident, Binary, Not, Index, Prop, Error, Env}
@@ -26,10 +26,10 @@ impl Meaning for IntLit {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        cx.type(int)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        cx.const_int_at(e, self.value)
     }
 }
 impl Meaning for FloatLit {
@@ -37,10 +37,14 @@ impl Meaning for FloatLit {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        cx.type(float)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        // A real has its OWN constant: the variant is the type, so an
+        // instruction never means one thing here and another there.
+        let dst = cx.result(e)
+        cx.emit(Ins.ConstFloat(dst, self.bits))
+        dst
     }
 }
 impl Meaning for Ident {
@@ -48,10 +52,11 @@ impl Meaning for Ident {
         cx.use_name(e, self.name.of)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        cx.warn_use(e)
+        cx.target_type(e)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        ident_reg(cx, e)
     }
 }
 impl Meaning for Binary {
@@ -59,10 +64,10 @@ impl Meaning for Binary {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        binary_type(cx, e, self.op, self.left, self.right)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        binary_reg(cx, e, self.op, self.left, self.right)
     }
 }
 impl Meaning for Not {
@@ -70,10 +75,10 @@ impl Meaning for Not {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        not_type(cx, self.value)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        not_reg(cx, e, self.value)
     }
 }
 impl Meaning for Index {
@@ -81,10 +86,10 @@ impl Meaning for Index {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        index_type(cx, self.subject, self.index)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        index_reg(cx, e, self.subject, self.index)
     }
 }
 impl Meaning for Prop {
@@ -92,10 +97,10 @@ impl Meaning for Prop {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        prop_type(cx, e, self.subject, self.name.of)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        prop_reg(cx, e, self.subject, self.name.of)
     }
 }
 impl Meaning for Error {
@@ -103,10 +108,10 @@ impl Meaning for Error {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        cx.error_type
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        cx.foreign_node(e)
     }
 }
 impl Meaning for Env {
@@ -114,9 +119,9 @@ impl Meaning for Env {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        spine_type(cx, e)
+        cx.error_type
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        spine_lower(cx, e)
+        cx.foreign_node(e)
     }
 }

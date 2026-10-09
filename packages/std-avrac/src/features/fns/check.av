@@ -344,18 +344,6 @@ fn holds_error(cx: TypeCx, body: ExprId) -> bool {
     stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error)
 }
 
-fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
-    match cx.view.store.expr(e) {
-        .Named(_, value) -> cx.type_at(value),
-        .Call(callee, pins, args) -> {
-            cx.warn_use(e)
-            let sig? = cx.sig_of(e) else { return cx.settled_call(e, args, valued_call(cx, e, callee.of, pins, args)) }
-            cx.settled_call(e, args, dispatched_call(cx, e, callee.of, pins, args, sig))
-        },
-        rest -> cx.error_type,
-    }
-}
-
 /// A call through a FN-TYPED VALUE — a lambda, a captured fn, a
 /// fn-typed param: the value's own seats judge the arguments.
 fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>) -> TypeId {

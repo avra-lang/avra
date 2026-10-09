@@ -101,61 +101,34 @@ fn literal_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 
 impl Meaning for ListLit {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        lists_resolve(cx, e)
+        nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        lists_type_of(cx, e)
+        literal_type(cx, e)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        lists_lower(cx, e)
+        literal_reg(cx, e)
     }
 }
 impl Meaning for Comp {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        lists_resolve(cx, e)
+        resolve_comp(cx, e, self.elem, self.clauses)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        lists_type_of(cx, e)
+        comp_type(cx, e, self.elem, self.clauses)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        lists_lower(cx, e)
+        comp_reg(cx, e, self.elem, self.clauses)
     }
 }
 impl Meaning for Collect {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        lists_resolve(cx, e)
+        cx.walk(self.body)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        lists_type_of(cx, e)
+        collect_type(cx, e, self.body)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        lists_lower(cx, e)
-    }
-}
-
-fn lists_resolve(mut cx: ResolveCx, e: ExprId) {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .Comp(elem, clauses) -> resolve_comp(cx, e, elem, clauses),
-        .Collect(body) -> cx.walk(body),
-        rest -> nothing(),
-    }
-}
-
-fn lists_type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .Comp(elem, clauses) -> comp_type(cx, e, elem, clauses),
-        .Collect(body) -> collect_type(cx, e, body),
-        rest -> literal_type(cx, e),
-    }
-}
-
-fn lists_lower(mut cx: LowerCx, e: ExprId) -> Reg {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .Comp(elem, clauses) -> comp_reg(cx, e, elem, clauses),
-        .Collect(body) -> collect_reg(cx, e, body),
-        rest -> literal_reg(cx, e),
+        collect_reg(cx, e, self.body)
     }
 }

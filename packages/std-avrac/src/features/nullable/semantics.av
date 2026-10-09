@@ -2,7 +2,7 @@
 //! lowering — the MEANING — in lower.av. `??` is CONTROL-OWNING at
 //! lowering (its right side runs only on absence) but plain for the
 //! earlier passes: both sides resolve and type in the same scope.
-use core.{Expr, ExprId, TypeId, Reg}
+use core.{Expr, ExprId, Type, TypeId, Reg}
 use features.{named_bind, NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
 
 use core.expr.{NullLit, Coalesce, Force, Propagate, MatchOpt, Chain}
@@ -34,10 +34,10 @@ impl Meaning for NullLit {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        nullable_type(cx, e)
+        cx.view.types.intern(Type.Null)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        nullable_reg(cx, e)
+        null_reg(cx, e)
     }
 }
 impl Meaning for Coalesce {
@@ -45,10 +45,10 @@ impl Meaning for Coalesce {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        nullable_type(cx, e)
+        coalesce_type(cx, self.left, self.right)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        nullable_reg(cx, e)
+        coalesce_reg(cx, e, self.left, self.right)
     }
 }
 impl Meaning for Force {
@@ -56,10 +56,10 @@ impl Meaning for Force {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        nullable_type(cx, e)
+        forced_type(cx, self.value)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        nullable_reg(cx, e)
+        forced_reg(cx, self.value)
     }
 }
 impl Meaning for Propagate {
@@ -67,10 +67,10 @@ impl Meaning for Propagate {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        nullable_type(cx, e)
+        propagate_type(cx, self.value)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        nullable_reg(cx, e)
+        propagate_reg(cx, e, self.value)
     }
 }
 impl Meaning for MatchOpt {
@@ -79,10 +79,10 @@ impl Meaning for MatchOpt {
         cx.arm_scope([], self.absent)
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        nullable_type(cx, e)
+        match_opt_type(cx, self.subject, self.bind.of, self.present, self.absent)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        nullable_reg(cx, e)
+        match_opt_reg(cx, e, self.subject, self.present, self.absent)
     }
 }
 impl Meaning for Chain {
@@ -90,9 +90,9 @@ impl Meaning for Chain {
         nothing()
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        nullable_type(cx, e)
+        chain_type(cx, e, self.subject, self.name.of)
     }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        nullable_reg(cx, e)
+        chain_reg(cx, e, self.subject, self.name.of)
     }
 }
