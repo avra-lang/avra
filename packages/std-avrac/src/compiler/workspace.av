@@ -75,7 +75,7 @@ use features.{
     ComponentWord,
     Instanced,
 }
-use @std.meta.{Diagnostic, bracket, identity, plain_field, derive}
+use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
 use core.{StmtId, watched_kernel}
 use diagnostics.{
     SourceFile,
@@ -698,7 +698,8 @@ fn built(
     // and `.ordinal` agree by construction; the check stays as the witness
     // that the two still do.
     for f in Family.all() {
-        if ws.db.family((arg: int) -> ws.refetched(f, arg)) != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
+        let entry = family_entry(f)
+        if ws.db.family((arg: int) -> entry(ws, arg)) != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
         if reads_rows_whole(f) { ws.db.kernel.reads_whole(f.ordinal) }
     }
     // the table's reads ARE the queries
@@ -916,50 +917,8 @@ impl Workspace {
         }
     }
 
-    /// The kernel's verifier for every family: the key re-asked through
-    /// its own query, then the cell's changed_at.
-    fn refetched(f: Family, arg: int) -> int {
-        match f {
-            .Source -> touch(self.source(file_at(arg))),
-            .Parsed -> touch(self.parsed(file_at(arg))),
-            .Items -> touch(self.items(file_at(arg))),
-            .Namespace -> touch(self.namespace(module_at(arg))),
-            .Visible -> touch(self.visible(file_at(arg))),
-            .Resolved -> touch(self.resolved(file_at(arg))),
-            .Sig -> touch(self.sig(decl_at_arg(arg))),
-            .Methods -> touch(self.methods(decl_at_arg(arg))),
-            .Typed -> touch(self.typed(decl_at_arg(arg))),
-            .ConstTyped -> touch(self.const_type_at(arg)),
-            .Folded -> touch(self.folded(file_at(arg))),
-            .Analysis -> touch(self.analysis(file_at(arg))),
-            .Settled -> touch(self.settled_at(arg)),
-            .Lowered -> touch(self.lowered(arg)),
-            .LiftLowered -> touch(self.lift_lowered(arg)),
-            .Lifted -> touch(self.lifted_at(arg)),
-            .Manifest -> touch(self.manifest(arg)),
-            .Receivers -> touch(self.receivers()),
-            .Expanded -> touch(self.expanded(file_at(arg))),
-            .Plain -> touch(self.plain_parsed(file_at(arg))),
-            .References -> touch(self.references()),
-            .Failures -> touch(self.failures()),
-            .HeldSig -> touch(self.held_sig(module_at(arg))),
-            .Raised -> touch(self.raised_by(decl_at_arg(arg))),
-            .MethodDiags -> touch(self.method_diagnostics(file_at(arg))),
-            .Syntax -> touch(self.syntax(decl_at_arg(arg))),
-            .Names -> touch(self.name_slice(decl_at_arg(arg))),
-            .Marks -> touch(self.computed_marks(decl_at_arg(arg))),
-            .Admitted -> self.admission(file_at(arg)),
-            .Named -> self.decls.named_now(arg),
-            .ReadReach -> touch(self.read_reach()),
-            .DeclReads -> touch(self.decl_reads_state(decl_at_arg(arg))),
-            .Input -> touch(self.input_at(arg)),
-            .BlockScan -> touch(file_lexes_block(self, self.input_names.get()[arg].key)),
-            .ComponentScan -> touch(file_declares_component(self, self.input_names.get()[arg].key)),
-            .ComponentNames -> touch(component_names(self, self.input_names.get()[arg].key)),
-            .CancelReach -> touch(self.cancel_reach()),
-        }
-        self.db.changed_at(key(f, arg))
-    }
+    /// The kernel's verifier for every family lives with the family's own
+    /// entry fn and code hash, below (the dispatcher split into 37 fns).
 
     /// A clock started now.
     fn marking() -> Marks { Marks { now: self.clock, last: self.clock(), spans: [] } }
@@ -1707,8 +1666,8 @@ impl Workspace {
 
     /// Asks the Kernel, reading the module's record only on a real miss —
     /// a hit is the ask alone, since every held row read lands here.
-    /// `refetched`'s own re-derivation for this family, so a re-ask
-    /// through the Kernel's verifier matches a direct one exactly.
+    /// The family's entry fn's own re-derivation, so a re-ask through
+    /// the Kernel's verifier matches a direct one exactly.
     fn held_sig_asked(mid: ModuleId) {
         let store? = self.store.get() else { return }
         let hk = key(Family.HeldSig, mid.index)
@@ -2075,4 +2034,286 @@ fn declaring_stmts(p: Parsed) -> List<StmtId> {
 /// Every component a parse declares, as a word its own module stands under.
 fn declared_components(p: Parsed) -> List<ComponentWord> {
     [w with { own: true } for w in flatten([some_list(word_of(p.store, s, p.source.file)) for s in p.stmts])]
+}
+
+// ── A family's own code ──
+//
+// THE PER-FAMILY IDENTITY (DB 05b, design section 6.4): each family's
+// key is re-asked through its own ENTRY FN, so `code_hash` over that fn
+// is a function of the family's own IR and what it calls — never of a
+// shared dispatcher. `family_code_hash` reads the 37 hashes the
+// compiler's own build bakes in (the pass after lowering answers every
+// `code_hash`), so nothing is computed at run time; the store folds a
+// family's row into the key a saved answer is filed under.
+
+fn refetch_source(ws: Workspace, arg: int) -> int {
+    touch(ws.source(file_at(arg)))
+    ws.db.changed_at(key(Family.Source, arg))
+}
+
+fn refetch_parsed(ws: Workspace, arg: int) -> int {
+    touch(ws.parsed(file_at(arg)))
+    ws.db.changed_at(key(Family.Parsed, arg))
+}
+
+fn refetch_items(ws: Workspace, arg: int) -> int {
+    touch(ws.items(file_at(arg)))
+    ws.db.changed_at(key(Family.Items, arg))
+}
+
+fn refetch_namespace(ws: Workspace, arg: int) -> int {
+    touch(ws.namespace(module_at(arg)))
+    ws.db.changed_at(key(Family.Namespace, arg))
+}
+
+fn refetch_visible(ws: Workspace, arg: int) -> int {
+    touch(ws.visible(file_at(arg)))
+    ws.db.changed_at(key(Family.Visible, arg))
+}
+
+fn refetch_resolved(ws: Workspace, arg: int) -> int {
+    touch(ws.resolved(file_at(arg)))
+    ws.db.changed_at(key(Family.Resolved, arg))
+}
+
+fn refetch_sig(ws: Workspace, arg: int) -> int {
+    touch(ws.sig(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Sig, arg))
+}
+
+fn refetch_methods(ws: Workspace, arg: int) -> int {
+    touch(ws.methods(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Methods, arg))
+}
+
+fn refetch_typed(ws: Workspace, arg: int) -> int {
+    touch(ws.typed(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Typed, arg))
+}
+
+fn refetch_const_typed(ws: Workspace, arg: int) -> int {
+    touch(ws.const_type_at(arg))
+    ws.db.changed_at(key(Family.ConstTyped, arg))
+}
+
+fn refetch_folded(ws: Workspace, arg: int) -> int {
+    touch(ws.folded(file_at(arg)))
+    ws.db.changed_at(key(Family.Folded, arg))
+}
+
+fn refetch_analysis(ws: Workspace, arg: int) -> int {
+    touch(ws.analysis(file_at(arg)))
+    ws.db.changed_at(key(Family.Analysis, arg))
+}
+
+fn refetch_settled(ws: Workspace, arg: int) -> int {
+    touch(ws.settled_at(arg))
+    ws.db.changed_at(key(Family.Settled, arg))
+}
+
+fn refetch_lowered(ws: Workspace, arg: int) -> int {
+    touch(ws.lowered(arg))
+    ws.db.changed_at(key(Family.Lowered, arg))
+}
+
+fn refetch_lift_lowered(ws: Workspace, arg: int) -> int {
+    touch(ws.lift_lowered(arg))
+    ws.db.changed_at(key(Family.LiftLowered, arg))
+}
+
+fn refetch_lifted(ws: Workspace, arg: int) -> int {
+    touch(ws.lifted_at(arg))
+    ws.db.changed_at(key(Family.Lifted, arg))
+}
+
+fn refetch_manifest(ws: Workspace, arg: int) -> int {
+    touch(ws.manifest(arg))
+    ws.db.changed_at(key(Family.Manifest, arg))
+}
+
+fn refetch_receivers(ws: Workspace, arg: int) -> int {
+    touch(ws.receivers())
+    ws.db.changed_at(key(Family.Receivers, arg))
+}
+
+fn refetch_expanded(ws: Workspace, arg: int) -> int {
+    touch(ws.expanded(file_at(arg)))
+    ws.db.changed_at(key(Family.Expanded, arg))
+}
+
+fn refetch_plain(ws: Workspace, arg: int) -> int {
+    touch(ws.plain_parsed(file_at(arg)))
+    ws.db.changed_at(key(Family.Plain, arg))
+}
+
+fn refetch_references(ws: Workspace, arg: int) -> int {
+    touch(ws.references())
+    ws.db.changed_at(key(Family.References, arg))
+}
+
+fn refetch_failures(ws: Workspace, arg: int) -> int {
+    touch(ws.failures())
+    ws.db.changed_at(key(Family.Failures, arg))
+}
+
+fn refetch_held_sig(ws: Workspace, arg: int) -> int {
+    touch(ws.held_sig(module_at(arg)))
+    ws.db.changed_at(key(Family.HeldSig, arg))
+}
+
+fn refetch_raised(ws: Workspace, arg: int) -> int {
+    touch(ws.raised_by(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Raised, arg))
+}
+
+fn refetch_method_diags(ws: Workspace, arg: int) -> int {
+    touch(ws.method_diagnostics(file_at(arg)))
+    ws.db.changed_at(key(Family.MethodDiags, arg))
+}
+
+fn refetch_syntax(ws: Workspace, arg: int) -> int {
+    touch(ws.syntax(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Syntax, arg))
+}
+
+fn refetch_names(ws: Workspace, arg: int) -> int {
+    touch(ws.name_slice(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Names, arg))
+}
+
+fn refetch_marks(ws: Workspace, arg: int) -> int {
+    touch(ws.computed_marks(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Marks, arg))
+}
+
+fn refetch_admitted(ws: Workspace, arg: int) -> int {
+    ws.admission(file_at(arg))
+    ws.db.changed_at(key(Family.Admitted, arg))
+}
+
+fn refetch_named(ws: Workspace, arg: int) -> int {
+    ws.decls.named_now(arg)
+    ws.db.changed_at(key(Family.Named, arg))
+}
+
+fn refetch_read_reach(ws: Workspace, arg: int) -> int {
+    touch(ws.read_reach())
+    ws.db.changed_at(key(Family.ReadReach, arg))
+}
+
+fn refetch_decl_reads(ws: Workspace, arg: int) -> int {
+    touch(ws.decl_reads_state(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.DeclReads, arg))
+}
+
+fn refetch_input(ws: Workspace, arg: int) -> int {
+    touch(ws.input_at(arg))
+    ws.db.changed_at(key(Family.Input, arg))
+}
+
+fn refetch_block_scan(ws: Workspace, arg: int) -> int {
+    touch(file_lexes_block(ws, ws.input_names.get()[arg].key))
+    ws.db.changed_at(key(Family.BlockScan, arg))
+}
+
+fn refetch_component_scan(ws: Workspace, arg: int) -> int {
+    touch(file_declares_component(ws, ws.input_names.get()[arg].key))
+    ws.db.changed_at(key(Family.ComponentScan, arg))
+}
+
+fn refetch_component_names(ws: Workspace, arg: int) -> int {
+    touch(component_names(ws, ws.input_names.get()[arg].key))
+    ws.db.changed_at(key(Family.ComponentNames, arg))
+}
+
+fn refetch_cancel_reach(ws: Workspace, arg: int) -> int {
+    touch(ws.cancel_reach())
+    ws.db.changed_at(key(Family.CancelReach, arg))
+}
+
+/// Each family's entry fn — the value the kernel re-asks its key through.
+fn family_entry(f: Family) -> fn(Workspace, int) -> int {
+    match f {
+        .Source -> refetch_source,
+        .Parsed -> refetch_parsed,
+        .Items -> refetch_items,
+        .Namespace -> refetch_namespace,
+        .Visible -> refetch_visible,
+        .Resolved -> refetch_resolved,
+        .Sig -> refetch_sig,
+        .Methods -> refetch_methods,
+        .Typed -> refetch_typed,
+        .ConstTyped -> refetch_const_typed,
+        .Folded -> refetch_folded,
+        .Analysis -> refetch_analysis,
+        .Settled -> refetch_settled,
+        .Lowered -> refetch_lowered,
+        .LiftLowered -> refetch_lift_lowered,
+        .Lifted -> refetch_lifted,
+        .Manifest -> refetch_manifest,
+        .Receivers -> refetch_receivers,
+        .Expanded -> refetch_expanded,
+        .Plain -> refetch_plain,
+        .References -> refetch_references,
+        .Failures -> refetch_failures,
+        .HeldSig -> refetch_held_sig,
+        .Raised -> refetch_raised,
+        .MethodDiags -> refetch_method_diags,
+        .Syntax -> refetch_syntax,
+        .Names -> refetch_names,
+        .Marks -> refetch_marks,
+        .Admitted -> refetch_admitted,
+        .Named -> refetch_named,
+        .ReadReach -> refetch_read_reach,
+        .DeclReads -> refetch_decl_reads,
+        .Input -> refetch_input,
+        .BlockScan -> refetch_block_scan,
+        .ComponentScan -> refetch_component_scan,
+        .ComponentNames -> refetch_component_names,
+        .CancelReach -> refetch_cancel_reach,
+    }
+}
+
+/// The compiler's own code hash for the family's entry fn, one row per
+/// family. Baked at build time; the store keys a saved answer by it.
+export fn family_code_hash(f: Family) -> string {
+    match f {
+        .Source -> code_hash(refetch_source) ?? "",
+        .Parsed -> code_hash(refetch_parsed) ?? "",
+        .Items -> code_hash(refetch_items) ?? "",
+        .Namespace -> code_hash(refetch_namespace) ?? "",
+        .Visible -> code_hash(refetch_visible) ?? "",
+        .Resolved -> code_hash(refetch_resolved) ?? "",
+        .Sig -> code_hash(refetch_sig) ?? "",
+        .Methods -> code_hash(refetch_methods) ?? "",
+        .Typed -> code_hash(refetch_typed) ?? "",
+        .ConstTyped -> code_hash(refetch_const_typed) ?? "",
+        .Folded -> code_hash(refetch_folded) ?? "",
+        .Analysis -> code_hash(refetch_analysis) ?? "",
+        .Settled -> code_hash(refetch_settled) ?? "",
+        .Lowered -> code_hash(refetch_lowered) ?? "",
+        .LiftLowered -> code_hash(refetch_lift_lowered) ?? "",
+        .Lifted -> code_hash(refetch_lifted) ?? "",
+        .Manifest -> code_hash(refetch_manifest) ?? "",
+        .Receivers -> code_hash(refetch_receivers) ?? "",
+        .Expanded -> code_hash(refetch_expanded) ?? "",
+        .Plain -> code_hash(refetch_plain) ?? "",
+        .References -> code_hash(refetch_references) ?? "",
+        .Failures -> code_hash(refetch_failures) ?? "",
+        .HeldSig -> code_hash(refetch_held_sig) ?? "",
+        .Raised -> code_hash(refetch_raised) ?? "",
+        .MethodDiags -> code_hash(refetch_method_diags) ?? "",
+        .Syntax -> code_hash(refetch_syntax) ?? "",
+        .Names -> code_hash(refetch_names) ?? "",
+        .Marks -> code_hash(refetch_marks) ?? "",
+        .Admitted -> code_hash(refetch_admitted) ?? "",
+        .Named -> code_hash(refetch_named) ?? "",
+        .ReadReach -> code_hash(refetch_read_reach) ?? "",
+        .DeclReads -> code_hash(refetch_decl_reads) ?? "",
+        .Input -> code_hash(refetch_input) ?? "",
+        .BlockScan -> code_hash(refetch_block_scan) ?? "",
+        .ComponentScan -> code_hash(refetch_component_scan) ?? "",
+        .ComponentNames -> code_hash(refetch_component_names) ?? "",
+        .CancelReach -> code_hash(refetch_cancel_reach) ?? "",
+    }
 }
