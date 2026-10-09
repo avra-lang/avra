@@ -4,8 +4,8 @@
 //! so none outlives the block it was made in. A `Tasks` owner holds
 //! tasks whose answers nobody reads — `conns.push(spawn serve(c))` —
 //! shedding each as it finishes, so a loop that never ends owns only
-//! the tasks still running. A deadline is `@std/time`'s `within`
-//! component, over the scheduler's rows.
+//! the tasks still running. `within limit { body }` gives the body a
+//! deadline, over the scheduler's rows.
 use features.{
     LanguageFeature,
     BuilderRow,
@@ -26,8 +26,9 @@ use diagnostics.{DiagCode}
 
 export fn tasks() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name    | build
-        "spawn" | build_spawn
+        name          | build
+        "spawn"       | build_spawn
+        "within_expr" | build_within
     }
     let properties = table<PropertyRow> {
         name    | takes   | check       | lower       | waits | view
@@ -53,6 +54,7 @@ export fn tasks() -> LanguageFeature {
     LanguageFeature tasks {
         gram: grammar {
             primary = "spawn" v:expression -> spawn(v)
+            primary = "within" l:expression b:block -> within_expr(l, b) @head(l)
         }
         builders: rows
         properties: properties

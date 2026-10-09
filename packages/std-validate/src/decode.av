@@ -170,7 +170,7 @@ impl Decoding {
     /// before a field is read.
     mut fn object(s: Slot) -> Obj? {
         let entries? = scalar(self, s, "an object", as_entries) else { return null }
-        if !self.within(s) { return null }
+        if !self.shallow(s) { return null }
         Obj { entries: entries, at: s.at, hidden: s.hidden, before: self.count() }
     }
 
@@ -205,7 +205,7 @@ impl Decoding {
     }
 
     /// Deep enough to read; past the bound is one issue.
-    mut fn within(s: Slot) -> bool {
+    mut fn shallow(s: Slot) -> bool {
         if s.at.depth() < self.limits.depth { return true }
         self.say(Issue { path: s.at, rule: "depth", message: too_deep(self.limits.depth) })
         false
@@ -231,7 +231,7 @@ impl Decoding {
     /// `?tag=a`.
     mut fn items(s: Slot) -> List<Value>? {
         let xs? = scalar(self, s, "a list", as_items) else { return null }
-        if self.within(s) && self.bounded(s, xs.length) { xs } else { null }
+        if self.shallow(s) && self.bounded(s, xs.length) { xs } else { null }
     }
 
     mut fn text(s: Slot) -> string? { scalar(self, s, "text", as_text) }
