@@ -46,52 +46,26 @@ impl Workspace {
         let fns = [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
         self.decls.clear_cancels(fns)
         self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
-        // WHETHER THE PROGRAM LINKS A SCHEDULER: a member that SPAWNS,
-        // reads a waiting property, or calls a fn that parks — or a
-        // wait written at a FILE's top level, which is the entry root
-        // and no declaration. A call through a value is not enough —
-        // the value may be any fn, so it is every program's
-        // conservative bit and would link the scheduler for all of
-        // them. A program that links none emits no while check: it has
-        // no source to preempt and no row to call (the wasm target
-        // among them). The bit rides the settled VALUE below, so a
-        // reader after a reuse reads what the fingerprint covers.
-        let links = fns.any((d) -> self.cancel_survey(d).waits().any((w) -> self.wait_links(w))) ||
-            self.roots_wait()
-        self.decls.record_schedulers(links)
-        self
-            .db
-            .settle(
-                k,
-                fp(
-                    1,
-                    [
-                        fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns]),
-                        if links { 1 } else { 0 },
-                    ],
-                ),
-            )
+        self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns])]))
         fns.length
     }
 
-    /// Whether any file's TOP-LEVEL statements wait. A program's entry
-    /// root is no declaration, so a `spawn` or a waiting read written
-    /// at top level is invisible to the member survey; this reads every
-    /// file's own expressions, its declarations' waits among them
-    /// (already surveyed) changing no answer.
-    fn roots_wait() -> bool {
-        self
-            .decls
-            .all_files()
-            .any(
-                (fi) -> !self.is_held(fi.id) &&
-                    self.reads_as_source(fi.path) &&
-                    self.file_waits(fi.id).any((w: NodeWait) -> self.wait_links(w)),
-            )
+    /// Whether any MEMBER's own body waits through a row that links a
+    /// scheduler: a spawn, a waiting property, or a call to a fn the pass
+    /// settled as parking. A call through a value does not — any program
+    /// has one, and it says nothing about this program's rows. PURE: it
+    /// reads the bits the pass settled and writes nothing.
+    fn members_link_scheduler() -> bool {
+        let _ = self.cancel_reach()
+        [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
+            .any((d) -> self.cancel_survey(d).waits().any((w) -> self.wait_links(w)))
     }
 
-    /// Every wait in a file's expressions.
-    fn file_waits(f: FileId) -> List<NodeWait> {
+    /// Whether a FILE's own expressions wait through a row that links a
+    /// scheduler. A program's entry root is no declaration, so its
+    /// top-level `spawn` or waiting read is surveyed here by the driver
+    /// (`Program.lowered_bodies`), which knows the entry; the pass cannot.
+    fn file_links_scheduler(f: FileId) -> bool {
         let reader = WaitReader {
             view: file_view(self.lang, self.parsed(f), self.decls, f),
             names: self.resolved(f),
@@ -99,17 +73,17 @@ impl Workspace {
         }
         let store = self.decls.store_of(f)
         flatten([reader.node_waits(ExprId { index: i }) for i in 0..store.exprs.count()])
+            .any((w: NodeWait) -> self.wait_links(w))
     }
 
     /// Whether a call to `d` may reach a cancel point.
     fn reaches_cancel(d: DeclId) -> bool { self.reach_of(d).may() }
 
-    /// Whether the program links a scheduler at all — the pass settled
-    /// first. A program that reaches none emits no while check.
-    fn scheduler_linked() -> bool {
-        let _ = self.cancel_reach()
-        self.decls.links_scheduler()
-    }
+    /// Whether the program links a scheduler at all — the bit the
+    /// DRIVER settled from the members and the entry root
+    /// (`Program.lowered_bodies`), which alone knows the entry. A program
+    /// that links none emits no while check.
+    fn scheduler_linked() -> bool { self.decls.links_scheduler() }
 
     /// What a call to `d` may reach. A member the pass could not settle
     /// (asked mid-resolve) answers that it may, both ways.
@@ -231,13 +205,13 @@ impl Workspace {
     }
 
     /// Whether one wait LINKS A SCHEDULER: a spawn, a waiting property,
-    /// or a call to a fn the pass settled as parking. A call through a
-    /// value does not — any program has one, and it says nothing about
-    /// this program's rows. Read AFTER `spread_cancels`, when every
-    /// member's bit is settled.
+    /// or a call to a fn the pass settled as parking — a runtime row by
+    /// its column among them. A call through a value does not — any
+    /// program has one, and it says nothing about this program's rows.
+    /// Read AFTER the pass settled, when every member's bit is set.
     fn wait_links(w: NodeWait) -> bool {
         match w {
-            .Calls(g, _) -> self.decls.cancel_bits(g)?.parks ?? false,
+            .Calls(g, _) -> self.reach_of(g).parks,
             .Spawns or .Reads(_) -> true,
             .Value -> false,
         }
