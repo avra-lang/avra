@@ -273,7 +273,7 @@ fn opened_at(pack: Pack) {
         let at = joined_path(pack.dir, newest)
         // LICENSED input.store_io: the sealed body's own bytes, read to merge it
         let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-        scan_segment(pack, at, raw, true)
+        scan_body(pack, raw)
     }
     for name in segments(pack.dir) {
         let at = joined_path(pack.dir, name)
@@ -315,31 +315,74 @@ fn newest_body(dir: string) -> string {
     newest
 }
 
-/// SEAL the merged store into `body-<rev>.pack`, in the segment's own
-/// spelling — one plain header then a framed record each — so a flipped
-/// byte inside a body fails its frame's check exactly as a segment's does.
-/// Only the lock holder calls this. A reader holding the old body keeps it.
+/// SEAL the merged store into `body-<rev>.pack`: one payload frame — a
+/// plain header then a framed record each — wrapped in an outer frame
+/// whose truncated BLAKE3 is the body's footer. A flipped byte anywhere
+/// inside the body fails that footer, so the whole body is torn, never
+/// read. Only the lock holder calls this; a reader holding the old body
+/// keeps its mapping.
 fn seal(pack: Pack) {
     let rev = body_rev(newest_body(pack.dir)) + 1
-    let w = writer()
-    w.text(MAGIC)
-    w.int(FORMAT_VERSION)
-    w.text(pack.print)
+    let p = writer()
+    p.text(MAGIC)
+    p.int(FORMAT_VERSION)
+    p.text(pack.print)
     for digest, value in pack.content.get() {
         let body = content_body(digest, value)
-        let _ = w.octets(body)
-        w.text(check_of(body))
+        let _ = p.octets(body)
+        p.text(check_of(body))
     }
     for at, digest in pack.actions.get() {
         let nl = at.index_of("\n") ?? 0
         let body = action_body(at.substring(0, nl), at.substring(nl + 1, at.length), digest, [])
-        let _ = w.octets(body)
-        w.text(check_of(body))
+        let _ = p.octets(body)
+        p.text(check_of(body))
     }
-    let _ = write_bytes(joined_path(pack.dir, "body-${rev}.pack"), w.bytes())
+    let payload = p.bytes()
+    let b = writer()
+    b.octets(payload)
+    b.text(check_of(payload))
+    let _ = write_bytes(joined_path(pack.dir, "body-${rev}.pack"), b.bytes())
     let _ = write_bytes(joined_path(pack.dir, "body-${rev}.idx"), "".bytes())
     retire(pack)
     keep_bodies(pack)
+}
+
+/// A sealed body: its one outer frame verified first, so any flipped byte
+/// inside it is torn; then the payload's header and records.
+fn scan_body(pack: Pack, raw: Bytes) {
+    if raw.length == 0 { return }
+    let r = reader(raw)
+    let payload? = read_frame(r) else {
+        torn_at(pack, 0)
+        return
+    }
+    let q = reader(payload)
+    let magic? = ok(q.text()) else {
+        torn_at(pack, 0)
+        return
+    }
+    let version? = ok(q.int()) else {
+        torn_at(pack, 0)
+        return
+    }
+    let print? = ok(q.text()) else {
+        torn_at(pack, 0)
+        return
+    }
+    if magic != MAGIC || version != FORMAT_VERSION || print != pack.print {
+        pack.foreign.set(true)
+        if traced() { qtrace("Q\tstore\tforeign\n") }
+        return
+    }
+    while !q.done() {
+        let before = q.at.get()
+        let body? = read_frame(q) else {
+            torn_at(pack, before)
+            return
+        }
+        applied(pack, body)
+    }
 }
 
 /// Every segment whose writer is DEAD folded into the new body, so it can
