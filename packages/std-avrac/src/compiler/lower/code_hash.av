@@ -4,9 +4,10 @@
 //! replaced by that symbol's own hash, so a rename moves nothing; a
 //! recursion cycle is hashed as one unit, each member by its COLOUR
 //! (`close`), never its name. A call THROUGH a fn value reaches every fn
-//! whose address the program takes, so the callee it cannot name is
-//! covered all the same. EVERY REFERENCE LIST IS POSITIONAL — a body's
-//! in the order its instructions name them, a static's in slot order —
+//! whose address the program takes WITH THAT FN TYPE, so the callee it
+//! cannot name is covered by TYPE, never by the whole program's values.
+//! EVERY REFERENCE LIST IS POSITIONAL — a body's in the order its
+//! instructions name them, a static's in slot order —
 //! but the fn values', a set, since a value dispatches by address.
 //!
 //! THE LAW OF A CYCLE: two members with equal final colours have equal
@@ -125,11 +126,20 @@ fn distinct_targets(targets: List<string>) -> List<string> {
 /// reaches them, or as a SET when the node is the program's fn values.
 type CodeNode = { own: string, refs: List<string>, set: bool = false }
 
-/// THE PROGRAM'S FN VALUES, as one node: every address the program
-/// takes. A body that calls through a value reaches this node, so the
-/// fold costs one edge however many addresses there are. No symbol holds
-/// a space, so this name is no body's.
+/// THE PROGRAM'S FN VALUES, BY TYPE: one node per fn type, holding every
+/// address the program takes WITH that type. A body that calls through a
+/// value reaches ITS callee's type node, so its hash depends on the fns
+/// of that type — never on unrelated code elsewhere. The bare name is the
+/// fallback a site with no known type folds. No symbol holds a space, so
+/// these names are no body's.
 const values_node: string = "fn values"
+
+/// The per-type node a value dispatch reaches: the callee type's node, or
+/// the whole-program node when the type is unknown (the loud fallback).
+fn values_node_name(shapes: Map<string, string>, t: TypeId) -> string {
+    let shape? = shapes.get("${t.index}") else { return values_node }
+    "${values_node} ${shape}"
+}
 
 /// The program's code as a graph, and the hashes asked of it so far.
 type CodeGraph = {
@@ -155,8 +165,31 @@ export fn code_graph(
     asked: List<string>,
 ) -> CodeGraph {
     mut nodes: Map<string, CodeNode> = {}
-    let values = distinct_targets(flatten([f.addressed for f in facts]))
-    nodes.set(values_node, CodeNode { own: digest_of_name(values_node), refs: values, set: true })
+    // PER-TYPE VALUE NODES: a `CallPtr` folds the fns taken with its
+    // callee's type; the bare node is the fallback, holding every one.
+    let taken = flatten([[entry_at(a) for a in f.addressed] for f in facts])
+    nodes
+        .set(
+            values_node,
+            CodeNode {
+                own: digest_of_name(values_node),
+                refs: distinct_targets([e.sym for e in taken]),
+                set: true,
+            },
+        )
+    for node in distinct_targets([e.node for e in taken]) {
+        if node != values_node {
+            nodes
+                .set(
+                    node,
+                    CodeNode {
+                        own: digest_of_name(node),
+                        refs: distinct_targets([e.sym for e in taken if e.node == node]),
+                        set: true,
+                    },
+                )
+        }
+    }
     for f in facts {
         for n in f.nodes { nodes.set(n.name, CodeNode { own: n.own, refs: n.refs }) }
     }
@@ -207,7 +240,7 @@ export fn code_facts(decls: Decls, bodies: List<Body>, statics: List<Static>, as
     CodeFacts {
         nodes: [fact_node(b.name, body_node(shapes, b)) for b in lowered]
             .concat([fact_node(s.name, static_node(s)) for s in statics]),
-        addressed: addressed(lowered, statics),
+        addressed: addressed(lowered, statics, shapes),
         asked: distinct_targets(asked),
     }
 }
@@ -293,23 +326,45 @@ impl WireRead {
 }
 
 /// Every fn address the program takes, in a body or a static's slot.
-fn addressed(bodies: List<Body>, statics: List<Static>) -> List<string> {
+fn addressed(bodies: List<Body>, statics: List<Static>, shapes: Map<string, string>) -> List<string> {
     distinct_targets(
-        flatten([addressed_in(b) for b in bodies])
-            .concat(flatten([static_code_syms(s.boxes) for s in statics])),
+        flatten([addressed_in(b, shapes) for b in bodies])
+            .concat(flatten([addressed_static(s) for s in statics])),
     )
 }
 
-fn addressed_in(b: Body) -> List<string> { flatten([addressed_at(i) for i in b.ins]) }
+fn addressed_in(b: Body, shapes: Map<string, string>) -> List<string> {
+    flatten([addressed_at(i, b, shapes) for i in b.ins])
+}
 
-fn addressed_at(i: Ins) -> List<string> {
-    match i { .FnAddr(_, sym) -> [sym], rest -> [] }
+/// A taken address as `node\tsymbol`: which per-type value node it belongs
+/// to, and the symbol, for the graph to group.
+fn addressed_at(i: Ins, b: Body, shapes: Map<string, string>) -> List<string> {
+    match i {
+        .FnAddr(dst, sym) -> ["${values_node_name(shapes, b.reg_types[dst.index])}\t${sym}"],
+        rest -> [],
+    }
+}
+
+/// A static's fn addresses ride the fallback node: a static box names no
+/// call-site type.
+fn addressed_static(s: Static) -> List<string> {
+    ["${values_node}\t${sym}" for sym in static_code_syms(s.boxes)]
+}
+
+/// A taken address read back from `addressed`'s `node\tsymbol` text.
+type Addressed = { node: string, sym: string }
+
+fn entry_at(s: string) -> Addressed {
+    let at = s.index_of("\t")
+    if at < 0 { return Addressed { node: values_node, sym: s } }
+    Addressed { node: s.substring(0, at), sym: s.substring(at + 1, s.length) }
 }
 
 /// A body as a node: its instructions with each symbol replaced by its
 /// place among the body's references, its seat and register types, and —
-/// when it calls through a fn value — the program's fn values, since a
-/// value may hold any of them.
+/// when it calls through a fn value — the value nodes of the fn types it
+/// dispatches through.
 fn body_node(shapes: Map<string, string>, b: Body) -> CodeNode {
     let refs = distinct_targets(flatten([symbols_of(i) for i in b.ins]))
     let placed = (sym: string) -> "#${refs.index_of(sym)}"
@@ -319,13 +374,18 @@ fn body_node(shapes: Map<string, string>, b: Body) -> CodeNode {
     for t in typed { d = digest_text(d, t) }
     d = digest_int(d, b.ins.length)
     for i in b.ins { d = digest_ins(d, resymbolled(i, placed)) }
-    CodeNode {
-        own: digest_key(d),
-        refs: if b.ins.any(calls_through) { refs.concat([values_node]) } else { refs },
-    }
+    CodeNode { own: digest_key(d), refs: refs.concat(callptr_nodes(shapes, b)) }
 }
 
-fn calls_through(i: Ins) -> bool { i is .CallPtr }
+/// The per-type value nodes a body dispatches through: one per fn type
+/// its `CallPtr` sites call through.
+fn callptr_nodes(shapes: Map<string, string>, b: Body) -> List<string> {
+    mut out: List<string> = []
+    for i in b.ins {
+        if i is .CallPtr(_, f, _) { out.push(values_node_name(shapes, b.reg_types[f.index])) }
+    }
+    distinct_targets(out)
+}
 
 /// The types a body names: its seats, its answer, its registers.
 fn typed_by(b: Body) -> List<TypeId> { b.params.concat([b.ret]).concat(b.reg_types) }
