@@ -1,6 +1,8 @@
 //! CONTROL FLOW AS DATA — how control runs through one node's
 //! children, the shape a must-analysis (what EVERY path does) reads
-//! instead of matching nodes itself.
+//! instead of matching nodes itself. Each node's own `control()`
+//! lives on its record (`core/expr`, `core/stmt`); the steps these
+//! bodies share — a step list, a one-armed branch, a loop — are here.
 
 /// How control runs through one node's children.
 export enum Control {
@@ -20,84 +22,12 @@ export enum Control {
     Apart
 }
 
-fn exprs_at(es: List<ExprId>) -> List<At> { [At.Expr(e) for e in es] }
+export fn exprs_at(es: List<ExprId>) -> List<At> { [At.Expr(e) for e in es] }
 
-fn stmts_at(ss: List<StmtId>) -> List<At> { [At.Stmt(s) for s in ss] }
+export fn stmts_at(ss: List<StmtId>) -> List<At> { [At.Stmt(s) for s in ss] }
 
 /// A choice between running `rest` and running nothing.
-fn maybe(head: List<ExprId>, rest: List<At>) -> Control { Control.Branch(exprs_at(head), [[], rest]) }
-
-/// `&&` and `||` run their right side only when the left does not
-/// decide; every other operator runs both.
-fn expr_binary_control(op: BinOp, l: ExprId, r: ExprId) -> Control {
-    match op {
-        .And or .Or -> maybe([l], exprs_at([r])),
-        .Add or .Sub or .Mul or .Div or .Mod or .Eq or .Ne or .Lt or .Le or .Gt or .Ge or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> Control.Seq(exprs_at([l, r])),
-    }
-}
-
-/// A comprehension's first source always runs; the rest of its heads,
-/// its filters and its element run once per element, or never.
-fn expr_comp_control(elem: ExprId, clauses: List<CompClause>) -> Control {
-    let first = flatten([comp_clause_reach(c) for c in clauses.slice(0, 1)])
-    let rest = flatten([comp_clause_reach(c) for c in clauses.slice(1, clauses.length)])
-    maybe(first, exprs_at(rest.concat([elem])))
-}
-
-// ── the `@branches` variants' own control (core/flow_derive.av) ──
-
-fn expr_map_lit_control(keys: List<ExprId>, values: List<ExprId>) -> Control {
-    Control.Seq(exprs_at(flatten([[k, values[i]] for i, k in keys])))
-}
-
-fn expr_if_control(c: ExprId, t: ExprId, f: ExprId) -> Control { Control.Branch(exprs_at([c]), [exprs_at([t]), exprs_at([f])]) }
-
-fn expr_when_control(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId) -> Control {
-    Control.Branch(exprs_at(conds.slice(0, 1)), [exprs_at([v]) for v in values.concat([fallback])])
-}
-
-fn expr_match_control(s: ExprId, arms: List<Arm>) -> Control {
-    Control.Branch(exprs_at([s]), [exprs_at(some_list(a.guard).concat([a.value])) for a in arms])
-}
-
-fn expr_coalesce_control(l: ExprId, r: ExprId) -> Control { maybe([l], exprs_at([r])) }
-
-fn expr_match_opt_control(s: ExprId, _bind: Scoped, p: ExprId, a: ExprId) -> Control {
-    Control.Branch(exprs_at([s]), [exprs_at([p]), exprs_at([a])])
-}
-
-fn expr_catch_control(s: ExprId, _variants: List<Plain>, _binds: List<Scoped>, vs: List<ExprId>) -> Control {
-    Control.Branch(exprs_at([s]), [exprs_at([])].concat([exprs_at([v]) for v in vs]))
-}
-
-fn stmt_assign_control(t: ExprId, v: ExprId) -> Control { Control.Seq(exprs_at([v, t])) }
+export fn maybe(head: List<ExprId>, rest: List<At>) -> Control { Control.Branch(exprs_at(head), [[], rest]) }
 
 /// A loop's head runs, then its body, or never.
-fn loop_control(head: ExprId, body: List<StmtId>) -> Control { maybe([head], stmts_at(body)) }
-
-fn stmt_while_control(c: ExprId, ss: List<StmtId>) -> Control { loop_control(c, ss) }
-
-fn stmt_let_else_control(_name: Scoped, c: ExprId, ss: List<StmtId>) -> Control { loop_control(c, ss) }
-
-fn stmt_for_each_control(_index: Scoped?, _name: Scoped, c: ExprId, ss: List<StmtId>) -> Control { loop_control(c, ss) }
-
-fn stmt_for_control(
-    _name: Scoped,
-    from: ExprId,
-    to: ExprId,
-    cond: ExprId,
-    step: ExprId,
-    ss: List<StmtId>,
-) -> Control {
-    maybe([from, to, cond], stmts_at(ss).concat(exprs_at([step])))
-}
-
-fn stmt_if_stmt_control(c: ExprId, t: List<StmtId>, e: List<StmtId>) -> Control {
-    Control.Branch(exprs_at([c]), [stmts_at(t), stmts_at(e)])
-}
-
-fn stmt_return_control(v: ExprId?) -> Control { Control.Returns(v) }
-
-fn stmt_fail_control(v: ExprId) -> Control { Control.Fails(v) }
-
-fn stmt_jump_control(_label: ExprId?, _again: bool) -> Control { Control.Seq([]) }
+export fn loop_control(head: ExprId, body: List<StmtId>) -> Control { maybe([head], stmts_at(body)) }

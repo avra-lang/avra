@@ -1,0 +1,62 @@
+// core/control: every record's control is derived from its fields —
+// its expressions in order, or apart — and a record whose control is
+// its own writes `impl Node`.
+use @std.avrac.core.{new_node_store, Control, At, Expr, Node, Stmt, Scoped, named_ref}
+
+/// The word a control answer is, and how many steps or arms it holds.
+fn shown(c: Control) -> string {
+    match c {
+        .Seq(steps) -> "seq ${steps.length}",
+        .Branch(head, arms) -> "branch ${head.length} ${arms.length}",
+        .Returns(_) -> "returns",
+        .Fails(_) -> "fails",
+        .Apart -> "apart",
+    }
+}
+
+/// The expression a step names, or -1.
+fn expr_at(a: At) -> int {
+    match a { .Expr(e) -> e.index, _ -> -1 }
+}
+
+spec "core/control — every node's control is derived" {
+    given "the control a record yields" {
+        then "a sequence runs its fields' expressions in field order" {
+            mut s = new_node_store()
+            let a = s.alloc_expr(Expr.IntLit(1))
+            let b = s.alloc_expr(Expr.IntLit(2))
+            let e = s.alloc_expr(Expr.Index(a, b))
+            match s.expr(e).control() {
+                .Seq(steps) -> ["${expr_at(x)}" for x in steps].join(" ") == "${a.index} ${b.index}",
+                _ -> false,
+            }
+        }
+        then "an assignment runs its value before its target" {
+            mut s = new_node_store()
+            let t = s.alloc_expr(Expr.IntLit(1))
+            let v = s.alloc_expr(Expr.IntLit(2))
+            let st = s.alloc_stmt(Stmt.Assign(t, v))
+            match s.stmt(st).control() {
+                .Seq(steps) -> ["${expr_at(x)}" for x in steps].join(" ") == "${v.index} ${t.index}",
+                _ -> false,
+            }
+        }
+        then "branching, leaving, apart and empty shapes answer as before" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let shapes = [
+                shown(s.expr(s.alloc_expr(Expr.If(one, one, one))).control()),
+                shown(s.expr(s.alloc_expr(Expr.Lambda([], one))).control()),
+                shown(s.expr(s.alloc_expr(Expr.Receiver)).control()),
+                shown(s.stmt(s.alloc_stmt(Stmt.Return(null))).control()),
+                shown(s.stmt(s.alloc_stmt(Stmt.Jump(null, false))).control()),
+                shown(
+                    s
+                        .stmt(s.alloc_stmt(Stmt.FnDecl(Scoped("f"), [], [], named_ref("int"), one)))
+                        .control(),
+                ),
+            ]
+            shapes.join(", ") == "branch 1 2, apart, seq 0, returns, seq 0, apart"
+        }
+    }
+}

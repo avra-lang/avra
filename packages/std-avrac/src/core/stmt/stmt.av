@@ -2,6 +2,9 @@
 //! (core/nodes.av), its fields the variant's payload.
 use core.{
     stmt_node,
+    At,
+    Control,
+    Node,
     Scoped,
     Plain,
     TypeRef,
@@ -14,21 +17,25 @@ use core.{
     CollectKind,
     CollectScope,
     Projection,
+    exprs_at,
+    flatten,
+    loop_control,
+    maybe,
+    some_list,
+    stmts_at,
 }
-use core.marks.{apart, branches, declares, sequence}
+use core.marks.{apart, declares}
 
 /// `let name = v`, optionally `let name: T = v` — the written
 /// type, when declared, is what the binding HOLDS; the value
 /// must be accepted by it.
 @stmt_node
-@sequence
 export type Let = { name: Scoped, ty: TypeRef?, value: ExprId }
 
 /// A reassignable binding — unmanaged values only, until
 /// ownership analysis; optionally annotated, holding what it
 /// declares exactly as `let` does.
 @stmt_node
-@sequence
 export type MutLet = { name: Scoped, ty: TypeRef?, value: ExprId }
 
 /// `const name = v` — a value the COMPILER computes, so every
@@ -42,17 +49,18 @@ export type ConstDecl = { name: Scoped, ty: TypeRef?, value: ExprId }
 
 /// Reassignment of a `mut` binding, by name.
 @stmt_node
-@branches
 export type Assign = { target: ExprId, value: ExprId }
+
+impl Node for Assign {
+    fn control() -> Control { Control.Seq(exprs_at([self.value, self.target])) }
+}
 
 /// An expression at statement position.
 @stmt_node
-@sequence
 export type ExprStmt = { value: ExprId }
 
 /// `let _ = v` — the value run for its effect, never an answer.
 @stmt_node
-@sequence
 export type Discard = { value: ExprId }
 
 @stmt_node
@@ -68,30 +76,43 @@ export type ExternFn = { name: Scoped, params: List<Param>, ret: TypeRef }
 
 /// Condition re-evaluated each turn; the body is a scope.
 @stmt_node
-@branches
 export type While = { cond: ExprId, stmts: List<StmtId> }
+
+impl Node for While {
+    fn control() -> Control { loop_control(self.cond, self.stmts) }
+}
 
 /// `if c { … }` (optionally `else { … }`) at STATEMENT
 /// position: the branches are statement lists and the whole
 /// carries no value — the guard idiom's home. An absent else
 /// IS the empty list.
 @stmt_node
-@branches
 export type IfStmt = { cond: ExprId, then_stmts: List<StmtId>, else_stmts: List<StmtId> }
+
+impl Node for IfStmt {
+    fn control() -> Control { Control
+            .Branch(exprs_at([self.cond]), [stmts_at(self.then_stmts), stmts_at(self.else_stmts)]) }
+}
 
 /// `return v` — the enclosing fn answers NOW. Typing accepts
 /// `v` against the declared return; lowering exits with every
 /// open scope's debts settled at the site.
 /// `return`, with a value or bare — a bare one leaves a void fn.
 @stmt_node
-@branches
 export type Return = { value: ExprId? }
+
+impl Node for Return {
+    fn control() -> Control { Control.Returns(self.value) }
+}
 
 /// `fail value` — raise: the enclosing fn answers the failure
 /// channel of its Result right here. Diverges, like `return`.
 @stmt_node
-@branches
 export type Fail = { value: ExprId }
+
+impl Node for Fail {
+    fn control() -> Control { Control.Fails(self.value) }
+}
 
 @stmt_node
 @declares
@@ -109,16 +130,24 @@ export type TraitDecl = { name: Scoped, fns: List<StmtId> }
 /// must leave. Parsed by `let_stmt`; nullability gives it
 /// meaning.
 @stmt_node
-@branches
 export type LetElse = { name: Scoped, subject: ExprId, stmts: List<StmtId> }
+
+impl Node for LetElse {
+    fn control() -> Control { loop_control(self.subject, self.stmts) }
+}
 
 /// `for name in from..to` — binds `name` over the body. `cond`
 /// and `step` are parse-time desugar (`name < to`, `name + 1`):
 /// real nodes every pass walks, so the loop is mut+while in
 /// costume.
 @stmt_node
-@branches
 export type For = { name: Scoped, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId> }
+
+impl Node for For {
+    fn control() -> Control {
+        maybe([self.from, self.to, self.cond], stmts_at(self.stmts).concat(exprs_at([self.step])))
+    }
+}
 
 /// `use a.b.{x, y}` — the path's segments (a `@pkg` head kept
 /// as written) and the items brought into scope.
@@ -129,8 +158,11 @@ export type Use = { path: List<string>, items: List<string>, aliases: List<strin
 /// `for x in xs` — or `for i, x in xs`, the index beside the
 /// element, the loop's own counter with a name.
 @stmt_node
-@branches
 export type ForEach = { index: Scoped?, name: Scoped, subject: ExprId, stmts: List<StmtId> }
+
+impl Node for ForEach {
+    fn control() -> Control { loop_control(self.subject, self.stmts) }
+}
 
 /// `type Name = { field: ty, ... }` — a nominal record; the
 /// name lives in the TYPE namespace, program-wide like fns.
@@ -223,5 +255,8 @@ export type CollectEnum = { name: Scoped, kind: CollectKind, scope: CollectScope
 /// the innermost loop's, or the `for` whose name `label` reads.
 /// Diverges, like `return`.
 @stmt_node
-@branches
 export type Jump = { label: ExprId?, again: bool }
+
+impl Node for Jump {
+    fn control() -> Control { Control.Seq([]) }
+}

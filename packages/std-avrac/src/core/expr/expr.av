@@ -3,21 +3,28 @@
 use core.{
     expr_node,
     Arm,
+    At,
     BinOp,
     BodyView,
     CompClause,
+    Control,
     ExprId,
+    Node,
     Nominal,
     Param,
     Plain,
     Scoped,
     StmtId,
     TypeRef,
+    comp_clause_reach,
+    exprs_at,
+    flatten,
+    maybe,
+    some_list,
 }
-use core.marks.{apart, branches, expands, sequence}
+use core.marks.{apart, expands}
 
 @expr_node
-@sequence
 export type IntLit = { value: int }
 
 /// A REAL literal, carried as its IEEE-754 BIT PATTERN rather than
@@ -26,39 +33,40 @@ export type IntLit = { value: int }
 /// crosses the compiler that emits it — reinterpreted once, at
 /// the machine.
 @expr_node
-@sequence
 export type FloatLit = { bits: int }
 
 @expr_node
-@sequence
 export type StrLit = { value: string }
 
 @expr_node
-@sequence
 export type BoolLit = { value: bool }
 
 @expr_node
-@sequence
 export type Ident = { name: Scoped }
 
 /// `self` — the enclosing method's receiver. A keyword, so it
 /// carries no name: the binding says what it is.
 @expr_node
-@sequence
 export type Receiver = {}
 
 @expr_node
-@branches
 export type Binary = { op: BinOp, left: ExprId, right: ExprId }
+
+impl Node for Binary {
+    fn control() -> Control {
+        match self.op {
+            .And or .Or -> maybe([self.left], exprs_at([self.right])),
+            .Add or .Sub or .Mul or .Div or .Mod or .Eq or .Ne or .Lt or .Le or .Gt or .Ge or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> Control.Seq(exprs_at([self.left, self.right])),
+        }
+    }
+}
 
 /// Boolean negation — the one unary, until minus.
 @expr_node
-@sequence
 export type Not = { value: ExprId }
 
 /// The first aggregate — homogeneous scalar elements.
 @expr_node
-@sequence
 export type ListLit = { elems: List<ExprId> }
 
 /// `[elem for name in source if cond]` — a list built by walking
@@ -67,23 +75,33 @@ export type ListLit = { elems: List<ExprId> }
 /// one's binder), with an `if` filter after any head. `clauses`
 /// is the written order; the first is always a head.
 @expr_node
-@branches
 export type Comp = { elem: ExprId, clauses: List<CompClause> }
+
+impl Node for Comp {
+    fn control() -> Control {
+        let first = flatten([comp_clause_reach(c) for c in self.clauses.slice(0, 1)])
+        let rest = flatten(
+            [comp_clause_reach(c) for c in self.clauses.slice(1, self.clauses.length)],
+        )
+        maybe(first, exprs_at(rest.concat([self.elem])))
+    }
+}
 
 /// `{ "k": v, … }` — keys and values in written order.
 @expr_node
-@branches
 export type MapLit = { keys: List<ExprId>, values: List<ExprId> }
+
+impl Node for MapLit {
+    fn control() -> Control { Control.Seq(exprs_at(flatten([[k, self.values[i]] for i, k in self.keys]))) }
+}
 
 /// `subject[index]` — element access.
 @expr_node
-@sequence
 export type Index = { subject: ExprId, index: ExprId }
 
 /// `subject.name` — a property read; TYPING refuses unknown
 /// names, so the parse stays generous.
 @expr_node
-@sequence
 export type Prop = { subject: ExprId, name: Plain }
 
 /// A HOLE-BEARING BODY owned by a NAMED grammar — the ONE shape
@@ -93,7 +111,6 @@ export type Prop = { subject: ExprId, name: Plain }
 /// projection; `holes` are the expressions that fill them and ARE
 /// the node's children; `view` is its parsed form or expansion.
 @expr_node
-@sequence
 export type Body = { word: string, parts: List<string>, holes: List<ExprId>, view: BodyView }
 
 /// A COMPONENT INSTANCE — `within ms(500) { … }`: an imported
@@ -107,71 +124,93 @@ export type Body = { word: string, parts: List<string>, holes: List<ExprId>, vie
 export type Component = { word: string, heads: List<ExprId>, block: ExprId?, view: BodyView, check: ExprId? }
 
 @expr_node
-@branches
 export type If = { cond: ExprId, on_true: ExprId, on_false: ExprId }
+
+impl Node for If {
+    fn control() -> Control { Control.Branch(exprs_at([self.cond]), [exprs_at([self.on_true]), exprs_at([self.on_false])]) }
+}
 
 /// Multi-way choice; `fallback` is the total `_` arm.
 @expr_node
-@branches
 export type When = { conds: List<ExprId>, values: List<ExprId>, fallback: ExprId }
+
+impl Node for When {
+    fn control() -> Control {
+        Control
+            .Branch(
+                exprs_at(self.conds.slice(0, 1)),
+                [exprs_at([v]) for v in self.values.concat([self.fallback])],
+            )
+    }
+}
 
 /// Statements then a value — a scope as an expression. The
 /// value is ABSENT only when the last statement DIVERGES
 /// (`return`, `fail`): a block that leaves needs no tail, and
 /// it answers whatever the fn it leaves promises.
 @expr_node
-@sequence
 export type Block = { stmts: List<StmtId>, value: ExprId? }
 
 /// A direct call by name; fn values arrive later. `pins` are
 /// explicit type arguments (`f<int>(x)`) — empty when inferred.
 @expr_node
-@sequence
 export type Call = { callee: Scoped, pins: List<TypeRef>, args: List<ExprId> }
 
 /// `name: value` in an argument list — the seat it fills, by the
 /// callee's name for it.
 @expr_node
-@sequence
 export type Named = { name: Plain, value: ExprId }
 
 /// `Name { field: value, ... }` — fields in WRITTEN order
 /// (evaluation order); lowering reorders to declaration slots.
 @expr_node
-@sequence
 export type StructLit = { name: Nominal, fields: List<Plain>, values: List<ExprId> }
 
 /// `subject with { field: value, ... }` — a modified COPY; the
 /// unwritten fields carry over.
 @expr_node
-@sequence
 export type With = { subject: ExprId, fields: List<Plain>, values: List<ExprId> }
 
 /// `match subject { pattern -> value, ... }` — the first arm
 /// whose pattern accepts the subject answers; typing proves the
 /// arms cover the subject (every variant, or a catch-all).
 @expr_node
-@branches
 export type Match = { subject: ExprId, arms: List<Arm> }
+
+impl Node for Match {
+    fn control() -> Control {
+        Control
+            .Branch(
+                exprs_at([self.subject]),
+                [exprs_at(some_list(a.guard).concat([a.value])) for a in self.arms],
+            )
+    }
+}
 
 /// The absent value. Its type inhabits every `T?` and nothing
 /// else, which is what makes `let x: int = null` refuse.
 @expr_node
-@sequence
 export type NullLit = {}
 
 /// `left ?? right` — the left value unless it is absent. The
 /// right side is evaluated ONLY then.
 @expr_node
-@branches
 export type Coalesce = { left: ExprId, right: ExprId }
+
+impl Node for Coalesce {
+    fn control() -> Control { maybe([self.left], exprs_at([self.right])) }
+}
 
 /// `match v { b? -> present, null -> absent }` — the absence
 /// answered by ASKING. Exactly two arms, and `bind` names what
 /// the present arm receives, so no arm needs a string tag.
 @expr_node
-@branches
 export type MatchOpt = { subject: ExprId, bind: Scoped, present: ExprId, absent: ExprId }
+
+impl Node for MatchOpt {
+    fn control() -> Control { Control
+            .Branch(exprs_at([self.subject]), [exprs_at([self.present]), exprs_at([self.absent])]) }
+}
 
 /// `(params) -> body` — a CLOSURE: the body may read outer
 /// names, captured BY VALUE into the closure's box at
@@ -186,40 +225,34 @@ export type Lambda = { params: List<Param>, body: ExprId }
 /// subject holds is applied. `f(x)` by NAME stays the direct
 /// Call; this node is the postfix `pick(m)(x)` / `(lambda)(x)`.
 @expr_node
-@sequence
 export type CallValue = { subject: ExprId, args: List<ExprId> }
 
 /// `subject?.name` — the member of what a nullable CARRIES,
 /// nullable again: an absent subject answers absence, and the
 /// whole chain short-circuits on the first one.
 @expr_node
-@sequence
 export type Chain = { subject: ExprId, name: Plain }
 
 /// `value!` — the absence answered by INSISTING. The type loses
 /// its `?`; a value that is absent anyway refuses at runtime,
 /// which is the whole cost of writing it.
 @expr_node
-@sequence
 export type Force = { value: ExprId }
 
 /// `subject is .variant` — the tag test; typing demands an enum
 /// subject that names the variant, and answers bool.
 @expr_node
-@sequence
 export type Is = { subject: ExprId, variant: Plain }
 
 /// `.name(args)` — a variant of the enum the site EXPECTS; the
 /// want names the enum, the literal names the variant.
 @expr_node
-@sequence
 export type VariantLit = { name: Plain, args: List<ExprId> }
 
 /// `value?` — the absence answered by PASSING IT ON: a present
 /// value unwraps; an absent one makes the ENCLOSING fn answer
 /// `null` right here, so the fn must promise a nullable.
 @expr_node
-@sequence
 export type Propagate = { value: ExprId }
 
 /// `subject catch <recovery>` — recover from a Result's
@@ -229,42 +262,42 @@ export type Propagate = { value: ExprId }
 /// decides the type: a total catch recovers to the ok side; a
 /// selective one stays the Result, the unmatched propagating.
 @expr_node
-@branches
 export type Catch = { subject: ExprId, variants: List<Plain>, binds: List<Scoped>, values: List<ExprId> }
+
+impl Node for Catch {
+    fn control() -> Control {
+        Control
+            .Branch(exprs_at([self.subject]), [exprs_at([])].concat([exprs_at([v]) for v in self.values]))
+    }
+}
 
 /// `subject.name(args)` — a METHOD call: the impl the
 /// receiver's TYPE names supplies the fn; `subject` rides as
 /// its first argument. Resolution is provable at typing —
 /// never a runtime lookup.
 @expr_node
-@sequence
 export type MethodCall = { subject: ExprId, name: Plain, args: List<ExprId> }
 
 /// A parse failure's placeholder — the tree survives bad input.
 @expr_node
-@sequence
 export type Error = {}
 
 /// `collect { … }` — a list of every value its statements would
 /// discard, in the order they ran; `body` is a block with no tail.
 @expr_node
-@sequence
 export type Collect = { body: ExprId }
 
 /// `b"…"` — octets, carried as the spelling between the quotes;
 /// `byte_string_octets` (grammar/lexer.av) is what it holds.
 @expr_node
-@sequence
 export type BytesLit = { spelled: string }
 
 /// `(lo..hi)` — a half-open counting range, the two bounds as
 /// written. A flat value: the walk reads the bounds, no box.
 @expr_node
-@sequence
 export type Range = { lo: ExprId, hi: ExprId }
 
 /// Reserved: `env T`'s read, whose feature is gone. Kept so the
 /// variants after it keep their positions; nothing builds one.
 @expr_node
-@sequence
 export type Env = { ty: TypeRef }
