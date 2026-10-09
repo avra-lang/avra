@@ -279,6 +279,20 @@ export enum PipeStage {
     Chars
 }
 
+/// One bit per per-expression bool fact — the `flags` column packs them.
+const hungry_bit = 1
+const warned_bit = 2
+const alias_copy_bit = 4
+const thaw_bit = 8
+const plain_thaw_bit = 16
+const gathered_bit = 32
+const offer_bit = 64
+const spread_bit = 128
+const null_tail_bit = 256
+
+/// The one per-statement flag: a `let` whose seed is boxed into a cell.
+const boxed_stmt_bit = 1
+
 export type TypeFacts = {
     of_expr: SideTable<TypeId>,
     widens: SideTable<TypeId?>,
@@ -292,7 +306,10 @@ export type TypeFacts = {
     // capture read wears, wherever the lane is read
     captures: SideTable<List<TypeId>?>,
     wants: SideTable<TypeId?>,
-    hungry: SideTable<bool>,
+    // the per-expression bool facts, ONE packed column — one bit a flag,
+    // born zero: hungry, warned, alias_copies, thaws, plain_thaws,
+    // gathered, offers, spreads, null_tails.
+    flags: SideTable<int>,
     starved: SideTable<TypeId?>,
     // the parameter scope a hungry node was typed under — what its
     // rule runs under again when fed or starving
@@ -302,34 +319,13 @@ export type TypeFacts = {
     // a paired head's INDEX binder — `int` for a list, the key's own
     // type under a map
     index_types: SideTable<TypeId?>,
-    // a plain `let`'s declaring statement, marked when it is a
-    // writing method's non-`mut` receiver — its seed is boxed into
-    // a cell, thawed, the same way a `mut` local's is
-    boxed_locals: SideTable<bool>,
-    // a use whose declaration's warnings were already spoken — one
-    // voice per use, however often the node is typed
-    warned: SideTable<bool>,
-    // a place written through a bare `mut` local — one copied from a
-    // place, or a path rooted at one — a writing call's receiver, a
-    // `mut` seat's argument (F2106, `copy_laws`); lowering reads it unique
-    alias_copies: SideTable<bool>,
-    thaws: SideTable<bool>,
-    // a writing method's receiver with no cell behind it (a
-    // parameter, or a value with no binding), thawed once at the call
-    plain_thaws: SideTable<bool>,
-    // a value a `collect` keeps — checking's one answer, lowering's one read
-    gathered: SideTable<bool>,
+    // the per-statement flags, ONE packed column over the whole file: a
+    // plain `let`'s declaring statement is marked when it is a writing
+    // method's non-`mut` receiver — its seed is boxed into a cell, thawed,
+    // the same way a `mut` local's is.
+    stmt_flags: SideTable<int>,
     // each `collect`'s kept values, so a re-typed one never re-walks its body
     collections: SideTable<List<ExprId>?>,
-    // a lambda that takes its seat's record by FIELD NAME — checking's
-    // one answer, lowering's one read
-    offers: SideTable<bool>,
-    // a kept LIST a `collect` spreads, element by element
-    spreads: SideTable<bool>,
-    // a trailing-arms-sugar Match left with an uncovered variant
-    // under a nullable seat — checking's one answer, lowering's one
-    // read: the missing case answers `null`
-    null_tails: SideTable<bool>,
     // the method a dot-call chose among a generic trait's impls
     chosen: SideTable<DeclId?>,
     // the members a dot-call dispatches among at run, by one `dyn` argument
@@ -356,16 +352,8 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         lambda_marks: side_table<List<SeatMark>?>("lambda_marks", lo, hi, null),
         captures: side_table<List<TypeId>?>("captures", lo, hi, null),
         wants: side_table<TypeId?>("wants", lo, hi, null),
-        hungry: side_table("hungry", lo, hi, false),
-        warned: side_table("warned", lo, hi, false),
-        alias_copies: side_table("alias_copies", lo, hi, false),
-        thaws: side_table("thaws", lo, hi, false),
-        plain_thaws: side_table("plain_thaws", lo, hi, false),
-        gathered: side_table("gathered", lo, hi, false),
+        flags: side_table("flags", lo, hi, 0),
         collections: side_table<List<ExprId>?>("collections", lo, hi, null),
-        offers: side_table("offers", lo, hi, false),
-        spreads: side_table("spreads", lo, hi, false),
-        null_tails: side_table("null_tails", lo, hi, false),
         chosen: side_table<DeclId?>("chosen", lo, hi, null),
         dispatches: side_table<RunChoice?>("dispatches", lo, hi, null),
         stages: side_table<PipeStage?>("stages", lo, hi, null),
@@ -374,7 +362,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
         binding_types: side_table<TypeId?>("binding_types", 0, stmts, null),
         index_types: side_table<TypeId?>("index_types", 0, stmts, null),
-        boxed_locals: side_table("boxed_locals", 0, stmts, false),
+        stmt_flags: side_table("stmt_flags", 0, stmts, 0),
         voices: no_voices(),
     }
 }
@@ -385,11 +373,20 @@ impl TypeFacts {
     /// expression is typed by the body that OWNS it, never another.
     fn owns(e: ExprId) -> bool { self.of_expr.holds(e.index) }
 
-    fn hungry_at(e: ExprId) -> bool { self.hungry.get(e.index) }
+    /// Whether `e`'s flags hold `bit`.
+    fn flag_at(e: ExprId, bit: int) -> bool { self.flags.get(e.index) & bit != 0 }
+
+    /// Set `e`'s `bit`.
+    fn set_flag(e: ExprId, bit: int) { self.flags.set(e.index, self.flags.get(e.index) | bit) }
+
+    /// Clear `e`'s `bit`.
+    fn clear_flag(e: ExprId, bit: int) { self.flags.set(e.index, self.flags.get(e.index) & (bit ^ -1)) }
+
+    fn hungry_at(e: ExprId) -> bool { self.flag_at(e, hungry_bit) }
 
     /// The hungry expressions, in window order.
     fn hungry_ones() -> List<ExprId> {
-        [ExprId { index: i } for i in self.hungry.ids(is_hungry)]
+        [ExprId { index: i } for i in self.flags.ids(has_hungry)]
     }
 
     /// The seat a starved expression wanted, when it was starved.
@@ -445,7 +442,7 @@ impl TypeFacts {
     fn want_at(e: ExprId) -> TypeId? { self.wants.get(e.index) }
 
     fn go_hungry(e: ExprId) {
-        self.hungry.set(e.index, true)
+        self.set_flag(e, hungry_bit)
     }
 
     fn remember_scope(e: ExprId, params: List<TypeId>) {
@@ -455,13 +452,13 @@ impl TypeFacts {
     fn scope_at(e: ExprId) -> List<TypeId>? { self.scopes.get(e.index)?.params }
 
     fn absorb_hunger(e: ExprId) {
-        self.hungry.set(e.index, false)
+        self.clear_flag(e, hungry_bit)
     }
 
     /// A hungry expression starved of the seat it wanted; true when
     /// it was hungry.
     fn starve(e: ExprId, want: TypeId) -> bool {
-        if !self.hungry.get(e.index) { return false }
+        if !self.hungry_at(e) { return false }
         self.starved.set(e.index, want)
         true
     }
@@ -483,65 +480,65 @@ impl TypeFacts {
     }
 
     /// Whether this use already spoke its declaration's warnings.
-    fn spoke_warning(e: ExprId) -> bool { self.warned.get(e.index) }
+    fn spoke_warning(e: ExprId) -> bool { self.flag_at(e, warned_bit) }
 
     fn mark_warned(e: ExprId) {
-        self.warned.set(e.index, true)
+        self.set_flag(e, warned_bit)
     }
 
     /// Whether this place is written through a bare `mut` local that
     /// must not share — checking's one answer, lowering's one read; the
     /// derivation lives at `copy_laws` alone.
-    fn wants_alias_copy(e: ExprId) -> bool { self.alias_copies.get(e.index) }
+    fn wants_alias_copy(e: ExprId) -> bool { self.flag_at(e, alias_copy_bit) }
 
     fn mark_alias_copy(e: ExprId) {
-        self.alias_copies.set(e.index, true)
+        self.set_flag(e, alias_copy_bit)
     }
 
     /// Whether this place is a bare `mut` local seeded fresh, written
     /// whole: opened only when its box is the binary's own data.
-    fn wants_thaw(e: ExprId) -> bool { self.thaws.get(e.index) }
+    fn wants_thaw(e: ExprId) -> bool { self.flag_at(e, thaw_bit) }
 
     fn mark_thaw(e: ExprId) {
-        self.thaws.set(e.index, true)
+        self.set_flag(e, thaw_bit)
     }
 
     /// Whether this writing method's receiver was thawed at the
     /// call, with no cell behind it.
-    fn wants_plain_thaw(e: ExprId) -> bool { self.plain_thaws.get(e.index) }
+    fn wants_plain_thaw(e: ExprId) -> bool { self.flag_at(e, plain_thaw_bit) }
 
     fn mark_plain_thaw(e: ExprId) {
-        self.plain_thaws.set(e.index, true)
+        self.set_flag(e, plain_thaw_bit)
     }
 
     /// Whether a `collect` keeps this discarded value.
-    fn keeps(e: ExprId) -> bool { self.gathered.get(e.index) }
+    fn keeps(e: ExprId) -> bool { self.flag_at(e, gathered_bit) }
 
     fn mark_kept(e: ExprId) {
-        self.gathered.set(e.index, true)
+        self.set_flag(e, gathered_bit)
     }
 
     /// Whether a `collect` spreads this kept list — checking's one
     /// answer, lowering's one read.
-    fn spreads_at(e: ExprId) -> bool { self.spreads.get(e.index) }
+    fn spreads_at(e: ExprId) -> bool { self.flag_at(e, spread_bit) }
 
     fn spread(e: ExprId, spreads: bool) {
-        self.spreads.set(e.index, spreads)
+        if spreads { self.set_flag(e, spread_bit) } else { self.clear_flag(e, spread_bit) }
     }
 
     /// Whether a sugar match's uncovered variants answer `null` —
     /// checking's one answer, lowering's one read.
-    fn has_null_tail(e: ExprId) -> bool { self.null_tails.get(e.index) }
+    fn has_null_tail(e: ExprId) -> bool { self.flag_at(e, null_tail_bit) }
 
     fn mark_null_tail(e: ExprId) {
-        self.null_tails.set(e.index, true)
+        self.set_flag(e, null_tail_bit)
     }
 
     /// Whether a lambda takes its seat's record by field name.
-    fn takes_by_name(lam: ExprId) -> bool { self.offers.get(lam.index) }
+    fn takes_by_name(lam: ExprId) -> bool { self.flag_at(lam, offer_bit) }
 
     fn offer(lam: ExprId) {
-        self.offers.set(lam.index, true)
+        self.set_flag(lam, offer_bit)
     }
 
     /// What a `collect` kept, once its body has been walked.
@@ -570,24 +567,18 @@ impl TypeFacts {
         self.lambda_marks.lay(other.lambda_marks)
         self.captures.lay(other.captures)
         self.wants.lay(other.wants)
+        self.flags.lay(other.flags)
         self.pattern_types.lay(other.pattern_types)
-        self.alias_copies.lay(other.alias_copies)
-        self.thaws.lay(other.thaws)
-        self.plain_thaws.lay(other.plain_thaws)
-        self.gathered.lay(other.gathered)
         self.collections.lay(other.collections)
-        self.offers.lay(other.offers)
-        self.spreads.lay(other.spreads)
-        self.null_tails.lay(other.null_tails)
         self.chosen.lay(other.chosen)
         self.dispatches.lay(other.dispatches)
         self.stages.lay(other.stages)
         self.binding_types.lay_named(other.binding_types, is_typed)
         self.index_types.lay_named(other.index_types, is_typed)
         // a WHOLE-FILE column: a named lay, never plain, keeps one
-        // declaration's `true` from being stomped by another's
-        // untouched `false` — the same law `binding_types` pays
-        self.boxed_locals.lay_named(other.boxed_locals, marked_boxed)
+        // declaration's flags from being stomped by another's empty
+        // cells — the same law `binding_types` pays
+        self.stmt_flags.lay_named(other.stmt_flags, marked_stmt)
     }
 
     fn declared_binding(s: StmtId) -> TypeId? { self.binding_types.get(s.index) }
@@ -596,9 +587,9 @@ impl TypeFacts {
 
     fn record_index_type(s: StmtId, ty: TypeId) { self.index_types.set(s.index, ty) }
 
-    fn wants_boxed_local(s: StmtId) -> bool { self.boxed_locals.get(s.index) }
+    fn wants_boxed_local(s: StmtId) -> bool { self.stmt_flags.get(s.index) & boxed_stmt_bit != 0 }
 
-    fn mark_boxed_local(s: StmtId) { self.boxed_locals.set(s.index, true) }
+    fn mark_boxed_local(s: StmtId) { self.stmt_flags.set(s.index, self.stmt_flags.get(s.index) | boxed_stmt_bit) }
 
     fn seat_lambda(lam: ExprId, tys: List<TypeId>, marks: List<SeatMark>) {
         self.lambda_params.set(lam.index, tys)
@@ -765,8 +756,8 @@ impl BodyRegs {
 
 /// A column's fold reads only what the body actually recorded.
 fn is_typed(t: TypeId?) -> bool { t != null }
-fn is_hungry(h: bool) -> bool { h }
-fn marked_boxed(b: bool) -> bool { b }
+fn has_hungry(bits: int) -> bool { bits & hungry_bit != 0 }
+fn marked_stmt(bits: int) -> bool { bits != 0 }
 
 /// `n` empty type lists — spelled without the generic fill: a test
 /// shard instantiating a list-writing generic at a list-of-lists
