@@ -985,6 +985,9 @@ static int64_t within_opened(Fiber* f, int64_t ms) {
     }
     *scope_at(f, i) = (Scope){ id, at, first };
     f->scopes_n = i + 1;
+    // A STANDING DEADLINE ARMS THE SOURCE: a task that never waits files
+    // no timer, so the tick must fire for the cold side to see it.
+    __atomic_store_n(&avra_tick_wanted, 1, __ATOMIC_RELAXED);
     if (f->armed != i) return id;
     f->armed = i + 1;
     owner_found(f);
@@ -1421,7 +1424,7 @@ void avra_fiber_overflowed(const Fiber* f) {
 __attribute__((noinline, cold))
 static void switched_to_fresh(Fiber* self, Fiber* next) {
     fiber_bound(next);
-    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1440,7 +1443,7 @@ static inline void switch_to(Fiber* next) {
     if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
     // PRECOMPTION WORK STANDS exactly while a task runs with others
     // ready or a deadline filed; the source stands down otherwise.
-    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -2069,17 +2072,18 @@ void avra_tick_cold(void) {
     }
     if (!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) return;
     __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
-    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
+    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:
+    // a task that never waits files no deadline, so the cold side asks here.
+    if (g_timers_len > 0) fire_due_timers(now_ns());
+    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
     if (g_ready_head != NULL) avra_fiber_yield();
 }
-
-// THE TICK BYTE, as an evaluated program's flag read sees it.
-int64_t avra_tick_set(void) { return (int64_t)__atomic_load_n(&avra_tick, __ATOMIC_RELAXED); }
 
 // THE EVALUATOR'S OWN COLD SIDE, over its virtual task `t`: the same
 // turn count and the same draw from the schedule as a compiled
 // back-edge, so both engines yield at the same turn. Answers 1 when the
-// evaluator must yield, 0 when the task goes on.
+// evaluator must yield, 0 when the task goes on. The evaluator holds the
+// tick set (no thread exists), so this counts every back-edge.
 int64_t avra_vtask_tick_cold(int64_t t) {
     Fiber* f = virtual_at(t);
     if (g_seeded) {
@@ -2089,9 +2093,8 @@ int64_t avra_vtask_tick_cold(int64_t t) {
         f->tick_turns = tick_turns_drawn();
         return 1;
     }
-    if (!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) return 0;
-    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
-    if (f->cancel_by != 0) f->unwinding = 1;
+    if (g_timers_len > 0) fire_due_timers(now_ns());
+    if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
     return g_ready_head != NULL;
 }
 

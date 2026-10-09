@@ -210,6 +210,61 @@ static void body_source_do(void) {
     avra_tick_wanted = 0;
 }
 
+// ── the deadline a spinning back-edge is cut by ─────────────────
+
+static volatile int g_neighbour_ran;
+
+// A task that never waits: only the checked back-edge can cut it.
+static void* doomed(void* self) {
+    (void)self;
+    int64_t scope = avra_fiber_within(20);
+    while (!__atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED)) avra_tick_cold();
+    avra_fiber_within_end(scope);
+    return NULL;
+}
+
+static void* neighbour(void* self) {
+    (void)self;
+    g_neighbour_ran = 1;
+    return NULL;
+}
+
+// A SPINNING TASK IS CANCELLED BY ITS DEADLINE AND A SECOND TASK STILL
+// RUNS: the cold side checks the running task's own deadline, which no
+// wait filed because the task never waits.
+static void body_deadline_do(void) {
+    avra_tick_wanted = 1;
+    avra_tick_armed();
+    g_neighbour_ran = 0;
+    void* a = spawn1(doomed, 0);
+    void* b = spawn1(neighbour, 0);
+    int64_t waited = 0;
+    while (avra_task_done(a) == 0 && waited < 4000) { avra_fiber_sleep(5); waited += 5; }
+    CHECK(avra_task_done(a) != 0, "a spinning back-edge is cut by its deadline");
+    CHECK(g_neighbour_ran, "a second task still runs beside the spinner");
+    avra_task_settle(a);
+    CHECK(avra_task_ended(a) == 2, "the spinner ends cancelled, never answered");
+    avra_rc_release(a);
+    joined(b);
+    avra_tick_wanted = 0;
+    avra_tick_stood_down();
+}
+
+// THE EVALUATOR'S OWN COLD SIDE over a virtual task: the same deadline
+// cut, with no thread and no fiber.
+static void body_vdeadline_do(void) {
+    int64_t vt = avra_vtask_new();
+    int64_t scope = avra_vtask_within(vt, 20);
+    int64_t turns = 0;
+    while (avra_vtask_unwinding(vt) == 0 && turns < 100000000) {
+        avra_vtask_tick_cold(vt);
+        turns++;
+    }
+    CHECK(avra_vtask_unwinding(vt) != 0, "the evaluator's cold side cuts a virtual spinner at its deadline");
+    avra_vtask_within_end(vt, scope);
+    avra_vtask_free(vt);
+}
+
 // ── the store the source reads ──────────────────────────────────
 
 static volatile int g_running;
@@ -294,6 +349,8 @@ int main(void) {
     in_child("the pid the arm compares", body_hot_arm_reads_no_pid_do);
     in_child("a raw fork re-arms", body_raw_fork_rearms_do);
     in_child("the store the source reads", body_wanted_do);
+    in_child("the deadline a spinner is cut by", body_deadline_do);
+    in_child("the evaluator's deadline cut", body_vdeadline_do);
     printf("tick: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

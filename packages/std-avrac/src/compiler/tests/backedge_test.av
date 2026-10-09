@@ -1,0 +1,73 @@
+//! The check a `while` back-edge carries: one read of the tick byte and,
+//! taken, the cold side — emitted at a `while`'s back edge and nowhere
+//! else; a `for` over a list or a range carries none, and an `@unbroken`
+//! fn's own `while` carries none either.
+use @std.avrac.testing.{ir_of}
+use compiler.backend.{render_ir}
+
+/// The IR text of a program.
+fn ir(lines: List<string>) -> string { render_ir(ir_of(lines.concat([""]).join("\n"))) }
+
+/// How many times `word` stands in `text`.
+fn times(text: string, word: string) -> int { text.split(word).length - 1 }
+
+/// The tick reads a program's back edges emit.
+fn ticks(lines: List<string>) -> int { times(ir(lines), "= flag tick") }
+
+/// The cold-side calls a program's back edges emit.
+fn colds(lines: List<string>) -> int { times(ir(lines), "call avra_tick_cold()") }
+
+/// A `while` around a counter.
+fn spinning() -> List<string> {
+    [
+        "fn spin(n: int) -> int {",
+        "    mut i = 0",
+        "    while i < n { i = i + 1 }",
+        "    i",
+        "}",
+        "spin(3)",
+    ]
+}
+
+/// Two `for`s: over a list, and over a range.
+fn walking() -> List<string> {
+    [
+        "fn walk(xs: List<int>) -> int {",
+        "    mut s = 0",
+        "    for x in xs { s = s + x }",
+        "    s",
+        "}",
+        "fn rng(n: int) -> int {",
+        "    mut s = 0",
+        "    for i in 0..n { s = s + i }",
+        "    s",
+        "}",
+        "walk([1]) + rng(2)",
+    ]
+}
+
+spec "compiler/lower — the checked while back-edge" {
+    then "a `while` reads the tick and calls the cold side once" {
+        ticks(spinning()) == 1 && colds(spinning()) == 1
+    }
+    then "a `for` over a list or a range carries no check" {
+        ticks(walking()) == 0 && colds(walking()) == 0
+    }
+    then "an `@unbroken` fn's own `while` carries no check" {
+        ticks(
+            [
+                "use @std.meta.{unbroken}",
+                "@unbroken",
+                "fn rouse() -> int {",
+                "    mut i = 0",
+                "    while i < 3 { i = i + 1 }",
+                "    i",
+                "}",
+                "rouse()",
+            ],
+        ) == 0
+    }
+    then "the cold side is followed by the unwind test, so a cancelled task leaves" {
+        times(ir(spinning()), "= flag unwinding") >= 1
+    }
+}

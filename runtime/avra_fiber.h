@@ -184,8 +184,6 @@ int64_t avra_vtask_unwinding(int64_t t);
 // from the schedule as a compiled back-edge. Answers 1 when the
 // evaluator must yield, 0 when the task goes on.
 int64_t avra_vtask_tick_cold(int64_t t);
-// The tick byte, as an evaluated program's flag read sees it.
-int64_t avra_tick_set(void);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 void avra_vtask_within_end(int64_t t, int64_t id);
 // The task's deadline, in ns; 0 when none.
