@@ -1091,9 +1091,16 @@ bench-collections: build/libavra_runtime.a
 # THE FLOW BENCH: tasks, waits and wakes, each Avra program beside its Go
 # twin on this machine (tools/flow_bench/run.sh); `flow-probes` is the
 # stack allocator's own measurements.
-.PHONY: flow-bench flow-probes flow-trace
+#
+# `flow-g1` is the GATE a runtime/*.c change answers: the same rows, each
+# Avra row's ratio against Go's best judged (2x time, 3x memory, in
+# table.py), and a row that FAILs fails the target. It needs Go and the
+# compiler and SKIPS, spoken, where either is absent.
+.PHONY: flow-bench flow-probes flow-g1 flow-trace
 flow-bench: build/libavra_runtime.a
 	@sh tools/flow_bench/run.sh
+flow-g1: build/libavra_runtime.a
+	@FLOW_GATE=1 sh tools/flow_bench/run.sh
 flow-probes:
 	@sh tools/flow_bench/run.sh probes
 

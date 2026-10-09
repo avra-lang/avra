@@ -129,6 +129,16 @@ fi
 # Go: the PATH's, the Sprite's, or one fetched into the build directory.
 go=$(command -v go || true)
 [ -n "$go" ] || { [ -x /.sprite/bin/go ] && go=/.sprite/bin/go; } || true
+# THE GATE (`make flow-g1`) JUDGES AVRA BESIDE GO, so a machine missing
+# either SKIPS, spoken, rather than fetching a toolchain to pass itself.
+if [ "${FLOW_GATE:-0}" = 1 ] && [ -z "$go" ]; then
+    echo "flow-g1: SKIPPED — no Go on this machine; the G1 rows compare against Go's best" >&2
+    exit 0
+fi
+if [ "${FLOW_GATE:-0}" = 1 ] && [ ! -x "$root/build/avra" ]; then
+    echo "flow-g1: SKIPPED — no compiler at build/avra; the Avra rows cannot run" >&2
+    exit 0
+fi
 if [ -z "$go" ]; then
     arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
     os=$(uname -s | tr A-Z a-z)
