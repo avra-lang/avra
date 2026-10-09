@@ -1,0 +1,40 @@
+// proves: `within` is the tasks expression — its block answers as
+// written, a `return` and a `?` leave through it, and a task spawned
+// inside is joined by the block
+use @std.time.{ms, secs, sleep}
+
+fn early(n: int) -> int {
+    let v = within secs(1) {
+        if n > 1 {
+            return 0 - n
+        }
+        n
+    }
+    v * 10
+}
+
+fn number(s: string) -> Result<int, string> {
+    if s != "4" {
+        fail "not a number"
+    }
+    .Ok(4)
+}
+
+fn parsed(s: string) -> Result<int, string> {
+    let v = within ms(500) { number(s)? + 1 }
+    .Ok(v)
+}
+
+fn told(r: Result<int, string>) -> string {
+    match r { .Ok(v) -> "${v}", .Err(e) -> e }
+}
+
+let nested = within secs(2) { within ms(10) { 2 } * within ms(20) { 3 } }
+let joined = within secs(1) {
+    let t = spawn {
+        sleep(ms(5))
+        40
+    }
+    t.await + 2
+}
+"${nested} ${early(1)} ${early(3)} ${told(parsed("4"))} ${told(parsed("x"))} ${joined}"
