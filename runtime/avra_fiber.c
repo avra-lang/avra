@@ -2045,6 +2045,18 @@ static uint32_t tick_turns_drawn(void) {
     return (uint32_t)chosen(TICK_TURNS) + 1;
 }
 
+// One seeded back-edge's countdown: 1 when the task must yield now, 0
+// when it goes on. Schedule 0 draws nothing and never preempts. The
+// compiled task and the evaluator's virtual task share it, so both
+// engines yield at the same turn.
+static int tick_turn_comes(Fiber* f) {
+    if (g_schedule == 0) { return 0; }
+    if (f->tick_turns == 0) f->tick_turns = tick_turns_drawn();
+    if (--f->tick_turns > 0) return 0;
+    f->tick_turns = tick_turns_drawn();
+    return 1;
+}
+
 // THE CHECKED BACK-EDGE'S COLD SIDE: the emitted `while` check calls
 // this when the tick byte is set. Under a schedule there is no source —
 // the byte is held set, a per-task count falls, and at zero the task
@@ -2063,10 +2075,7 @@ void avra_tick_cold(void) {
     if (g_runs > 0) return;
     Fiber* f = g_current;
     if (g_seeded) {
-        if (g_schedule == 0) return;
-        if (f->tick_turns == 0) f->tick_turns = tick_turns_drawn();
-        if (--f->tick_turns > 0) return;
-        f->tick_turns = tick_turns_drawn();
+        if (!tick_turn_comes(f)) return;
         avra_fiber_yield();
         return;
     }
@@ -2086,13 +2095,7 @@ void avra_tick_cold(void) {
 // tick set (no thread exists), so this counts every back-edge.
 int64_t avra_vtask_tick_cold(int64_t t) {
     Fiber* f = virtual_at(t);
-    if (g_seeded) {
-        if (g_schedule == 0) return 0;
-        if (f->tick_turns == 0) f->tick_turns = tick_turns_drawn();
-        if (--f->tick_turns > 0) return 0;
-        f->tick_turns = tick_turns_drawn();
-        return 1;
-    }
+    if (g_seeded) return tick_turn_comes(f);
     if (g_timers_len > 0) fire_due_timers(now_ns());
     if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
     return g_ready_head != NULL;
