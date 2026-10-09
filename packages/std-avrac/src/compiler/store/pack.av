@@ -136,7 +136,14 @@ fn read_frame(r: Reader) -> Bytes? {
 /// A torn frame ends this segment; a foreign header drops it whole. The
 /// header is not framed: a store's own print must be readable, and forgeable,
 /// before any frame is trusted.
-fn scan_segment(pack: Pack, path: string, raw: Bytes, alive: bool) {
+fn scan_segment(
+    pack: Pack,
+    path: string,
+    raw: Bytes,
+    alive: bool,
+    claims: Cell<Map<string, string>>,
+    writer: string,
+) {
     if raw.length == 0 { return }
     let r = reader(raw)
     let magic? = ok(r.text()) else {
@@ -166,7 +173,7 @@ fn scan_segment(pack: Pack, path: string, raw: Bytes, alive: bool) {
             if !alive { trim(path, before) }
             return
         }
-        applied(pack, body)
+        applied(pack, body, claims, writer)
     }
 }
 
@@ -176,7 +183,7 @@ fn torn_at(pack: Pack, at: int) {
     if traced() { qtrace("Q\tstore\ttorn\t${at}\n") }
 }
 
-fn applied(pack: Pack, body: Bytes) {
+fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, string>>, writer: string) {
     let r = reader(body)
     let tag? = ok(r.int()) else { return }
     if tag == CONTENT_TAG {
@@ -189,8 +196,41 @@ fn applied(pack: Pack, body: Bytes) {
         let family? = ok(r.text()) else { return }
         let key? = ok(r.text()) else { return }
         let digest? = ok(r.text()) else { return }
-        pack.actions.put(action_key(family, key), digest)
+        claimed(pack, claims, writer, family, key, digest)
     }
+}
+
+/// One answer CLAIM for an action key. A second claim from ANOTHER writer
+/// that names a different value is a reproducibility defect — the shared
+/// store doubling as a detector of nondeterminism — so it is reported,
+/// naming the key, both value digests and their writers. The later segment
+/// still stands: the report is the finding, never a refusal.
+fn claimed(
+    pack: Pack,
+    claims: Cell<Map<string, string>>,
+    writer: string,
+    family: string,
+    key: string,
+    digest: string,
+) {
+    let at = action_key(family, key)
+    let prior? = claims.get().get(at) else {
+        claims.put(at, "${digest}\t${writer}")
+        pack.actions.put(at, digest)
+        return
+    }
+    let parts = prior.split("\t")
+    let was = parts[0]
+    let who = parts[1]
+    if was != digest && who != writer {
+        if traced() {
+            qtrace(
+                "Q\tstore\tclaim-conflict\t${family}\t${key}\t${was}\t${digest}\t${who}\t${writer}\n",
+            )
+        }
+    }
+    claims.put(at, "${digest}\t${writer}")
+    pack.actions.put(at, digest)
 }
 
 fn is_segment(name: string) -> bool {
@@ -255,11 +295,12 @@ fn opened_at(pack: Pack) {
     let _ = make_dirs(joined_path(root, "bin"))
     let _ = write_text(joined_path(pack.dir, "body-0.pack"), "")
     let _ = write_text(joined_path(pack.dir, "body-0.idx"), "")
+    let claims: Cell<Map<string, string>> = map_cell()
     for name in segments(pack.dir) {
         let at = joined_path(pack.dir, name)
         // LICENSED input.store_io: a segment's own bytes, read to merge it
         let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-        scan_segment(pack, at, raw, writer_alive(name))
+        scan_segment(pack, at, raw, writer_alive(name), claims, name)
     }
     admit(pack)
 }
