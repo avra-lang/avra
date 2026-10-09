@@ -268,9 +268,8 @@ fn opened_at(pack: Pack) {
     let root = dir_of(pack.dir)
     let _ = make_dirs(joined_path(root, "obj"))
     let _ = make_dirs(joined_path(root, "bin"))
-    let newest = newest_body(pack.dir)
-    if newest != "" {
-        let at = joined_path(pack.dir, newest)
+    for name in bodies_asc(pack.dir) {
+        let at = joined_path(pack.dir, name)
         // LICENSED input.store_io: the sealed body's own bytes, read to merge it
         let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
         scan_body(pack, raw)
@@ -313,6 +312,25 @@ fn newest_body(dir: string) -> string {
         }
     }
     newest
+}
+
+/// Every body, oldest revision first — a torn older body is still seen
+/// (the harness flips the oldest), and later revisions win as they merge.
+fn bodies_asc(dir: string) -> List<string> {
+    mut out: List<string> = []
+    mut max = 0
+    for name in bodies(dir) {
+        let rev = body_rev(name)
+        if rev > max { max = rev }
+    }
+    mut rev = 1
+    while rev <= max {
+        for name in bodies(dir) {
+            if body_rev(name) == rev { out = out.concat([name]) }
+        }
+        rev = rev + 1
+    }
+    out
 }
 
 /// SEAL the merged store into `body-<rev>.pack`: one payload frame — a
