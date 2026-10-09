@@ -59,6 +59,7 @@ export type Pack = {
 
 /// One store's pack, empty — nothing read from disk until the first ask.
 export fn pack_at(root: string, print: string) -> Pack {
+    let no_folded: List<string> = []
     Pack {
         dir: joined_path(root, "store"),
         print: print,
@@ -69,7 +70,7 @@ export fn pack_at(root: string, print: string) -> Pack {
         foreign: Cell.new(false),
         skipped: Cell.new(false),
         headed: Cell.new(false),
-        folded: Cell.new([]),
+        folded: Cell.new(no_folded),
         lock_fd: Cell.new(0 - 1),
     }
 }
@@ -279,7 +280,7 @@ fn opened_at(pack: Pack) {
         // LICENSED input.store_io: a segment's own bytes, read to merge it
         let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
         scan_segment(pack, at, raw, writer_alive(name))
-        pack.folded.get().push(name)
+        pack.folded.set(pack.folded.get().concat([name]))
     }
     admit(pack)
 }
