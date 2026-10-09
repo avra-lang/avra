@@ -34,7 +34,7 @@ use @std.process.{
     exit,
 }
 use @std.time.{now_ns}
-use @std.io.{exists, is_dir, env, make_dirs, compile_slot, Entry}
+use @std.io.{exists, env, make_dirs, compile_slot, Entry}
 use @std.avrac.compiler.backend.{emit_ll}
 use @std.avrac.compiler.host.{no_target, Stamp}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
@@ -297,7 +297,7 @@ export fn answered(text: string?, absent: string) -> int {
 /// file is entered.
 fn program_at(args: CliResult) -> Program? {
     let path = path_arg(args)
-    if is_dir(path) {
+    if is_a_dir(path) {
         let whole: Program = root_program(path)
         return whole
     }
@@ -438,12 +438,12 @@ fn status_of_exit(e: Exit) -> int {
 /// The workspace a build stands in — a directory is a package root, a file is a lone
 /// program — built WITHOUT analysis, so the key is taken before a line is typed.
 fn build_workspace(path: string) -> Workspace {
-    if is_dir(path) { root_workspace(path) } else { file_workspace(path) }
+    if is_a_dir(path) { root_workspace(path) } else { file_workspace(path) }
 }
 
 /// The entry a build of this workspace runs: a package's `[bin]`, or the file itself.
 fn build_entry(ws: Workspace, path: string) -> string? {
-    if is_dir(path) { ws.entry_of() } else { path }
+    if ws.is_dir(path) { ws.entry_of() } else { path }
 }
 
 /// EVERY BUILD-CACHE COMMAND'S PROLOGUE — `build`, `check`, `test`: the
@@ -465,7 +465,8 @@ export fn argued_path(args: CliResult) -> string? {
 /// machine's slots, and a single file never waits.
 export fn slotted_path(args: CliResult) -> string? {
     let path? = argued_path(args) else { return null }
-    if is_dir(path) { let _ = compile_slot() }
+    // LICENSED input.compile_slot: a package-scale command takes one of the machine's slots, which never changes a compile answer
+    if is_a_dir(path) { let _ = compile_slot() }
     path
 }
 

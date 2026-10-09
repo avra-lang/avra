@@ -393,7 +393,11 @@ fn user_pid_alive(name: string) -> bool {
 fn has_live_user(ws: Workspace, store: string) -> bool {
     let users = joined_path(store, ".users")
     // LICENSED compiler.host_asked_directly: whether another process uses this store is asked of the disk at this instant, never of what was read earlier
-    if !ws.host.is_dir(users) { return false }
+    let stands = match ws.host.listing(users) {
+        .Listing(_, entries) -> entries != null,
+        rest -> false,
+    }
+    if !stands { return false }
     // LICENSED compiler.host_asked_directly: the users of this store are listed as they stand at this instant
     let names = ws.host.list(users)
     for name in names {
