@@ -139,14 +139,7 @@ def label_pair(label):
 # ── ACKNOWLEDGED GAPS — a candidate this reader finds real but the
 # registry does not exercise, named with why, read here rather than
 # left for the reader to wonder whether it was forgotten. ──
-ACKNOWLEDGED_GAPS = {
-    ("decl_wire", "wire_decl"):
-        "needs an ADMITTED declaration's real DeclId — the fixture workspace "
-        "(compiler/codecs.av's codec_workspace, matching compiler/tests/"
-        "fn_wire_marks_test.av's own shape) mints no declaration, only scalar "
-        "and structural types. type_wire/interface_type's own exemplars stay "
-        "at scalars and composites for the same reason.",
-}
+ACKNOWLEDGED_GAPS = {}
 
 
 CASES = [

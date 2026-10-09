@@ -14,7 +14,7 @@
 //! bug"). `tools/codecs.py` is this file's OTHER surface: it refuses
 //! an encoder/decoder-shaped pair the tree carries that this registry
 //! does not name.
-use core.{SeatMark, TypeId, Type, DeclKind, list_eq}
+use core.{DeclId, SeatMark, TypeId, Type, DeclKind, list_eq}
 use features.{
     DeclFacts,
     AnnotationFact,
@@ -33,6 +33,7 @@ use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
 use @std.text.{from_codepoint}
+use compiler.failures.{Raised}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
 
@@ -144,11 +145,11 @@ fn heap_from_wire_wire(raw: string) -> MetaHeap? {
     heap_from_wire(r)
 }
 
-// ── A FIXTURE WORKSPACE — the codecs that cross `TypeId`/`FileId`
-// need a real `Decls`/`TypeRegistry` to intern into; this is that
-// one, held to scalars and structural types so no declaration needs
-// admitting (`compiler/tests/fn_wire_marks_test.av`'s own shape). Its
-// own verbs live on `Workspace` (`style.free_state_verb`). ──
+// ── A FIXTURE WORKSPACE — the codecs that cross `TypeId`/`FileId`/
+// `DeclId` need a real `Decls`/`TypeRegistry` to intern into; this is
+// that one, and `codec_decl_exemplars` mints its file's declarations
+// so the id-writing codecs name a real `DeclId`. Its own verbs live on
+// `Workspace` (`style.free_state_verb`). ──
 
 fn codec_workspace() -> Workspace {
     new_workspace(
@@ -207,12 +208,11 @@ impl Workspace {
     }
 
     /// A handful of `Wanted` rows — `decl: null`/`sub: null`
-    /// throughout: a real `DeclId` needs an admitted declaration this
-    /// fixture does not carry (`fn_wire_marks_test.av`'s own fixture
-    /// stops there too), so `sub_wire`/`decl_wire` are covered only as
-    /// far as their OWN decoder never runs (`sub_mark == "+"`) —
-    /// `seat_wire`'s shape is exercised in full through a seat
-    /// carrying a real `TypeId`.
+    /// throughout: `decl_wire`'s own round trip is exercised beside its
+    /// decoder (`interface.decl_wire/wire_decl`), so `sub_wire`'s nested
+    /// declaration ref is covered here only as far as its decoder never
+    /// runs (`sub_mark == "+"`) — `seat_wire`'s shape is exercised in
+    /// full through a seat carrying a real `TypeId`.
     fn codec_wanted_exemplars() -> List<Wanted> {
         let i = self.decls.types.type(int)
         let seat = SeatValue {
@@ -249,6 +249,32 @@ impl Workspace {
 
     fn codec_same_wanted(a: Wanted, b: Wanted) -> bool {
         self.wanted_wire(a) == self.wanted_wire(b)
+    }
+
+    /// The fixture's real declarations: `items` mints every row of the
+    /// file, so the id-writing codecs name a `DeclId` the program
+    /// itself made — a workspace with none would pass vacuously.
+    fn codec_decl_exemplars() -> List<DeclId> { self.items(self.file_id("/w/src/main.av")) }
+
+    fn codec_decl_labels() -> List<string> { [self.decls.decl(d).name for d in self.codec_decl_exemplars()] }
+
+    fn codec_same_decl(a: DeclId, b: DeclId) -> bool { self.decls.decl_wire(a) == self.decls.decl_wire(b) }
+
+    fn codec_raised_exemplars() -> List<Raised> {
+        let d = self.codec_decl_exemplars()[0]
+        [
+            Raised { owner: d, errors: [] },
+            Raised { owner: d, errors: [self.decls.types.type(int), self.decls.types.type(bool)] },
+        ]
+    }
+
+    fn codec_same_raised(a: Raised, b: Raised) -> bool {
+        self.decls.decl_wire(a.owner) == self.decls.decl_wire(b.owner) &&
+            list_eq(
+                a.errors,
+                b.errors,
+                (x, y) -> self.decls.type_wire(x) == self.decls.type_wire(y),
+            )
     }
 }
 
@@ -613,6 +639,10 @@ fn same_opt_bool(a: bool?, b: bool?) -> bool {
 
 // ── THE REGISTRY ─────────────────────────────────────────────────────
 
+/// The fixture workspace's declaration names — the receipt that the
+/// id-writing codecs name a real `DeclId` rather than an empty list.
+export fn codec_fixture_decl_names() -> List<string> { codec_workspace().codec_decl_labels() }
+
 export fn codec_pairs() -> List<CodecCheck> {
     let ws = codec_workspace()
     [
@@ -815,6 +845,38 @@ export fn codec_pairs() -> List<CodecCheck> {
             packed,
             unpacked,
             same_string_list,
+        ),
+        derived(
+            "interface.decl_wire/wire_decl",
+            ws.codec_decl_exemplars(),
+            ws.codec_decl_labels(),
+            (d) -> ws.decls.decl_wire(d),
+            (w) -> ws.decl_from_ref(w),
+            (x, y) -> ws.codec_same_decl(x, y),
+        ),
+        derived(
+            "family.decls_wire/decls_of_wire",
+            [ws.codec_decl_exemplars()],
+            ["the file's declarations"],
+            (ds) -> ws.decls_wire(ds),
+            (w) -> ws.decls_of_wire(w),
+            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_decl(x, y)),
+        ),
+        derived(
+            "family.types_wire/types_of_wire",
+            [[], ws.codec_type_exemplars()],
+            ["empty", "every exemplar"],
+            (ts) -> ws.types_wire(ts),
+            (w) -> ws.types_of_wire(w),
+            (a, b) -> list_eq(a, b, (x, y) -> ws.codec_same_type_shape(x, y)),
+        ),
+        derived(
+            "family.raised_wire/raised_of_wire",
+            ws.codec_raised_exemplars(),
+            ["one owner, no errors", "one owner, two errors"],
+            (r) -> ws.raised_wire(r),
+            (w) -> ws.raised_of_wire(w),
+            (x, y) -> ws.codec_same_raised(x, y),
         ),
         derived(
             "interface.type_wire/read_type_wire",
