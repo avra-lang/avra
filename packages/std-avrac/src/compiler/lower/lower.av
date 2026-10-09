@@ -1022,6 +1022,8 @@ fn lower_fn(
     // carries.
     let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
     mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross))
+    // an `@unbroken` fn's own `while`s carry no back-edge check
+    lo.unbroken = a.view.decls.marks_unbroken(x.id)
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.mint_ty(pt) }
     lo.seeded()
@@ -1069,6 +1071,9 @@ fn lower_lambda(
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
     mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross))
+    // a lambda's `while`s wear its maker's law: an `@unbroken` fn's lifted
+    // body carries no back-edge check either
+    lo.unbroken = lj.unbroken
     if lj.kind is .Task { lo.exit = lo.answer_cell(rt) }
     // register 0 is the env box, 1..N the seats
     let _ = lo.mint_ty(lam_ty)

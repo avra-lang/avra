@@ -997,10 +997,12 @@ impl Machine {
     }
 
     /// A runtime flag as the running task reads it: the task's own bit,
-    /// which the runtime keeps and both engines read.
+    /// which the runtime keeps and both engines read — and the tick the
+    /// source sets, which is the machine's, not a task's.
     fn flag_now(flag: RtFlag) -> bool {
         match flag {
             .Unwinding -> self.running >= 0 && avra_vtask_unwinding(self.tasks[self.running].vt) != 0,
+            .Tick -> avra_tick_set() != 0,
         }
     }
 
@@ -1514,6 +1516,7 @@ impl Machine {
             .TaskSettleAll -> self.task_settle_all_val(vals),
             .TasksPush -> self.tasks_push_val(vals),
             .FiberYield -> self.fiber_yield_val(),
+            .TickCold -> self.tick_cold_val(),
             .FiberSleep -> self.fiber_sleep_val(vals),
             .FiberParkFd -> self.fiber_park_fd_val(vals),
             .FiberInterrupted -> self.fiber_interrupted_val(),

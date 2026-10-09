@@ -2049,7 +2049,15 @@ static uint32_t tick_turns_drawn(void) {
 // schedule 0 draws nothing and never preempts, its order the queue's
 // own. With a source, the switch has already heard the tick: a task that
 // does not switch hears its cancel here and lets others run.
+//
+// AN EVALUATED RUN IS THE INTERPRETER'S OWN: while it stands, a compiled
+// back-edge here is the compiler's, so it draws nothing from the guest's
+// schedule and yields nothing. The guest's turns are the evaluator's own
+// arm (`avra_vtask_tick_cold`).
+static size_t g_runs;
+static Fiber* virtual_at(int64_t t);
 void avra_tick_cold(void) {
+    if (g_runs > 0) return;
     Fiber* f = g_current;
     if (g_seeded) {
         if (g_schedule == 0) return;
@@ -2063,6 +2071,28 @@ void avra_tick_cold(void) {
     __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
     if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
     if (g_ready_head != NULL) avra_fiber_yield();
+}
+
+// THE TICK BYTE, as an evaluated program's flag read sees it.
+int64_t avra_tick_set(void) { return (int64_t)__atomic_load_n(&avra_tick, __ATOMIC_RELAXED); }
+
+// THE EVALUATOR'S OWN COLD SIDE, over its virtual task `t`: the same
+// turn count and the same draw from the schedule as a compiled
+// back-edge, so both engines yield at the same turn. Answers 1 when the
+// evaluator must yield, 0 when the task goes on.
+int64_t avra_vtask_tick_cold(int64_t t) {
+    Fiber* f = virtual_at(t);
+    if (g_seeded) {
+        if (g_schedule == 0) return 0;
+        if (f->tick_turns == 0) f->tick_turns = tick_turns_drawn();
+        if (--f->tick_turns > 0) return 0;
+        f->tick_turns = tick_turns_drawn();
+        return 1;
+    }
+    if (!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) return 0;
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    if (f->cancel_by != 0) f->unwinding = 1;
+    return g_ready_head != NULL;
 }
 
 __attribute__((noinline))

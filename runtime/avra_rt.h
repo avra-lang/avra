@@ -201,6 +201,7 @@ extern const char avra_rt_held_avra_task_settle_all __asm__(AVRA_RT_LABEL(avra_t
 extern const char avra_rt_held_avra_task_join __asm__(AVRA_RT_LABEL(avra_task_join));
 extern const char avra_rt_held_avra_task_done __asm__(AVRA_RT_LABEL(avra_task_done));
 extern const char avra_rt_held_avra_fiber_yield __asm__(AVRA_RT_LABEL(avra_fiber_yield));
+extern const char avra_rt_held_avra_tick_cold __asm__(AVRA_RT_LABEL(avra_tick_cold));
 extern const char avra_rt_held_avra_fiber_sleep __asm__(AVRA_RT_LABEL(avra_fiber_sleep));
 extern const char avra_rt_held_avra_fiber_park_fd __asm__(AVRA_RT_LABEL(avra_fiber_park_fd));
 extern const char avra_rt_held_avra_fiber_interrupted __asm__(AVRA_RT_LABEL(avra_fiber_interrupted));
@@ -393,6 +394,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_task_join,
     &avra_rt_held_avra_task_done,
     &avra_rt_held_avra_fiber_yield,
+    &avra_rt_held_avra_tick_cold,
     &avra_rt_held_avra_fiber_sleep,
     &avra_rt_held_avra_fiber_park_fd,
     &avra_rt_held_avra_fiber_interrupted,
@@ -725,6 +727,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_done(AVRA_RT_PT
     "avra_task_done: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_yield()), void),
     "avra_fiber_yield: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_tick_cold()), void),
+    "avra_tick_cold: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_sleep(AVRA_RT_I64)), void),
     "avra_fiber_sleep: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_park_fd(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
