@@ -57,9 +57,8 @@ impl Workspace {
     /// reads the bits the pass settled and writes nothing.
     fn members_link_scheduler() -> bool {
         let _ = self.cancel_reach()
-        let hits = [x for x in self.decls.all_decls() if self.cancel_member(x.id) && self.cancel_survey(x.id).waits().any((w) -> self.wait_links(w))]
-        if !hits.is_empty() { eprintln("QTRACE member links: ${[x.name for x in hits].join(", ")}") }
-        !hits.is_empty()
+        [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
+            .any((d) -> self.cancel_survey(d).waits().any((w) -> self.wait_links(w)))
     }
 
     /// Whether a FILE's own expressions wait through a row that links a
@@ -73,12 +72,8 @@ impl Workspace {
             facts: self.folded(f),
         }
         let store = self.decls.store_of(f)
-        let waits = flatten(
-            [reader.node_waits(ExprId { index: i }) for i in 0..store.exprs.count()],
-        )
-        let linked = waits.any((w: NodeWait) -> self.wait_links(w))
-        if linked { eprintln("QTRACE file links: ${self.decls.file(f).path}") }
-        linked
+        flatten([reader.node_waits(ExprId { index: i }) for i in 0..store.exprs.count()])
+            .any((w: NodeWait) -> self.wait_links(w))
     }
 
     /// Whether a call to `d` may reach a cancel point.
