@@ -32,6 +32,7 @@ use diagnostics.{SourceFile}
 use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
+use @std.text.{from_codepoint}
 
 // ── THE HARNESS ─────────────────────────────────────────────────────
 
@@ -587,6 +588,29 @@ fn reach_labels() -> List<string> {
 
 fn same_text(a: string, b: string) -> bool { a == b }
 
+// ── The scalar family answers — `int`, `bool`, `string` and `bool?`
+// ride the `MetaVal` scalar wire (`scalar_wire.av`). ──
+
+fn int_wire_exemplars() -> List<int> { [0, 1, -1, 42, 9223372036854775807] }
+
+fn int_wire_labels() -> List<string> { ["zero", "one", "minus one", "forty-two", "the int ceiling"] }
+
+fn bool_wire_exemplars() -> List<bool> { [true, false] }
+
+fn bool_wire_labels() -> List<string> { ["true", "false"] }
+
+fn text_wire_exemplars() -> List<string> { ["", "a", from_codepoint(0), "two\nlines"] }
+
+fn text_wire_labels() -> List<string> { ["empty", "one character", "a NUL alone", "a newline inside"] }
+
+fn presence_wire_exemplars() -> List<bool?> { [null, true, false] }
+
+fn presence_wire_labels() -> List<string> { ["absent", "present true", "present false"] }
+
+fn same_opt_bool(a: bool?, b: bool?) -> bool {
+    (a == null) == (b == null) && (a == null || a! == b!)
+}
+
 // ── THE REGISTRY ─────────────────────────────────────────────────────
 
 export fn codec_pairs() -> List<CodecCheck> {
@@ -799,6 +823,38 @@ export fn codec_pairs() -> List<CodecCheck> {
             (t) -> ws.decls.type_wire(t),
             (w) -> ws.read_type_wire_of_wire(w),
             (x, y) -> ws.codec_same_type_shape(x, y),
+        ),
+        derived(
+            "family.int_wire/int_of_wire",
+            int_wire_exemplars(),
+            int_wire_labels(),
+            int_wire,
+            int_of_wire,
+            (x, y) -> x == y,
+        ),
+        derived(
+            "family.bool_wire/bool_of_wire",
+            bool_wire_exemplars(),
+            bool_wire_labels(),
+            bool_wire,
+            bool_of_wire,
+            (x, y) -> x == y,
+        ),
+        derived(
+            "family.text_wire/text_of_wire",
+            text_wire_exemplars(),
+            text_wire_labels(),
+            text_wire,
+            text_of_wire,
+            (x, y) -> x == y,
+        ),
+        derived_total(
+            "family.presence_wire/presence_of_wire",
+            presence_wire_exemplars(),
+            presence_wire_labels(),
+            presence_wire,
+            presence_of_wire,
+            same_opt_bool,
         ),
         dbrow_check(),
     ]
