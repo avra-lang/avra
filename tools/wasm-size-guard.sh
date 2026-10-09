@@ -44,7 +44,11 @@ footprint() { # dir mode [entry]
     w=$("$avra" build --target "$target" $flag "$work/pkg/$entry" 2>/dev/null | tail -1)
     [ -f "$w" ] || { echo ""; return; }
     bytes=$(stat -c%s "$w" 2>/dev/null || stat -f%z "$w")
-    globals=$("$avra" emit "$dir/$entry" 2>/dev/null | grep -c '^@')
+    # A FAILED EMIT IS NOT ZERO GLOBALS: it prints nothing, and `grep -c`
+    # would answer 0 as if measured. Require output, or fail loudly.
+    emitted=$("$avra" emit "$dir/$entry" 2>/dev/null) || { say "emit failed for $dir/$entry" >&2; return 1; }
+    [ -n "$emitted" ] || { say "emit produced nothing for $dir/$entry" >&2; return 1; }
+    globals=$(printf '%s\n' "$emitted" | grep -c '^@' || true)
     c=$(wasm-objdump -h "$w" 2>/dev/null | awk '/ Code /{print; exit}' | sed -n 's/.*size=0x\([0-9a-fA-F]*\).*/\1/p')
     d=$(wasm-objdump -h "$w" 2>/dev/null | awk '/ Data /{print; exit}' | sed -n 's/.*size=0x\([0-9a-fA-F]*\).*/\1/p')
     echo "$bytes $globals $(hex "${c:-0}") $(hex "${d:-0}")"
