@@ -1,7 +1,8 @@
 // The vertical: `spawn` runs beside the spawner, `.await` answers what
 // the body did, `.done` asks without parking, and a task is joined where
 // the last thing holding it ends.
-use @std.avrac.testing.{shown, refused_at_run}
+use @std.avrac.testing.{shown, refused_at_run, ir_of}
+use compiler.backend.{render_ir}
 
 extern fn avra_sched_timers() -> int
 extern fn avra_sched_pick_links() -> int
@@ -15,6 +16,9 @@ spec "features/tasks" {
         }
         then "`.done` asks without parking — the spawner runs on first" {
             shown("let t = spawn 1\nlet d = t.done\nlet v = t.await\n\"\${d} \${t.done} \${v}\"") == "false true 1"
+        }
+        then "`t.cancel()` lowers to the row and answers nothing" {
+            render_ir(ir_of("let t = spawn 1\nt.cancel()")).contains("call avra_task_cancel")
         }
         then "a list of tasks awaits in order" {
             shown(
