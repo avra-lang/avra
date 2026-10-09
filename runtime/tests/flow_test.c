@@ -1140,9 +1140,8 @@ static void late_parker_after_interrupt(void) {
 
     early = spawn1(parks_briefly, 3);
     avra_fiber_yield();
-    int64_t until = now_ns() + 6000000;
-    while (now_ns() < until) {}
-    CHECK(write(g_pipe[1], "e", 1) == 1, "a byte comes after a waiter's time has passed, before any switch");
+    avra_fiber_sleep(6);                    // its time passes while nobody is ready, so its deadline fires
+    CHECK(write(g_pipe[1], "e", 1) == 1, "a byte comes after the waiter has left by its time");
     avra_fiber_yield();
     CHECK(avra_sched_fd_waiters() == 0, "the waiter has left by its time");
     t0 = now_ns();
@@ -2152,19 +2151,44 @@ static void* shield_nests(void* self) {
     g_byte_b = avra_unwinding;              // 1
     avra_fiber_shield_leave();              // depth 1: nothing restored
     g_byte_c = avra_unwinding;              // 1
-    avra_fiber_shield_leave();              // depth 0: the outer saved bit comes back
-    g_byte_d = avra_unwinding;              // 0
+    avra_fiber_shield_leave();              // depth 0: the saved bit ORs back
+    g_byte_d = avra_unwinding;              // 1: the bit raised inside stands
     return answer(0);
 }
 
 static void a_nested_shield_does_not_restore_early(void) {
     bytes_unseen();
     void* t = spawn1(shield_nests, 0);
-    CHECK(ended(t) == 1, "an uncancelled task ends answered");
+    CHECK(ended(t) == 2, "a bit raised inside the bracket still unwinds the task");
     CHECK(g_byte_a == 0, "the bit starts clear");
     CHECK(g_byte_b == 1, "a nested bracket does not clear the outer's work");
     CHECK(g_byte_c == 1, "nor does its leave restore the outer's saved bit");
-    CHECK(g_byte_d == 0, "and the outer leave restores it");
+    CHECK(g_byte_d == 1, "a bit raised inside the bracket stands after the outer leave");
+}
+
+// A CANCEL MET INSIDE THE SHIELD STANDS: the wait the bracket holds is cut
+// by the standing cancel, which raises the bit, and the leave ORs the saved
+// bit back without clearing it — a cancel from either side stands.
+static void* shield_cancel_inside(void* self) {
+    (void)self;
+    avra_fiber_shield_enter();
+    avra_fiber_sleep(2);                    // the standing cancel cuts this wait and raises the bit
+    g_byte_a = avra_unwinding;              // 1
+    avra_fiber_shield_leave();
+    g_byte_b = avra_unwinding;              // 1: the leave does not clear it
+    return answer(0);
+}
+
+static void a_cancel_met_inside_a_shield_survives(void) {
+    bytes_unseen();
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    void* t = spawn1(shield_cancel_inside, 0);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "a cancel met inside a shield still ends the task cancelled");
+    CHECK(g_byte_a == 1, "the wait inside the shield raises the bit");
+    CHECK(g_byte_b == 1, "and the leave does not clear it");
+    avra_clock_run_ends();
 }
 
 // A checked back-edge in a shielded task yields and raises nothing.
@@ -2371,6 +2395,7 @@ int main(int argc, char** argv) {
     in_child_within("a fork keeps the caller's scopes", forked_keeps_the_callers_scopes, 5);
     in_child_within("a virtual task inherits a scope", virtual_scopes, 5);
     a_shield_saves_and_restores_the_bit();
+    a_cancel_met_inside_a_shield_survives();
     a_nested_shield_does_not_restore_early();
     a_shielded_back_edge_yields_and_raises_nothing();
     a_shield_scope_waits_only_its_own_limit();
