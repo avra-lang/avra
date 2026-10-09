@@ -338,9 +338,13 @@ export type TypeFacts = {
 
 /// Born total: every expression in the range pre-typed as the hole.
 /// THE WINDOW IS THE TABLE'S — the expression columns run over
-/// [lo, hi) and the statement columns over the whole file, so no
-/// reader subtracts anything.
-export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFacts {
+/// [lo, hi) and the statement columns over the declaration's own
+/// [stmt_lo, stmt_hi), so no reader subtracts anything. A negative
+/// `stmt_lo` is a declaration whose statement range was never computed
+/// (a generated one): its statement columns stay whole-file.
+export fn new_type_facts(lo: int, hi: int, stmt_lo: int, stmt_hi: int, stmts: int, hole: TypeId) -> TypeFacts {
+    let wlo = if stmt_lo < 0 { 0 } else { stmt_lo }
+    let whi = if stmt_lo < 0 { stmts } else { stmt_hi }
     let no_types: List<TypeId> = []
     TypeFacts {
         of_expr: side_table("of_expr", lo, hi, hole),
@@ -360,9 +364,9 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
-        binding_types: side_table<TypeId?>("binding_types", 0, stmts, null),
-        index_types: side_table<TypeId?>("index_types", 0, stmts, null),
-        stmt_flags: side_table("stmt_flags", 0, stmts, 0),
+        binding_types: side_table<TypeId?>("binding_types", wlo, whi, null),
+        index_types: side_table<TypeId?>("index_types", wlo, whi, null),
+        stmt_flags: side_table("stmt_flags", wlo, whi, 0),
         voices: no_voices(),
     }
 }
