@@ -40,21 +40,36 @@ fn control_body(t: MetaType) -> Code {
     quote { Control.Seq(${concatenated(steps_of(t))}) }
 }
 
-/// What a record runs, field by field.
-fn steps_of(t: MetaType) -> List<Code> { [step(f) for f in t.fields] }
+/// What a record runs, field by field — ONLY the fields that carry an
+/// expression contribute, so a leading scalar leaves no empty part for
+/// the fold to guess at.
+fn steps_of(t: MetaType) -> List<Code> { [c for f in t.fields for c in runs(step(f))] }
 
-/// HOW A FIELD'S TYPE STEPS — the whole registry, one row per shape the
-/// node model runs, an empty run for one that carries no expression,
-/// and a defect the build refuses at the generated code for a type
-/// absent here — never a silent zero.
-fn step(f: Field) -> Code {
+fn runs(s: Step) -> List<Code> {
+    match s {
+        .Runs(c) -> [c],
+        .Still -> [],
+        .Unknown -> [quote { a_node_field_type_the_control_derive_has_no_step_for() }],
+    }
+}
+
+/// HOW A FIELD'S TYPE STEPS — the whole registry: a type that runs
+/// expressions, one that runs none, or one this walk does not know,
+/// which the generated code refuses at the name it cannot resolve.
+enum Step {
+    Runs(code: Code)
+    Still
+    Unknown
+}
+
+fn step(f: Field) -> Step {
     let b = f.name
     match f.ty {
-        "ExprId" -> quote { [At.Expr(self.${b})] },
-        "ExprId?" -> quote { [At.Expr(x) for x in some_list(self.${b})] },
-        "List<ExprId>" -> quote { [At.Expr(x) for x in self.${b}] },
-        "List<StmtId>" -> quote { [At.Stmt(x) for x in self.${b}] },
-        "int" or "bool" or "string" or "List<string>" or "Scoped" or "Scoped?" or "Plain" or "List<Plain>" or "Nominal" or "TypeRef" or "TypeRef?" or "List<TypeRef>" or "BodyView" -> quote { [] },
-        _ -> quote { a_node_field_type_the_control_derive_has_no_step_for() },
+        "ExprId" -> Step.Runs(quote { [At.Expr(self.${b})] }),
+        "ExprId?" -> Step.Runs(quote { [At.Expr(x) for x in some_list(self.${b})] }),
+        "List<ExprId>" -> Step.Runs(quote { [At.Expr(x) for x in self.${b}] }),
+        "List<StmtId>" -> Step.Runs(quote { [At.Stmt(x) for x in self.${b}] }),
+        "int" or "bool" or "string" or "List<string>" or "Scoped" or "Scoped?" or "Plain" or "List<Plain>" or "Nominal" or "TypeRef" or "TypeRef?" or "List<TypeRef>" or "BodyView" -> Step.Still,
+        _ -> Step.Unknown,
     }
 }
