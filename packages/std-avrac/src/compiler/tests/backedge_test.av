@@ -1,7 +1,8 @@
 //! The check a `while` back-edge carries: one read of the tick byte and,
 //! taken, the cold side — emitted at a `while`'s back edge and nowhere
 //! else; a `for` over a list or a range carries none, and an `@unbroken`
-//! fn's own `while` carries none either.
+//! fn's own `while` carries none either. Every program here spawns from a
+//! fn, so the cancel pass says the program links a scheduler.
 use @std.avrac.testing.{ir_of}
 use compiler.backend.{render_ir}
 
@@ -17,7 +18,7 @@ fn ticks(lines: List<string>) -> int { times(ir(lines), "= flag tick") }
 /// The cold-side calls a program's back edges emit.
 fn colds(lines: List<string>) -> int { times(ir(lines), "call avra_tick_cold()") }
 
-/// A `while` around a counter.
+/// A `while` around a counter, run as a task.
 fn spinning() -> List<string> {
     [
         "fn spin(n: int) -> int {",
@@ -25,11 +26,15 @@ fn spinning() -> List<string> {
         "    while i < n { i = i + 1 }",
         "    i",
         "}",
-        "spin(3)",
+        "fn go() -> int {",
+        "    let t = spawn spin(3)",
+        "    t.await",
+        "}",
+        "go()",
     ]
 }
 
-/// Two `for`s: over a list, and over a range.
+/// Two `for`s — over a list and over a range — run as a task.
 fn walking() -> List<string> {
     [
         "fn walk(xs: List<int>) -> int {",
@@ -42,11 +47,15 @@ fn walking() -> List<string> {
         "    for i in 0..n { s = s + i }",
         "    s",
         "}",
-        "walk([1]) + rng(2)",
+        "fn go() -> int {",
+        "    let t = spawn walk([1])",
+        "    t.await + rng(2)",
+        "}",
+        "go()",
     ]
 }
 
-spec "compiler/lower — the checked while back-edge" {
+spec "compiler/lower — a checked `while` back-edge" {
     then "a `while` reads the tick and calls the cold side once" {
         ticks(spinning()) == 1 && colds(spinning()) == 1
     }
@@ -63,7 +72,11 @@ spec "compiler/lower — the checked while back-edge" {
                 "    while i < 3 { i = i + 1 }",
                 "    i",
                 "}",
-                "rouse()",
+                "fn go() -> int {",
+                "    let t = spawn rouse()",
+                "    t.await",
+                "}",
+                "go()",
             ],
         ) == 0
     }
