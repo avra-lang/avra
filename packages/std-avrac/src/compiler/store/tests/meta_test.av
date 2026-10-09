@@ -1,0 +1,126 @@
+// The columnar meta region stands alone: a run round-trips, a record is
+// found by index in a meta-only buffer, and a wrong shape refuses.
+use @std.relation.stable.{writer}
+use compiler.store.{RecordMeta, Durability, encode_meta, decode_meta, record_width, Meta}
+
+fn bytes_of(v: int) -> Bytes { [v for _i in 0..32].bytes()! }
+
+fn same_bytes(a: Bytes, b: Bytes) -> bool {
+    a.length == b.length && !(0..a.length).any((k) -> a.at(k) != b.at(k))
+}
+
+fn durability_is(m: Meta, i: int, want: Durability) -> bool {
+    match m.durability(i) {
+        d? -> d == want
+        null -> false
+    }
+}
+
+fn sample(i: int) -> RecordMeta {
+    RecordMeta {
+        action_key: bytes_of(i),
+        name_id: 100 + i,
+        value_digest: bytes_of(i + 1),
+        set_id: 200 + i,
+        changed_at: 1000 + i,
+        verified_at: 2000 + i,
+        durability: if i % 2 == 0 { Durability.Low } else { Durability.High },
+        shape_fp: bytes_of(i + 2),
+        code_hash: bytes_of(i + 3),
+    }
+}
+
+spec "compiler/store/meta — the columnar fixed-width region" {
+    given "a run round-trips" {
+        then "every column reads back for the record asked" {
+            let rows = [sample(i) for i in 0..5]
+            match decode_meta(encode_meta(rows)!) {
+                m? -> m.records() == 5 &&
+                    same_bytes(m.action_key(3), bytes_of(3)) &&
+                    m.name_id(3) == 103 &&
+                    same_bytes(m.value_digest(3), bytes_of(4)) &&
+                    m.set_id(3) == 203 &&
+                    m.changed_at(3) == 1003 &&
+                    m.verified_at(3) == 2003 &&
+                    same_bytes(m.shape_fp(3), bytes_of(5)) &&
+                    same_bytes(m.code_hash(3), bytes_of(6))
+                null -> false
+            }
+        }
+        then "durability reads back per record" {
+            match decode_meta(encode_meta([sample(0), sample(1)])!) {
+                m? -> durability_is(m, 0, Durability.Low) && durability_is(m, 1, Durability.High)
+                null -> false
+            }
+        }
+        then "an empty run round-trips" {
+            match decode_meta(encode_meta([])!) {
+                m? -> m.records() == 0
+                null -> false
+            }
+        }
+    }
+    given "verification reads no value" {
+        then "a record's meta comes from a meta-only buffer, whose length is its span" {
+            let rows = [sample(i) for i in 0..4]
+            let raw = encode_meta(rows)!
+            match decode_meta(raw) {
+                m? -> m.span() == raw.length && m.name_id(2) == 102
+                null -> false
+            }
+        }
+        then "a value byte past the region refuses — the decoder stops at meta's end" {
+            let raw = encode_meta([sample(0)])!
+            let with_value = [raw.at(i) for i in 0..raw.length].concat([0]).bytes()!
+            decode_meta(with_value) == null
+        }
+    }
+    given "wrong shape refuses, never misaligns" {
+        then "a truncated region refuses" {
+            let raw = encode_meta([sample(0), sample(1)])!
+            decode_meta(raw.slice(0, raw.length - 1)) == null
+        }
+        then "a region a whole record longer than its count refuses" {
+            let raw = encode_meta([sample(0)])!
+            let padded = [raw.at(i) for i in 0..raw.length]
+                .concat([0 for _k in 0..record_width()])
+                .bytes()!
+            decode_meta(padded) == null
+        }
+        then "a stride this module does not lay out refuses" {
+            let w = writer()
+            w.text("AVRAMETA")
+            w.int(1)
+            w.int(record_width() + 1)
+            w.count(0)
+            decode_meta(w.bytes()) == null
+        }
+        then "a foreign magic refuses" {
+            let w = writer()
+            w.text("NOTMETA")
+            w.int(1)
+            w.int(record_width())
+            w.count(0)
+            decode_meta(w.bytes()) == null
+        }
+    }
+    given "the encoder refuses a slot it cannot lay out" {
+        then "a digest that is not a whole slot refuses the run" {
+            encode_meta(
+                [
+                    RecordMeta {
+                        action_key: [1].bytes()!,
+                        name_id: 1,
+                        value_digest: bytes_of(1),
+                        set_id: 1,
+                        changed_at: 1,
+                        verified_at: 1,
+                        durability: Durability.Low,
+                        shape_fp: bytes_of(1),
+                        code_hash: bytes_of(1),
+                    },
+                ],
+            ) == null
+        }
+    }
+}
