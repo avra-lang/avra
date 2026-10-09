@@ -12,11 +12,17 @@ fn ir(lines: List<string>) -> string { render_ir(ir_of(lines.concat([""]).join("
 /// How many times `word` stands in `text`.
 fn times(text: string, word: string) -> int { text.split(word).length - 1 }
 
-/// The tick reads a program's back edges emit.
-fn ticks(lines: List<string>) -> int { times(ir(lines), "= flag tick") }
+/// The IR of ONE fn's body: from its `fn <name>(` line to the next `fn `.
+fn section(text: string, name: string) -> string {
+    let parts = text.split("fn ${name}(")
+    if parts.length < 2 { return "" }
+    parts[1].split("\nfn ")[0]
+}
 
-/// The cold-side calls a program's back edges emit.
-fn colds(lines: List<string>) -> int { times(ir(lines), "call avra_tick_cold()") }
+/// How many times `word` stands in `name`'s body.
+fn in_body(lines: List<string>, name: string, word: string) -> int {
+    times(section(ir(lines), name), word)
+}
 
 /// A `while` around a counter, run as a task.
 fn spinning() -> List<string> {
@@ -55,32 +61,40 @@ fn walking() -> List<string> {
     ]
 }
 
+/// An `@unbroken` fn's own `while`, run as a task.
+fn unbroken_spin() -> List<string> {
+    [
+        "use @std.meta.{unbroken}",
+        "@unbroken",
+        "fn rouse() -> int {",
+        "    mut i = 0",
+        "    while i < 3 { i = i + 1 }",
+        "    i",
+        "}",
+        "fn go() -> int {",
+        "    let t = spawn rouse()",
+        "    t.await",
+        "}",
+        "go()",
+    ]
+}
+
 spec "compiler/lower — a checked `while` back-edge" {
     then "a `while` reads the tick and calls the cold side once" {
-        ticks(spinning()) == 1 && colds(spinning()) == 1
+        in_body(spinning(), "spin", "= flag tick") == 1 &&
+            in_body(spinning(), "spin", "call avra_tick_cold()") == 1
     }
     then "a `for` over a list or a range carries no check" {
-        ticks(walking()) == 0 && colds(walking()) == 0
+        in_body(walking(), "walk", "= flag tick") == 0 &&
+            in_body(walking(), "walk", "call avra_tick_cold()") == 0 &&
+            in_body(walking(), "rng", "= flag tick") == 0 &&
+            in_body(walking(), "rng", "call avra_tick_cold()") == 0
     }
     then "an `@unbroken` fn's own `while` carries no check" {
-        ticks(
-            [
-                "use @std.meta.{unbroken}",
-                "@unbroken",
-                "fn rouse() -> int {",
-                "    mut i = 0",
-                "    while i < 3 { i = i + 1 }",
-                "    i",
-                "}",
-                "fn go() -> int {",
-                "    let t = spawn rouse()",
-                "    t.await",
-                "}",
-                "go()",
-            ],
-        ) == 0
+        in_body(unbroken_spin(), "rouse", "= flag tick") == 0 &&
+            in_body(unbroken_spin(), "rouse", "call avra_tick_cold()") == 0
     }
     then "the cold side is followed by the unwind test, so a cancelled task leaves" {
-        times(ir(spinning()), "= flag unwinding") >= 1
+        in_body(spinning(), "spin", "= flag unwinding") >= 1
     }
 }
