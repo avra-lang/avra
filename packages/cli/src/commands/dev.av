@@ -24,7 +24,7 @@ use @std.http.server.{server}
 use @std.http.files.{Files, directory}
 use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
 use @std.net.{Bell, Listener}
-use @std.io.{IoError, read_bytes, read_text, exists, stamp}
+use @std.io.{IoError, read_bytes, read_text, stamp}
 use @std.io.watch.{Watch, watch}
 use @std.path.{joined_path, file_name}
 use @std.process.{Tool, tool, cmd, inherited}
@@ -63,7 +63,12 @@ fn mounts_a_page(ws: Workspace) -> bool {
 /// is the workspace's to say.
 export fn pointed(path: string) -> Pointed {
     if !is_a_dir(path) { return .File }
-    if !exists(joined_path(path, "avra.toml")) { return .Files }
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    let there = match disk_host().there(joined_path(path, "avra.toml")) {
+        .Exists(_, t) -> t,
+        rest -> false,
+    }
+    if !there { return .Files }
     let ws = root_workspace(path)
     if ws.entry_of() == null { return .Library }
     if mounts_a_page(ws) { .Page } else { .Program }
@@ -72,7 +77,9 @@ export fn pointed(path: string) -> Pointed {
 impl Runnable for DevCmd {
     fn run(args: CliResult) -> int {
         let path = rooted(args.arg("path"))
-        if !exists(path) {
+        // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+        let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+        if !there {
             no_such_file(path)
             return 2
         }
@@ -206,10 +213,13 @@ enum Mark {
 }
 
 fn mark_of(path: string) -> Mark {
-    if !exists(path) { return .Gone }
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+    if !there { return .Gone }
     match stamp(path) {
         s? -> .Settled(s)
-        null -> .Young(read_text(path) catch "")
+        // LICENSED compiler.host_asked_directly: a command's read of the file it was given, at this instant — no query frame is open
+        null -> .Young(disk_host().spared_text(path).as_text() ?? "")
     }
 }
 
