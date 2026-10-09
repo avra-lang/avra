@@ -5,6 +5,9 @@ A row an engine could not finish carries its words instead.
     table.py <raw>            every row, side by side
     table.py <raw> --gates    the G1 rows: Avra against Go, gate 2x time,
                               3x memory, the rows that cannot run, named
+    table.py <raw> --gates --enforce
+                              the same view, and a FAILed row fails the
+                              run (a plain --gates only prints)
 """
 import statistics
 import sys
@@ -96,35 +99,47 @@ def verdict(v, go1, goN, gate):
     return "PASS" if v <= gate * best else "FAIL"
 
 
+# A row an engine did not run is not a FAIL: the gate judges only the
+# rows both ran. Answers how many FAILed, so run.sh's exit carries it.
 def gate_table():
+    fails = 0
     print("| G1 row | Go, 1 proc | Go, default | Avra | ratio vs best Go | gate | verdict |")
     print("|---|---|---|---|---|---|---|")
     for label, ak, gk in TIME_ROWS:
         avra, go1, goN = least_of(ak, "avra"), least_of(gk, "go1"), least_of(gk, "goN")
         best = min([g for g in (go1, goN) if g is not None] or [None]) if (go1 or goN) else None
+        v = verdict(avra, go1, goN, TIME_GATE)
+        if v == "FAIL":
+            fails += 1
         print(
             f"| {label} | {one(gk, go1) if go1 is not None else '—'} | {one(gk, goN) if goN is not None else '—'} "
             f"| {one(ak, avra) if avra is not None else '—'} | {ratio(avra, best) if avra is not None else '—'} "
-            f"| ≤ {TIME_GATE:.0f}x | {verdict(avra, go1, goN, TIME_GATE)} |"
+            f"| ≤ {TIME_GATE:.0f}x | {v} |"
         )
     for key in sorted(k for k in rows if k.startswith("parked_rss_")):
         n = key[len("parked_rss_") :]
         mem = lambda e: sum(x for x in (least_of(f"parked_rss_{n}", e), least_of(f"parked_pte_{n}", e)) if x is not None)
         avra, go1, goN = mem("avra") or None, mem("go1") or None, mem("goN") or None
         best = min([g for g in (go1, goN) if g is not None] or [None]) if (go1 or goN) else None
+        v = verdict(avra, go1, goN, MEM_GATE)
+        if v == "FAIL":
+            fails += 1
         print(
             f"| parked bytes a task, N={n} | {one(key, go1) if go1 is not None else '—'} "
             f"| {one(key, goN) if goN is not None else '—'} | {one(key, avra) if avra is not None else '—'} "
-            f"| {ratio(avra, best) if avra is not None else '—'} | ≤ {MEM_GATE:.0f}x | {verdict(avra, go1, goN, MEM_GATE)} |"
+            f"| {ratio(avra, best) if avra is not None else '—'} | ≤ {MEM_GATE:.0f}x | {v} |"
         )
     print()
     print("| G1 row that cannot run yet | blocker |")
     print("|---|---|")
     for label, why in BLOCKED_ROWS:
         print(f"| {label} | {why} |")
+    return fails
 
 
 if "--gates" in sys.argv[1:]:
-    gate_table()
+    fails = gate_table()
+    # A plain view prints and passes; `--enforce` is the gate's own ask.
+    sys.exit(1 if "--enforce" in sys.argv[1:] and fails else 0)
 else:
     full_table()

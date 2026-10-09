@@ -129,6 +129,17 @@ fi
 # Go: the PATH's, the Sprite's, or one fetched into the build directory.
 go=$(command -v go || true)
 [ -n "$go" ] || { [ -x /.sprite/bin/go ] && go=/.sprite/bin/go; } || true
+# THE GATE (`make flow-g1`) JUDGES AVRA BESIDE GO, so a machine missing
+# either SKIPS, spoken, rather than fetching a toolchain to pass itself.
+# A skip is NOT a pass: 77 is the distinct status a caller reads.
+if [ "${FLOW_GATE:-0}" = 1 ] && [ -z "$go" ]; then
+    echo "flow-g1: SKIPPED (77) — no Go on this machine; the G1 rows compare against Go's best" >&2
+    exit 77
+fi
+if [ "${FLOW_GATE:-0}" = 1 ] && [ ! -x "$root/build/avra" ]; then
+    echo "flow-g1: SKIPPED (77) — no compiler at build/avra; the Avra rows cannot run" >&2
+    exit 77
+fi
 if [ -z "$go" ]; then
     arch=$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')
     os=$(uname -s | tr A-Z a-z)
@@ -234,4 +245,4 @@ echo
 python3 "$here/table.py" "$out/raw"
 echo
 echo "## G1 — Avra beside Go on THIS machine (gate: 2x time, 3x memory)"
-python3 "$here/table.py" "$out/raw" --gates
+python3 "$here/table.py" "$out/raw" --gates ${FLOW_GATE:+--enforce}

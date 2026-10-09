@@ -235,9 +235,64 @@ static void body_wanted_do(void) {
     avra_tick_wanted = 0;
 }
 
+// A TICK FORCES THE WORLD PATH: with the queue's countdown still long and
+// a ready task in hand, the switch reads the world and consumes the tick —
+// the tick is time's word that a deadline may have passed.
+static void* quiet(void* self) { (void)self; return NULL; }
+
+static void body_tick_forces_world_do(void) {
+    avra_tick_wanted = 0;                   // the source is parked: the byte is ours alone
+    avra_tick = 1;
+    void* t = spawn1(quiet, 0);
+    avra_fiber_yield();
+    CHECK(__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) == 0, "a tick forces the switch through the world");
+    joined(t);
+}
+
+// ── the pid the arm compares ────────────────────────────────────
+
+// THE HOT ARM READS NO PROCESS ID: the cold arm reads it once and the
+// arms after compare the cache. The count is the witness.
+static void body_hot_arm_reads_no_pid_do(void) {
+    avra_tick_wanted = 1;
+    avra_tick_armed();
+    uint64_t before = avra_tick_cold_pid_reads();
+    for (int i = 0; i < 10000; i++) { avra_tick_armed(); avra_tick_stood_down(); }
+    CHECK(before >= 1, "the cold arm reads the process id");
+    CHECK(avra_tick_cold_pid_reads() == before, "the hot arm reads no process id");
+    avra_tick_wanted = 0;
+}
+
+// A RAW FORK RE-ARMS: no `avra_fiber_forked`, only the tick's own fork
+// handling — the child's arm stands up a source of its own.
+static void body_raw_fork_rearms_do(void) {
+    avra_tick_wanted = 1;
+    avra_tick_armed();
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid == 0) {
+        avra_tick = 0;
+        avra_tick_wanted = 1;
+        avra_tick_armed();
+        int seen = 0;
+        for (int i = 0; i < 200 && !seen; i++) {
+            if (__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) seen = 1;
+            else pause_ms(2);
+        }
+        _exit(seen ? 0 : 1);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "a raw fork brings a source of its own up");
+    avra_tick_wanted = 0;
+}
+
 int main(void) {
+    in_child("a tick forces the world", body_tick_forces_world_do);
     in_child("the seeded draw", body_seeded_do);
     in_child("the hosted source", body_source_do);
+    in_child("the pid the arm compares", body_hot_arm_reads_no_pid_do);
+    in_child("a raw fork re-arms", body_raw_fork_rearms_do);
     in_child("the store the source reads", body_wanted_do);
     printf("tick: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;

@@ -871,8 +871,9 @@ no-threads:
 # are printed, which is what balances the halves — the second is the
 # lighter because the train runs the seed check after it.
 # KEEPERS_ALONE are held to a clock (a timer firing within one round of the
-# scheduler), so nothing may compete with them for a core.
-KEEPERS_ALONE = runtime-tests
+# scheduler), so nothing may compete with them for a core. The mutation run
+# drives the same clocked tests, so it stands here beside them.
+KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
@@ -1091,9 +1092,16 @@ bench-collections: build/libavra_runtime.a
 # THE FLOW BENCH: tasks, waits and wakes, each Avra program beside its Go
 # twin on this machine (tools/flow_bench/run.sh); `flow-probes` is the
 # stack allocator's own measurements.
-.PHONY: flow-bench flow-probes flow-trace
+#
+# `flow-g1` is the GATE a runtime/*.c change answers: the same rows, each
+# Avra row's ratio against Go's best judged (2x time, 3x memory, in
+# table.py), and a row that FAILs fails the target. It needs Go and the
+# compiler and SKIPS, spoken, where either is absent.
+.PHONY: flow-bench flow-probes flow-g1 flow-trace
 flow-bench: build/libavra_runtime.a
 	@sh tools/flow_bench/run.sh
+flow-g1: build/libavra_runtime.a
+	@FLOW_GATE=1 sh tools/flow_bench/run.sh
 flow-probes:
 	@sh tools/flow_bench/run.sh probes
 
