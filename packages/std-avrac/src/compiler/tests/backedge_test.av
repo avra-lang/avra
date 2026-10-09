@@ -3,7 +3,11 @@
 //! else; a `for` over a list or a range carries none, and an `@unbroken`
 //! fn's own `while` carries none either. Every program here spawns from a
 //! fn, so the cancel pass says the program links a scheduler.
-use @std.avrac.testing.{ir_of}
+//!
+//! `@std/meta` is PACKAGED, not a lone source (compiler/tests/
+//! unbroken_test.av): a lone source cannot import it, so its mark would
+//! never resolve and the `@unbroken` case would prove nothing.
+use @std.avrac.testing.{ir_of, provided}
 use compiler.backend.{render_ir}
 
 /// The IR text of a program.
@@ -20,8 +24,11 @@ fn section(text: string, name: string) -> string {
 }
 
 /// How many times `word` stands in `name`'s body.
+fn in_text(text: string, name: string, word: string) -> int { times(section(text, name), word) }
+
+/// How many times `word` stands in `name`'s body, over a lone source.
 fn in_body(lines: List<string>, name: string, word: string) -> int {
-    times(section(ir(lines), name), word)
+    in_text(ir(lines), name, word)
 }
 
 /// A `while` around a counter, run as a task.
@@ -61,22 +68,29 @@ fn walking() -> List<string> {
     ]
 }
 
-/// An `@unbroken` fn's own `while`, run as a task.
-fn unbroken_spin() -> List<string> {
-    [
-        "use @std.meta.{unbroken}",
-        "@unbroken",
-        "fn rouse() -> int {",
-        "    mut i = 0",
-        "    while i < 3 { i = i + 1 }",
-        "    i",
-        "}",
-        "fn go() -> int {",
-        "    let t = spawn rouse()",
-        "    t.await",
-        "}",
-        "go()",
-    ]
+/// An `@unbroken` fn's own `while`, run as a task, `@std/meta` vendored.
+fn unbroken_ir() -> string {
+    render_ir(
+        provided(
+            [
+                "use @std.meta.{unbroken}",
+                "@unbroken",
+                "fn rouse() -> int {",
+                "    mut i = 0",
+                "    while i < 3 { i = i + 1 }",
+                "    i",
+                "}",
+                "fn go() -> int {",
+                "    let t = spawn rouse()",
+                "    t.await",
+                "}",
+                "go()",
+            ]
+                .join("\n"),
+            "",
+        )
+            .lowered(),
+    )
 }
 
 spec "compiler/lower — a checked `while` back-edge" {
@@ -91,8 +105,8 @@ spec "compiler/lower — a checked `while` back-edge" {
             in_body(walking(), "rng", "call avra_tick_cold()") == 0
     }
     then "an `@unbroken` fn's own `while` carries no check" {
-        in_body(unbroken_spin(), "rouse", "= flag tick") == 0 &&
-            in_body(unbroken_spin(), "rouse", "call avra_tick_cold()") == 0
+        in_text(unbroken_ir(), "rouse", "= flag tick") == 0 &&
+            in_text(unbroken_ir(), "rouse", "call avra_tick_cold()") == 0
     }
     then "the cold side is followed by the unwind test, so a cancelled task leaves" {
         in_body(spinning(), "spin", "= flag unwinding") >= 1
