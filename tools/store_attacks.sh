@@ -228,8 +228,25 @@ say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
 fail "stage 1 keys a segment by the compiler PRINT, so a rebuild that changed one query is a whole-store miss — the per-query recompute needs S2's query code hash"
 
 # ── §6.8 a claim conflict ──
-say "§6.8 claim conflict: two values for one key are reported, naming both digests and their writers (S7)"
-fail "the stage-1 store has no claim-conflict check — an event is owed (a line naming the key and the two value digests) when two segments hold different digests for one action key"
+# A key is an answer CLAIM (S7): each writer appends its own segment. Two
+# writers that name DIFFERENT values for one action key are a reproducibility
+# defect, so the reader that merges them reports it — naming the key, both
+# value digests and their writers. The edit makes a second writer claim a new
+# value for a key the first segment already named; the reader that follows
+# merges two disagreeing segments and answers the oracle all the same.
+say "§6.8 claim conflict: two values for one key are reported, naming the key and both digests"
+rm -rf .avra-cache
+checked claim_a
+sed -i.bak 's/{ 4 }/{ 7 }/' $R/p/src/more.av
+checked claim_b
+mv $R/p/src/more.av.bak $R/p/src/more.av
+checked claim_c
+agrees claim_c "a claim conflict"
+conflicts=$(heard claim_c claim-conflict)
+[ "$conflicts" -ge 1 ] || fail "two values for one key were not reported ($conflicts lines)"
+line=$(grep -m1 '^Q	store	claim-conflict	' $R/claim_c.trace)
+fields=$(printf '%s' "$line" | awk -F'\t' '{print NF}')
+[ "$fields" -ge 8 ] || fail "the claim-conflict report names $fields fields, not the key, both digests and their writers: $line"
 
 echo "store-attacks: $steps attack(s), $fails failure(s)"
 [ "$fails" = 0 ]
