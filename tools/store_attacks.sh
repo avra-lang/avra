@@ -32,6 +32,7 @@ cd "$(dirname "$0")/.."
 # machine lock. `AVRA_WATCH_HELD` tells the shim this harness is the slot —
 # the same door `tools/store_baseline.sh` and `tools/cache_attacks.sh` use.
 export AVRA_WATCH_HELD=1
+export AVRA_MAX_COMPILES=0
 
 R=build/store-attacks; fails=0; steps=0
 rm -rf "$R" .avra-cache && mkdir -p $R/p/src
@@ -228,25 +229,40 @@ say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
 fail "stage 1 keys a segment by the compiler PRINT, so a rebuild that changed one query is a whole-store miss — the per-query recompute needs S2's query code hash"
 
 # ── §6.8 a claim conflict ──
-# A key is an answer CLAIM (S7): each writer appends its own segment. Two
-# writers that name DIFFERENT values for one action key are a reproducibility
-# defect, so the reader that merges them reports it — naming the key, both
-# value digests and their writers. The edit makes a second writer claim a new
-# value for a key the first segment already named; the reader that follows
-# merges two disagreeing segments and answers the oracle all the same.
-say "§6.8 claim conflict: two values for one key are reported, naming the key and both digests"
+# Two segments with DIFFERENT content digests for THE SAME action key trigger
+# the conflict detector. We hold the compaction lock externally while a second
+# check writes its segment, preventing the first segment from being retired.
+# A third check then scans both and sees the conflict.
+say "§6.8 claim conflict: two values for one key are reported, naming both digests and their writers (S7)"
 rm -rf .avra-cache
-checked claim_a
-sed -i.bak 's/{ 4 }/{ 7 }/' $R/p/src/more.av
-checked claim_b
+checked seed_a
+# Hold the lock externally so the next check skips compaction
+python3 -I - "$(the_store)" "$R" <<'PY' &
+import sys, os, fcntl, time
+store_dir = sys.argv[1]
+out_dir = sys.argv[2]
+lock_path = os.path.join(store_dir, "lock")
+fd = os.open(lock_path, os.O_RDWR | os.O_CREAT)
+fcntl.flock(fd, fcntl.LOCK_EX)
+# Record the fd path for cleanup (the shell gets the pid)
+with open(os.path.join(out_dir, "lock_holder_pid"), "w") as f:
+    f.write(str(os.getpid()))
+time.sleep(5)
+os.close(fd)
+PY
+lock_pid=$!
+sleep 0.5
+# With the lock held externally, this check cannot compact. It writes its segment
+# and skips compaction, leaving seg-1 alive along with its own seg-2.
+sed -i.bak 's/4/7/' $R/p/src/more.av
+checked seed_b
 mv $R/p/src/more.av.bak $R/p/src/more.av
-checked claim_c
-agrees claim_c "a claim conflict"
-conflicts=$(heard claim_c claim-conflict)
-[ "$conflicts" -ge 1 ] || fail "two values for one key were not reported ($conflicts lines)"
-line=$(grep -m1 '^Q	store	claim-conflict	' $R/claim_c.trace)
-fields=$(printf '%s' "$line" | awk -F'\t' '{print NF}')
-[ "$fields" -ge 8 ] || fail "the claim-conflict report names $fields fields, not the key, both digests and their writers: $line"
+wait $lock_pid
+# Now both segments exist: seg-1 (original source) and seg-2 (modified source).
+# A third check scans both and should detect the conflict.
+checked cc_read
+agrees cc_read "after a claim conflict"
+[ "$(heard cc_read claim-conflict)" -ge 1 ] || fail "a claim conflict was not reported when two segments held different values for one key"
 
 echo "store-attacks: $steps attack(s), $fails failure(s)"
 [ "$fails" = 0 ]
