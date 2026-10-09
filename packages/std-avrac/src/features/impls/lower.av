@@ -10,20 +10,16 @@ fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     cx.def_reg(e) ?? cx.lower_defect(e, "a receiver outside a method survived resolve")
 }
 
-fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .MethodCall(subject, name, args) -> match callee_of(cx.view, cx.type_at(subject), name.of) {
-            .Variant(_, _) -> built_variant(cx, e, name.of, args),
-            .Static(m, _) -> static_dispatch(cx, e, m, args),
-            .Bounded(_, _, _) -> cx.lower_defect(e, "a bounded receiver survived mono"),
-            .Contract(tdecl, _) -> dyn_dispatch(cx, e, subject, tdecl, name.of, args),
-            .FnField(slot, fty) -> fielded_dispatch(cx, e, subject, slot, fty, args),
-            .Row(r) -> r.lower(cx, MethodCall { e: e, subject: subject, args: args }),
-            .Declared(decl, _) -> declared_dispatch(cx, e, subject, decl, name.of, args),
-            .Nameless -> cx.lower_defect(e, "a method on a nameless receiver survived typing"),
-        },
-        _ -> cx.foreign_node(e),
+fn method_call_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> Reg {
+    match callee_of(cx.view, cx.type_at(subject), name) {
+        .Variant(_, _) -> built_variant(cx, e, name, args),
+        .Static(m, _) -> static_dispatch(cx, e, m, args),
+        .Bounded(_, _, _) -> cx.lower_defect(e, "a bounded receiver survived mono"),
+        .Contract(tdecl, _) -> dyn_dispatch(cx, e, subject, tdecl, name, args),
+        .FnField(slot, fty) -> fielded_dispatch(cx, e, subject, slot, fty, args),
+        .Row(r) -> r.lower(cx, MethodCall { e: e, subject: subject, args: args }),
+        .Declared(decl, _) -> declared_dispatch(cx, e, subject, decl, name, args),
+        .Nameless -> cx.lower_defect(e, "a method on a nameless receiver survived typing"),
     }
 }
 
