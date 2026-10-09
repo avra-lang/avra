@@ -7,6 +7,13 @@ use features.{DeclSig, FnSig, StructSig, EnumSig, NamedSig, Lacked}
 use core.{DeclId, TypeId}
 use compiler.{Workspace}
 
+/// All or nothing: if every element in the list is present, return the
+/// list of values; otherwise return null.
+fn all_or_none<T>(xs: List<T?>) -> List<T>? {
+    if xs.any(it == null) { return null }
+    [v! for v in xs]
+}
+
 /// One `Lacked` row, its two names.
 fn lacked_of(raw: string) -> Lacked? {
     let p = unpacked(raw)
@@ -25,11 +32,7 @@ impl Workspace {
     /// A run of types, each by `type_wire`'s own spelling.
     fn type_run(ts: List<TypeId>) -> string { packed([self.type_ref(t) for t in ts]) }
 
-    fn type_run_back(raw: string) -> List<TypeId>? {
-        let back = [self.type_from_wire(p) for p in unpacked(raw)]
-        if back.any(it == null) { return null }
-        [t! for t in back]
-    }
+    fn type_run_back(raw: string) -> List<TypeId>? { all_or_none([self.type_from_wire(p) for p in unpacked(raw)]) }
 
     /// A run of possibly-absent declaration refs — `decl_ref` writes the
     /// empty text for null, `decl_from_ref` reads it back.
@@ -39,28 +42,16 @@ impl Workspace {
 
     fn lacked_run(ls: List<Lacked>) -> string { packed([packed([l.field, l.why]) for l in ls]) }
 
-    fn lacked_run_back(raw: string) -> List<Lacked>? {
-        let back = [lacked_of(p) for p in unpacked(raw)]
-        if back.any(it == null) { return null }
-        [l! for l in back]
-    }
+    fn lacked_run_back(raw: string) -> List<Lacked>? { all_or_none([lacked_of(p) for p in unpacked(raw)]) }
 
     fn bool_run(bs: List<bool>) -> string { packed([if b { "1" } else { "0" } for b in bs]) }
 
-    fn bool_run_back(raw: string) -> List<bool>? {
-        let back = [bool_at(p) for p in unpacked(raw)]
-        if back.any(it == null) { return null }
-        [b! for b in back]
-    }
+    fn bool_run_back(raw: string) -> List<bool>? { all_or_none([bool_at(p) for p in unpacked(raw)]) }
 
     /// A variant's payloads, each a run of types.
     fn payload_run(ps: List<List<TypeId>>) -> string { packed([self.type_run(inner) for inner in ps]) }
 
-    fn payload_run_back(raw: string) -> List<List<TypeId>>? {
-        let back = [self.type_run_back(p) for p in unpacked(raw)]
-        if back.any(it == null) { return null }
-        [inner! for inner in back]
-    }
+    fn payload_run_back(raw: string) -> List<List<TypeId>>? { all_or_none([self.type_run_back(p) for p in unpacked(raw)]) }
 
     fn decl_sig_wire(s: DeclSig) -> string {
         match s {
