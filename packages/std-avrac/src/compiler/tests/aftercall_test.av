@@ -2,11 +2,16 @@
 //! running task's unwind bit, emitted where the cancel fact says a call
 //! may reach and nowhere else; set, the fn runs its deferred calls and
 //! leaves.
+use @std.io.{make_dirs}
+use @std.time.{now_ns}
 use @std.avrac.testing.{ir_of}
-use compiler.backend.{render_ir}
+use compiler.backend.{emit_ll, render_ir}
 
 /// The IR text of a program.
 fn ir(lines: List<string>) -> string { render_ir(ir_of(lines.concat([""]).join("\n"))) }
+
+/// One directory per run, so no earlier run's module answers for this one.
+once fn emit_base() -> string { "/tmp/avra-aftercall-test/${now_ns()}" }
 
 /// How many times `word` stands in `text`.
 fn times(text: string, word: string) -> int { text.split(word).length - 1 }
@@ -51,4 +56,24 @@ spec "compiler/lower — the test after a call" {
             napping().concat(["fn work() -> int {", "    defer { nap() }", "    7", "}", "work()"]),
         ) == 3
     }
+    then "the entry's unwind arm answers C's `int`, and its LLVM verifies" {
+        // a `while` spins, so the entry's call to `work` carries the test;
+        // the entry `avra_main` is declared `i32 ()`, so a hollow of nothing
+        // must narrow — the wasm size guard builds this shape
+        let _ = make_dirs(emit_base())
+        emit_ll(ir_of(croak_program().concat([""]).join("\n")), "${emit_base()}/entry.ll", "") == null
+    }
+}
+
+/// A program whose entry calls a fn that spins (a `while`).
+fn croak_program() -> List<string> {
+    [
+        "fn spinner() -> int {",
+        "    mut i = 0",
+        "    while i < 3 { i = i + 1 }",
+        "    i",
+        "}",
+        "fn work() -> int { spinner() }",
+        "work()",
+    ]
 }

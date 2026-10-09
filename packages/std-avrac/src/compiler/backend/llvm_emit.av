@@ -626,9 +626,18 @@ impl Emit {
 
     /// An early return: ret RIGHT HERE, then open a dead block so the
     /// arm's unreachable tail (its yield, the region's br) lands
-    /// somewhere harmless.
+    /// somewhere harmless. THE VALUE WEARS THE FN'S OWN RETURN TYPE:
+    /// `avra_main` answers C's `int` where every other body answers
+    /// its answer's machine type, so a hollow of nothing is narrowed.
     fn fn_exit(r: Reg) {
-        let _ = avra_llvm_build_ret(self.b, self.vals[r.index])
+        let _ = avra_llvm_build_ret(
+            self.b,
+            avra_llvm_cast_to_type(
+                self.b,
+                self.vals[r.index],
+                avra_llvm_return_type_of(self.fn_val),
+            ),
+        )
         let dead = avra_llvm_append_basic_block(self.lc, self.fn_val, "postret")
         avra_llvm_position_at_end(self.b, dead)
     }
