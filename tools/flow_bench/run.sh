@@ -26,6 +26,9 @@ runtime_built() {
         cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$o" "$c"
         [ "$(basename "$c")" = avra_fiber.c ] || rest="$rest $o"
     done
+    # the tick's source, outside the glob the scheduler's files come from
+    cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$out/rt/avra_tick.o" "$root/runtime/host/avra_tick.c"
+    rest="$rest $out/rt/avra_tick.o"
     echo "$rest"
 }
 

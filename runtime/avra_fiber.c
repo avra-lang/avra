@@ -36,6 +36,7 @@
 #endif
 #include "avra_fiber.h"
 #include "avra_runtime.h"
+#include "avra_platform.h"
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>
@@ -223,6 +224,7 @@ struct Fiber {
     uint32_t armed;         // the scopes below this depth may still ask
     uint32_t owner;         // the armed scope whose limit is `deadline`
     uint32_t deeper_cap;
+    uint32_t tick_turns;    // the seeded back-edge's countdown to its next yield
     Scope scope[SCOPES];
     Scope* deeper;          // the scopes past the inline ones
     Waiter held[HELD];
@@ -261,7 +263,14 @@ static uint64_t g_fiber_seq = 0;
 // fiber to run does.
 static Fiber* g_finished = NULL;
 
+static int g_seeded;
+static int pinned(void);
+
 static void ready_push(Fiber* f) {
+    // A TASK BECOMES READY WITH THE QUEUE EMPTY: the source must run.
+    // The call is on the transition, never on a switch; a seeded run
+    // and a virtual clock hold the byte and run no source.
+    if (!g_ready_head && !pinned()) avra_tick_armed();
     f->state = FIBER_READY;
     f->next = NULL;
     if (g_ready_tail) g_ready_tail->next = f; else g_ready_head = f;
@@ -312,6 +321,24 @@ static void fiber_freed(Fiber* f) {
 
 static int64_t id_of(const Fiber* f) { return f->local->id; }
 
+// THE TICK: the source's nudge that time passed while tasks were ready.
+// The scheduler reads it — the switch, and a checked back-edge through
+// `avra_tick_cold`; a hosted target's thread sets it, a no-OS target's
+// timer sets it, and a seeded run HOLDS it set. One relaxed byte: a lost
+// tick costs one period.
+uint8_t avra_tick = 0;
+// What the source reads to know tasks are running. The scheduler stores
+// it — a store, not a call — so a switch pays nothing to stand down.
+uint8_t avra_tick_wanted = 0;
+// The source's period, in microseconds. Read once, in `tick_settle`.
+int64_t avra_tick_us = 10000;
+static int64_t g_timer_turns = 64;
+// Switches left before the timer heap is read again. THE SAME COUNTDOWN
+// SEEDED AND UNSEDED: a schedule holds `avra_tick` for its back-edges,
+// and this is what the switch's clock read is gated on, so the two
+// engines fire a timer at the same switch.
+static int64_t g_timer_until = 0;
+
 // ── The trace ───────────────────────────────────────────────────
 //
 // `AVRA_FLOW_TRACE=1` writes one line per event to stderr, any other
@@ -341,6 +368,32 @@ static void trace_settle(void) {
     const char* cap = getenv("AVRA_FLOW_TRACE_CAP");
     g_trace_left = cap ? (int64_t)avra_number(cap, 0) : (int64_t)256 << 20;
     g_flow_trace = 1;
+}
+
+// A SETTING IS A WHOLE NUMBER ABOVE ZERO, or a trap names it.
+static int64_t whole_above_zero(const char* name, const char* value) {
+    char* end = NULL;
+    errno = 0;
+    long long n = *value >= '0' && *value <= '9' ? strtoll(value, &end, 10) : 0;
+    if (!end || *end != 0 || errno != 0 || n <= 0) {
+        char words[200];
+        avra_fmt(words, sizeof words, "%s is `%s` — it is a whole number above zero", name, value);
+        avra_trap(words);
+    }
+    return (int64_t)n;
+}
+
+// THE TICK'S TWO SETTINGS, read once beside the trace flag so a running
+// program pays no `getenv`. AVRA_TICK_US is the source's period; a
+// spinning `while` holds its core at most that long. AVRA_TIMER_TURNS
+// bounds a due timer's lateness to that many switches or one tick,
+// whichever is sooner.
+__attribute__((constructor))
+static void tick_settle(void) {
+    const char* us = getenv("AVRA_TICK_US");
+    if (us && *us) avra_tick_us = whole_above_zero("AVRA_TICK_US", us);
+    const char* turns = getenv("AVRA_TIMER_TURNS");
+    if (turns && *turns) g_timer_turns = whole_above_zero("AVRA_TIMER_TURNS", turns);
 }
 
 #define TRACING __builtin_expect(g_flow_trace, 0)
@@ -535,6 +588,8 @@ static void timer_down(size_t i) {
 // `g_until_poll` counts the switches left; with no waiter filed it is
 // out of reach.
 #define FAIR_TURNS 64
+// A seeded task yields within TICK_TURNS back-edges of its last yield.
+#define TICK_TURNS 64
 #define POLL_IDLE ((int64_t)1 << 62)
 static int64_t g_until_poll = POLL_IDLE;
 
@@ -563,6 +618,12 @@ static int64_t g_pinned_until_poll = 0;
 static int64_t g_polls = 0;
 
 static void timer_set(uint32_t kind, void* who, int64_t at) {
+    // THE FIRST TIMER OF A BURST SETS THE WINDOW: the clock is read at
+    // the next switch, then every AVRA_TIMER_TURNS. Measured from the
+    // heap's own empty-to-filed edge, so both engines and both runs of
+    // one schedule read the clock at the same switch — and the switch
+    // is not left on the fast path past that edge.
+    if (g_timers_len == 0) { g_timer_until = 0; g_until_poll = 0; }
     if (g_timers_len == g_timers_cap) {
         g_timers_cap = g_timers_cap ? g_timers_cap * 2 : 64;
         g_timers = realloc(g_timers, g_timers_cap * sizeof(Timer));
@@ -572,6 +633,10 @@ static void timer_set(uint32_t kind, void* who, int64_t at) {
     g_timers[i] = (Timer){ at, g_timer_seq++, kind, who };
     timer_placed(i);
     timer_up(i);
+    // A TIMER IS FILED: the switch returns to the clock within
+    // AVRA_TIMER_TURNS switches, or at the first tick, whichever is
+    // sooner — so a due timer is never late by a whole tick.
+    if (g_until_poll > g_timer_turns) g_until_poll = g_timer_turns;
 }
 
 // The entry at `i` leaves the heap; its owner's place is its to clear.
@@ -611,7 +676,9 @@ static void poll_counted(void) {
         g_pinned_until_poll = FAIR_TURNS;
         return;
     }
-    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
+    int64_t next = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
+    if (g_timers_len > 0 && g_timer_turns < next) next = g_timer_turns;
+    g_until_poll = next;
 }
 
 static void poller_open(void) {
@@ -1353,6 +1420,7 @@ void avra_fiber_overflowed(const Fiber* f) {
 __attribute__((noinline, cold))
 static void switched_to_fresh(Fiber* self, Fiber* next) {
     fiber_bound(next);
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1369,6 +1437,9 @@ static inline void switch_to(Fiber* next) {
     next->state = FIBER_RUNNING;
     if (next == self) return;
     if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
+    // PRECOMPTION WORK STANDS exactly while a task runs with others
+    // ready or a deadline filed; the source stands down otherwise.
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1439,11 +1510,32 @@ static Fiber* next_with_world(void) {
     for (;;) {
         if (__builtin_expect(g_asked, 0)) tasks_answered();
         if (g_timers_len > 0) {
-            int64_t now = now_ns();
-            ages_noted(now);
-            fire_due_timers(now);
+            // THE CLOCK IS READ EVERY AVRA_TIMER_TURNS SWITCHES while
+            // tasks are ready, or at a real tick — the SAME quantity
+            // whether or not a schedule holds the byte for its
+            // back-edges. With NOBODY READY it is read at once: a parked
+            // task's deadline is not deferred behind the window, and a
+            // virtual clock hands its timers over by JUMPING.
+            int forced = !g_seeded && __atomic_load_n(&avra_tick, __ATOMIC_RELAXED);
+            if (g_ready_head == NULL || avra_clock.virtual || forced || g_timer_until <= 0) {
+                g_timer_until = g_timer_turns;
+                int64_t now = now_ns();
+                ages_noted(now);
+                fire_due_timers(now);
+            }
         }
+        // the switch heard the tick: clear it so the fast path stands
+        // again. A seeded run HOLDS it set — every back-edge must hear.
+        if (!g_seeded) __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
         poller_turn();
+        // the countdown is spent: give the next stretch back, so the
+        // timer heap is read again within AVRA_TIMER_TURNS switches. A
+        // pinned switch stays pinned — its own cadence is the poller's.
+        if (!pinned()) {
+            if (g_timers_len > 0) g_until_poll = g_timer_turns;
+            else if (g_parked_fds > 0) g_until_poll = FAIR_TURNS;
+            else g_until_poll = POLL_IDLE;
+        }
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
         if (next) {
             // an ask counted during this pass, after its count was reset,
@@ -1461,6 +1553,7 @@ static Fiber* next_with_world(void) {
         if (world_waited_virtually()) continue;
         int64_t wait = g_timers_len > 0 ? g_timers[0].at - now_ns() : -1;
         int held = g_parked_fds > 0;
+        __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);   // nothing runs: the source may park
         if (held) avra_clock_hold(1);
         poller_wait(g_timers_len > 0 && wait < 0 ? 0 : wait);
         if (held) avra_clock_hold(-1);
@@ -1474,7 +1567,8 @@ static Fiber* next_with_world(void) {
 __attribute__((always_inline))
 static inline int queue_alone(void) {
     int64_t left = --g_until_poll;
-    return __builtin_expect(g_timers_len == 0 && left > 0, 1);
+    if (g_timer_until > 0) --g_timer_until;
+    return __builtin_expect(!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) && left > 0, 1);
 }
 
 // THE POLICY, ONE FOR BOTH ENGINES: who runs next. A compiled program
@@ -1939,6 +2033,36 @@ void avra_fiber_yield(void) {
     run_next();
 }
 
+// How many back-edges a seeded task runs before its next yield: a draw
+// from the schedule's own stream, so the same schedule yields at the
+// same turn. Never less than one.
+static uint32_t tick_turns_drawn(void) {
+    return (uint32_t)chosen(TICK_TURNS) + 1;
+}
+
+// THE CHECKED BACK-EDGE'S COLD SIDE: the emitted `while` check calls
+// this when the tick byte is set. Under a schedule there is no source —
+// the byte is held set, a per-task count falls, and at zero the task
+// yields at a turn DRAWN from the schedule (one counted choice);
+// schedule 0 draws nothing and never preempts, its order the queue's
+// own. With a source, the switch has already heard the tick: a task that
+// does not switch hears its cancel here and lets others run.
+void avra_tick_cold(void) {
+    Fiber* f = g_current;
+    if (g_seeded) {
+        if (g_schedule == 0) return;
+        if (f->tick_turns == 0) f->tick_turns = tick_turns_drawn();
+        if (--f->tick_turns > 0) return;
+        f->tick_turns = tick_turns_drawn();
+        avra_fiber_yield();
+        return;
+    }
+    if (!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) return;
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
+    if (g_ready_head != NULL) avra_fiber_yield();
+}
+
 __attribute__((noinline))
 static void slept(int64_t ms) {
     Fiber* self = g_current;
@@ -2050,6 +2174,10 @@ void avra_fiber_forked(void) {
     tasks_door_named();
     // a schedule is its run's: the child's order is the queue's own
     g_seeded = 0;
+    // THE SOURCE IS THE CALLING THREAD'S: a forked child has no tick
+    // thread, so it brings its own up, and starts with no stale tick.
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    if (!pinned()) avra_tick_armed();
 }
 
 // A task leaves every place the policy files it — its waiters and the
@@ -2216,6 +2344,9 @@ int64_t avra_vtask_next(void) {
 // slow half, or let go.
 static void clock_turned(void) { poll_counted(); }
 
+// The timer window's length, for a test that asserts its bound.
+int64_t avra_sched_timer_turns(void) { return g_timer_turns; }
+
 // ── The seeded order ────────────────────────────────────────────
 
 void avra_sched_seed(int64_t schedule) {
@@ -2223,6 +2354,11 @@ void avra_sched_seed(int64_t schedule) {
     g_schedule = schedule;
     g_seed_state = (uint64_t)schedule;
     g_choices = 0;
+    // NO SOURCE, AND THE TICK IS HELD: every checked back-edge takes
+    // its cold side, where the turn is drawn from the schedule.
+    __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);
+    g_timer_until = 0;
     poll_counted();
 }
 
@@ -2230,11 +2366,12 @@ void avra_sched_seed(int64_t schedule) {
 // sets it again.
 int64_t avra_sched_settle(void) {
     g_seeded = 0;
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
     return g_choices;
 }
 
 // A run inside a run keeps the outer schedule whole, to put it back.
-typedef struct { int seeded; int64_t schedule; uint64_t state; int64_t choices; } Schedule;
+typedef struct { int seeded; int64_t schedule; uint64_t state; int64_t choices; uint8_t tick; } Schedule;
 static Schedule* g_outer_schedules = NULL;
 static size_t g_runs = 0;
 static int run_deadlocked(void) { return g_vnext_asking && g_runs > 0; }
@@ -2246,8 +2383,9 @@ void avra_sched_run_begins(void) {
         g_outer_schedules = realloc(g_outer_schedules, g_runs_cap * sizeof(Schedule));
         if (!g_outer_schedules) avra_trap("the scheduler ran out of memory for a run's schedule");
     }
-    g_outer_schedules[g_runs++] = (Schedule){ g_seeded, g_schedule, g_seed_state, g_choices };
+    g_outer_schedules[g_runs++] = (Schedule){ g_seeded, g_schedule, g_seed_state, g_choices, avra_tick };
     g_seeded = 0;
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
     avra_clock_run_begins();
 }
 
@@ -2258,6 +2396,10 @@ void avra_sched_run_ends(void) {
     g_schedule = outer.schedule;
     g_seed_state = outer.state;
     g_choices = outer.choices;
+    __atomic_store_n(&avra_tick, outer.tick, __ATOMIC_RELAXED);
+    // THE RUN'S SOURCE STANDS DOWN: an evaluated run's tasks are gone,
+    // and the host's own stand again exactly as they stood.
+    if (!pinned()) avra_tick_stood_down();
     // THE SCHEDULE IS PUT BACK BEFORE THE CLOCK: ending the clock's run
     // asks the switch whether it is pinned, which reads the schedule —
     // the outer one, or the next switches run on the inner run's pin.

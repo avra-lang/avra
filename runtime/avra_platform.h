@@ -29,4 +29,16 @@
 #define AVRA_INSTRUMENTS 1
 #endif
 
+// THE TICK: the scheduler's nudge that time passed while tasks were
+// ready — one byte the scheduler reads (`avra_tick`) and its source
+// sets. The SOURCE is the target's: a hosted target runs a thread, a
+// target with a timer interrupt sets the byte there, wasm has neither
+// and never preempts. The scheduler calls these two verbs to bring the
+// source up and let it stand down; a target with no source defines
+// them empty. They live in an object of their own, never in the
+// scheduler's `runtime/*.c`, so a kernel with no threads still builds
+// the scheduler (D7).
+void avra_tick_armed(void);
+void avra_tick_stood_down(void);
+
 #endif

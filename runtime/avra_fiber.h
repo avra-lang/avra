@@ -7,6 +7,26 @@
 #include <stdint.h>
 #include <stdio.h>
 
+// THE TICK BYTE: the source's nudge that time passed while tasks were
+// ready. Read by the switch and by a checked back-edge; set by the
+// target's source; HELD set by a seeded run. A reader that hears it
+// clears it, so a lost tick costs one period.
+extern uint8_t avra_tick;
+// What the source reads to know tasks are running: stored by the
+// scheduler when a task runs with others ready or a deadline filed,
+// cleared as it enters its poller. A store, so a switch pays nothing.
+extern uint8_t avra_tick_wanted;
+// The source's period in microseconds, read once at load. The hosted
+// thread sleeps it; a no-OS target's timer uses it.
+extern int64_t avra_tick_us;
+
+// THE CHECKED BACK-EDGE'S COLD SIDE: the emitted `while` check calls
+// this when the tick byte is set. With no source (a seeded run) a
+// per-task count falls and the task yields at a turn drawn from the
+// schedule; with a source, a task that does not switch hears its
+// cancel here and lets others run.
+void avra_tick_cold(void);
+
 // A new task running the closure box `body` (`[code, captures…]`,
 // called with the box at seat 0, answering one managed box — the
 // compiler's task lift puts the value in a one-cell list). Keeps
@@ -250,6 +270,10 @@ int64_t avra_sched_wide_resident(void);
 // An evaluated run's first task row: traps when its host has a timer or
 // a descriptor waiter filed, which the run would share.
 void avra_sched_guest_waits(void);
+
+// The switches between two reads of the timer heap — AVRA_TIMER_TURNS.
+// A due timer is heard at most that many switches late, or at one tick.
+int64_t avra_sched_timer_turns(void);
 
 // How many entries the timer heap holds, how many waiters are filed on
 // descriptors, how many times the poller has been asked, and how many

@@ -7,7 +7,8 @@ deadline read around it stands still. Two doors reach C, and both are
 read:
 
   - C the runtime and the packages own (`runtime/*.c`,
-    `packages/*/src/c/*.c`): a call of a BLOCKING name;
+    `runtime/host/*.c`, `packages/*/src/c/*.c`): a call of a BLOCKING
+    name;
   - an `extern fn` an `.av` file declares with a BLOCKING name: Avra
     calls the library straight, so no C of ours stands between to hold.
 
@@ -133,7 +134,8 @@ def main():
     if "--self" in sys.argv:
         print(f"clock-holds: {n} of the keeper's own cases hold")
         return 0
-    sources = sorted(glob.glob("runtime/*.c") + glob.glob("packages/*/src/c/*.c"))
+    sources = sorted(glob.glob("runtime/*.c") + glob.glob("runtime/host/*.c")
+                      + glob.glob("packages/*/src/c/*.c"))
     declaring = sorted(p for p in glob.glob("packages/**/*.av", recursive=True) if "/tests/" not in p)
     vendored = sorted(glob.glob("packages/*/vendor/**/*.c", recursive=True))
     found, calls, externs = [], 0, 0
