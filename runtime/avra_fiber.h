@@ -42,8 +42,15 @@ void avra_task_settle_all(void* list);
 // owner first sheds the tasks that have finished.
 void avra_tasks_push(void* owner, void* task);
 
-// The task's answer, owned — parking the caller until it is done.
+// The task's answer, owned — parking the caller until it is done. A
+// task that ended cancelled passes its cancel to the caller (the
+// unwind bit is set) and hands back NULL.
 void* avra_task_join(void* task);
+
+// A caught join: waits for the task to end WITHOUT passing its cancel
+// to the caller; answers a two-cell `Cancelled` box (the asker's id,
+// the site) when the task ended cancelled, NULL when it answered.
+void* avra_task_join_caught(void* task);
 
 // 1 when the task has answered, else 0. Never parks.
 int64_t avra_task_done(void* task);
