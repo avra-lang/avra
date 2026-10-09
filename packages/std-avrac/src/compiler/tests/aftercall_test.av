@@ -29,6 +29,22 @@ spec "compiler/lower — the test after a call" {
     then "calls that reach no cancel point carry no test" {
         tests(["fn one() -> int { 1 }", "fn two() -> int { one() + one() }", "two()"]) == 0
     }
+    then "a compiler unit's call is tested — no `wanted` name to judge it by" {
+        // a module state's cell is built by a unit never named through
+        // `wanted`, so the conservative answer MUST be `may reach`:
+        // an omission here would let a caller read a hollow
+        tests(["state counter: int = 0", "counter"]) >= 1
+    }
+    then "a task's cold exit answers an EMPTY cell, never a null a joiner reads" {
+        // the spawn body calls a may-reach fn, so its task lambda carries
+        // a test and its cold exit: that exit must box an empty answer,
+        // not a null the join would read as a value
+        let text = ir(
+            napping()
+                .concat(["fn work() -> int { nap() 7 }", "let t = spawn { work() }", "t.await"]),
+        )
+        times(text, "call avra_array_new(") >= 1
+    }
     then "a call through a value is tested, and so is a call to the fn that makes it" {
         tests(["fn call(f: fn() -> int) -> int { f() }", "call(() -> 1)"]) == 2
     }

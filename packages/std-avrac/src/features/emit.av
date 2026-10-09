@@ -177,14 +177,24 @@ impl LowerCx {
     /// The fn leaves unwinding: what a failure runs, then the exit.
     mut fn unwinds() {
         self.failing()
-        self.emit(Ins.FnExit(self.hollow_of(self.exit ?? self.fn_ret ?? self.type(void))))
+        self.emit(Ins.FnExit(self.exit_answer()))
+    }
+
+    /// What the cold exit answers. A task's answer rides a CELL, so it
+    /// leaves an EMPTY one — never a null a joiner could read as a
+    /// value. Every other fn answers a hollow no caller reads, since
+    /// the caller tests in turn.
+    fn exit_answer() -> Reg {
+        let cell? = self.exit else { return self.hollow_of(self.fn_ret ?? self.type(void)) }
+        self.array_new(self.view.types.shape_of(cell))
     }
 
     /// Whether a call to the body `callee` names may reach a cancel
-    /// point — its declaration's bits; a body no declaration names is
-    /// the compiler's own and reaches none.
+    /// point — its declaration's bits. A body no declaration names
+    /// cannot be judged, so it MAY reach and is tested: a compiler
+    /// unit's call site must never silently omit the test.
     fn body_reaches(callee: string) -> bool {
-        let d? = self.jobs.callees.get(callee) else { return false }
+        let d? = self.jobs.callees.get(callee) else { return true }
         self.view.decls.cancel_bits(d)?.may() ?? true
     }
 
