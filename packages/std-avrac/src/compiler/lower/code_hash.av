@@ -201,7 +201,7 @@ export fn code_facts(decls: Decls, bodies: List<Body>, statics: List<Static>, as
     mut shapes: Map<string, string> = {}
     for b in lowered {
         for t in typed_by(b) {
-            if shapes.get("${t.index}") == null { shapes.set("${t.index}", type_shape(decls, t)) }
+            if shapes.get("${t.index}") == null { shapes.set("${t.index}", type_shape_cached(decls, t)) }
         }
     }
     CodeFacts {
@@ -335,6 +335,21 @@ fn typed_by(b: Body) -> List<TypeId> { b.params.concat([b.ret]).concat(b.reg_typ
 /// named type its shape; a declared type met again inside itself is its
 /// depth in that walk.
 export fn type_shape(decls: Decls, t: TypeId) -> string { shape_in(decls, t, []) }
+
+/// A TYPE'S SHAPE, cached build-wide: `type_shape` starts its walk at the
+/// type with an empty path, so the text is a function of the type alone and
+/// one answer serves every caller. The nested walk stays pure.
+fn type_shape_cached(decls: Decls, t: TypeId) -> string {
+    let kept? = decls.shape_texts.at(t.index) else { return fresh_shape(decls, t) }
+    kept
+}
+
+/// The shape, freshly walked and filed for the next asker.
+fn fresh_shape(decls: Decls, t: TypeId) -> string {
+    let text = type_shape(decls, t)
+    decls.shape_texts.keep(t.index, text)
+    text
+}
 
 fn shape_in(decls: Decls, t: TypeId, open: List<int>) -> string {
     let seen = decls.types.seen_through(t)
