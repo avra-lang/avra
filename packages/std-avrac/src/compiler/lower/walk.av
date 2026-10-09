@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, Deferral, DirectCall, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -395,6 +395,22 @@ impl LowerCx {
         self
             .deferred
             .push(Deferred { work: Deferral.Landing(scope, cell), depth: self.depth, on_error: false })
+    }
+
+    /// A `within`'s landing opens: its scope end joins the frame where
+    /// the scope stands, and the landing stack holds the one-turn loop
+    /// an unwind jumps to.
+    mut fn open_landing(scope: Reg, cell: Reg) {
+        self.at_exit_landing(scope, cell)
+        self
+            .within_loops
+            .push(WithinMark { loop: self.loops.length - 1, frame: self.depth, cell: cell })
+    }
+
+    /// The innermost `within`'s landing closes: no longer an unwind's
+    /// target.
+    mut fn close_landing() {
+        let _ = self.within_loops.pop()
     }
 
     /// An early exit that ANSWERS `answer`: every open frame's

@@ -3,7 +3,7 @@
 //! one-cell list — one box for every shape, so the runtime makes one
 //! call; `.await` joins and reads that cell.
 use core.{ExprId, Reg, Type, TypeId, BinOp, RtFlag}
-use features.{LowerCx, MethodCall, WithinMark}
+use features.{LowerCx, MethodCall}
 
 fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -31,11 +31,10 @@ fn within_reg(mut cx: LowerCx, e: ExprId, limit: ExprId, body: ExprId) -> Reg {
     cx.loop_cond(cx.const_bool(true))
     cx.scope_enter()
     let scope = cx.fiber_within(Type.Int, limit_reg)
-    cx.within_loops.push(WithinMark { loop: at, frame: cx.depth, cell: landing })
+    cx.open_landing(scope, landing)
     cx.stored(answer, cx.reg_of(body))
-    cx.at_exit_landing(scope, landing)
     cx.scope_exit(null)
-    let _ = cx.within_loops.pop()
+    cx.close_landing()
     cx.jumped(at, false)
     cx.loop_end()
     within_epilogue(cx, e, body_ty, answer)
