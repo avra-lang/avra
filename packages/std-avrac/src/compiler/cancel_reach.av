@@ -46,11 +46,16 @@ impl Workspace {
         let fns = [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
         self.decls.clear_cancels(fns)
         self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
-        // WHETHER THE PROGRAM LINKS A SCHEDULER: any member parks or
-        // spawns. A program that reaches none emits no while check — it
-        // has no source to preempt and no row to call (the wasm target
-        // among them).
-        self.decls.record_schedulers(fns.any((d) -> self.decls.cancel_bits(d)?.parks ?? false))
+        // WHETHER THE PROGRAM LINKS A SCHEDULER: a member that SPAWNS,
+        // reads a waiting property, or calls a fn that parks. A call
+        // through a value is not enough — the value may be any fn, so
+        // it is every program's conservative bit and would link the
+        // scheduler for all of them. A program that links none emits no
+        // while check: it has no source to preempt and no row to call
+        // (the wasm target among them).
+        self
+            .decls
+            .record_schedulers(fns.any((d) -> self.cancel_survey(d).waits().any((w) -> self.wait_links(w))))
         self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns])]))
         fns.length
     }
@@ -182,6 +187,19 @@ impl Workspace {
 
     fn wait_parks(w: NodeWait) -> bool {
         match w { .Calls(g, _) -> self.reach_of(g).parks, .Spawns or .Reads(_) or .Value -> true }
+    }
+
+    /// Whether one wait LINKS A SCHEDULER: a spawn, a waiting property,
+    /// or a call to a fn the pass settled as parking. A call through a
+    /// value does not — any program has one, and it says nothing about
+    /// this program's rows. Read AFTER `spread_cancels`, when every
+    /// member's bit is settled.
+    fn wait_links(w: NodeWait) -> bool {
+        match w {
+            .Calls(g, _) -> self.decls.cancel_bits(g)?.parks ?? false,
+            .Spawns or .Reads(_) -> true,
+            .Value -> false,
+        }
     }
 
     fn wait_spins(w: NodeWait) -> bool {
