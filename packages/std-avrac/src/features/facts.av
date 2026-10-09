@@ -24,7 +24,6 @@ use core.{
 use core.{SeatMark, SideTable, side_table, side_table_of, ParamId, Fingerprint}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
-use @std.relation.db.{Db as RelDb}
 use @std.meta.{derive}
 
 /// The language's registries, once — never copied into a program.
@@ -42,7 +41,7 @@ export fn remedy_for(rows: LanguageRows, word: string) -> string? {
 export fn no_owner_spans() -> Cell<List<OwnerSpan>?> { Cell.new(null) }
 
 /// An empty `assign_roots` Cell — `file_view`'s own mint.
-export fn no_assign_roots() -> Cell<RelDb?> { Cell.new(null) }
+export fn no_assign_roots() -> Cell<Map<string, List<ExprId>>?> { Cell.new(null) }
 
 /// What every context and facade reads of a file: its identity, its
 /// nodes, its text, the declaration table, the type registry, and
@@ -59,7 +58,11 @@ export type FileView = {
     types: TypeRegistry,
     lang: LanguageRows,
     owner_spans: Cell<List<OwnerSpan>?>,
-    assign_roots: Cell<RelDb?>,
+    /// The roots each declaration's own statements write to, keyed by the
+    /// declaration's index: this file's own index, cached in a plain map —
+    /// never a `Db` whose rows stand in a process-wide store
+    /// (`filed_assign_roots`, features/code.av).
+    assign_roots: Cell<Map<string, List<ExprId>>?>,
 }
 
 impl FileView {
@@ -142,12 +145,12 @@ impl FileView {
     /// This file's assignment-root index, filed once — `write_roots`'
     /// every ask past the first reads the same `Db`, never rewalks the
     /// arena (`filed_assign_roots`, features/code.av).
-    fn assign_roots() -> RelDb {
+    fn assign_roots() -> Map<string, List<ExprId>> {
         let held = self.assign_roots.get()
         if held != null { return held! }
-        let db = filed_assign_roots(self)
-        self.assign_roots.set(db)
-        db
+        let made = filed_assign_roots(self)
+        self.assign_roots.set(made)
+        made
     }
 }
 
