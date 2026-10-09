@@ -1,6 +1,6 @@
 //! The typing rules: `spawn e` is a `Task` of what `e` answers, and
 //! `.await` answers it back; `.done` is a `bool`.
-use core.{ExprId, TypeId, Type}
+use core.{ExprId, TypeId, Type, ResSides}
 use features.{TypeCx, MethodCall, this_is}
 use diagnostics.{refusal}
 
@@ -20,8 +20,22 @@ fn spawned(mut cx: TypeCx, body: ExprId) -> TypeId {
     cx.view.types.intern(Type.Task(arrow.answer))
 }
 
-fn check_await(mut cx: TypeCx, _e: ExprId, ty: TypeId) -> TypeId {
+fn check_await(cx: TypeCx, _e: ExprId, ty: TypeId) -> TypeId {
     cx.view.types.task_answer(ty) ?? cx.error_type
+}
+
+/// A caught `await` recovers the task's answer or, when its end was a
+/// cancel, the `Cancelled` record — the failure view `catch` reads.
+fn await_view(cx: TypeCx, answer: TypeId) -> ResSides? {
+    ResSides { ok: answer, err: cancelled_type(cx) }
+}
+
+/// The `Cancelled` record `@std/errors` declares — who asked, where the
+/// cancel was met. Error when the program loads no `@std/errors`.
+fn cancelled_type(cx: TypeCx) -> TypeId {
+    let decl? = cx.view.decls.package_decl("@std.errors", "Cancelled") else { return cx.error_type }
+    let _ = cx.view.decls.sig(decl)
+    cx.view.types.intern(Type.Struct(decl, "Cancelled"))
 }
 
 fn check_done(cx: TypeCx, _e: ExprId, _ty: TypeId) -> TypeId { cx.type(bool) }

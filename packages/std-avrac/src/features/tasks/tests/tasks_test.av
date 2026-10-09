@@ -1,7 +1,7 @@
 // The vertical: `spawn` runs beside the spawner, `.await` answers what
 // the body did, `.done` asks without parking, and a task is joined where
 // the last thing holding it ends.
-use @std.avrac.testing.{shown, refused_at_run, ir_of}
+use @std.avrac.testing.{shown, refused_at_run, ir_of, refusals}
 use compiler.backend.{render_ir}
 
 extern fn avra_sched_timers() -> int
@@ -19,6 +19,9 @@ spec "features/tasks" {
         }
         then "`t.cancel()` lowers to the row and answers nothing" {
             render_ir(ir_of("let t = spawn 1\nt.cancel()")).contains("call avra_task_cancel")
+        }
+        then "a caught await TYPES clean — the arm hears the answer and the cancel" {
+            refusals("fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv") == 0
         }
         then "a list of tasks awaits in order" {
             shown(
