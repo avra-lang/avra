@@ -192,7 +192,7 @@ MUTATIONS = [
     ("a stopped task says nothing of why", "    if (f == g_case_spinner) { fputs(", "    if (0) { fputs("),
     ("a program prints what it likes", "    int64_t same = ended && avra_streq(got, g_program_expected);", "    int64_t same = ended;"),
     ("a program's schedules share one process", "    int told[2];\n    if (pipe(told) != 0)", "    { avra_capture_begin(); scheduled(schedule, choices, program_body_called); const char* g = avra_capture_end(); int64_t s = avra_streq(g, g_program_expected); avra_rc_release((void*)g); return s; }\n    int told[2];\n    if (pipe(told) != 0)"),
-    ("an evaluated deadlock ends the process", "    if (!next) return 0;\n", ""),
+    ("an evaluated deadlock ends the process", "    if (!next) { deadlock_reported(); return 0; }", "    if (!next) { deadlock_reported(); }"),
     ("a program runs off the schedules", "    return over_schedules(\"program \", label, program_under);", "    int64_t c = 0;\n    return program_under(0, &c);"),
     ("the evaluated leg reads schedule i whatever is replayed", "    return g_sched_only >= 0 ? g_sched_only : i;", "    return i;"),
     ("the evaluated leg reads one schedule whatever is set", "    return g_sched_only >= 0 ? 1 : g_sched_runs;", "    return 1;"),
@@ -219,6 +219,9 @@ MUTATIONS = [
     ("the handler's line is stamped with no time", "    k += digits_put(line + k, (long long)now_ns());", "    line[k++] = '0';"),
     ("a task that has not run is listed as parked", "    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);", "    if (!f->sp) fprintf(out, \"ts=%lld park id=%lld src=at arm=0:0\\n\", (long long)now, id);\n    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);"),
     ("the door is never opened", "    guard_handler_install();\n    tasks_door_opened();", "    guard_handler_install();"),
+    ("a compiled deadlock lists no task", "            deadlock_reported();\n            avra_trap(\"every task is waiting — deadlock\");", "            avra_trap(\"every task is waiting — deadlock\");"),
+    ("an evaluated deadlock lists no task", "    if (!next) { deadlock_reported(); return 0; }", "    if (!next) { return 0; }"),
+    ("a deadlock's report names no wait", "        task_said(stderr, process_id, f);\n        waits_said(stderr, process_id, f);", "        task_said(stderr, process_id, f);"),
 ]
 DOOR_MUTATIONS = [
     ("a door directory others may write is a door", " && (st.st_mode & 077) == 0) return dfd;", ") return dfd;"),

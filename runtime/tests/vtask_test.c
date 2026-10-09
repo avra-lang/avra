@@ -2,6 +2,7 @@
 // driven the way the evaluator drives it — so one scenario, run as
 // fibers and as virtual tasks, interleaves alike.
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -99,6 +100,21 @@ static void deadlocked(void) {
     avra_vtask_next();
 }
 
+// Inside a run: two virtual tasks, each parked on its own gate, name
+// what each waits on. The policy answers the evaluator no task.
+static void run_deadlocked(void) {
+    avra_sched_run_begins();
+    int64_t a = avra_vtask_new(), b = avra_vtask_new();
+    void* ga = avra_gate_new();
+    void* gb = avra_gate_new();
+    avra_vtask_wait_gate(a, ga, 0, 0);
+    avra_vtask_park(a);
+    avra_vtask_wait_gate(b, gb, 0, 0);
+    avra_vtask_park(b);
+    if (avra_vtask_next() != 0) _exit(3);
+    avra_sched_run_ends();
+}
+
 int main(void) {
     joins();
     // one scenario, both engines, one interleaving
@@ -148,19 +164,27 @@ int main(void) {
     pid_t pid = fork();
     if (pid == 0) { dup2(out[1], 2); close(out[0]); alarm(60); deadlocked(); _exit(0); }
     close(out[1]);
-    char buf[256] = {0};
+    char buf[1024] = {0};
     size_t got = 0;
     for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
     int status = 0;
     waitpid(pid, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && strstr(buf, "every task is waiting — deadlock"), "a virtual deadlock is the policy's trap");
+    CHECK(strstr(buf, "the evaluated program's own run") != NULL, "and names the task");
 
-    // inside a run, the same deadlock is the evaluator's to file
-    avra_sched_run_begins();
-    int64_t stuck = avra_vtask_new();
-    CHECK(avra_vtask_next() == 0, "inside a run, a virtual deadlock answers the evaluator: no task");
-    avra_vtask_free(stuck);
-    avra_sched_run_ends();
+    // inside a run, the same deadlock is the evaluator's to file, named
+    if (pipe(out) != 0) return 1;
+    pid = fork();
+    if (pid == 0) { dup2(out[1], 2); close(out[0]); alarm(60); run_deadlocked(); _exit(0); }
+    close(out[1]);
+    memset(buf, 0, sizeof buf);
+    got = 0;
+    for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "inside a run, a virtual deadlock answers the evaluator: no task");
+    CHECK(strstr(buf, "every task is waiting, and nothing can wake one") != NULL, "and the run's report is headed");
+    CHECK(strstr(buf, "the evaluated program's own run") != NULL && strstr(buf, "waits on gate 0x") != NULL, "each task is named with the gate it waits on");
+    CHECK(buf[0] != 0 && strstr(strstr(buf, "waits on gate 0x") + 1, "waits on gate 0x") != NULL, "both waiting tasks are named");
 
     printf("vtasks: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
