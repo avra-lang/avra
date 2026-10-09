@@ -189,6 +189,9 @@ int64_t avra_vtask_interrupted(int64_t t);
 // The task's unwind bit, as the task itself wears it: what a read of
 // the flag inside that task answers.
 int64_t avra_vtask_unwinding(int64_t t);
+// The task's unwind bit, as the evaluator sets it: a wait that cuts in a
+// virtual task raises it the way the switch raises a compiled task's.
+void avra_vtask_set_unwinding(int64_t t, int64_t v);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 void avra_vtask_within_end(int64_t t, int64_t id);
 // The shield's row pair, on the virtual task `t` — the same policy a

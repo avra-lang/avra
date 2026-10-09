@@ -1086,7 +1086,7 @@ static void deadline_fired(Fiber* f) {
 static void scope_inherited(Fiber* child, const Fiber* from) {
     const Scope* s = from->scope_by != 0 ? scope_at(from, from->armed) : from->deadline != 0 ? scope_at(from, from->owner) : NULL;
     if (!s) return;
-    child->scope[0] = (Scope){ s->id, s->at, 0 };
+    child->scope[0] = (Scope){ .id = s->id, .at = s->at, .first = 0, .shield = 0 };
     child->scopes_n = child->armed = 1;
     child->owner = 0;
     child->deadline = s->at;
@@ -2156,9 +2156,10 @@ int64_t avra_scope_end(int64_t id) { return scope_ended(g_current, id); }
 // A `defer` RUNS WHOLE UNDER A SHIELD: a frame's cold exit brackets its
 // deferred calls with these two rows, so a call that may reach is not cut
 // between them. The enter saves the task's unwind bit and clears it, so
-// only a WAIT that cuts re-sets it; the leave puts the saved bit back.
-// A bracket inside a bracket is a depth, so a deferred call's own cold
-// exit nests without the inner leave unshielding the outer.
+// only a WAIT that cuts re-sets it; the leave ORs the saved bit back, so
+// a bit a wait raised inside the shield stands too. A bracket inside a
+// bracket is a depth, so a deferred call's own cold exit nests without
+// the inner leave unshielding the outer.
 
 static void shield_entered(Fiber* f, uint8_t* bit) {
     if (f->shield_depth++ == 0) {
@@ -2169,7 +2170,7 @@ static void shield_entered(Fiber* f, uint8_t* bit) {
 
 static void shield_left(Fiber* f, uint8_t* bit) {
     if (f->shield_depth == 0) return;
-    if (--f->shield_depth == 0) *bit = f->shield_saved;
+    if (--f->shield_depth == 0) *bit |= f->shield_saved;
 }
 
 void avra_fiber_shield_enter(void) { shield_entered(g_current, &avra_unwinding); }
@@ -2336,6 +2337,10 @@ int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_
 void avra_vtask_shield_enter(int64_t t) { Fiber* f = virtual_at(t); shield_entered(f, &f->unwinding); }
 
 void avra_vtask_shield_leave(int64_t t) { Fiber* f = virtual_at(t); shield_left(f, &f->unwinding); }
+
+// The task's unwind bit, as the evaluator sets it: a wait that cuts in a
+// virtual task raises it the way the switch raises a compiled task's.
+void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }
 
 void avra_vtask_within_end(int64_t t, int64_t id) { scope_ended(virtual_at(t), id); }
 
