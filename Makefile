@@ -349,7 +349,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: try edit-loop footprint footprint-accept tick-object no-threads ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -831,6 +831,21 @@ footprint: $(RUNTIME_LIB)
 # Re-accept this platform's sizes deliberately.
 footprint-accept: $(RUNTIME_LIB)
 	@python3 tools/footprint.py --accept
+
+# THE FLOW G1 GATE: the scheduler's transition rows (a gate round trip,
+# spawn+join, a cold parked spawn) against tools/flow_bench/gate.baseline,
+# refusing past 2x. A change under runtime/ can cost the transition hot
+# path without touching a test, so a runtime PR runs this before its own
+# checks (the `flow-gate` job in .github/workflows/checks.yml, which fires
+# on a diff under runtime/). `--require` makes a machine with no baseline
+# row a REFUSAL; a lane measuring a runtime saved elsewhere points
+# FLOW_RUNTIME at it.
+flow-gate:
+	@python3 tools/flow_bench/gate.py --self-test
+	@sh tools/flow_bench/run.sh --gate $(FLOW_GATE_ARGS)
+# Re-accept this machine's rows deliberately (FLOW_RUNTIME for another tree).
+flow-gate-accept:
+	@sh tools/flow_bench/run.sh --record
 
 # THE TICK'S TWO KEEPERS. `tick-object` holds the hosted source's
 # undefined symbols to the no-lock set a forked child may inherit;

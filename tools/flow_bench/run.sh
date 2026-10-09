@@ -7,12 +7,20 @@
 #
 #   sh tools/flow_bench/run.sh          the bench
 #   sh tools/flow_bench/run.sh probes   the stack allocator's probes
+#   sh tools/flow_bench/run.sh --gate [--require]   the runtime change
+#                                       gate: the C rows against
+#                                       gate.baseline, refusing past 2x
+#   sh tools/flow_bench/run.sh --record  re-accept this machine's rows
 #   FLOW_AVRA=0 …                       Go and the runtime's rows alone
+#   FLOW_RUNTIME=<dir> …                measure a runtime saved elsewhere
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
 out=$root/build/flow-bench
 rounds=${ROUNDS:-5}
+# The runtime the rows are measured against: this tree's, or one saved
+# elsewhere (FLOW_RUNTIME), so a before/after reads the same instrument.
+rt=${FLOW_RUNTIME:-$root/runtime}
 mkdir -p "$out/go" "$out/rt"
 
 # The runtime's objects, built as the Makefile builds them, the scheduler
@@ -21,23 +29,52 @@ runtime_built() {
     probes=""
     [ "$(uname -s)" = Darwin ] || probes=-fstack-clash-protection
     rest=""
-    for c in "$root"/runtime/*.c; do
+    for c in "$rt"/*.c; do
         o=$out/rt/$(basename "$c" .c).o
-        cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$o" "$c"
+        cc -c -O2 -fPIC $probes -I"$rt" -o "$o" "$c"
         [ "$(basename "$c")" = avra_fiber.c ] || rest="$rest $o"
     done
     # the tick's source, outside the glob the scheduler's files come from
-    cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$out/rt/avra_tick.o" "$root/runtime/host/avra_tick.c"
-    rest="$rest $out/rt/avra_tick.o"
+    if [ -f "$rt/host/avra_tick.c" ]; then
+        cc -c -O2 -fPIC $probes -I"$rt" -o "$out/rt/avra_tick.o" "$rt/host/avra_tick.c"
+        rest="$rest $out/rt/avra_tick.o"
+    fi
     echo "$rest"
 }
 
 # The scheduler linked under the C bench.
 spawn_bench() {
-    cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$out/fiber_today.o" "$root/runtime/avra_fiber.c"
-    cc -O2 -I"$root/runtime" -o "$out/spawn_bench_today" "$here/probes/spawn_bench.c" "$out/fiber_today.o" $rest
-    cc -O2 -I"$root/runtime" -o "$out/latency_bench" "$here/probes/latency_bench.c" "$out/fiber_today.o" $rest
+    cc -c -O2 -fPIC $probes -I"$rt" -o "$out/fiber_today.o" "$rt/avra_fiber.c"
+    cc -O2 -I"$rt" -o "$out/spawn_bench_today" "$here/probes/spawn_bench.c" "$out/fiber_today.o" $rest
+    cc -O2 -I"$rt" -o "$out/latency_bench" "$here/probes/latency_bench.c" "$out/fiber_today.o" $rest
 }
+
+# THE RUNTIME CHANGE GATE (`--gate`, `--record`): the C rows alone, no Go
+# and no compiler, against the recorded baseline. `--record` writes this
+# machine's rows into gate.baseline; `--gate` compares and refuses past the
+# ratio. Extra words are handed to gate.py — `--require` makes a missing
+# baseline row a refusal, which the runtime-PR job asks for.
+if [ "${1:-bench}" = --gate ] || [ "${1:-bench}" = --record ]; then
+    mode=${1#--}
+    rest=$(runtime_built)
+    probes=""
+    [ "$(uname -s)" = Darwin ] || probes=-fstack-clash-protection
+    spawn_bench
+    : > "$out/gate-raw"
+    g=1
+    while [ "$g" -le 3 ]; do
+        # the row as `ran` writes it: the engine, then the probe's own key
+        "$out/spawn_bench_today" c g1 | sed 's/^/c /' >> "$out/gate-raw"
+        g=$((g + 1))
+    done
+    echo "== $(uname -srm), $(nproc 2>/dev/null || sysctl -n hw.ncpu) cpus, page $(getconf PAGESIZE)"
+    if [ "$mode" = record ]; then
+        python3 "$here/gate.py" --record --baseline "$here/gate.baseline" "$out/gate-raw"
+    else
+        python3 "$here/gate.py" --baseline "$here/gate.baseline" ${2:-} "$out/gate-raw"
+    fi
+    exit $?
+fi
 
 if [ "${1:-bench}" = probes ]; then
     rest=$(runtime_built)
