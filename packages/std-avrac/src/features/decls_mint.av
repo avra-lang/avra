@@ -539,7 +539,7 @@ impl Decls {
     /// What a declaration nested in `d`'s body names as its encloser: `d`'s key, its path left out.
     fn within_text(d: DeclId) -> string {
         let x = self.decl(d)
-        decl_key_text("", x.name, x.kind, x.owner, x.maker, x.within, x.sibling)
+        decl_key_text("", x.name, x.kind, x.owner, x.maker, x.enclosing, x.sibling)
     }
 
     fn spanned_here(f: FileId, d: DeclId) -> bool { self.spanned_stmt_of(f, self.decl(d).stmt) == null }
@@ -594,10 +594,10 @@ impl Decls {
         exported: bool,
         owner: string,
         parent: DeclId?,
-        within: string,
+        enclosing: string,
         root: ExprId?,
     ) -> DeclId {
-        self.mint_faced(f, s, name, kind, exported, owner, parent, within, root, "", null)
+        self.mint_faced(f, s, name, kind, exported, owner, parent, enclosing, root, "", null)
     }
 
     /// An id for a declaration: the one its NAME already has (its row
@@ -616,7 +616,7 @@ impl Decls {
         exported: bool,
         owner: string,
         parent: DeclId?,
-        within: string,
+        enclosing: string,
         root: ExprId?,
         maker: string,
         told: DeclFacts?,
@@ -626,9 +626,9 @@ impl Decls {
         let sibling = self
             .counted
             .get()
-            .taken(f, maker, decl_key_text(path, name, kind, owner, maker, within, 0))
+            .taken(f, maker, decl_key_text(path, name, kind, owner, maker, enclosing, 0))
         let known: DeclId? = self
-            .known_id(decl_key_text(path, name, kind, owner, maker, within, sibling))
+            .known_id(decl_key_text(path, name, kind, owner, maker, enclosing, sibling))
         let id: DeclId = known ?? DeclId { index: self.decl_row_rows.get().next_id() }
         let d = Decl {
             id: id,
@@ -642,7 +642,7 @@ impl Decls {
             maker: maker,
             sibling: sibling,
             parent: parent,
-            within: within,
+            enclosing: enclosing,
             root: root,
             lo: 0,
             hi: 0,
