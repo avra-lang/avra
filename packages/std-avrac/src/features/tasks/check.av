@@ -9,6 +9,20 @@ fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) { .Spawn(body) -> spawned(cx, body), rest -> cx.error_type }
 }
 
+/// `within limit { body }` answers what the body answers. The limit is
+/// a field read (`Duration.ms`), typed with the body so a limit that is
+/// no span refuses in the member law's own words.
+fn within_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
+    match cx.view.store.expr(e) {
+        .Within(limit, body) -> {
+            let _ = cx.walk_type(limit)
+            if cx.errored(limit) { return cx.error_type }
+            cx.walk_type(body)
+        },
+        rest -> cx.error_type,
+    }
+}
+
 /// The body is hidden from the walk — its lambda lowers only as the
 /// task's lift — so it is typed here, and its answer is the task's.
 fn spawned(mut cx: TypeCx, body: ExprId) -> TypeId {

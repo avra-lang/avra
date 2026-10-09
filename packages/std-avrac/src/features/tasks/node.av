@@ -1,7 +1,7 @@
-//! The `spawn` node: a variant of `Expr` (core/nodes.av), declared
-//! where its meaning is.
+//! The task nodes: variants of `Expr` (core/nodes.av), declared
+//! where their meaning is.
 use core.{expr_node, ExprId, TypeId, Reg}
-use core.marks.{apart}
+use core.marks.{apart, sequence}
 
 use features.{Meaning, ResolveCx, TypeCx, LowerCx}
 
@@ -17,4 +17,22 @@ impl Meaning for Spawn {
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { task_expr_type(cx, e) }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg { task_expr_reg(cx, e) }
+}
+
+/// `within limit { body }` — the body runs with a deadline arming the
+/// calling task: every park under it ends by `limit` from now, and
+/// the body answers as written. The body stays INLINE, so `return`
+/// and `?` leave through the enclosing fn — the reason this is a head
+/// keeping its brace and never a lambda. `limit` is the span's own
+/// milliseconds, read at the field it is made of.
+@expr_node
+@sequence
+export type Within = { limit: ExprId, body: ExprId }
+
+impl Meaning for Within {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        cx.walk(self.body)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { within_expr_type(cx, e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { within_expr_reg(cx, e) }
 }
