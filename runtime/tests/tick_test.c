@@ -256,10 +256,10 @@ static void body_tick_forces_world_do(void) {
 static void body_hot_arm_reads_no_pid_do(void) {
     avra_tick_wanted = 1;
     avra_tick_armed();
-    uint64_t before = avra_tick_pid_reads();
+    uint64_t before = avra_tick_cold_pid_reads();
     for (int i = 0; i < 10000; i++) { avra_tick_armed(); avra_tick_stood_down(); }
     CHECK(before >= 1, "the cold arm reads the process id");
-    CHECK(avra_tick_pid_reads() == before, "the hot arm reads no process id");
+    CHECK(avra_tick_cold_pid_reads() == before, "the hot arm reads no process id");
     avra_tick_wanted = 0;
 }
 

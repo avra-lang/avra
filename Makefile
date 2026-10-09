@@ -871,8 +871,9 @@ no-threads:
 # are printed, which is what balances the halves — the second is the
 # lighter because the train runs the seed check after it.
 # KEEPERS_ALONE are held to a clock (a timer firing within one round of the
-# scheduler), so nothing may compete with them for a core.
-KEEPERS_ALONE = runtime-tests
+# scheduler), so nothing may compete with them for a core. The mutation run
+# drives the same clocked tests, so it stands here beside them.
+KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads

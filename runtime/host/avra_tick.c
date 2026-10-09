@@ -33,20 +33,21 @@ static pid_t g_owner = 0;
 static int g_fork_registered = 0;
 static int g_wake[2] = { -1, -1 };
 static volatile uint8_t g_parked = 0;
-// A test holds the hot arm to reading no process id: the cold arm reads
-// it once and the count stands still across every arm after.
+// A test holds the hot arm to taking no process id: this reader runs once
+// per cold arm and the count stands still across every arm after.
 static uint64_t g_pid_reads = 0;
 
-uint64_t avra_tick_pid_reads(void) { return __atomic_load_n(&g_pid_reads, __ATOMIC_RELAXED); }
+uint64_t avra_tick_cold_pid_reads(void) { return __atomic_load_n(&g_pid_reads, __ATOMIC_RELAXED); }
 
 // A child of fork has no source, and its inherited pid is the parent's.
 static void tick_after_fork(void) { g_owner = 0; }
 
 // The process id, read once per cold arm; every hot arm compares the
-// cached owner instead.
+// cached owner instead. The count sits at the read.
 static pid_t this_pid(void) {
+    pid_t pid = getpid();
     __atomic_add_fetch(&g_pid_reads, 1, __ATOMIC_RELAXED);
-    return getpid();
+    return pid;
 }
 
 static struct timespec us_as_ts(int64_t us) {

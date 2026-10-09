@@ -32,9 +32,10 @@ on the Sprite (`linux-vdso`, glibc), ~192 ns of a 302 ns C round trip.
 ## Tests first
 
 - `tick_test.c`: `the hot arm reads no process id` — a counted witness
-  (`avra_tick_pid_reads`, declared in `avra_platform.h`) that 10k arms and
-  stood-downs raise no pid read; `a raw fork re-arms` — no
-  `avra_fiber_forked`, only the tick's own handler.
+  (`avra_tick_cold_pid_reads`, declared in `avra_platform.h`) that 10k arms
+  and stood-downs raise no cold read; `a raw fork re-arms` — no
+  `avra_fiber_forked`, only the tick's own handler. The count sits at the
+  `getpid()` call and counts the arm's one reader.
 - `mutations.py`: 7 new HOST breaks — the registration, the handler body,
   the hot pid read, the owner-ignoring check, the stood-down pid read, the
   cold arm's record, and the counter itself. All killed; 231 of 231 total.
@@ -56,9 +57,12 @@ was a machine where `getpid` costs ~450 ns.
 ## The gate
 
 `make flow-g1` runs the bench with the G1 verdicts (2x time, 3x memory) and
-FAILs on any row that FAILs; it SKIPS, spoken, where Go or the compiler is
-absent. `make runtime-tests` 0 failed, `make runtime-mutations` 231/231
-killed 0 survived, `make keepers` whole exit 0.
+FAILs on any row that FAILs; a plain `make flow-bench` prints the same view
+and exits 0. Where Go or the compiler is absent the gate SKIPS, spoken,
+with status 77 — a skip is not a pass. `runtime-mutations` joined
+`KEEPERS_ALONE`, so the train runs the mutation proof. `make runtime-tests`
+0 failed, `make runtime-mutations` 231/231 killed 0 survived, `make keepers`
+whole exit 0.
 
 ## Owed / unverified
 

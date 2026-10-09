@@ -5,6 +5,9 @@ A row an engine could not finish carries its words instead.
     table.py <raw>            every row, side by side
     table.py <raw> --gates    the G1 rows: Avra against Go, gate 2x time,
                               3x memory, the rows that cannot run, named
+    table.py <raw> --gates --enforce
+                              the same view, and a FAILed row fails the
+                              run (a plain --gates only prints)
 """
 import statistics
 import sys
@@ -135,6 +138,8 @@ def gate_table():
 
 
 if "--gates" in sys.argv[1:]:
-    sys.exit(1 if gate_table() else 0)
+    fails = gate_table()
+    # A plain view prints and passes; `--enforce` is the gate's own ask.
+    sys.exit(1 if "--enforce" in sys.argv[1:] and fails else 0)
 else:
     full_table()

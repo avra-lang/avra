@@ -255,7 +255,7 @@ HOST_MUTATIONS = [
     ("the arm ignores the owner", "    if (g_started && g_owner) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();", "    if (g_started) {\n        if (__atomic_load_n(&g_parked, __ATOMIC_RELAXED)) wake_once();"),
     ("the stood-down arm reads the process id again", "void avra_tick_stood_down(void) {\n    if (g_started && g_owner) wake_once();\n}", "void avra_tick_stood_down(void) {\n    if (g_started && g_owner == this_pid()) wake_once();\n}"),
     ("a cold arm never records the pid", "    g_owner = this_pid();\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);", "    g_owner = 0;\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);"),
-    ("the pid read is never counted", "    __atomic_add_fetch(&g_pid_reads, 1, __ATOMIC_RELAXED);\n    return getpid();", "    return getpid();"),
+    ("the pid read is never counted", "    pid_t pid = getpid();\n    __atomic_add_fetch(&g_pid_reads, 1, __ATOMIC_RELAXED);\n    return pid;", "    return getpid();"),
 ]
 TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
 BOUND = 60
