@@ -493,6 +493,10 @@ impl Workspace {
         obj_key_cached(ws, s, self.module_path_of(path), path)
     }
 
+    /// Whether this build is for wasm: no fiber, no thread, so no `while`
+    /// check — the row it would call has no body on that target.
+    fn wasm_target() -> bool { self.keys.build_mode.get().starts_with("wasm") }
+
     /// One unit lowered. A HELD FILE HAS NO BODY TO LOWER: asked for one — a
     /// compile-time run reads the body it calls — it answers nothing and NOTES the
     /// file, and the build starts again with that file parsed.
@@ -514,8 +518,10 @@ impl Workspace {
             .crossed_lifted(d, want)
         // a compile-time run emits no back-edge check: it links no source,
         // and a program the cancel pass says links no scheduler emits none
-        // either (a wasm build among them)
-        let checks = !self.comptime_active() && self.scheduler_linked()
+        // either. A WASM build emits none whatever the survey says: its
+        // runtime carries no fiber and no thread, so the tick has no body
+        // there — a program that really parks fails on the row it parks at.
+        let checks = !self.comptime_active() && !self.wasm_target() && self.scheduler_linked()
         lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle, cross, checks)
     }
 
