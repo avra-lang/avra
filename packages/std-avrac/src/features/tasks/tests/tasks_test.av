@@ -23,6 +23,16 @@ spec "features/tasks" {
         then "a caught await TYPES clean — the arm hears the answer and the cancel" {
             refusals("fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv") == 0
         }
+        then "a `within` lowers as a one-turn loop whose end is its landing" {
+            let text = render_ir(
+                ir_of("type Lim = { ms: int }\nlet x = within Lim { ms: 5 } { 7 }\nx"),
+            )
+            text.contains("call avra_fiber_within(") &&
+                text.contains("call avra_fiber_within_end(") &&
+                text.contains("flag unwinding") &&
+                text.contains("loop {") &&
+                text.contains("break 0")
+        }
         then "a list of tasks awaits in order" {
             shown(
                 "mut ts: List<Task<int>> = []\nfor i in 0..4 {\n    ts.push(spawn i * i)\n}\n[\"\${t.await}\" for t in ts].join(\",\")",

@@ -735,8 +735,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_fd_ready(AVRA_
     "avra_fiber_fd_ready: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_within(AVRA_RT_I64)), int64_t),
     "avra_fiber_within: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_within_end(AVRA_RT_I64)), void),
-    "avra_fiber_within_end: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_within_end(AVRA_RT_I64)), int64_t),
+    "avra_fiber_within_end: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_fd(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
     "avra_wait_fd: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_until(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),

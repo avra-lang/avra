@@ -389,6 +389,14 @@ impl LowerCx {
             .push(Deferred { work: Deferral.Direct(call), depth: self.depth, on_error: on_error })
     }
 
+    /// A `within` scope's end to make when the frame closes: the scope
+    /// ends and its answer lands in `cell`.
+    mut fn at_exit_landing(scope: Reg, cell: Reg) {
+        self
+            .deferred
+            .push(Deferred { work: Deferral.Landing(scope, cell), depth: self.depth, on_error: false })
+    }
+
     /// An early exit that ANSWERS `answer`: every open frame's
     /// entries run, innermost first — an `errdefer` behind the
     /// answer's tag. Nothing closes — other paths continue.
@@ -437,8 +445,16 @@ impl LowerCx {
             .Call(box) -> self.run_deferred_call(box),
             .Settle(owner, cell) -> self.settle_owner(owner, cell),
             .Direct(call) -> self.run_direct(call),
+            .Landing(scope, cell) -> self.landed_scope(scope, cell),
         }
         self.deferring = was
+    }
+
+    /// The `within` scope's end: the scope ends, and whether the cancel
+    /// it met was its own lands in the cell its epilogue reads.
+    mut fn landed_scope(scope: Reg, cell: Reg) {
+        let landed = self.fiber_within_end(Type.Int, scope)
+        self.stored(cell, landed)
     }
 
     /// An owner's tasks joined: the task, or each in its list — read out
