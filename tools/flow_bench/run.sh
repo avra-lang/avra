@@ -195,3 +195,6 @@ load=$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || sysctl -n vm.loadavg)
 echo "$(uname -srm), $(nproc 2>/dev/null || sysctl -n hw.ncpu) cpus, page $(getconf PAGESIZE), load $load after the runs, least of $rounds, $("$go" version)"
 echo
 python3 "$here/table.py" "$out/raw"
+echo
+echo "## G1 — Avra beside Go on THIS machine (gate: 2x time, 3x memory)"
+python3 "$here/table.py" "$out/raw" --gates
