@@ -136,12 +136,14 @@ fn read_frame(r: Reader) -> Bytes? {
 /// A torn frame ends this segment; a foreign header drops it whole. The
 /// header is not framed: a store's own print must be readable, and forgeable,
 /// before any frame is trusted.
+type Claim = { digest: string, writer: string }
+
 fn scan_segment(
     pack: Pack,
     path: string,
     raw: Bytes,
     alive: bool,
-    claims: Cell<Map<string, string>>,
+    claims: Cell<Map<string, Claim>>,
     writer: string,
 ) {
     if raw.length == 0 { return }
@@ -183,7 +185,7 @@ fn torn_at(pack: Pack, at: int) {
     if traced() { qtrace("Q\tstore\ttorn\t${at}\n") }
 }
 
-fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, string>>, writer: string) {
+fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, Claim>>, writer: string) {
     let r = reader(body)
     let tag? = ok(r.int()) else { return }
     if tag == CONTENT_TAG {
@@ -207,7 +209,7 @@ fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, string>>, writer: s
 /// still stands: the report is the finding, never a refusal.
 fn claimed(
     pack: Pack,
-    claims: Cell<Map<string, string>>,
+    claims: Cell<Map<string, Claim>>,
     writer: string,
     family: string,
     key: string,
@@ -215,13 +217,12 @@ fn claimed(
 ) {
     let at = action_key(family, key)
     let prior? = claims.get().get(at) else {
-        claims.put(at, "${digest}\t${writer}")
+        claims.put(at, Claim { digest: digest, writer: writer })
         pack.actions.put(at, digest)
         return
     }
-    let parts = prior.split("\t")
-    let was = parts[0]
-    let who = parts[1]
+    let was = prior.digest
+    let who = prior.writer
     if was != digest && who != writer {
         if traced() {
             qtrace(
@@ -229,7 +230,7 @@ fn claimed(
             )
         }
     }
-    claims.put(at, "${digest}\t${writer}")
+    claims.put(at, Claim { digest: digest, writer: writer })
     pack.actions.put(at, digest)
 }
 
@@ -295,7 +296,7 @@ fn opened_at(pack: Pack) {
     let _ = make_dirs(joined_path(root, "bin"))
     let _ = write_text(joined_path(pack.dir, "body-0.pack"), "")
     let _ = write_text(joined_path(pack.dir, "body-0.idx"), "")
-    let claims: Cell<Map<string, string>> = map_cell()
+    let claims: Cell<Map<string, Claim>> = map_cell()
     for name in segments(pack.dir) {
         let at = joined_path(pack.dir, name)
         // LICENSED input.store_io: a segment's own bytes, read to merge it
