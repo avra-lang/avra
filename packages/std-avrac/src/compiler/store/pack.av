@@ -11,9 +11,18 @@
 //! read. Nothing past a torn frame is trusted.
 //!
 //! `body-<rev>.pack`/`.idx` are the SEALED half compaction folds the
-//! segments into; stage 1 writes neither. `lock` is the flock compaction
-//! takes, and the only use of a lock here.
-use @std.io.{read_bytes, write_text, make_dirs, list_dir, opened_for_append, truncate_to, env}
+//! segments into. `lock` is the flock compaction takes, and the only use
+//! of a lock here.
+use @std.io.{
+    read_bytes,
+    write_bytes,
+    make_dirs,
+    list_dir,
+    remove,
+    opened_for_append,
+    truncate_to,
+    env,
+}
 use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list}
 use @std.relation.engine.{map_cell}
@@ -44,11 +53,13 @@ export type Pack = {
     foreign: Cell<bool>,
     skipped: Cell<bool>,
     headed: Cell<bool>,
+    folded: Cell<List<string>>,
     lock_fd: Cell<int>,
 }
 
 /// One store's pack, empty — nothing read from disk until the first ask.
 export fn pack_at(root: string, print: string) -> Pack {
+    let no_folded: List<string> = []
     Pack {
         dir: joined_path(root, "store"),
         print: print,
@@ -59,6 +70,7 @@ export fn pack_at(root: string, print: string) -> Pack {
         foreign: Cell.new(false),
         skipped: Cell.new(false),
         headed: Cell.new(false),
+        folded: Cell.new(no_folded),
         lock_fd: Cell.new(0 - 1),
     }
 }
@@ -132,12 +144,17 @@ fn read_frame(r: Reader) -> Bytes? {
 
 // ── Opening: every segment merged ──
 
+/// One answer CLAIM for an action key. A second claim from ANOTHER writer
+/// that names a different value is a reproducibility defect — the shared
+/// store doubling as a detector of nondeterminism — so it is reported,
+/// naming the key, both value digests and their writers. The later segment
+/// still stands: the report is the finding, never a refusal.
+type Claim = { digest: string, writer: string }
+
 /// Every record in one segment, after its PLAIN header, folded into the pack.
 /// A torn frame ends this segment; a foreign header drops it whole. The
 /// header is not framed: a store's own print must be readable, and forgeable,
 /// before any frame is trusted.
-type Claim = { digest: string, writer: string }
-
 fn scan_segment(
     pack: Pack,
     path: string,
@@ -258,8 +275,8 @@ fn segments(dir: string) -> List<string> {
     [n for n in names if is_segment(n)]
 }
 
-/// Take compaction's lock, if it is free, and hold it for the asked
-/// hold — the skeleton's admission, since stage 1 compacts nothing.
+/// Take compaction's lock, if it is free, hold it, then seal. A process
+/// that cannot take the lock says it skipped and returns without sealing.
 fn admit(pack: Pack) {
     let at = joined_path(pack.dir, "lock")
     let af? = match opened_for_append(at) { .Ok(f) -> f, .Err(_) -> null } else { return }
@@ -272,6 +289,7 @@ fn admit(pack: Pack) {
     }
     pack.lock_fd.set(af.fd)
     hold_ms()
+    seal(pack)
 }
 
 /// A test hook: hold the lock so a second process's admission fails.
@@ -284,8 +302,8 @@ fn hold_ms() {
     let _ = avra_spawn_status("sleep", ["${ms / 1000}.${ms % 1000}"])
 }
 
-/// Read every segment once and build the index; emit the one open line
-/// a warm command's trace counts.
+/// Read every segment and body once and build the index; emit the one open
+/// line a warm command's trace counts.
 fn opened_at(pack: Pack) {
     if pack.opened.get() { return }
     pack.opened.set(true)
@@ -294,16 +312,174 @@ fn opened_at(pack: Pack) {
     let root = dir_of(pack.dir)
     let _ = make_dirs(joined_path(root, "obj"))
     let _ = make_dirs(joined_path(root, "bin"))
-    let _ = write_text(joined_path(pack.dir, "body-0.pack"), "")
-    let _ = write_text(joined_path(pack.dir, "body-0.idx"), "")
+    for name in bodies_asc(pack.dir) {
+        let at = joined_path(pack.dir, name)
+        // LICENSED input.store_io: the sealed body's own bytes, read to merge it
+        let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+        scan_body(pack, raw)
+    }
     let claims: Cell<Map<string, Claim>> = map_cell()
     for name in segments(pack.dir) {
         let at = joined_path(pack.dir, name)
         // LICENSED input.store_io: a segment's own bytes, read to merge it
         let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
         scan_segment(pack, at, raw, writer_alive(name), claims, name)
+        pack.folded.set(pack.folded.get().concat([name]))
     }
     admit(pack)
+}
+
+// ── Compaction: the sealed body ──
+
+fn is_body(name: string) -> bool {
+    name.starts_with("body-") && name.ends_with(".pack") && name != "body-0.pack"
+}
+
+/// A body file's revision, `body-<rev>.pack`. body-0 is the sentinel.
+fn body_rev(name: string) -> int { parse_int(name.substring(5, name.length - 5)) ?? 0 }
+
+fn bodies(dir: string) -> List<string> {
+    // LICENSED input.store_io: the store's own sealed bodies, listed to seal the next
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [n for n in names if is_body(n)]
+}
+
+/// The highest-revision body, or nothing — each seal folds the one before
+/// it, so the newest alone stands for the whole sealed half.
+fn newest_body(dir: string) -> string {
+    mut newest = ""
+    mut best = 0 - 1
+    for name in bodies(dir) {
+        let rev = body_rev(name)
+        if rev > best {
+            best = rev
+            newest = name
+        }
+    }
+    newest
+}
+
+/// Every body, oldest revision first — a torn older body is still seen,
+/// and later revisions win as they merge.
+fn bodies_asc(dir: string) -> List<string> {
+    mut out: List<string> = []
+    mut max = 0
+    for name in bodies(dir) {
+        let rev = body_rev(name)
+        if rev > max { max = rev }
+    }
+    mut rev = 1
+    while rev <= max {
+        for name in bodies(dir) {
+            if body_rev(name) == rev { out = out.concat([name]) }
+        }
+        rev = rev + 1
+    }
+    out
+}
+
+/// SEAL the merged store into `body-<rev>.pack`: one payload frame — a
+/// plain header then a framed record each — wrapped in an outer frame
+/// whose truncated BLAKE3 is the body's footer. A flipped byte anywhere
+/// inside the body fails that footer, so the whole body is torn, never
+/// read. Only the lock holder calls this; a reader holding the old body
+/// keeps its mapping.
+fn seal(pack: Pack) {
+    let rev = body_rev(newest_body(pack.dir)) + 1
+    let p = writer()
+    p.text(MAGIC)
+    p.int(FORMAT_VERSION)
+    p.text(pack.print)
+    for digest, value in pack.content.get() {
+        let body = content_body(digest, value)
+        let _ = p.octets(body)
+        p.text(check_of(body))
+    }
+    for at, digest in pack.actions.get() {
+        let nl = at.index_of("\n") ?? 0
+        let body = action_body(at.substring(0, nl), at.substring(nl + 1, at.length), digest, [])
+        let _ = p.octets(body)
+        p.text(check_of(body))
+    }
+    let payload = p.bytes()
+    let b = writer()
+    b.octets(payload)
+    b.text(check_of(payload))
+    let _ = write_bytes(joined_path(pack.dir, "body-${rev}.pack"), b.bytes())
+    let _ = write_bytes(joined_path(pack.dir, "body-${rev}.idx"), "".bytes())
+    retire(pack)
+    keep_bodies(pack)
+}
+
+/// A sealed body: its one outer frame verified first, so any flipped byte
+/// inside it is torn; then the payload's header and records.
+fn scan_body(pack: Pack, raw: Bytes) {
+    if raw.length == 0 { return }
+    let r = reader(raw)
+    let payload? = read_frame(r) else {
+        torn_at(pack, 0)
+        return
+    }
+    let q = reader(payload)
+    let magic? = ok(q.text()) else {
+        torn_at(pack, 0)
+        return
+    }
+    let version? = ok(q.int()) else {
+        torn_at(pack, 0)
+        return
+    }
+    let print? = ok(q.text()) else {
+        torn_at(pack, 0)
+        return
+    }
+    if magic != MAGIC || version != FORMAT_VERSION || print != pack.print {
+        pack.foreign.set(true)
+        if traced() { qtrace("Q\tstore\tforeign\n") }
+        return
+    }
+    while !q.done() {
+        let before = q.at.get()
+        let body? = read_frame(q) else {
+            torn_at(pack, before)
+            return
+        }
+        applied(pack, body, map_cell(), "")
+    }
+}
+
+/// Every segment whose writer is DEAD folded into the new body, so it can
+/// go; a LIVE writer's segment stays — it appends without the lock, and
+/// unlinking it would silently drop the frames still arriving.
+fn retire(pack: Pack) {
+    for name in pack.folded.get() {
+        if !writer_alive(name) { let _ = remove(joined_path(pack.dir, name)) }
+    }
+}
+
+/// The time-travel window: the last N sealed bodies (default 10,
+/// `AVRA_STORE_REVISIONS`), so `explain` can say what changed.
+fn keep_bodies(pack: Pack) {
+    // LICENSED input.debug_flag: the time-travel window's size, never an input of what is built
+    let raw = env("AVRA_STORE_REVISIONS")
+    let n = if raw == null { 10 } else { parse_int(raw!) ?? 10 }
+    if n < 1 { return }
+    mut count = bodies(pack.dir).length
+    while count > n {
+        mut oldest = ""
+        mut best = 1000000
+        for name in bodies(pack.dir) {
+            let rev = body_rev(name)
+            if rev < best {
+                best = rev
+                oldest = name
+            }
+        }
+        if oldest == "" { return }
+        let _ = remove(joined_path(pack.dir, oldest))
+        let _ = remove(joined_path(pack.dir, "${oldest.substring(0, oldest.length - 5)}.idx"))
+        count = count - 1
+    }
 }
 
 // ── Reading and writing ──
