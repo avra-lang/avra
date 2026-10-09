@@ -1,0 +1,217 @@
+//! THE SEALED BODY — a segment's worth of records folded into one file, and
+//! its index. §6.1's `body-<rev>.pack`: a header, the body's NAMES and
+//! interned READ SETS (compiler/store/names.av), the CONTENT tier
+//! (value digest -> bytes), then per family its META columns — action key,
+//! value digest, set id, revisions — so verification reads no value. The
+//! whole payload is one commit-marked frame, so a half-written or flipped
+//! body is torn and never read.
+//!
+//! `body-<rev>.idx` is §6.1's S4 lookup: a 256-entry fan-out over the action
+//! keys' first byte, the keys sorted, and a parallel offset per key.
+use @std.io.{read_bytes, write_bytes, list_dir}
+use @std.path.{joined_path}
+use @std.relation.stable.{writer, reader, Writer}
+use @std.relation.engine.{list_cell}
+use @std.text.{parse_int}
+use core.{sorted_by, text_before}
+use core.debug.{qtrace, traced}
+
+const BODY_MAGIC: string = "AVRABODY"
+const IDX_MAGIC: string = "AVRABIDX"
+const BODY_VERSION: int = 1
+
+/// §6.1's families, in one fixed order so a body's bytes are deterministic.
+const FAMILIES: List<string> = ["sig", "fp", "unit", "warn", "rows"]
+
+/// The path a sealed body stands at.
+export fn body_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.pack") }
+
+/// The path its index stands at.
+export fn idx_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.idx") }
+
+fn is_body(name: string) -> bool { name.starts_with("body-") && name.ends_with(".pack") }
+
+fn rev_of(name: string) -> int {
+    if !is_body(name) { return 0 - 1 }
+    parse_int(name.substring(5, name.length - 5)) ?? 0 - 1
+}
+
+/// The newest sealed body's path, or nothing when the store has none.
+export fn latest_body(dir: string) -> string? {
+    // LICENSED input.store_io: the store's own bodies, listed to find the newest
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    let bodies = [n for n in names if is_body(n)]
+    if bodies.is_empty() { return null }
+    mut best = 0 - 1
+    for n in bodies {
+        if rev_of(n) > best { best = rev_of(n) }
+    }
+    if best < 0 { return null }
+    body_path(dir, best)
+}
+
+/// A payload behind its commit marker, so a torn body is one `read_frame` away.
+fn framed(payload: Bytes) -> Bytes {
+    let w = writer()
+    w.octets(payload)
+    w.text(check_of(payload))
+    w.bytes()
+}
+
+// ── Sealing ──
+
+/// Fold this pack's index into one `body-<rev>.pack` + `.idx`. False when
+/// there is nothing to seal or the seal cannot be written; the caller then
+/// leaves the segments as the store.
+export fn seal(pack: Pack) -> bool {
+    let keys = sorted_by(pack.records.get().keys(), text_before)
+    if keys.is_empty() { return false }
+    let rev = pack.rev.get() + 1
+    let payload = body_payload(pack, keys, rev)
+    let idx = idx_payload(keys, rev)
+    if !wrote(idx_path(pack.dir, rev), idx) { return false }
+    if !wrote(body_path(pack.dir, rev), framed(payload)) { return false }
+    true
+}
+
+fn wrote(at: string, bytes: Bytes) -> bool {
+    match write_bytes(at, bytes) { .Ok(_) -> true, .Err(_) -> false }
+}
+
+/// The body's bytes: header · names · sets · content · per-family meta.
+fn body_payload(pack: Pack, keys: List<string>, rev: int) -> Bytes {
+    let n = names()
+    let s = sets()
+    for k in keys {
+        let h? = record_of(pack, k) else { continue }
+        for r in h.read { let _ = n.intern(r) }
+    }
+    for k in keys {
+        let h? = record_of(pack, k) else { continue }
+        let _ = s.intern(named_ids(n, h.read))
+    }
+    let w = writer()
+    w.text(BODY_MAGIC)
+    w.int(BODY_VERSION)
+    w.int(rev)
+    w.text(pack.print)
+    w.octets(n.encode())
+    w.octets(s.encode())
+    let content = sorted_by(pack.content.get().keys(), text_before)
+    w.count(content.length)
+    for c in content {
+        let value? = pack.content.get().get(c) else { continue }
+        w.text(c)
+        w.text(value)
+    }
+    w.count(FAMILIES.length)
+    for fam in FAMILIES {
+        w.text(fam)
+        let mine = [k for k in keys if record_of(pack, k)?.family == fam]
+        w.count(mine.length)
+        for k in mine {
+            let h? = record_of(pack, k) else { continue }
+            w.text(h.key)
+            w.text(h.digest)
+            w.int(s.intern(named_ids(n, h.read)))
+            w.int(rev)
+            w.int(rev)
+        }
+    }
+    w.bytes()
+}
+
+fn record_of(pack: Pack, at: string) -> Held? { pack.records.get().get(at) }
+
+fn named_ids(n: Names, read: List<string>) -> List<int> {
+    [n.id_of(r) ?? 0 for r in read]
+}
+
+/// The index: a 256 fan-out (cumulative), the action keys sorted, one offset
+/// each.
+fn idx_payload(keys: List<string>, rev: int) -> Bytes {
+    let counts: Cell<List<int>> = list_cell()
+    for _k in 0..256 { counts.push(0) }
+    for k in keys {
+        let b = first_byte(k)
+        counts.set_at(b, counts.get()[b] + 1)
+    }
+    let w = writer()
+    w.text(IDX_MAGIC)
+    w.int(BODY_VERSION)
+    w.int(rev)
+    w.int(keys.length)
+    mut acc = 0
+    for b in 0..256 {
+        acc = acc + counts.get()[b]
+        w.int(acc)
+    }
+    for k in keys { w.text(k) }
+    for i, k in keys.enumerate() { w.int(i) }
+    w.bytes()
+}
+
+/// The byte an action key's first two hex characters spell.
+fn first_byte(k: string) -> int {
+    if k.length < 2 { return 0 }
+    hex_val(k.substring(0, 1)) * 16 + hex_val(k.substring(1, 2))
+}
+
+fn hex_val(c: string) -> int { "0123456789abcdef".index_of(c) }
+
+// ── Reading ──
+
+/// Read the newest body into the pack — before the segments, so a later
+/// segment wins. A torn or foreign body is ignored, and says so once.
+export fn body_scan(pack: Pack) {
+    let at? = latest_body(pack.dir) else { return }
+    // LICENSED input.store_io: the store's own body, read to merge it
+    let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+    let r = reader(raw)
+    let payload? = read_frame(r) else {
+        torn_at(pack, 0)
+        return
+    }
+    let _ = body_read(pack, payload)
+}
+
+fn body_read(pack: Pack, payload: Bytes) -> bool {
+    let r = reader(payload)
+    let magic? = ok(r.text()) else { return false }
+    if magic != BODY_MAGIC { return false }
+    let version? = ok(r.int()) else { return false }
+    if version != BODY_VERSION { return false }
+    let rev? = ok(r.int()) else { return false }
+    let print? = ok(r.text()) else { return false }
+    if print != pack.print {
+        pack.foreign.set(true)
+        if traced() { qtrace("Q\tstore\tforeign\n") }
+        return false
+    }
+    let names_bytes? = ok(r.octets()) else { return false }
+    let n? = names_from(names_bytes) else { return false }
+    let sets_bytes? = ok(r.octets()) else { return false }
+    let s? = sets_from(sets_bytes) else { return false }
+    let content? = ok(r.count()) else { return false }
+    for _k in 0..content {
+        let digest? = ok(r.text()) else { return false }
+        let value? = ok(r.text()) else { return false }
+        pack.content.put(digest, value)
+    }
+    let families? = ok(r.count()) else { return false }
+    for _f in 0..families {
+        let fam? = ok(r.text()) else { return false }
+        let count? = ok(r.count()) else { return false }
+        for _m in 0..count {
+            let key? = ok(r.text()) else { return false }
+            let digest? = ok(r.text()) else { return false }
+            let sid? = ok(r.int()) else { return false }
+            let _changed? = ok(r.int()) else { return false }
+            let _verified? = ok(r.int()) else { return false }
+            held(pack, fam, key, digest, [n.text_of(id) for id in s.members(sid)])
+        }
+    }
+    if !r.done() { return false }
+    pack.rev.set(rev)
+    true
+}
