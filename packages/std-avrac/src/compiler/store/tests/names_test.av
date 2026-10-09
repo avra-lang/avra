@@ -1,0 +1,122 @@
+// The name table and the interned read sets stand alone: bytes in, the
+// same ids and texts out, one hash per set per revision.
+use compiler.store.{Names, names, names_from, Sets, sets, sets_from}
+use core.{list_eq}
+
+fn name_table(texts: List<string>) -> Names {
+    let t = names()
+    for x in texts { let _ = t.intern(x) }
+    t
+}
+
+fn table_texts(t: Names) -> List<string> { [t.text_of(i) for i in 0..t.length()] }
+
+fn set_of(groups: List<List<int>>) -> Sets {
+    let s = sets()
+    for g in groups { let _ = s.intern(g) }
+    s
+}
+
+spec "compiler/store/names — the front-coded name table" {
+    given "a table built by interning" {
+        then "an id is the name's sorted position" {
+            let t = name_table(["rose", "ash", "oak"])
+            t.text_of(0) == "ash" && t.text_of(1) == "oak" && t.text_of(2) == "rose"
+        }
+        then "interning the same name twice answers one id" {
+            let t = names()
+            let a = t.intern("oak")
+            let b = t.intern("oak")
+            a == b && t.length() == 1
+        }
+        then "a name that sorts earlier moves the id a later lookup answers" {
+            let t = names()
+            let _ = t.intern("oak")
+            let _ = t.intern("ash")
+            t.intern("oak") == 1 && t.text_of(0) == "ash"
+        }
+    }
+    given "front-coding over shared prefixes" {
+        then "encode then decode keeps every id and text" {
+            let t = name_table(
+                [
+                    "compiler/store/names",
+                    "compiler/store/names/test",
+                    "compiler/store/names_test",
+                    "core",
+                    "core/lists",
+                ],
+            )
+            match names_from(t.encode()) {
+                back? -> list_eq(table_texts(back), table_texts(t), (a, b) -> a == b)
+                null -> false
+            }
+        }
+        then "a run sharing a long prefix spends fewer bytes than the names alone" {
+            let t = name_table(["aaaaaaaaaaaaaaaa", "aaaaaaaaaaaaaaab", "aaaaaaaaaaaaaaac"])
+            t.encode().length < 16 * 3
+        }
+        then "the empty table round-trips" {
+            match names_from(names().encode()) {
+                back? -> back.length() == 0
+                null -> false
+            }
+        }
+        then "truncated bytes are refused, never half read" {
+            let raw = names().encode()
+            names_from(raw.slice(0, raw.length - 1)) == null
+        }
+    }
+}
+
+spec "compiler/store/names — interned read sets" {
+    given "a set is its members" {
+        then "the same members intern once whatever their order" {
+            let s = sets()
+            let a = s.intern([3, 1, 2])
+            let b = s.intern([2, 3, 1])
+            a == b && s.length() == 1
+        }
+        then "members read back rising and once" {
+            let s = sets()
+            let a = s.intern([3, 1, 2, 2])
+            ["${m}" for m in s.members(a)].join(",") == "1,2,3"
+        }
+        then "a different run is a different set" {
+            let s = sets()
+            let a = s.intern([1, 2])
+            let b = s.intern([1, 3])
+            a != b && s.length() == 2
+        }
+    }
+    given "encode then decode" {
+        then "the sets and their interning survive bytes" {
+            let s = set_of([[5, 1], [9], [], [1, 5]])
+            match sets_from(s.encode()) {
+                back? -> back.length() == 3 && back.intern([1, 5]) == s.intern([1, 5])
+                null -> false
+            }
+        }
+        then "truncated bytes are refused" {
+            let raw = sets().encode()
+            sets_from(raw.slice(0, raw.length - 1)) == null
+        }
+    }
+    given "one hash per set per revision" {
+        then "the same members at one revision share one hash" {
+            let s = sets()
+            let a = s.intern([4, 2])
+            let b = s.intern([2, 4])
+            s.hash_of(a, 7) == s.hash_of(b, 7)
+        }
+        then "different members hash apart" {
+            let s = sets()
+            s.hash_of(s.intern([1, 2]), 7) != s.hash_of(s.intern([1, 2, 3]), 7)
+        }
+        then "a revision is part of the hash" {
+            let s = sets()
+            let a = s.intern([1, 2])
+            s.hash_of(a, 7) != s.hash_of(a, 8)
+        }
+    }
+}
