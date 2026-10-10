@@ -1764,24 +1764,30 @@ fn read_wire(r: RunRead) -> string {
     )
 }
 
+/// A hex cell read back: empty text for an empty cell. `split` DROPS a run's
+/// trailing empty run, so a cell that was written empty arrives absent.
+fn unhex_text(s: string) -> string? {
+    if s.is_empty() { return "" }
+    let b? = unhex(s) else { return null }
+    b.text()
+}
+
 /// `read_wire` read back — a legacy part with no `~` is a path alone, a read
-/// whose file was named before a declaration rode it.
+/// whose file was named before a declaration rode it. The cell count is read
+/// by PADDING, never by the split alone: a read whose ref and print are both
+/// empty (a plain read) ends `~~`, and `split` drops those trailing empties.
 fn read_of_wire(s: string) -> RunRead? {
     if !s.contains("~") {
-        let p? = unhex(s) else { return null }
-        let text? = p.text() else { return null }
+        let text? = unhex_text(s) else { return null }
         return RunRead { path: text, digest: "", ref: "", print: "" }
     }
     let xs = s.split("~")
-    if xs.length != 4 { return null }
-    let p? = unhex(xs[0]) else { return null }
-    let dg? = unhex(xs[1]) else { return null }
-    let rf? = unhex(xs[2]) else { return null }
-    let pr? = unhex(xs[3]) else { return null }
-    let pt? = p.text() else { return null }
-    let dt? = dg.text() else { return null }
-    let rt? = rf.text() else { return null }
-    let qt? = pr.text() else { return null }
+    if xs.length > 4 { return null }
+    let cells = xs.concat(["", "", "", ""]).slice(0, 4)
+    let pt? = unhex_text(cells[0]) else { return null }
+    let dt? = unhex_text(cells[1]) else { return null }
+    let rt? = unhex_text(cells[2]) else { return null }
+    let qt? = unhex_text(cells[3]) else { return null }
     RunRead { path: pt, digest: dt, ref: rt, print: qt }
 }
 

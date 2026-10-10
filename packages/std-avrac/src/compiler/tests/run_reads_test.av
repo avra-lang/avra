@@ -2,7 +2,7 @@
 // whose run asks: the record names it, so the file is held only while
 // that text stands.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
+use compiler.{Workspace, RunRead, reads_field, reads_of}
 use compiler.host.{memory_host}
 
 const RUN_READS_MAIN: string = "/w/src/main.av"
@@ -44,5 +44,26 @@ spec "compiler/settle — a run's read of the world is recorded" {
         let _ = ws.run_read(f, "/w/src/data.txt")
         let _ = ws.run_read(f, "/w/src/data.txt")
         run_reads_of(ws) == "/w/src/data.txt"
+    }
+}
+
+spec "compiler/record — a read's wire round-trips, empty cells included" {
+    then "a plain read — no ref, no print — survives" {
+        let r = RunRead { path: "/w/src/data.txt", digest: "d", ref: "", print: "" }
+        let wire = reads_field([r])
+        let xs = reads_of(wire) ?? []
+        xs.length == 1 && reads_field(xs) == wire
+    }
+    then "a held declaration's read — no print — survives" {
+        let r = RunRead { path: "/w/src/data.txt", digest: "d", ref: "r", print: "" }
+        let wire = reads_field([r])
+        let xs = reads_of(wire) ?? []
+        xs.length == 1 && reads_field(xs) == wire
+    }
+    then "a read with no digest, ref or print survives" {
+        let r = RunRead { path: "/w/src/data.txt", digest: "", ref: "", print: "" }
+        let wire = reads_field([r])
+        let xs = reads_of(wire) ?? []
+        xs.length == 1 && reads_field(xs) == wire
     }
 }
