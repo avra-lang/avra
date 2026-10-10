@@ -1,5 +1,6 @@
-# THE DETERMINISTIC WATCHER. No LLM, one pass every two minutes and after
-# every `checks` run: a PR whose `test` failed is told the exact failing
+# THE DETERMINISTIC WATCHER. No LLM, one pass every five minutes — GitHub's
+# floor for a schedule, best-effort — and after every `checks` or `auto-merge`
+# run and every push to `main`: a PR whose `test` failed is told the exact failing
 # `job — line` and has its failed jobs re-run once; a green, mergeable PR
 # is enqueued, but only while the queue holds fewer than `AVRA_QUEUE_MAX`
 # entries (default 3), since N full trains in flight saturate the runners
@@ -20,10 +21,12 @@ name: pr-watcher
 
 on:
   schedule:
-    - cron: "*/2 * * * *"
+    - cron: "*/5 * * * *"
   workflow_run:
-    workflows: [checks]
+    workflows: [checks, auto-merge]
     types: [completed]
+  push:
+    branches: [main]
   workflow_dispatch:
 
 # One watcher at a time: two passes racing would double an action.
