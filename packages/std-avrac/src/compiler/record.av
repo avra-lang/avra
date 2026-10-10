@@ -89,7 +89,10 @@ fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
 /// its text digest at write, and — when the run read a DECLARATION of it — that
 /// declaration's ref and its syntax hash at write. A read with no declaration, or
 /// one whose file was held, keeps empty ref and print and is judged by its text.
-export type RunRead = { path: string, digest: string, ref: string, print: string }
+/// `outline` is the read file's declaration outline at write: a renamed, added or
+/// removed declaration beside the one read moves the reader's module interface
+/// without moving the read itself, and is known from syntax alone.
+export type RunRead = { path: string, digest: string, ref: string, print: string, outline: string }
 
 /// WHERE ONE FILE STANDS IN ITS MODULE'S RECORD: its `file` line, and the run of its
 /// declaration lines — a record lists a file's declarations together — and the
@@ -1755,11 +1758,17 @@ fn hex_fields_of(field: string) -> List<string>? {
     [x! for x in xs]
 }
 
-/// ONE READ as one field: its four texts hexed, `~` between. Hexing each keeps
+/// ONE READ as one field: its five texts hexed, `~` between. Hexing each keeps
 /// a print holding `~`, `|` or a tab from spending the field's own separators.
 fn read_wire(r: RunRead) -> string {
     joined(
-        [hex(r.path.bytes()), hex(r.digest.bytes()), hex(r.ref.bytes()), hex(r.print.bytes())],
+        [
+            hex(r.path.bytes()),
+            hex(r.digest.bytes()),
+            hex(r.ref.bytes()),
+            hex(r.print.bytes()),
+            hex(r.outline.bytes()),
+        ],
         "~",
     )
 }
@@ -1773,22 +1782,24 @@ fn unhex_text(s: string) -> string? {
 }
 
 /// `read_wire` read back — a legacy part with no `~` is a path alone, a read
-/// whose file was named before a declaration rode it. The cell count is read
-/// by PADDING, never by the split alone: a read whose ref and print are both
-/// empty (a plain read) ends `~~`, and `split` drops those trailing empties.
+/// whose file was named before a declaration rode it. The cells are read
+/// through core's `wire_fields` — which keeps the empty LAST cell `split`
+/// drops — then padded to four: a plain read ends `~~~`, and a raw split
+/// reads it two cells short.
 fn read_of_wire(s: string) -> RunRead? {
     if !s.contains("~") {
         let text? = unhex_text(s) else { return null }
-        return RunRead { path: text, digest: "", ref: "", print: "" }
+        return RunRead { path: text, digest: "", ref: "", print: "", outline: "" }
     }
-    let xs = s.split("~")
-    if xs.length > 4 { return null }
-    let cells = xs.concat(["", "", "", ""]).slice(0, 4)
+    let parts = wire_fields(s, "~")
+    if parts.length > 5 { return null }
+    let cells = parts.concat(["", "", "", "", ""]).slice(0, 5)
     let pt? = unhex_text(cells[0]) else { return null }
     let dt? = unhex_text(cells[1]) else { return null }
     let rt? = unhex_text(cells[2]) else { return null }
     let qt? = unhex_text(cells[3]) else { return null }
-    RunRead { path: pt, digest: dt, ref: rt, print: qt }
+    let ot? = unhex_text(cells[4]) else { return null }
+    RunRead { path: pt, digest: dt, ref: rt, print: qt, outline: ot }
 }
 
 /// A list of reads as one record field, each a `read_wire`.
