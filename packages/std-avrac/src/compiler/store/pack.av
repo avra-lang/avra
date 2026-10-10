@@ -60,6 +60,10 @@ export type Pack = {
     records: Cell<Map<string, Held>>,
     content: Cell<Map<string, string>>,
     opened: Cell<bool>,
+    /// Whether a WRITER has taken the compaction lock and sealed. An
+    /// inspection opens the index and never sets this, so the same pack can
+    /// be read by an inspection and written by a check in one process.
+    admitted: Cell<bool>,
     torn: Cell<bool>,
     foreign: Cell<bool>,
     skipped: Cell<bool>,
@@ -77,6 +81,7 @@ export fn pack_at(root: string, print: string) -> Pack {
         records: map_cell(),
         content: map_cell(),
         opened: Cell.new(false),
+        admitted: Cell.new(false),
         torn: Cell.new(false),
         foreign: Cell.new(false),
         skipped: Cell.new(false),
@@ -315,25 +320,31 @@ fn hold_ms() {
 }
 
 /// Read every sealed body and every segment once and build the index; emit
-/// the one open line a warm command's trace counts.
-fn opened_at(pack: Pack) {
-    if pack.opened.get() { return }
-    pack.opened.set(true)
-    if traced() { qtrace("Q\tstore\topen\t${pack.dir}\n") }
-    let _ = make_dirs(pack.dir)
-    let root = dir_of(pack.dir)
-    let _ = make_dirs(joined_path(root, "obj"))
-    let _ = make_dirs(joined_path(root, "bin"))
-    body_scan(pack)
-    let claims: Cell<Map<string, Claim>> = map_cell()
-    for name in segments(pack.dir) {
-        let at = joined_path(pack.dir, name)
-        // LICENSED input.store_io: a segment's own bytes, read to merge it
-        let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-        scan_segment(pack, at, raw, writer_alive(name), claims, name)
-        pack.folded.set(pack.folded.get().concat([name]))
+/// the one open line a warm command's trace counts. COMPACTION IS A WRITER'S
+/// ACT: `read_only` builds the index and never takes the lock or seals, so an
+/// inspection leaves the store exactly as it found it.
+fn opened_at(pack: Pack, read_only: bool) {
+    if !pack.opened.get() {
+        pack.opened.set(true)
+        if traced() { qtrace("Q\tstore\topen\t${pack.dir}\n") }
+        body_scan(pack)
+        let claims: Cell<Map<string, Claim>> = map_cell()
+        for name in segments(pack.dir) {
+            let at = joined_path(pack.dir, name)
+            // LICENSED input.store_io: a segment's own bytes, read to merge it
+            let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+            scan_segment(pack, at, raw, writer_alive(name), claims, name)
+            pack.folded.set(pack.folded.get().concat([name]))
+        }
     }
-    admit(pack)
+    if !read_only && !pack.admitted.get() {
+        pack.admitted.set(true)
+        let _ = make_dirs(pack.dir)
+        let root = dir_of(pack.dir)
+        let _ = make_dirs(joined_path(root, "obj"))
+        let _ = make_dirs(joined_path(root, "bin"))
+        admit(pack)
+    }
 }
 
 /// Every segment whose writer is DEAD folded into the new body, so it can
@@ -377,13 +388,13 @@ fn oldest_body(dir: string) -> string {
 
 // ── Reading and writing ──
 
-export fn pack_has(pack: Pack, family: string, key: string) -> bool {
-    opened_at(pack)
+export fn pack_has(pack: Pack, family: string, key: string, read_only: bool = false) -> bool {
+    opened_at(pack, read_only)
     pack.records.get().has(action_key(family, key))
 }
 
-export fn pack_get(pack: Pack, family: string, key: string) -> string? {
-    opened_at(pack)
+export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = false) -> string? {
+    opened_at(pack, read_only)
     let held? = pack.records.get().get(action_key(family, key)) else { return null }
     pack.content.get().get(held.digest)
 }
@@ -413,7 +424,7 @@ fn kill_at_commit() {
 }
 
 export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
-    opened_at(pack)
+    opened_at(pack, false)
     let digest = content_digest(value)
     if !pack.content.get().has(digest) {
         append(pack, content_body(digest, value))
