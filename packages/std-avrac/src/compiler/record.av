@@ -16,10 +16,9 @@ use core.{
     Plain,
     wire_fields,
     some_list,
-    new_digest,
-    digest_text,
-    digest_key,
+    hex,
     digest_of,
+    blake_key,
     joined,
     sorted_texts,
     distinct,
@@ -314,7 +313,13 @@ fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> s
     let key = "${m.text()}\t${path}"
     let known: string? = ws.keys.object_keys.get().get(key)
     if known != null { return known! }
-    let made = key_of_parts(ws.key_parts_cached(store, m, path))
+    // THE BUILD MODE JOINS: one store serves every compiler AND every target, so a
+    // host object and a wasm object for one source must not share a key. `built_for`
+    // clears this table, since a mode that moved leaves every key stale.
+    let made = node_key(
+        Stored.Obj,
+        [ws.compiler_id(), key_of_parts(ws.key_parts_cached(store, m, path))],
+    )
     ws.keys.object_keys.put(key, made)
     made
 }
@@ -1168,12 +1173,8 @@ fn kind_of_word(word: string) -> DeclKind? {
 /// A module with no record yet, as its files' bytes: it over-invalidates, never under.
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
 export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
-    mut d = new_digest()
-    for path in sorted_texts(ws.module_files(m)) {
-        d = digest_text(d, path)
-        d = digest_text(d, ws.text_digest(path))
-    }
-    digest_key(d)
+    let lines = [fields_wire([path, ws.text_digest(path)]) for path in sorted_texts(ws.module_files(m))]
+    blake_key(fields_wire(lines))
 }
 
 /// WHAT A DEPENDENT KEYS ON: a module's interface digest, from its record. A record's
@@ -1460,17 +1461,21 @@ fn enclosings(name: string) -> List<string> {
     [joined(segments.slice(0, k), ".") for k in 1..segments.length + 1]
 }
 
-/// The key a file's parts digest to.
+/// The key a file's parts digest to — BLAKE3 over an arity-folded encoding of every
+/// part, so a member that moved what a part folds to moves the object key.
 fn key_of_parts(k: KeyParts) -> string {
-    mut d = new_digest()
-    d = digest_text(d, k.module)
-    if k.path != "" {
-        d = digest_text(d, k.path)
-        d = digest_text(d, k.text)
-    }
-    for r in k.runs { d = digest_text(d, r) }
-    d = digest_text(d, fields_wire(k.gathered))
-    digest_key(digest_text(d, seen_digest(k.seen)))
+    blake_key(
+        fields_wire(
+            [
+                k.module,
+                k.path,
+                k.text,
+                fields_wire(k.runs),
+                fields_wire(k.gathered),
+                seen_digest(k.seen),
+            ],
+        ),
+    )
 }
 
 /// Where a file's key parts are kept: under its PATH, so the parts a key was made
