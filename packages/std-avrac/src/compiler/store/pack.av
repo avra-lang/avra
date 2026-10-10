@@ -58,6 +58,7 @@ export type Pack = {
     dir: string,
     print: string,
     records: Cell<Map<string, Held>>,
+    withdrawn: Cell<Map<string, bool>>,
     content: Cell<Map<string, string>>,
     opened: Cell<bool>,
     /// Whether a WRITER has taken the compaction lock and sealed. An
@@ -79,6 +80,7 @@ export fn pack_at(root: string, print: string) -> Pack {
         dir: joined_path(root, "store"),
         print: print,
         records: map_cell(),
+        withdrawn: map_cell(),
         content: map_cell(),
         opened: Cell.new(false),
         admitted: Cell.new(false),
@@ -390,20 +392,26 @@ fn oldest_body(dir: string) -> string {
 
 export fn pack_has(pack: Pack, family: string, key: string, read_only: bool = false) -> bool {
     opened_at(pack, read_only)
-    pack.records.get().has(action_key(family, key))
+    let at = action_key(family, key)
+    !withdrawn(pack, at) && pack.records.get().has(at)
 }
 
 export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = false) -> string? {
     opened_at(pack, read_only)
-    let held? = pack.records.get().get(action_key(family, key)) else { return null }
+    let at = action_key(family, key)
+    if withdrawn(pack, at) { return null }
+    let held? = pack.records.get().get(at) else { return null }
     pack.content.get().get(held.digest)
 }
+
+/// Whether the open has withdrawn this action key since the index was built.
+fn withdrawn(pack: Pack, at: string) -> bool { pack.withdrawn.get().get(at) ?? false }
 
 /// WITHDRAW a key from this open's index: the row reads ABSENT until a later
 /// write names it again, so a replaced row's old value cannot answer.
 export fn pack_forget(pack: Pack, family: string, key: string) {
-    opened_at(pack)
-    pack.records.get().remove(action_key(family, key))
+    opened_at(pack, false)
+    pack.withdrawn.put(action_key(family, key), true)
 }
 
 /// The segment this process owns.
@@ -432,6 +440,7 @@ fn kill_at_commit() {
 
 export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
     opened_at(pack, false)
+    pack.withdrawn.put(action_key(family, key), false)
     let digest = content_digest(value)
     if !pack.content.get().has(digest) {
         append(pack, content_body(digest, value))
