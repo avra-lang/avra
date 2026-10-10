@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timedelta, timezone
 
 PR = "pull_request"
@@ -53,8 +54,7 @@ def plan(prs, queue, trains, state):
         key = f"train:{t['databaseId']}"
         if key in told:
             continue
-        told[key] = True
-        acts.append({"do": "comment", "pr": t["pr"],
+        acts.append({"do": "comment", "pr": t["pr"], "mark": ("told", key),
                      "text": f"train failed: {t['job']} — {t['line']}\n\n"
                              f"Run `sh tools/work land` from the worktree once this is fixed."})
 
@@ -70,11 +70,11 @@ def plan(prs, queue, trains, state):
                 body = f"BLOCKED: {t['job']} — {t['line']}"
                 if want_rerun:
                     body += "\n\nRe-running the failed jobs once."
-                told[key] = True
-                acts.append({"do": "comment", "pr": n, "text": body})
+                acts.append({"do": "comment", "pr": n, "text": body,
+                             "mark": ("told", key)})
             if want_rerun:
-                rerun[f"rerun:{n}:{head}"] = True
-                acts.append({"do": "rerun", "run": t["runId"]})
+                acts.append({"do": "rerun", "run": t["runId"],
+                             "mark": ("rerun", f"rerun:{n}:{head}")})
             continue
         # (b) green, mergeable, unmerged, not queued — enqueue it.
         if (t is not None and t["conclusion"] == "SUCCESS"
@@ -155,17 +155,17 @@ def open_prs(repo):
 def merge_queue(repo):
     owner, name = repo.split("/", 1)
     q = ("{repository(owner:\"%s\",name:\"%s\"){mergeQueue(branch:\"main\")"
-         "{entries(first:100){nodes{state pullRequest{number id headRefOid}}}}}}" % (owner, name))
+         "{entries(first:100){nodes{state pullRequest{number id headRefOid} enqueuedAt}}}}}" % (owner, name))
     out = _gh(["api", "graphql", "-f", f"query={q}", "--jq",
                ".data.repository.mergeQueue.entries.nodes[] | "
-               "[.state, (.pullRequest.number|tostring), .pullRequest.id, .pullRequest.headRefOid] | @tsv"],
+               "[.state, (.pullRequest.number|tostring), .pullRequest.id, .pullRequest.headRefOid, .enqueuedAt] | @tsv"],
               check=False)
     entries = []
     for line in out.splitlines():
         parts = line.split("\t")
-        if len(parts) == 4:
+        if len(parts) == 5:
             entries.append({"state": parts[0], "pr": int(parts[1]), "nodeId": parts[2],
-                            "headSha": parts[3]})
+                            "headSha": parts[3], "enqueuedAt": parts[4]})
     return entries
 
 
@@ -174,18 +174,34 @@ def _merge_group_runs(repo):
                      "--json", "databaseId,conclusion,headBranch,headSha,createdAt"])
 
 
-def _recent_run_prs(runs, minutes):
-    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
-    n = set()
+# (c) fires for a STUCK entry ONLY. An entry is stuck when it has sat more
+# than five minutes with NO merge_group run for it since it was enqueued: a
+# fresh entry has not been picked up yet, and one whose train is running has
+# a run created after it. Churning either cancels an in-flight train.
+STUCK_MINUTES = 5
+
+
+def _entry_stuck(e, runs, now):
+    raw = e.get("enqueuedAt")
+    if not raw:
+        return False  # cannot judge an entry's age: leave it alone
+    try:
+        enq = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if now - enq < timedelta(minutes=STUCK_MINUTES):
+        return False
     for r in runs:
         m = re.search(r"/pr-(\d+)-", r.get("headBranch") or "")
+        if not m or int(m.group(1)) != e["pr"]:
+            continue
         try:
             ts = datetime.fromisoformat((r.get("createdAt") or "").replace("Z", "+00:00"))
         except ValueError:
             continue
-        if m and ts >= cutoff:
-            n.add(int(m.group(1)))
-    return n
+        if ts >= enq - timedelta(seconds=60):
+            return False  # a train started for THIS entry
+    return True
 
 
 def test_of(repo, pr):
@@ -220,12 +236,9 @@ def collect(repo, state):
     q = merge_queue(repo)
     inq = {e["pr"] for e in q}
     runs = _merge_group_runs(repo)
-    # A queued entry is stuck when no train has started on it lately: an
-    # UNMERGEABLE entry stalls the whole queue, and one with no run for ten
-    # minutes was made and never picked up. A run in progress is recent.
-    recent = _recent_run_prs(runs, minutes=10)
+    now = datetime.now(timezone.utc)
     for e in q:
-        e["stuck"] = e["state"] == "UNMERGEABLE" or e["pr"] not in recent
+        e["stuck"] = _entry_stuck(e, runs, now)
     prs = []
     for raw in open_prs(repo):
         p = dict(raw)
@@ -273,22 +286,48 @@ def collect(repo, state):
 
 
 # ---- doing the actions (gh) --------------------------------------------
+def do_action(a, repo, run):
+    if a["do"] == "comment":
+        run(["pr", "comment", str(a["pr"]), "-R", repo, "--body", a["text"]])
+    elif a["do"] == "rerun":
+        run(["run", "rerun", str(a["run"]), "--failed", "-R", repo])
+    elif a["do"] == "enqueue":
+        run(["api", "graphql", "-f",
+             f'mutation={{enqueuePullRequest(input:{{pullRequestId:"{a["node"]}"}}){{clientMutationId}}}}'])
+    elif a["do"] == "enqueue-auto":
+        run(["pr", "merge", str(a["pr"]), "-R", repo, "--auto", "--squash"])
+    elif a["do"] == "dequeue":
+        run(["api", "graphql", "-f",
+             f'mutation={{dequeuePullRequest(input:{{id:"{a["node"]}"}}){{clientMutationId}}}}'])
+    else:
+        raise RuntimeError(f"unknown action {a['do']}")
+
+
 def execute(actions, repo, run=_gh):
-    for a in actions:
-        if a["do"] == "comment":
-            run(["pr", "comment", str(a["pr"]), "-R", repo, "--body", a["text"]])
-        elif a["do"] == "rerun":
-            run(["run", "rerun", str(a["run"]), "--failed", "-R", repo])
-        elif a["do"] == "enqueue":
-            run(["api", "graphql", "-f",
-                 f'mutation={{enqueuePullRequest(input:{{pullRequestId:"{a["node"]}"}}){{clientMutationId}}}}'])
-        elif a["do"] == "enqueue-auto":
-            run(["pr", "merge", str(a["pr"]), "-R", repo, "--auto", "--squash"])
-        elif a["do"] == "dequeue":
-            run(["api", "graphql", "-f",
-                 f'mutation={{dequeuePullRequest(input:{{id:"{a["node"]}"}}){{clientMutationId}}}}'])
-        else:
-            raise RuntimeError(f"unknown action {a['do']}")
+    """Take every action, each in its own try. ONE un-mergeable PR (a
+    protected branch that refuses auto-merge, a race with a closed PR)
+    must never abort the pass: the failure is named and the rest run.
+    Answers the indices that failed, so their marks are not committed."""
+    failed = []
+    for i, a in enumerate(actions):
+        try:
+            do_action(a, repo, run)
+        except Exception as e:
+            failed.append(i)
+            where = a.get("pr", a.get("run", ""))
+            print(f"pr-watcher: {where} {a['do']} FAILED — {e}", file=sys.stderr)
+    return failed
+
+
+def commit_marks(actions, failed, state):
+    """A SUCCEEDED action's mark is committed; a FAILED one's is not, so
+    the next pass retries exactly it and repeats nothing that worked."""
+    for i, a in enumerate(actions):
+        if i in failed:
+            continue
+        m = a.get("mark")
+        if m:
+            state[m[0]][m[1]] = True
 
 
 def load_state(path):
@@ -371,6 +410,7 @@ def selftest():
     # a failed PR told once, not every pass.
     st = _empty_state()
     first = plan([_pr(1, "FAILURE")], [], [], st)
+    commit_marks(first, [], st)
     second = plan([_pr(1, "FAILURE", test={"conclusion": "FAILURE", "runId": 901,
                                            "attempt": 2, "job": "gate", "line": "x"})],
                   [], [], st)
@@ -382,25 +422,84 @@ def selftest():
     if "tests passed" not in first_cause("1/2 tests passed"):
         sys.exit("pr-watcher: self-test — first_cause missed a test mismatch")
 
+    # (2) THE STUCK PREDICATE IS REAL: a fresh entry and an entry whose train
+    # started are never stuck; only an old entry with no run is.
+    now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    run_after = {"headBranch": "gh-readonly-queue/main/pr-7-abc",
+                 "createdAt": "2026-01-01T11:56:30Z"}
+    old_with_run = {"pr": 7, "enqueuedAt": "2026-01-01T11:55:00Z"}
+    fresh_no_run = {"pr": 8, "enqueuedAt": "2026-01-01T11:59:30Z"}
+    old_no_run = {"pr": 9, "enqueuedAt": "2026-01-01T11:50:00Z"}
+    if _entry_stuck(old_with_run, [run_after], now):
+        sys.exit("pr-watcher: self-test — an entry with a train was called stuck")
+    if _entry_stuck(fresh_no_run, [], now):
+        sys.exit("pr-watcher: self-test — a fresh entry was called stuck")
+    if not _entry_stuck(old_no_run, [], now):
+        sys.exit("pr-watcher: self-test — an entry with no run for 10 minutes was not stuck")
+    if plan([], [{"pr": 8, "nodeId": "N8", "stuck": False},
+                 {"pr": 7, "nodeId": "N7", "stuck": False}], [], _empty_state()) != []:
+        sys.exit("pr-watcher: self-test — a healthy queue produced actions")
+
+    # (1)+(3) ONE FAILING ACTION MUST NOT ABORT THE PASS, AND STATE IS SAVED
+    # WITH ONLY THE SUCCEEDED MARKS: the failed action is retried next pass.
+    acts = plan([_pr(1, "FAILURE")], [],
+                [{"pr": 5, "databaseId": 777, "job": "keepers-a", "line": "x"}],
+                _empty_state())
+    calls = []
+
+    def flaky(args, _calls=calls):
+        _calls.append(args)
+        if args[0] == "run" and args[1] == "rerun":
+            raise RuntimeError("GraphQL: Pull request Protected branch rules not configured")
+
+    failed = execute(acts, "r", flaky)
+    if len(calls) != len(acts) or len(failed) != 1:
+        sys.exit("pr-watcher: self-test — a failed action stopped the pass")
+    st = _empty_state()
+    d = tempfile.mkdtemp(prefix="pr-watcher-selftest-")
+    p = os.path.join(d, "state.json")
+    world = {"prs": [_pr(1, "FAILURE")], "queue": [],
+             "trains": [{"pr": 5, "databaseId": 777, "job": "keepers-a", "line": "x"}]}
+    run_pass(world, st, p, "r", execute_fn=lambda a, r: execute(a, r, flaky))
+    saved = load_state(p)
+    if saved["rerun"] or not saved["told"]:
+        sys.exit("pr-watcher: self-test — state saved a failed mark or lost a succeeded one")
+
+
+def run_pass(world, state, state_path, repo, execute_fn=execute):
+    """One live pass. State is committed and SAVED in a `finally`:
+    whatever an action or the pass itself does, the marks of what
+    SUCCEEDED stand and the next pass retries only what failed."""
+    acts = plan(world["prs"], world["queue"], world["trains"], state)
+    for a in acts:
+        print("pr-watcher:", a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
+    failed = []
+    try:
+        failed = execute_fn(acts, repo)
+    finally:
+        commit_marks(acts, failed, state)
+        save_state(state_path, state)
+    return acts
+
 
 def main(argv):
     if "--self-test" in argv:
         selftest()
-        print(f"pr-watcher: self-test — {len(SELFTEST)} scenario(s) hold")
+        print(f"pr-watcher: self-test — {len(SELFTEST)} plan scenario(s) and the "
+              f"finder/runner cases hold")
         return 0
     repo = os.environ.get("GH_REPO", DEFAULT_REPO)
     state_path = os.environ.get("AVRA_WATCHER_STATE",
                                 os.path.expanduser("~/.avra-pr-watcher/state.json"))
     state = load_state(state_path)
     world = collect(repo, state)
-    acts = plan(world["prs"], world["queue"], world["trains"], state)
-    for a in acts:
-        print("pr-watcher:", a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
     if "--dry-run" in argv:
-        print(f"pr-watcher: dry run — {len(acts)} action(s) not taken")
+        acts = plan(world["prs"], world["queue"], world["trains"], state)
+        for a in acts:
+            print("pr-watcher:", a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
+        print(f"pr-watcher: dry run — {len(acts)} action(s) not taken, state untouched")
         return 0
-    execute(acts, repo)
-    save_state(state_path, state)
+    acts = run_pass(world, state, state_path, repo)
     print(f"pr-watcher: {len(world['prs'])} open PR(s), {len(world['queue'])} queued, "
           f"{len(world['trains'])} failed train(s) — {len(acts)} action(s)")
     return 0
