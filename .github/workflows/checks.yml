@@ -136,11 +136,20 @@ jobs:
       # `make avra` advances one generation, so twice — and one too old to read
       # it (new syntax, a new refusal about its own source) fails that build
       # and the tree BOOTSTRAPS from the committed seed instead.
+      #
+      # `.avra-cache` rides with the binary: a store is one compiler's, so the
+      # restored binary reads its own store for the FIRST self-compile instead
+      # of rebuilding every module (measured: the first compile 517s -> 404s,
+      # the analysis and emit rows reused; `lower` is one program and still
+      # re-runs). The SECOND self-compile is that new compiler's own first
+      # build, so it is cold whatever this cache does.
       - if: steps.plan.outputs.build == '1'
         uses: actions/cache/restore@v4
         id: cache
         with:
-          path: build/avra
+          path: |
+            build/avra
+            .avra-cache
           key: ${{ steps.plan.outputs.key }}
           restore-keys: |
             avrac-
@@ -151,10 +160,19 @@ jobs:
           s=$(date +%s)
           if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
-      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
+      # A CACHE IS SCOPE-BOUND, AND ONLY THE DEFAULT BRANCH CROSSES RUNS: a run
+      # restores caches from its own branch and `main`, never a sibling's, and
+      # each merge-queue train stands on its own throwaway ref — so a compiler
+      # saved by a train (or by a PR's merge ref) is unreachable to every other
+      # train and only churns the store toward eviction. Save on `push` alone,
+      # where the next train and every PR can restore it; `workflow_dispatch` may
+      # write `main`'s scope too. Everything else restores only.
+      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
-          path: build/avra
+          path: |
+            build/avra
+            .avra-cache
           key: ${{ steps.plan.outputs.key }}
       - if: steps.plan.outputs.build == '1'
         uses: actions/upload-artifact@v4
@@ -189,11 +207,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -265,11 +283,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -377,11 +395,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -498,11 +516,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
