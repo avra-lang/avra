@@ -14,13 +14,13 @@
 #   cache-attacks  the build cache attacked — the train's.
 #   test     the ONE required check name: an aggregate that passes iff every
 #            needed job succeeded or was skipped.
-# A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt
-# and idioms on the packages it TOUCHES — no keepers, no untouched packages,
-# no suites, no object build — so a green PR is a fast floor, not a second
-# full gate. The train runs the keepers, the cache attacks, the seed check
-# and every AFFECTED package (dependents included) on the COMBINATION, so
-# nothing lands untested. A failure only the train sees drops the PR one
-# train later; the watcher re-runs a PR's own failed jobs once.
+# A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt on
+# its touched files and `check` on the AFFECTED closure (touched plus every
+# dependent) — no keepers, no suites, no object build — so a green PR is a
+# fast floor that still catches a dependent's broken compile, not a second
+# full gate. The train runs the keepers, the cache attacks, the seed check and
+# the suites over that same affected set on the COMBINATION, so nothing lands
+# untested. The watcher re-runs a PR's own failed jobs once.
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) is a
 # train's over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
@@ -69,11 +69,13 @@ jobs:
       - if: github.event_name != 'push'
         name: base
         run: git fetch -q --depth=20 origin main
-      # WHAT THIS RUN OWES, decided before anything is built. A TRAIN owes the
-      # whole gate over every affected package. A PR owes the minimum: the
-      # packages it TOUCHES (their dependents are the train's), and no
-      # compiler at all when it touches no `.av`, no package and no compiler
-      # source.
+      # WHAT THIS RUN OWES, decided before anything is built. Both a PR and a
+      # train check the packages a diff AFFECTS — touched plus every package
+      # that reaches one (tools/affected_packages.sh, the ONE definition) —
+      # because a change in A that breaks a DEPENDENT B's compile must refuse
+      # on the PR, not wait for a train (#484). A PR still owes no compiler at
+      # all when it touches no `.av`, no package and no compiler source, and it
+      # runs no suite: `check` is the floor, the train runs the programs.
       - id: plan
         name: plan
         run: |
@@ -94,7 +96,9 @@ jobs:
           runtime_base=origin/main
           if [ "$event" = push ]; then runtime_base=HEAD~1; fi
           if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
-          if [ "$event" = merge_group ]; then
+          # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
+          # train adds the suites over it, never a package the PR skipped.
+          if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
             pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD")
           fi
           # Asked for by hand, the run is a train's over EVERY package: the
@@ -106,7 +110,6 @@ jobs:
             pkgs=$(ls packages)
           fi
           if [ "$event" = pull_request ]; then
-            pkgs=$(sh tools/affected_packages.sh --touched origin/main HEAD "$PWD")
             if git diff --quiet origin/main...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
             if [ -z "$changed$pkgs" ] && [ "$compiler" = 0 ]; then build=0; fi
             # a file a PR keeper holds to the compiler wants one built to hold it to
@@ -400,7 +403,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: avra-compiler, path: build }
       # A PR's gate reads the compiler alone: fmt on the changed files and
-      # `check` on the touched packages. It does not untar the objects, does
+      # `check` on the affected packages. It does not untar the objects, does
       # not run the keepers, does not build the wasm target. The train is the
       # gate; the PR is the fast floor under it.
       - name: compiler
