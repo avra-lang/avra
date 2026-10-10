@@ -48,6 +48,7 @@ use core.{
     resymbolled,
     symbols_of,
     static_code_syms,
+    same_reg,
     flatten,
     qtrace,
 }
@@ -327,27 +328,77 @@ impl WireRead {
 
 /// Every fn address the program takes, in a body or a static's slot.
 fn addressed(bodies: List<Body>, statics: List<Static>, shapes: Map<string, string>) -> List<string> {
+    let codes = static_codes(statics)
     distinct_targets(
-        flatten([addressed_in(b, shapes) for b in bodies])
+        flatten([addressed_in(b, shapes, codes) for b in bodies])
             .concat(flatten([addressed_static(s) for s in statics])),
     )
 }
 
-fn addressed_in(b: Body, shapes: Map<string, string>) -> List<string> {
-    flatten([addressed_at(i, b, shapes) for i in b.ins])
+fn addressed_in(b: Body, shapes: Map<string, string>, codes: Map<string, List<string>>) -> List<
+    string,
+> {
+    flatten([addressed_at(i, b, shapes, codes) for i in b.ins])
 }
 
-/// A taken address as `node\tsymbol`: which per-type value node it belongs
-/// to, and the symbol, for the graph to group.
-fn addressed_at(i: Ins, b: Body, shapes: Map<string, string>) -> List<string> {
+/// A taken address as `node\tsymbol`: the value node of the fn TYPE it is
+/// taken with, and the symbol. An `FnAddr` rides the box it is pushed
+/// into; a `StaticAddr` of a box of code rides the read's own type; a site
+/// whose box is unknown rides the fallback.
+fn addressed_at(i: Ins, b: Body, shapes: Map<string, string>, codes: Map<string, List<string>>) -> List<
+    string,
+> {
     match i {
-        .FnAddr(dst, sym) -> ["${values_node_name(shapes, b.reg_types[dst.index])}\t${sym}"],
+        .FnAddr(dst, sym) -> ["${addr_node(b, shapes, dst)}\t${sym}"],
+        .StaticAddr(dst, name) -> static_addr_entries(b, shapes, codes, dst, name),
         rest -> [],
     }
 }
 
-/// A static's fn addresses ride the fallback node: a static box names no
-/// call-site type.
+/// The node a code address belongs to: the type of the box it is pushed
+/// into, never the `int` it is minted at — the box is what a `CallPtr`
+/// sees. A code address no box takes rides the fallback.
+fn addr_node(b: Body, shapes: Map<string, string>, ad: Reg) -> string {
+    let box? = addr_box(b, ad) else { return values_node }
+    values_node_name(shapes, b.reg_types[box.index])
+}
+
+/// The box a pushed code address rides: the first call taking it as its
+/// value seat — slot 0 of the box, the captures after.
+fn addr_box(b: Body, ad: Reg) -> Reg? { flatten([boxes_holding(i, ad) for i in b.ins]).first() }
+
+fn boxes_holding(i: Ins, ad: Reg) -> List<Reg> {
+    match i {
+        .CallRtVoid(_, args) or .CallRt(_, _, args) -> if pushed_as_value(args, ad) { [args[0]] } else { [] },
+        rest -> [],
+    }
+}
+
+fn pushed_as_value(args: List<Reg>, ad: Reg) -> bool { args.length > 1 && same_reg(args[1], ad) }
+
+/// The entries a `StaticAddr` of a box of code contributes: the read's own
+/// type, which is the fn type a `CallPtr` through the box will see.
+fn static_addr_entries(
+    b: Body,
+    shapes: Map<string, string>,
+    codes: Map<string, List<string>>,
+    dst: Reg,
+    name: string,
+) -> List<string> {
+    let node = values_node_name(shapes, b.reg_types[dst.index])
+    let syms = codes.get(name) ?? []
+    ["${node}\t${sym}" for sym in syms]
+}
+
+/// Every code address a static's boxes name, by the static's own name.
+fn static_codes(statics: List<Static>) -> Map<string, List<string>> {
+    mut by_name: Map<string, List<string>> = {}
+    for s in statics { by_name.set(s.name, static_code_syms(s.boxes)) }
+    by_name
+}
+
+/// A static's fn addresses still ride the fallback too: a `Slot.Code` no
+/// `StaticAddr` in a lowered body names is reachable only there.
 fn addressed_static(s: Static) -> List<string> {
     ["${values_node}\t${sym}" for sym in static_code_syms(s.boxes)]
 }
@@ -378,13 +429,21 @@ fn body_node(shapes: Map<string, string>, b: Body) -> CodeNode {
 }
 
 /// The per-type value nodes a body dispatches through: one per fn type
-/// its `CallPtr` sites call through.
+/// its `CallPtr` sites call through. The box rides seat 0, so that seat's
+/// type is the callee's — the slot-0 code read mints in the code lane's
+/// `int`, which names no fn and would lose every callee.
 fn callptr_nodes(shapes: Map<string, string>, b: Body) -> List<string> {
-    mut out: List<string> = []
-    for i in b.ins {
-        if i is .CallPtr(_, f, _) { out.push(values_node_name(shapes, b.reg_types[f.index])) }
+    distinct_targets([callptr_node(shapes, b, i) for i in b.ins if i is .CallPtr])
+}
+
+fn callptr_node(shapes: Map<string, string>, b: Body, i: Ins) -> string {
+    match i {
+        .CallPtr(_, f, args) -> {
+            let seat = args.first() ?? f
+            values_node_name(shapes, b.reg_types[seat.index])
+        },
+        rest -> values_node,
     }
-    distinct_targets(out)
 }
 
 /// The types a body names: its seats, its answer, its registers.
