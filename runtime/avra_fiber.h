@@ -180,6 +180,10 @@ int64_t avra_vtask_interrupted(int64_t t);
 // The task's unwind bit, as the task itself wears it: what a read of
 // the flag inside that task answers.
 int64_t avra_vtask_unwinding(int64_t t);
+// THE EVALUATOR'S OWN COLD SIDE: the same turn count and the same draw
+// from the schedule as a compiled back-edge. Answers 1 when the
+// evaluator must yield, 0 when the task goes on.
+int64_t avra_vtask_tick_cold(int64_t t);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 int64_t avra_vtask_within_end(int64_t t, int64_t id);
 // The task's deadline, in ns; 0 when none.

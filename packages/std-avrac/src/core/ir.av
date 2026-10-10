@@ -23,18 +23,19 @@ export enum Level { Application, Systems, Bare, Hardware }
 export enum UnOp { Not }
 
 /// A byte the runtime keeps about the running task, which compiled code
-/// reads in place: its unwind bit.
+/// reads in place: its unwind bit, and the tick the source sets so a
+/// checked back-edge can hear time passed.
 @derive(Fingerprint)
-export enum RtFlag { Unwinding }
+export enum RtFlag { Unwinding, Tick }
 
 /// The runtime's own name for the byte.
 export fn flag_symbol(f: RtFlag) -> string {
-    match f { .Unwinding -> "avra_unwinding" }
+    match f { .Unwinding -> "avra_unwinding", .Tick -> "avra_tick" }
 }
 
 /// The flag's word in the IR's text.
 export fn flag_word(f: RtFlag) -> string {
-    match f { .Unwinding -> "unwinding" }
+    match f { .Unwinding -> "unwinding", .Tick -> "tick" }
 }
 
 /// The operator's surface symbol — the projection beside its enum.
@@ -942,6 +943,9 @@ export enum RtHost {
     TaskSettleAll
     TasksPush
     FiberYield
+    /// The checked back-edge's cold side: the source's tick was set, so
+    /// hear a done timer, a standing cancel, and let others run.
+    TickCold
     FiberSleep
     FiberParkFd
     FiberInterrupted
