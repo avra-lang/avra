@@ -2135,7 +2135,7 @@ int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
 
 int64_t avra_scope_end(int64_t id) { return scope_ended(g_current, id); }
 
-void avra_fiber_within_end(int64_t id) { scope_ended(g_current, id); }
+int64_t avra_fiber_within_end(int64_t id) { return scope_ended(g_current, id); }
 
 int64_t avra_task_request(void* task) {
     const Fiber* f = (const Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER];
@@ -2292,7 +2292,7 @@ int64_t avra_vtask_unwinding(int64_t t) { return virtual_at(t)->unwinding; }
 
 int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_at(t), ms); }
 
-void avra_vtask_within_end(int64_t t, int64_t id) { scope_ended(virtual_at(t), id); }
+int64_t avra_vtask_within_end(int64_t t, int64_t id) { return scope_ended(virtual_at(t), id); }
 
 int64_t avra_vtask_deadline(int64_t t) { return virtual_at(t)->deadline; }
 

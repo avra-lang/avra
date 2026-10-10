@@ -174,10 +174,18 @@ impl LowerCx {
         r
     }
 
-    /// The fn leaves unwinding: what a failure runs, then the exit.
+    /// The fn leaves unwinding: with a `within` open, that scope's own
+    /// landing catches it — the frames inside run, and control jumps
+    /// to the landing; with none, what a failure runs, then the exit.
     mut fn unwinds() {
-        self.failing()
-        self.emit(Ins.FnExit(self.exit_answer()))
+        let landing = self.within_loops.last()
+        if landing == null {
+            self.failing()
+            self.emit(Ins.FnExit(self.exit_answer()))
+            return
+        }
+        self.run_from(landing!.frame, null)
+        self.emit(Ins.LoopJump(self.loops.length - 1 - landing!.loop, false))
     }
 
     /// What the cold exit answers. A task's answer rides a CELL, so it

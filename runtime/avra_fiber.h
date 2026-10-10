@@ -117,7 +117,7 @@ int64_t avra_fiber_within(int64_t ms);
 // The innermost scope, `id`, ends (any other traps by name): 1 when the
 // request that stands is this scope's, which then stands no longer.
 int64_t avra_scope_end(int64_t id);
-void avra_fiber_within_end(int64_t id);
+int64_t avra_fiber_within_end(int64_t id);
 // The task's standing request: 0 for none (or a task that has ended), a
 // scope's id when its limit passed, else 1 + the id of the task that
 // cancelled it. ONE STANDS: a task's cancel outranks any scope, an outer
@@ -181,7 +181,7 @@ int64_t avra_vtask_interrupted(int64_t t);
 // the flag inside that task answers.
 int64_t avra_vtask_unwinding(int64_t t);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
-void avra_vtask_within_end(int64_t t, int64_t id);
+int64_t avra_vtask_within_end(int64_t t, int64_t id);
 // The task's deadline, in ns; 0 when none.
 int64_t avra_vtask_deadline(int64_t t);
 // The new task `t` takes the limit `from` stands under, as a compiled
