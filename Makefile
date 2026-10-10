@@ -881,6 +881,7 @@ KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
 	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
 	  t0=$$(date +%s); \
+	  echo "keepers: running $$k" >&2; \
 	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
 	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \
 	done; exit $$fail
