@@ -5,17 +5,23 @@
 #            builds the C objects and package libraries ONCE, and hands both
 #            down as artifacts.
 #   suites   one matrix job PER SHARD, in parallel on their own runners.
-#   keepers  the static keepers and the seed check, on the prepared compiler
-#            — the train's.
+#   keepers-a / keepers-b  the static keepers' two halves, EACH on its own
+#            runner, the clocked ones running first alone.
+#   seed-check  the committed seed builds this tree, ALONE on its own runner
+#            — a compiler build beside the two halves was what the runner's
+#            OOM killed (137), with nothing said.
 #   gate     the changed-file fmt and the packages' idioms.
-#   cache-attacks  the build cache attacked — the train's.
+#   cache-attacks  the build cache attacked — on the train, on main's own
+#                  push, and on a PR that reaches the store or the attacks.
 #   test     the ONE required check name: an aggregate that passes iff every
 #            needed job succeeded or was skipped.
-# A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt,
-# idioms and suites over the packages it TOUCHES; the train runs the keepers,
-# the cache attacks and every AFFECTED package (dependents included) on the
-# COMBINATION, so nothing lands untested and a PR pays the whole gate once,
-# not twice. A failure only the train sees drops the PR one train later.
+# A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt on
+# its touched files and `check` on the AFFECTED closure (touched plus every
+# dependent) — no keepers, no suites, no object build — so a green PR is a
+# fast floor that still catches a dependent's broken compile, not a second
+# full gate. The train runs the keepers, the cache attacks, the seed check and
+# the suites over that same affected set on the COMBINATION, so nothing lands
+# untested. The watcher re-runs a PR's own failed jobs once.
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) is a
 # train's over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
@@ -31,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       only:
-        description: "leave empty for a whole train; `keepers` runs the keepers job alone"
+        description: "leave empty for a whole train; `keepers` runs the keepers and seed-check jobs alone"
         default: ""
 
 # The event is part of the group: a run asked for by hand on a ref never
@@ -57,6 +63,8 @@ jobs:
       packages: ${{ steps.plan.outputs.packages }}
       build: ${{ steps.plan.outputs.build }}
       runtime: ${{ steps.plan.outputs.runtime }}
+      cache: ${{ steps.plan.outputs.cache }}
+      key: ${{ steps.plan.outputs.key }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -64,11 +72,13 @@ jobs:
       - if: github.event_name != 'push'
         name: base
         run: git fetch -q --depth=20 origin main
-      # WHAT THIS RUN OWES, decided before anything is built. A TRAIN owes the
-      # whole gate over every affected package. A PR owes the minimum: the
-      # packages it TOUCHES (their dependents are the train's), and no
-      # compiler at all when it touches no `.av`, no package and no compiler
-      # source.
+      # WHAT THIS RUN OWES, decided before anything is built. Both a PR and a
+      # train check the packages a diff AFFECTS — touched plus every package
+      # that reaches one (tools/affected_packages.sh, the ONE definition) —
+      # because a change in A that breaks a DEPENDENT B's compile must refuse
+      # on the PR, not wait for a train (#484). A PR still owes no compiler at
+      # all when it touches no `.av`, no package and no compiler source, and it
+      # runs no suite: `check` is the floor, the train runs the programs.
       - id: plan
         name: plan
         run: |
@@ -78,6 +88,7 @@ jobs:
           compiler=1
           build=1
           runtime=0
+          cache=0
           if [ "$event" != push ] && [ -z "${{ inputs.only }}" ]; then
             changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
           fi
@@ -89,8 +100,28 @@ jobs:
           runtime_base=origin/main
           if [ "$event" = push ]; then runtime_base=HEAD~1; fi
           if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
-          if [ "$event" = merge_group ]; then
+          # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
+          # train adds the suites over it, never a package the PR skipped.
+          if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
             pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD")
+          fi
+          # THE BUILD CACHE'S OWN ATTACKS RUN WHEREVER THE STORE CAN MOVE: the
+          # train always, main's own push (so a store change main just took is
+          # named on main, not only on a train), and a PR whose diff reaches the
+          # store, the cache's key files or the attacks themselves. A store
+          # rewrite once went PR-green because a PR skips these, and every train
+          # after it failed until the queue stalled.
+          if [ "$event" = merge_group ] || [ "$event" = push ]; then cache=1; fi
+          if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then cache=1; fi
+          if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
+              packages/std-avrac/src/compiler/store \
+              packages/std-avrac/src/compiler/build.av \
+              packages/std-avrac/src/compiler/record.av \
+              packages/std-avrac/src/compiler/answers.av \
+              packages/std-avrac/src/compiler/host/input.av \
+              packages/std-avrac/src/compiler/lower/code_hash.av \
+              'tools/*attack*.sh'; then
+            cache=1
           fi
           # Asked for by hand, the run is a train's over EVERY package: the
           # whole gate on any branch, without a queue entry.
@@ -101,12 +132,14 @@ jobs:
             pkgs=$(ls packages)
           fi
           if [ "$event" = pull_request ]; then
-            pkgs=$(sh tools/affected_packages.sh --touched origin/main HEAD "$PWD")
             if git diff --quiet origin/main...HEAD -- $(sh tools/compiler_paths.sh) ':(exclude,glob)**/tests/**'; then compiler=0; fi
             if [ -z "$changed$pkgs" ] && [ "$compiler" = 0 ]; then build=0; fi
             # a file a PR keeper holds to the compiler wants one built to hold it to
             if ! git diff --quiet origin/main...HEAD -- docs/DIAGNOSTICS.md DOGFOODING.md Makefile 'tools/footprint*' tools/attack.sh; then build=1; fi
           fi
+          # The attacks need a compiler and its objects: a run that owes them
+          # owes the build, even when the diff itself is only the harness.
+          if [ "$cache" = 1 ]; then build=1; fi
           key=$(sh tools/compiler_paths.sh --key)
           shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py 4)
           {
@@ -114,44 +147,79 @@ jobs:
             echo "packages=$(echo $pkgs)"
             echo "build=${build}"
             echo "runtime=${runtime}"
+            echo "cache=${cache}"
             echo "key=avrac-${key}"
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
-          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime packages: $(echo $pkgs)"
-      # THE KEEPERS THAT NEED NO COMPILER, on every PR and before anything is
-      # built: a refusal one of them would speak stops here, in half a minute,
-      # rather than on a train. The train runs every keeper regardless.
-      - if: github.event_name == 'pull_request'
-        name: static keepers
-        run: |
-          s=$(date +%s)
-          make -s keepers-static
-          echo "speed static $(( $(date +%s) - s ))" >> speed.log
+          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime cache=$cache packages: $(echo $pkgs)"
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
       # tree whose compiler is main's takes main's binary and builds nothing.
       # Otherwise the newest cached binary only has to BUILD this tree — one
       # `make avra` advances one generation, so twice — and one too old to read
       # it (new syntax, a new refusal about its own source) fails that build
       # and the tree BOOTSTRAPS from the committed seed instead.
+      #
+      # `.avra-cache` rides with the binary: a store is one compiler's, so the
+      # restored binary reads its own store for the FIRST self-compile instead
+      # of rebuilding every module (measured: the first compile 517s -> 404s,
+      # the analysis and emit rows reused; `lower` is one program and still
+      # re-runs). The SECOND self-compile is that new compiler's own first
+      # build, so it is cold whatever this cache does.
       - if: steps.plan.outputs.build == '1'
         uses: actions/cache/restore@v4
         id: cache
         with:
-          path: build/avra
+          path: |
+            build/avra
+            .avra-cache
           key: ${{ steps.plan.outputs.key }}
           restore-keys: |
             avrac-
             avra-
+      # THE COMPILER, FETCHED FROM WHERE EVERY REF CAN REACH IT. A cache is
+      # ref-scoped — only the default branch's caches cross runs, so a train on
+      # its own `gh-readonly-queue/...` ref can never read what main's push
+      # saved. A release asset is not: main publishes the compiler under its own
+      # source digest, and a run whose cache missed the exact key fetches THAT
+      # instead of rebuilding. The fetch overwrites whatever a prefix restore
+      # left (a stale binary beside a usable `.avra-cache`), and the binary is
+      # smoke-run before it is trusted, so a release built for another image
+      # falls through to the build.
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
+        id: release
+        name: compiler from release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p build
+          if python3 tools/compiler_release.py fetch "${{ steps.plan.outputs.key }}" build/avra \
+             && build/avra --version >/dev/null 2>&1; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "speed compiler 0" >> speed.log
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            rm -f build/avra
+          fi
+      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true'
         name: compiler
         run: |
           s=$(date +%s)
           if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
-      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
+      # A CACHE IS SCOPE-BOUND, AND ONLY THE DEFAULT BRANCH CROSSES RUNS: a run
+      # restores caches from its own branch and `main`, never a sibling's, and
+      # each merge-queue train stands on its own throwaway ref — so a compiler
+      # saved by a train (or by a PR's merge ref) is unreachable to every other
+      # train and only churns the store toward eviction. Save on `push` alone,
+      # where the next train and every PR can restore it; `workflow_dispatch` may
+      # write `main`'s scope too. Everything else restores only.
+      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
-          path: build/avra
+          path: |
+            build/avra
+            .avra-cache
           key: ${{ steps.plan.outputs.key }}
       - if: steps.plan.outputs.build == '1'
         uses: actions/upload-artifact@v4
@@ -159,14 +227,17 @@ jobs:
           name: avra-compiler
           path: build/avra
           retention-days: 1
-      # THE C OBJECTS AND PACKAGE LIBRARIES, built ONCE and handed down: every
-      # job below runs programs, and each used to build these for itself.
-      - if: steps.plan.outputs.build == '1' && github.event_name != 'push'
+      # THE C OBJECTS AND PACKAGE LIBRARIES, built ONCE and handed down to
+      # the jobs that run programs — the keepers, the seed check, the suites,
+      # and the cache attacks. A plain PR runs none of those (its check is fmt
+      # and idioms on the packages it touched), so it pays no object build at
+      # all; a PR that reaches the store runs the attacks and does.
+      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.plan.outputs.cache == '1')
         name: objects and libs
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
           tar -cf avra-build.tar --exclude=build/avra build
-      - if: steps.plan.outputs.build == '1' && github.event_name != 'push'
+      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.plan.outputs.cache == '1')
         uses: actions/upload-artifact@v4
         with:
           name: avra-build
@@ -186,17 +257,41 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
           path: speed-base.metrics
           key: speed-main-prepare-${{ github.sha }}
-  keepers:
+  # THE COMPILER MAIN BUILT, PUBLISHED WHERE A TRAIN CAN READ IT. Only a push to
+  # `main` reaches this job (this workflow fires on no other branch), so no
+  # PR-supplied binary is ever published. The key is the compiler's own source
+  # digest, so the artifact is immutable: one key, one binary, and `publish`
+  # never overwrites one. A train cannot publish here — its tree is the queue's
+  # combination, not main.
+  publish-compiler:
+    needs: [prepare]
+    if: github.event_name == 'push' && needs.prepare.outputs.build == '1'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - name: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x build/avra
+          python3 tools/compiler_release.py publish "${{ needs.prepare.outputs.key }}" build/avra
+
+  keepers-a:
     needs: [prepare]
     if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -214,38 +309,40 @@ jobs:
       # job rebuilds what prepare built from the same commit.
       - name: built
         run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      # ONE LIST, the Makefile's. The keepers held to a clock run first, with
-      # nothing beside them. Then its two halves run SIDE BY SIDE, each in its
-      # own copy of the tree, so nothing one writes under build/ or beside a
-      # package is the other's, and each takes its own build lock. Both run
-      # to the end, and either refusing fails the job. Two, never three: a
-      # third process on these four cores slowed every keeper and failed the
-      # clocked ones.
+      # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
+      # measured against, and it is not the VM's published spec.
+      - name: room
+        run: |
+          echo "room: cpu=$(nproc)"
+          awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "room: memory total %d MB, available %d MB\n", t/1024, a/1024}' /proc/meminfo
+          printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+      # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
+      # runtime-mutations) ARE NOT THIS JOB'S: a runner that held them beside
+      # this half was killed mid-mutation, and their own job is a follow-up.
+      # The Makefile's `make keepers` still holds them.
       #
-      # THE COMMITTED SEED STILL BUILDS THIS TREE, checked after the lighter
-      # half: it links against the runtime and compiles HEAD. No other job
-      # starts from the seed once a cached compiler exists, so a removed
-      # runtime symbol the seed names, or source the seed cannot read, is
-      # refused here before it can land.
+      # EACH HEAVY make PRINTS ITS PEAK (max RSS of the tree it waited on,
+      # read from `getrusage`), so a runner grown past its memory is read
+      # from the log rather than inferred from a 137.
       - name: keepers
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
         run: |
-          alone=0; a=0; b=0
-          make -s -o avra keepers-alone || alone=1
-          cp -a . ../keepers-b
-          tb=$(date +%s)
-          (cd ../keepers-b && export AVRA_BUILD_LOCK=/tmp/avra-build-b.lock && s=0 && { make -s -o avra keepers-b || s=1; } && { t0=$(date +%s); make -s -o avra seed-check || s=1; echo "keepers: seed-check $(( $(date +%s) - t0 ))s"; } && exit $s) > ../keepers-b.log 2>&1 &
-          ta=$(date +%s); make -s -o avra keepers-a > keepers-a.log 2>&1 || a=1; cat keepers-a.log
+          a=0
+          # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
+          # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
+          # skipped with "time: not found". The peak is read from the finished
+          # tree's rusage, which needs nothing from the shell.
+          peak() {
+            peak_label="$1"; shift
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+          }
+          ta=$(date +%s)
+          peak keepers-a make -s -o avra keepers-a || a=1
           echo "speed keepers-a $(( $(date +%s) - ta ))" >> speed.log
-          wait $! || b=1
-          echo "speed keepers-b $(( $(date +%s) - tb ))" >> speed.log
-          echo "::group::keepers-b and seed-check"; cat ../keepers-b.log; echo "::endgroup::"
-          [ "$alone" = 0 ] || echo "::error::a keeper that runs alone refused"
           [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
-          [ "$b" = 0 ] || echo "::error::a keeper in the second half, or the seed check, refused"
-          exit $((alone + a + b))
+          exit "$a"
 
       - name: speed baseline
         uses: actions/cache/restore@v4
@@ -258,23 +355,87 @@ jobs:
         name: speed note
         continue-on-error: true
         run: |
-          sh tools/speed_note.sh collect speed.log keepers-a.log ../keepers-b.log > speed-now.metrics
+          sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
           path: speed-base.metrics
           key: speed-main-keepers-${{ github.sha }}
-  # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
-  # clears the store it builds through, and it runs beside the gate.
+  # THE SECOND HALF, alone on its own runner. It needs only the lowercase
+  # build artifact, and it shares the Makefile's one list with keepers-a —
+  # never a second list kept in step by hand.
+  keepers-b:
+    needs: [prepare]
+    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      - name: built
+        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: keepers
+        env:
+          # the landing tool's supervisor checks need a machine with an init
+          AVRA_NO_SUPERVISOR_TESTS: "1"
+        run: |
+          # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
+          # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
+          # skipped with "time: not found". The peak is read from the finished
+          # tree's rusage, which needs nothing from the shell.
+          peak() {
+            peak_label="$1"; shift
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+          }
+          peak keepers-b make -s -o avra keepers-b || exit 1
+  # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
+  # heaviest single keeper. It stands ALONE: run beside the two halves it was
+  # the third compiler process on one runner, and the OOM killed the whole
+  # keepers job (137) before anything could be said. No other job starts from
+  # the seed once a cached compiler exists, so a removed runtime symbol the
+  # seed names, or source the seed cannot read, is refused here before it can
+  # land — and now a refusal is that job's, not the keepers'.
+  seed-check:
+    needs: [prepare]
+    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      # Handed-down objects stand newer than this checkout's sources, so make
+      # rebuilds none of what prepare built from the same commit.
+      - name: built
+        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: seed check
+        run: |
+          python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
+  # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
+  # through, and it runs beside the gate. It runs on the train, on main's own
+  # push, and on a PR that reaches the store or the attacks — the three places
+  # the cache can move, so the attacks are named where the change is, not only
+  # one train later.
   cache-attacks:
     needs: [prepare]
-    if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.only == '')
+    if: needs.prepare.outputs.cache == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -311,11 +472,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -333,38 +494,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      # The keepers are the train's (its keepers job); a PR's gate is the
-      # changed files' formatting and its touched packages' idioms.
+      # A PR's gate reads the compiler alone: fmt on the changed files and
+      # `check` on the affected packages. It does not untar the objects, does
+      # not run the keepers, does not build the wasm target. The train is the
+      # gate; the PR is the fast floor under it.
+      - name: compiler
+        run: chmod +x build/avra
       - name: gate
-        run: sh tools/gate_changed.sh --files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers
-
-  # THE KEEPERS A PR CAN BREAK ALONE (`make keepers-pr`), under the compiler
-  # the PR built: a refusal stops on the PR instead of failing a train. The
-  # train runs every keeper in its keepers job.
-  pr-keepers:
-    needs: [prepare]
-    if: github.event_name == 'pull_request' && needs.prepare.outputs.build == '1'
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      - name: PR keepers
-        run: make -s -o avra keepers-pr
+        run: |
+          args="--files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers"
+          [ "${{ github.event_name }}" != pull_request ] || args="$args --pr-minimum"
+          sh tools/gate_changed.sh $args
 
   # THE LATENCY GATE A RUNTIME CHANGE OWES: the scheduler's transition
   # rows against the recorded baseline, on the runner the checks' image
@@ -386,7 +526,10 @@ jobs:
         run: make -s flow-gate FLOW_GATE_ARGS=--require
   suites:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.packages != ''
+    # THE TRAIN'S, and a hand-run whole gate's. A PR's check does not run a
+    # suite: the train runs every AFFECTED package (dependents included) on
+    # the combination, which no single PR's tree can. A PR pays fmt + idioms.
+    if: needs.prepare.outputs.packages != '' && (github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.only == ''))
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -432,11 +575,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-now.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && (github.event_name == 'push' || github.event_name == 'merge_group') && hashFiles('speed-base.metrics') != ''
+      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -446,7 +589,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers, pr-keepers, flow-gate, cache-attacks, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, seed-check, flow-gate, cache-attacks, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

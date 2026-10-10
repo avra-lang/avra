@@ -254,6 +254,7 @@ fn new_lower_cx(
     seats: List<SeatValue>,
     seat_marks: List<SeatMark>,
     jobs: Jobs,
+    checks: bool = true,
 ) -> LowerCx {
     LowerCx {
         view: a.view,
@@ -272,6 +273,7 @@ fn new_lower_cx(
         seat_marks: seat_marks,
         fn_ret: fn_ret,
         jobs: jobs,
+        checks: checks,
         deferred: [],
         depth: 0,
     }
@@ -316,6 +318,7 @@ export fn lower_unit(
     w: Wanted,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> Unit {
     // a `collect` carries no body of its own — SYNTHESISED, never
     // parsed (`is_collect_decl`) — so it is exempt from the guard a
@@ -337,6 +340,7 @@ export fn lower_unit(
             externs,
             settle,
             cross,
+            checks,
         )
         w.root != null -> lower_root(
             a,
@@ -347,8 +351,9 @@ export fn lower_unit(
             settle,
             cross,
             if w.decl == null { null } else { a.view.file },
+            checks,
         )
-        w.decl == null -> lower_main(a, w.name, externs, settle, cross)
+        w.decl == null -> lower_main(a, w.name, externs, settle, cross, checks)
         is_collect_decl(a, w.decl!) -> lower_collect(
             a,
             a.view.decls.decl(w.decl!),
@@ -356,8 +361,19 @@ export fn lower_unit(
             externs,
             settle,
             cross,
+            checks,
         )
-        _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle, cross)
+        _ -> lower_fn(
+            a,
+            a.view.decls.decl(w.decl!),
+            w.name,
+            w.sub,
+            w.seats,
+            externs,
+            settle,
+            cross,
+            checks,
+        )
     }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
@@ -379,7 +395,7 @@ export fn lower_unit(
                     )
             }
         } else {
-            let lf = lower_lambda(a, lifts.pop(), externs, settle, cross)
+            let lf = lower_lambda(a, lifts.pop(), externs, settle, cross, checks)
             bodies.push(lf.body)
             spoken = spoken.concat(lf.voices.list)
             wants = wants.concat(lf.jobs.pending)
@@ -998,6 +1014,7 @@ fn lower_fn(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
     let root: ExprId = x.root!
     let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
@@ -1021,7 +1038,11 @@ fn lower_fn(
     // `seat_marks` above, which stays the currency a fn VALUE's TYPE
     // carries.
     let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
-    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross), checks)
+    // an `@unbroken` fn's own `while`s carry no back-edge check — the
+    // cancel pass already decided it: a fn that SPINS has one, and its
+    // bit is false for an `@unbroken` fn
+    lo.unbroken = !(a.view.decls.cancel_bits(x.id)?.spins ?? true)
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.mint_ty(pt) }
     lo.seeded()
@@ -1062,13 +1083,17 @@ fn lower_lambda(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
     let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
     let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross), checks)
+    // a lambda's `while`s wear its maker's law: an `@unbroken` fn's lifted
+    // body carries no back-edge check either
+    lo.unbroken = lj.unbroken
     if lj.kind is .Task { lo.exit = lo.answer_cell(rt) }
     // register 0 is the env box, 1..N the seats
     let _ = lo.mint_ty(lam_ty)
@@ -1199,10 +1224,11 @@ fn lower_collect(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
     let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
     let rt: TypeId = collect_answer_type(a.view.decls, x.file, x.stmt)
-    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross), checks)
     lo.out.seeded()
     lo.seats_enter()
     let r = collect_table_reg(lo, a, rt, p, x.file)
@@ -1519,9 +1545,10 @@ fn lower_root(
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
     home: FileId?,
+    checks: bool = true,
 ) -> LoweredBody {
     let rt: TypeId = a.facts.type_at(root)
-    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross), checks)
     lo.seeded()
     // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
     // `const` seat as its called value, so the settlement computes on
@@ -1566,6 +1593,7 @@ fn lower_state_root(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
     let read_ty: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a
         .view
@@ -1591,7 +1619,7 @@ fn lower_state_root(
     }
     let init = root
     let maybe: TypeId = a.view.decls.types.type(cell_ty?)
-    mut lo = new_lower_cx(a, cell_ty, null, [], [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, cell_ty, null, [], [], new_jobs(externs, settle, cross), checks)
     lo.seeded()
     lo.seats_enter()
     let held = lo.once_read(lo.view.decls.types.shape_of(maybe), w.name)
@@ -1637,8 +1665,9 @@ fn lower_main(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
-    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle, cross), checks)
     lo.scope_enter()
     lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)
