@@ -3,7 +3,7 @@
 //! before any opens.
 use @std.cli.{CliResult, Runnable, command, arg}
 use @std.path.{joined_path}
-use @std.process.{Tool, tool, tool_from_env, ProcessError}
+use @std.process.{Tool, ProcessError}
 use @std.avrac.diagnostics.{Diag, new_source_file, render}
 use @std.avrac.compiler.host.{ToolRow, read_manifest}
 
@@ -58,12 +58,17 @@ fn resolved_text(row: ToolRow) -> string {
     match minted(row) { .Ok(t) -> t.path, .Err(e) -> "NOT FOUND — ${e.describe().message}" }
 }
 
-/// A row minted as the library would, by its provenance.
+/// A row minted as the library would, by its provenance — read through
+/// the door, with the row's own terminator laid over the word's default.
 fn minted(row: ToolRow) -> Result<Tool, ProcessError> {
-    match row.from {
+    let got = match row.from {
         .Path -> tool(row.name),
         .Env -> tool_from_env(row.var ?? "", row.default ?? row.name),
         .Abs -> tool(row.at_path ?? row.name),
+    }
+    match got {
+        .Ok(t) -> .Ok(t with { terminator: row.terminator ?? t.terminator }),
+        .Err(e) -> .Err(e),
     }
 }
 

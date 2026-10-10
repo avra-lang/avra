@@ -319,6 +319,12 @@ fn not_self(pid: int) -> string { "process ${pid} is this one, which does not si
 
 fn not_ours(pid: int) -> string { "process ${pid} is not this user's to signal" }
 
+/// A tool the door has already found: `path` is what the read answered,
+/// and the word's own row names the terminator. No lookup, no PATH.
+export fn tool_at(name: string, path: string) -> Tool {
+    Tool { name: name, path: path, terminator: terminator_of(name) }
+}
+
 /// The one widening from a name to a tool: resolved on the invoker's
 /// PATH now — relative entries never searched — and pinned as an
 /// absolute path for good. A name spelled with a `/` is taken as written.
@@ -327,7 +333,7 @@ export fn tool(name: string) -> Result<Tool, ProcessError> {
     if holed_at >= 0 { fail ProcessError.Holed(name, holed_at) }
     let path = which(name, search_path())
     if path.length == 0 { fail ProcessError.NotFound(name, search_path()) }
-    Tool { name: name, path: path, terminator: terminator_of(name) }
+    tool_at(name, path)
 }
 
 /// A tool named by the environment (`CC`) with a fallback name: the

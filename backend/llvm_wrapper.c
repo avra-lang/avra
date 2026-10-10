@@ -603,6 +603,20 @@ LLVMValueRef avra_llvm_build_load(LLVMBuilderRef b, LLVMTypeRef ty, LLVMValueRef
     return load;
 }
 
+// A RUNTIME FLAG IS SHARED across the scheduler's threads, so its load
+// is atomic: a plain load may be hoisted out of the loop whose back-edge
+// reads it, and the written byte would then never be seen again. The
+// ordering matches the runtime's own `__atomic_load_n(..., RELAXED)`.
+LLVMValueRef avra_llvm_build_load_atomic(LLVMBuilderRef b, LLVMTypeRef ty, LLVMValueRef ptr_val, const char* name) {
+    if (!ty) {
+        fprintf(stderr, "[CRASH] avra_llvm_build_load_atomic: ty is NULL (name=%s)\n", name);
+        abort();
+    }
+    LLVMValueRef load = LLVMBuildLoad2(b, ty, ptr_val, name);
+    LLVMSetOrdering(load, LLVMAtomicOrderingMonotonic);
+    return load;
+}
+
 // Emit a CALL to avra_track_store_i64/ptr that logs and performs the store.
 // Falls back to raw store if the tracking function isn't available.
 static LLVMValueRef tracked_store_or_raw(LLVMBuilderRef b, LLVMValueRef val, LLVMValueRef ptr_val) {

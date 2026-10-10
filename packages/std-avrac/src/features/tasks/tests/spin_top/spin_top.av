@@ -1,0 +1,43 @@
+//! proves: a program whose ONLY spawn and ONLY `while`s are top-level and
+//! a spawned fn is preempted — the top-level spawn is no declaration, so
+//! the cancel pass must survey the entry root to find the scheduler link.
+//! If it does not, no `while` carries a check and the order is one task's
+//! whole run then the other's; both engines draw the same turn.
+extern fn avra_sched_seed(schedule: int)
+extern fn avra_sched_settle() -> int
+extern fn avra_array_sized(n: int) -> ptr
+extern fn avra_array_push(a: ptr, v: int)
+extern fn avra_array_get(a: ptr, i: int) -> int
+
+/// A task that spins a `while`, noting its name at every turn.
+fn spinner(name: int, log: ptr) -> int {
+    mut i = 0
+    while i < 300 {
+        avra_array_push(log, name)
+        i = i + 1
+    }
+    0
+}
+
+/// The order folded to one number, so the whole of it is one line.
+fn folded(log: ptr) -> int {
+    mut sum = 7
+    mut i = 0
+    while i < 600 {
+        sum = (sum * 31 + avra_array_get(log, i)) % 1000000007
+        i = i + 1
+    }
+    sum
+}
+
+avra_sched_seed(7)
+let log = avra_array_sized(640)
+let t = spawn spinner(1, log)
+mut i = 0
+while i < 300 {
+    avra_array_push(log, 2)
+    i = i + 1
+}
+let _ = t.await
+let _ = avra_sched_settle()
+"${folded(log)}"

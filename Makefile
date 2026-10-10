@@ -350,7 +350,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -748,6 +748,21 @@ inputs-accept:
 read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/db_measure/read_cost.sh
 
+# THE SPEED RATCHET, HARD: each phase of `packages/cli`'s own build and
+# check held against a ceiling in tools/speed.budget, refusing past it and
+# naming the phase with its before and after ms. The measurement is the
+# LEAST of warm one-edit rounds (tools/speed_measure.sh), run on the
+# machine the keeper stands on; on macOS it goes to the lane's Sprite
+# (`tools/work run`), since a loaded Mac supplies no number. The gate's
+# fixtures prove the gate before it judges. `speed-accept` lowers the
+# ceilings to what was measured and never raises one.
+speed-ratchet:
+	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@python3 tools/speed_ratchet.py
+speed-accept:
+	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@python3 tools/speed_ratchet.py --accept
+
 idioms:
 	@STATUS=0; CHECKED=0; \
 	for pkg in packages/*/; do \
@@ -874,13 +889,14 @@ no-threads:
 # scheduler), so nothing may compete with them for a core. The mutation run
 # drives the same clocked tests, so it stands here beside them.
 KEEPERS_ALONE = runtime-tests runtime-mutations
-KEEPERS_A = read-cost codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
+KEEPERS_A = read-cost speed-ratchet codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
 	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
 	  t0=$$(date +%s); \
+	  echo "keepers: running $$k" >&2; \
 	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
 	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \
 	done; exit $$fail
@@ -888,7 +904,7 @@ keepers keepers-alone keepers-a keepers-b:
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
-                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh work_test.sh reclaim_test.sh
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh witness_compiler_release.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
@@ -913,7 +929,7 @@ keepers-static:
 # attacks a feature mechanically, in seconds. A refusal stops on the PR
 # instead of failing a train. Each is one of KEEPERS, which the train runs
 # whole.
-KEEPERS_PR = rt-header rt-ns witnesses dogfooding-rules footprint attack
+KEEPERS_PR = rt-header rt-ns witnesses dogfooding-rules footprint attack speed-ratchet
 keepers-pr:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@fail=0; for k in $(KEEPERS_PR); do \

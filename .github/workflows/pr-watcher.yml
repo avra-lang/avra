@@ -1,0 +1,60 @@
+# THE DETERMINISTIC WATCHER. No LLM, one pass every five minutes — GitHub's
+# floor for a schedule, best-effort — and after every `checks` or `auto-merge`
+# run and every push to `main`: a PR whose `test` failed is told the exact failing
+# `job — line` and has its failed jobs re-run once; a green, mergeable PR
+# is enqueued, but only while the queue holds fewer than `AVRA_QUEUE_MAX`
+# entries (default 3), since N full trains in flight saturate the runners
+# and the queue then lands slower with more entries; a queued entry with no
+# train is taken out and put back; a failed train is named on the PR. The
+# decision is a pure function proved against fixtures
+# (tools/pr_watcher.py --self-test), so this job is the same answer every
+# pass.
+#
+# A token a workflow holds with the repository's GITHUB_TOKEN does not
+# start a new workflow for the events it causes; the merge queue's
+# `merge_group` run is one of them. So when the repo has a PAT or app
+# token it is used (`AVRA_QUEUE_TOKEN`), and the GITHUB_TOKEN is the
+# fallback that at least records the entry (`make ci` and the queue
+# keeper still see it). Set AVRA_QUEUE_TOKEN to make the enqueue start
+# its own train.
+name: pr-watcher
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_run:
+    workflows: [checks, auto-merge]
+    types: [completed]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One watcher at a time: two passes racing would double an action.
+concurrency:
+  group: pr-watcher
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with: { sparse-checkout: tools/pr_watcher.py }
+      - name: self-test
+        run: python3 tools/pr_watcher.py --self-test
+      - uses: actions/cache@v4
+        with:
+          path: ~/.avra-pr-watcher
+          key: pr-watcher-${{ github.run_id }}
+          restore-keys: pr-watcher-
+      - env:
+          GH_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          AVRA_QUEUE_MAX: "3"
+        run: python3 tools/pr_watcher.py

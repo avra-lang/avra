@@ -3,16 +3,18 @@
 # tools/gate_changed.sh --files … --packages …`) and the train can never
 # be two instruments.
 #
-#   sh tools/gate_changed.sh --refs <base> <head> [--no-keepers]   # a git tree
-#   sh tools/gate_changed.sh --files <f…> --packages <p…>          # no `.git`
+#   sh tools/gate_changed.sh --refs <base> <head> [--no-keepers] [--pr-minimum]
+#   sh tools/gate_changed.sh --files <f…> --packages <p…> [--pr-minimum]
 #
 # With the tree's OWN compiler (${AVRA:-build/avra}; `tools/work run` builds
 # it from the branch on the lane's Sprite), it runs:
 #   - the keepers (`make keepers`, the Makefile's one list)
 #   - `fmt --check` on the changed `.av`
 #   - `check <pkg> --baseline tools/idioms.baseline` on each affected package
+#   - the wasm target's proof, where its toolchain stands
 # `--no-keepers` is for a caller that already ran them (the train's own
-# keepers step).
+# keepers step). `--pr-minimum` is a PR's fast floor: fmt and idioms only,
+# skipping the wasm proof, which is minutes and belongs to the train.
 set -eu
 avra=${AVRA:-build/avra}
 files=""
@@ -20,6 +22,7 @@ packages=""
 base=""
 head=""
 keepers=1
+pr_minimum=0
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --refs)
@@ -37,6 +40,10 @@ while [ "$#" -gt 0 ]; do
             while [ "$#" -gt 0 ] && [ "${1#--}" = "$1" ]; do packages="$packages $1"; shift; done
             ;;
         --no-keepers) keepers=0; shift ;;
+        # A PR's fast floor: the changed files' fmt and the touched packages'
+        # idioms, and NOT the wasm target's whole proof (its builds and cache
+        # attacks are the train's). The train passes no such flag.
+        --pr-minimum) pr_minimum=1; shift ;;
         *) echo "gate_changed: unknown argument $1" >&2; exit 2 ;;
     esac
 done
@@ -61,8 +68,9 @@ done
 # THE WASM TARGET'S OWN PROOF, where its toolchain stands: the import/export
 # seam, the refusals, the store across targets, and eval == native == wasm.
 # Each SKIPS, spoken, when the toolchain is absent, so a machine without it is
-# not falsely green.
-if command -v clang >/dev/null 2>&1 && clang --print-targets 2>/dev/null | grep -q wasm32; then
+# not falsely green. SKIPPED for a PR's minimum — the wasm builds and cache
+# attacks are minutes, and the train is where the target is proved.
+if [ "$pr_minimum" = 0 ] && command -v clang >/dev/null 2>&1 && clang --print-targets 2>/dev/null | grep -q wasm32; then
     make -s -o avra wasm-runtime wasm-packages >/dev/null 2>&1 || true
     sh tools/wasm-check.sh || { echo "gate_changed: wasm-check refused" >&2; exit 1; }
     sh tools/wasm-seam-check.sh || { echo "gate_changed: wasm-seam refused" >&2; exit 1; }
