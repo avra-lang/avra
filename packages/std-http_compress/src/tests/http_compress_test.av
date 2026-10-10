@@ -1,11 +1,11 @@
 // Content coding as a layer: what a client accepts decides the coding,
 // only what is worth coding is coded, and a coded request body is
-// decoded under a ceiling.
+// decoded_x under a ceiling.
 use @std.http.frame.{framed, limits}
 use @std.http.body.{Body, whole}
 use @std.http.http.{Request, Unrouted, Response, Header, Stream, text, stream_of}
 use @std.http_compress.{Compression, compressed, compressing}
-use @std.compress.{Format, encoded, decoded}
+use @std.compress.{Format, encoded, decoded_x}
 use @std.text.{repeat}
 
 /// A request framed from its fields, carrying `body`.
@@ -55,7 +55,7 @@ fn posted(fields: string, body: Bytes) -> string {
 
 fn gzipped(s: string) -> Bytes { encoded(s.bytes(), Format.Gzip) catch nothing() }
 
-fn back(r: Response, f: Format) -> string { (decoded(r.body, f, 1000000) catch nothing()).text() ?? "?" }
+fn back(r: Response, f: Format) -> string { (decoded_x(r.body, f, 1000000) catch nothing()).text() ?? "?" }
 
 spec "std/http_compress — Accept-Encoding" {
     given "the empty cases, written first" {
@@ -202,7 +202,7 @@ spec "std/http_compress — the request" {
         then "an empty coded body has nothing to decode" { posted("Content-Encoding: gzip\r\nContent-Length: 0\r\n", nothing()) == "200 - - " }
     }
     given "a coded body" {
-        then "gzip is decoded and its fields dropped" { posted("Content-Encoding: gzip\r\nContent-Length: 32\r\n", gzipped("hello")) == "200 - - hello" }
+        then "gzip is decoded_x and its fields dropped" { posted("Content-Encoding: gzip\r\nContent-Length: 32\r\n", gzipped("hello")) == "200 - - hello" }
         then "br" {
             posted(
                 "Content-Encoding: br\r\n",
@@ -252,7 +252,7 @@ fn streamed() -> Response {
     ) }
 }
 
-/// The coded stream drained and decoded back, or a word about the wreck.
+/// The coded stream drained and decoded_x back, or a word about the wreck.
 fn coded_read(f: Format) -> string {
     let r = answered("Accept-Encoding: br, gzip\r\n", streamed())
     match r.stream {
@@ -265,7 +265,7 @@ fn coded_read(f: Format) -> string {
                 }
             }
             s.ended()
-            (decoded(packed, f, 1000000) catch nothing()).text() ?? "?"
+            (decoded_x(packed, f, 1000000) catch nothing()).text() ?? "?"
         }
         null -> "no stream"
     }

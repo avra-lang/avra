@@ -17,11 +17,11 @@
 //! no longer the ones it named.
 //!
 //! A REQUEST BODY sent `Content-Encoding: gzip`, `deflate` or `br` is
-//! decoded before the handler sees it, UNDER A CEILING: a body that
+//! decoded_x before the handler sees it, UNDER A CEILING: a body that
 //! inflates past `inflated` is a 413 with nothing past the ceiling
 //! produced, one that is not what it claims a 400, and a coding this
 //! layer does not read a 415 naming the ones it does.
-use @std.compress.{Format, CompressError, Encoder, encoded, encoding, decoded}
+use @std.compress.{Format, CompressError, Encoder, encoded, encoding, decoded_x}
 use @std.http.http.{
     Request,
     Unrouted,
@@ -56,7 +56,7 @@ export fn compressing(c: Compression) -> fn(Request<Unrouted>, Handler) -> Respo
     (q: Request<Unrouted>, next: Handler) -> coded(c, q, next)
 }
 
-/// `q` decoded, answered by `next`, and the answer encoded.
+/// `q` decoded_x, answered by `next`, and the answer encoded.
 fn coded(c: Compression, q: Request<Unrouted>, next: Handler) -> Response {
     match request_decoded(c, q) {
         .Ok(plain) -> response_encoded(c, q, next(plain)),
@@ -84,9 +84,9 @@ fn format_named(coding: string) -> Format? {
 
 // ── The request ─────────────────────────────────────────────────
 
-/// `q` with its body decoded, or the response refusing it. A request
+/// `q` with its body decoded_x, or the response refusing it. A request
 /// with no coding, or `identity`, passes as it came, and an empty body
-/// has nothing to decode; one decoded no longer carries the
+/// has nothing to decode; one decoded_x no longer carries the
 /// `content-encoding` and `content-length` that described the coded
 /// octets. Several `content-encoding` fields are read as the one list
 /// they join into, and a list of codings is one this layer does not
@@ -101,9 +101,9 @@ fn request_decoded(c: Compression, q: Request<Unrouted>) -> Result<Request<Unrou
     without_field(without_field(q, "content-encoding"), "content-length") with { body: whole(plain) }
 }
 
-/// `packed` decoded from `f` under `ceiling`, or the response refusing it.
+/// `packed` decoded_x from `f` under `ceiling`, or the response refusing it.
 fn inflated(packed: Bytes, f: Format, ceiling: int) -> Result<Bytes, Response> {
-    match decoded(packed, f, ceiling) { .Ok(b) -> b, .Err(e) -> { fail decode_refused(e) } }
+    match decoded_x(packed, f, ceiling) { .Ok(b) -> b, .Err(e) -> { fail decode_refused(e) } }
 }
 
 // ── The response ────────────────────────────────────────────────
@@ -306,7 +306,7 @@ fn unread_coding() -> Response {
 fn decode_refused(e: CompressError) -> Response {
     match e {
         .TooLarge(n) -> text(413, "the body decodes to more than ${n} octets"),
-        .Memory -> text(503, "the body could not be decoded: memory ran out"),
+        .Memory -> text(503, "the body could not be decoded_x: memory ran out"),
         .Corrupt or .Truncated -> text(400, "the body is not in the coding it names: ${e.describe().message}"),
     }
 }

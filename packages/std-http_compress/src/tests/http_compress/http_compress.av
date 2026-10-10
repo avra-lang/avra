@@ -1,11 +1,11 @@
 // proves: content coding as a layer, evaluated and native alike — the
 // coding a client weighs highest, a page read back, a posted gzip body
-// decoded, and a bomb refused at its ceiling.
+// decoded_x, and a bomb refused at its ceiling.
 use @std.http.frame.{framed, limits}
 use @std.http.body.{whole}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http_compress.{compressed}
-use @std.compress.{Format, encoded, decoded}
+use @std.compress.{Format, encoded, decoded_x}
 use @std.text.{repeat}
 
 fn asked(fields: string, body: Bytes) -> Request<Unrouted> {
@@ -25,7 +25,7 @@ for ae in ["br", "gzip;q=0.9, deflate", "deflate", "identity"] {
     )
 }
 let r = compressed(asked("Accept-Encoding: br\r\n", "".bytes()), (_q) -> text(200, page))
-println("${(decoded(r.body, Format.Brotli, 100000) catch "".bytes()).text() == page}")
+println("${(decoded_x(r.body, Format.Brotli, 100000) catch "".bytes()).text() == page}")
 let posted = compressed(
     asked("Content-Encoding: gzip\r\n", encoded("posted".bytes(), Format.Gzip) catch "".bytes()),
     (q) -> text(200, q.body.text() ?? "?"),
