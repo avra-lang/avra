@@ -1,10 +1,13 @@
 # THE DETERMINISTIC WATCHER. No LLM, one pass every two minutes and after
 # every `checks` run: a PR whose `test` failed is told the exact failing
 # `job — line` and has its failed jobs re-run once; a green, mergeable PR
-# is enqueued; a queued entry with no train is taken out and put back; a
-# failed train is named on the PR. The decision is a pure function proved
-# against fixtures (tools/pr_watcher.py --self-test), so this job is the
-# same answer every pass.
+# is enqueued, but only while the queue holds fewer than `AVRA_QUEUE_MAX`
+# entries (default 3), since N full trains in flight saturate the runners
+# and the queue then lands slower with more entries; a queued entry with no
+# train is taken out and put back; a failed train is named on the PR. The
+# decision is a pure function proved against fixtures
+# (tools/pr_watcher.py --self-test), so this job is the same answer every
+# pass.
 #
 # A token a workflow holds with the repository's GITHUB_TOKEN does not
 # start a new workflow for the events it causes; the merge queue's
@@ -50,4 +53,5 @@ jobs:
       - env:
           GH_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          AVRA_QUEUE_MAX: "3"
         run: python3 tools/pr_watcher.py

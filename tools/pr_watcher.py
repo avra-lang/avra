@@ -9,7 +9,13 @@ script could have noticed. This watcher closes it, deterministically:
       and re-run the failed jobs ONCE (a second rerun of the same head
       changes nothing, so it is refused by state, not by try-again);
   (b) a green, mergeable, unmerged PR not in the queue — enqueue it
-      (auto-merge when it is not set, a direct enqueue when it is);
+      (auto-merge when it is not set, a direct enqueue when it is), but
+      ONLY while the queue holds fewer than `AVRA_QUEUE_MAX` entries
+      (default 3): a full train is ~40 min of the shared runner pool, so
+      N entries in flight saturate it and every extra entry makes the
+      queue land SLOWER, not more. A green PR over the cap is held and
+      named (`queue at 3 — holding #537`), never dropped; a later pass
+      enqueues it once a slot frees.
   (c) a queued entry with no `merge_group` run — dequeue and put it back,
       since an entry with no train starts nothing by waiting;
   (d) a failed train — name its failing `job — line` on the PR it carried.
@@ -31,13 +37,18 @@ from datetime import datetime, timedelta, timezone
 
 PR = "pull_request"
 DEFAULT_REPO = "avra-lang/avra"
+# N full trains in flight saturate the runners, so beyond a few entries the
+# merge queue runs SLOWER (trains sit `queued` and nothing finishes). Three
+# keeps slots moving without starving the pool; override with
+# AVRA_QUEUE_MAX only to measure a different value.
+QUEUE_MAX = 3
 FULL = {"pull_request", "merge_group", "push", "workflow_dispatch", "schedule"}
 RERUN = "rerun"
 TOLD = "told"
 
 
 # ---- the decision (pure; this is what the fixtures prove) --------------
-def plan(prs, queue, trains, state):
+def plan(prs, queue, trains, state, limit=QUEUE_MAX):
     """The actions a pass owes. See the module docstring for the rules.
 
     `prs`: number, isDraft, state, mergeable, autoMerge, headRefOid,
@@ -45,6 +56,7 @@ def plan(prs, queue, trains, state):
     `queue`: pr, nodeId, stuck
     `trains`: pr, databaseId, job, line
     `state`: {"rerun": {key}, "told": {key}}
+    `limit`: the queue-depth cap for new enqueues (rule b).
     """
     acts = []
     rerun, told = state["rerun"], state["told"]
@@ -58,6 +70,12 @@ def plan(prs, queue, trains, state):
                      "text": f"train failed: {t['job']} — {t['line']}\n\n"
                              f"Run `sh tools/work land` from the worktree once this is fixed."})
 
+    # (b) the cap: room is the queue's whole depth budget. Entries with a
+    # train RUNNING count against it and are never touched, so a new enqueue
+    # can never displace a train already in flight. Candidates are taken in
+    # the order the list arrives in — never re-sorted or shuffled — so
+    # whatever priority the pass put on it is the order the cap spends.
+    room = max(0, limit - len(queue))
     for p in prs:
         n, head = p["number"], p["headRefOid"]
         t = p.get("test")
@@ -80,10 +98,17 @@ def plan(prs, queue, trains, state):
         if (t is not None and t["conclusion"] == "SUCCESS"
                 and p["state"] == "OPEN" and not p["isDraft"]
                 and p["mergeable"] == "MERGEABLE" and not p["inQueue"]):
-            acts.append({"do": "enqueue-auto" if not p["autoMerge"] else "enqueue",
-                         "pr": n, "node": p.get("nodeId")})
+            if room > 0:
+                acts.append({"do": "enqueue-auto" if not p["autoMerge"] else "enqueue",
+                             "pr": n, "node": p.get("nodeId")})
+                room -= 1
+            else:
+                acts.append({"do": "hold", "pr": n,
+                             "text": f"queue at {limit} — holding #{n}"})
 
-    # (c) a queued entry with no train: take it out and put it back.
+    # (c) a queued entry with no train: take it out and put it back. Only a
+    # `stuck` entry is touched, so one whose train is running is left where
+    # it stands; the cap above already counted it against the depth budget.
     for q in queue:
         if q.get("stuck"):
             acts.append({"do": "dequeue", "node": q["nodeId"], "pr": q["pr"]})
@@ -299,6 +324,8 @@ def do_action(a, repo, run):
     elif a["do"] == "dequeue":
         run(["api", "graphql", "-f",
              f'mutation={{dequeuePullRequest(input:{{id:"{a["node"]}"}}){{clientMutationId}}}}'])
+    elif a["do"] == "hold":
+        pass  # a decision, not a mutation: the log says what the cap held.
     else:
         raise RuntimeError(f"unknown action {a['do']}")
 
@@ -383,6 +410,34 @@ SELFTEST = [
     ("green-in-queue",
      dict(prs=[_pr(2, "SUCCESS", inQueue=True)], queue=[], trains=[], state=_empty_state()),
      []),
+    # (b) THE CAP: a queue at the cap enqueues NOTHING and names what it held.
+    ("queue-at-cap-holds",
+     dict(prs=[_pr(7, "SUCCESS")],
+          queue=[{"pr": 4, "nodeId": "N4", "stuck": False},
+                 {"pr": 5, "nodeId": "N5", "stuck": False},
+                 {"pr": 6, "nodeId": "N6", "stuck": False}],
+          trains=[], state=_empty_state()),
+     [("hold", 7)]),
+    # a queue below the cap enqueues.
+    ("room-below-cap-enqueues",
+     dict(prs=[_pr(7, "SUCCESS")],
+          queue=[{"pr": 4, "nodeId": "N4", "stuck": False},
+                 {"pr": 5, "nodeId": "N5", "stuck": False}],
+          trains=[], state=_empty_state()),
+     [("enqueue-auto", 7)]),
+    # the cap spends its room in list order and holds only the excess.
+    ("cap-holds-the-excess",
+     dict(prs=[_pr(7, "SUCCESS"), _pr(8, "SUCCESS")],
+          queue=[{"pr": 4, "nodeId": "N4", "stuck": False},
+                 {"pr": 5, "nodeId": "N5", "stuck": False}],
+          trains=[], state=_empty_state()),
+     [("enqueue-auto", 7), ("hold", 8)]),
+    # a running entry is never dequeued even beside a stuck one.
+    ("running-entry-untouched",
+     dict(prs=[], queue=[{"pr": 7, "nodeId": "N7", "stuck": False},
+                         {"pr": 8, "nodeId": "N8", "stuck": True}],
+          trains=[], state=_empty_state()),
+     [("dequeue", 8), ("enqueue", 8)]),
     # a conflicted or draft PR is left alone.
     ("conflicting-left", dict(prs=[_pr(3, "SUCCESS", mergeable="CONFLICTING")],
                               queue=[], trains=[], state=_empty_state()), []),
@@ -440,6 +495,24 @@ def selftest():
                  {"pr": 7, "nodeId": "N7", "stuck": False}], [], _empty_state()) != []:
         sys.exit("pr-watcher: self-test — a healthy queue produced actions")
 
+    # THE CAP'S LOG NAMES THE LIMIT AND THE PR IT HELD, and the default is
+    # three while AVRA_QUEUE_MAX moves it.
+    held = plan([_pr(7, "SUCCESS")],
+                [{"pr": 4, "nodeId": "N4", "stuck": False},
+                 {"pr": 5, "nodeId": "N5", "stuck": False},
+                 {"pr": 6, "nodeId": "N6", "stuck": False}],
+                [], _empty_state())
+    if [(a["do"], a["text"]) for a in held] != [("hold", "queue at 3 — holding #7")]:
+        sys.exit(f"pr-watcher: self-test — the cap's hold line was {held}")
+    os.environ["AVRA_QUEUE_MAX"] = "2"
+    try:
+        if queue_max() != 2:
+            sys.exit("pr-watcher: self-test — AVRA_QUEUE_MAX was not read")
+    finally:
+        del os.environ["AVRA_QUEUE_MAX"]
+    if queue_max() != QUEUE_MAX:
+        sys.exit("pr-watcher: self-test — the cap did not fall back to its default")
+
     # (1)+(3) ONE FAILING ACTION MUST NOT ABORT THE PASS, AND STATE IS SAVED
     # WITH ONLY THE SUCCEEDED MARKS: the failed action is retried next pass.
     acts = plan([_pr(1, "FAILURE")], [],
@@ -466,11 +539,18 @@ def selftest():
         sys.exit("pr-watcher: self-test — state saved a failed mark or lost a succeeded one")
 
 
-def run_pass(world, state, state_path, repo, execute_fn=execute):
+def queue_max():
+    """The cap from the environment, or the default. A blank or unreadable
+    value falls back rather than crashing a pass the whole landing waits on."""
+    raw = (os.environ.get("AVRA_QUEUE_MAX") or "").strip()
+    return int(raw) if raw.isdigit() and int(raw) > 0 else QUEUE_MAX
+
+
+def run_pass(world, state, state_path, repo, execute_fn=execute, limit=QUEUE_MAX):
     """One live pass. State is committed and SAVED in a `finally`:
     whatever an action or the pass itself does, the marks of what
     SUCCEEDED stand and the next pass retries only what failed."""
-    acts = plan(world["prs"], world["queue"], world["trains"], state)
+    acts = plan(world["prs"], world["queue"], world["trains"], state, limit)
     for a in acts:
         print("pr-watcher:", a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
     failed = []
@@ -493,13 +573,16 @@ def main(argv):
                                 os.path.expanduser("~/.avra-pr-watcher/state.json"))
     state = load_state(state_path)
     world = collect(repo, state)
+    limit = queue_max()
     if "--dry-run" in argv:
-        acts = plan(world["prs"], world["queue"], world["trains"], state)
+        acts = plan(world["prs"], world["queue"], world["trains"], state, limit)
+        held = sum(1 for a in acts if a["do"] == "hold")
         for a in acts:
             print("pr-watcher:", a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
-        print(f"pr-watcher: dry run — {len(acts)} action(s) not taken, state untouched")
+        print(f"pr-watcher: dry run — queue at {len(world['queue'])}/{limit}, "
+              f"{len(acts) - held} action(s), {held} held, not taken, state untouched")
         return 0
-    acts = run_pass(world, state, state_path, repo)
+    acts = run_pass(world, state, state_path, repo, limit=limit)
     print(f"pr-watcher: {len(world['prs'])} open PR(s), {len(world['queue'])} queued, "
           f"{len(world['trains'])} failed train(s) — {len(acts)} action(s)")
     return 0
