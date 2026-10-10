@@ -17,8 +17,11 @@ extern fn avra_vtask_park_fd(t: int, fd: int, writable: int, timeout_ms: int) ->
 extern fn avra_vtask_timed_out(t: int) -> int
 extern fn avra_vtask_interrupted(t: int) -> int
 extern fn avra_vtask_unwinding(t: int) -> int
+/// The checked back-edge's cold side, over the evaluator's own task:
+/// 1 when it must yield, 0 when it goes on.
+extern fn avra_vtask_tick_cold(t: int) -> int
 extern fn avra_vtask_within(t: int, ms: int) -> int
-extern fn avra_vtask_within_end(t: int, id: int)
+extern fn avra_vtask_within_end(t: int, id: int) -> int
 extern fn avra_vtask_inherits(t: int, from: int)
 extern fn avra_vtask_next() -> int
 extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
@@ -286,6 +289,19 @@ impl Machine {
         Val.I(0)
     }
 
+    /// The checked back-edge's cold side in the evaluator: the same turn
+    /// count and the same draw from the schedule as a compiled back-edge,
+    /// so both engines yield at the same turn. A yielding row re-runs as
+    /// it resumes, so its own waking is consumed.
+    fn tick_cold_val() -> Val {
+        self.rooted()
+        if self.woke() { return Val.I(0) }
+        if avra_vtask_tick_cold(self.tasks[self.running].vt) == 0 { return Val.I(0) }
+        avra_vtask_ready(self.tasks[self.running].vt)
+        self.policy_parked()
+        Val.I(0)
+    }
+
     fn fiber_sleep_val(vals: List<Val>) -> Val {
         self.rooted()
         if self.woke() { return Val.I(0) }
@@ -316,8 +332,7 @@ impl Machine {
 
     fn fiber_within_end_val(vals: List<Val>) -> Val {
         self.rooted()
-        avra_vtask_within_end(self.tasks[self.running].vt, self.whole(vals[0]))
-        Val.I(0)
+        Val.I(avra_vtask_within_end(self.tasks[self.running].vt, self.whole(vals[0])))
     }
 
     /// The running task parked on the POLICY — a sleep, a descriptor — so
