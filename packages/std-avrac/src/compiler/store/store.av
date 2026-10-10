@@ -90,6 +90,9 @@ fn mint_pack(at: string, root: string, print: string) -> Pack {
     made
 }
 
+/// Whether a store's writes are set aside — an inspection keeps to memory.
+fn inspects(keeping: Keeping) -> bool { match keeping { .Disk -> false, .Aside(_) -> true } }
+
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — the root in, the store out, like `new_kernel`.
 export fn store_at(root: string) -> Store { store_with(root, "", Keeping.Disk) }
 
@@ -138,7 +141,11 @@ impl Store {
     /// open built; a file family asks two `exists`, reading nothing.
     fn has(family: Stored, key: string) -> bool {
         if self.aside_row(family, key) != null { return true }
-        if family.file_family() { self.on_disk(family, key) } else { pack_has(self.pack, family.name(), key) }
+        if family.file_family() {
+            self.on_disk(family, key)
+        } else {
+            pack_has(self.pack, family.name(), key, inspects(self.keeping))
+        }
     }
 
     fn on_disk(family: Stored, key: string) -> bool {
@@ -157,7 +164,11 @@ impl Store {
     fn get(family: Stored, key: string) -> string? {
         let aside = self.aside_row(family, key)
         if aside != null { return aside }
-        if family.file_family() { self.read_disk(family, key) } else { pack_get(self.pack, family.name(), key) }
+        if family.file_family() {
+            self.read_disk(family, key)
+        } else {
+            pack_get(self.pack, family.name(), key, inspects(self.keeping))
+        }
     }
 
     fn read_disk(family: Stored, key: string) -> string? {
