@@ -13,6 +13,7 @@ is a failure too, and the bound keeps the whole run short.
 """
 import os
 import platform
+import signal
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -259,6 +260,13 @@ HOST_MUTATIONS = [
 ]
 TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
 BOUND = 60
+# A MUTATED TEST CAN PRINT WITHOUT BOUND: `capture_output` would hold every
+# byte in THIS process, so a print loop would grow the suite's memory until it
+# was gone. A test's words go to a file whose size RLIMIT_FSIZE caps (SIGXFSZ
+# ends a runaway) and only the head is read back; the run is its own process
+# group, so a test that outlives BOUND takes its children with it.
+LOG_CAP_BLOCKS = 32768  # 512-byte blocks: 16 MiB
+HEAD_BYTES = 65536
 
 os.makedirs(out, exist_ok=True)
 for test in TESTS:
@@ -291,13 +299,24 @@ def tried(numbered):
         return name, "rotten", "does not build — " + built.stderr.strip().splitlines()[0][:120]
     for test in TESTS:
         subprocess.run(["cc", "-O2", *flags, "-o", f"{here}/{test}", f"{out}/{test}.o", f"{here}/{which}.o", *rest[which]], check=True, capture_output=True)
-        try:
-            ran = subprocess.run([f"{here}/{test}"], capture_output=True, timeout=BOUND)
-        except subprocess.TimeoutExpired:
-            return name, "killed", f"{test} (it outlived {BOUND} s)"
-        if ran.returncode != 0:
-            words = [line for line in ran.stderr.decode(errors="replace").splitlines() if "FAILED" in line]
-            return name, "killed", test + (f": {words[0].split('FAILED ', 1)[1][:70]}" if words else f" (exit {ran.returncode})")
+        log = f"{here}/{test}.log"
+        with open(log, "wb") as lf:
+            ran = subprocess.Popen(["sh", "-c", f'ulimit -f {LOG_CAP_BLOCKS}; exec "$0"', f"{here}/{test}"],
+                                   stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
+            try:
+                rc = ran.wait(timeout=BOUND)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(os.getpgid(ran.pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                ran.wait()
+                return name, "killed", f"{test} (it outlived {BOUND} s)"
+        if rc != 0:
+            with open(log, "rb") as lf:
+                said = lf.read(HEAD_BYTES).decode(errors="replace")
+            words = [line for line in said.splitlines() if "FAILED" in line]
+            return name, "killed", test + (f": {words[0].split('FAILED ', 1)[1][:70]}" if words else f" (exit {rc})")
     return name, "alive", ""
 
 
