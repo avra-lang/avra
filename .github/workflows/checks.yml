@@ -64,6 +64,7 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       runtime: ${{ steps.plan.outputs.runtime }}
       cache: ${{ steps.plan.outputs.cache }}
+      key: ${{ steps.plan.outputs.key }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -175,7 +176,32 @@ jobs:
           restore-keys: |
             avrac-
             avra-
+      # THE COMPILER, FETCHED FROM WHERE EVERY REF CAN REACH IT. A cache is
+      # ref-scoped — only the default branch's caches cross runs, so a train on
+      # its own `gh-readonly-queue/...` ref can never read what main's push
+      # saved. A release asset is not: main publishes the compiler under its own
+      # source digest, and a run whose cache missed the exact key fetches THAT
+      # instead of rebuilding. The fetch overwrites whatever a prefix restore
+      # left (a stale binary beside a usable `.avra-cache`), and the binary is
+      # smoke-run before it is trusted, so a release built for another image
+      # falls through to the build.
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
+        id: release
+        name: compiler from release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p build
+          if python3 tools/compiler_release.py fetch "${{ steps.plan.outputs.key }}" build/avra \
+             && build/avra --version >/dev/null 2>&1; then
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+            echo "speed compiler 0" >> speed.log
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+            rm -f build/avra
+          fi
+      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true'
         name: compiler
         run: |
           s=$(date +%s)
@@ -188,7 +214,7 @@ jobs:
       # train and only churns the store toward eviction. Save on `push` alone,
       # where the next train and every PR can restore it; `workflow_dispatch` may
       # write `main`'s scope too. Everything else restores only.
-      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
           path: |
@@ -241,6 +267,30 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-prepare-${{ github.sha }}
+  # THE COMPILER MAIN BUILT, PUBLISHED WHERE A TRAIN CAN READ IT. Only a push to
+  # `main` reaches this job (this workflow fires on no other branch), so no
+  # PR-supplied binary is ever published. The key is the compiler's own source
+  # digest, so the artifact is immutable: one key, one binary, and `publish`
+  # never overwrites one. A train cannot publish here — its tree is the queue's
+  # combination, not main.
+  publish-compiler:
+    needs: [prepare]
+    if: github.event_name == 'push' && needs.prepare.outputs.build == '1'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - name: publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x build/avra
+          python3 tools/compiler_release.py publish "${{ needs.prepare.outputs.key }}" build/avra
+
   keepers-a:
     needs: [prepare]
     if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
