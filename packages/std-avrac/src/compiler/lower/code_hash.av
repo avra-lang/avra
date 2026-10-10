@@ -200,6 +200,15 @@ export fn code_graph(
         nodes
             .set(code_hash_symbol(t), CodeNode { own: digest_of_name(code_hash_symbol(t)), refs: [t] })
     }
+    // A DISPATCH THROUGH A TYPE NO ADDRESS OF WAS TAKEN REACHES NO
+    // BODY: its value node stands EMPTY, so the reach hashes rather
+    // than poisoning a cycle on a name no entry made.
+    let unpopulated = distinct_targets(
+        flatten(
+            [[r for r in n.refs if r.starts_with("${values_node} ") && nodes.get(r) == null] for n in nodes.values()],
+        ),
+    )
+    for node in unpopulated { nodes.set(node, CodeNode { own: digest_of_name(node), refs: [], set: true }) }
     mut held_names: Map<string, bool> = {}
     for h in held { held_names.set(h, true) }
     mut known_names: Map<string, bool> = {}
