@@ -52,6 +52,7 @@ use @std.meta.{
     type_named,
     Type,
     Field,
+    Variant,
     Mark,
     Kind,
     Annotation,
@@ -89,6 +90,7 @@ use stable.{
     written_opt,
     written_list,
     written_all,
+    written_tagged,
     writer,
     reader,
     read_opt,
@@ -218,7 +220,7 @@ fn mints(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
         .Int -> true,
         .Named(n, _) -> match shapes(n) {
             .Dense(_) -> true,
-            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> false,
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain or .Payload(_) -> false,
         },
         .Float or .Bool or .Str or .Ptr or .Void or .Opt(_) or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
@@ -269,7 +271,7 @@ fn files(k: Kind, shapes: fn(string) -> NamedShape) -> bool {
         .Named(n, _) -> match shapes(n) {
             .Dense(_) or .Tagged(_) -> true,
             .Over(shape) -> files(shape, shapes),
-            .Record(_) or .Plain -> false,
+            .Record(_) or .Plain or .Payload(_) -> false,
         },
         .Float or .Ptr or .Void or .Opt(_) or .List(_) or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
@@ -315,8 +317,12 @@ fn carried_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) 
         .List(elem) -> carried_under(elem, shapes, seen),
         .Named(n, _) -> match shapes(n) {
             .Tagged(_) -> true,
-            .Record(fs) -> !seen.contains(n) &&
-                columns(fs).all((f: Field) -> carried_under(f.kind, shapes, seen.concat([n]))),
+            .Payload(vs) -> vs.all((v: Variant) -> v.fields.all((f: Field) -> carried_under(f.kind, shapes, seen))),
+            .Record(fs) -> if seen.contains(n) {
+                true
+            } else {
+                columns(fs).all((f: Field) -> carried_under(f.kind, shapes, seen.concat([n])))
+            },
             .Over(shape) -> carried_under(shape, shapes, seen),
             .Dense(_) or .Plain -> false,
         },
@@ -334,8 +340,12 @@ fn dense_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) ->
     match k {
         .Named(n, _) -> match shapes(n) {
             .Dense(_) -> true,
-            .Record(fs) -> !seen.contains(n) &&
-                columns(fs).any((f: Field) -> dense_under(f.kind, shapes, seen.concat([n]))),
+            .Payload(vs) -> vs.any((v: Variant) -> v.fields.any((f: Field) -> dense_under(f.kind, shapes, seen))),
+            .Record(fs) -> if seen.contains(n) {
+                false
+            } else {
+                columns(fs).any((f: Field) -> dense_under(f.kind, shapes, seen.concat([n])))
+            },
             .Over(shape) -> dense_under(shape, shapes, seen),
             .Tagged(_) or .Plain -> false,
         },
@@ -355,9 +365,55 @@ fn decodable(k: Kind) -> bool {
         .List(elem) -> decodable(elem),
         .Named(n, _) -> match named_shape(n) {
             .Tagged(_) -> true,
-            .Dense(_) or .Record(_) or .Over(_) or .Plain -> false,
+            .Dense(_) or .Record(_) or .Over(_) or .Plain or .Payload(_) -> false,
         },
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// Whether a relation's stable columns reach a payload-carrying enum or a
+/// record that reaches itself — the types whose codec is emitted as a
+/// named helper rather than inlined.
+fn uses_helpers(t: Type) -> bool { stable(t).any((f: Field) -> kind_needs(f.kind, [])) }
+
+/// Whether a kind's subtree needs a generated helper: it reaches a payload
+/// enum, or a record reachable from itself.
+fn kind_needs(k: Kind, seen: List<string>) -> bool {
+    match k {
+        .Opt(inner) -> kind_needs(inner, seen),
+        .List(elem) -> kind_needs(elem, seen),
+        .Named(n, _) -> match named_shape(n) {
+            .Payload(_) -> true,
+            .Record(fs) -> if seen.contains(n) {
+                true
+            } else {
+                columns(fs).any((f: Field) -> kind_needs(f.kind, seen.concat([n])))
+            },
+            .Tagged(_) or .Dense(_) or .Over(_) or .Plain -> false,
+        },
+        rest -> false,
+    }
+}
+
+/// Whether a kind reads back when every named type in its subtree has a
+/// generated helper — `decodable`'s twin for a helper-using relation.
+fn helper_decodable(k: Kind) -> bool { helper_decodable_under(k, []) }
+
+fn helper_decodable_under(k: Kind, seen: List<string>) -> bool {
+    match k {
+        .Int or .Bool or .Str -> true,
+        .Opt(inner) -> helper_decodable_under(inner, seen),
+        .List(elem) -> helper_decodable_under(elem, seen),
+        .Named(n, _) -> match named_shape(n) {
+            .Tagged(_) or .Payload(_) -> true,
+            .Record(fs) -> if seen.contains(n) {
+                true
+            } else {
+                columns(fs).all((f: Field) -> helper_decodable_under(f.kind, seen.concat([n])))
+            },
+            .Dense(_) or .Over(_) or .Plain -> false,
+        },
+        rest -> false,
     }
 }
 
@@ -367,6 +423,9 @@ export enum NamedShape {
     Dense(field: string)
     /// an enum whose variants carry nothing, by name in declared order
     Tagged(names: List<string>)
+    /// an enum whose variants carry payloads: each variant's tag, then
+    /// its payload's columns in declared order
+    Payload(variants: List<Variant>)
     /// a record, each field a column of its own
     Record(fields: List<Field>)
     /// a NAMED type — `type Code = string` — carried as its shape, read
@@ -380,7 +439,10 @@ export enum NamedShape {
 export fn named_shape(n: string) -> NamedShape {
     let ty? = type_named(n) else { return NamedShape.Plain }
     if spelled_shape(ty.over) { return NamedShape.Over(ty.over) }
-    if !ty.variants.is_empty() && ty.variants.all(it.payload.is_empty()) { return NamedShape.Tagged([v.name for v in ty.variants]) }
+    if !ty.variants.is_empty() {
+        if ty.variants.all(it.payload.is_empty()) { return NamedShape.Tagged([v.name for v in ty.variants]) }
+        return NamedShape.Payload(ty.variants)
+    }
     let one? = ty.fields.first() else { return NamedShape.Plain }
     if ty.fields.length == 1 && one.kind is .Int && ty.annotations.any(it.name == "dense") { return NamedShape.Dense(one.name) }
     if ty.variants.is_empty() { return NamedShape.Record(ty.fields) }
@@ -397,7 +459,7 @@ fn tags(k: Kind) -> List<string> {
     match k {
         .Named(n, _) -> match named_shape(n) {
             .Tagged(names) -> names,
-            .Dense(_) or .Record(_) or .Over(_) or .Plain -> [],
+            .Dense(_) or .Record(_) or .Over(_) or .Plain or .Payload(_) -> [],
         },
         rest -> [],
     }
@@ -532,6 +594,8 @@ fn generated(t: Type) -> Decls {
             ${key_record(t)}
             ${stored_record(t)}
             impl ${t} {
+                ${codec_helper_members(t)}
+
                 static fn relation_name() -> string { ${literal(stable_name(t))} }
 
                 static fn shape_hash() -> int { ${shape_hash(t)} }
@@ -680,7 +744,7 @@ fn key_of(e: Code, k: Kind) -> Code {
             .Dense(f) -> quote { dense_key(${e}.${f}) },
             .Tagged(_) -> quote { text_key(${tag_of(e, k)}) },
             .Over(shape) -> key_of(quote { ${e}.of }, shape),
-            .Record(_) or .Plain -> quote { a_relation_lookup_kind_with_no_index_key() },
+            .Record(_) or .Plain or .Payload(_) -> quote { a_relation_lookup_kind_with_no_index_key() },
         },
         rest -> quote { a_relation_lookup_kind_with_no_index_key() },
     }
@@ -800,7 +864,7 @@ fn shown(e: Code, k: Kind) -> Code {
             .Dense(f) -> quote { int_text(${e}.${f}) },
             .Tagged(_) -> tag_of(e, k),
             .Over(shape) -> shown(quote { ${e}.of }, shape),
-            .Record(_) or .Plain -> quote { a_relation_lookup_kind_with_no_text() },
+            .Record(_) or .Plain or .Payload(_) -> quote { a_relation_lookup_kind_with_no_text() },
         },
         rest -> quote { a_relation_lookup_kind_with_no_text() },
     }
@@ -879,7 +943,7 @@ fn part_of(e: Code, k: Kind) -> Code {
         .Bool -> quote { bool_part(${e}) },
         .Named(n, _) -> match named_shape(n) {
             .Over(shape) -> part_of(quote { ${e}.of }, shape),
-            .Tagged(_) or .Dense(_) or .Record(_) or .Plain -> quote { key_part(${tag_of(e, k)}) },
+            .Tagged(_) or .Dense(_) or .Record(_) or .Plain or .Payload(_) -> quote { key_part(${tag_of(e, k)}) },
         },
         rest -> quote { a_relation_key_kind_with_no_text() },
     }
@@ -939,26 +1003,30 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
 
 fn hash_chain(t: Type) -> Code {
     mut acc: Code = quote { stable_hasher(${text_hash(stable_name(t))}) }
-    for f in stable(t) { acc = hashed(acc, quote { self.${f.name} }, f.kind) }
+    for f in stable(t) { acc = hashed(acc, quote { self.${f.name} }, f.kind, t.name) }
     acc
 }
 
 /// `acc` with one value folded in. A `?` layer folds its presence
 /// first and a list its count, so the arity is fixed per kind; a nested
 /// value folds through a lambda that captures nothing.
-fn hashed(acc: Code, e: Code, k: Kind) -> Code {
+fn hashed(acc: Code, e: Code, k: Kind, owner: string) -> Code {
     match k {
         .Int -> quote { ${acc}.int(${e}) },
         .Bool -> quote { ${acc}.bool(${e}) },
         .Str -> quote { ${acc}.text(${e}) },
-        .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner)}) },
-        .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem)}) },
-        .Named(n, _) -> match named_shape(n) {
-            .Record(fs) -> folded_record(acc, e, fs),
-            .Over(shape) -> hashed(acc, quote { ${e}.of }, shape),
-            .Tagged(_) -> quote { ${acc}.text(${tag_of(e, k)}) },
-            .Dense(field) -> quote { ${acc}.int(${e}.${field}) },
-            .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
+        .Opt(inner) -> quote { hashed_opt(${acc}, ${e}, ${hash_each(inner, owner)}) },
+        .List(elem) -> quote { hashed_list(${acc}, ${e}, ${hash_each(elem, owner)}) },
+        .Named(n, _) -> if kind_needs(k, []) {
+            quote { ${name(owner)}.hash_${helper_id(n)}(${acc}, ${e}) }
+        } else {
+            match named_shape(n) {
+                .Record(fs) -> folded_record(acc, e, fs, owner),
+                .Over(shape) -> hashed(acc, quote { ${e}.of }, shape, owner),
+                .Tagged(_) -> quote { ${acc}.text(${tag_of(e, k)}) },
+                .Dense(field) -> quote { ${acc}.int(${e}.${field}) },
+                .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
+            }
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -966,27 +1034,31 @@ fn hashed(acc: Code, e: Code, k: Kind) -> Code {
 
 /// A nested record folded column by column in declared order — a fixed
 /// arity per record type, its `@local` fields never folded.
-fn folded_record(acc: Code, e: Code, fs: List<Field>) -> Code {
+fn folded_record(acc: Code, e: Code, fs: List<Field>, owner: string) -> Code {
     mut folded = acc
-    for f in columns(fs) { folded = hashed(folded, quote { ${e}.${f.name} }, f.kind) }
+    for f in columns(fs) { folded = hashed(folded, quote { ${e}.${f.name} }, f.kind, owner) }
     folded
 }
 
 /// The lambda that folds one value of kind `k`. Its parameters are the
 /// template's own names, so each nested lambda has its own.
-fn hash_each(k: Kind) -> Code {
+fn hash_each(k: Kind, owner: string) -> Code {
     match k {
         .Int -> quote { (h: StableHasher, v: int) -> h.int(v) },
         .Bool -> quote { (h: StableHasher, v: bool) -> h.bool(v) },
         .Str -> quote { (h: StableHasher, v: string) -> h.text(v) },
-        .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner)}) },
-        .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem)}) },
-        .Named(n, _) -> match named_shape(n) {
-            .Record(fs) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${folded_record(quote { h }, quote { v }, fs)} },
-            .Over(shape) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${hashed(quote { h }, quote { v.of }, shape)} },
-            .Tagged(_) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
-            .Dense(field) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(v.${field}) },
-            .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
+        .Opt(inner) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_opt(h, v, ${hash_each(inner, owner)}) },
+        .List(elem) -> quote { (h: StableHasher, v: ${k.spelled()}) -> hashed_list(h, v, ${hash_each(elem, owner)}) },
+        .Named(n, _) -> if kind_needs(k, []) {
+            quote { (h: StableHasher, v: ${k.spelled()}) -> ${name(owner)}.hash_${helper_id(n)}(h, v) }
+        } else {
+            match named_shape(n) {
+                .Record(fs) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${folded_record(quote { h }, quote { v }, fs, owner)} },
+                .Over(shape) -> quote { (h: StableHasher, v: ${k.spelled()}) -> ${hashed(quote { h }, quote { v.of }, shape, owner)} },
+                .Tagged(_) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.text(${tag_of(quote { v }, k)}) },
+                .Dense(field) -> quote { (h: StableHasher, v: ${k.spelled()}) -> h.int(v.${field}) },
+                .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
+            }
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
@@ -1000,7 +1072,7 @@ fn encoded_member(t: Type) -> Decls {
     quote {
         fn encoded() -> Bytes {
             let ${w} = writer()
-            ${[written(name(w), quote { self.${f.name} }, f.kind) for f in stable(t)]}
+            ${[written(name(w), quote { self.${f.name} }, f.kind, t.name) for f in stable(t)]}
             ${name(w)}.bytes()
         }
     }
@@ -1011,7 +1083,12 @@ fn encoded_member(t: Type) -> Decls {
 /// a relation whose columns cannot read back, naming the column, never
 /// a silently undurable one — owner: ORM.
 fn decoded_members(t: Type) -> List<Decls> {
-    if !stable(t).all((f: Field) -> decodable(f.kind)) { return [] }
+    let ok = if uses_helpers(t) {
+        stable(t).all((f: Field) -> helper_decodable(f.kind))
+    } else {
+        stable(t).all((f: Field) -> decodable(f.kind))
+    }
+    if !ok { return [] }
     [decoded_member(t)]
 }
 
@@ -1020,7 +1097,7 @@ fn decoded_members(t: Type) -> List<Decls> {
 /// octets to spare refused, never half read. A row with `@local` columns
 /// reads back as its STORED type, which has none to read.
 fn decoded_member(t: Type) -> Decls {
-    let read = [quote { W { ${f.name}: ${read_value(f.kind)} } } for f in stable(t)]
+    let read = [quote { W { ${f.name}: ${read_value(f.kind, t.name)} } } for f in stable(t)]
     if localized(t) {
         return quote {
             static fn decoded(b: Bytes) -> Result<${t}Stored, CodecFault> {
@@ -1053,7 +1130,7 @@ fn minted_id(t: Type, n: Code) -> Code {
     match id.kind {
         .Named(ty, _) -> match named_shape(ty) {
             .Dense(f) -> quote { ${ty} { ..${[quote { W { ${f}: ${n} } }]} } },
-            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> n,
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain or .Payload(_) -> n,
         },
         rest -> n,
     }
@@ -1065,7 +1142,7 @@ fn id_int(t: Type, e: Code) -> Code {
     match id.kind {
         .Named(ty, _) -> match named_shape(ty) {
             .Dense(f) -> quote { ${e}.${f} },
-            .Tagged(_) or .Record(_) or .Over(_) or .Plain -> e,
+            .Tagged(_) or .Record(_) or .Over(_) or .Plain or .Payload(_) -> e,
         },
         rest -> e,
     }
@@ -1075,74 +1152,213 @@ fn id_int(t: Type, e: Code) -> Code {
 fn ided(t: Type) -> bool { t.fields.any(it.name == "id") }
 
 /// One value read back through `rd`, `written`'s mirror.
-fn read_value(k: Kind) -> Code {
+fn read_value(k: Kind, owner: string) -> Code {
     match k {
         .Int -> quote { rd.int()? },
         .Bool -> quote { rd.bool()? },
         .Str -> quote { rd.text()? },
-        .Opt(inner) -> quote { read_opt(rd, ${read_each(inner)})? },
-        .List(elem) -> quote { read_list(rd, ${read_each(elem)})? },
-        .Named(_, _) -> quote { ${tag_read(quote { rd }, k)}? },
+        .Opt(inner) -> quote { read_opt(rd, ${read_each(inner, owner)})? },
+        .List(elem) -> quote { read_list(rd, ${read_each(elem, owner)})? },
+        .Named(n, _) -> if kind_needs(k, []) {
+            quote { ${name(owner)}.read_${helper_id(n)}(rd)? }
+        } else {
+            quote { ${tag_read(quote { rd }, k)}? }
+        },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
 }
 
 /// The lambda that reads one value of kind `k`, `write_each`'s mirror.
-fn read_each(k: Kind) -> Code {
+fn read_each(k: Kind, owner: string) -> Code {
     match k {
         .Int -> quote { (r: Reader) -> r.int() },
         .Bool -> quote { (r: Reader) -> r.bool() },
         .Str -> quote { (r: Reader) -> r.text() },
-        .Opt(inner) -> quote { (r: Reader) -> read_opt(r, ${read_each(inner)}) },
-        .List(elem) -> quote { (r: Reader) -> read_list(r, ${read_each(elem)}) },
-        .Named(_, _) -> quote { (r: Reader) -> ${tag_read(quote { r }, k)} },
+        .Opt(inner) -> quote { (r: Reader) -> read_opt(r, ${read_each(inner, owner)}) },
+        .List(elem) -> quote { (r: Reader) -> read_list(r, ${read_each(elem, owner)}) },
+        .Named(n, _) -> if kind_needs(k, []) {
+            quote { (r: Reader) -> ${name(owner)}.read_${helper_id(n)}(r) }
+        } else {
+            quote { (r: Reader) -> ${tag_read(quote { r }, k)} }
+        },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
 }
 
 /// One value written through `w`, in the hash's own order and arity.
-fn written(w: Code, e: Code, k: Kind) -> Code {
+fn written(w: Code, e: Code, k: Kind, owner: string) -> Code {
     match k {
         .Int -> quote { ${w}.int(${e}) },
         .Bool -> quote { ${w}.bool(${e}) },
         .Str -> quote { ${w}.text(${e}) },
-        .Opt(inner) -> quote { written_opt(${w}, ${e}, ${write_each(inner)}) },
-        .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem)}) },
-        .Named(n, _) -> match named_shape(n) {
-            .Record(fs) -> {
-                let writers = column_writers(k, fs)
-                quote { written_all(${w}, ${e}, [${..writers}]) }
-            },
-            .Over(shape) -> written(w, quote { ${e}.of }, shape),
-            .Tagged(_) or .Dense(_) or .Plain -> quote { ${w}.text(${tag_of(e, k)}) },
+        .Opt(inner) -> quote { written_opt(${w}, ${e}, ${write_each(inner, owner)}) },
+        .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem, owner)}) },
+        .Named(n, _) -> if kind_needs(k, []) {
+            quote { ${name(owner)}.write_${helper_id(n)}(${w}, ${e}) }
+        } else {
+            match named_shape(n) {
+                .Record(fs) -> {
+                    let writers = column_writers(k.spelled(), fs, owner)
+                    quote { written_all(${w}, ${e}, [${..writers}]) }
+                },
+                .Over(shape) -> written(w, quote { ${e}.of }, shape, owner),
+                .Tagged(_) or .Dense(_) or .Plain -> quote { ${w}.text(${tag_of(e, k)}) },
+                .Payload(_) -> quote { a_relation_field_kind_with_no_stable_encoding() },
+            }
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
 }
 
 /// A nested record's writers, one per column in declared order.
-fn column_writers(k: Kind, fs: List<Field>) -> List<Code> {
-    [quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v.${f.name} }, f.kind)} } for f in columns(fs)]
+fn column_writers(ty: string, fs: List<Field>, owner: string) -> List<Code> {
+    [quote { (w: Writer, v: ${ty}) -> ${written(quote { w }, quote { v.${f.name} }, f.kind, owner)} } for f in columns(fs)]
 }
 
 /// The lambda that writes one value of kind `k`, `hash_each`'s twin.
-fn write_each(k: Kind) -> Code {
+fn write_each(k: Kind, owner: string) -> Code {
     match k {
         .Int -> quote { (w: Writer, v: int) -> w.int(v) },
         .Bool -> quote { (w: Writer, v: bool) -> w.bool(v) },
         .Str -> quote { (w: Writer, v: string) -> w.text(v) },
-        .Opt(inner) -> quote { (w: Writer, v: ${k.spelled()}) -> written_opt(w, v, ${write_each(inner)}) },
-        .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem)}) },
-        .Named(n, _) -> match named_shape(n) {
-            .Record(fs) -> {
-                let writers = column_writers(k, fs)
-                quote { (w: Writer, v: ${k.spelled()}) -> written_all(w, v, [${..writers}]) }
-            },
-            .Over(shape) -> quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v.of }, shape)} },
-            .Tagged(_) or .Dense(_) or .Plain -> quote { (w: Writer, v: ${k.spelled()}) -> w.text(${tag_of(quote { v }, k)}) },
+        .Opt(inner) -> quote { (w: Writer, v: ${k.spelled()}) -> written_opt(w, v, ${write_each(inner, owner)}) },
+        .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem, owner)}) },
+        .Named(n, _) -> if kind_needs(k, []) {
+            quote { (w: Writer, v: ${k.spelled()}) -> ${name(owner)}.write_${helper_id(n)}(w, v) }
+        } else {
+            match named_shape(n) {
+                .Record(fs) -> {
+                    let writers = column_writers(k.spelled(), fs, owner)
+                    quote { (w: Writer, v: ${k.spelled()}) -> written_all(w, v, [${..writers}]) }
+                },
+                .Over(shape) -> quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v.of }, shape, owner)} },
+                .Tagged(_) or .Dense(_) or .Plain -> quote { (w: Writer, v: ${k.spelled()}) -> w.text(${tag_of(quote { v }, k)}) },
+                .Payload(_) -> quote { a_relation_field_kind_with_no_stable_encoding() },
+            }
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
+}
+
+// ── the named-type helpers ──
+
+/// A generated helper's own name: the type's, an identifier.
+fn helper_id(n: string) -> string { snake(n) }
+
+/// Every named type reachable from a helper-using relation's stable columns
+/// that needs a helper — a payload enum, or a record reached from itself.
+fn helper_types(t: Type) -> List<string> {
+    mut all: List<string> = []
+    for f in stable(t) { all = collect_names(f.kind, all) }
+    [n for i, n in all if all.index_of(n) == i]
+}
+
+/// Every named type reachable in a kind's subtree, in reach order.
+fn collect_names(k: Kind, acc: List<string>) -> List<string> {
+    match k {
+        .Opt(inner) -> collect_names(inner, acc),
+        .List(elem) -> collect_names(elem, acc),
+        .Named(n, _) -> {
+            if acc.contains(n) { return acc }
+            let next = acc.concat([n])
+            match named_shape(n) {
+                .Record(fs) -> {
+                    mut out = next
+                    for f in columns(fs) { out = collect_names(f.kind, out) }
+                    out
+                },
+                .Payload(vs) -> {
+                    mut out = next
+                    for v in vs {
+                        for f in v.fields { out = collect_names(f.kind, out) }
+                    }
+                    out
+                },
+                .Over(shape) -> collect_names(shape, next),
+                .Tagged(_) or .Dense(_) or .Plain -> next,
+            }
+        },
+        rest -> acc,
+    }
+}
+
+fn codec_helper_members(t: Type) -> List<Decls> {
+    if !uses_helpers(t) { return [] }
+    mut out: List<Decls> = []
+    for n in helper_types(t) { out = out.concat(helper_members(t, n)) }
+    out
+}
+
+/// One named type's three helpers — write, read and hash — `static` on the
+/// relation, so recursion is a call by name and a diamond is one body.
+fn helper_members(t: Type, n: string) -> List<Decls> {
+    let owner = t.name
+    let id = helper_id(n)
+    match named_shape(n) {
+        .Record(fs) -> {
+            let writers = column_writers(n, fs, owner)
+            let reads = [quote { W { ${f.name}: ${read_value(f.kind, owner)} } } for f in columns(fs)]
+            [
+                quote {
+                static fn write_${id}(w: Writer, v: ${n}) -> void { written_all(w, v, [${..writers}]) }
+                static fn read_${id}(rd: Reader) -> Result<${n}, CodecFault> { .Ok(${n} { ..${reads} }) }
+                static fn hash_${id}(h: StableHasher, v: ${n}) -> StableHasher { ${folded_record(quote { h }, quote { v }, fs, owner)} }
+            },
+            ]
+        },
+        .Payload(vs) -> {
+            [
+                quote {
+                static fn write_${id}(w: Writer, v: ${n}) -> void { match v { ${write_arms(vs, owner)} } }
+                static fn read_${id}(rd: Reader) -> Result<${n}, CodecFault> {
+                    let tag = rd.text()?
+                    ${read_body(vs, n, owner)}
+                }
+                static fn hash_${id}(h: StableHasher, v: ${n}) -> StableHasher { match v { ${hash_arms(vs, owner)} } }
+            },
+            ]
+        },
+        .Tagged(_) or .Dense(_) or .Over(_) or .Plain -> [],
+    }
+}
+
+/// A payload field's binder inside a variant's arm — positional, so two
+/// fields never share a name and none can shadow the writer.
+fn binder(i: int) -> string { "p${i}" }
+
+fn write_arms(vs: List<Variant>, owner: string) -> List<Arms> { [write_arm(v, owner) for v in vs] }
+
+fn write_arm(v: Variant, owner: string) -> Arms {
+    if v.fields.is_empty() { return quote { .${v.name} -> w.text(${literal(v.name)}) } }
+    let binders = [binder(i) for i in 0..v.fields.length]
+    let parts = [quote { (wt: Writer) -> ${written(quote { wt }, name(binder(i)), f.kind, owner)} } for i, f in v.fields]
+    quote { .${v.name}(${..binders}) -> written_tagged(w, ${literal(v.name)}, [${..parts}]) }
+}
+
+fn hash_arms(vs: List<Variant>, owner: string) -> List<Arms> { [hash_arm(v, owner) for v in vs] }
+
+fn hash_arm(v: Variant, owner: string) -> Arms {
+    if v.fields.is_empty() { return quote { .${v.name} -> h.text(${literal(v.name)}) } }
+    let binders = [binder(i) for i in 0..v.fields.length]
+    mut acc: Code = quote { h.text(${literal(v.name)}) }
+    for i, f in v.fields { acc = hashed(acc, name(binder(i)), f.kind, owner) }
+    quote { .${v.name}(${..binders}) -> ${acc} }
+}
+
+fn read_body(vs: List<Variant>, n: string, owner: string) -> Code {
+    mut acc: Code = quote { .Err(CodecFault.NotVariant) }
+    mut i = vs.length
+    while i > 0 {
+        i = i - 1
+        acc = quote { if tag == ${literal(vs[i].name)} { ${read_ok(vs[i], n, owner)} } else { ${acc} } }
+    }
+    acc
+}
+
+fn read_ok(v: Variant, n: string, owner: string) -> Code {
+    if v.fields.is_empty() { return quote { .Ok(${name(n)}.${v.name}) } }
+    let reads = [read_value(f.kind, owner) for f in v.fields]
+    quote { .Ok(${name(n)}.${v.name}(${..reads})) }
 }
 
 // ── Voices ──
