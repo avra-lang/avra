@@ -14,11 +14,13 @@
 #   cache-attacks  the build cache attacked — the train's.
 #   test     the ONE required check name: an aggregate that passes iff every
 #            needed job succeeded or was skipped.
-# A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt,
-# idioms and suites over the packages it TOUCHES; the train runs the keepers,
-# the cache attacks and every AFFECTED package (dependents included) on the
-# COMBINATION, so nothing lands untested and a PR pays the whole gate once,
-# not twice. A failure only the train sees drops the PR one train later.
+# A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt
+# and idioms on the packages it TOUCHES — no keepers, no untouched packages,
+# no suites, no object build — so a green PR is a fast floor, not a second
+# full gate. The train runs the keepers, the cache attacks, the seed check
+# and every AFFECTED package (dependents included) on the COMBINATION, so
+# nothing lands untested. A failure only the train sees drops the PR one
+# train later; the watcher re-runs a PR's own failed jobs once.
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) is a
 # train's over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
@@ -121,15 +123,6 @@ jobs:
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
           echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime packages: $(echo $pkgs)"
-      # THE KEEPERS THAT NEED NO COMPILER, on every PR and before anything is
-      # built: a refusal one of them would speak stops here, in half a minute,
-      # rather than on a train. The train runs every keeper regardless.
-      - if: github.event_name == 'pull_request'
-        name: static keepers
-        run: |
-          s=$(date +%s)
-          make -s keepers-static
-          echo "speed static $(( $(date +%s) - s ))" >> speed.log
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
       # tree whose compiler is main's takes main's binary and builds nothing.
       # Otherwise the newest cached binary only has to BUILD this tree — one
@@ -162,14 +155,17 @@ jobs:
           name: avra-compiler
           path: build/avra
           retention-days: 1
-      # THE C OBJECTS AND PACKAGE LIBRARIES, built ONCE and handed down: every
-      # job below runs programs, and each used to build these for itself.
-      - if: steps.plan.outputs.build == '1' && github.event_name != 'push'
+      # THE C OBJECTS AND PACKAGE LIBRARIES, built ONCE and handed down to
+      # the jobs that run programs — the keepers, the seed check, the suites.
+      # A PR runs NONE of those (its check is fmt and idioms on the packages
+      # it touched), so a PR pays no object build at all: the minimum is a
+      # compiled binary and a `check`.
+      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch')
         name: objects and libs
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
           tar -cf avra-build.tar --exclude=build/avra build
-      - if: steps.plan.outputs.build == '1' && github.event_name != 'push'
+      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch')
         uses: actions/upload-artifact@v4
         with:
           name: avra-build
@@ -403,38 +399,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      # Handed-down objects stand newer than this checkout's sources, so no
-      # job rebuilds what prepare built from the same commit.
-      - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      # The keepers are the train's (its keepers job); a PR's gate is the
-      # changed files' formatting and its touched packages' idioms.
+      # A PR's gate reads the compiler alone: fmt on the changed files and
+      # `check` on the touched packages. It does not untar the objects, does
+      # not run the keepers, does not build the wasm target. The train is the
+      # gate; the PR is the fast floor under it.
+      - name: compiler
+        run: chmod +x build/avra
       - name: gate
-        run: sh tools/gate_changed.sh --files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers
-
-  # THE KEEPERS A PR CAN BREAK ALONE (`make keepers-pr`), under the compiler
-  # the PR built: a refusal stops on the PR instead of failing a train. The
-  # train runs every keeper in its keepers job.
-  pr-keepers:
-    needs: [prepare]
-    if: github.event_name == 'pull_request' && needs.prepare.outputs.build == '1'
-    runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/avra-lang/avra-ci:llvm22
-      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with: { name: avra-compiler, path: build }
-      - uses: actions/download-artifact@v4
-        with: { name: avra-build }
-      - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
-      - name: PR keepers
-        run: make -s -o avra keepers-pr
+        run: |
+          args="--files ${{ needs.prepare.outputs.changed }} --packages ${{ needs.prepare.outputs.packages }} --no-keepers"
+          [ "${{ github.event_name }}" != pull_request ] || args="$args --pr-minimum"
+          sh tools/gate_changed.sh $args
 
   # THE LATENCY GATE A RUNTIME CHANGE OWES: the scheduler's transition
   # rows against the recorded baseline, on the runner the checks' image
@@ -456,7 +431,10 @@ jobs:
         run: make -s flow-gate FLOW_GATE_ARGS=--require
   suites:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.packages != ''
+    # THE TRAIN'S, and a hand-run whole gate's. A PR's check does not run a
+    # suite: the train runs every AFFECTED package (dependents included) on
+    # the combination, which no single PR's tree can. A PR pays fmt + idioms.
+    if: needs.prepare.outputs.packages != '' && (github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.only == ''))
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -516,7 +494,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers-a, keepers-b, seed-check, pr-keepers, flow-gate, cache-attacks, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, seed-check, flow-gate, cache-attacks, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
