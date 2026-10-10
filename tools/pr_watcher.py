@@ -100,7 +100,7 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
                 and p["mergeable"] == "MERGEABLE" and not p["inQueue"]):
             if room > 0:
                 acts.append({"do": "enqueue-auto" if not p["autoMerge"] else "enqueue",
-                             "pr": n, "node": p.get("nodeId")})
+                             "pr": n, "node": p.get("nodeId"), "why": "new"})
                 room -= 1
             else:
                 acts.append({"do": "hold", "pr": n,
@@ -112,7 +112,8 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
     for q in queue:
         if q.get("stuck"):
             acts.append({"do": "dequeue", "node": q["nodeId"], "pr": q["pr"]})
-            acts.append({"do": "enqueue", "pr": q["pr"], "node": q["nodeId"]})
+            acts.append({"do": "enqueue", "pr": q["pr"], "node": q["nodeId"],
+                         "why": "kick"})
     return acts
 
 
@@ -512,6 +513,13 @@ def selftest():
         del os.environ["AVRA_QUEUE_MAX"]
     if queue_max() != QUEUE_MAX:
         sys.exit("pr-watcher: self-test — the cap did not fall back to its default")
+    # The cap's new enqueues and rule (c)'s kicks wear distinct marks, so the
+    # dry run can report what the cap did apart from the queue's own churn.
+    if plan([_pr(7, "SUCCESS")], [], [], _empty_state())[0].get("why") != "new":
+        sys.exit("pr-watcher: self-test — a cap enqueue was not marked new")
+    kick = plan([], [{"pr": 8, "nodeId": "N8", "stuck": True}], [], _empty_state())
+    if [a.get("why") for a in kick] != [None, "kick"]:
+        sys.exit("pr-watcher: self-test — a stuck-entry kick was not marked")
 
     # (1)+(3) ONE FAILING ACTION MUST NOT ABORT THE PASS, AND STATE IS SAVED
     # WITH ONLY THE SUCCEEDED MARKS: the failed action is retried next pass.
@@ -576,11 +584,17 @@ def main(argv):
     limit = queue_max()
     if "--dry-run" in argv:
         acts = plan(world["prs"], world["queue"], world["trains"], state, limit)
+        # New enqueues (rule b) are what the cap governs; kicks (rule c) are
+        # re-enqueues of entries already counted against the depth.
+        new = sum(1 for a in acts if a.get("why") == "new")
+        kicks = sum(1 for a in acts if a.get("why") == "kick")
         held = sum(1 for a in acts if a["do"] == "hold")
         for a in acts:
-            print("pr-watcher:", a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
-        print(f"pr-watcher: dry run — queue at {len(world['queue'])}/{limit}, "
-              f"{len(acts) - held} action(s), {held} held, not taken, state untouched")
+            tag = f" [{a['why']}]" if a.get("why") else ""
+            print("pr-watcher:", a["do"] + tag, a.get("pr", a.get("run", "")), a.get("text", ""))
+        print(f"pr-watcher: dry run — queue at {len(world['queue'])}/{limit}: "
+              f"{new} new enqueue(s), {held} held, {kicks} stuck-entry kick(s) — "
+              f"not taken, state untouched")
         return 0
     acts = run_pass(world, state, state_path, repo, limit=limit)
     print(f"pr-watcher: {len(world['prs'])} open PR(s), {len(world['queue'])} queued, "
