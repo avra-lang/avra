@@ -224,12 +224,10 @@ jobs:
           echo "room: cpu=$(nproc)"
           awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "room: memory total %d MB, available %d MB\n", t/1024, a/1024}' /proc/meminfo
           printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
-      # ONE LIST, the Makefile's. A keeper held to a clock runs FIRST, with
-      # nothing beside it; the first half follows on the same runner. THE
-      # SECOND HALF IS ITS OWN JOB (keepers-b), so no runner ever holds two
-      # keeper processes: three on one runner — with the seed's compiler build
-      # — is what the OOM killed (137), and two still crossed it on a train's
-      # combined tree, so the seed check is a third job (seed-check).
+      # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
+      # runtime-mutations) ARE NOT THIS JOB'S: a runner that held them beside
+      # this half was killed mid-mutation, and their own job is a follow-up.
+      # The Makefile's `make keepers` still holds them.
       #
       # EACH HEAVY make PRINTS ITS PEAK (max RSS of the tree it waited on,
       # read from `getrusage`), so a runner grown past its memory is read
@@ -239,7 +237,7 @@ jobs:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
         run: |
-          alone=0; a=0
+          a=0
           # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
           # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
           # skipped with "time: not found". The peak is read from the finished
@@ -248,13 +246,11 @@ jobs:
             peak_label="$1"; shift
             python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
           }
-          peak keepers-alone make -s -o avra keepers-alone || alone=1
           ta=$(date +%s)
           peak keepers-a make -s -o avra keepers-a || a=1
           echo "speed keepers-a $(( $(date +%s) - ta ))" >> speed.log
-          [ "$alone" = 0 ] || echo "::error::a keeper that runs alone refused"
           [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
-          exit $((alone + a))
+          exit "$a"
 
       - name: speed baseline
         uses: actions/cache/restore@v4
