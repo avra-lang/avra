@@ -11,7 +11,8 @@
 #            — a compiler build beside the two halves was what the runner's
 #            OOM killed (137), with nothing said.
 #   gate     the changed-file fmt and the packages' idioms.
-#   cache-attacks  the build cache attacked — the train's.
+#   cache-attacks  the build cache attacked — on the train, on main's own
+#                  push, and on a PR that reaches the store or the attacks.
 #   test     the ONE required check name: an aggregate that passes iff every
 #            needed job succeeded or was skipped.
 # A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt on
@@ -62,6 +63,7 @@ jobs:
       packages: ${{ steps.plan.outputs.packages }}
       build: ${{ steps.plan.outputs.build }}
       runtime: ${{ steps.plan.outputs.runtime }}
+      cache: ${{ steps.plan.outputs.cache }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -85,6 +87,7 @@ jobs:
           compiler=1
           build=1
           runtime=0
+          cache=0
           if [ "$event" != push ] && [ -z "${{ inputs.only }}" ]; then
             changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
           fi
@@ -101,6 +104,24 @@ jobs:
           if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
             pkgs=$(sh tools/affected_packages.sh origin/main HEAD "$PWD")
           fi
+          # THE BUILD CACHE'S OWN ATTACKS RUN WHEREVER THE STORE CAN MOVE: the
+          # train always, main's own push (so a store change main just took is
+          # named on main, not only on a train), and a PR whose diff reaches the
+          # store, the cache's key files or the attacks themselves. A store
+          # rewrite once went PR-green because a PR skips these, and every train
+          # after it failed until the queue stalled.
+          if [ "$event" = merge_group ] || [ "$event" = push ]; then cache=1; fi
+          if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then cache=1; fi
+          if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
+              packages/std-avrac/src/compiler/store \
+              packages/std-avrac/src/compiler/build.av \
+              packages/std-avrac/src/compiler/record.av \
+              packages/std-avrac/src/compiler/answers.av \
+              packages/std-avrac/src/compiler/host/input.av \
+              packages/std-avrac/src/compiler/lower/code_hash.av \
+              'tools/*attack*.sh'; then
+            cache=1
+          fi
           # Asked for by hand, the run is a train's over EVERY package: the
           # whole gate on any branch, without a queue entry.
           if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then
@@ -115,6 +136,9 @@ jobs:
             # a file a PR keeper holds to the compiler wants one built to hold it to
             if ! git diff --quiet origin/main...HEAD -- docs/DIAGNOSTICS.md DOGFOODING.md Makefile 'tools/footprint*' tools/attack.sh; then build=1; fi
           fi
+          # The attacks need a compiler and its objects: a run that owes them
+          # owes the build, even when the diff itself is only the harness.
+          if [ "$cache" = 1 ]; then build=1; fi
           key=$(sh tools/compiler_paths.sh --key)
           shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py 4)
           {
@@ -122,10 +146,11 @@ jobs:
             echo "packages=$(echo $pkgs)"
             echo "build=${build}"
             echo "runtime=${runtime}"
+            echo "cache=${cache}"
             echo "key=avrac-${key}"
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
-          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime packages: $(echo $pkgs)"
+          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime cache=$cache packages: $(echo $pkgs)"
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
       # tree whose compiler is main's takes main's binary and builds nothing.
       # Otherwise the newest cached binary only has to BUILD this tree — one
@@ -177,16 +202,16 @@ jobs:
           path: build/avra
           retention-days: 1
       # THE C OBJECTS AND PACKAGE LIBRARIES, built ONCE and handed down to
-      # the jobs that run programs — the keepers, the seed check, the suites.
-      # A PR runs NONE of those (its check is fmt and idioms on the packages
-      # it touched), so a PR pays no object build at all: the minimum is a
-      # compiled binary and a `check`.
-      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch')
+      # the jobs that run programs — the keepers, the seed check, the suites,
+      # and the cache attacks. A plain PR runs none of those (its check is fmt
+      # and idioms on the packages it touched), so it pays no object build at
+      # all; a PR that reaches the store runs the attacks and does.
+      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.plan.outputs.cache == '1')
         name: objects and libs
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
           tar -cf avra-build.tar --exclude=build/avra build
-      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch')
+      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.plan.outputs.cache == '1')
         uses: actions/upload-artifact@v4
         with:
           name: avra-build
@@ -353,11 +378,14 @@ jobs:
       - name: seed check
         run: |
           python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
-  # THE BUILD CACHE, ATTACKED — the train's, like the keepers. Its own job: it
-  # clears the store it builds through, and it runs beside the gate.
+  # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
+  # through, and it runs beside the gate. It runs on the train, on main's own
+  # push, and on a PR that reaches the store or the attacks — the three places
+  # the cache can move, so the attacks are named where the change is, not only
+  # one train later.
   cache-attacks:
     needs: [prepare]
-    if: github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.only == '')
+    if: needs.prepare.outputs.cache == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
