@@ -1,7 +1,7 @@
 // The red team's survivors: every prefix of a stream, every bit of a
 // checksummed one, a header that asks for a dictionary, a second
 // member, and ceilings at their edges.
-use @std.compress.{Format, CompressError, encoded, decoded}
+use @std.compress.{Format, CompressError, encoded, decoded_x}
 use @std.text.{repeat}
 
 fn page() -> string { repeat("a line of text that repeats, ", 40) }
@@ -9,7 +9,7 @@ fn page() -> string { repeat("a line of text that repeats, ", 40) }
 fn packed_page(f: Format) -> Bytes { encoded(page().bytes(), f) catch "".bytes() }
 
 fn read_back(b: Bytes, f: Format, ceiling: int) -> string {
-    match decoded(b, f, ceiling) {
+    match decoded_x(b, f, ceiling) {
         .Ok(out) -> out.text() ?? "octets ${out.length}",
         .Err(e) -> e.describe().message,
     }
@@ -47,7 +47,7 @@ spec "std/compress — adversarial" {
                 .all((f) -> read_back(encoded("x".bytes(), f) catch "".bytes(), f, 1) == "x")
         }
         then "a ceiling below zero refuses even nothing" {
-            match decoded(encoded("".bytes(), Format.Gzip) catch "".bytes(), Format.Gzip, 0 - 1) {
+            match decoded_x(encoded("".bytes(), Format.Gzip) catch "".bytes(), Format.Gzip, 0 - 1) {
                 .Err(e) -> match e { .TooLarge(c) -> c == 0 - 1, .Corrupt or .Truncated or .Memory -> false },
                 .Ok(_) -> false,
             }

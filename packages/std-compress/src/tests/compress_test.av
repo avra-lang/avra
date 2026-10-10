@@ -1,6 +1,6 @@
 // gzip, zlib and brotli: other implementations' output read, our own
 // read back, and every decode held to its ceiling.
-use @std.compress.{Format, CompressError, Encoder, encoded, encoding, decoded}
+use @std.compress.{Format, CompressError, Encoder, encoded, encoding, decoded_x}
 use @std.text.{from_base64, repeat}
 
 /// Vectors written by `gzip -n -9`, Python's `zlib.compress` and the
@@ -14,7 +14,7 @@ fn said(r: Result<Bytes, CompressError>) -> string {
 }
 
 fn round(text: string, f: Format) -> string {
-    said(decoded(encoded(text.bytes(), f) catch "".bytes(), f, 1000000))
+    said(decoded_x(encoded(text.bytes(), f) catch "".bytes(), f, 1000000))
 }
 
 fn formats() -> List<Format> { [Format.Gzip, Format.Zlib, Format.Brotli] }
@@ -34,35 +34,35 @@ spec "std/compress" {
         then "nothing round-trips in every format" { formats().all(round("", it) == "") }
         then "empty input is truncated, not empty output" {
             formats()
-                .all(said(decoded("".bytes(), it, 100)) == "the input ends before its stream does")
+                .all(said(decoded_x("".bytes(), it, 100)) == "the input ends before its stream does")
         }
-        then "gzip's own empty member" { said(decoded(from_base64("H4sIAAAAAAAAAwMAAAAAAAAAAAA=")!, Format.Gzip, 10)) == "" }
-        then "a zero ceiling holds an empty output" { said(decoded(encoded("".bytes(), Format.Gzip) catch "".bytes(), Format.Gzip, 0)) == "" }
+        then "gzip's own empty member" { said(decoded_x(from_base64("H4sIAAAAAAAAAwMAAAAAAAAAAAA=")!, Format.Gzip, 10)) == "" }
+        then "a zero ceiling holds an empty output" { said(decoded_x(encoded("".bytes(), Format.Gzip) catch "".bytes(), Format.Gzip, 0)) == "" }
     }
     given "other implementations' output" {
-        then "gzip" { said(decoded(gzip_hello(), Format.Gzip, 100)) == "hello, world" }
-        then "zlib" { said(decoded(zlib_hello(), Format.Zlib, 100)) == "hello, world" }
-        then "brotli" { said(decoded(brotli_hello(), Format.Brotli, 100)) == "hello, world" }
+        then "gzip" { said(decoded_x(gzip_hello(), Format.Gzip, 100)) == "hello, world" }
+        then "zlib" { said(decoded_x(zlib_hello(), Format.Zlib, 100)) == "hello, world" }
+        then "brotli" { said(decoded_x(brotli_hello(), Format.Brotli, 100)) == "hello, world" }
     }
     given "our own output" {
         then "every format round-trips text" { formats().all(round("the quick brown fox", it) == "the quick brown fox") }
         then "every octet round-trips" {
             let all = [k % 256 for k in 0..5000].bytes()!
             formats()
-                .all((decoded(encoded(all, it) catch "".bytes(), it, 5000) catch "".bytes()) == all)
+                .all((decoded_x(encoded(all, it) catch "".bytes(), it, 5000) catch "".bytes()) == all)
         }
         then "repetition shrinks" { formats().all((encoded(repeat("abc", 1000).bytes(), it) catch "".bytes()).length < 500) }
         then "gzip carries its magic" { (encoded("x".bytes(), Format.Gzip) catch "".bytes()).at(0) == 31 }
         then "an effort out of range is clamped, not refused" {
             said(
-                    decoded(
+                    decoded_x(
                         encoded("x".bytes(), Format.Brotli, 99) catch "".bytes(),
                         Format.Brotli,
                         10,
                     ),
                 ) == "x" &&
                 said(
-                    decoded(
+                    decoded_x(
                         encoded("x".bytes(), Format.Zlib, 0 - 4) catch "".bytes(),
                         Format.Zlib,
                         10,
@@ -71,16 +71,16 @@ spec "std/compress" {
         }
     }
     given "a ceiling" {
-        then "exactly the ceiling decodes" { said(decoded(gzip_hello(), Format.Gzip, 12)) == "hello, world" }
-        then "one octet under it refuses" { said(decoded(gzip_hello(), Format.Gzip, 11)) == "the input decodes to more than 11 octets" }
+        then "exactly the ceiling decodes" { said(decoded_x(gzip_hello(), Format.Gzip, 12)) == "hello, world" }
+        then "one octet under it refuses" { said(decoded_x(gzip_hello(), Format.Gzip, 11)) == "the input decodes to more than 11 octets" }
         then "a bomb stops at the ceiling in every format" {
             formats()
                 .all(
-                    said(decoded(encoded(zeros(22), it) catch "".bytes(), it, 65536)) == "the input decodes to more than 65536 octets",
+                    said(decoded_x(encoded(zeros(22), it) catch "".bytes(), it, 65536)) == "the input decodes to more than 65536 octets",
                 )
         }
         then "the refusal carries the ceiling" {
-            match decoded(brotli_hello(), Format.Brotli, 3) {
+            match decoded_x(brotli_hello(), Format.Brotli, 3) {
                 .Err(e) -> match e { .TooLarge(c) -> c == 3, .Corrupt or .Truncated or .Memory -> false },
                 .Ok(_) -> false,
             }
@@ -88,14 +88,14 @@ spec "std/compress" {
     }
     given "malformed input" {
         then "the wrong format" {
-            said(decoded(gzip_hello(), Format.Zlib, 100)) == "the input is not in the format it was read as" &&
-                said(decoded(zlib_hello(), Format.Gzip, 100)) == "the input is not in the format it was read as"
+            said(decoded_x(gzip_hello(), Format.Zlib, 100)) == "the input is not in the format it was read as" &&
+                said(decoded_x(zlib_hello(), Format.Gzip, 100)) == "the input is not in the format it was read as"
         }
         then "cut short" {
             formats()
                 .all(
                     said(
-                        decoded(
+                        decoded_x(
                             (encoded(repeat("a", 3000).bytes(), it) catch "".bytes()).slice(0, 8),
                             it,
                             10000,
@@ -104,8 +104,8 @@ spec "std/compress" {
                 )
         }
         then "trailing octets after the stream" {
-            said(decoded(gzip_hello().concat("x".bytes()), Format.Gzip, 100)) == "the input is not in the format it was read as" &&
-                said(decoded(brotli_hello().concat("x".bytes()), Format.Brotli, 100)) == "the input is not in the format it was read as"
+            said(decoded_x(gzip_hello().concat("x".bytes()), Format.Gzip, 100)) == "the input is not in the format it was read as" &&
+                said(decoded_x(brotli_hello().concat("x".bytes()), Format.Brotli, 100)) == "the input is not in the format it was read as"
         }
         then "a flipped octet in gzip's checksum" {
             let g = gzip_hello()
@@ -113,13 +113,13 @@ spec "std/compress" {
                 .slice(0, g.length - 5)
                 .concat([(g.at(g.length - 5) + 1) % 256].bytes()!)
                 .concat(g.slice(g.length - 4, g.length))
-            said(decoded(bad, Format.Gzip, 100)) == "the input is not in the format it was read as"
+            said(decoded_x(bad, Format.Gzip, 100)) == "the input is not in the format it was read as"
         }
-        then "plain text in every format" { formats().all(said(decoded("hello".bytes(), it, 100)) != "hello") }
+        then "plain text in every format" { formats().all(said(decoded_x("hello".bytes(), it, 100)) != "hello") }
     }
 }
 
-/// `f`'s encoding fed three pieces and finished once, decoded back.
+/// `f`'s encoding fed three pieces and finished once, decoded_x back.
 fn incremental(f: Format) -> string {
     match encoding(f, 4) {
         .Ok(enc) -> {
@@ -128,7 +128,7 @@ fn incremental(f: Format) -> string {
             let tail = pushed(enc, "world")
             let end = match enc.finish() { .Ok(b) -> b, .Err(_) -> "".bytes() }
             enc.free()
-            said(decoded(head.concat(middle).concat(tail).concat(end), f, 1000000))
+            said(decoded_x(head.concat(middle).concat(tail).concat(end), f, 1000000))
         },
         .Err(e) -> e.describe().message,
     }
