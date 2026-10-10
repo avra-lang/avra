@@ -1,0 +1,33 @@
+// The shield's rows: a frame's cold exit brackets its deferred calls with
+// a row pair, so a call that may reach is not cut between them. Both rows
+// answer nothing, take no seat, and reach the world; the evaluator runs
+// each on the running task, so eval == native holds.
+use @std.avrac.core.{rt_sigs, RtSig, RtHost, runtime_namespace}
+
+fn shield_row(name: string) -> RtSig? { rt_sigs().find(it.name == name) }
+
+fn is_shield(name: string) -> bool {
+    let r? = shield_row(name) else { return false }
+    r.armed() && r.ret is .Void && r.params.is_empty() && r.reach is .World
+}
+
+fn has_host(name: string, want: RtHost) -> bool {
+    let r? = shield_row(name) else { return false }
+    r.host == want
+}
+
+spec "core/runtime_api — the shield" {
+    given "the frame's cold exit" {
+        then "both rows are armed, answer nothing, take no seat, and reach the world" {
+            is_shield("avra_fiber_shield_enter") && is_shield("avra_fiber_shield_leave")
+        }
+        then "each row's host is its own" {
+            has_host("avra_fiber_shield_enter", RtHost.FiberShieldEnter) &&
+                has_host("avra_fiber_shield_leave", RtHost.FiberShieldLeave)
+        }
+        then "each row gets its own method in the generated namespace" {
+            runtime_namespace().contains("mut fn fiber_shield_enter()") &&
+                runtime_namespace().contains("mut fn fiber_shield_leave()")
+        }
+    }
+}

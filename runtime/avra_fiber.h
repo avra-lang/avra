@@ -118,6 +118,15 @@ int64_t avra_fiber_within(int64_t ms);
 // request that stands is this scope's, which then stands no longer.
 int64_t avra_scope_end(int64_t id);
 void avra_fiber_within_end(int64_t id);
+
+// A `defer` runs whole under a shield: the frame's cold exit brackets
+// its deferred calls with these two rows. The enter saves the task's
+// unwind bit and clears it, so a call that may reach is not cut between
+// the calls; a WAIT still answers a standing cancel at once. The leave
+// puts the saved bit back. A `within` opened while shielded is a SHIELD
+// SCOPE: its own limit alone cuts a wait under it.
+void avra_fiber_shield_enter(void);
+void avra_fiber_shield_leave(void);
 // The task's standing request: 0 for none (or a task that has ended), a
 // scope's id when its limit passed, else 1 + the id of the task that
 // cancelled it. ONE STANDS: a task's cancel outranks any scope, an outer
@@ -180,8 +189,15 @@ int64_t avra_vtask_interrupted(int64_t t);
 // The task's unwind bit, as the task itself wears it: what a read of
 // the flag inside that task answers.
 int64_t avra_vtask_unwinding(int64_t t);
+// The task's unwind bit, as the evaluator sets it: a wait that cuts in a
+// virtual task raises it the way the switch raises a compiled task's.
+void avra_vtask_set_unwinding(int64_t t, int64_t v);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 void avra_vtask_within_end(int64_t t, int64_t id);
+// The shield's row pair, on the virtual task `t` — the same policy a
+// compiled task's pair carries.
+void avra_vtask_shield_enter(int64_t t);
+void avra_vtask_shield_leave(int64_t t);
 // The task's deadline, in ns; 0 when none.
 int64_t avra_vtask_deadline(int64_t t);
 // The new task `t` takes the limit `from` stands under, as a compiled

@@ -94,6 +94,42 @@ static void joins(void) {
     avra_vtask_free(j);
 }
 
+// The byte pair on a virtual task: the enter saves and clears, the leave
+// ORs the saved bit back, so a bit raised inside the shield stands.
+static void shield_bytes(void) {
+    int64_t t = avra_vtask_new();
+    avra_vtask_set_unwinding(t, 1);
+    avra_vtask_shield_enter(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "the shield clears a virtual task's saved bit");
+    avra_vtask_set_unwinding(t, 1);
+    avra_vtask_shield_leave(t);
+    CHECK(avra_vtask_unwinding(t) == 1, "and the leave keeps a bit raised inside");
+    avra_vtask_free(t);
+}
+
+// A `within` opened while a virtual task runs shielded: its own limit
+// alone cuts the wait, and a task cancel does not.
+static void shields(void) {
+    int64_t t = avra_vtask_new();
+    avra_vtask_cancel(t, 7);
+    avra_vtask_shield_enter(t);
+    int64_t scope = avra_vtask_within(t, 5);
+    CHECK(avra_vtask_deadline(t) != 0, "a `within` opened under a shield carries its own limit");
+    void* gate = avra_gate_new();
+    avra_vtask_wait_gate(t, gate, 0, 0);
+    CHECK(avra_vtask_park(t) == 1, "a cancelled virtual wait under a shield scope parks");
+    avra_vtask_cancel(t, 8);                // an ask while it is parked does not claim it
+    CHECK(avra_sched_timers() >= 1, "its own limit stands filed");
+    CHECK(avra_vtask_next() == t, "the policy names it at its own limit, not the cancel");
+    int64_t claim = avra_vtask_claim(t);
+    CHECK((int)(claim >> 32) == -1 && (int)(int32_t)(uint32_t)claim == 1, "the claim is the shield scope's deadline");
+    avra_vtask_within_end(t, scope);
+    CHECK(avra_sched_timers() == 0, "the shield scope's end takes its entry out");
+    avra_vtask_shield_leave(t);
+    avra_rc_release(gate);
+    avra_vtask_free(t);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -117,6 +153,8 @@ static void run_deadlocked(void) {
 
 int main(void) {
     joins();
+    shield_bytes();
+    shields();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);
