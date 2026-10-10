@@ -15,6 +15,7 @@ use @std.avrac.compiler.{
     PartMoved,
     HeldMismatch,
     Explained,
+    Changed,
     Digested,
     FamilyCount,
     Counted,
@@ -24,7 +25,7 @@ use @std.avrac.compiler.{
     hex_word,
     Phase,
 }
-use @std.avrac.core.{joined, counted}
+use @std.avrac.core.{joined, counted, flatten}
 use @std.relation.engine.{count_reads, read_calls, abandoned_frames}
 use @std.json.{Json, Field, field, to_text}
 use @std.path.{relative_path}
@@ -119,11 +120,36 @@ fn package_answer(a: Asked, ws: Workspace) -> Lines {
         return stats_answer(a, ws.walk_graph())
     }
     let walk = walk_of(ws)?
-    if a.json { return [to_text(holds_json(walk))] }
+    let changed = ws.walk_graph().ws.reached_by(walk.moved)
+    if a.json { return [to_text(holds_json(walk, changed))] }
     let read = [h for h in walk.holds if !h.held]
     [files_line(walk), attempts_line(walk), moved_line(walk)]
         .concat([line for h in walk.holds for line in text_moved(walk, h)])
         .concat([line for h in read for line in hold_lines(walk, h)])
+        .concat(reached_lines(walk, changed))
+}
+
+/// How many answers a moved input's section names before the rest is a count.
+const REACHED_CAP: int = 20
+
+/// The answers each moved input reaches, named per input and capped per input.
+fn reached_lines(walk: CacheWalk, changed: List<Changed>) -> List<string> {
+    if changed.is_empty() { return [] }
+    [
+        "reached by the change (re-verified; an unchanged answer stands; through shared program tables, an unrelated file's answers can be reached):",
+    ]
+        .concat(flatten([changed_lines(walk, c) for c in changed]))
+}
+
+fn changed_lines(walk: CacheWalk, c: Changed) -> List<string> {
+    let shown = c
+        .answers
+        .slice(0, if c.answers.length < REACHED_CAP { c.answers.length } else { REACHED_CAP })
+    ["  ${at_root(walk, c.input)} — ${counted(c.answers.length, "answer")}"]
+        .concat(["    ${a.label}" for a in shown])
+        .concat(
+            if c.answers.length > REACHED_CAP { ["    +${c.answers.length - REACHED_CAP} more"] } else { [] },
+        )
 }
 
 fn files_line(walk: CacheWalk) -> string {
@@ -399,7 +425,7 @@ fn page_json(held: List<Field>, answers: List<Shown>) -> Json {
     Json.Obj(held.concat([field("answers", Json.Arr([shown_json(s) for s in answers]))]))
 }
 
-fn holds_json(walk: CacheWalk) -> Json {
+fn holds_json(walk: CacheWalk, changed: List<Changed>) -> Json {
     Json
         .Obj(
             [
@@ -407,8 +433,19 @@ fn holds_json(walk: CacheWalk) -> Json {
                 field("held", Json.Int([h for h in walk.holds if h.held].length)),
                 field("moved", texts_json([at_root(walk, p) for p in walk.moved])),
                 field("read", Json.Arr([hold_json(walk, h) for h in walk.holds if !h.held])),
+                field("reached", Json.Arr([changed_json(walk, c) for c in changed])),
                 field("attempts", Json.Int(walk.attempts)),
                 field("discarded", Json.Int(walk.discarded)),
+            ],
+        )
+}
+
+fn changed_json(walk: CacheWalk, c: Changed) -> Json {
+    Json
+        .Obj(
+            [
+                field("input", Json.Str(at_root(walk, c.input))),
+                field("answers", texts_json([a.label for a in c.answers])),
             ],
         )
 }
@@ -446,7 +483,7 @@ export command explain {
         description: "a file, a package's directory, `@name` or `@Owner.name` for a declaration, or an answer as `Family(subject)` — the package the command stands in when absent"
     }
     flag stats { description: "count the package's answers: cells, reads and how long one answer's reads run, per family" }
-    flag why { description: "what moved since the kept state: whether a check holds each file and why not, and the way down from an answer to each moved input" }
+    flag why { description: "what moved since the kept state: whether a check holds each file and why not, the way down from an answer to each moved input, and the answers each moved input reaches" }
     flag json { description: "JSON instead of text, every list in the text's order" }
     flag time { description: "with `--stats`, the time each phase of the derivation took — the one row that differs run to run" }
     run: ExplainCmd {}
