@@ -2045,44 +2045,48 @@ Runtime facts, ours to ratify:
 
 ## How work lands
 
+The single source for the landing path, Sprites, the watcher and the
+CI gates is `docs/2026_10_11_THE_PIPELINE.md`; the section below is the
+doctrine it expands.
+
 - ALL WORK MOVES THROUGH SEVEN COMMANDS, and nothing else touches main:
 
       sh tools/work new <name>   # a worktree ../avra-<name> off main, and its Sprite
       sh tools/work run <cmd>    # run it on this lane's Sprite, streamed, its exit status
       sh tools/work test         # what this branch touches, on this lane's Sprite
-      sh tools/work land         # push, PR, queue — no Sprite involved
-      sh tools/work status       # PRs and the queue; each lane and its Sprite
+      sh tools/work land         # push, PR, arm auto-merge — no Sprite involved
+      sh tools/work status       # PRs and their merge state; each lane and its Sprite
       sh tools/work sprites      # every Sprite at a glance; `--fix [name]` repairs
       sh tools/work done         # remove this lane, free its Sprite
 
-  Main lives on GitHub (avra-lang/avra) and moves only through its merge
-  queue: squash merges, linear history, no direct pushes. A local main
+  Main lives on GitHub (avra-lang/avra): squash merges, linear history,
+  no direct pushes. It requires the `test` check AND that a branch be up
+  to date with it, and auto-merge lands a green, current PR by itself,
+  one at a time. A local main
   only follows `origin/main` (the reference-transaction hook refuses any
   other update; a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`).
-- A PR RUNS THE MINIMUM, AND THE TRAIN RUNS THE GATE. A PR's own `test`
-  check is fmt on its changed `.av`, and idioms and suites over the
-  packages it TOUCHES, on the PR's own tree (`.github/workflows/
-  checks.yml`); a PR that touches no `.av`, no package and no compiler
-  source builds nothing. Before it builds anything it runs the keepers
-  that need NO COMPILER (`make keepers-static`, half a minute), so a
-  refusal one of them speaks stops on the PR. It does NOT run the other
-  keepers, the cache attacks, the seed check or its dependents' suites:
-  each runs on the train, and a failure there drops the PR one train
-  later. THE COMPILER IS CACHED BY
+- THE PR IS THE TRAIN, AND THERE IS NO MERGE QUEUE (dropped 2026-10-11:
+  its only real value was testing `main` plus every PR ahead, which
+  "require up to date" gives back for free one PR at a time, while the
+  queue cost trains that tested many PRs at once — one red suite killed
+  them all — HEADGREEN batching and a rebase treadmill). A PR's `test`
+  check IS the gate, on the PR's own tree (`.github/workflows/
+  checks.yml`): fmt on its changed `.av`, idioms and suites over the
+  packages it TOUCHES, the compiler-dependent keepers, the seed check and
+  the affected packages' suites; a PR that touches no `.av`, no package
+  and no compiler source builds nothing. Before it builds anything it
+  runs the keepers that need NO COMPILER (`make keepers-static`, half a
+  minute), so a refusal one of them speaks stops on the PR. Because the
+  branch must be up to date, the tree it tests already holds `main`, so a
+  cross-PR interaction (two individually-green PRs
+  colliding on a latent bug) is caught on the later PR's own run. THE
+  COMPILER IS CACHED BY
   ITS OWN SOURCE (`tools/compiler_paths.sh`): a tree whose compiler is
   main's takes main's binary; otherwise the newest cached binary builds
   the tree twice (the generation law), and one too old to read it — new
   syntax, a new refusal about its own source — fails that build and the
-  tree BOOTSTRAPS from the committed seed. The queue then builds main
-  plus every PR ahead of it plus this one and tests that COMBINATION on
-  GitHub's runners (Ubuntu 26.04, LLVM 22, the image in `.github/ci/`):
-  the keepers, the attacks, the seed check and every AFFECTED package —
-  the only place a CROSS-PR interaction (two individually-green PRs
-  colliding on a latent bug) can be seen, and the only place the seed is
-  proved to build the tree. Ten trains test at once; when one passes, it
-  and every PR ahead of it land together (HEADGREEN). A failing train
-  drops its PR with the log on the PR. Main's own push run caches the
-  compiler every run starts from.
+  tree BOOTSTRAPS from the committed seed. Main's own push run caches
+  the compiler every run starts from.
 - A LANE ITERATES WITH `make try`, NEVER `make avra`: it builds the
   compiler with the STANDING `build/avra` into `build/avra-try` and never
   replaces the builder, so its store stays warm (a leaf edit, ~4 s held
@@ -2152,7 +2156,7 @@ Runtime facts, ours to ratify:
   correct work.
 - A CHANGE THE COMPILER CHECKS ABOUT ITS OWN SOURCE (a renamed type, a
   new license form) lands as a BRIDGE first: main's compiler must build
-  the branch, because the seed and the train's own build both use it.
+  the branch, because the seed and the gate's own build both use it.
 
 ## Working discipline
 
@@ -2163,24 +2167,27 @@ Runtime facts, ours to ratify:
   to infer progress. Break work into bounded steps: kick a long job off
   as ONE bounded background command, do useful work, then check ONCE. A
   `work wait` for a landing is bounded to a couple of minutes per call,
-  never an hour, and it reads the PR's merge-queue state, never `main`.
+  never an hour, and it reads the PR's state, never `main`.
   A lane that blocks for minutes waiting is a defect in the lane, not
   patience. (Owner rule, 2026-10-02: an 18-minute `sleep` loop waiting on
   `main` deadlocked the merge queue — main could not move because that
   lane's own PR was failing the train.)
 
 - GITHUB'S RUNNERS ARE THE ONLY GATE. `tools/gate_changed.sh` is the
-  train's checks in one definition — the static keepers, `fmt --check`
+  gate's checks in one definition — the static keepers, `fmt --check`
   on the changed `.av`, `check --baseline` on every affected package —
-  and checks.yml runs it on the train, and on a PR without the keepers
-  and over the packages it touches. `tools/work land`
+  and checks.yml runs it on every PR, plus the compiler-dependent
+  keepers, the seed check and the affected packages' suites.
+  `tools/work land`
   checks formatting alone, with the compiler the worktree already
   holds, and asks no other machine; a lane that wants the whole gate
   before pushing runs that script through `work run`.
-- A QUEUED PR WITH NO TRAIN IS STUCK, AND WAITING DOES NOT START ONE.
-  An entry can sit in the merge queue with no `merge_group` run until
-  it is taken out and put back; `work status` and `work wait` do that
-  to one queued five minutes with no train, and say so.
+- A GREEN PR LANDS ITSELF, AND A STALE ONE IS REFRESHED. An armed PR
+  that falls behind `main` is updated by the watcher
+  (`tools/pr_watcher.py`, `gh pr update-branch`) so "up to date" is met
+  without a human; the watcher also arms a green PR, names a conflict
+  and cancels a closed PR's run. `work status` shows each PR's check,
+  its merge state and whether auto-merge is armed.
 - MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
   retain/release/list-write counts and, with the per-caller tables,
   who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 4000 ./avra

@@ -1,5 +1,8 @@
 # Sprite sessions
 
+> Superseded as the single source by `docs/2026_10_11_THE_PIPELINE.md`
+> (Sprites, provisioning, the seed path). Kept as the design record.
+
 A Sprite is a persistent Linux microVM (stock Ubuntu, no custom base
 image). One command provisions this tree there:
 

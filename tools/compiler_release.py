@@ -2,14 +2,22 @@
 """THE COMPILER, PUBLISHED WHERE EVERY REF CAN REACH IT.
 
 A GitHub Actions cache restores only from the run's own ref and the default
-branch, so a merge-queue train — which stands on its own
-`gh-readonly-queue/...` ref — can never read the compiler main built. A
-release asset is not ref-scoped: publish the binary under the key
+branch, so a run that missed the cache — a PR on its own ref, a lane —
+fetches the exact binary main published instead of rebuilding it. A release
+asset is not ref-scoped: publish the binary under the key
 `tools/compiler_paths.sh --key` computes, and any run fetches the exact
 binary that key names.
 
     compiler_release.py fetch   <key> <dest>   # 0 and the file, or nonzero
+    compiler_release.py latest  <dest>         # the newest published compiler
     compiler_release.py publish <key> <file>   # the release, created once
+
+`fetch` reads the release named by the key — the tree's OWN compiler, so a
+hit needs no build. A tree that differs from main (a train, or a PR that
+touches the compiler's source) has a key no release can carry, because only
+a push to main publishes; `latest` answers main's newest compiler instead.
+That one is not the tree's, so it is the STARTING point an incremental
+build reads, never a reason to skip the build.
 
 The key is the compiler's OWN SOURCE digest, so one key is one binary: the
 artifact is immutable and `publish` never overwrites what already answers a
@@ -102,6 +110,50 @@ def fetch(base, key, dest):
     return 0
 
 
+def fetch_latest(base, dest):
+    """Place the newest published compiler at dest. 1, with a word, when
+    no release carries one. Only a push to main publishes, so the newest
+    release is main's latest compiler — a train's or a PR's own key is
+    never published, and this is the starting point its incremental build
+    reads, never the tree's own compiler."""
+    try:
+        release = _newest(base)
+    except urllib.error.URLError as e:
+        print(f"compiler-release: latest: release API unreachable ({e})", file=sys.stderr)
+        return 1
+    if release is None:
+        print("compiler-release: latest: no published release carries an avra asset", file=sys.stderr)
+        return 1
+    asset = next(a for a in release["assets"] if a.get("name") == ASSET)
+    tag = release.get("tag_name", "?")
+    tmp = dest + ".part"
+    try:
+        with _request(asset["url"], accept="application/octet-stream") as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+    except urllib.error.URLError as e:
+        print(f"compiler-release: latest {tag}: asset unreachable ({e})", file=sys.stderr)
+        _unlink(tmp)
+        return 1
+    os.replace(tmp, dest)
+    os.chmod(dest, 0o755)
+    print(f"compiler-release: latest {tag}: fetched {os.path.getsize(dest)} bytes from release")
+    return 0
+
+
+def _newest(base):
+    """The newest published release carrying the compiler asset, or None.
+    Releases are listed newest-first by GitHub, but the order is sorted
+    here so the choice reads from the data, not from the API's promise."""
+    with _request(f"{base}/releases?per_page=100") as r:
+        releases = json.load(r)
+    ranked = sorted(
+        (rel for rel in releases if _has_asset(rel) and not rel.get("draft")),
+        key=lambda rel: rel.get("created_at") or "",
+        reverse=True,
+    )
+    return ranked[0] if ranked else None
+
+
 def _unlink(path):
     try:
         os.unlink(path)
@@ -176,6 +228,8 @@ def _self_test():
 
         def do_GET(self):
             path = self.path
+            if path.startswith("/repos/o/r/releases?") or path == "/repos/o/r/releases":
+                return self._json(200, list(state["releases"].values()))
             if path.startswith("/repos/o/r/releases/tags/"):
                 key = urllib.parse.unquote(path.rsplit("/", 1)[-1])
                 rel = state["releases"].get(key)
@@ -207,6 +261,8 @@ def _self_test():
                 state["next"] += 1
                 state["releases"][key] = {
                     "tag_name": key,
+                    "created_at": "2026-01-0%dT00:00:00Z" % num,
+                    "draft": False,
                     "assets": [],
                     "upload_url": f"http://{self.server.server_address[0]}:"
                     f"{self.server.server_address[1]}/upload/repos/o/r/releases/{num}/assets{{?name,label}}",
@@ -273,6 +329,9 @@ def _self_test_body(base, state, tempfile):
         check("the second key reads its own bytes", fetch(base, "avrac-bb", one))
         check("key aa and key bb are distinct", open(one, "rb").read(), b"compiler-B")
 
+        check("latest reads a published compiler", fetch_latest(base, dest))
+        check("latest is the newest release", open(dest, "rb").read(), b"compiler-B")
+
     if failures:
         print(f"compiler_release: SELF-TEST FAILED — {', '.join(failures)}", file=sys.stderr)
         return 1
@@ -288,6 +347,8 @@ def main(argv):
     f = sub.add_parser("fetch")
     f.add_argument("key")
     f.add_argument("dest")
+    l = sub.add_parser("latest")
+    l.add_argument("dest")
     u = sub.add_parser("publish")
     u.add_argument("key")
     u.add_argument("path")
@@ -297,6 +358,8 @@ def main(argv):
     base = _api_for(args.repo, args.api)
     if args.cmd == "fetch":
         return fetch(base, args.key, args.dest)
+    if args.cmd == "latest":
+        return fetch_latest(base, args.dest)
     return publish(base, args.key, args.path)
 
 

@@ -19,6 +19,10 @@ non-zero exit naming the phase, its ceiling and what it measured.
                                 for `check packages/cli`, unchanged and
                                 after one body edit, against the ticket's
                                 HARD ceilings (tools/warm_edit_bench.sh)
+  speed_ratchet.py --wall --raw <file>
+                                judge the wall-clock budget: a PR check's
+                                per-job and whole wall time, as
+                                `tools/ci_wall.py` reads them from the run
 
 The measurement itself is `tools/speed_measure.sh`: `packages/cli`, one
 file edited, the `--time` phases of a build and a check, each round a
@@ -34,6 +38,15 @@ file, not a second budget: `<host> warm unchanged <ms>` and
 whose judge is `--warm --raw`. Unlike a phase ceiling these are the
 ticket's TARGETS, not a measured baseline, so they are HARD (no ratio,
 no slack) and `--accept` does not touch them.
+
+THE WALL-CLOCK GATE (`--wall`) is a THIRD family in the same budget file:
+`ci-wall wall <job> <ms>` for each job a PR check ran, and
+`ci-wall wall total <ms>` for the check whole, held HARD against the
+owner's own target. Its measurement is `tools/ci_wall.py`, which reads the
+run's job clocks from GitHub — so the queue and the artifact hand-downs
+count, and no step's own `date` arithmetic can see them. It is judged in
+the `test` job of every PR run; a host with no row is measured and said
+out loud, never passed in silence.
 
 LIKE FOR LIKE: a ceiling row is keyed by `<platform>-<machine>-<cpu>`,
 so a Mac, a Sprite and a runner are never compared. A host with no row
@@ -68,9 +81,14 @@ PHASES = {
 WARM_PHASES = ["unchanged", "edit"]
 WARM_COMMAND = "warm"
 WARM_GOAL = {"unchanged": 40, "edit": 150}
-ROW = re.compile(r"^(?P<cmd>build|check|warm) (?P<phase>[a-z]+) (?P<ms>[0-9]+)$")
+# The wall-clock family: a PR check's whole wall time and each job in it,
+# as `tools/ci_wall.py` reads them from the run. HARD ceilings like the
+# warm family, because these are the owner's target, not a noisy phase.
+WALL_COMMAND = "wall"
+WALL_TOTAL = "total"
+ROW = re.compile(r"^(?P<cmd>build|check|warm|wall) (?P<phase>[a-z][a-z0-9_-]*) (?P<ms>[0-9]+)$")
 HOST_ROW = re.compile(r"^host (?P<host>\S+)$")
-BUDGET_ROW = re.compile(r"^(?P<host>[^#\s]+) (?P<cmd>build|check|warm) (?P<phase>[a-z]+) (?P<ms>[0-9]+)$")
+BUDGET_ROW = re.compile(r"^(?P<host>[^#\s]+) (?P<cmd>build|check|warm|wall) (?P<phase>[a-z][a-z0-9_-]*) (?P<ms>[0-9]+)$")
 
 DEFAULT_RATIO = 1.25
 DEFAULT_SLACK_MS = 250
@@ -260,6 +278,62 @@ def gate_warm(measured, accepted, host, require):
     return 0
 
 
+def check_wall(measured, accepted, host, require):
+    """The wall-clock family: a PR check's whole wall time and each job
+    in it, held against a ceiling in `tools/speed.budget`. Like the warm
+    family a wall figure is HARD — no ratio, no slack — and `--accept`
+    may only lower a ceiling. A job the event skipped has no clock and is
+    simply absent, never a refusal; the `total` row is always judged,
+    because a budget that measured no total judged nothing."""
+    refusals, gated, words = [], 0, []
+    rows_here = {k: v for k, v in accepted.items() if k[0] == host and k[1] == WALL_COMMAND}
+    if not rows_here:
+        words.append("NO WALL CEILING ROW for %s — measured, not gated; `--accept` records it" % host)
+        if require:
+            refusals.append((host, "no wall ceiling row — refused by --require"))
+        return refusals, gated, words
+    held = {(c, p) for (h, c, p) in rows_here}
+    seen = {k for k in measured if k[0] == WALL_COMMAND}
+    total = (WALL_COMMAND, WALL_TOTAL)
+    if total in held and total not in seen:
+        refusals.append(("wall total", "no total measured — the ceiling has nothing to judge"))
+    for c, p in sorted(seen - held):
+        why = "wall %s measured %dms with no ceiling row — record it with --accept" % (p, measured[(c, p)])
+        if (c, p) == total:
+            refusals.append(("wall total", why))
+        else:
+            words.append(why)
+    for c, p in sorted(seen & held):
+        now, ceiling = measured[(c, p)], accepted[(host, c, p)]
+        gated += 1
+        over = now - ceiling
+        print("speed: %s: wall %s: %dms vs ceiling %dms%s"
+              % ("PASS" if now <= ceiling else "FAIL", p, now, ceiling,
+                 "" if now <= ceiling else " (over by %dms)" % over))
+        if now > ceiling:
+            refusals.append(("wall %s" % p, "%dms vs ceiling %dms (over by %dms)" % (now, ceiling, over)))
+    return refusals, gated, words
+
+
+def gate_wall(measured, accepted, host, require):
+    print("speed: wall-clock host %s" % host)
+    fail, gated, words = check_wall(measured, accepted, host, require)
+    seen = len({k for k in measured if k[0] == WALL_COMMAND})
+    print("speed: %d wall row(s) measured, %d gated here" % (seen, gated))
+    for why in words:
+        print("speed: %s" % why)
+    if fail:
+        print("speed: REFUSED — %d wall row(s) past the ceiling or unjudged:" % len(fail))
+        for name, why in fail:
+            print("speed:   %s: %s" % (name, why))
+        return 1
+    if gated == 0:
+        print("speed: NOT GATED — no wall ceiling row on this host, so nothing was compared")
+        return 1 if require else 0
+    print("speed: clean — %d wall row(s) within the ceiling" % gated)
+    return 0
+
+
 def measure():
     """The raw measurement, run on this host — or, on macOS, on the lane's
     Sprite. Answers the text, or None when no Sprite can be reached (the
@@ -420,8 +494,52 @@ def self_test():
     assert fail == [] and gated == 0 and any("NO WARM CEILING ROW" in w for w in words), (fail, gated, words)
     fail, _, _ = check_warm(wm, elsewhere, host, True)
     assert len(fail) == 1 and "refused by --require" in fail[0][1], fail
+    # ── the wall-clock family: HARD, per job and whole ──
+    wall_base = {
+        (host, "wall", "prepare"): 180000,
+        (host, "wall", "gate"): 120000,
+        (host, "wall", "total"): 300000,
+    }
+    wall_under = "host %s\nwall prepare 90000\nwall gate 60000\nwall total 200000\n" % host
+    ww = least_rows(wall_under)
+    fail, gated, _ = check_wall(ww, wall_base, host, False)
+    assert fail == [] and gated == 3, (fail, gated)
+    # a job or the whole check past its ceiling names itself, with the overage
+    w_over = least_rows(wall_under.replace("wall total 200000", "wall total 400000"))
+    fail, gated, _ = check_wall(w_over, wall_base, host, False)
+    assert [r for r, _ in fail] == ["wall total"], fail
+    assert "over by 100000ms" in fail[0][1], fail
+    # a skipped job is absent, never a refusal; an unregistered job is a word
+    skip = least_rows("host %s\nwall prepare 90000\nwall total 200000\n" % host)
+    fail, gated, _ = check_wall(skip, wall_base, host, False)
+    assert fail == [] and gated == 2, (fail, gated)
+    w_extra = least_rows(wall_under + "wall codecs 5000\n")
+    fail, _, words = check_wall(w_extra, wall_base, host, False)
+    assert fail == [] and any("codecs" in w for w in words), (fail, words)
+    # a total ceiling with no total measured is a verdict over nothing
+    no_total = least_rows("host %s\nwall prepare 90000\n" % host)
+    fail, _, _ = check_wall(no_total, wall_base, host, False)
+    assert [r for r, _ in fail] == ["wall total"], fail
+    # a total measured with no ceiling row is unrecorded growth
+    w_no_total = {k: v for k, v in wall_base.items() if k[2] != "total"}
+    fail, _, _ = check_wall(ww, w_no_total, host, False)
+    assert [r for r, _ in fail] == ["wall total"], fail
+    # no wall ceiling is a word, and --require refuses
+    fail, gated, words = check_wall(ww, {("darwin-arm64", "wall", "total"): 1}, host, False)
+    assert fail == [] and gated == 0 and any("NO WALL CEILING ROW" in w for w in words), (fail, gated, words)
+    fail, _, _ = check_wall(ww, {("darwin-arm64", "wall", "total"): 1}, host, True)
+    assert len(fail) == 1 and "refused by --require" in fail[0][1], fail
+    # the three families share ONE budget but never judge each other
+    all_base = dict(base)
+    all_base.update(warm_base)
+    all_base.update(wall_base)
+    all_rows = least_rows(under + "warm unchanged 40\nwarm edit 250\n" + wall_under)
+    assert check(all_rows, all_base, host, 1.25, 200, False)[0] == []
+    assert check_warm(all_rows, all_base, host, False)[1] == 2
+    assert check_wall(all_rows, all_base, host, False)[1] == 3
     # the round trip carries warm rows in the one budget
     assert budget_rows(budget_text(mixed_base)) == mixed_base, budget_text(mixed_base)
+    assert budget_rows(budget_text(all_base)) == all_base, budget_text(all_base)
     # --accept lowers, records a new host, and never raises
     global BUDGET
     keep = BUDGET
@@ -438,9 +556,15 @@ def self_test():
             assert written[(host, "check", "keep")] == 7200, written
             assert accept({("build", "keep"): 3}, rows, "new-host") == 0
             assert rows[("new-host", "build", "keep")] == 3, rows
+            # a wall ceiling too may only fall
+            wrows = dict(wall_base)
+            assert accept({("wall", "total"): 200000}, wrows, host) == 0
+            assert wrows[(host, "wall", "total")] == 200000, wrows
+            assert accept({("wall", "total"): 400000}, wrows, host) == 1
+            assert wrows[(host, "wall", "total")] == 200000, wrows
     finally:
         BUDGET = keep
-    print("speed_ratchet self-test: 21 fixture(s) held")
+    print("speed_ratchet self-test: 33 fixture(s) held")
     return 0
 
 
@@ -450,6 +574,22 @@ def main(argv):
     ratio = float(os.environ.get("SPEED_RATCHET_RATIO", DEFAULT_RATIO))
     slack = int(os.environ.get("SPEED_RATCHET_SLACK_MS", DEFAULT_SLACK_MS))
     require = "--require" in argv
+    if "--wall" in argv:
+        # `tools/ci_wall.py` reads a PR check's per-job and total wall time
+        # from the run; the budget and its reader live in this one file.
+        if "--raw" not in argv:
+            print("speed: --wall needs `--raw <file>` — tools/ci_wall.py writes it", file=sys.stderr)
+            return 64
+        raw = open(argv[argv.index("--raw") + 1]).read()
+        measured = least_rows(raw)
+        if not measured:
+            print("speed: the wall measurement answered no row — the collector did not run", file=sys.stderr)
+            return 1
+        accepted = budget_rows(open(BUDGET).read()) if os.path.isfile(BUDGET) else {}
+        here = measured_host(raw) or host_key()
+        if "--accept" in argv:
+            return accept(measured, accepted, here)
+        return gate_wall(measured, accepted, here, require)
     if "--warm" in argv:
         # `tools/warm_edit_bench.sh` measures and hands its raw stream here;
         # the budget and its reader live in this one file.

@@ -1,5 +1,5 @@
 #!/bin/sh
-# WITNESS — `tools/gate_changed.sh`, the ONE enqueue gate the train and
+# WITNESS — `tools/gate_changed.sh`, the ONE gate a PR's own check and
 # `tools/work land`'s preflight both call: keepers, the changed-file fmt, and
 # the affected packages' idioms, all on the tree's own compiler. Hermetic —
 # stubs for `avra`, `make` and `git` — so the proof is about the WIRING.
