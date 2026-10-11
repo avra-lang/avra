@@ -1,5 +1,5 @@
 #!/bin/sh
-# FIXTURES FOR tools/work's lanes and its queue watch — no Sprite and no
+# FIXTURES FOR tools/work's lanes and its PR state — no Sprite and no
 # GitHub: a scratch repository with its own origin, AVRA_SPRITES naming a
 # pool of two, AVRA_SPRITE_CLI standing in for `sprite` (the names in
 # SILENT do not answer) and AVRA_GH for `gh`.
@@ -97,17 +97,13 @@ echo "$*" >> "$GH_LOG"
 case "$*" in
     *"run list --workflow checks"*) [ -z "${CI_RUN:-}" ] || echo "$CI_RUN ${CI_SHA:-0000000}" ;;
     *"run download"*) [ -n "${CI_RUN:-}" ] || exit 1; while [ "$1" != -D ]; do shift; done; echo binary > "$2/avra" ;;
-    *"pr list --state open"*) printf '7\tPR_7\tlane-a\tsuccess\ta title\n' ;;
-    *dequeuePullRequest*) ;;
-    *enqueuePullRequest*) echo "queued at position 1" ;;
-    *mergeQueueEntry*) [ -z "${QUEUED:-}" ] || echo "$QUEUED" ;;
-    *"run list"*) [ -z "${TRAINS:-}" ] || echo "$TRAINS" ;;
+    *"pr list --state open"*) printf '7\tlane-a\tarmed\tCLEAN\tsuccess\ta title\n' ;;
 esac
 STUB
 chmod +x "$scratch/sprite" "$scratch/gh"
 export AVRA_WAKE_S=3 AVRA_HEALTH_S=3
 export AVRA_SPRITE_CLI="$scratch/sprite" AVRA_SPRITES="A B" AVRA_GH="$scratch/gh" GH_LOG="$scratch/gh.log"
-unset SILENT QUEUED TRAINS
+unset SILENT
 
 holder() { cat "$(git -C "$1" rev-parse --absolute-git-dir)/avra-sprite" 2>/dev/null; }
 
@@ -362,20 +358,12 @@ cd "$main" || exit 1
 check "$st $stands $(grep -c 'Mine-2 stopped' "$scratch/out") $(grep -c '^stop Mine-2' "$scratch/fake/calls")" "0 absent 1 1" "work done: the lane's live run is stopped before its Sprite is freed" "$scratch/out"
 cd "$main" || exit 1
 
-# ══ THE QUEUE: a PR queued with no train is taken out and put back ════
+# ══ THE PR STATE: status shows the check, the merge state and whether
+# auto-merge is armed, and reaches no queue mutation ═══════════════════
 cd "$main" || exit 1
 : > "$GH_LOG"
-QUEUED="2 400" TRAINS= sh "$work" status > "$scratch/out" 2>&1
-check "$(grep -c dequeuePullRequest "$GH_LOG") $(grep -c enqueuePullRequest "$GH_LOG") $(grep -c 'NO TRAIN for 400s' "$scratch/out") $(grep -c 'queueing it again' "$scratch/out")" "1 1 1 1" "work status: a PR queued 400 s with no train is requeued, and it says so" "$scratch/out"
-: > "$GH_LOG"
-QUEUED="2 400" TRAINS="gh-readonly-queue/main/pr-7-abc" sh "$work" status > "$scratch/out" 2>&1
-check "$(grep -c dequeuePullRequest "$GH_LOG") $(grep -c 'train running' "$scratch/out")" "0 1" "work status: one a train carries is left alone" "$scratch/out"
-: > "$GH_LOG"
-QUEUED="2 60" TRAINS="gh-readonly-queue/main/pr-70-abc" sh "$work" status > "$scratch/out" 2>&1
-check "$(grep -c dequeuePullRequest "$GH_LOG")" 0 "work status: one queued a minute is given its time; another PR's train is not its own" "$scratch/out"
-: > "$GH_LOG"
-QUEUED= sh "$work" status > "$scratch/out" 2>&1
-check "$(grep -c dequeuePullRequest "$GH_LOG") $(grep -c '#7  lane-a  open' "$scratch/out")" "0 1" "work status: a PR outside the queue is only shown" "$scratch/out"
+sh "$work" status > "$scratch/out" 2>&1
+check "$(grep -c '#7  lane-a  armed  CLEAN' "$scratch/out") $(grep -c 'queue\|enqueue\|mergeQueue' "$GH_LOG")" "1 0" "work status: a PR shows its armed/CLEAN state and no queue mutation is reached" "$scratch/out"
 
 # ══ THE SYNC, THE SPRITE BEING A DIRECTORY HERE: this machine's own rsync
 # carries the tree, and the Sprite's half answers from $scratch/sync-home.

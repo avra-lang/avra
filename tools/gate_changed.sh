@@ -1,6 +1,6 @@
 #!/bin/sh
-# THE TRAIN'S CHECKS, in ONE definition, so a lane (`sh tools/work run sh
-# tools/gate_changed.sh --files … --packages …`) and the train can never
+# THE GATE'S CHECKS, in ONE definition, so a lane (`sh tools/work run sh
+# tools/gate_changed.sh --files … --packages …`) and a PR's own gate can never
 # be two instruments.
 #
 #   sh tools/gate_changed.sh --refs <base> <head> [--no-keepers] [--pr-minimum]
@@ -12,9 +12,9 @@
 #   - `fmt --check` on the changed `.av`
 #   - `check <pkg> --baseline tools/idioms.baseline` on each affected package
 #   - the wasm target's proof, where its toolchain stands
-# `--no-keepers` is for a caller that already ran them (the train's own
+# `--no-keepers` is for a caller that already ran them (the gate's own
 # keepers step). `--pr-minimum` is a PR's fast floor: fmt and idioms only,
-# skipping the wasm proof, which is minutes and belongs to the train.
+# skipping the wasm proof, which is minutes and belongs to the gate.
 set -eu
 avra=${AVRA:-build/avra}
 files=""
