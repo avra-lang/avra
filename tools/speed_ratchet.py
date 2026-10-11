@@ -14,12 +14,26 @@ non-zero exit naming the phase, its ceiling and what it measured.
                                 rather than a note
   speed_ratchet.py --self-test  the rules on fixtures, no compiler
   speed_ratchet.py --raw <file> judge a measurement already taken
+  speed_ratchet.py --warm --raw <file>
+                                judge the DB 07 warm-edit gate: wall ms
+                                for `check packages/cli`, unchanged and
+                                after one body edit, against the ticket's
+                                HARD ceilings (tools/warm_edit_bench.sh)
 
 The measurement itself is `tools/speed_measure.sh`: `packages/cli`, one
 file edited, the `--time` phases of a build and a check, each round a
 fresh edit, the LEAST of SPEED_ROUNDS per phase. It runs on the HOST the
 keeper runs on; on macOS the lane's Sprite runs it (`tools/work run`), so
 a loaded Mac never supplies a number.
+
+THE WARM-EDIT GATE (`--warm`) is a SECOND family in the same budget
+file, not a second budget: `<host> warm unchanged <ms>` and
+`<host> warm edit <ms>` hold the DB 07 acceptance's own numbers
+(avra-8sb5.57.176) — an unchanged check <= 60 ms, one body edit
+<= 300 ms, goal 150 — measured and gated by `tools/warm_edit_bench.sh`,
+whose judge is `--warm --raw`. Unlike a phase ceiling these are the
+ticket's TARGETS, not a measured baseline, so they are HARD (no ratio,
+no slack) and `--accept` does not touch them.
 
 LIKE FOR LIKE: a ceiling row is keyed by `<platform>-<machine>-<cpu>`,
 so a Mac, a Sprite and a runner are never compared. A host with no row
@@ -48,9 +62,15 @@ PHASES = {
     "build": ["analyze", "lower", "keep", "emit", "link"],
     "check": ["analyze", "lower", "keep"],
 }
-ROW = re.compile(r"^(?P<cmd>build|check) (?P<phase>[a-z]+) (?P<ms>[0-9]+)$")
+# The DB 07 warm-edit family: wall ms for `check packages/cli`, unchanged
+# and after one body edit. Held to the ticket's HARD ceilings, never the
+# phase family's ratio.
+WARM_PHASES = ["unchanged", "edit"]
+WARM_COMMAND = "warm"
+WARM_GOAL = {"unchanged": 40, "edit": 150}
+ROW = re.compile(r"^(?P<cmd>build|check|warm) (?P<phase>[a-z]+) (?P<ms>[0-9]+)$")
 HOST_ROW = re.compile(r"^host (?P<host>\S+)$")
-BUDGET_ROW = re.compile(r"^(?P<host>[^#\s]+) (?P<cmd>build|check) (?P<phase>[a-z]+) (?P<ms>[0-9]+)$")
+BUDGET_ROW = re.compile(r"^(?P<host>[^#\s]+) (?P<cmd>build|check|warm) (?P<phase>[a-z]+) (?P<ms>[0-9]+)$")
 
 DEFAULT_RATIO = 1.25
 DEFAULT_SLACK_MS = 250
@@ -152,7 +172,7 @@ def check(measured, accepted, host, ratio, slack, require):
     ceiling here, which is the coverage the gate must state. A machine
     with no ceiling row refuses only when the caller asks (`--require`)."""
     refusals, gated, words = [], 0, []
-    rows_here = {k: v for k, v in accepted.items() if k[0] == host}
+    rows_here = {k: v for k, v in accepted.items() if k[0] == host and k[1] in PHASES}
     if not rows_here:
         words.append("NO CEILING ROW for %s — measured, not gated; `--accept` records it" % host)
         if require:
@@ -162,7 +182,7 @@ def check(measured, accepted, host, ratio, slack, require):
     # budget row no round measured is a verdict over nothing, and a phase
     # measured with no ceiling is unrecorded growth.
     held = {(c, p) for (h, c, p) in rows_here}
-    seen = set(measured)
+    seen = {k for k in measured if k[0] in PHASES}
     for c, p in sorted(held - seen):
         refusals.append(("%s %s" % (c, p), "no round measured it — the ceiling has nothing to judge"))
     for c, p in sorted(seen - held):
@@ -180,6 +200,64 @@ def check(measured, accepted, host, ratio, slack, require):
             if now > limit:
                 refusals.append(("%s %s" % (c, p), line))
     return refusals, gated, words
+
+
+def check_warm(measured, accepted, host, require):
+    """The DB 07 warm-edit gate. Answers (refusals, gated, words), the
+    same shape as `check`, but a warm ceiling is HARD: a wall figure has
+    no per-phase slack to spend, and these are the ticket's targets, not
+    a measured baseline that noise may move. A machine with no warm row
+    refuses only when the caller asks (`--require`)."""
+    refusals, gated, words = [], 0, []
+    rows_here = {k: v for k, v in accepted.items() if k[0] == host and k[1] == WARM_COMMAND}
+    if not rows_here:
+        words.append("NO WARM CEILING ROW for %s — measured, not gated" % host)
+        if require:
+            refusals.append((host, "no warm ceiling row — refused by --require"))
+        return refusals, gated, words
+    # The budget's warm scenarios and the measurement's must name the same
+    # set, exactly as the phase gate holds `PHASES`.
+    held = {(c, p) for (h, c, p) in rows_here}
+    seen = {k for k in measured if k[0] == WARM_COMMAND}
+    for c, p in sorted(held - seen):
+        refusals.append(("%s %s" % (c, p), "no round measured it — the ceiling has nothing to judge"))
+    for c, p in sorted(seen - held):
+        refusals.append(("%s %s" % (c, p), "measured %dms with no ceiling row — record it in tools/speed.budget" % measured[(c, p)]))
+    for p in WARM_PHASES:
+        key = (WARM_COMMAND, p)
+        if key not in measured or (host, WARM_COMMAND, p) not in accepted:
+            continue
+        now, ceiling = measured[key], accepted[(host, WARM_COMMAND, p)]
+        gated += 1
+        over = now - ceiling
+        goal = WARM_GOAL.get(p)
+        stretch = ", goal %dms" % goal if goal else ""
+        print("speed: %s: warm %s: %dms vs ceiling %dms%s%s"
+              % ("PASS" if now <= ceiling else "FAIL", p, now, ceiling, stretch,
+                 "" if now <= ceiling else " (over by %dms)" % over))
+        if now > ceiling:
+            refusals.append(("warm %s" % p, "%dms vs ceiling %dms%s (over by %dms)"
+                             % (now, ceiling, stretch, over)))
+    return refusals, gated, words
+
+
+def gate_warm(measured, accepted, host, require):
+    print("speed: warm-edit host %s" % host)
+    fail, gated, words = check_warm(measured, accepted, host, require)
+    seen = len({k for k in measured if k[0] == WARM_COMMAND})
+    print("speed: %d warm scenario(s) measured, %d gated here" % (seen, gated))
+    for why in words:
+        print("speed: %s" % why)
+    if fail:
+        print("speed: REFUSED — %d warm scenario(s) past the ceiling or unjudged:" % len(fail))
+        for name, why in fail:
+            print("speed:   %s: %s" % (name, why))
+        return 1
+    if gated == 0:
+        print("speed: NOT GATED — no warm ceiling row on this host, so nothing was compared")
+        return 1 if require else 0
+    print("speed: clean — %d warm scenario(s) within the ticket's ceiling" % gated)
+    return 0
 
 
 def measure():
@@ -307,8 +385,43 @@ def self_test():
     assert fail == [] and gated == 0 and any("NO CEILING ROW" in w for w in words), (fail, gated, words)
     fail, _, _ = check(measured, mac, host, 1.25, 200, True)
     assert len(fail) == 1 and "refused by --require" in fail[0][1], fail
-    # the round trip: what is written is what is read
-    assert budget_rows(budget_text(base)) == base, budget_text(base)
+    # ── the warm-edit family: HARD ceilings, the ticket's targets ──
+    warm_base = {
+        (host, "warm", "unchanged"): 60,
+        (host, "warm", "edit"): 300,
+    }
+    warm_under = "host %s\nwarm unchanged 40\nwarm edit 250\n" % host
+    wm = least_rows(warm_under)
+    fail, gated, _ = check_warm(wm, warm_base, host, False)
+    assert fail == [] and gated == 2, (fail, gated)
+    # a wall figure spends no slack: 61 > 60 fails, and it says by how much
+    w_over = least_rows(warm_under.replace("warm unchanged 40", "warm unchanged 61"))
+    fail, gated, _ = check_warm(w_over, warm_base, host, False)
+    assert [r for r, _ in fail] == ["warm unchanged"], fail
+    assert "over by 1ms" in fail[0][1], fail
+    # at the ceiling passes: the warm gate is `>`, never `>=`
+    edge = least_rows(warm_under.replace("warm edit 250", "warm edit 300"))
+    assert check_warm(edge, warm_base, host, False)[0] == []
+    # a warm row no round measured is a verdict over nothing; a warm
+    # scenario with no ceiling is unrecorded, each named
+    w_short = least_rows(warm_under.replace("warm edit 250\n", ""))
+    assert [r for r, _ in check_warm(w_short, warm_base, host, False)[0]] == ["warm edit"]
+    w_extra = least_rows(warm_under + "warm place 5\n")
+    assert [r for r, _ in check_warm(w_extra, warm_base, host, False)[0]] == ["warm place"]
+    # the two families share ONE budget but never judge each other
+    mixed_base = dict(base)
+    mixed_base.update(warm_base)
+    mixed = least_rows(under + "warm unchanged 40\nwarm edit 250\n")
+    assert check(mixed, mixed_base, host, 1.25, 200, False)[0] == [], "warm rows are not phases"
+    assert check_warm(mixed, mixed_base, host, False)[1] == 2, "phase rows are not warm"
+    # a host with no warm ceiling is a word, and --require refuses
+    elsewhere = {("darwin-arm64", "warm", "unchanged"): 60}
+    fail, gated, words = check_warm(wm, elsewhere, host, False)
+    assert fail == [] and gated == 0 and any("NO WARM CEILING ROW" in w for w in words), (fail, gated, words)
+    fail, _, _ = check_warm(wm, elsewhere, host, True)
+    assert len(fail) == 1 and "refused by --require" in fail[0][1], fail
+    # the round trip carries warm rows in the one budget
+    assert budget_rows(budget_text(mixed_base)) == mixed_base, budget_text(mixed_base)
     # --accept lowers, records a new host, and never raises
     global BUDGET
     keep = BUDGET
@@ -327,7 +440,7 @@ def self_test():
             assert rows[("new-host", "build", "keep")] == 3, rows
     finally:
         BUDGET = keep
-    print("speed_ratchet self-test: 13 fixture(s) held")
+    print("speed_ratchet self-test: 21 fixture(s) held")
     return 0
 
 
@@ -337,6 +450,23 @@ def main(argv):
     ratio = float(os.environ.get("SPEED_RATCHET_RATIO", DEFAULT_RATIO))
     slack = int(os.environ.get("SPEED_RATCHET_SLACK_MS", DEFAULT_SLACK_MS))
     require = "--require" in argv
+    if "--warm" in argv:
+        # `tools/warm_edit_bench.sh` measures and hands its raw stream here;
+        # the budget and its reader live in this one file.
+        if "--raw" not in argv:
+            print("speed: --warm needs `--raw <file>` — tools/warm_edit_bench.sh writes it", file=sys.stderr)
+            return 64
+        raw = open(argv[argv.index("--raw") + 1]).read()
+        if "skip cold-store" in raw:
+            print("speed: no warm store on the measuring machine — not gated (make try, then re-run)")
+            return 0
+        measured = least_rows(raw)
+        if not measured:
+            print("speed: the measurement answered no scenario — the compiler did not run", file=sys.stderr)
+            return 1
+        accepted = budget_rows(open(BUDGET).read()) if os.path.isfile(BUDGET) else {}
+        here = measured_host(raw) or host_key()
+        return gate_warm(measured, accepted, here, require)
     if "--raw" in argv:
         raw = open(argv[argv.index("--raw") + 1]).read()
     else:

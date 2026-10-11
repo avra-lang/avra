@@ -2,7 +2,7 @@
 // whose run asks: the record names it, so the file is held only while
 // that text stands.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace}
+use compiler.{Workspace, RunRead, reads_field, reads_of}
 use compiler.host.{memory_host}
 
 const RUN_READS_MAIN: string = "/w/src/main.av"
@@ -22,7 +22,7 @@ fn run_reads_workspace() -> Workspace {
 }
 
 /// What the file's runs are recorded as having read.
-fn run_reads_of(ws: Workspace) -> string { (ws.hold.runs.get().get(RUN_READS_MAIN) ?? []).join(",") }
+fn run_reads_of(ws: Workspace) -> string { (ws.hold.runs.get().get(RUN_READS_MAIN) ?? []).map(it.path).join(",") }
 
 spec "compiler/settle — a run's read of the world is recorded" {
     then "a file a run reads is recorded for the file whose run asks, and its text answers" {
@@ -44,5 +44,37 @@ spec "compiler/settle — a run's read of the world is recorded" {
         let _ = ws.run_read(f, "/w/src/data.txt")
         let _ = ws.run_read(f, "/w/src/data.txt")
         run_reads_of(ws) == "/w/src/data.txt"
+    }
+}
+
+spec "compiler/record — a read's wire round-trips, empty cells included" {
+    then "a plain read — no ref, no print, no outline — survives" {
+        let r = RunRead { path: "/w/src/data.txt", digest: "d", ref: "", print: "", outline: "" }
+        let wire = reads_field([r])
+        let xs = reads_of(wire) ?? []
+        xs.length == 1 && reads_field(xs) == wire
+    }
+    then "a held declaration's read — no print or outline — survives" {
+        let r = RunRead { path: "/w/src/data.txt", digest: "d", ref: "r", print: "", outline: "" }
+        let wire = reads_field([r])
+        let xs = reads_of(wire) ?? []
+        xs.length == 1 && reads_field(xs) == wire
+    }
+    then "a read with no digest, ref, print or outline survives" {
+        let r = RunRead { path: "/w/src/data.txt", digest: "", ref: "", print: "", outline: "" }
+        let wire = reads_field([r])
+        let xs = reads_of(wire) ?? []
+        xs.length == 1 && reads_field(xs) == wire
+    }
+    then "a read of a declaration carries its outline" {
+        let r = RunRead {
+            path: "/w/src/data.txt",
+            digest: "d",
+            ref: "r",
+            print: "42",
+            outline: "o",
+        }
+        let xs = reads_of(reads_field([r])) ?? []
+        xs.length == 1 && xs[0].outline == "o" && xs[0].print == "42"
     }
 }

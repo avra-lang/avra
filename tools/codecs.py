@@ -139,7 +139,12 @@ def label_pair(label):
 # ── ACKNOWLEDGED GAPS — a candidate this reader finds real but the
 # registry does not exercise, named with why, read here rather than
 # left for the reader to wonder whether it was forgotten. ──
-ACKNOWLEDGED_GAPS = {}
+ACKNOWLEDGED_GAPS = {
+    # `Row.of_wire` is a WIRE-FIELD ACCESSOR on a record row, not an encoder: the
+    # `_wire` suffix rule pairs it with `read_of_wire` by name alone. The real
+    # pair is `read_wire`/`read_of_wire`, which IS registered.
+    ("of_wire", "read_of_wire"): "record.av: `Row.of_wire` reads one field of a wire row; `read_wire` is `read_of_wire`'s encoder",
+}
 
 
 CASES = [

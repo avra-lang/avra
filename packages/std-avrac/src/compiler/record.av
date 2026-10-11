@@ -85,11 +85,20 @@ fn record_cached(ws: Workspace, store: Store, m: ModulePath) -> string {
     text
 }
 
+/// ONE FILE A COMPILE-TIME RUN READ, as the reader's own line carries it: the file,
+/// its text digest at write, and — when the run read a DECLARATION of it — that
+/// declaration's ref and its syntax hash at write. A read with no declaration, or
+/// one whose file was held, keeps empty ref and print and is judged by its text.
+/// `outline` is the read file's declaration outline at write: a renamed, added or
+/// removed declaration beside the one read moves the reader's module interface
+/// without moving the read itself, and is known from syntax alone.
+export type RunRead = { path: string, digest: string, ref: string, print: string, outline: string }
+
 /// WHERE ONE FILE STANDS IN ITS MODULE'S RECORD: its `file` line, and the run of its
 /// declaration lines — a record lists a file's declarations together — and the
 /// files its compile-time runs read. Asked per file, a scan of the whole record
 /// is the module's lines squared.
-type Placed = { file: List<string>, runs: List<string>, lo: int, hi: int }
+type Placed = { file: List<string>, runs: List<RunRead>, lo: int, hi: int }
 
 /// A record's files, each placed — memoized for the build.
 // LICENSED compiler.free_state_verb: see `record_cached` — a Workspace method trips the F2010 defect.
@@ -874,6 +883,9 @@ fn meet_file(
     let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
     if why == null {
         ws.hold.hold_asked.push(f)
+        for p in ws.hold.pending_reads.get() {
+            if p.reader == f { ws.hold.read_with.set(ws.hold.read_with.get().concat([p.read.path])) }
+        }
         return
     }
     ws.hold.read_files.push(ReadFile { path: f, why: why! })
@@ -950,6 +962,7 @@ fn read_why(
     let forced: Reads? = ws.hold.forced.get().get(f)
     if forced != null { return forced! }
     if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
+    if ws.reads_pending(store, m, f) { return null }
     if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
     let rows = file_rows(record_fields(ws, store, m), at)
     if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
@@ -1255,7 +1268,7 @@ impl Workspace {
             path: path,
             text: if path == "" { "" } else { self.text_digest(path) },
             // an object that bakes a compile-time run's answer in reads the TEXT the run read
-            runs: [self.run_said(ran) for ran in kept_runs(record_places(self, store, m).get(path))],
+            runs: [self.read_token(path, read) for read in kept_runs(record_places(self, store, m).get(path))],
             // an object that bakes a collect's members in reads the set it gathered
             gathered: self.gathered_said(store, m, path),
             seen: self.view_parts(store, m),
@@ -1287,6 +1300,30 @@ impl Workspace {
         let made = self.key_parts(store, m, path)
         self.keys.object_parts.put(key, made)
         made
+    }
+
+    /// ONE READ'S TOKEN IN A READER'S KEY: the read file's text when no declaration
+    /// rode it, the write-time print while its text stands, and a pending marker when
+    /// its text moved but a declaration may still name the same syntax — the token
+    /// `resolve_pending_reads` finalizes once the read file is parsed.
+    fn read_token(reader: string, read: RunRead) -> string {
+        if read.ref == "" || read.print == "" { return self.run_said(read.path) }
+        if self.text_digest(read.path) == read.digest { return read.print }
+        let key = pending_key(reader, read)
+        let done: string? = self.hold.pending_resolved.get().get(key)
+        if done != null { return done! }
+        self
+            .hold
+            .pending_reads
+            .set(self.hold.pending_reads.get().concat([PendingRead { reader: reader, read: read }]))
+        "?${read.print}"
+    }
+
+    /// Whether `f`'s key carries a read whose declaration must be parsed before its
+    /// hold can be decided — the reader is a hold candidate until then.
+    fn reads_pending(store: Store, m: ModulePath, f: string) -> bool {
+        let _ = self.key_parts_cached(store, m, f)
+        self.hold.pending_reads.get().any(it.reader == f)
     }
 
     /// The modules a module's files see, each with its interface key and file
@@ -1707,7 +1744,7 @@ fn opens_decl_wire(word: string) -> bool {
 fn seen_digest(seen: List<SeenPart>) -> string { digest_of(joined([s.bytes_key for s in seen], "\n")) }
 
 /// The files a record says one file's compile-time runs read.
-fn kept_runs(at: Placed?) -> List<string> { at?.runs ?? [] }
+fn kept_runs(at: Placed?) -> List<RunRead> { at?.runs ?? [] }
 
 /// A list of texts as one record field: each as hex, so no character a text may
 /// hold is spent on the record's own separators.
@@ -1721,11 +1758,86 @@ fn hex_fields_of(field: string) -> List<string>? {
     [x! for x in xs]
 }
 
-/// A `file` line's runs read back; null when one is no path's hex — a line this
+/// ONE READ as one field: its five texts hexed, `~` between. Hexing each keeps
+/// a print holding `~`, `|` or a tab from spending the field's own separators.
+fn read_wire(r: RunRead) -> string {
+    joined(
+        [
+            hex(r.path.bytes()),
+            hex(r.digest.bytes()),
+            hex(r.ref.bytes()),
+            hex(r.print.bytes()),
+            hex(r.outline.bytes()),
+        ],
+        "~",
+    )
+}
+
+/// A hex cell read back: empty text for an empty cell. `split` DROPS a run's
+/// trailing empty run, so a cell that was written empty arrives absent.
+fn unhex_text(s: string) -> string? {
+    if s.is_empty() { return "" }
+    let b? = unhex(s) else { return null }
+    b.text()
+}
+
+/// `read_wire` read back — a legacy part with no `~` is a path alone, a read
+/// whose file was named before a declaration rode it. The cells are read
+/// through core's `wire_fields` — which keeps the empty LAST cell `split`
+/// drops — then padded to four: a plain read ends `~~~`, and a raw split
+/// reads it two cells short.
+fn read_of_wire(s: string) -> RunRead? {
+    if !s.contains("~") {
+        let text? = unhex_text(s) else { return null }
+        return RunRead { path: text, digest: "", ref: "", print: "", outline: "" }
+    }
+    let parts = wire_fields(s, "~")
+    if parts.length > 5 { return null }
+    let cells = parts.concat(["", "", "", "", ""]).slice(0, 5)
+    let pt? = unhex_text(cells[0]) else { return null }
+    let dt? = unhex_text(cells[1]) else { return null }
+    let rt? = unhex_text(cells[2]) else { return null }
+    let qt? = unhex_text(cells[3]) else { return null }
+    let ot? = unhex_text(cells[4]) else { return null }
+    RunRead { path: pt, digest: dt, ref: rt, print: qt, outline: ot }
+}
+
+/// A list of reads as one record field, each a `read_wire`.
+export fn reads_field(reads: List<RunRead>) -> string { joined([read_wire(r) for r in reads], "|") }
+
+/// `reads_field` read back; null when a part is no read — a field this compiler
+/// never wrote.
+export fn reads_of(field: string) -> List<RunRead>? {
+    if field.is_empty() { return [] }
+    let xs = [read_of_wire(part) for part in field.split("|")]
+    if xs.any(it == null) { return null }
+    [x! for x in xs]
+}
+
+/// The key a pending read resolves under: its reader, the read file, and the
+/// declaration that rode it.
+fn pending_key(reader: string, read: RunRead) -> string { "${reader}\t${read.path}\t${read.ref}" }
+
+/// The reads with each one's first appearance kept, order intact — `distinct`
+/// over the wire, since a read is a record and not a string.
+fn distinct_reads(xs: List<RunRead>) -> List<RunRead> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<RunRead> = []
+    for r in xs {
+        let w = read_wire(r)
+        if seen.get(w) == null {
+            seen.set(w, true)
+            out.push(r)
+        }
+    }
+    out
+}
+
+/// A `file` line's runs read back; null when one is no read's hex — a line this
 /// compiler never wrote, so it places nothing.
-fn runs_of(parts: List<string>) -> List<string>? {
+fn runs_of(parts: List<string>) -> List<RunRead>? {
     if parts.length < 4 { return [] }
-    hex_fields_of(parts[3])
+    reads_of(parts[3])
 }
 
 /// The modules a module's record says it imports — memoized for the build.
