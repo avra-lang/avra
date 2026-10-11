@@ -62,7 +62,7 @@ MUTATIONS = [
     ("a park under a shield scope is claimed by a cancel", "    if (f->cancel_by != 0 && !shield_scope_stands(f)) {", "    if (f->cancel_by != 0) {"),
     ("a cancel claims a shield scope's parked wait", "f->parked && !shield_scope_stands(f) && !(f->legacy", "f->parked && !(f->legacy"),
     ("a shield scope's limit is dropped by a task cancel", "    if (f->cancel_by != 0 && !scope_at(f, f->owner)->shield) {", "    if (f->cancel_by != 0) {"),
-    ("a shielded back-edge raises its cancel", "    if (!f->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();", "    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();"),
+    ("a shielded back-edge raises its cancel", "    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();", "    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();"),
     ("a shielded yield raises its cancel", "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();", "    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();"),
     ("the shield never saves or clears the bit", "    if (f->shield_depth++ == 0) {\n        f->shield_saved = *bit;\n        *bit = 0;\n    }\n", "    f->shield_depth++;\n"),
     ("the shield saves and clears on every bracket", "    if (f->shield_depth++ == 0) {\n        f->shield_saved = *bit;\n        *bit = 0;\n    }\n", "    f->shield_saved = *bit;\n    *bit = 0;\n    f->shield_depth++;\n"),
@@ -149,8 +149,8 @@ MUTATIONS = [
     ("schedule 0 preempts like any other", "    if (g_schedule == 0) { return 0; }\n", ""),
     ("the seeded draw is not the schedule's", "    return (uint32_t)chosen(TICK_TURNS) + 1;", "    return 1;"),
     ("the switch ignores the tick", "    return __builtin_expect(!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) && left > 0, 1);", "    return __builtin_expect(left > 0, 1);"),
-    ("the tick's cold side ignores a due timer", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    if (g_timers_len > 0) fire_due_timers(now_ns());\n    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}"),
-    ("the tick's cold side ignores a deadline", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n"),
+    ("the tick's cold side ignores a due timer", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    if (g_timers_len > 0) fire_due_timers(now_ns());\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}"),
+    ("the tick's cold side ignores a deadline", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n"),
     ("the evaluator's cold side ignores a deadline", "    if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;\n", ""),
     ("a compiled back-edge draws inside an evaluated run", "void avra_tick_cold(void) {\n    if (g_runs > 0) return;\n", "void avra_tick_cold(void) {\n"),
     ("a scope's opening arms no source", "    __atomic_store_n(&avra_tick_wanted, 1, __ATOMIC_RELAXED);\n", ""),
@@ -284,6 +284,22 @@ HOST_MUTATIONS = [
 ]
 TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
 BOUND = 60
+# A BREAK LIVES INSIDE ITS OWN TEST. A mutation that makes the scheduler
+# spawn threads or processes without bound would otherwise exhaust the
+# runner's process ceiling before any FAILING line is read — the runner
+# itself, not the keeper, is what dies. So each mutated test runs with a
+# ceiling on the processes it may own and on its address space (a thread's
+# stack is address space, which caps a thread bomb even where RLIMIT_NPROC
+# is not enforced for root). Both are fixed here, never derived from the
+# machine or the mutation count; a test that hits one fails as any broken
+# test does, and the mutation is recorded killed.
+TEST_PROCS = 2048
+TEST_AS_KB = 4 * 1024 * 1024
+# THE WORKER COUNT IS A FIXED BOUND, NEVER A FUNCTION OF THE RUNNER. Each
+# worker runs a compiler and then a test, so a count derived from the CPU
+# count multiplied the live process tree until a large runner hit its fork
+# limit. Four workers on every machine.
+WORKERS = 4
 # A MUTATED TEST CAN PRINT WITHOUT BOUND: `capture_output` would hold every
 # byte in THIS process, so a print loop would grow the suite's memory until it
 # was gone. A test's words go to a file whose size RLIMIT_FSIZE caps (SIGXFSZ
@@ -325,7 +341,8 @@ def tried(numbered):
         subprocess.run(["cc", "-O2", *flags, "-o", f"{here}/{test}", f"{out}/{test}.o", f"{here}/{which}.o", *rest[which]], check=True, capture_output=True)
         log = f"{here}/{test}.log"
         with open(log, "wb") as lf:
-            ran = subprocess.Popen(["sh", "-c", f'ulimit -f {LOG_CAP_BLOCKS}; exec "$0"', f"{here}/{test}"],
+            limiter = (f'ulimit -f {LOG_CAP_BLOCKS}; ulimit -u {TEST_PROCS}; ulimit -v {TEST_AS_KB}; exec "$0"')
+            ran = subprocess.Popen(["sh", "-c", limiter, f"{here}/{test}"],
                                    stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 rc = ran.wait(timeout=BOUND)
@@ -344,7 +361,8 @@ def tried(numbered):
     return name, "alive", ""
 
 
-with ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) // 2)) as pool:
+print(f"runtime-mutations: {WORKERS} workers over {len(ALL)} breaks", file=sys.stderr)
+with ThreadPoolExecutor(max_workers=WORKERS) as pool:
     results = list(pool.map(tried, enumerate(ALL)))
 for name, how, by in results:
     print(f"  {name}: " + {"killed": f"killed by {by}", "alive": "SURVIVED every runtime test", "rotten": by}[how])
