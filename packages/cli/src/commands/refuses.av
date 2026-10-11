@@ -14,7 +14,7 @@ use @std.avrac.compiler.{RefusesCall, Toolchain}
 use @std.avrac.core.{counted}
 use @std.path.{joined_path, relative_path}
 use @std.process.{cmd, Exit, Outcome as ChildOutcome, ProcessError, exit_text}
-use @std.time.{secs}
+use @std.time.{secs, Duration}
 use stage.{refuse_eval_words}
 
 /// A trap's own exit: code 2, never a signal or a clean run.
@@ -29,6 +29,16 @@ fn leg_wrong(leg: string, voice: string, o: ChildOutcome) -> string? {
     null
 }
 
+/// A leg is bounded as a HANG, never as a slow pass: a `.refuses` eval
+/// leg is a `from_sources` derivation of seconds of CPU, and its WALL time
+/// scales with the machine — measured past 30 s under sixteen spinning
+/// processes on an eight-core Sprite, and 90-113 s under a peer's load. A
+/// 30 s bound sat below that honest wall time, so a loaded runner read as
+/// a failing test; this one is far past any honest run (the number
+/// `commands/tests/runs.av`'s `hang_bound` also uses), so it catches a
+/// stuck child and never a busy machine.
+fn hang_bound() -> Duration { secs(600) }
+
 /// One leg run as a child and judged against the voice — a program
 /// under test, never a workload, so a leg that outlives its window is
 /// refused rather than hung on.
@@ -36,7 +46,7 @@ fn leg(program: string, args: List<string>, name: string, voice: string) -> Resu
     string?,
     ProcessError,
 > {
-    let o = (cmd(tool(program)?, args) with { timeout: secs(30) }).outcome()?
+    let o = (cmd(tool(program)?, args) with { timeout: hang_bound() }).outcome()?
     leg_wrong(name, voice, o)
 }
 
