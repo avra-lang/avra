@@ -585,11 +585,28 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
+  # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The train runs these an order
+  # down; a PR runs them FIRST and for nothing, so a keeper that reads only
+  # the tree refuses on the PR instead of one train later. The set is
+  # KEEPERS_STATIC, named once in the Makefile — this job invokes the target,
+  # never a second list kept in step by hand.
+  keepers-static:
+    needs: [prepare]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: keepers-static
+        run: make -s keepers-static
   # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers-a, keepers-b, seed-check, flow-gate, cache-attacks, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, keepers-static, seed-check, flow-gate, cache-attacks, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
