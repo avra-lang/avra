@@ -3,12 +3,22 @@
 # run and every push to `main`: a PR whose `test` failed is told the exact failing
 # `job — line` and has its failed jobs re-run once; a green, mergeable PR
 # is enqueued, but only while the queue holds fewer than `AVRA_QUEUE_MAX`
-# entries (default 3), since N full trains in flight saturate the runners
-# and the queue then lands slower with more entries; a queued entry with no
-# train is taken out and put back; a failed train is named on the PR. The
-# decision is a pure function proved against fixtures
-# (tools/pr_watcher.py --self-test), so this job is the same answer every
-# pass.
+# entries (default 6), since N full trains in flight saturate the runners
+# and the queue then lands slower with more entries; a green DRAFT is named
+# and taken ready where auto-merge asks for it; a queued entry is put back
+# only when NOTHING is moving it — a live train is never touched (a train
+# takes ~45 minutes, and churning one cancels it and restarts forever); a
+# failed train is named on the PR. The decision is a pure function proved
+# against fixtures (tools/pr_watcher.py --self-test), so this job is the
+# same answer every pass. Every comment carries its own dedup marker, so a
+# stale state file can never re-post one.
+#
+# THE CAP IS TUNED TO THE TRAIN'S COST, NOT CHOSEN ONCE. It was 3 when a
+# train paid a cold compiler rebuild in `prepare` (~7-16 min); a release
+# compiler made `prepare` ~76 s, so 6 is the default now. The merge-queue
+# ruleset allows `max_entries_to_build: 10` concurrent `merge_group` runs
+# (GitHub's range 1-100), so 6 stays under the build concurrency; re-tune
+# from `prepare` and train-duration data, not a guess.
 #
 # A token a workflow holds with the repository's GITHUB_TOKEN does not
 # start a new workflow for the events it causes; the merge queue's
@@ -48,13 +58,26 @@ jobs:
         with: { sparse-checkout: tools/pr_watcher.py }
       - name: self-test
         run: python3 tools/pr_watcher.py --self-test
-      - uses: actions/cache@v4
+      # THE STATE IS RESTORED AND SAVED AS TWO EXPLICIT STEPS, the pattern
+      # checks.yml proves. The combined action's post-step save has been
+      # denied ("token has no writable scopes") on this workflow, so the
+      # state froze and every pass re-commented; the save runs `always()` so
+      # a failed pass still records what it did. The comments carry their own
+      # dedup markers too, so correctness never rests on this cache.
+      - uses: actions/cache/restore@v4
         with:
           path: ~/.avra-pr-watcher
           key: pr-watcher-${{ github.run_id }}
           restore-keys: pr-watcher-
+      # The cap comes from the code default (tools/pr_watcher.py, QUEUE_MAX);
+      # set AVRA_QUEUE_MAX here only to measure a different value.
       - env:
           GH_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          AVRA_QUEUE_MAX: "3"
         run: python3 tools/pr_watcher.py
+      - if: always()
+        name: save state
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.avra-pr-watcher
+          key: pr-watcher-${{ github.run_id }}
