@@ -16,9 +16,11 @@
 # that conflicts with main gets ONE comment saying "rebase onto
 # origin/main". A PR a failed train dropped is told once per failure to
 # land again — a train fails every PR it carries, so most drops are
-# someone else's — and one whose head has failed three trains is held as a
-# DRAFT, with its failing lines on the PR, since every PR behind it rides
-# its failure. Each is left for its owner.
+# someone else's — and one whose head has failed three trains is told once
+# that every PR behind it rode its failure. IT NEVER DRAFTS: a draft can
+# never ride a train and a watcher that takes drafts ready would fight this
+# script forever, so a thrice-failed PR is named, never hidden. Each is
+# left for its owner.
 set -eu
 
 repo=avra-lang/avra
@@ -85,9 +87,8 @@ pass() {
         t=$(failed_trains "$n" "$head")
         [ "${t:-0}" -gt 0 ] || continue
         if [ "$t" -ge 3 ]; then
-            say_once "$n" "$(printf 'queue keeper: three trains have failed with this PR in them, so it is held as a DRAFT — every PR behind it rode its failure. Its newest failure:\n\n```\n%s\n```\nFix it, then `gh pr ready %s` and `sh tools/work land`.' "$(train_failure "$n")" "$n")" failed
-            gh pr ready "$n" -R "$repo" --undo >/dev/null 2>&1 || :
-            echo "queue-keeper: #$n failed three trains — held as a draft, owner told"
+            say_once "$n" "$(printf 'queue keeper: three trains have failed with this PR in them — every PR behind it rode its failure. Its newest failure:\n\n```\n%s\n```\nFix it, then `sh tools/work land` from its worktree.' "$(train_failure "$n")")" failed
+            echo "queue-keeper: #$n failed three trains — owner told"
             continue
         fi
         say_once "$n" "queue keeper: a train carrying this PR failed and dropped it from the queue (failure $t of 3 before it is held). If the failure is not this PR's, run \`sh tools/work land\` from its worktree to queue it again." "dropped-$t"

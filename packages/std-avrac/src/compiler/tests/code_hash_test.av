@@ -94,6 +94,12 @@ spec "compiler — a fn's code hash" {
                 "fn leaf() -> int { 2 }\nfn zero() -> int { 0 }\nonce fn slot() -> Cell<fn() -> int> { Cell.new(zero) }\nfn answer() -> int { slot().get()() }\nfn setup() { slot().set(leaf) }\nsetup()",
             )
         }
+        then "a fn handed through a cell the caller passes on moves it" {
+            moved(
+                "fn leaf() -> int { 1 }\nfn zero() -> int { 0 }\nonce fn slot() -> Cell<fn() -> int> { Cell.new(zero) }\nfn through(c: Cell<fn() -> int>) -> int { c.get()() }\nfn answer() -> int { through(slot()) }\nfn setup() { slot().set(leaf) }\nsetup()",
+                "fn leaf() -> int { 2 }\nfn zero() -> int { 0 }\nonce fn slot() -> Cell<fn() -> int> { Cell.new(zero) }\nfn through(c: Cell<fn() -> int>) -> int { c.get()() }\nfn answer() -> int { through(slot()) }\nfn setup() { slot().set(leaf) }\nsetup()",
+            )
+        }
     }
     given "an edit that moves no code the fn reaches" {
         then "a rename of a callee moves nothing" {
@@ -173,6 +179,9 @@ spec "compiler — an instantiation's kept key" {
     given "a type argument whose shape differs" {
         then "names another key" {
             inst_key_of("home", "int", "g\$^T") != inst_key_of("home", "record 1 (int)", "g\$^T")
+        }
+        then "a field's type moved under the same name names another key" {
+            inst_key_of("home", "record 2 (int, int)", "g\$^T") != inst_key_of("home", "record 2 (int, string)", "g\$^T")
         }
     }
     given "a home whose object key differs" {
