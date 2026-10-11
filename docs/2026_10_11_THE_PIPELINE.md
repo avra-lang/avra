@@ -1,9 +1,9 @@
 # The pipeline — how work lands, on Sprites, through the gates
 
-One document for the path from a branch to `main`: the merge queue and
-how a change lands, Sprites, the deterministic watcher, the keepers and
-gates, the speed budgets, the known traps, and what to run when a step
-fails. It is written for a reader who has never seen this repo.
+One document for the path from a branch to `main`: how a change lands,
+Sprites, the deterministic watcher, the keepers and gates, the speed
+budgets, the known traps, and what to run when a step fails. It is
+written for a reader who has never seen this repo.
 
 Everything here was read against the tree it describes — the Makefile,
 `.github/workflows/`, and each `tools/` script named — never assembled
@@ -19,32 +19,41 @@ therefore either fixed here or recorded as a known gap, never left to rot.
 
 ## 0. The one-paragraph model
 
-`main` is protected and moves **only through GitHub's native merge
-queue**, squash-merged, linear history, no direct pushes. A pull request
-lands only when it is **mergeable, based on `main`, unstacked, and its
-required check `test` is green**. There are three layers of proof:
+`main` is protected by a ruleset: squash merges, linear history, no
+direct pushes. It requires the `test` check **and** that a branch be
+**up to date with `main`** before merging, and every green PR has
+auto-merge armed, so merges happen **one at a time, hands-off**. There
+are three layers of proof:
 
 1. **Dev — a Sprite.** Every heavy build and test runs on a remote
    Ubuntu microVM bound to the lane, warm between runs. This is the
    fast loop.
-2. **PR — a fast floor.** A PR's own check is `fmt` on the files it
-   changed plus `check` on the affected package closure. It builds no
-   compiler, runs no keepers and runs no suites — it is a floor under
-   the train, not the gate.
-3. **The train — the gate.** When the queue advances, `checks.yml` runs
-   the static keepers, the seed check, the cache attacks, the changed
-   files' gate, the affected packages' suites (sharded), and the
-   runtime latency gate where `runtime/` moved, over the **combination**
-   of `main` and every queued PR ahead of it. A passing train lands it
-   and everything ahead of it together (HEADGREEN).
+2. **The PR — the gate.** A PR's own `test` check runs on the
+   combination of `main` and the PR, because "up to date" makes its
+   branch hold current `main`: `fmt` on its changed files, `check` on
+   the affected package closure, the static and compiler-dependent
+   keepers, the seed check, the cache attacks where the store moved, the
+   runtime latency gate where `runtime/` moved, and the affected
+   packages' suites (sharded). A PR that touches no `.av`, no package and
+   no compiler source builds nothing and owes nothing.
+3. **`main`'s own push run** caches the compiler every run starts from
+   and publishes the release asset.
 
-`.github/workflows/checks.yml` is the one definition of what a train
-does. `tools/work` is the one command surface a lane uses. Nothing in
+**THERE IS NO MERGE QUEUE (dropped 2026-10-11).** Its only real value
+was testing `main` plus every PR ahead of it, which "require up to date"
+gives back for free one PR at a time. What it cost was trains that
+tested many PRs at once (one red suite killed them all), HEADGREEN
+batching, and a rebase treadmill where every landing re-conflicted
+everything behind it. True line conflicts are unavoidable in any model;
+the queue only made them more expensive to discover.
+
+`.github/workflows/checks.yml` is the one definition of the gate.
+`tools/work` is the one command surface a lane uses. Nothing in
 `tools/work` writes `main`.
 
 ---
 
-## 1. The merge queue: how a change lands
+## 1. How a change lands
 
 ### The lane's day
 
@@ -54,62 +63,48 @@ From a fresh checkout:
 
 Work there, commit, then:
 
-    sh tools/work land            # rebase, fmt-check, push, open PR, queue it
+    sh tools/work land            # rebase, fmt-check, push, open PR, arm auto-merge
 
 `land` does, in order: refuses to run on `main`; refuses a dirty tree;
 `git fetch origin main`; `git rebase origin/main` (onto `main` only);
 checks the changed `.av`'s formatting with the compiler the worktree
 already holds; force-with-lease pushes; opens a PR against `main` if one
-is not open; waits (up to ~5 minutes) for the PR's own `test` check to go
-green; and enqueues it. It prints the PR URL.
+is not open; and **arms auto-merge** (`gh pr merge <n> --auto --squash`).
+It prints the PR URL and says what it armed.
 
-### Entering the queue
+### What auto-merge does
 
-Three independent mechanisms put a green PR in the queue, so a green PR
-never sits unqueued:
+There is no queue. An armed PR merges **itself** the moment both
+requirements hold: its required `test` check is green, and its branch is
+up to date with `main`. Merges are serialized by the second requirement:
+while one PR merges, every other armed PR that is now behind waits, and
+the watcher refreshes it (§3). Nothing polls `main` to decide a landing.
 
-- **`sh tools/work land`** pushes, opens the PR, waits for its own
-  `test` check, and enqueues it directly (`enqueuePullRequest`).
+`sh tools/work status` prints every open PR with its checks, its merge
+state, and whether auto-merge is armed, then one line per lane and its
+Sprite.
+
+`sh tools/work wait <branch>` waits for one branch's PR to merge. **The
+oracle is the PR's state, asked of `gh`, never `main`.** `MERGED` is the
+only success; `CLOSED` is a failure. The deadline is `AVRA_WAIT_SECONDS`
+(default 120 s) and the poll `AVRA_WAIT_POLL` (default 15 s).
+
+### Entering and staying armed
+
+Two independent mechanisms arm auto-merge, so a green PR never sits
+unmerged:
+
 - **`.github/workflows/auto-merge.yml`** runs on every `opened`,
   `ready_for_review`, `synchronize` and `reopened` event and runs
   `gh pr merge --auto --squash`. A draft is skipped, and a fork's PR is
-  skipped (its token cannot enqueue).
-- **`tools/pr_watcher.py`** enqueues a green, mergeable, unmerged PR
-  under the queue cap — enabling auto-merge when it is not set, or
-  enqueuing directly when it is (§3).
+  skipped (its token cannot arm it).
+- **`tools/pr_watcher.py`** arms a green, mergeable, unarmed PR on its
+  next pass, and refreshes one that has fallen behind (§3).
 
-### What the queue does
+`tools/work land` also arms auto-merge directly, so a lane that pushes
+and moves on needs nothing else.
 
-The queue is GitHub's **native merge queue**, not a script. When the
-front of the queue is ready, GitHub creates a `merge_group` ref holding
-`main` plus that PR and every PR ahead of it, and runs `checks.yml` on
-it. If the whole train passes, every PR on it merges together; if it
-fails, the failing PR is dropped to its owner and the rest are
-re-enqueued. One red PR drops the whole train, so a lane runs the
-check's own scope before pushing.
-
-`sh tools/work status` prints every open PR with its checks and its
-queue position, then one line per lane and its Sprite. It also
-re-enqueues a stuck entry on sight.
-
-`sh tools/work wait <branch>` waits for one branch's PR to merge. **The
-oracle is the PR's state, asked of `gh`, never `main`.** `main` only
-moves when a train passes, so polling it to infer a landing waits on the
-wrong clock — and it deadlocked the queue once. `MERGED` is the only
-success; `CLOSED` is a failure. The deadline is `AVRA_WAIT_SECONDS`
-(default 120 s) and the poll `AVRA_WAIT_POLL` (default 15 s).
-
-`sh tools/queue_keeper.sh`, run by `.github/workflows/queue-keeper.yml`
-every five minutes, keeps the queue moving without an agent: an entry
-GitHub marked `UNMERGEABLE` leaves the queue; a PR conflicting with
-`main` gets one "rebase onto `origin/main`" comment; a PR a failed train
-dropped is told once per failure to land again; a PR whose head has
-failed three trains is held as a **draft** with its failing lines on the
-PR. **It never enqueues** — a workflow token cannot start the
-`merge_group` workflow it would cause, so an entry it added would stall.
-A PR enters the queue from its lane.
-
-### The compiler in CI, and why a train is cheap
+### The compiler in CI
 
 `checks.yml`'s `prepare` job decides what a run owes and gets a compiler
 before anything else. The compiler is **keyed by its own source**
@@ -121,8 +116,8 @@ before anything else. The compiler is **keyed by its own source**
 2. **Release asset** — `python3 tools/compiler_release.py fetch`, a
    binary `main` published under its own source digest. This exists
    because a GitHub cache is **scope-bound**: a run restores from its
-   own branch and `main`, never a sibling's, and every train stands on
-   its own `gh-readonly-queue/...` ref. A release asset crosses refs.
+   own branch and `main`, never a sibling's. A release asset crosses
+   refs.
 3. **Build twice** (`make avra` twice) — one `make avra` advances the
    compiler by one generation, so a compiler carrying a change must
    build the tree twice before it is the tree.
@@ -131,27 +126,27 @@ before anything else. The compiler is **keyed by its own source**
    own source), fall back to the committed seed.
 
 Only a push to `main` saves the cache and publishes the release asset,
-so a train never publishes a binary.
+so no PR run publishes a binary.
 
-### What a PR runs vs what a train runs
+### What each job runs
 
-| job | PR (`pull_request`) | train (`merge_group`) |
-|---|---|---|
-| `prepare` | plan + compiler only if `build=1` | plan + compiler + objects/libs |
-| `keepers-a` / `keepers-b` | — | the static keepers, two halves on two runners |
-| `seed-check` | — | the committed seed must compile HEAD |
-| `gate` | `fmt` + idioms on the affected closure | the same, on the combination |
-| `cache-attacks` | only if the diff reaches the store or the attacks | always |
-| `flow-gate` | only if `runtime/` moved | only if `runtime/` moved |
-| `suites` | — | affected packages, sharded (4 shards) |
-| `test` | the aggregate required check | the aggregate required check |
+| job | when it runs |
+|---|---|
+| `prepare` | every run; plan, then a compiler and the objects/libs when `build=1` |
+| `keepers-a` / `keepers-b` | any non-push run with `build=1`; the two keeper halves on two runners |
+| `seed-check` | any non-push run with `build=1`; the committed seed must compile HEAD |
+| `gate` | any non-push run with a changed `.av` or an affected package; `fmt` + idioms |
+| `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks) |
+| `flow-gate` | whenever `runtime/` moved |
+| `suites` | any non-push run with a non-empty affected closure; sharded (4 shards) |
+| `codecs` | a PR whose diff reaches the compiler source or the reader |
+| `test` | the aggregate required check, every run |
 
-A **plain PR pays no object build at all** — no `.av`, no package and no
-compiler source changed means no compiler is built. A PR that changes
-the store (or the attacks) runs the cache attacks too. The compiler
-source paths are `sh tools/compiler_paths.sh` (the `cli` package plus
-every `@std` package it reaches, the runtime, the backend, the seed and
-the Makefile). Affected packages are `sh tools/affected_packages.sh`
+A run that touches no `.av`, no package and no compiler source **builds
+nothing and owes nothing**. The compiler source paths are
+`sh tools/compiler_paths.sh` (the `cli` package plus every `@std`
+package it reaches, the runtime, the backend, the seed and the
+Makefile). Affected packages are `sh tools/affected_packages.sh`
 (touched plus every dependent).
 
 ---
@@ -266,24 +261,34 @@ push to `main`, and `workflow_dispatch`.
 
 Its decision is a **pure function** (`plan`), proved against fixtures
 with no network and no LLM (`python3 tools/pr_watcher.py --self-test`).
-It does four things:
+There is no queue; the watcher keeps every open PR able to merge itself:
 
 - **(a)** a PR whose required `test` failed — comment the exact
   `job — line`, and re-run the failed jobs **once** (a second rerun of
   the same head changes nothing, so it is refused by state).
-- **(b)** a green, mergeable, unmerged PR not in the queue — enqueue it
-  (enable auto-merge when it is not set, or a direct enqueue when it
-  is), but only while the queue holds fewer than `AVRA_QUEUE_MAX` entries
-  (default 3). A full train is ~40 min of the shared runner pool, so
-  more entries make the queue land *slower*. A green PR over the cap is
-  held and named, never dropped.
-- **(c)** a queued entry with no `merge_group` run — dequeue and put it
-  back, since an entry with no train starts nothing by waiting.
-- **(d)** a failed train — name its failing `job — line` on the PR.
+- **(b)** a green, mergeable, unconflicted PR — **arm** auto-merge
+  (`gh pr merge --auto --squash`) when it is not already armed. There is
+  no cap: one merge at a time is what "up to date" enforces.
+- **(c)** a green, armed PR that is **behind** `main` — **refresh** its
+  branch (`gh pr update-branch`), so "up to date" is met without a human.
+  The refresh is deduped per head, and the update moves the head, so it
+  refreshes again only if `main` moved again.
+- **(d)** a PR that **conflicts** with `main` — name the rebase its owner
+  owes, once.
+- **(e)** a **draft** — name it so it is never invisible; take a green,
+  otherwise-landable, wanted one ready (a `DO NOT MERGE` title is the
+  deliberate exception).
+- **(f)** a **doomed run** — cancel a `pull_request` run whose PR is no
+  longer open. A superseded run is already cancelled by `checks.yml`'s
+  own concurrency.
+- **(g)** a **blocked** PR — name the check it waits on, once.
 
-State (which heads were re-run, which failures were told) is a JSON file
-in `~/.avra-pr-watcher/state.json`, restored and saved by the workflow's
-cache and shared across harnesses, so no two post the same comment.
+Every open PR gets an action or a loud name. Every comment is deduped by
+`(pr, head, reason)` and carries its own marker, so a lost state file
+cannot re-post it and two watchers never double-comment. State (which
+heads were re-run, which failures and refreshes were told, which runs
+were cancelled) is a JSON file in `~/.avra-pr-watcher/state.json`,
+restored and saved by the workflow's cache.
 
 ### The local driver (uncommitted)
 
@@ -300,9 +305,8 @@ stale watchdog. `~/.avra-pr-watcher/watchdog.log` is the liveness check.
 messages no session and no human; it runs only while that Mac is awake;
 it is one machine. A second driver off this machine is wanted.
 
-`tools/queue_keeper.sh` is the third, independent path (see §1). Three
-independent mechanisms — `auto-merge.yml`, `pr-watcher`, `queue-keeper`
-— are what make "nothing is landing" hard.
+`auto-merge.yml` and `pr-watcher` are the two independent mechanisms
+that make "nothing is landing" hard.
 
 ---
 
@@ -318,9 +322,9 @@ by nobody.
 
 | target | what it is | who runs it |
 |---|---|---|
-| `make keepers-static` | the keepers that need no compiler, ~half a minute | a lane before pushing |
+| `make keepers-static` | the keepers that need no compiler, ~half a minute | a PR before it builds anything; a lane before pushing |
 | `make keepers-pr` | the keepers a PR can break alone | a lane before pushing |
-| `make keepers-a` / `make keepers-b` | the two halves the train runs on separate runners | the train |
+| `make keepers-a` / `make keepers-b` | the two halves a gate run splits onto separate runners | the PR's `test` check |
 | `make keepers` | every keeper, union of the above | `tools/gate_changed.sh` when not told `--no-keepers` |
 | `make gate` | the full local gate: keepers plus suites plus the vocabulary proofs | a lane proving a whole tree |
 
@@ -379,7 +383,7 @@ whole job with nothing said.
 ### The changed-file gate
 
 `sh tools/gate_changed.sh` is the one definition of "what a changed tree
-owes", shared by a lane and the train so they can never be two
+owes", shared by a lane and a PR's own check so they can never be two
 instruments:
 
     sh tools/gate_changed.sh --refs <base> <head> [--no-keepers] [--pr-minimum]
@@ -388,8 +392,8 @@ instruments:
 It runs the keepers (unless `--no-keepers`), `fmt --check` on the changed
 `.av`, `check <pkg> --baseline tools/idioms.baseline` on each affected
 package, and — where a wasm toolchain stands — the wasm target's proof.
-`--pr-minimum` is a PR's fast floor: fmt and idioms only, skipping the
-wasm proof, which belongs to the train. A lane runs it as
+`--pr-minimum` is a fast floor: fmt and idioms only, skipping the wasm
+proof. A lane runs it as
 `sh tools/work run sh tools/gate_changed.sh --files … --packages …`.
 
 ### The lane's pre-push scope
@@ -401,8 +405,8 @@ Before pushing, a lane runs, in this order:
     make keepers-pr
 
 and the affected package's suites (on the Sprite). A green PR is cheaper
-than a red one: one red PR drops a whole train. Note `--refs origin/main`
-does not work on a Sprite (no `origin/main` there); run it on the Mac.
+than a red one. Note `--refs origin/main` does not work on a Sprite (no
+`origin/main` there); run it on the Mac.
 
 ---
 
@@ -445,8 +449,8 @@ of it was the two self-compiles:
 
 Inside one self-compile (~508 s): `parse 24, analyze 39, lower 368, keep
 54, emit 43, link 2.5` — **`lower` is the whole cost**. The cache hit is
-0 s; the cold path is why a train rebuilds. These are dated measurements,
-not guarantees: re-measure with the same Sprite before relying on them.
+0 s. These are dated measurements, not guarantees: re-measure with the
+same Sprite before relying on them.
 
 ### Memory and the build lock
 
@@ -478,36 +482,37 @@ never removed).
 
 ## 6. Known traps
 
-**A green PR is not a green train.** A PR runs the fast floor; the train
-runs the gate over a combination no single PR's tree can. Run the
-affected closure's suites before pushing.
+**A green PR is not automatically a green `main`.** Its check runs the
+full gate on the combination, but the PR can still be behind a merge
+that landed a moment ago; "up to date" and the watcher's refresh keep it
+current. Run the affected closure's suites before pushing to save a
+round.
 
-**A red keeper on `main` blocks everything.** Every train fails, so no
-PR can land no matter what you do to it. If `main` is red, fix `main`
+**A red keeper on `main` blocks everything.** Every PR's gate fails, so
+nothing lands no matter what you do to it. If `main` is red, fix `main`
 first — one lane, one PR.
 
-**A stack can never enter the queue.** A PR whose base is not `main`
-fails with "No merge queue found for branch …". Land the dependency
-first, then rebase onto `main`.
+**A stack is never rebased onto another unlanded branch.** A PR whose
+base is not `main` is not tested against the combination; land the
+dependency first, then rebase onto `main` (`git rebase --onto origin/main
+main <branch>`).
 
-**A queued entry with no train is stuck, and waiting does not start
-one.** Take it out and put it back (`queue-keeper` and `tools/work
-status` do this).
+**A stale PR is refreshed by the watcher, but a conflicted one is not.**
+`gh pr update-branch` resolves staleness, never a line conflict; a
+conflicting PR is named on the PR with the rebase its owner owes.
 
 **`land` reads the PR, never `main`.** Polling `main` to infer a landing
-waits on the wrong clock and once deadlocked the queue.
+waits on the wrong clock.
 
-**Do not make a PR run the train's jobs "to close the gap."** It costs
-an hour per PR. The gap is closed by dev-time Sprite runs and by the
-watcher.
+**Do not add a job "to close the gap."** The gap is closed by dev-time
+Sprite runs and by the watcher, not by making a PR run something extra.
 
 **The cron is best-effort.** GitHub's `schedule` is a floor, not a
-promise; a stalled watcher or a stalled queue is what the local driver
-and `queue-keeper` are for. `tools/pr_watcher.py`'s own docstring still
-says "every two minutes"; `.github/workflows/pr-watcher.yml` says
-`*/5 * * * *`, and that is what runs.
+promise; that is what the local driver is for.
+`.github/workflows/pr-watcher.yml` says `*/5 * * * *`, and that is what
+runs.
 
-**A GitHub cache is scope-bound.** A train's own ref cannot read a
+**A GitHub cache is scope-bound.** A PR's own ref cannot read a
 sibling's compiler cache; the release asset is what crosses refs. Save
 the cache only on `push` to `main`.
 
@@ -546,11 +551,11 @@ workspace. Probe from `/tmp`.
 
 **Older notes name scripts that are not in the tree.** The speculative
 land-train design (`docs/2026_09_29_LAND_TRAIN.md`) named `tools/land.sh`
-and `tools/land_train.sh`; neither was built — the mechanism is GitHub's
-native merge queue plus `tools/work`. A ticket once named
+and `tools/land_train.sh`; neither was built. A ticket once named
 `tools/warm_edit_bench.sh`, which does not exist. The retired queue
 pollers `tools/qwatch.sh` and `tools/qfill.sh` are in the local archive;
-GitHub's auto-merge replaces them. None of these is a command to run.
+the merge queue itself was dropped in favour of "up to date" plus
+auto-merge (§0). None of these is a command to run.
 
 ---
 
@@ -564,8 +569,8 @@ GitHub's auto-merge replaces them. None of these is a command to run.
 | `sh tools/work run <cmd>` | run `<cmd>` on this lane's Sprite, followed to its status |
 | `sh tools/work run --for <minutes> <cmd>` | the same, with a raised bound |
 | `sh tools/work test` | what this branch touches, on this lane's Sprite |
-| `sh tools/work land` | rebase, fmt-check, push, open PR, queue it |
-| `sh tools/work status` | PRs and the queue; each lane and its Sprite |
+| `sh tools/work land` | rebase, fmt-check, push, open PR, arm auto-merge |
+| `sh tools/work status` | PRs and their merge state; each lane and its Sprite |
 | `sh tools/work sprites [--fix]` | every Sprite at a glance; `--fix` repairs |
 | `sh tools/work bind [<sprite>]` | give this worktree a Sprite, or move it |
 | `sh tools/work wait <branch>` | wait until the branch's PR merges |
@@ -590,7 +595,7 @@ GitHub's auto-merge replaces them. None of these is a command to run.
 |---|---|
 | `make gate` | the full local gate |
 | `make keepers` | every keeper |
-| `make keepers-a` / `make keepers-b` | the train's two keeper halves |
+| `make keepers-a` / `make keepers-b` | the two keeper halves a run splits across runners |
 | `make seed-check` | the committed seed must compile HEAD |
 | `make speed-ratchet` | hold each build/check phase under its ceiling |
 | `make speed-accept` | lower a ceiling to what was measured (never raises) |
@@ -599,16 +604,16 @@ GitHub's auto-merge replaces them. None of these is a command to run.
 | `make attack` | the accepted-mutant baseline |
 | `make pipeline-doc` | this document's commands resolve |
 
-### The queue and CI
+### Landing and CI
 
 | command | what it does |
 |---|---|
-| `gh pr merge <n> --auto --squash` | queue a PR by auto-merge (a lane's `land` and the watcher enqueue directly; `auto-merge.yml` sets this on PR events) |
+| `gh pr merge <n> --auto --squash` | arm auto-merge (a lane's `land` and the watcher do this; `auto-merge.yml` sets it on PR events) |
 | `gh pr view <n> --json autoMergeRequest` | confirm auto-merge is set |
+| `gh pr update-branch <n>` | refresh a branch that is behind `main` |
 | `gh run list -R avra-lang/avra --branch main` | is `main` itself green? |
-| `gh workflow run checks --ref <branch>` | run a whole train by hand on a branch |
+| `gh workflow run checks --ref <branch>` | run a whole gate by hand on a branch |
 | `python3 tools/pr_watcher.py --self-test` | prove the watcher's decision on fixtures |
-| `sh tools/queue_keeper.sh` | one queue-keeper pass |
 
 ### Measurement
 
@@ -628,18 +633,16 @@ GitHub's auto-merge replaces them. None of these is a command to run.
 (`job — line`), reproduce that job's scope locally, and fix the cause.
 Never weaken a keeper or a test. `tools/work status` shows the checks.
 
-**A PR is green but not queued.** `sh tools/work status` re-enqueues a
-stuck entry on sight. If it is not stuck, either set auto-merge with `gh
-pr merge <n> --auto --squash` or let the watcher's next pass pick it up.
+**A PR is green but unarmed.** Either set auto-merge with
+`gh pr merge <n> --auto --squash` or let the watcher's next pass arm it.
 
-**A PR will not enqueue.** The message is the diagnosis: "No merge queue
-found" means it is stacked (base is not `main`); "Required status check
-`test` is failing" means a check is red; "merge conflicts" means rebase
-onto `origin/main`.
+**A PR is green, armed, and will not merge.** It is behind `main`:
+the watcher refreshes it (`gh pr update-branch <n>`) on its next pass, or
+do it by hand. If it is blocked instead, `tools/work status` names the
+merge state.
 
-**A train fails on someone else's PR.** Read the failing job's log; the
-PR that caused it is the one to fix, not yours. `queue-keeper` drafts a
-PR whose head has failed three trains.
+**A PR conflicts with `main`.** Rebase onto `origin/main` (the watcher
+comments the exact command) and land again.
 
 **`main` itself is red.** Stop feature work. Check out `origin/main`,
 reproduce the keeper refusal on a fresh build, fix `main`, one PR. Until
@@ -675,18 +678,21 @@ material that was spread across four places:
   its expansion, and `CLAUDE.md` remains the law of the language.
 - `docs/2026_09_29_LAND_TRAIN.md` — a **design** for a speculative merge
   queue over `tools/land.sh`. The scripts it named (`tools/land.sh`,
-  `tools/land_train.sh`) are not in the tree, and the mechanism that
-  actually runs is GitHub's native merge queue plus `tools/work`. Kept:
-  nothing operational; the design is history.
+  `tools/land_train.sh`) are not in the tree. Kept: nothing operational;
+  the design is history.
 - `docs/2026_09_16_SPRITE_SESSIONS.md` — kept in substance (what a
   Sprite is, provisioning, the seed fast/slow path), folded into §2.
 - `.lead/LANDING_GUIDE.md` and `.lead/WATCHDOG.md` — uncommitted local
-  notes, now superseded by this doc. Two of their claims disagreed with
-  the code and the code was kept: the watcher's cadence (the workflow
-  cron is `*/5`, best-effort, not ~2 minutes), and the PR check's scope
-  (the code runs `gate_changed --no-keepers --pr-minimum` — fmt and
-  idioms — not the keepers; a lane runs the keepers locally before
-  pushing).
+  notes, now superseded by this doc.
+
+**Dropped 2026-10-11: the merge queue.** This doc previously described
+GitHub's native merge queue, its trains, HEADGREEN batching and the
+queue keeper. All of that is gone. `main`'s ruleset now requires the
+`test` check **and** that a branch be up to date with `main`, and
+auto-merge lands every green PR one at a time — the queue's real value
+(the combination test) for free, without its batching cost. A repo that
+re-enables a queue needs its events and its enqueue path back; the
+prose above is the state of the tree, not of a queue.
 
 Local material that is not part of this doc's subject (the DB05 store
 explainer, the local launchd driver and its scripts, one-off code

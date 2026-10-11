@@ -1,7 +1,8 @@
 # The land train — a speculative merge queue over `tools/land.sh`
 
 > NOT BUILT. `tools/land.sh` and `tools/land_train.sh` are not in the
-> tree; the landing mechanism is GitHub's native merge queue plus
+> tree; the landing mechanism is a required `test` check, "up to date"
+> enforcement and auto-merge plus
 > `tools/work`. The committed single source is
 > `docs/2026_10_11_THE_PIPELINE.md`.
 
