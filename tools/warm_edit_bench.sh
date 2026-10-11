@@ -19,10 +19,13 @@
 #
 # stdout is the raw measurement the judge reads (`host <key>`,
 # `warm unchanged <ms>`, `warm edit <ms>`); every word of its own goes to
-# stderr. A warm store is REQUIRED: a cold one makes the first rounds the
-# whole program's price, so it SKIPS with a word (never a silent pass).
-# On macOS the measurement goes to the lane's Sprite (`tools/work run`),
-# as `speed-ratchet` does — a loaded Mac supplies no number.
+# stderr. A WARM STORE IS REQUIRED and a run that cannot judge is a
+# FAILURE, never a silent pass: a named reason and status 1, with the
+# `skip warm-edit` marker on stdout. The ONLY skip is a hand-set
+# `WARM_EDIT_SKIP` (the workflow's `warm_skip` input), and even then it says
+# so loudly. On macOS the measurement goes to the lane's Sprite
+# (`tools/work run`), as `speed-ratchet` does — a loaded Mac supplies no
+# number, and a worktree with no Sprite refuses rather than passing.
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
@@ -33,22 +36,39 @@ file=${SPEED_EDIT_FILE:-packages/cli/src/commands/shared.av}
 lit=${SPEED_EDIT_LIT:-· memo}
 case "$rounds" in ''|*[!0-9]*) rounds=3 ;; esac
 
-# A Mac has no number of its own: this lane's Sprite has. Re-run there, and
-# answer its status. A worktree with no Sprite is not measured here.
-if [ "$(uname -s)" = "Darwin" ] && [ "${SPEED_LOCAL:-0}" != "1" ]; then
-    sprite=$(cat "$(git rev-parse --absolute-git-dir)/avra-sprite" 2>/dev/null || :)
-    if [ -z "$sprite" ]; then
-        echo "warm_edit_bench: no Sprite bound to this worktree — not measured here" >&2
+# A SKIP IS A FAILURE. `WARM_EDIT_SKIP` is the ONE hand-set opt-out — the
+# workflow's `warm_skip` input passes it, and a human sets it nowhere else.
+# With it the reason goes out LOUDLY and the status is 0; without it a run
+# that cannot judge REFUSES, with a named reason and the `skip warm-edit`
+# marker on stdout.
+refuse() { # <reason>
+    echo "warm_edit_bench: $1" >&2
+    if [ -n "${WARM_EDIT_SKIP:-}" ]; then
+        echo "warm_edit_bench: SKIPPED BY REQUEST (WARM_EDIT_SKIP=${WARM_EDIT_SKIP}) — the warm gate is NOT judged" >&2
+        echo "skip warm-edit"
         exit 0
     fi
+    echo "warm_edit_bench: this is a FAILURE — the warm-edit gate cannot judge; set WARM_EDIT_SKIP=1 by hand only to skip" >&2
+    echo "skip warm-edit"
+    exit 1
+}
+
+# A Mac has no number of its own: this lane's Sprite has. Re-run there, and
+# answer its status. A worktree with no Sprite cannot judge, so it refuses.
+if [ "$(uname -s)" = "Darwin" ] && [ "${SPEED_LOCAL:-0}" != "1" ]; then
+    sprite=$(cat "$(git rev-parse --absolute-git-dir)/avra-sprite" 2>/dev/null || :)
+    [ -n "$sprite" ] || refuse "no Sprite bound to this worktree"
     exec sh tools/work run "sh tools/warm_edit_bench.sh"
 fi
 
-# A CEILING IS READ FROM A WARM STORE.
+# A CEILING IS READ FROM A WARM STORE. A cold run at a human's request
+# (`SPEED_ALLOW_COLD=1`) is measured, but said out loud: the first unchanged
+# round is the cold price and the least-of-rounds picks a later warm one.
 if [ ! -d .avra-cache ] && [ "${SPEED_ALLOW_COLD:-0}" != "1" ]; then
-    echo "warm_edit_bench: no warm store at .avra-cache — run \`make try\` once, then re-run; not measured" >&2
-    echo "skip cold-store"
-    exit 0
+    refuse "no warm store at .avra-cache"
+fi
+if [ ! -d .avra-cache ]; then
+    echo "warm_edit_bench: no warm store — measuring COLD at SPEED_ALLOW_COLD's request; the first unchanged round warms it" >&2
 fi
 [ -x "$avra" ] || { echo "warm_edit_bench: no compiler at $avra — build it first" >&2; exit 1; }
 [ -f "$file" ] || { echo "warm_edit_bench: no edit target at $file" >&2; exit 1; }
@@ -134,7 +154,10 @@ done
 printf 'warm edit %s\n' "$least" >> "$raw"
 
 cat "$raw"
-python3 tools/speed_ratchet.py --warm --raw "$raw"
+# `WARM_EDIT_ACCEPT` lowers this host's warm ceilings to what was measured
+# (never raises one); a human sets it when a real run landed under them.
+[ -z "${WARM_EDIT_ACCEPT:-}" ] || echo "warm_edit_bench: --accept — the warm ceilings may only fall" >&2
+python3 tools/speed_ratchet.py --warm ${WARM_EDIT_ACCEPT:+--accept} --raw "$raw"
 st=$?
 rm -f "$raw"
 exit $st

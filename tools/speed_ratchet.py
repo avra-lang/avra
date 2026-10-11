@@ -37,7 +37,8 @@ file, not a second budget: `<host> warm unchanged <ms>` and
 <= 300 ms, goal 150 — measured and gated by `tools/warm_edit_bench.sh`,
 whose judge is `--warm --raw`. Unlike a phase ceiling these are the
 ticket's TARGETS, not a measured baseline, so they are HARD (no ratio,
-no slack) and `--accept` does not touch them.
+no slack) and `--warm --accept` may only LOWER one to a faster real run,
+never raise it.
 
 THE WALL-CLOCK GATE (`--wall`) is a THIRD family in the same budget file:
 `ci-wall wall <job> <ms>` for each job a PR check ran, and
@@ -153,6 +154,17 @@ def measured_host(text):
         m = HOST_ROW.match(line.strip())
         if m:
             return m.group("host")
+    return None
+
+
+def skip_reason(text):
+    """The skip marker `tools/warm_edit_bench.sh` writes to stdout when it
+    cannot judge — `skip warm-edit` today, `skip cold-store` from the
+    older spelling — or None. A SKIP IS NOT A PASS: the caller refuses it
+    unless a human set `WARM_EDIT_SKIP`."""
+    for line in text.splitlines():
+        if line.strip() in ("skip warm-edit", "skip cold-store"):
+            return line.strip()
     return None
 
 
@@ -512,6 +524,11 @@ def self_test():
     assert fail == [] and gated == 0 and any("NO WARM CEILING ROW" in w for w in words), (fail, gated, words)
     fail, _, _ = check_warm(wm, elsewhere, host, True)
     assert len(fail) == 1 and "refused by --require" in fail[0][1], fail
+    # a skip is not a pass: the marker is read, and only a hand-set opt-out
+    # (main's own WARM_EDIT_SKIP policy) lets it stand
+    assert skip_reason("host h\nskip warm-edit\n") == "skip warm-edit"
+    assert skip_reason("host h\nskip cold-store\n") == "skip cold-store"
+    assert skip_reason("host h\nwarm unchanged 40\nwarm edit 250\n") is None
     # ── the wall-clock family: HARD, per job and whole ──
     wall_base = {
         (host, "wall", "prepare"): 180000,
@@ -580,9 +597,15 @@ def self_test():
             assert wrows[(host, "wall", "total")] == 200000, wrows
             assert accept({("wall", "total"): 400000}, wrows, host) == 1
             assert wrows[(host, "wall", "total")] == 200000, wrows
+            # a warm ceiling too: lowered to a faster real run, never raised
+            wmrows = dict(warm_base)
+            assert accept({("warm", "unchanged"): 50}, wmrows, host) == 0
+            assert wmrows[(host, "warm", "unchanged")] == 50, wmrows
+            assert accept({("warm", "unchanged"): 70}, wmrows, host) == 1
+            assert wmrows[(host, "warm", "unchanged")] == 50, wmrows
     finally:
         BUDGET = keep
-    print("speed_ratchet self-test: 33 fixture(s) held")
+    print("speed_ratchet self-test: 34 fixture(s) held")
     return 0
 
 
@@ -615,15 +638,26 @@ def main(argv):
             print("speed: --warm needs `--raw <file>` — tools/warm_edit_bench.sh writes it", file=sys.stderr)
             return 64
         raw = open(argv[argv.index("--raw") + 1]).read()
-        if "skip cold-store" in raw:
-            print("speed: no warm store on the measuring machine — not gated (make try, then re-run)")
-            return 0
+        # A SKIP IS NOT A PASS. The bench writes `skip warm-edit` when it
+        # cannot judge; only a hand-set `WARM_EDIT_SKIP` (the workflow's
+        # `warm_skip` input, which says so loudly) lets it stand.
+        skipped = skip_reason(raw)
+        if skipped:
+            if os.environ.get("WARM_EDIT_SKIP"):
+                print("speed: warm-edit SKIPPED BY REQUEST (WARM_EDIT_SKIP=%s) — not gated"
+                      % os.environ["WARM_EDIT_SKIP"])
+                return 0
+            print("speed: REFUSED — the warm-edit measurement was skipped (%s), and a skip is not a pass; "
+                  "set WARM_EDIT_SKIP=1 by hand only to skip" % skipped, file=sys.stderr)
+            return 1
         measured = least_rows(raw)
         if not measured:
             print("speed: the measurement answered no scenario — the compiler did not run", file=sys.stderr)
             return 1
         accepted = budget_rows(open(BUDGET).read()) if os.path.isfile(BUDGET) else {}
         here = measured_host(raw) or host_key()
+        if "--accept" in argv:
+            return accept(measured, accepted, here)
         return gate_warm(measured, accepted, here, require)
     if "--raw" in argv:
         raw = open(argv[argv.index("--raw") + 1]).read()
@@ -634,9 +668,14 @@ def main(argv):
             return 1 if require else 0
     measured = least_rows(raw)
     if not measured:
-        if "skip cold-store" in raw:
-            print("speed: no warm store on the measuring machine — not gated (make try, then re-run)")
-            return 0
+        skipped = skip_reason(raw)
+        if skipped:
+            if os.environ.get("WARM_EDIT_SKIP"):
+                print("speed: SKIPPED BY REQUEST (WARM_EDIT_SKIP=%s) — not gated" % os.environ["WARM_EDIT_SKIP"])
+                return 0
+            print("speed: REFUSED — the measurement was skipped (%s), and a skip is not a pass; "
+                  "set WARM_EDIT_SKIP=1 by hand only to skip" % skipped, file=sys.stderr)
+            return 1
         print("speed: the measurement answered no phase — the compiler did not run", file=sys.stderr)
         return 1
     accepted = budget_rows(open(BUDGET).read()) if os.path.isfile(BUDGET) else {}

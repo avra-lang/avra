@@ -350,7 +350,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -782,15 +782,20 @@ wall-accept:
 # `check packages/cli` <= 60 ms and one body edit <= 300 ms (goal 150),
 # wall, on a warm store. tools/warm_edit_bench.sh measures it and judges
 # it through tools/speed_ratchet.py --warm, whose ceilings are the same
-# tools/speed.budget the phase ratchet reads — ONE file, ONE reader. A
-# cold store SKIPS with a word (never a silent pass), and on macOS the
-# measurement goes to the lane's Sprite, as speed-ratchet does. The gate's
-# fixtures prove it before it judges. There is no accept: the ceilings are
-# the ticket's targets, and only a human edit of tools/speed.budget moves
-# them.
+# tools/speed.budget the phase ratchet reads — ONE file, ONE reader. A run
+# that CANNOT judge FAILS with a named reason (a skip is not a pass); only
+# a hand-set WARM_EDIT_SKIP — the workflow's `warm_skip` input — stands it
+# down, loudly. In CI the store rides down from prepare and SPEED_HOST is
+# `ci-warm`, so a runner's CPU never decides whether the gate is judged;
+# `warm-accept` lowers this host's warm ceilings to a real run and never
+# raises one. On macOS the measurement goes to the lane's Sprite, as
+# speed-ratchet does.
 warm-edit:
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@sh tools/warm_edit_bench.sh
+warm-accept:
+	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@WARM_EDIT_ACCEPT=1 sh tools/warm_edit_bench.sh
 
 idioms:
 	@STATUS=0; CHECKED=0; \
@@ -934,7 +939,7 @@ keepers keepers-alone keepers-a keepers-b:
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
-                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh work_test.sh reclaim_test.sh
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
