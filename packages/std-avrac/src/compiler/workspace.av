@@ -113,6 +113,12 @@ use @std.relation.engine.{
 /// No paths, typed — a Cell's first value says what it holds.
 fn no_paths() -> List<string> { [] }
 
+/// No reads, typed.
+fn no_read_list() -> List<RunRead> { [] }
+
+/// No pending reads, typed.
+fn no_pending() -> List<PendingRead> { [] }
+
 /// No held file's code, typed.
 fn no_codes() -> List<CodeFacts> { [] }
 
@@ -196,8 +202,10 @@ type Hold = {
     held_wants: Cell<List<Wanted>>,
     held_codes: Cell<List<CodeFacts>>,
     body_asks: Cell<List<string>>,
-    runs: Cell<Map<string, List<string>>>,
-    settle_reads: Cell<Map<string, List<string>>>,
+    runs: Cell<Map<string, List<RunRead>>>,
+    settle_reads: Cell<Map<string, List<RunRead>>>,
+    pending_reads: Cell<List<PendingRead>>,
+    pending_resolved: Cell<Map<string, string>>,
     settling: Cell<List<string>>,
     hold_asked: Cell<List<string>>,
     read_with: Cell<List<string>>,
@@ -224,6 +232,10 @@ type Hold = {
 /// One const a unit's lowering asked the settlement for.
 type ConstAsk = { file: FileId, root: SettleRoot, seats: List<SeatValue> }
 
+/// A read whose declaration's syntax must be parsed before a reader's hold can be
+/// decided: the file whose key carries it, and the read itself.
+type PendingRead = { reader: string, read: RunRead }
+
 /// A held file's `collect` that gathers its package: the file, the package's source,
 /// what it gathers, and the set it gathered when it was last read.
 type HeldGather = { collector: string, package: string, gathering: Gathering, digest: string }
@@ -241,7 +253,7 @@ type KeptLine = { line: string, unit: bool, path: string, bodies: List<string>, 
 fn new_hold() -> Hold {
     let no_forced: Map<string, Reads> = {}
     let no_wants: List<Wanted> = []
-    let no_runs: Map<string, List<string>> = {}
+    let no_runs: Map<string, List<RunRead>> = {}
     let no_reads: List<string> = []
     let no_seeds: List<ReadFile> = []
     let no_read_files: List<ReadFile> = []
@@ -257,6 +269,8 @@ fn new_hold() -> Hold {
         body_asks: Cell.new(no_paths()),
         runs: Cell.new(no_runs),
         settle_reads: map_cell(),
+        pending_reads: Cell.new(no_pending()),
+        pending_resolved: map_cell(),
         settling: Cell.new(no_paths()),
         hold_asked: Cell.new(no_paths()),
         read_with: Cell.new(no_reads),

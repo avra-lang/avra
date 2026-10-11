@@ -545,7 +545,7 @@ impl Workspace {
         let reader: string? = self.hold.settling.get().last()
         let unit = self.hold.lowering.get().last()
         if unit != null { self.unit_asked(unit!, ConstAsk { file: f, root: root, seats: seats }) }
-        if reader != null { self.read_by(reader!, [self.decls.file(f).path]) }
+        if reader != null { self.read_by(reader!, [self.const_read(f, root)]) }
         let id = self.settle_id(f, root, seats)
         let r = self.settled_at(id)
         if reader != null { self.read_by(reader!, self.hold.settle_reads.get().get("${id}") ?? []) }
@@ -570,7 +570,7 @@ impl Workspace {
     /// file's record names it, its object key digests it, and the file is
     /// held only while that text stands. `embed` is the one such read.
     fn run_read(f: FileId, path: string) -> Result<string, string> {
-        self.read_by(self.decls.file(f).path, [path])
+        self.read_by(self.decls.file(f).path, [self.plain_read(path)])
         self.embed_read(path)
     }
 
@@ -582,9 +582,58 @@ impl Workspace {
         self.hold.unit_asks.put(key, (self.hold.unit_asks.get().get(key) ?? []).concat([ask]))
     }
 
-    /// `paths` joined to what `reader`'s compile-time runs read.
-    fn read_by(reader: string, paths: List<string>) {
-        self.hold.runs.put(reader, distinct((self.hold.runs.get().get(reader) ?? []).concat(paths)))
+    /// `reads` joined to what `reader`'s compile-time runs read.
+    fn read_by(reader: string, reads: List<RunRead>) {
+        self
+            .hold
+            .runs
+            .put(reader, distinct_reads((self.hold.runs.get().get(reader) ?? []).concat(reads)))
+    }
+
+    /// A read of `path` with no declaration riding it: judged by the file's text.
+    /// The digest stays empty — a plain read is tokenized by `run_said`, so no
+    /// reader of the run ever asks it, and computing it eagerly would read the
+    /// file before the law that owns it (`embed`) can refuse a bad one.
+    fn plain_read(path: string) -> RunRead {
+        RunRead { path: path, digest: "", ref: "", print: "", outline: "" }
+    }
+
+    /// A read of a declaration `d` in file `f`: its ref, and its syntax hash at write
+    /// unless `f` is held — a held file has no syntax to print. Its outline at
+    /// write rides beside it: the module interface a reader follows even when the
+    /// declaration it read stands unmoved.
+    fn decl_read(f: FileId, d: DeclId?) -> RunRead {
+        let path = self.decls.file(f).path
+        if d == null { return self.plain_read(path) }
+        RunRead {
+            path: path,
+            digest: self.text_digest(path),
+            ref: self.decl_ref(d),
+            print: if self.is_held(f) { "" } else { "${self.syntax(d!)}" },
+            outline: if self.is_held(f) { "" } else { self.outline(path) },
+        }
+    }
+
+    /// A read of the declaration a settlement runs: its const's own, or, for an
+    /// expression, the declaration its range sits in.
+    fn const_read(f: FileId, root: SettleRoot) -> RunRead {
+        let s = const_stmt(root)
+        let d = if s == null { self.root_decl_for(f, root) } else { self.decls.decl_of(f, s!) }
+        self.decl_read(f, d)
+    }
+
+    /// The declaration an expression settlement's range sits in.
+    fn root_decl_for(f: FileId, root: SettleRoot) -> DeclId? {
+        match root {
+            .Const(_) -> null,
+            .Expr(e) -> [d for d in self.decls.decls_of_file(f) if self.decls.decl(d).lo <= e.index && e.index < self.decls.decl(d).hi]
+                .first(),
+        }
+    }
+
+    /// The declaration a lowered body belongs to, by its symbol in that file.
+    fn decl_for_body(f: FileId, name: string) -> DeclId? {
+        [d for d in self.decls.decls_of_file(f) if self.decls.symbol(d) == name].first()
     }
 
     /// What `f`'s own run reads, recorded once its OUTCOME is known: `chain`
@@ -597,7 +646,7 @@ impl Workspace {
         self
             .read_by(
                 self.decls.file(f).path,
-                [self.decls.file(b.file!).path for b in bodies if b.file != null],
+                [self.decl_read(b.file!, self.decl_for_body(b.file!, b.name)) for b in bodies if b.file != null],
             )
     }
 
@@ -856,7 +905,7 @@ impl Workspace {
                 false,
             )
         // the annotation's own body is the first thing the run reads
-        self.read_by(self.decls.file(f).path, [self.decls.file(x.file).path])
+        self.read_by(self.decls.file(f).path, [self.decl_read(x.file, d)])
         self.recorded_reads(f, l, null)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let sig = self.decls.sig(d)?.fn_sig()
