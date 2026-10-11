@@ -222,6 +222,7 @@ extern const char avra_rt_held_avra_task_cancel __asm__(AVRA_RT_LABEL(avra_task_
 extern const char avra_rt_held_avra_task_slot __asm__(AVRA_RT_LABEL(avra_task_slot));
 extern const char avra_rt_held_avra_task_slot_set __asm__(AVRA_RT_LABEL(avra_task_slot_set));
 extern const char avra_rt_held_avra_task_id __asm__(AVRA_RT_LABEL(avra_task_id));
+extern const char avra_rt_held_avra_task_ended_by __asm__(AVRA_RT_LABEL(avra_task_ended_by));
 extern const char avra_rt_held_avra_sched_seed __asm__(AVRA_RT_LABEL(avra_sched_seed));
 extern const char avra_rt_held_avra_sched_settle __asm__(AVRA_RT_LABEL(avra_sched_settle));
 extern const char avra_rt_held_avra_cores_online __asm__(AVRA_RT_LABEL(avra_cores_online));
@@ -415,6 +416,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_task_slot,
     &avra_rt_held_avra_task_slot_set,
     &avra_rt_held_avra_task_id,
+    &avra_rt_held_avra_task_ended_by,
     &avra_rt_held_avra_sched_seed,
     &avra_rt_held_avra_sched_settle,
     &avra_rt_held_avra_cores_online,
@@ -769,6 +771,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_slot_set(AVRA_R
     "avra_task_slot_set: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_id()), int64_t),
     "avra_task_id: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_ended_by(AVRA_RT_PTR)), int64_t),
+    "avra_task_ended_by: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_seed(AVRA_RT_I64)), void),
     "avra_sched_seed: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_settle()), int64_t),

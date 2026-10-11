@@ -15,8 +15,8 @@ thread-local (the footprint door D7). A thread lives in its own object,
 never in the scheduler, so a kernel with no threads still builds it.
 
 The two are separate verbs because one reads a built object and the
-other reads the tree; the train runs both (`KEEPERS_B`), and a PR runs
-`threads` with the keepers that need no compiler.
+other reads the tree; the gate runs both (`KEEPERS_B`), and a PR's
+static floor runs `threads` with the keepers that need no compiler.
 """
 import os
 import re
