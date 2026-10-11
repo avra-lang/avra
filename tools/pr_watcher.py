@@ -209,9 +209,13 @@ def plan(prs, runs, state):
                     acts.append({"do": "refresh", "pr": n, "key": key,
                                  "mark": ("told", key),
                                  "text": f"#{n} is behind main — updating the branch"})
-            elif p["autoMerge"] and landable:
+            elif landable:
+                if p["autoMerge"]:
+                    acts.append({"do": "note", "pr": n,
+                                 "text": f"#{n} is green and armed — auto-merge lands it"})
+            else:
                 acts.append({"do": "note", "pr": n,
-                             "text": f"#{n} is green and armed — auto-merge lands it"})
+                             "text": f"#{n} is green but the merge state is {mss}"})
             continue
 
         # (g) blocked — name the check it is waiting on, once.
@@ -529,6 +533,12 @@ SELFTEST = [
     ("blocked-names-its-check",
      dict(prs=[_pr(4, None, mergeStateStatus="BLOCKED")], runs=[], state=_empty_state()),
      [("comment", 4)]),
+    # a green, armed PR in a merge state that is neither CLEAN nor BEHIND (a
+    # state that should not occur here) is still NAMED, never silently skipped.
+    ("green-armed-blocked-named",
+     dict(prs=[_pr(6, "SUCCESS", autoMerge=True, mergeStateStatus="BLOCKED")],
+          runs=[], state=_empty_state()),
+     [("note", 6)]),
     ("pending-names-its-check",
      dict(prs=[_pr(5, "", mergeStateStatus="BLOCKED")], runs=[], state=_empty_state()),
      [("comment", 5)]),
