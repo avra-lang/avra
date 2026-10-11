@@ -3,7 +3,7 @@
 // frame; `errdefer` waits on the failure channel; and the laws
 // refuse what would fail unheard or never run.
 
-use @std.avrac.testing.{shown, refused_with, ir_of}
+use @std.avrac.testing.{shown, refused_with, refused_at_run, ir_of}
 use compiler.backend.{render_ir}
 
 /// The one observer a deferred body has: the runtime's puts, which
@@ -170,6 +170,12 @@ spec "features/defers" {
             refused_with(
                 "${puts()}defer avra_puts(1)\n1",
                 "argument 1 of `avra_puts` wants `string`, found `int`",
+            )
+        }
+        then "a deferred body that parks with no `within` is refused — the wait would outlast the cleanup" {
+            refused_at_run(
+                "${puts()}extern fn avra_fiber_sleep(ms: int)\nfn clean() {\n    defer avra_fiber_sleep(1)\n}\nclean()",
+                "no `within` it writes bounds the wait",
             )
         }
     }

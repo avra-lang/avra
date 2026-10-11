@@ -1,0 +1,101 @@
+//! THE UNBOUNDED CLEANUP LAW: a `defer` or `errdefer` runs under the
+//! shield a cold exit raises, so a wait in its body is bounded by the
+//! `within` that body writes and by nothing else. A body that PARKS —
+//! reaches a cancel point, the settled cancel fact (`cancel_reach.av`)
+//! — outside every `within` it writes is refused: the wait would
+//! outlast the thing it was cleaning and no bound would cut it.
+//!
+//! Run at lowering, where the cancel fact is settled
+//! (`Program.lowered_bodies` touches it first): judging earlier would
+//! read a half-built answer.
+use core.{DeclId, ExprId, FileId, Span, Stmt, StmtId, SyntaxArena, some_list, flatten}
+use compiler.{WaitReader, NodeWait}
+use diagnostics.{Diag, refusal}
+
+/// One wait in a deferred body that parks outside every `within` the
+/// body writes, and the node it stands at.
+type Unbounded = { node: ExprId, wait: NodeWait }
+
+impl Workspace {
+    /// Every unbounded cleanup in the program's files, one refusal per
+    /// deferred statement.
+    fn cleanup_voices(files: List<FileId>) -> List<Diag> {
+        flatten(
+            [self.cleanup_of(x.id) for x in self.decls.all_decls() if self.cancel_member(x.id) && files.contains(x.file)],
+        )
+    }
+
+    /// One declaration's deferred statements, judged.
+    fn cleanup_of(d: DeclId) -> List<Diag> {
+        let s = self.cancel_survey(d)
+        let store = s.view.store
+        let tag = store.tag_stmt(Stmt.Defer(ExprId { index: 0 }, false))
+        flatten([self.cleanup_at(s, st) for st in store.stmts_by_kind(0, store.stmts.count(), tag)])
+    }
+
+    /// Every park in the deferred body `at` that no `within` written in
+    /// that body bounds.
+    fn cleanup_parks(s: CancelSurvey, at: Span) -> List<Unbounded> {
+        let store = s.view.store
+        let bounds = flatten([within_bounds(store, ExprId { index: i }, at) for i in s.lo..s.hi])
+        flatten([self.parks_at(s, ExprId { index: i }, at, bounds) for i in s.lo..s.hi])
+    }
+
+    /// The parks one node of the deferred body holds, when it stands in
+    /// the body and outside every bound.
+    fn parks_at(s: CancelSurvey, e: ExprId, at: Span, bounds: List<Span>) -> List<Unbounded> {
+        let store = s.view.store
+        if !inside(store.expr_span(e), at) { return [] }
+        if bounds.any((b) -> inside(store.expr_span(e), b)) { return [] }
+        let reader = WaitReader { view: s.view, names: s.names, facts: s.facts }
+        [Unbounded { node: e, wait: w } for w in reader.node_waits(e) if self.wait_links(w)]
+    }
+
+    /// One deferred statement's refusal, at the first park no `within` of
+    /// its body bounds. A statement outside this declaration is skipped:
+    /// the statement table is whole-file.
+    fn cleanup_at(s: CancelSurvey, st: StmtId) -> List<Diag> {
+        let lam? = defer_lambda(s.view.store, st) else { return [] }
+        let body? = s.view.store.lambda_parts(lam)?.body else { return [] }
+        if !s.in_reach(body) { return [] }
+        let at? = s.view.store.expr_span(body) else { return [] }
+        let stopped? = self.cleanup_parks(s, at).first() else { return [] }
+        [self.unbounded_cleanup(s, st, stopped)]
+    }
+
+    /// The voice: a deferred body that waits, with no bound it wrote.
+    fn unbounded_cleanup(s: CancelSurvey, st: StmtId, stopped: Unbounded) -> Diag {
+        let word = if runs_on_error(s.view.store, st) { "errdefer" } else { "defer" }
+        refusal(
+            "flow.unbounded_cleanup",
+            s.view.loc_of(stopped.node),
+            "this `${word}`'s body waits, and no `within` it writes bounds the wait — it ${self.wait_said(stopped.wait)}",
+            "waits here",
+            "bound the cleanup in its own body — `defer { within ms(100) { … } }`",
+        )
+    }
+}
+
+/// The lambda a `defer`/`errdefer` statement carries.
+fn defer_lambda(store: SyntaxArena, st: StmtId) -> ExprId? {
+    match store.stmt(st) { .Defer(lam, _) -> lam, rest -> null }
+}
+
+/// Whether a deferred statement is an `errdefer`.
+fn runs_on_error(store: SyntaxArena, st: StmtId) -> bool {
+    match store.stmt(st) { .Defer(_, on_error) -> on_error, rest -> false }
+}
+
+/// The body span of every `within` written inside `at` — the only
+/// bounds that may cover a wait in this deferred body.
+fn within_bounds(store: SyntaxArena, e: ExprId, at: Span) -> List<Span> {
+    if !inside(store.expr_span(e), at) { return [] }
+    match store.expr(e) { .Within(_, wb) -> some_list(store.expr_span(wb)), rest -> [] }
+}
+
+/// Whether `inner` stands inside `outer`; an unknown span is no
+/// evidence of a bound, so it never counts.
+fn inside(inner: Span?, outer: Span) -> bool {
+    let i? = inner else { return false }
+    i.lo >= outer.lo && i.hi <= outer.hi
+}
