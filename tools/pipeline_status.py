@@ -112,6 +112,8 @@ def verdict(s):
 
     if prs is not None and not prs and not (queue or []):
         return "nothing to land — no open PRs and an empty queue"
+    if prs is None:
+        return "cannot determine — the open PRs could not be read (unknown)"
     return "no single blocker found — see the per-PR table above"
 
 
@@ -423,7 +425,7 @@ def _vstate(prs=(), queue=(), failed_jobs=None, tfail=0, trun=0, tpass=0,
             tqueue=0, driver=None, window=TRAIN_WINDOW, unread=0):
     return {"repo": "r", "now": "2026-01-01T00:00:00+00:00", "main": None,
             "queue": [{"pr": n, "state": "QUEUED", "stuck": st} for n, st in queue],
-            "prs": [{"number": n, "blocker": b} for n, b in prs],
+            "prs": None if prs is None else [{"number": n, "blocker": b} for n, b in prs],
             "driver": driver if driver is not None else {"loaded": True, "fresh": True, "age_s": 10},
             "trains": {"counts": {"running": trun, "queued": tqueue, "failed": tfail,
                                   "passed": tpass, "other": 0},
@@ -462,6 +464,9 @@ VERDICT_CASES = [
     ("unread-trains",
      _vstate(prs=[(11, "pending")], tfail=2, unread=2),
      ["could not be read"]),
+    ("prs-unknown",
+     _vstate(prs=None),
+     ["unknown"]),
     ("nothing-to-land",
      _vstate(),
      ["nothing to land"]),
