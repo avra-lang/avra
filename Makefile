@@ -715,6 +715,14 @@ http-cites:
 dogfooding-rules:
 	@./build/avra rules --check-markdown DOGFOODING.md
 
+# THE PIPELINE DOCUMENT'S COMMANDS RESOLVE: every `make <target>` and
+# `tools/` path in docs/2026_10_11_THE_PIPELINE.md names something the
+# tree holds. A command the tree no longer carries is refused here
+# rather than read as current. A name kept as a HISTORICAL negative
+# example stands in tools/pipeline_doc.allow with its reason.
+pipeline-doc:
+	@python3 tools/pipeline_doc.py
+
 # THE FAMILY ORDINALS ARE APPEND-ONLY. A family ordinal is a durable
 # address — rows, kept caches and witnesses key by it — so the enum's
 # declared order is a contract. tools/families.order is that contract;
@@ -904,7 +912,7 @@ no-threads:
 # drives the same clocked tests, so it stands here beside them.
 KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost speed-ratchet warm-edit codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
-KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack pipeline-doc \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
@@ -928,8 +936,8 @@ tool-witnesses:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites
-.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr
+KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites pipeline-doc
+.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr pipeline-doc
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@fail=0; for k in $(KEEPERS_STATIC); do \
