@@ -109,10 +109,10 @@ fn dropped<T>(stack: Cell<List<T>>) {
     stack.set(held.slice(0, held.length - 1))
 }
 
-/// How a family's cell is verified: by a fn its owner gave, as an input
-/// the driver sets, or by its live hash.
+/// How a family's cell is verified: by a compiler-side dispatcher, as
+/// an input the driver sets, or by its live hash.
 enum Verifier {
-    By(verify: fn(int) -> int)
+    By
     Input
     /// With each cell's hash as last seen and the revision it was seen
     /// to move at (0: never seen).
@@ -214,6 +214,11 @@ export type Kernel = {
     /// remaps nothing.
     cells: Cell<List<Cell<List<QueryCell?>>>>,
     verifiers: Cell<List<Verifier>>,
+    /// The per-family dispatcher: called for every `.By` family to
+    /// verify a cell. The workspace sets this to a generated match
+    /// over its families; tests chain per-family fns through
+    /// `set_verify`. A default that answers 0 stands until then.
+    by_dispatch: Cell<fn(int, int) -> int>,
     /// The LAST-READER STAMP of every key, laid out as `cells` is: the
     /// reader id that last recorded it, 0 for none. A row only grows
     /// (`read_any`).
@@ -243,11 +248,16 @@ fn unexempt(_b: Bypass) -> bool { false }
 
 fn uncovering(_b: Bypass) -> List<Key> { [] }
 
+/// The default dispatch: returns 0 (the cell was never verified), so
+/// every cell recomputes until a dispatcher is set.
+fn no_dispatch(_family: int, _arg: int) -> int { 0 }
+
 export fn new_kernel() -> Kernel {
     Kernel {
         rev: Cell.new(1),
         cells: list_cell(),
         verifiers: list_cell(),
+        by_dispatch: Cell.new(no_dispatch),
         stamps: list_cell(),
         minted: Cell.new(0),
         asker: new_asker(),
@@ -406,7 +416,7 @@ impl Kernel {
         if key.arg < row.get().length { row.set_at(key.arg, null) }
     }
 
-    fn family(verify: fn(int) -> int) -> int { self.registered(Verifier.By(verify)) }
+    fn family() -> int { self.registered(Verifier.By) }
 
     /// A family of INPUTS: a cell changed when it was last set to a new
     /// value, and nothing is asked to verify it.
@@ -416,6 +426,16 @@ impl Kernel {
     /// revision its hash was last seen to differ. What was seen rides the
     /// family, so `live` holds no kernel and the family is no cycle.
     fn hashed_family(live: fn(int) -> int) -> int { self.registered(Verifier.Hash(live, list_cell(), list_cell())) }
+
+    /// A per-family verify fn, for tests that need individual verifiers
+    /// rather than a generated dispatcher. Chains onto the existing
+    /// dispatch so a family registered before is not forgotten.
+    fn set_verify(family: int, verify: fn(int) -> int) {
+        let prev = self.by_dispatch.get()
+        self
+            .by_dispatch
+            .set((f: int, arg: int) -> if f == family { verify(arg) } else { prev(f, arg) })
+    }
 
     fn registered(verifier: Verifier) -> int {
         self.verifiers.push(verifier)
@@ -432,7 +452,8 @@ impl Kernel {
     /// contains this handle. Replacing them breaks that ownership cycle
     /// after a one-shot run.
     fn disarm() {
-        self.verifiers.set([Verifier.By(never_verify) for v in self.verifiers.get()])
+        self.by_dispatch.set(no_dispatch)
+        self.verifiers.set([Verifier.By for v in self.verifiers.get()])
         self.audit.on.set(false)
         self.audit.exempt.set(unexempt)
         self.audit.covers.set(uncovering)
@@ -491,7 +512,7 @@ impl Kernel {
     /// The revision a cell last changed at, by its family's verifier.
     fn verified(family: int, arg: int) -> int {
         match self.verifiers.get()[family] {
-            .By(verify) -> verify(arg),
+            .By -> (self.by_dispatch.get())(family, arg),
             .Input -> self.changed_at(Key { family: family, arg: arg }),
             .Hash(live, seen, moved) -> self.moved_at(seen, moved, arg, live(arg)),
         }
@@ -842,11 +863,6 @@ fn abandoned_out_of_order(key: Key) {
     avra_trap(
         "defect: only the innermost open query may be abandoned, and ${key.family}:${key.arg} is not it",
     )
-}
-
-fn never_verify(arg: int) -> int {
-    avra_trap("defect: a disarmed query database was reused")
-    arg
 }
 
 /// Recorded reads, and abandoned frames, over every kernel that counted them.
