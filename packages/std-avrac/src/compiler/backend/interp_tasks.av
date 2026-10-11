@@ -77,6 +77,9 @@ type Job = {
     clocked: bool,
     // it ended with no answer
     cancelled: bool,
+    // who ended it: its own id, or the id of the task that answered or
+    // cancelled it (a scope's id when a limit passed)
+    ended_by: int,
     // a wait row filed for it and it has not parked on its set: one
     // set at a time, so no other wait may begin
     arming: bool,
@@ -103,6 +106,7 @@ fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -
         gate: null,
         clocked: false,
         cancelled: false,
+        ended_by: 0,
         arming: false,
     }
 }
@@ -376,6 +380,7 @@ impl Machine {
     /// own, or the one that answered or cancelled a task nothing runs.
     fn ended(id: int, answer: Val, by: int) {
         let t = self.tasks[id]
+        self.tasks[id].ended_by = by
         if t.record >= 0 { self.arrays[t.record].set(2, answer) }
         self.tasks[id].done = true
         for w in t.waiters { avra_vtask_joined(self.tasks[w].vt, by) }
@@ -641,6 +646,14 @@ impl Machine {
 
     fn task_id_val() -> Val {
         Val.I(if self.running < 0 { 0 } else { self.tasks[self.running].id })
+    }
+
+    /// Who asked the cancel that ended the task, or the task's own id for
+    /// an answer — the same record the native `avra_task_ended_by` reads.
+    fn task_ended_by_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let id = self.task_of(vals[0])
+        Val.I(self.tasks[id].ended_by)
     }
 }
 

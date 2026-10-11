@@ -6,7 +6,7 @@
 # test`), and its reasoning on stderr.
 #
 # `--touched` first answers the touched packages alone, no dependents:
-# what a PR's own check runs, the train running the rest.
+# what a PR's own floor runs, the same run's gate covering the rest.
 #
 # THE ROOT IS AN ARGUMENT, NEVER THIS SCRIPT'S OWN LOCATION: a caller
 # tests a DIFFERENT tree than the one this copy of the script happens to
@@ -101,10 +101,10 @@ for f in $touched_files; do
     esac
 done
 
-# `--touched` stops here: a PR's own check runs the packages its diff
-# stands in, and their dependents are the train's to run.
+# `--touched` stops here: a PR's own floor runs the packages its diff
+# stands in, and the same run's gate covers their dependents.
 if [ "$touched_only" -eq 1 ]; then
-    echo "affected_packages: touched:$touched_pkgs — dependents left to the train" >&2
+    echo "affected_packages: touched:$touched_pkgs — dependents covered by the run's gate" >&2
     for name in $touched_pkgs; do echo "$name"; done
     exit 0
 fi
