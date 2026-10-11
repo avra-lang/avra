@@ -2,9 +2,9 @@
 """THE COMPILER, PUBLISHED WHERE EVERY REF CAN REACH IT.
 
 A GitHub Actions cache restores only from the run's own ref and the default
-branch, so a merge-queue train — which stands on its own
-`gh-readonly-queue/...` ref — can never read the compiler main built. A
-release asset is not ref-scoped: publish the binary under the key
+branch, so a run that missed the cache — a PR on its own ref, a lane —
+fetches the exact binary main published instead of rebuilding it. A release
+asset is not ref-scoped: publish the binary under the key
 `tools/compiler_paths.sh --key` computes, and any run fetches the exact
 binary that key names.
 

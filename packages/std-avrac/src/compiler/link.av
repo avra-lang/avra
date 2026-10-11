@@ -10,7 +10,7 @@ use compiler.backend.{
 
 /// clang's words for a link: the objects, the packages' own objects and
 /// flags, the runtime, then the path it is staged at — `binary` is where it
-/// lands.
+/// lands. A host link runs `ld` when one is named.
 /// A PROGRAM CARRIES WHAT IT REACHES: the link drops every fn and object
 /// member nothing reaches, so a package imported and not called costs
 /// nothing. A program whose packages resolve its own symbols by name keeps
@@ -29,6 +29,7 @@ fn link_objects(
     target: string,
     reactor: bool,
     debug: bool,
+    ld: string,
     hosted: List<string>,
 ) -> List<string> {
     if target != "" {
@@ -62,6 +63,7 @@ fn link_objects(
         // A HOST FN IS KEPT: its symbol is defined for a caller outside the
         // program, which the linker cannot see reaching it.
         ["-w", if ws.names_its_symbols() { "-rdynamic" } else { unreached_dropped() }]
+            .concat(if ld == "" { [] } else { ["--ld-path=${ld}"] })
             .concat(host_kept_words(hosted))
             .concat(link_named(binary))
             .concat(objs)

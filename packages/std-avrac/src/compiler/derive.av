@@ -539,7 +539,18 @@ impl Workspace {
     /// rule findings were never kept, since only a check keeps them.
     fn unruled(store: Store, want: Want) -> List<ReadFile> {
         match want {
-            .Diagnostics -> [ReadFile { path: path, why: Reads.Unruled } for path in held_paths(self) if !ruled(store, self.held_okey(store, path))],
+            .Diagnostics -> {
+                // A HELD FILE'S OWN KEY MAY OPEN A PENDING READ: one of its runs read
+                // a file whose text moved, and `read_token` holds the key at
+                // `?<print>` until the read file is parsed and the read declaration
+                // judged (`resolve_pending_reads`). `settle_holds` resolved the keys
+                // it computed; the keys asked HERE must be resolved too, or a reader
+                // whose reads all stand is forced read as if they had moved.
+                let held = held_paths(self)
+                for path in held { let _ = self.held_okey(store, path) }
+                self.resolve_pending_reads(store)
+                [ReadFile { path: path, why: Reads.Unruled } for path in held if !ruled(store, self.held_okey(store, path))]
+            },
             .Binary -> [],
         }
     }
