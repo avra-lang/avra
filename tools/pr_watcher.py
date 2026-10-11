@@ -11,10 +11,11 @@ script could have noticed. This watcher closes it, deterministically:
   (b) a green, mergeable, unmerged PR not in the queue — enqueue it
       (auto-merge when it is not set, a direct enqueue when it is), but
       ONLY while the queue holds fewer than `AVRA_QUEUE_MAX` entries
-      (default 3): a full train is ~40 min of the shared runner pool, so
+      (default 6, tuned to the train's cost — see `QUEUE_MAX`): a full
+      train occupies the shared runner pool for its whole duration, so
       N entries in flight saturate it and every extra entry makes the
       queue land SLOWER, not more. A green PR over the cap is held and
-      named (`queue at 3 — holding #537`), never dropped; a later pass
+      named (`queue at 6 — holding #537`), never dropped; a later pass
       enqueues it once a slot frees. A green DRAFT never rides a train,
       so it is named, and taken ready where landing is wanted;
   (c) a queued entry that NOTHING is moving — dequeue and put it back. A
@@ -22,7 +23,19 @@ script could have noticed. This watcher closes it, deterministically:
       is `in_progress`/`queued`, or started less than `STUCK_MINUTES`
       ago, is WORKING and is never churned (churning it cancels the live
       train and restarts the clock forever);
-  (d) a failed train — name its failing `job — line` on the PR it carried.
+  (d) a failed train — name its failing `job — line` on the PR it carried;
+  (e) a DRAFT — name it `#N is a DRAFT — unlandable` so it is never
+      invisible, and take a green, otherwise-landable, wanted one ready
+      (`DO NOT MERGE` in the title is the deliberate exception);
+  (f) a CONFLICT — name it once with the rebase the owner owes
+      (`git rebase --onto origin/main main <branch>`), sharing its words
+      with `tools/queue_keeper.sh` so the two never drift;
+  (g) BLOCKED — name the check it waits on, once.
+
+EVERY open PR gets an action or a loud name: a state the watcher cannot
+move is still a state it says out loud, never one it skips. Every comment
+is deduped by `(pr, head, reason)`, so a pass over an unchanged head
+repeats nothing.
 
 The DECISION is a pure function (`plan`) over a world the gh CLI reads,
 so it is proved against fixtures with NO network and NO LLM
@@ -45,22 +58,56 @@ from datetime import datetime, timedelta, timezone
 
 PR = "pull_request"
 DEFAULT_REPO = "avra-lang/avra"
-# N full trains in flight saturate the runners, so beyond a few entries the
-# merge queue runs SLOWER (trains sit `queued` and nothing finishes). Three
-# keeps slots moving without starving the pool; override with
-# AVRA_QUEUE_MAX only to measure a different value.
-QUEUE_MAX = 3
+# THE QUEUE CAP IS TUNED TO THE TRAIN'S COST, NEVER CHOSEN ONCE. N full
+# trains in flight saturate the shared runner pool, so too many entries make
+# the queue land SLOWER, not more. The cap was 3 when every train paid a
+# COLD COMPILER REBUILD in `prepare` (~7-16 minutes) and three saturated the
+# pool; `prepare` now fetches a release compiler and costs ~76 s, so that
+# rationale is gone. This repo's merge-queue ruleset allows
+# `max_entries_to_build: 10` concurrent `merge_group` runs (GitHub's setting
+# ranges 1-100; `max_entries_to_merge: 5`), so 6 doubles throughput while
+# staying under the build concurrency and leaving room for entries an owner
+# or the queue keeper adds. RE-TUNE FROM DATA: read a train's `prepare` time
+# and its total duration when the pool saturates, and move this number with
+# the cost; override with AVRA_QUEUE_MAX to measure a different value.
+QUEUE_MAX = 6
 FULL = {"pull_request", "merge_group", "push", "workflow_dispatch", "schedule"}
 RERUN = "rerun"
 TOLD = "told"
+# A PR whose title says DO NOT MERGE is a deliberate draft: named, never
+# readied. The phrase is a claim the owner wrote, not a state we infer.
+DO_NOT_MERGE = re.compile(r"DO\s+NOT\s+MERGE", re.IGNORECASE)
+# THE CONFLICT WORDS ARE ONE DEFINITION: `tools/queue_keeper.sh` speaks the
+# same sentence, and the self-test refuses the two drifting apart.
+CONFLICT_PHRASE = "this conflicts with main and cannot ride a train. Rebase onto origin/main"
 
 
 # ---- the decision (pure; this is what the fixtures prove) --------------
+def _waiting_on(p):
+    """What a non-conflicting, non-draft, non-failing PR is waiting on.
+
+    A missing `test` names itself; a pending one names its state; a green
+    one whose merge state is not CLEAN names that. None means the PR is
+    simply not required yet (a state a fixture may leave unmodelled).
+    """
+    t = p.get("test")
+    if t is None:
+        return "the required `test` check (not run yet)"
+    c = (t.get("conclusion") or "").upper()
+    if c == "SUCCESS":
+        mss = (p.get("mergeStateStatus") or "CLEAN").upper()
+        return None if mss == "CLEAN" else f"the merge state ({mss})"
+    if c == "FAILURE":
+        return None  # rule (a) owns it
+    return f"the required `test` check ({c.lower() or 'pending'})"
+
+
 def plan(prs, queue, trains, state, limit=QUEUE_MAX):
     """The actions a pass owes. See the module docstring for the rules.
 
-    `prs`: number, isDraft, state, mergeable, autoMerge, headRefOid,
-           inQueue, test = None | {conclusion, runId, attempt, job, line}
+    `prs`: number, isDraft, state, mergeable, mergeStateStatus, title,
+           headRefName, autoMerge, headRefOid, inQueue,
+           test = None | {conclusion, runId, attempt, job, line}
     `queue`: pr, nodeId, stuck
     `trains`: pr, databaseId, job, line
     `state`: {"rerun": {key}, "told": {key}}
@@ -78,17 +125,28 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
                      "text": f"train failed: {t['job']} — {t['line']}\n\n"
                              f"Run `sh tools/work land` from the worktree once this is fixed."})
 
-    # (b) the cap: room is the queue's whole depth budget. Entries with a
-    # train RUNNING count against it and are never touched, so a new enqueue
-    # can never displace a train already in flight. Candidates are taken in
-    # the order the list arrives in — never re-sorted or shuffled — so
-    # whatever priority the pass put on it is the order the cap spends.
+    # The cap governs NEW enqueues: room is the queue's whole depth budget.
+    # Entries with a train RUNNING count against it and are never touched,
+    # so a new enqueue can never displace a train already in flight.
+    # Candidates are taken in the order the list arrives in — never
+    # re-sorted or shuffled — so whatever priority the pass put on it is the
+    # order the cap spends.
     room = max(0, limit - len(queue))
     for p in prs:
         n, head = p["number"], p["headRefOid"]
         t = p.get("test")
         failed = t is not None and t["conclusion"] == "FAILURE"
-        # (a) the PR's own check failed: say why, and rerun the failed jobs once.
+        conflicted = p.get("mergeable") == "CONFLICTING"
+        draft = bool(p.get("isDraft"))
+        green = t is not None and t["conclusion"] == "SUCCESS"
+        open_ = p["state"] == "OPEN"
+        # `mergeStateStatus` is CLEAN only when every requirement — checks,
+        # reviews, no conflict — is met; a fixture omitting it means CLEAN.
+        landable = (p.get("mergeable") == "MERGEABLE"
+                    and (p.get("mergeStateStatus") or "CLEAN").upper() == "CLEAN")
+
+        # (a) a failing check is the cause behind every other state: name the
+        # job — line, and rerun the failed jobs once.
         if failed:
             want_rerun = t.get("attempt", 1) == 1 and f"rerun:{n}:{head}" not in rerun
             key = f"told:{n}:{head}"
@@ -98,28 +156,55 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
                     body += "\n\nRe-running the failed jobs once."
                 acts.append({"do": "comment", "pr": n, "key": key, "text": body,
                              "mark": ("told", key)})
+            else:
+                acts.append({"do": "note", "pr": n,
+                             "text": f"#{n} still FAILING: {t['job']} — {t['line']} (told)"})
             if want_rerun:
                 acts.append({"do": "rerun", "run": t["runId"],
                              "mark": ("rerun", f"rerun:{n}:{head}")})
+
+        # (f) a conflict is named, so its owner is told rather than guessing;
+        # its words are `tools/queue_keeper.sh`'s own.
+        if conflicted:
+            key = f"conflict:{n}:{head}"
+            if key in told:
+                acts.append({"do": "note", "pr": n,
+                             "text": f"#{n} still conflicts with main (told)"})
+            else:
+                acts.append({"do": "comment", "pr": n, "key": key, "mark": ("told", key),
+                             "also": CONFLICT_PHRASE,
+                             "text": f"CONFLICT: {CONFLICT_PHRASE} — "
+                                     f"`git rebase --onto origin/main main "
+                                     f"{p.get('headRefName') or '<branch>'}`, "
+                                     f"then `sh tools/work land`."})
+
+        # (e) a draft is named — never silently skipped — and a green,
+        # otherwise-landable, wanted one is taken ready.
+        if draft:
+            key = f"draft:{n}:{head}"
+            if key in told:
+                acts.append({"do": "note", "pr": n,
+                             "text": f"#{n} is still a DRAFT (told)"})
+            else:
+                acts.append({"do": "comment", "pr": n, "key": key, "mark": ("told", key),
+                             "text": f"#{n} is a DRAFT — unlandable. "
+                                     f"`gh pr ready {n}` when it should land."})
+            if (green and landable and open_ and not conflicted and not p["inQueue"]
+                    and not DO_NOT_MERGE.search(p.get("title") or "")):
+                acts.append({"do": "ready", "pr": n,
+                             "text": f"#{n} is a green DRAFT — marking it ready"})
+
+        # A failed, conflicting or draft PR is fully named above and cannot
+        # ride a train; an in-queue one is named and left to its own train.
+        if failed or conflicted or draft or p["inQueue"]:
+            if p["inQueue"]:
+                acts.append({"do": "note", "pr": n,
+                             "text": f"#{n} is in the queue — its train decides"})
             continue
-        # (b) green, mergeable, unmerged, not queued — enqueue it.
-        if (t is not None and t["conclusion"] == "SUCCESS"
-                and p["state"] == "OPEN" and p["mergeable"] == "MERGEABLE"
-                and not p["inQueue"]):
-            # A DRAFT can never ride a train: the queue rejects it and its
-            # required check never counts. Name it; take it ready where
-            # landing is clearly wanted (auto-merge armed).
-            if p.get("isDraft"):
-                if p["autoMerge"]:
-                    acts.append({"do": "ready", "pr": n,
-                                 "text": f"#{n} is a DRAFT — unlandable; marking it ready"})
-                else:
-                    key = f"draft:{n}:{head}"
-                    acts.append({"do": "comment", "pr": n, "key": key,
-                                 "mark": ("told", key),
-                                 "text": f"#{n} is a DRAFT — unlandable. "
-                                         f"`gh pr ready {n}` when it should land."})
-                continue
+
+        # (b) green, mergeable, unconflicted, not queued — arm auto-merge (or
+        # enqueue when it is already armed) while the cap has room.
+        if green and landable and open_:
             if room > 0:
                 acts.append({"do": "enqueue-auto" if not p["autoMerge"] else "enqueue",
                              "pr": n, "node": p.get("nodeId"), "why": "new"})
@@ -127,6 +212,20 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
             else:
                 acts.append({"do": "hold", "pr": n,
                              "text": f"queue at {limit} — holding #{n}"})
+            continue
+
+        # (g) blocked — name the check it is waiting on, once.
+        why = _waiting_on(p)
+        key = f"blocked:{n}:{head}"
+        if why and key not in told:
+            acts.append({"do": "comment", "pr": n, "key": key, "mark": ("told", key),
+                         "text": f"BLOCKED: waiting on {why}"})
+        elif why:
+            acts.append({"do": "note", "pr": n,
+                         "text": f"#{n} still BLOCKED on {why} (told)"})
+        else:
+            acts.append({"do": "note", "pr": n,
+                         "text": f"#{n} {p.get('mergeStateStatus') or 'unknown'} — no action owed"})
 
     # (c) a queued entry with no live train: take it out and put it back. Only
     # a `stuck` entry is touched, so one whose train is running is left where
@@ -196,7 +295,8 @@ def failing_job(repo, run_id):
 
 def open_prs(repo):
     return _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
-                     "--json", "number,id,isDraft,state,mergeable,autoMergeRequest,"
+                     "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
+                               "title,headRefName,autoMergeRequest,"
                                "headRefOid,statusCheckRollup"])
 
 
@@ -275,7 +375,7 @@ def test_of(repo, pr):
         name = c.get("name") or c.get("context")
         if name != "test":
             continue
-        concl = c.get("conclusion") or c.get("state")
+        concl = c.get("conclusion") or c.get("state") or c.get("status")
         run_id = None
         url = c.get("detailsUrl") or c.get("targetUrl") or ""
         m = re.search(r"/runs/(\d+)", url)
@@ -357,15 +457,21 @@ def do_action(a, repo, run):
         body, key = a["text"], a.get("key")
         if key:
             # THE COMMENT CARRIES ITS OWN DEDUP KEY, so a lost state file
-            # cannot re-post it and a second watcher cannot double it. An
-            # unreadable answer refuses nothing, so a query that fails does
-            # not silence the comment.
-            marker = f"<!-- pr-watcher:{key} -->"
+            # cannot re-post it and a second watcher cannot double it. A
+            # conflict also yields to a standing `queue_keeper.sh` comment,
+            # which speaks `CONFLICT_PHRASE`: the two share the words, so
+            # one phrase both names the conflict and proves it was named.
+            # An unreadable answer refuses nothing, so a query that fails
+            # does not silence the comment.
+            needles = [f"<!-- pr-watcher:{key} -->"]
+            if a.get("also"):
+                needles.append(a["also"])
+            sel = " or ".join(f"contains({json.dumps(nd)})" for nd in needles)
             seen = run(["pr", "view", str(a["pr"]), "-R", repo, "--json", "comments",
-                        "--jq", f'[.comments[].body | select(contains("{marker}"))] | length'])
+                        "--jq", f"[.comments[].body | select({sel})] | length"])
             if (seen or "").strip() not in ("", "0"):
                 return
-            body += f"\n\n{marker}"
+            body += f"\n\n<!-- pr-watcher:{key} -->"
         run(["pr", "comment", str(a["pr"]), "-R", repo, "--body", body])
     elif a["do"] == "rerun":
         run(["run", "rerun", str(a["run"]), "--failed", "-R", repo])
@@ -382,8 +488,9 @@ def do_action(a, repo, run):
              f'query=mutation{{dequeuePullRequest(input:{{id:"{a["node"]}"}}){{clientMutationId}}}}'])
     elif a["do"] == "ready":
         run(["pr", "ready", str(a["pr"]), "-R", repo])
-    elif a["do"] == "hold":
-        pass  # a decision, not a mutation: the log says what the cap held.
+    elif a["do"] in ("hold", "note"):
+        pass  # a decision, not a mutation: the log says what the cap held or
+              # what state the PR was already named in.
     else:
         raise RuntimeError(f"unknown action {a['do']}")
 
@@ -436,8 +543,10 @@ def save_state(path, state):
 def _pr(n, concl, **kw):
     base = {"number": n, "isDraft": False, "state": "OPEN", "mergeable": "MERGEABLE",
             "autoMerge": False, "headRefOid": f"h{n}", "inQueue": False,
-            "test": {"conclusion": concl, "runId": 900 + n, "attempt": 1,
-                     "job": "gate", "line": "gate_changed: idioms refused packages/cli"}}
+            "mergeStateStatus": "CLEAN", "title": "", "headRefName": f"lane/{n}"}
+    if concl is not None:
+        base["test"] = {"conclusion": concl, "runId": 900 + n, "attempt": 1,
+                        "job": "gate", "line": "gate_changed: idioms refused packages/cli"}
     base.update(kw)
     return base
 
@@ -451,43 +560,52 @@ SELFTEST = [
     ("failed-pr-reruns-once", dict(prs=[_pr(1, "FAILURE")], queue=[], trains=[],
                               state=_empty_state()),
      [("comment", 1), ("rerun", 901)]),
-    # the same head a second time: nothing (attempt is now 2).
+    # the same head a second time: named as already told, never rerun twice.
     ("rerun-not-twice",
      dict(prs=[_pr(1, "FAILURE", test={"conclusion": "FAILURE", "runId": 901,
                                        "attempt": 2, "job": "gate", "line": "x"})],
           queue=[], trains=[],
           state={RERUN: {"rerun:1:h1": True}, TOLD: {"told:1:h1": True}}),
-     []),
-    # (b) a green mergeable PR is enqueued (auto-merge when unset).
+     [("note", 1)]),
+    # (b) a green mergeable PR is enqueued (auto-merge armed when unset).
     ("green-enqueues", dict(prs=[_pr(2, "SUCCESS")], queue=[], trains=[], state=_empty_state()),
      [("enqueue-auto", 2)]),
     ("green-already-auto",
      dict(prs=[_pr(2, "SUCCESS", autoMerge=True)], queue=[], trains=[], state=_empty_state()),
      [("enqueue", 2)]),
-    # a green PR already in the queue: nothing.
+    # a green PR already in the queue: named, left to its own train.
     ("green-in-queue",
      dict(prs=[_pr(2, "SUCCESS", inQueue=True)], queue=[], trains=[], state=_empty_state()),
-     []),
+     [("note", 2)]),
     # (b) THE CAP: a queue at the cap enqueues NOTHING and names what it held.
     ("queue-at-cap-holds",
      dict(prs=[_pr(7, "SUCCESS")],
           queue=[{"pr": 4, "nodeId": "N4", "stuck": False},
                  {"pr": 5, "nodeId": "N5", "stuck": False},
-                 {"pr": 6, "nodeId": "N6", "stuck": False}],
+                 {"pr": 6, "nodeId": "N6", "stuck": False},
+                 {"pr": 8, "nodeId": "N8", "stuck": False},
+                 {"pr": 9, "nodeId": "N9", "stuck": False},
+                 {"pr": 10, "nodeId": "N10", "stuck": False}],
           trains=[], state=_empty_state()),
      [("hold", 7)]),
     # a queue below the cap enqueues.
     ("room-below-cap-enqueues",
      dict(prs=[_pr(7, "SUCCESS")],
           queue=[{"pr": 4, "nodeId": "N4", "stuck": False},
-                 {"pr": 5, "nodeId": "N5", "stuck": False}],
+                 {"pr": 5, "nodeId": "N5", "stuck": False},
+                 {"pr": 6, "nodeId": "N6", "stuck": False},
+                 {"pr": 8, "nodeId": "N8", "stuck": False},
+                 {"pr": 9, "nodeId": "N9", "stuck": False}],
           trains=[], state=_empty_state()),
      [("enqueue-auto", 7)]),
     # the cap spends its room in list order and holds only the excess.
     ("cap-holds-the-excess",
      dict(prs=[_pr(7, "SUCCESS"), _pr(8, "SUCCESS")],
           queue=[{"pr": 4, "nodeId": "N4", "stuck": False},
-                 {"pr": 5, "nodeId": "N5", "stuck": False}],
+                 {"pr": 5, "nodeId": "N5", "stuck": False},
+                 {"pr": 6, "nodeId": "N6", "stuck": False},
+                 {"pr": 9, "nodeId": "N9", "stuck": False},
+                 {"pr": 10, "nodeId": "N10", "stuck": False}],
           trains=[], state=_empty_state()),
      [("enqueue-auto", 7), ("hold", 8)]),
     # a running entry is never dequeued even beside a stuck one.
@@ -496,18 +614,40 @@ SELFTEST = [
                          {"pr": 8, "nodeId": "N8", "stuck": True}],
           trains=[], state=_empty_state()),
      [("dequeue", 8), ("enqueue", 8)]),
-    # a conflicted PR is left alone.
-    ("conflicting-left", dict(prs=[_pr(3, "SUCCESS", mergeable="CONFLICTING")],
-                              queue=[], trains=[], state=_empty_state()), []),
-    # a green DRAFT is loud, not invisible: named when no auto-merge asks for
-    # it, and taken ready when it does.
-    ("draft-named", dict(prs=[_pr(3, "SUCCESS", isDraft=True)],
-                          queue=[], trains=[], state=_empty_state()),
-     [("comment", 3)]),
-    ("draft-green-readied",
-     dict(prs=[_pr(3, "SUCCESS", isDraft=True, autoMerge=True)],
+    # (f) a conflict is NAMED once, with the rebase its owner owes.
+    ("conflict-named",
+     dict(prs=[_pr(3, "SUCCESS", mergeable="CONFLICTING", headRefName="lane/x")],
           queue=[], trains=[], state=_empty_state()),
-     [("ready", 3)]),
+     [("comment", 3)]),
+    # (e) a green, otherwise-landable DRAFT is NAMED and taken ready.
+    ("draft-green-readied",
+     dict(prs=[_pr(3, "SUCCESS", isDraft=True)],
+          queue=[], trains=[], state=_empty_state()),
+     [("comment", 3), ("ready", 3)]),
+    # a green DRAFT that is NOT otherwise landable is named, never readied.
+    ("draft-blocked-named",
+     dict(prs=[_pr(3, "SUCCESS", isDraft=True, mergeStateStatus="BLOCKED")],
+          queue=[], trains=[], state=_empty_state()),
+     [("comment", 3)]),
+    # a DO NOT MERGE draft is the deliberate exception: named, never readied.
+    ("draft-do-not-merge-named",
+     dict(prs=[_pr(3, "SUCCESS", isDraft=True, title="DO NOT MERGE — timing proof")],
+          queue=[], trains=[], state=_empty_state()),
+     [("comment", 3)]),
+    # a conflicting DRAFT is named twice — as a conflict and as a draft.
+    ("draft-conflict-named",
+     dict(prs=[_pr(3, "SUCCESS", isDraft=True, mergeable="CONFLICTING")],
+          queue=[], trains=[], state=_empty_state()),
+     [("comment", 3), ("comment", 3)]),
+    # (g) a BLOCKED PR names the check it waits on, once.
+    ("blocked-names-its-check",
+     dict(prs=[_pr(4, None, mergeStateStatus="BLOCKED")],
+          queue=[], trains=[], state=_empty_state()),
+     [("comment", 4)]),
+    ("pending-names-its-check",
+     dict(prs=[_pr(5, "", mergeStateStatus="BLOCKED")],
+          queue=[], trains=[], state=_empty_state()),
+     [("comment", 5)]),
     # (c) a queued entry with no train is dequeued and re-enqueued.
     ("stuck-entry",
      dict(prs=[], queue=[{"pr": 4, "nodeId": "N4", "stuck": True}],
@@ -534,8 +674,49 @@ def selftest():
     second = plan([_pr(1, "FAILURE", test={"conclusion": "FAILURE", "runId": 901,
                                            "attempt": 2, "job": "gate", "line": "x"})],
                   [], [], st)
-    if first == [] or second != []:
+    if (not any(a["do"] == "comment" for a in first)
+            or any(a["do"] == "comment" for a in second)
+            or any(a["do"] == "rerun" for a in second)):
         sys.exit("pr-watcher: self-test — a failure was not told exactly once")
+
+    # (5) DEDUP BY (PR, HEAD, REASON): a conflict, a draft and a blocked PR
+    # are each commented ONCE for one head, and a second pass over an
+    # unchanged head repeats nothing. This is the proof the state file is
+    # keyed by reason, not merely by PR.
+    for reason, pr in (("conflict", _pr(11, "SUCCESS", mergeable="CONFLICTING")),
+                       ("draft", _pr(12, "SUCCESS", isDraft=True, mergeStateStatus="BLOCKED")),
+                       ("blocked", _pr(13, None, mergeStateStatus="BLOCKED"))):
+        st = _empty_state()
+        pass1 = plan([pr], [], [], st)
+        commit_marks(pass1, [], st)
+        pass2 = plan([pr], [], [], st)
+        comments1 = [a for a in pass1 if a["do"] == "comment"]
+        if not comments1:
+            sys.exit(f"pr-watcher: self-test — the {reason} state was never named")
+        if any(a["do"] == "comment" for a in pass2):
+            sys.exit(f"pr-watcher: self-test — the {reason} comment repeated on an unchanged head")
+
+    # NEVER SILENT: every state a PR can be in draws an action or a name.
+    for p in (_pr(21, "SUCCESS"),
+              _pr(22, "SUCCESS", isDraft=True),
+              _pr(23, "SUCCESS", mergeable="CONFLICTING"),
+              _pr(24, None, mergeStateStatus="BLOCKED"),
+              _pr(25, "FAILURE"),
+              _pr(26, "SUCCESS", inQueue=True),
+              _pr(27, "SUCCESS", isDraft=True, mergeable="CONFLICTING")):
+        if not plan([p], [], [], _empty_state()):
+            sys.exit(f"pr-watcher: self-test — PR #{p['number']} was silently skipped")
+
+    # (f) THE CONFLICT WORDS ARE ONE DEFINITION: `tools/queue_keeper.sh`
+    # speaks the same sentence, so the watcher and the keeper cannot drift.
+    keeper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue_keeper.sh")
+    try:
+        with open(keeper) as f:
+            keeper_text = f.read()
+    except OSError as e:
+        sys.exit(f"pr-watcher: self-test — cannot read {keeper}: {e}")
+    if CONFLICT_PHRASE not in keeper_text:
+        sys.exit("pr-watcher: self-test — the conflict words drifted from queue_keeper.sh")
     # first_cause names a keeper refusal and a test mismatch.
     if "refused" not in first_cause("... keepers: gate refused ..."):
         sys.exit("pr-watcher: self-test — first_cause missed a keeper refusal")
@@ -572,13 +753,16 @@ def selftest():
         sys.exit("pr-watcher: self-test — a healthy queue produced actions")
 
     # THE CAP'S LOG NAMES THE LIMIT AND THE PR IT HELD, and the default is
-    # three while AVRA_QUEUE_MAX moves it.
+    # six while AVRA_QUEUE_MAX moves it.
     held = plan([_pr(7, "SUCCESS")],
                 [{"pr": 4, "nodeId": "N4", "stuck": False},
                  {"pr": 5, "nodeId": "N5", "stuck": False},
-                 {"pr": 6, "nodeId": "N6", "stuck": False}],
+                 {"pr": 6, "nodeId": "N6", "stuck": False},
+                 {"pr": 8, "nodeId": "N8", "stuck": False},
+                 {"pr": 9, "nodeId": "N9", "stuck": False},
+                 {"pr": 10, "nodeId": "N10", "stuck": False}],
                 [], _empty_state())
-    if [(a["do"], a["text"]) for a in held] != [("hold", "queue at 3 — holding #7")]:
+    if [(a["do"], a["text"]) for a in held] != [("hold", "queue at 6 — holding #7")]:
         sys.exit(f"pr-watcher: self-test — the cap's hold line was {held}")
     os.environ["AVRA_QUEUE_MAX"] = "2"
     try:
@@ -636,6 +820,29 @@ def selftest():
     do_action(act, "r", absent)
     if len(posted) != 1:
         sys.exit("pr-watcher: self-test — a comment without its marker was not posted")
+
+    # A CONFLICT ALSO YIELDS TO THE KEEPER'S WORDS: when a standing comment
+    # carries `CONFLICT_PHRASE` (as `queue_keeper.sh`'s does) the watcher does
+    # not add a second conflict comment, though it posts when the phrase is
+    # absent.
+    posted.clear()
+
+    def phrase_stands(args, _p=posted):
+        if args[0] == "pr" and args[1] == "view":
+            return "1" if CONFLICT_PHRASE in " ".join(args) else "0"
+        _p.append(args)
+        return ""
+
+    conflict_act = {"do": "comment", "pr": 1, "key": "conflict:1:h1",
+                    "also": CONFLICT_PHRASE, "text": f"CONFLICT: {CONFLICT_PHRASE}."}
+    do_action(conflict_act, "r", phrase_stands)
+    if posted:
+        sys.exit("pr-watcher: self-test — a conflict comment repeated over queue_keeper's")
+    posted.clear()
+    do_action({"do": "comment", "pr": 1, "key": "conflict:2:h2",
+               "also": CONFLICT_PHRASE, "text": "CONFLICT elsewhere."}, "r", absent)
+    if len(posted) != 1:
+        sys.exit("pr-watcher: self-test — a conflict was not named when no phrase stood")
     st = _empty_state()
     d = tempfile.mkdtemp(prefix="pr-watcher-selftest-")
     p = os.path.join(d, "state.json")
@@ -694,6 +901,17 @@ def main(argv):
         for a in acts:
             tag = f" [{a['why']}]" if a.get("why") else ""
             print("pr-watcher:", a["do"] + tag, a.get("pr", a.get("run", "")), a.get("text", ""))
+        # EVERY open PR, one line, straight off the actions the pass owes —
+        # so a state with no action reads as one instead of vanishing.
+        by_pr = {}
+        for a in acts:
+            by_pr.setdefault(a.get("pr"), []).append(a["do"])
+        for p in world["prs"]:
+            mine = by_pr.get(p["number"], [])
+            what = ",".join(sorted(set(mine))) if mine else "NO ACTION"
+            print(f"pr-watcher: #{p['number']:<4} {(p.get('mergeStateStatus') or '?'):<8} "
+                  f"draft={'Y' if p.get('isDraft') else 'n'} "
+                  f"mergeable={(p.get('mergeable') or '?'):<11} -> {what}")
         print(f"pr-watcher: dry run — queue at {len(world['queue'])}/{limit}: "
               f"{new} new enqueue(s), {held} held, {kicks} stuck-entry kick(s) — "
               f"not taken, state untouched")
