@@ -407,17 +407,20 @@ jobs:
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
+        shell: bash
         run: |
-          # DEBUG: stream the keeper and sample the tree's process count.
-          echo "ulimit -a:"; ulimit -a || true
-          echo "pids.max=$(cat /sys/fs/cgroup/pids.max 2>/dev/null) current=$(cat /sys/fs/cgroup/pids.current 2>/dev/null) threads=$(cat /sys/fs/cgroup/pids.current 2>/dev/null)"
-          echo "threads-max=$(cat /proc/sys/kernel/threads-max 2>/dev/null) pid-max=$(cat /proc/sys/kernel/pid_max 2>/dev/null)"
-          ( while :; do echo "$(date +%s) total=$(ps -e --no-headers 2>/dev/null | wc -l)"; sleep 2; done ) > /tmp/probe.out 2>&1 &
+          # DEBUG: sample pids.current with builtins only, and log per-mutation starts.
+          rm -f /tmp/pidlog /tmp/mutlog
+          ( peak=0; while :; do read -r p < /sys/fs/cgroup/pids.current 2>/dev/null || p=0; if [ "${p:-0}" -gt "$peak" ] 2>/dev/null; then peak=$p; echo "peak=$peak t=$SECONDS" >> /tmp/pidlog; fi; sleep 1; done ) &
           probe=$!
-          rc=0; sh tools/memcap.sh 6000 make -s -o avra keepers-alone || rc=$?
+          rc=0; sh tools/memcap.sh 6000 make -s -o avra runtime-mutations 2>&1 | tee /tmp/mutlog || rc=$?
           echo "DEBUG keeper rc=$rc"
           kill "$probe" 2>/dev/null || true
-          echo "DEBUG process peak/last:"; sort -t= -k3 -n /tmp/probe.out 2>/dev/null | tail -3; echo "DEBUG probe lines=$(wc -l < /tmp/probe.out 2>/dev/null)"
+          echo "DEBUG pids.current peaks:"
+          while IFS= read -r line; do echo "$line"; done < /tmp/pidlog
+          echo "DEBUG last 12 mutation starts:"
+          while IFS= read -r line; do echo "$line"; done < <(grep -E '^start ' /tmp/mutlog | tail -12)
+          echo "DEBUG summary line:"; grep -E 'runtime-mutations:|Cannot fork|memcap:' /tmp/mutlog | tail -5
           exit "$rc"
   # THE SECOND HALF, alone on its own runner. It needs only the lowercase
   # build artifact, and it shares the Makefile's one list with keepers-a —

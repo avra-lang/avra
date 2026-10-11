@@ -292,6 +292,7 @@ rest = {FIBER: objects, CLOCK: [o for o in objects if not o.endswith(f"/{CLOCK}.
 
 def tried(numbered):
     at, (which, (name, old, new)) = numbered
+    print(f"start {at}: {name}", file=sys.stderr, flush=True)
     text = sources[which]
     for a, b in old if isinstance(old, list) else [(old, new)]:
         if text.count(a) != 1:
