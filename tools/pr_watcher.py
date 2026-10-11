@@ -567,6 +567,24 @@ def selftest():
         sys.exit("pr-watcher: self-test — an entry whose run began 60 minutes ago was not stuck")
     if not _entry_stuck(old_no_run, [], now):
         sys.exit("pr-watcher: self-test — an entry with no run for 60 minutes was not stuck")
+    # (c) END TO END: the predicate and the action are ONE decision. An entry
+    # whose newest merge_group run is a LIVE train produces ZERO dequeue and
+    # re-enqueue through `plan`, HOWEVER long the entry has waited — not only
+    # through `_entry_stuck`. A train takes ~45 minutes, and the 5-minute
+    # churn this pins cancelled running trains for hours.
+    for label, live in (
+            ("running", running),
+            ("in_progress after three hours",
+             {"headBranch": branch, "status": "in_progress",
+              "createdAt": "2026-01-01T09:00:00Z"}),
+            ("queued after four hours",
+             {"headBranch": branch, "status": "queued",
+              "createdAt": "2026-01-01T08:00:00Z"})):
+        entry = dict(old_live, nodeId="N7")
+        entry["stuck"] = _entry_stuck(entry, [live], now)
+        got = [(a["do"], a.get("pr")) for a in plan([], [entry], [], _empty_state())]
+        if got:
+            sys.exit(f"pr-watcher: self-test — a live train ({label}) was churned: {got}")
     if plan([], [{"pr": 8, "nodeId": "N8", "stuck": False},
                  {"pr": 7, "nodeId": "N7", "stuck": False}], [], _empty_state()) != []:
         sys.exit("pr-watcher: self-test — a healthy queue produced actions")
@@ -636,6 +654,13 @@ def selftest():
     do_action(act, "r", absent)
     if len(posted) != 1:
         sys.exit("pr-watcher: self-test — a comment without its marker was not posted")
+    # A DRAFT AUTO-MERGE ASKED TO LAND IS MARKED READY, not merely named in
+    # the plan: the action runs `gh pr ready`, so a green draft cannot sit
+    # forever as a draft the queue can never carry.
+    ready = []
+    do_action({"do": "ready", "pr": 3}, "r", lambda args, _r=ready: _r.append(args))
+    if ready != [["pr", "ready", "3", "-R", "r"]]:
+        sys.exit(f"pr-watcher: self-test — a draft was not taken ready: {ready}")
     st = _empty_state()
     d = tempfile.mkdtemp(prefix="pr-watcher-selftest-")
     p = os.path.join(d, "state.json")
