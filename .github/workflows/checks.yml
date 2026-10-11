@@ -56,7 +56,9 @@ jobs:
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-    timeout-minutes: 60
+    # Backstop above the compiler (25) and objects (15) step bounds; a hang in
+    # either heavy step dies there with its own name, not here.
+    timeout-minutes: 45
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       changed: ${{ steps.plan.outputs.changed }}
@@ -64,6 +66,7 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       runtime: ${{ steps.plan.outputs.runtime }}
       cache: ${{ steps.plan.outputs.cache }}
+      codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +92,7 @@ jobs:
           build=1
           runtime=0
           cache=0
+          codecs=0
           if [ "$event" != push ] && [ -z "${{ inputs.only }}" ]; then
             changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
           fi
@@ -140,6 +144,15 @@ jobs:
           # The attacks need a compiler and its objects: a run that owes them
           # owes the build, even when the diff itself is only the harness.
           if [ "$cache" = 1 ]; then build=1; fi
+          # THE CODEC SCAN RUNS ON A PR WHOSE DIFF REACHES WHAT IT READS: the
+          # compiler's own source (any .av under packages/std-avrac/src) and
+          # the reader itself. The scan needs no compiler, so it is its own
+          # cheap job and can run whatever the build decided — and it names an
+          # unregistered encoder/decoder pair on the PR instead of one train
+          # later. The registry's round trip needs a whole compiler and stays
+          # with the train.
+          if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
+              packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
           shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py 4)
           {
@@ -148,10 +161,11 @@ jobs:
             echo "build=${build}"
             echo "runtime=${runtime}"
             echo "cache=${cache}"
+            echo "codecs=${codecs}"
             echo "key=avrac-${key}"
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
-          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime cache=$cache packages: $(echo $pkgs)"
+          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
       # tree whose compiler is main's takes main's binary and builds nothing.
       # Otherwise the newest cached binary only has to BUILD this tree — one
@@ -185,24 +199,40 @@ jobs:
       # left (a stale binary beside a usable `.avra-cache`), and the binary is
       # smoke-run before it is trusted, so a release built for another image
       # falls through to the build.
+      #
+      # A MISS NAMES ITSELF. The fallback to a build is correct, but a silent
+      # one reports success while a 15-minute rebuild starts — the miss is a
+      # `::warning::` carrying the fetch's own reason (an unpublished key, an
+      # unreachable API) or, when the fetch succeeded, that the smoke run
+      # failed on this runner.
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true'
         id: release
         name: compiler from release
         continue-on-error: true
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p build
-          if python3 tools/compiler_release.py fetch "${{ steps.plan.outputs.key }}" build/avra \
-             && build/avra --version >/dev/null 2>&1; then
+          reason=$(python3 tools/compiler_release.py fetch "${{ steps.plan.outputs.key }}" build/avra 2>&1) && fetched=1 || fetched=0
+          printf '%s\n' "$reason"
+          if [ "$fetched" = 1 ] && build/avra --version >/dev/null 2>&1; then
             echo "hit=true" >> "$GITHUB_OUTPUT"
             echo "speed compiler 0" >> speed.log
           else
             echo "hit=false" >> "$GITHUB_OUTPUT"
             rm -f build/avra
+            if [ "$fetched" = 0 ]; then
+              echo "::warning::compiler release miss for ${{ steps.plan.outputs.key }} — building from source: $reason"
+            else
+              echo "::warning::compiler release miss for ${{ steps.plan.outputs.key }} — the fetched binary failed its smoke run (avra --version); building from source"
+            fi
           fi
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true'
         name: compiler
+        # Two source generations: a cold `make avra` measured ~517 s each, so a
+        # bootstrap (~17 min) fits with margin; a hang dies here, named.
+        timeout-minutes: 25
         run: |
           s=$(date +%s)
           if [ -x build/avra ] && make -s avra && make -s avra; then :; else make -s bootstrap; fi
@@ -234,6 +264,8 @@ jobs:
       # all; a PR that reaches the store runs the attacks and does.
       - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.plan.outputs.cache == '1')
         name: objects and libs
+        # A cold C objects and package libraries build is minutes at most.
+        timeout-minutes: 15
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
           tar -cf avra-build.tar --exclude=build/avra build
@@ -482,6 +514,22 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-cache-attacks-${{ github.sha }}
+  # THE CODEC SCAN ON A PR WHOSE DIFF REACHES THE COMPILER'S SOURCE. It
+  # reads the tree alone — no compiler, no objects, no artifacts — so it is
+  # seconds, and it names an unregistered encoder/decoder pair before the
+  # PR ever enters a train. `codecs-static` is the same half `codecs` runs.
+  codecs:
+    needs: [prepare]
+    if: github.event_name == 'pull_request' && needs.prepare.outputs.codecs == '1'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: codecs
+        run: make -s codecs-static
   gate:
     needs: [prepare]
     if: github.event_name != 'push' && (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '')
@@ -589,7 +637,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers-a, keepers-b, seed-check, flow-gate, cache-attacks, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, seed-check, flow-gate, cache-attacks, codecs, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
