@@ -7,7 +7,7 @@ script could have noticed. This watcher closes it, deterministically:
 
   (a) a PR whose required `test` FAILED — tell it the exact `job — line`,
       and re-run the failed jobs ONCE (a second rerun of the same head
-      changes nothing, so it is refused by state, not by try-again);
+      changes nothing, so it is refused by attempt, not by try-again);
   (b) a green, mergeable, unmerged PR not in the queue — enqueue it
       (auto-merge when it is not set, a direct enqueue when it is), but
       ONLY while the queue holds fewer than `AVRA_QUEUE_MAX` entries
@@ -15,17 +15,25 @@ script could have noticed. This watcher closes it, deterministically:
       N entries in flight saturate it and every extra entry makes the
       queue land SLOWER, not more. A green PR over the cap is held and
       named (`queue at 3 — holding #537`), never dropped; a later pass
-      enqueues it once a slot frees.
-  (c) a queued entry with no `merge_group` run — dequeue and put it back,
-      since an entry with no train starts nothing by waiting;
+      enqueues it once a slot frees. A green DRAFT never rides a train,
+      so it is named, and taken ready where landing is wanted;
+  (c) a queued entry that NOTHING is moving — dequeue and put it back. A
+      train needs ~30–45 min, so an entry whose newest `merge_group` run
+      is `in_progress`/`queued`, or started less than `STUCK_MINUTES`
+      ago, is WORKING and is never churned (churning it cancels the live
+      train and restarts the clock forever);
   (d) a failed train — name its failing `job — line` on the PR it carried.
 
 The DECISION is a pure function (`plan`) over a world the gh CLI reads,
 so it is proved against fixtures with NO network and NO LLM
 (`--self-test`). Only `collect` and `execute` touch GitHub.
 
-State (which heads were rerun, which failures were told) lives in a
-small JSON file restored and saved by the workflow's cache: `--state`.
+Every comment carries its own dedup key in an HTML marker, and
+`do_action` refuses a body whose marker already stands on the PR — so a
+lost state file can never re-post a comment, and two watchers (this one
+and the machine's) never double-comment. State (which heads were rerun,
+which failures were told) lives in a small JSON file restored and saved
+by the workflow's cache: `--state`.
 """
 import json
 import os
@@ -66,7 +74,7 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
         key = f"train:{t['databaseId']}"
         if key in told:
             continue
-        acts.append({"do": "comment", "pr": t["pr"], "mark": ("told", key),
+        acts.append({"do": "comment", "pr": t["pr"], "key": key, "mark": ("told", key),
                      "text": f"train failed: {t['job']} — {t['line']}\n\n"
                              f"Run `sh tools/work land` from the worktree once this is fixed."})
 
@@ -88,7 +96,7 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
                 body = f"BLOCKED: {t['job']} — {t['line']}"
                 if want_rerun:
                     body += "\n\nRe-running the failed jobs once."
-                acts.append({"do": "comment", "pr": n, "text": body,
+                acts.append({"do": "comment", "pr": n, "key": key, "text": body,
                              "mark": ("told", key)})
             if want_rerun:
                 acts.append({"do": "rerun", "run": t["runId"],
@@ -96,8 +104,22 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
             continue
         # (b) green, mergeable, unmerged, not queued — enqueue it.
         if (t is not None and t["conclusion"] == "SUCCESS"
-                and p["state"] == "OPEN" and not p["isDraft"]
-                and p["mergeable"] == "MERGEABLE" and not p["inQueue"]):
+                and p["state"] == "OPEN" and p["mergeable"] == "MERGEABLE"
+                and not p["inQueue"]):
+            # A DRAFT can never ride a train: the queue rejects it and its
+            # required check never counts. Name it; take it ready where
+            # landing is clearly wanted (auto-merge armed).
+            if p.get("isDraft"):
+                if p["autoMerge"]:
+                    acts.append({"do": "ready", "pr": n,
+                                 "text": f"#{n} is a DRAFT — unlandable; marking it ready"})
+                else:
+                    key = f"draft:{n}:{head}"
+                    acts.append({"do": "comment", "pr": n, "key": key,
+                                 "mark": ("told", key),
+                                 "text": f"#{n} is a DRAFT — unlandable. "
+                                         f"`gh pr ready {n}` when it should land."})
+                continue
             if room > 0:
                 acts.append({"do": "enqueue-auto" if not p["autoMerge"] else "enqueue",
                              "pr": n, "node": p.get("nodeId"), "why": "new"})
@@ -106,8 +128,8 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
                 acts.append({"do": "hold", "pr": n,
                              "text": f"queue at {limit} — holding #{n}"})
 
-    # (c) a queued entry with no train: take it out and put it back. Only a
-    # `stuck` entry is touched, so one whose train is running is left where
+    # (c) a queued entry with no live train: take it out and put it back. Only
+    # a `stuck` entry is touched, so one whose train is running is left where
     # it stands; the cap above already counted it against the depth budget.
     for q in queue:
         if q.get("stuck"):
@@ -197,37 +219,55 @@ def merge_queue(repo):
 
 def _merge_group_runs(repo):
     return _gh_json(["run", "list", "-R", repo, "-e", "merge_group", "-L", "100",
-                     "--json", "databaseId,conclusion,headBranch,headSha,createdAt"])
+                     "--json", "databaseId,conclusion,status,headBranch,headSha,createdAt"])
 
 
-# (c) fires for a STUCK entry ONLY. An entry is stuck when it has sat more
-# than five minutes with NO merge_group run for it since it was enqueued: a
-# fresh entry has not been picked up yet, and one whose train is running has
-# a run created after it. Churning either cancels an in-flight train.
-STUCK_MINUTES = 5
+# (c) fires for a STUCK entry ONLY. A train needs ~30–45 minutes; churning
+# an entry whose train is STILL RUNNING cancels it and restarts the clock
+# forever, which is how a queue sat on one PR for hours while main never
+# moved. So the bar is a train's whole duration, not five minutes, and a
+# live run is never touched however long the entry has waited.
+STUCK_MINUTES = 45
+
+
+def _parse_ts(raw):
+    """An ISO timestamp as aware UTC, or None when unreadable."""
+    try:
+        return datetime.fromisoformat((raw or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _newest_run(runs, pr):
+    """The newest merge_group run for `pr` as (created, run), or None."""
+    latest = None
+    for r in runs:
+        m = re.search(r"/pr-(\d+)-", r.get("headBranch") or "")
+        if not m or int(m.group(1)) != pr:
+            continue
+        ts = _parse_ts(r.get("createdAt"))
+        if ts is not None and (latest is None or ts > latest[0]):
+            latest = (ts, r)
+    return latest
 
 
 def _entry_stuck(e, runs, now):
-    raw = e.get("enqueuedAt")
-    if not raw:
-        return False  # cannot judge an entry's age: leave it alone
-    try:
-        enq = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if now - enq < timedelta(minutes=STUCK_MINUTES):
-        return False
-    for r in runs:
-        m = re.search(r"/pr-(\d+)-", r.get("headBranch") or "")
-        if not m or int(m.group(1)) != e["pr"]:
-            continue
-        try:
-            ts = datetime.fromisoformat((r.get("createdAt") or "").replace("Z", "+00:00"))
-        except ValueError:
-            continue
-        if ts >= enq - timedelta(seconds=60):
-            return False  # a train started for THIS entry
-    return True
+    """A queued entry is stuck only when NOTHING is moving it.
+
+    A run that is `in_progress`/`queued` is a live train — WORKING, never
+    churned. Only an entry with NO run at all, or whose newest run began
+    longer ago than a whole train takes, may be dequeued and put back.
+    """
+    enq = _parse_ts(e.get("enqueuedAt"))
+    if enq is None or now - enq < timedelta(minutes=STUCK_MINUTES):
+        return False  # too young to judge: leave it alone
+    latest = _newest_run(runs, e["pr"])
+    if latest is None:
+        return True  # no train ever started for the entry
+    ts, r = latest
+    if r.get("status") in ("in_progress", "queued"):
+        return False  # a live train is WORKING
+    return now - ts >= timedelta(minutes=STUCK_MINUTES)
 
 
 def test_of(repo, pr):
@@ -314,17 +354,34 @@ def collect(repo, state):
 # ---- doing the actions (gh) --------------------------------------------
 def do_action(a, repo, run):
     if a["do"] == "comment":
-        run(["pr", "comment", str(a["pr"]), "-R", repo, "--body", a["text"]])
+        body, key = a["text"], a.get("key")
+        if key:
+            # THE COMMENT CARRIES ITS OWN DEDUP KEY, so a lost state file
+            # cannot re-post it and a second watcher cannot double it. An
+            # unreadable answer refuses nothing, so a query that fails does
+            # not silence the comment.
+            marker = f"<!-- pr-watcher:{key} -->"
+            seen = run(["pr", "view", str(a["pr"]), "-R", repo, "--json", "comments",
+                        "--jq", f'[.comments[].body | select(contains("{marker}"))] | length'])
+            if (seen or "").strip() not in ("", "0"):
+                return
+            body += f"\n\n{marker}"
+        run(["pr", "comment", str(a["pr"]), "-R", repo, "--body", body])
     elif a["do"] == "rerun":
         run(["run", "rerun", str(a["run"]), "--failed", "-R", repo])
     elif a["do"] == "enqueue":
+        # `gh api graphql` reads the operation from the `query` field (a
+        # mutation too) — a `mutation` field is no field at all and the
+        # whole call refuses with "A query attribute must be specified".
         run(["api", "graphql", "-f",
-             f'mutation={{enqueuePullRequest(input:{{pullRequestId:"{a["node"]}"}}){{clientMutationId}}}}'])
+             f'query=mutation{{enqueuePullRequest(input:{{pullRequestId:"{a["node"]}"}}){{clientMutationId}}}}'])
     elif a["do"] == "enqueue-auto":
         run(["pr", "merge", str(a["pr"]), "-R", repo, "--auto", "--squash"])
     elif a["do"] == "dequeue":
         run(["api", "graphql", "-f",
-             f'mutation={{dequeuePullRequest(input:{{id:"{a["node"]}"}}){{clientMutationId}}}}'])
+             f'query=mutation{{dequeuePullRequest(input:{{id:"{a["node"]}"}}){{clientMutationId}}}}'])
+    elif a["do"] == "ready":
+        run(["pr", "ready", str(a["pr"]), "-R", repo])
     elif a["do"] == "hold":
         pass  # a decision, not a mutation: the log says what the cap held.
     else:
@@ -439,11 +496,18 @@ SELFTEST = [
                          {"pr": 8, "nodeId": "N8", "stuck": True}],
           trains=[], state=_empty_state()),
      [("dequeue", 8), ("enqueue", 8)]),
-    # a conflicted or draft PR is left alone.
+    # a conflicted PR is left alone.
     ("conflicting-left", dict(prs=[_pr(3, "SUCCESS", mergeable="CONFLICTING")],
                               queue=[], trains=[], state=_empty_state()), []),
-    ("draft-left", dict(prs=[_pr(3, "SUCCESS", isDraft=True)],
-                        queue=[], trains=[], state=_empty_state()), []),
+    # a green DRAFT is loud, not invisible: named when no auto-merge asks for
+    # it, and taken ready when it does.
+    ("draft-named", dict(prs=[_pr(3, "SUCCESS", isDraft=True)],
+                          queue=[], trains=[], state=_empty_state()),
+     [("comment", 3)]),
+    ("draft-green-readied",
+     dict(prs=[_pr(3, "SUCCESS", isDraft=True, autoMerge=True)],
+          queue=[], trains=[], state=_empty_state()),
+     [("ready", 3)]),
     # (c) a queued entry with no train is dequeued and re-enqueued.
     ("stuck-entry",
      dict(prs=[], queue=[{"pr": 4, "nodeId": "N4", "stuck": True}],
@@ -478,20 +542,31 @@ def selftest():
     if "tests passed" not in first_cause("1/2 tests passed"):
         sys.exit("pr-watcher: self-test — first_cause missed a test mismatch")
 
-    # (2) THE STUCK PREDICATE IS REAL: a fresh entry and an entry whose train
-    # started are never stuck; only an old entry with no run is.
+    # (2) THE STUCK PREDICATE IS REAL, AND A LIVE TRAIN IS NEVER CHURNED: a
+    # fresh entry, an entry whose train is running, and one whose run began
+    # inside a whole train's duration are never stuck; only an entry with NO
+    # run, or whose newest run began longer ago than a train takes, is.
     now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-    run_after = {"headBranch": "gh-readonly-queue/main/pr-7-abc",
-                 "createdAt": "2026-01-01T11:56:30Z"}
-    old_with_run = {"pr": 7, "enqueuedAt": "2026-01-01T11:55:00Z"}
+    branch = "gh-readonly-queue/main/pr-7-abc"
+    running = {"headBranch": branch, "status": "in_progress",
+               "createdAt": "2026-01-01T11:20:00Z"}
+    fresh = {"headBranch": branch, "status": "completed", "conclusion": "cancelled",
+             "createdAt": "2026-01-01T11:58:00Z"}
+    aged = {"headBranch": branch, "status": "completed", "conclusion": "cancelled",
+            "createdAt": "2026-01-01T11:00:00Z"}
+    old_live = {"pr": 7, "enqueuedAt": "2026-01-01T11:00:00Z"}
     fresh_no_run = {"pr": 8, "enqueuedAt": "2026-01-01T11:59:30Z"}
-    old_no_run = {"pr": 9, "enqueuedAt": "2026-01-01T11:50:00Z"}
-    if _entry_stuck(old_with_run, [run_after], now):
-        sys.exit("pr-watcher: self-test — an entry with a train was called stuck")
+    old_no_run = {"pr": 9, "enqueuedAt": "2026-01-01T11:00:00Z"}
+    if _entry_stuck(old_live, [running], now):
+        sys.exit("pr-watcher: self-test — an entry with a RUNNING train was churned")
     if _entry_stuck(fresh_no_run, [], now):
         sys.exit("pr-watcher: self-test — a fresh entry was called stuck")
+    if _entry_stuck(old_live, [fresh], now):
+        sys.exit("pr-watcher: self-test — a run from 5 minutes ago was churned")
+    if not _entry_stuck(old_live, [aged], now):
+        sys.exit("pr-watcher: self-test — an entry whose run began 60 minutes ago was not stuck")
     if not _entry_stuck(old_no_run, [], now):
-        sys.exit("pr-watcher: self-test — an entry with no run for 10 minutes was not stuck")
+        sys.exit("pr-watcher: self-test — an entry with no run for 60 minutes was not stuck")
     if plan([], [{"pr": 8, "nodeId": "N8", "stuck": False},
                  {"pr": 7, "nodeId": "N7", "stuck": False}], [], _empty_state()) != []:
         sys.exit("pr-watcher: self-test — a healthy queue produced actions")
@@ -531,17 +606,43 @@ def selftest():
     def flaky(args, _calls=calls):
         _calls.append(args)
         if args[0] == "run" and args[1] == "rerun":
-            raise RuntimeError("GraphQL: Pull request Protected branch rules not configured")
+            raise RuntimeError("SELF-TEST: Pull request Protected branch rules not configured")
 
     failed = execute(acts, "r", flaky)
-    if len(calls) != len(acts) or len(failed) != 1:
+    if len(failed) != 1:
         sys.exit("pr-watcher: self-test — a failed action stopped the pass")
+    # A COMMENT'S OWN MARKER IS THE DEDUP: even with state lost, a body whose
+    # key already stands on the PR is not posted again, and one that does not
+    # is.
+    posted = []
+
+    def standing(args, _p=posted):
+        if args[0] == "pr" and args[1] == "view":
+            return "1"
+        _p.append(args)
+        return ""
+
+    def absent(args, _p=posted):
+        if args[0] == "pr" and args[1] == "view":
+            return "0"
+        _p.append(args)
+        return ""
+
+    act = {"do": "comment", "pr": 1, "key": "told:1:h1", "text": "BLOCKED"}
+    do_action(act, "r", standing)
+    if posted:
+        sys.exit("pr-watcher: self-test — a comment with its marker already standing was re-posted")
+    posted.clear()
+    do_action(act, "r", absent)
+    if len(posted) != 1:
+        sys.exit("pr-watcher: self-test — a comment without its marker was not posted")
     st = _empty_state()
     d = tempfile.mkdtemp(prefix="pr-watcher-selftest-")
     p = os.path.join(d, "state.json")
     world = {"prs": [_pr(1, "FAILURE")], "queue": [],
              "trains": [{"pr": 5, "databaseId": 777, "job": "keepers-a", "line": "x"}]}
-    run_pass(world, st, p, "r", execute_fn=lambda a, r: execute(a, r, flaky))
+    run_pass(world, st, p, "r", execute_fn=lambda a, r: execute(a, r, flaky),
+             label="pr-watcher:self-test:")
     saved = load_state(p)
     if saved["rerun"] or not saved["told"]:
         sys.exit("pr-watcher: self-test — state saved a failed mark or lost a succeeded one")
@@ -554,13 +655,14 @@ def queue_max():
     return int(raw) if raw.isdigit() and int(raw) > 0 else QUEUE_MAX
 
 
-def run_pass(world, state, state_path, repo, execute_fn=execute, limit=QUEUE_MAX):
+def run_pass(world, state, state_path, repo, execute_fn=execute, limit=QUEUE_MAX,
+             label="pr-watcher:"):
     """One live pass. State is committed and SAVED in a `finally`:
     whatever an action or the pass itself does, the marks of what
     SUCCEEDED stand and the next pass retries only what failed."""
     acts = plan(world["prs"], world["queue"], world["trains"], state, limit)
     for a in acts:
-        print("pr-watcher:", a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
+        print(label, a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
     failed = []
     try:
         failed = execute_fn(acts, repo)
