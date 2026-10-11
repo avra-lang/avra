@@ -43,7 +43,7 @@ def needed_from_workflow(text, job):
     m = re.search(r"^  %s:\s*$" % re.escape(job), text, re.M)
     if not m:
         return None
-    m2 = re.search(r"^    needs:\s*\[(.*?)\]", text[m.end():], re.M)
+    m2 = re.search(r"^    needs:\s*\[(.*?)\]", text[m.end():], re.M | re.S)
     if not m2:
         return None
     return [n.strip() for n in m2.group(1).split(",") if n.strip()]
@@ -109,6 +109,14 @@ def _self_test():
     needs: [x]
 """
     assert needed_from_workflow(wf, "test") == ["prepare", "keepers-a", "suites"]
+    # a flow list YAML wrapped across lines still parses
+    wf_wrapped = """jobs:
+  test:
+    needs: [prepare,
+            keepers-a, suites]
+    if: always()
+"""
+    assert needed_from_workflow(wf_wrapped, "test") == ["prepare", "keepers-a", "suites"]
     assert needed_from_workflow(wf, "missing") is None
     assert needed_from_workflow("jobs:\n  test:\n    runs-on: x\n", "test") is None
     # an unexpected extra job is not silently dropped from the count
