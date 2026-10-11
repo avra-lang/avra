@@ -711,7 +711,7 @@ impl Program {
         // is judged by one bit. A library that runs no top-level
         // statement (`entry` null, `programs` false) has no root.
         ws.decls.record_schedulers(ws.members_link_scheduler() || self.root_links(entry, programs))
-        memory(
+        let lo = memory(
             self
                 .ws
                 .decls
@@ -728,6 +728,10 @@ impl Program {
                     (i: Instance) -> ws.kept_instance(i),
                 ),
         ) with { libraries: ws.linked_packages() }
+        // A `defer` that parks outside its own `within`, refused here:
+        // the cancel fact settled above, so the parks are the settled
+        // pass's and not a stand-in.
+        lo with { diagnostics: ws.cleanup_voices([a.view.file for a in self.files]).concat(lo.diagnostics) }
     }
 
     /// A program lowered, with what its host fns owe the program beyond

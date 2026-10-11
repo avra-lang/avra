@@ -318,15 +318,63 @@ def declaring_sources():
 # of that name is answered by it, not by C. Both leave the wall; the
 # typer holds a host fn's seats (type.host_fn). One definition of "a
 # declaration this keeper judges", called by every reader below.
-WALL = re.compile(r"^(?:export )?extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\(([^)]*)\)(?:\s*->\s*(\w+)\??)?[ \t]*(\{)?", re.M)
+WALL_HEAD = re.compile(r"^(?:export )?extern fn ([A-Za-z_][A-Za-z_0-9]*)\s*\(", re.M)
+
+def balanced_close(text, start):
+    """The index of the `)` matching the `(` just before `start`, or None."""
+    depth, i = 1, start
+    while i < len(text):
+        if text[i] == "(":
+            depth += 1
+        elif text[i] == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return None
+
+def skip_space(text, at):
+    while at < len(text) and text[at].isspace():
+        at += 1
+    return at
+
+def skip_only(text, at, chars):
+    while at < len(text) and text[at] in chars:
+        at += 1
+    return at
+
+def wall_rows(text):
+    """Each `extern fn` in `text`: name, seats, answer, whether a body opens.
+
+    THE SEATS ARE BRACKET-COUNTED, never a `[^)]*` run: a regex stops at
+    the first `)` and truncates every fn-typed seat AFTER it, so
+    `cb: fn(int) -> int` listed as `cb: fn(int` and the seat law never
+    saw the callback.
+    """
+    for m in WALL_HEAD.finditer(text):
+        close = balanced_close(text, m.end())
+        if close is None:
+            continue
+        at = skip_space(text, close + 1)
+        answer = None
+        if text.startswith("->", at):
+            at = skip_space(text, at + 2)
+            start = at
+            while at < len(text) and (text[at].isalnum() or text[at] == "_"):
+                at += 1
+            answer = text[start:at] or None
+            if at < len(text) and text[at] == "?":
+                at += 1
+        at = skip_only(text, at, " \t")
+        yield m.group(1), text[m.end():close], answer, at < len(text) and text[at] == "{"
 
 def host_fns_in(texts):
     """The names some text defines as a host fn."""
-    return {m.group(1) for text in texts for m in WALL.finditer(text) if m.group(4)}
+    return {name for text in texts for name, _, _, hosted in wall_rows(text) if hosted}
 
 def walls_in(text, hosted):
     """Each bodiless `extern fn` of `text` no host fn answers: name, seats, answer (None when it has none)."""
-    return [(m.group(1), m.group(2), m.group(3)) for m in WALL.finditer(text) if not m.group(4) and m.group(1) not in hosted]
+    return [(name, seats, answer) for name, seats, answer, has_body in wall_rows(text) if not has_body and name not in hosted]
 
 _HOSTED = None
 def host_fns():
@@ -341,9 +389,33 @@ HOST_CASES = [
     ("extern fn a(frame: Bytes)\nextern fn a(frame: Bytes) {\n}\n", [], ["a"]),
     ("export extern fn b(p: ptr?) -> ptr?\nextern fn c() {\n}\n", ["b"], ["c"]),
     ("extern fn d(s: string)\n\nfn e() { d(\"x\") }\n", ["d"], []),
+    # A FN-TYPED SEAT IS ONE SEAT, with a comma of its own inside it.
+    ("extern fn f(cb: fn(int) -> int)\n", ["f"], []),
+    ("extern fn g(a: int, cb: fn(int, string) -> bool, b: int)\n", ["g"], []),
+    # A HOST FN'S fn-typed seat is bracketed the same way.
+    ("extern fn h(cb: fn(int) -> int) {\n}\n", [], ["h"]),
 ]
 
+# THE SEATS A fn-TYPED DECLARATION LISTS, exactly — the half the self-test
+# above cannot see, because it keeps only names. A `[^)]*` seat capture
+# truncates each one, so this is what the fix was for.
+WALL_SEAT_CASES = [
+    ("extern fn f(cb: fn(int) -> int)\n", "f", "cb: fn(int) -> int"),
+    ("extern fn g(a: int, cb: fn(int, string) -> bool, b: int)\n", "g", "a: int, cb: fn(int, string) -> bool, b: int"),
+    ("extern fn h(cb: fn(int) -> int) {\n}\n", "h", "cb: fn(int) -> int"),
+]
+
+def wall_seat_self_test():
+    for text, name, want in WALL_SEAT_CASES:
+        got = [seats for n, seats, _, _ in wall_rows(text) if n == name]
+        if got != [want]:
+            print(f"externs: wall seat self-test failed on {text!r}: {got!r}, want {want!r}")
+            return 1
+    return 0
+
 def host_self_test():
+    if wall_seat_self_test():
+        return 1
     for text, walls, hosted in HOST_CASES:
         got_hosted = sorted(host_fns_in([text]))
         got_walls = sorted({n for n, _, _ in walls_in(text, set(got_hosted))})
