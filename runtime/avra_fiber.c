@@ -1813,6 +1813,16 @@ static void* task_made(Fiber* f, void* body) {
 typedef struct { int64_t frames[UNWIND_CAP]; int64_t n; int64_t dropped; } Unwind;
 static Unwind g_main_unwind;
 
+// THE RECORD'S RESERVED CELLS ARE THE LIST'S OWN WORDS, and the names
+// `task_made` seeds between them sit where the struct lays them: a
+// reordered or resized Unwind is caught here, not by a lost frame.
+_Static_assert(TASK_FRAMES_N == TASK_FRAMES + (int64_t)(offsetof(Unwind, n) / sizeof(int64_t)),
+    "TASK_FRAMES_N names the frame count's cell");
+_Static_assert(TASK_DROPPED == TASK_FRAMES + (int64_t)(offsetof(Unwind, dropped) / sizeof(int64_t)),
+    "TASK_DROPPED names the drop count's cell");
+_Static_assert((int64_t)sizeof(Unwind) == (TASK_CELLS - TASK_FRAMES) * (int64_t)sizeof(int64_t),
+    "the task record's reserved cells are the Unwind's words");
+
 static Unwind* running_unwind(void) {
     if (g_current->task) return (Unwind*)(task_cells(g_current->task) + TASK_FRAMES);
     return &g_main_unwind;

@@ -2430,7 +2430,9 @@ static void the_programs_own_run_pushes(void) {
     avra_unwind_push(a);
     avra_unwind_push(a);
     CHECK(avra_unwind_count() == 2, "main's own frames stand");
-    CHECK(avra_unwind_at(2) == NULL && avra_unwind_at(-1) == NULL, "and a read past them answers null");
+    // `at(16)` is past the cap and lands on the list's own count — a word,
+    // never a frame — so the bound must refuse it, not a zero sitting there.
+    CHECK(avra_unwind_at(16) == NULL && avra_unwind_at(-1) == NULL, "and a read past them answers null");
     avra_rc_release(a);
 }
 

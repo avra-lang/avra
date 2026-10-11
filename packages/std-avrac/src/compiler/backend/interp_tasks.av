@@ -696,8 +696,18 @@ impl Machine {
         held[i]
     }
 
+    fn unwind_dropped_val() -> Val {
+        self.rooted()
+        Val.I(self.tasks[self.running].dropped)
+    }
+
     /// A cancel point: the first read of a set unwind bit begins an
-    /// unwind, whose list is exactly the frames from here on.
+    /// unwind, whose list is exactly the frames from here on. The
+    /// evaluator's virtual-task bit is set in one place — the checked
+    /// back-edge, `avra_vtask_tick_cold` (`runtime/avra_fiber.c:2150`)
+    /// — so this is the only transition the evaluator observes; the
+    /// other C cancel points' evaluator arms land with 14d, whose
+    /// flip first reads `at`.
     fn unwind_met(vt: int) {
         let bit = avra_vtask_unwinding(vt) != 0
         if bit && !self.tasks[self.running].unwound_bit {
