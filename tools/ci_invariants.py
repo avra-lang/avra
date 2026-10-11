@@ -254,9 +254,10 @@ def check_watcher_wired(make_text):
 
 def check_warm_edit(make_text, bench=None, ratchet=None):
     """WHERE the DB 07 warm-edit gate exists: its target is a keeper, its
-    measurement is judged, and a cold store SKIPS WITH A WORD. Absent, this
-    says so and passes. `bench`/`ratchet` default to the tree's; a fixture
-    passes its own, so the rule never reads the tree it is proving."""
+    measurement is judged, and a run that CANNOT judge FAILS — a skip is
+    not a pass, and the only opt-out is the hand-set `WARM_EDIT_SKIP`. Absent,
+    this says so and passes. `bench`/`ratchet` default to the tree's; a
+    fixture passes its own, so the rule never reads the tree it is proving."""
     if bench is None:
         bench = os.path.join(ROOT, "tools", "warm_edit_bench.sh")
     if ratchet is None:
@@ -272,18 +273,30 @@ def check_warm_edit(make_text, bench=None, ratchet=None):
         refusals.append("`make warm-edit` does not run `tools/speed_ratchet.py --self-test` before it measures")
     if not os.path.isfile(bench):
         refusals.append("`warm-edit` is wired but tools/warm_edit_bench.sh does not exist")
-    elif "skip cold-store" not in open(bench, encoding="utf-8").read():
-        refusals.append("tools/warm_edit_bench.sh does not SKIP WITH A WORD on a cold store "
-                        "(no `skip cold-store`) — it could silently pass an unmeasured claim")
+    else:
+        text = open(bench, encoding="utf-8").read()
+        # A SKIP IS A FAILURE. The bench names the marker the ratchet reads,
+        # the one hand-set opt-out, and a named FAILURE; the silent `exit 0`
+        # this invariant was written against is exactly the defect it refuses.
+        for needle, why in (
+            ("skip warm-edit", "the skip marker the ratchet reads (no `skip warm-edit`)"),
+            ("WARM_EDIT_SKIP", "the one hand-set opt-out (`WARM_EDIT_SKIP`)"),
+            ("FAILURE", "a named FAILURE for a run that cannot judge"),
+        ):
+            if needle not in text:
+                refusals.append("tools/warm_edit_bench.sh has no %s — a run that cannot "
+                                "judge could stand green" % why)
     if not os.path.isfile(ratchet):
         refusals.append("`warm-edit` is wired but tools/speed_ratchet.py does not exist")
     else:
         text = open(ratchet, encoding="utf-8").read()
-        if "--warm" not in text or "skip cold-store" not in text:
-            refusals.append("tools/speed_ratchet.py does not judge `--warm` and honour "
-                            "the cold-store skip word")
+        if "--warm" not in text:
+            refusals.append("tools/speed_ratchet.py does not judge `--warm`")
+        elif "skip warm-edit" not in text and "skip cold-store" not in text:
+            refusals.append("tools/speed_ratchet.py does not refuse the warm-edit skip marker")
     if not refusals:
-        return [], ["warm-edit: `make warm-edit` is a keeper, self-tested, and a cold store skips with a word"]
+        return [], ["warm-edit: `make warm-edit` is a keeper, self-tested, and a run that cannot judge "
+                    "FAILS (only WARM_EDIT_SKIP stands it down)"]
     return refusals, []
 
 
@@ -432,8 +445,11 @@ rt-header:
     with tempfile.TemporaryDirectory() as d:
         good_bench = os.path.join(d, "bench.sh")
         good_ratchet = os.path.join(d, "ratchet.py")
-        open(good_bench, "w").write('echo "skip cold-store"\n')
-        open(good_ratchet, "w").write('print("--warm skip cold-store")\n')
+        # the shape the law wants: the marker, the one opt-out, a FAILURE
+        open(good_bench, "w").write(
+            '[ -d .avra-cache ] || { echo "this is a FAILURE"; echo "skip warm-edit"; '
+            '[ -z "${WARM_EDIT_SKIP:-}" ] || exit 0; exit 1; }\n')
+        open(good_ratchet, "w").write('print("--warm skip warm-edit WARM_EDIT_SKIP")\n')
         good = (make.replace("KEEPERS_B = fingerprints vocab rt-header",
                              "KEEPERS_B = fingerprints vocab rt-header warm-edit")
                 + "warm-edit:\n\t@python3 tools/speed_ratchet.py --self-test\n\t@sh tools/warm_edit_bench.sh\n")
@@ -443,11 +459,17 @@ rt-header:
         bad = make + "warm-edit:\n\t@sh tools/warm_edit_bench.sh\n"
         assert any("KEEPERS" in x for x in check_warm_edit(bad, good_bench, good_ratchet)[0]), \
             check_warm_edit(bad, good_bench, good_ratchet)
-        # a bench with no skip word is refused
+        # a bench with no skip marker is refused
         silent = os.path.join(d, "silent.sh")
         open(silent, "w").write('echo measured\n')
-        assert any("SKIP WITH A WORD" in x for x in check_warm_edit(good, silent, good_ratchet)[0]), \
+        assert any("skip warm-edit" in x for x in check_warm_edit(good, silent, good_ratchet)[0]), \
             check_warm_edit(good, silent, good_ratchet)
+        # a bench that names the marker but still exits 0 is the silent pass
+        # this invariant exists to refuse: no FAILURE, no opt-out
+        green = os.path.join(d, "green.sh")
+        open(green, "w").write('echo "skip warm-edit"; exit 0\n')
+        assert any("FAILURE" in x for x in check_warm_edit(good, green, good_ratchet)[0]), \
+            check_warm_edit(good, green, good_ratchet)
         # a missing bench, once the target is a keeper, is refused
         assert any("does not exist" in x for x in
                    check_warm_edit(good, os.path.join(d, "nope.sh"), good_ratchet)[0]), \
