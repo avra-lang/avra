@@ -21,18 +21,7 @@ use @std.avrac.compiler.{
 }
 use @std.avrac.core.{joined, distinct, some_list}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, stem_of}
-use @std.process.{
-    Tool,
-    tool,
-    cmd,
-    Command,
-    Exit,
-    Streams,
-    inherited,
-    ProcessError,
-    tool_from_env,
-    exit,
-}
+use @std.process.{Tool, tool_at, cmd, Command, Exit, Streams, inherited, ProcessError, exit}
 use @std.time.{now_ns}
 use @std.io.{exists, make_dirs, compile_slot, Entry}
 use @std.avrac.compiler.backend.{emit_ll}
@@ -83,7 +72,24 @@ fn wasm_linkers(ws: Workspace) -> List<Stamp> {
     [s for w in words for s in some_list(ws.tool(w))]
 }
 
-/// The tools the host found, of those asked for.
+/// A tool a word names, read through the door: the stamp's path with the
+/// word's own record — never a second lookup. Absence is `NotFound`, the
+/// word answering no tool.
+export fn tool(word: string) -> Result<Tool, ProcessError> {
+    let stamp? = disk_host().found(word).as_stamp() else {
+        return .Err(ProcessError.NotFound(word, env_of(disk_host(), "PATH") ?? ""))
+    }
+    .Ok(tool_at(word, stamp.path))
+}
+
+/// A tool named by the environment through the door (`NODE`), else the
+/// fallback word.
+export fn tool_from_env(var: string, fallback: string) -> Result<Tool, ProcessError> {
+    let named = env_of(disk_host(), var) ?? ""
+    tool(if named.is_empty() { fallback } else { named })
+}
+
+/// The tools the door read, of those asked for.
 fn found(asked: List<Result<Tool, ProcessError>>) -> List<Tool> {
     [t for r in asked for t in match r { .Ok(t) -> [t], .Err(_) -> [] }]
 }
@@ -105,8 +111,9 @@ fn links_wasm(clang: Tool, triple: string) -> bool {
     }
 }
 
-/// A tool the host found, as a program to run.
-fn ran(s: Stamp) -> Tool { Tool { name: s.path, path: s.path, terminator: null } }
+/// A tool the door read, from its stamp alone — the word it was asked
+/// by is the path it resolved to.
+fn ran(s: Stamp) -> Tool { tool_at(s.path, s.path) }
 
 /// THE WASM TOOLCHAIN THIS MACHINE HAS: the first C compiler, of those that
 /// may link, with a WASI libc for one of the triples `spelled` may mean — or

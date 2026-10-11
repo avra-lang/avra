@@ -684,6 +684,16 @@ impl Program {
         self.lowered_as(entry, every, false)
     }
 
+    /// Whether the program's ROOT waits: the entry file's own
+    /// expressions, or every file's when a `programs` binary runs them
+    /// all. A top-level `spawn` or waiting read is no declaration, so the
+    /// cancel pass cannot survey it; the driver knows the entry.
+    fn root_links(entry: int?, programs: bool) -> bool {
+        if entry != null { return self.ws.file_links_scheduler(self.files[entry!].view.file) }
+        if !programs { return false }
+        self.files.any((a) -> self.ws.file_links_scheduler(a.view.file))
+    }
+
     fn lowered_bodies(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
         // Every file this program reaches is typed by now (the
@@ -694,6 +704,13 @@ impl Program {
         // its callee's cancel bits, so that fact settles here too.
         touch(ws.references())
         touch(ws.cancel_reach())
+        // WHETHER THE PROGRAM LINKS A SCHEDULER: a member that spawns or
+        // waits, or a wait at the ENTRY ROOT's top level — the root is no
+        // declaration, so the cancel pass cannot see it. Settled once
+        // here, before any body lowers, so every `while` of the program
+        // is judged by one bit. A library that runs no top-level
+        // statement (`entry` null, `programs` false) has no root.
+        ws.decls.record_schedulers(ws.members_link_scheduler() || self.root_links(entry, programs))
         memory(
             self
                 .ws

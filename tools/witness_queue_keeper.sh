@@ -42,10 +42,13 @@ keep 0 || say "(a) the pass failed"
 keep 1 || say "(b) the pass failed"
 [ "$(tr '\n' ' ' < "$log")" = "COMMENT " ] || say "(b) a dropped PR drew: $(tr '\n' ' ' < "$log")"
 
-# (c) three failed trains: held as a draft, told, never enqueued.
+# (c) three failed trains: told once, and NEVER drafted — a draft is
+# permanently unlandable, and the watcher takes one ready, so drafting
+# would fight it forever.
 keep 3 || say "(c) the pass failed"
-grep -q DRAFT "$log" || say "(c) a thrice-failed PR was not held as a draft"
+grep -q COMMENT "$log" || say "(c) a thrice-failed PR was not told"
+! grep -q DRAFT "$log" || say "(c) the keeper drafted a PR"
 ! grep -q ENQUEUE "$log" || say "(c) the keeper enqueued"
 
-[ "$fail" -eq 0 ] && echo "witness_queue_keeper: 3 proved — the keeper tells and holds, and never enqueues"
+[ "$fail" -eq 0 ] && echo "witness_queue_keeper: 3 proved — the keeper tells, never drafts, and never enqueues"
 exit "$fail"
