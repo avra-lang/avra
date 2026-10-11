@@ -191,6 +191,12 @@ def budget_text(rows):
         "# speed_ratchet.py --wall in the `test` job): `ci-wall wall <job> <ms>` and",
         "# `ci-wall wall total <ms>`, held HARD. `total` is the sum of the jobs'",
         "# own clocks, so no queue between them inflates it.",
+        "#",
+        "# The `ci-wall` ceilings are the FULL-GATE PR's: the merge queue is gone and",
+        "# the PR itself is the gate (keepers, seed-check and the suites included), so",
+        "# a PR that builds its own compiler costs ~16 min of `prepare` and ~70 min of",
+        "# summed job clock. They were first set for the fast floor and refused every",
+        "# PR; these are calibrated from the completed runs that measured the gate.",
     ]
     body = ["%s %s %s %d" % (h, c, p, rows[(h, c, p)]) for (h, c, p) in sorted(rows)]
     return "\n".join(head + body) + "\n"

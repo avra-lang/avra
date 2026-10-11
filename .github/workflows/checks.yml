@@ -807,6 +807,7 @@ jobs:
       actions: read
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@v4
       # A PART OF THE GATE IS NO VERDICT: a run asked for with `only` set posts
       # a failing `test`, so it can never stand as the required check on a
       # commit. Its jobs' own results say what it found.
@@ -815,17 +816,19 @@ jobs:
         run: |
           echo "test: NOT A VERDICT — this run was asked for with only=${{ inputs.only }}; read the jobs it ran"
           exit 1
+      # THE VERDICT NAMES ITS ARITHMETIC: the `test` job's own `needs:` is the
+      # expected set and the run's `needs` JSON is what happened, so a skipped
+      # leg BY DESIGN is green, a failure is refused by name, and a job the
+      # gate owed but the run did not report is refused too (tools/ci_verdict.py).
       - name: verdict
         run: |
           echo '${{ toJSON(needs) }}' > needs.json
-          python3 -c "import json,sys; n=json.load(open('needs.json')); print(json.dumps(n, indent=2)); bad=[k for k,v in n.items() if v['result'] not in ('success','skipped')]; print('test: PASSED' if not bad else 'test: FAILED — '+', '.join(bad)); sys.exit(1 if bad else 0)"
+          python3 tools/ci_verdict.py --needs needs.json --workflow .github/workflows/checks.yml --job test
       # THE WALL-CLOCK BUDGET: this PR check's per-job and whole wall time,
       # ratcheted in tools/speed.budget. It reads the run's own jobs as GitHub
       # reports them, so the queue and the hand-downs count; a ceiling may only
       # fall (`make speed-accept`), and a host with no row is said out loud and
       # not gated rather than passed in silence.
-      - if: always() && github.event_name == 'pull_request'
-        uses: actions/checkout@v4
       - if: always() && github.event_name == 'pull_request'
         name: wall budget
         timeout-minutes: 4
