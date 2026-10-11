@@ -2424,7 +2424,7 @@ static void the_cap_drops_the_middle(void) {
 }
 
 // The program's own run keeps its frames as a task's record keeps its
-own.
+// own.
 static void the_programs_own_run_pushes(void) {
     void* a = frame_marked(7);
     avra_unwind_push(a);
