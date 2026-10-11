@@ -349,7 +349,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept warm-edit
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -715,12 +715,11 @@ http-cites:
 dogfooding-rules:
 	@./build/avra rules --check-markdown DOGFOODING.md
 
-# THE FAMILY ORDINALS ARE APPEND-ONLY. A family ordinal is a durable
-# address — rows, kept caches and witnesses key by it — so the enum's
-# declared order is a contract. tools/families.order is that contract;
-# an inserted, moved or removed variant breaks its prefix and is
-# refused before it compiles (the node-variant law, one space over).
-families:
+# THE HAND-WRITTEN FAMILIES MAY ONLY FALL. Every `@family` marker is a
+# family not yet a `@query`; the count may only fall and the ceiling in
+# tools/families.ceiling is lowered as one converts. A family is keyed
+# by its NAME, so declaration order is free and no ordinal is durable.
+families-left:
 	@python3 tools/families.py
 
 # THE LAYERING IS ONE-WAY: no `use` names a layer above its own, and
@@ -904,7 +903,7 @@ no-threads:
 # drives the same clocked tests, so it stands here beside them.
 KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost speed-ratchet warm-edit codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
-KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+KEEPERS_B = fingerprints vocab families-left layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
@@ -928,7 +927,7 @@ tool-witnesses:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites
+KEEPERS_STATIC = fingerprints vocab families-left layers inputs cited http-cites externs suites
 .PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
@@ -1099,7 +1098,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
-gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families layers codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
