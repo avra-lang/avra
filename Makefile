@@ -350,7 +350,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept warm-edit
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -715,6 +715,14 @@ http-cites:
 dogfooding-rules:
 	@./build/avra rules --check-markdown DOGFOODING.md
 
+# THE PIPELINE DOCUMENT'S COMMANDS RESOLVE: every `make <target>` and
+# `tools/` path in docs/2026_10_11_THE_PIPELINE.md names something the
+# tree holds. A command the tree no longer carries is refused here
+# rather than read as current. A name kept as a HISTORICAL negative
+# example stands in tools/pipeline_doc.allow with its reason.
+pipeline-doc:
+	@python3 tools/pipeline_doc.py
+
 # THE FAMILY ORDINALS ARE APPEND-ONLY. A family ordinal is a durable
 # address — rows, kept caches and witnesses key by it — so the enum's
 # declared order is a contract. tools/families.order is that contract;
@@ -762,6 +770,21 @@ speed-ratchet:
 speed-accept:
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@python3 tools/speed_ratchet.py --accept
+
+# THE WALL-CLOCK RATCHET: a PR check's per-job and whole wall time, held in
+# the same tools/speed.budget the phase ratchet reads (ONE file, ONE reader),
+# measured by tools/ci_wall.py from a run's own jobs and judged in the `test`
+# job of every PR run. A ceiling may only fall: this lowers it to a run's
+# measured times and never raises one. Point it at a run's metrics with
+# `make wall-accept WALL=<file>`, where the file is
+# `python3 tools/ci_wall.py --repo <o/r> --run <id> collect`.
+WALL ?= wall.metrics
+wall-ratchet:
+	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@python3 tools/speed_ratchet.py --wall --raw "$(WALL)"
+wall-accept:
+	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@python3 tools/speed_ratchet.py --wall --accept --raw "$(WALL)"
 
 # THE DB 07 WARM-EDIT GATE, HARD (avra-8sb5.57.176): an unchanged
 # `check packages/cli` <= 60 ms and one body edit <= 300 ms (goal 150),
@@ -904,7 +927,7 @@ no-threads:
 # drives the same clocked tests, so it stands here beside them.
 KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost speed-ratchet warm-edit codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
-KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack pipeline-doc \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
@@ -918,7 +941,7 @@ keepers keepers-alone keepers-a keepers-b:
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
-                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh witness_compiler_release.sh work_test.sh reclaim_test.sh
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh witness_compiler_release.sh witness_ci_wall.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
@@ -928,8 +951,8 @@ tool-witnesses:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites
-.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr
+KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites pipeline-doc
+.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr pipeline-doc
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@fail=0; for k in $(KEEPERS_STATIC); do \

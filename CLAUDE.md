@@ -2045,6 +2045,10 @@ Runtime facts, ours to ratify:
 
 ## How work lands
 
+The single source for the landing path, Sprites, the watcher and the
+CI gates is `docs/2026_10_11_THE_PIPELINE.md`; the section below is the
+doctrine it expands.
+
 - ALL WORK MOVES THROUGH SEVEN COMMANDS, and nothing else touches main:
 
       sh tools/work new <name>   # a worktree ../avra-<name> off main, and its Sprite
