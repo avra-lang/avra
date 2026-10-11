@@ -21,7 +21,7 @@ impl Workspace {
     /// deferred statement.
     fn cleanup_voices(files: List<FileId>) -> List<Diag> {
         flatten(
-            [self.cleanup_of(x.id) for x in self.decls.all_decls() if self.cancel_member(x.id) && files.any(it.index == x.file.index)],
+            [self.cleanup_of(x.id) for x in self.decls.all_decls() if self.cancel_member(x.id) && files.contains(x.file)],
         )
     }
 
@@ -30,9 +30,7 @@ impl Workspace {
         let s = self.cancel_survey(d)
         let store = s.view.store
         let tag = store.tag_stmt(Stmt.Defer(ExprId { index: 0 }, false))
-        flatten(
-            [cleanup_at(self, s, st) for st in store.stmts_by_kind(0, store.stmts.count(), tag)],
-        )
+        flatten([self.cleanup_at(s, st) for st in store.stmts_by_kind(0, store.stmts.count(), tag)])
     }
 
     /// Every park in the deferred body `at` that no `within` written in
@@ -52,18 +50,30 @@ impl Workspace {
         let reader = WaitReader { view: s.view, names: s.names, facts: s.facts }
         [Unbounded { node: e, wait: w } for w in reader.node_waits(e) if self.wait_links(w)]
     }
-}
 
-/// One deferred statement's refusal, at the first park no `within` of
-/// its body bounds. A statement outside this declaration is skipped:
-/// the statement table is whole-file.
-fn cleanup_at(ws: Workspace, s: CancelSurvey, st: StmtId) -> List<Diag> {
-    let lam? = defer_lambda(s.view.store, st) else { return [] }
-    let body? = s.view.store.lambda_parts(lam)?.body else { return [] }
-    if !s.in_reach(body) { return [] }
-    let at? = s.view.store.expr_span(body) else { return [] }
-    let stopped? = ws.cleanup_parks(s, at).first() else { return [] }
-    [unbounded_cleanup(ws, s, st, stopped)]
+    /// One deferred statement's refusal, at the first park no `within` of
+    /// its body bounds. A statement outside this declaration is skipped:
+    /// the statement table is whole-file.
+    fn cleanup_at(s: CancelSurvey, st: StmtId) -> List<Diag> {
+        let lam? = defer_lambda(s.view.store, st) else { return [] }
+        let body? = s.view.store.lambda_parts(lam)?.body else { return [] }
+        if !s.in_reach(body) { return [] }
+        let at? = s.view.store.expr_span(body) else { return [] }
+        let stopped? = self.cleanup_parks(s, at).first() else { return [] }
+        [self.unbounded_cleanup(s, st, stopped)]
+    }
+
+    /// The voice: a deferred body that waits, with no bound it wrote.
+    fn unbounded_cleanup(s: CancelSurvey, st: StmtId, stopped: Unbounded) -> Diag {
+        let word = if runs_on_error(s.view.store, st) { "errdefer" } else { "defer" }
+        refusal(
+            "flow.unbounded_cleanup",
+            s.view.loc_of(stopped.node),
+            "this `${word}`'s body waits, and no `within` it writes bounds the wait — it ${self.wait_said(stopped.wait)}",
+            "waits here",
+            "bound the cleanup in its own body — `defer { within ms(100) { … } }`",
+        )
+    }
 }
 
 /// The lambda a `defer`/`errdefer` statement carries.
@@ -88,17 +98,4 @@ fn within_bounds(store: SyntaxArena, e: ExprId, at: Span) -> List<Span> {
 fn inside(inner: Span?, outer: Span) -> bool {
     let i? = inner else { return false }
     i.lo >= outer.lo && i.hi <= outer.hi
-}
-
-// ── the voice ──
-
-fn unbounded_cleanup(ws: Workspace, s: CancelSurvey, st: StmtId, stopped: Unbounded) -> Diag {
-    let word = if runs_on_error(s.view.store, st) { "errdefer" } else { "defer" }
-    refusal(
-        "flow.unbounded_cleanup",
-        s.view.loc_of(stopped.node),
-        "this `${word}`'s body waits, and no `within` it writes bounds the wait — it ${ws.wait_said(stopped.wait)}",
-        "waits here",
-        "bound the cleanup in its own body — `defer { within ms(100) { … } }`",
-    )
 }
