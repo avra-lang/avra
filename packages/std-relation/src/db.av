@@ -217,7 +217,8 @@ impl Db {
     /// each cell with.
     fn stamped_family(kernel: Kernel) -> int {
         let moved_at: Cell<Map<string, int>> = Cell.new({})
-        let family = kernel.family((cell: int) -> moved_at.get().get("${cell}") ?? 0)
+        let family = kernel.family()
+        kernel.set_verify(family, (cell: int) -> moved_at.get().get("${cell}") ?? 0)
         self.moves.put("${family}", moved_at)
         family
     }
@@ -524,15 +525,9 @@ impl Answers<V> {
         let slots = self.held
         let id = db.id
         let kernel = db.engine()
-        self
-            .placed(
-                db,
-                held_in(
-                    kernel,
-                    kernel.family((arg: int) -> reasked(slots.get()[id], arg)),
-                    db.cap.get(),
-                ),
-            )
+        let family = kernel.family()
+        kernel.set_verify(family, (arg: int) -> reasked(slots.get()[id], arg))
+        self.placed(db, held_in(kernel, family, db.cap.get()))
     }
 
     /// `made` kept as the answers under `db`, until the Db closes or is
