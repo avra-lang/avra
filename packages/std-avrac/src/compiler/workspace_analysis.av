@@ -632,8 +632,24 @@ impl Workspace {
     }
 
     /// The declaration a lowered body belongs to, by its symbol in that file.
+    /// A ROOT BODY IS A `const`'S INITIALIZER, named by its settle symbol
+    /// `settled_symbol(const_symbol(f, s), seats)` — `base` or `base@<fps>`.
+    /// The base matches EXACTLY, never as a prefix: `const_symbol` ends in
+    /// `const<index>`, so a prefix match resolves index 12 to index 1 and
+    /// holds the reader on the wrong declaration.
     fn decl_for_body(f: FileId, name: string) -> DeclId? {
-        [d for d in self.decls.decls_of_file(f) if self.decls.symbol(d) == name].first()
+        let by_symbol = [d for d in self.decls.decls_of_file(f) if self.decls.symbol(d) == name]
+            .first()
+        if by_symbol != null { return by_symbol }
+        let consts = [d for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Const]
+        let exact = [d for d in consts if name == self.const_base(f, d)].first()
+        if exact != null { return exact }
+        [d for d in consts if name.starts_with("${self.const_base(f, d)}@")].first()
+    }
+
+    /// A const declaration's plain settle base: its statement's `const_symbol`.
+    fn const_base(f: FileId, d: DeclId) -> string {
+        self.decls.const_symbol(f, self.decls.decl(d).stmt)
     }
 
     /// What `f`'s own run reads, recorded once its OUTCOME is known: `chain`
