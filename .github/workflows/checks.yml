@@ -1,6 +1,8 @@
-# THE MERGE QUEUE'S CHECK, SHARDED. A train used to be ONE serial job (~17
-# minutes: build, keepers, gate, then every affected package's suite one after
-# another). Now:
+# THE GATE. There is no merge queue: `main` requires the `test` check AND
+# that a branch be up to date with it, so the PR's own run IS the gate, on
+# the combination of `main` and the PR. A train used to be ONE serial job
+# (~17 minutes: build, keepers, gate, then every affected package's suite one
+# after another). Now:
 #   prepare  decides what the run owes, takes or builds the compiler ONCE,
 #            builds the C objects and package libraries ONCE, and hands both
 #            down as artifacts.
@@ -15,22 +17,21 @@
 #                  push, and on a PR that reaches the store or the attacks.
 #   test     the ONE required check name: an aggregate that passes iff every
 #            needed job succeeded or was skipped.
-# A PR RUNS THE MINIMUM, THE TRAIN RUNS THE GATE. A PR's own check is fmt on
-# its touched files and `check` on the AFFECTED closure (touched plus every
-# dependent) — no keepers, no suites, no object build — so a green PR is a
-# fast floor that still catches a dependent's broken compile, not a second
-# full gate. The train runs the keepers, the cache attacks, the seed check and
-# the suites over that same affected set on the COMBINATION, so nothing lands
-# untested. The watcher re-runs a PR's own failed jobs once.
-# A run asked for by hand (`gh workflow run checks --ref <branch>`) is a
-# train's over every package. The shards are packed by measured seconds
+# A PR RUNS THE GATE OVER ITS AFFECTED CLOSURE: with the queue gone the PR
+# is the train, so it pays the objects build, the keepers, the seed check and
+# the affected packages' suites — exactly what the combination needs. A PR
+# that touches no `.av`, no package and no compiler source still builds
+# nothing and owes nothing.
+# A run asked for by hand (`gh workflow run checks --ref <branch>`) runs the
+# whole gate over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
-# trades runner slots (the queue has ten) against wall time: four shards
-# leaves room for two trains at once.
+# trades runner slots against wall time: four shards keeps a PR's gate short.
 name: checks
 
 on:
   pull_request:
+  # A QUEUE'S EVENT IS STILL ACCEPTED, so a repo that re-enables one needs no
+  # edit here.
   merge_group:
   push:
     branches: [main]
@@ -258,18 +259,17 @@ jobs:
           path: build/avra
           retention-days: 1
       # THE C OBJECTS AND PACKAGE LIBRARIES, built ONCE and handed down to
-      # the jobs that run programs — the keepers, the seed check, the suites,
-      # and the cache attacks. A plain PR runs none of those (its check is fmt
-      # and idioms on the packages it touched), so it pays no object build at
-      # all; a PR that reaches the store runs the attacks and does.
-      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.plan.outputs.cache == '1')
+      # the jobs that run programs — the keepers, the seed check and the
+      # suites. A PR runs all three now, so it owes the objects build whenever
+      # it owes a compiler; a change that touches nothing builds nothing.
+      - if: steps.plan.outputs.build == '1'
         name: objects and libs
         # A cold C objects and package libraries build is minutes at most.
         timeout-minutes: 15
         run: |
           make -s -j"$(nproc)" -o avra objects libs || make -s -o avra objects libs
           tar -cf avra-build.tar --exclude=build/avra build
-      - if: steps.plan.outputs.build == '1' && (github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' || steps.plan.outputs.cache == '1')
+      - if: steps.plan.outputs.build == '1'
         uses: actions/upload-artifact@v4
         with:
           name: avra-build
@@ -325,7 +325,7 @@ jobs:
 
   keepers-a:
     needs: [prepare]
-    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'push' && needs.prepare.outputs.build == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -404,7 +404,7 @@ jobs:
   # never a second list kept in step by hand.
   keepers-b:
     needs: [prepare]
-    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'push' && needs.prepare.outputs.build == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -441,7 +441,7 @@ jobs:
   # land — and now a refusal is that job's, not the keepers'.
   seed-check:
     needs: [prepare]
-    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'push' && needs.prepare.outputs.build == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -574,10 +574,11 @@ jobs:
         run: make -s flow-gate FLOW_GATE_ARGS=--require
   suites:
     needs: [prepare]
-    # THE TRAIN'S, and a hand-run whole gate's. A PR's check does not run a
-    # suite: the train runs every AFFECTED package (dependents included) on
-    # the combination, which no single PR's tree can. A PR pays fmt + idioms.
-    if: needs.prepare.outputs.packages != '' && (github.event_name == 'merge_group' || (github.event_name == 'workflow_dispatch' && inputs.only == ''))
+    # A PR IS THE TRAIN, so the affected packages' suites run on it: with the
+    # queue gone and "up to date" required, the PR's tree already holds the
+    # combination the queue existed to test. A change that affects no package
+    # runs no suite.
+    if: needs.prepare.outputs.packages != '' && github.event_name != 'push'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
