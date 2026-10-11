@@ -70,6 +70,7 @@ static int g_pipe[2];
 static void* g_gate;
 static void* g_gates[6];
 static void* g_task;
+static void* g_pending;
 static int64_t g_handed = 0;
 static int64_t g_seen = 0;
 
@@ -535,6 +536,56 @@ static void cancel_twice(void) {
     avra_task_cancel(t);
     CHECK(ended(t) == 2 && g_byte_a == 1, "a second cancel by the same asker changes nothing");
     avra_clock_run_ends();
+}
+
+// A cancel is recorded with WHO ASKED: a task reads it back after the
+// end, and the asker is the task that called `avra_task_cancel`.
+static void* cancels_and_reads(void* self) {
+    (void)self;
+    avra_task_cancel(g_task);
+    avra_task_settle(g_task);
+    note(avra_task_ended_by(g_task));
+    return answer(avra_task_id());
+}
+
+static void a_cancel_names_its_asker(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    g_task = spawn1(cancelled_sleeper, 0);
+    g_log_len = 0;
+    avra_fiber_sleep(2);
+    int64_t asker = joined(spawn1(cancels_and_reads, 0));
+    CHECK(avra_task_ended(g_task) == 2, "the cancelled task ended cancelled");
+    CHECK(g_log_len == 1 && g_log[0] == asker, "and names the task that asked");
+    CHECK(avra_task_ended_by(g_task) == asker, "as the row reads it back");
+    avra_rc_release(g_task);
+    avra_clock_run_ends();
+}
+
+// A body that returns names itself; a task nothing runs names whoever
+// answered or cancelled it.
+static void* notes_its_id(void* self) { (void)self; note(avra_task_id()); return answer(7); }
+static void an_answer_names_the_task_itself(void) {
+    g_log_len = 0;
+    void* t = spawn1(notes_its_id, 0);
+    avra_task_settle(t);
+    CHECK(avra_task_ended(t) == 1 && g_log_len == 1 && avra_task_ended_by(t) == g_log[0], "a body that answered names itself");
+    avra_rc_release(t);
+}
+
+static void* cancels_a_pending(void* self) {
+    (void)self;
+    g_pending = avra_task_pending();
+    avra_task_cancel(g_pending);
+    note(avra_task_ended_by(g_pending));
+    return answer(avra_task_id());
+}
+static void a_fiberless_end_names_its_asker(void) {
+    g_log_len = 0;
+    void* t = spawn1(cancels_a_pending, 0);
+    int64_t asker = joined(t);
+    CHECK(g_log_len == 1 && g_log[0] == asker, "a task nothing runs names the task that cancelled it");
+    avra_rc_release(g_pending);
 }
 
 // ── one set at a time ───────────────────────────────────────────
@@ -2154,6 +2205,9 @@ int main(int argc, char** argv) {
     on_virtual_clock("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs);
     on_virtual_clock("the unwind bit is the running task's", the_bit_is_the_running_tasks);
     on_virtual_clock("a second cancel changes nothing", cancel_twice);
+    on_virtual_clock("a cancel names its asker", a_cancel_names_its_asker);
+    an_answer_names_the_task_itself();
+    a_fiberless_end_names_its_asker();
     in_child_within("a standing cancel parks no descriptor", a_standing_cancel_parks_no_descriptor, 5);
     on_virtual_clock("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join);
     trapped_on_virtual_clock("a join of a cancelled task", join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
