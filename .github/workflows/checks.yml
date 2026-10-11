@@ -64,6 +64,7 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       runtime: ${{ steps.plan.outputs.runtime }}
       cache: ${{ steps.plan.outputs.cache }}
+      codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +90,7 @@ jobs:
           build=1
           runtime=0
           cache=0
+          codecs=0
           if [ "$event" != push ] && [ -z "${{ inputs.only }}" ]; then
             changed=$(git diff --name-only --diff-filter=d origin/main HEAD -- '*.av' | tr '\n' ' ')
           fi
@@ -140,6 +142,15 @@ jobs:
           # The attacks need a compiler and its objects: a run that owes them
           # owes the build, even when the diff itself is only the harness.
           if [ "$cache" = 1 ]; then build=1; fi
+          # THE CODEC SCAN RUNS ON A PR WHOSE DIFF REACHES WHAT IT READS: the
+          # compiler's own source (any .av under packages/std-avrac/src) and
+          # the reader itself. The scan needs no compiler, so it is its own
+          # cheap job and can run whatever the build decided — and it names an
+          # unregistered encoder/decoder pair on the PR instead of one train
+          # later. The registry's round trip needs a whole compiler and stays
+          # with the train.
+          if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
+              packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
           shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py 4)
           {
@@ -148,10 +159,11 @@ jobs:
             echo "build=${build}"
             echo "runtime=${runtime}"
             echo "cache=${cache}"
+            echo "codecs=${codecs}"
             echo "key=avrac-${key}"
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
-          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime cache=$cache packages: $(echo $pkgs)"
+          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
       # tree whose compiler is main's takes main's binary and builds nothing.
       # Otherwise the newest cached binary only has to BUILD this tree — one
@@ -482,6 +494,22 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-cache-attacks-${{ github.sha }}
+  # THE CODEC SCAN ON A PR WHOSE DIFF REACHES THE COMPILER'S SOURCE. It
+  # reads the tree alone — no compiler, no objects, no artifacts — so it is
+  # seconds, and it names an unregistered encoder/decoder pair before the
+  # PR ever enters a train. `codecs-static` is the same half `codecs` runs.
+  codecs:
+    needs: [prepare]
+    if: github.event_name == 'pull_request' && needs.prepare.outputs.codecs == '1'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: codecs
+        run: make -s codecs-static
   gate:
     needs: [prepare]
     if: github.event_name != 'push' && (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '')
@@ -589,7 +617,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers-a, keepers-b, seed-check, flow-gate, cache-attacks, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, seed-check, flow-gate, cache-attacks, codecs, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
