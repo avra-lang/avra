@@ -289,9 +289,10 @@ jobs:
       #
       # THE OBJECTS ARE KEYED BY THE C THAT BUILT THEM, not by the compiler:
       # a `.av` change leaves every object identical, and `hashFiles` of the
-      # tree's C is the key that says so. A hit makes `make` a no-op (the
-      # restored objects are touched newer than the sources); a miss builds
-      # once and the save rides `push`/`workflow_dispatch` like the compiler.
+      # tree's C is the key that says so. AN EXACT hit makes `make` a no-op
+      # (the restored objects are touched newer than the sources); a miss
+      # builds once and the save rides `push`/`workflow_dispatch`. A PREFIX
+      # restore is NOT an exact hit (see `objects and libs`).
       - if: steps.plan.outputs.build == '1'
         uses: actions/cache/restore@v4
         id: objcache
@@ -305,7 +306,21 @@ jobs:
         name: objects and libs
         timeout-minutes: 15
         run: |
-          find build -type f -exec touch {} + 2>/dev/null || true
+          # A PREFIX RESTORE IS NOT THIS TREE'S OBJECTS. `restore-keys: objs-`
+          # can hand back an older key's objects; touching those would make
+          # them newer than the sources and hide a real change from `make` —
+          # a stale `avra_fiber.o` failed a link, and the stale objects were
+          # then SAVED under the new key, propagating the staleness to every
+          # later run. Only an EXACT key hit is this tree's own: touch it so
+          # `make` is a no-op. A miss DISCARDS the restored objects, so the
+          # build below is from source and what it SAVES is sound.
+          if [ "${{ steps.objcache.outputs.cache-hit }}" = "true" ]; then
+            find build -type f -exec touch {} + 2>/dev/null || true
+          else
+            # DISCARD A PREFIX RESTORE'S OBJECTS, whatever mtimes tar gave
+            # them, so the build below is from source and what SAVES is sound.
+            rm -f build/*.o build/*.a
+          fi
           timeout -k 10 900 make -s -j"$(nproc)" -o avra objects libs \
             || timeout -k 10 900 make -s -o avra objects libs \
             || { echo "::error::objects and libs exceeded their 900 s bound or failed"; exit 1; }
