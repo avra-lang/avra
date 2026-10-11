@@ -42,9 +42,9 @@ MUTATIONS = [
     ("code no row names is read as the first row's", "        if (rows[i].code == code) return rows[i].site;\n", "        return rows[i].site;\n"),
     ("the site table is read short by a row", "    for (size_t i = 0; i < n; i++) {\n        if (rows[i].code == code)", "    for (size_t i = 1; i < n; i++) {\n        if (rows[i].code == code)"),
     ("a virtual task's site is not in the trace", "    if (TRACING) traced_site(virtual_at(t), site, NULL);\n", ""),
-    ("a cancel displaces a claim", "    if (f->parked && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);", "    if (!(f->legacy && f->virtual)) { f->arm = -1; f->member = 0; if (f->parked) set_claimed(f, -1, 0, by); }"),
-    ("a cancel wakes an evaluated task's sleep or join", "    if (f->parked && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);", "    if (f->parked) set_claimed(f, -1, 0, by);"),
-    ("a cancel cuts no sleep, join or descriptor park", "    if (f->parked && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);", "    if (f->parked && !f->legacy) set_claimed(f, -1, 0, by);"),
+    ("a cancel displaces a claim", "    if (f->parked && !shield_scope_stands(f) && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);", "    if (!(f->legacy && f->virtual)) { f->arm = -1; f->member = 0; if (f->parked) set_claimed(f, -1, 0, by); }"),
+    ("a cancel wakes an evaluated task's sleep or join", "    if (f->parked && !shield_scope_stands(f) && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);", "    if (f->parked) set_claimed(f, -1, 0, by);"),
+    ("a cancel cuts no sleep, join or descriptor park", "    if (f->parked && !shield_scope_stands(f) && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);", "    if (f->parked && !f->legacy) set_claimed(f, -1, 0, by);"),
     ("a cancel is not passed down a scope's join", "    if (f->deaf && f->joining) { task_cancelled(f->joining, by); return; }\n", ""),
     ("a scope's end does not cancel what it owns", "    if (g_current->cancel_by != 0) task_cancelled(task, id_of(g_current));\n", ""),
     ("a scope's end is cut by a cancel", "    task_awaited(task, 1);", "    task_awaited(task, 0);"),
@@ -54,13 +54,28 @@ MUTATIONS = [
     ("a standing cancel lets a sleep park", "    if (cancel_stands(self)) return;\n    alone(self);\n    waits_until(", "    alone(self);\n    waits_until("),
     ("a standing cancel lets a join park", "    if (!deaf && cancel_stands(self)) return cells;\n", ""),
     ("a standing cancel lets a descriptor park", "    if (!f->virtual && cancel_stands(f)) { f->timed_out = 1; return 0; }\n", ""),
-    ("a yield is no cancel point", "    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n", "    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n"),
-    ("a cut yield stops switching", "    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n", "    if (__builtin_expect(g_current->cancel_by != 0, 0)) { cancel_met(); return; }\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n"),
+    ("a yield is no cancel point", "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n", "    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n"),
+    ("a cut yield stops switching", "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n", "    if (__builtin_expect(g_current->cancel_by != 0, 0)) { cancel_met(); return; }\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n"),
+    ("a scope opened under a shield is no shield scope", "f->shield_depth > 0 };", "0 };"),
+    ("a shield scope is not a shield scope", "    return f->scopes_n > 0 && scope_at(f, f->scopes_n - 1)->shield;", "    return 0;"),
+    ("a shield scope's wait is cut by a cancel", "    if (shield_scope_stands(f)) return 0;\n", ""),
+    ("a park under a shield scope is claimed by a cancel", "    if (f->cancel_by != 0 && !shield_scope_stands(f)) {", "    if (f->cancel_by != 0) {"),
+    ("a cancel claims a shield scope's parked wait", "f->parked && !shield_scope_stands(f) && !(f->legacy", "f->parked && !(f->legacy"),
+    ("a shield scope's limit is dropped by a task cancel", "    if (f->cancel_by != 0 && !scope_at(f, f->owner)->shield) {", "    if (f->cancel_by != 0) {"),
+    ("a shielded back-edge raises its cancel", "    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();", "    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();"),
+    ("a shielded yield raises its cancel", "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();", "    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();"),
+    ("the shield never saves or clears the bit", "    if (f->shield_depth++ == 0) {\n        f->shield_saved = *bit;\n        *bit = 0;\n    }\n", "    f->shield_depth++;\n"),
+    ("the shield saves and clears on every bracket", "    if (f->shield_depth++ == 0) {\n        f->shield_saved = *bit;\n        *bit = 0;\n    }\n", "    f->shield_saved = *bit;\n    *bit = 0;\n    f->shield_depth++;\n"),
+    ("the shield never puts the saved bit back", "    if (--f->shield_depth == 0) *bit |= f->shield_saved;\n", ""),
+    ("the shield overwrites a bit raised inside", "    if (--f->shield_depth == 0) *bit |= f->shield_saved;\n", "    if (--f->shield_depth == 0) *bit = f->shield_saved;\n"),
+    ("the shield restores on every bracket", "    if (f->shield_depth == 0) return;\n    if (--f->shield_depth == 0) *bit |= f->shield_saved;", "    if (f->shield_depth == 0) return;\n    f->shield_depth--;\n    *bit = f->shield_saved;"),
+    ("the evaluator's set does not raise the bit", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { (void)t; (void)v; }"),
+    ("the shield's enter is its leave", "void avra_fiber_shield_enter(void) { shield_entered(g_current, &avra_unwinding); }", "void avra_fiber_shield_enter(void) { shield_left(g_current, &avra_unwinding); }"),
     ("a cut join hands back an answer that does not exist", "    if (!cells[GATE_OPEN]) join_cut();\n", ""),
     ("the switch leaves the unwind bit where it was", "    self->unwinding = avra_unwinding;\n    avra_unwinding = next->unwinding;\n    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller", "    avra_fiber_switch(&self->sp, next->sp);\n    bury_finished();\n}\n\n// The caller"),
     ("a body that unwinds ends answered", "    cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;", "    cells[TASK_END] = END_ANSWERED;"),
-    ("a cancel is not heard at the next wait", "    if (f->cancel_by != 0) { set_claimed(f, -1, 0, f->cancel_by - 1); return 0; }\n", ""),
-    ("a standing cancel is answered before a claim made while arming", "    if (f->claimed) return 0;\n    if (f->cancel_by != 0) {", "    if (f->cancel_by != 0 && f->claimed) { f->arm = -1; f->member = 0; return 0; }\n    if (f->claimed) return 0;\n    if (f->cancel_by != 0) {"),
+    ("a cancel is not heard at the next wait", "    if (f->cancel_by != 0 && !shield_scope_stands(f)) { set_claimed(f, -1, 0, f->cancel_by - 1); return 0; }\n", ""),
+    ("a standing cancel is answered before a claim made while arming", "    if (f->claimed) return 0;\n    if (f->cancel_by != 0 && !shield_scope_stands(f)) {", "    if (f->cancel_by != 0 && f->claimed) { f->arm = -1; f->member = 0; return 0; }\n    if (f->claimed) return 0;\n    if (f->cancel_by != 0 && !shield_scope_stands(f)) {"),
     ("a task that ends leaves its waits filed", "    retract(self);\n    self->claimed = 0;\n    waiter_out(&self->due);\n", "    waiter_out(&self->due);\n"),
     ("a task that ends leaves its deadline filed", "    retract(self);\n    self->claimed = 0;\n    waiter_out(&self->due);\n", "    retract(self);\n    self->claimed = 0;\n"),
     ("the deadline wakes a sleep or a join", "    if (f->parked && f->heeds) set_claimed(f, -1, 1, BY_DEADLINE);", "    if (f->parked) set_claimed(f, -1, 1, BY_DEADLINE);"),
@@ -73,7 +88,7 @@ MUTATIONS = [
     ("a child does not inherit its spawner's deadline", "    scope_inherited(f, g_current);\n", ""),
     ("a virtual child does not inherit its spawner's deadline", "void avra_vtask_inherits(int64_t t, int64_t from) { scope_inherited(virtual_at(t), virtual_at(from)); }", "void avra_vtask_inherits(int64_t t, int64_t from) { (void)t; (void)from; }"),
     ("a child inherits the owner over the standing request", "from->scope_by != 0 ? scope_at(from, from->armed) :", "from->scope_by != 0 ? scope_at(from, from->owner) :"),
-    ("a child inherits a copy of its spawner's id", "    child->scope[0] = (Scope){ s->id, s->at, 0 };", "    child->scope[0] = (Scope){ s->id + 1, s->at, 0 };"),
+    ("a child inherits a copy of its spawner's id", "    child->scope[0] = (Scope){ .id = s->id, .at = s->at, .first = 0, .shield = 0 };", "    child->scope[0] = (Scope){ .id = s->id + 1, .at = s->at, .first = 0, .shield = 0 };"),
     ("the inner scope owns a tie", "        if (scope_at(f, outer)->at <= at) first = outer;", "        if (scope_at(f, outer)->at < at) first = outer;"),
     ("an opened scope never owns the limit", "    uint32_t first = i;\n    if (i > 0) {", "    uint32_t first = 0;\n    if (i > 0) {"),
     ("an opened scope always owns the limit", "        if (scope_at(f, outer)->at <= at) first = outer;\n", ""),
@@ -87,7 +102,7 @@ MUTATIONS = [
     ("a landed request stands on", "    if (landed) f->scope_by = 0;\n", ""),
     ("a scope's end leaves the owner as it was", "    if (f->armed > n) {\n        f->armed = n;\n        owner_found(f);\n    }\n", ""),
     ("a fifth scope is written over the fourth", "    return i < SCOPES ? (Scope*)&f->scope[i] : &f->deeper[i - SCOPES];", "    return i < SCOPES ? (Scope*)&f->scope[i] : (Scope*)&f->scope[SCOPES - 1];"),
-    ("a scope's limit outranks a task's cancel", "    if (f->cancel_by != 0) {\n        if (TRACING) traced_dropped(f, id, f->cancel_by);\n        f->armed = 0;\n        f->deadline = 0;\n        return;\n    }\n", ""),
+    ("a scope's limit outranks a task's cancel", "    if (f->cancel_by != 0 && !scope_at(f, f->owner)->shield) {\n        if (TRACING) traced_dropped(f, id, f->cancel_by);\n        f->armed = 0;\n        f->deadline = 0;\n        return;\n    }\n", ""),
     ("a dropped request is not traced", "        if (TRACING) traced_dropped(f, id, f->cancel_by);\n", ""),
     ("an inner request stays when the outer's limit passes", "    f->scope_by = id;\n    f->armed = f->owner;", "    if (f->scope_by == 0) f->scope_by = id;\n    f->armed = f->owner;"),
     ("an inner scope may ask after the outer did", "    f->scope_by = id;\n    f->armed = f->owner;", "    f->scope_by = id;"),
@@ -134,8 +149,8 @@ MUTATIONS = [
     ("schedule 0 preempts like any other", "    if (g_schedule == 0) { return 0; }\n", ""),
     ("the seeded draw is not the schedule's", "    return (uint32_t)chosen(TICK_TURNS) + 1;", "    return 1;"),
     ("the switch ignores the tick", "    return __builtin_expect(!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) && left > 0, 1);", "    return __builtin_expect(left > 0, 1);"),
-    ("the tick's cold side ignores a due timer", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    if (g_timers_len > 0) fire_due_timers(now_ns());\n    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}"),
-    ("the tick's cold side ignores a deadline", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n"),
+    ("the tick's cold side ignores a due timer", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    if (g_timers_len > 0) fire_due_timers(now_ns());\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:\n    // a task that never waits files no deadline, so the cold side asks here.\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n    if (g_ready_head != NULL) avra_fiber_yield();\n}"),
+    ("the tick's cold side ignores a deadline", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.\n    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();\n", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n"),
     ("the evaluator's cold side ignores a deadline", "    if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;\n", ""),
     ("a compiled back-edge draws inside an evaluated run", "void avra_tick_cold(void) {\n    if (g_runs > 0) return;\n", "void avra_tick_cold(void) {\n"),
     ("a scope's opening arms no source", "    __atomic_store_n(&avra_tick_wanted, 1, __ATOMIC_RELAXED);\n", ""),
@@ -205,6 +220,10 @@ MUTATIONS = [
     ("the evaluator asks the poller at every switch", [("    Fiber* next = next_ready();\n    g_vnext_asking = 0;", "    Fiber* next = next_with_world();\n    g_vnext_asking = 0;"), ("    if (g_until_poll > 0) return;\n", "")], None),
     ("a join answers a cancelled task", "    if (cells[TASK_END] == END_CANCELLED) join_refused();\n", ""),
     ("a fired timer's task answers nothing", "    cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;\n", "    avra_rc_release(unit);\n"),
+    ("a cancelled end names itself", "    cells[TASK_BY] = avra_unwinding ? (self->cancel_by ? self->cancel_by - 1 : self->scope_by) : id_of(self);\n", "    cells[TASK_BY] = id_of(self);\n"),
+    ("a task's end records no asker", "    cells[TASK_END] = how;\n    cells[TASK_BY] = by;\n", "    cells[TASK_END] = how;\n"),
+    ("the ended-by row answers the end, not the asker", "    return task_cells(task)[TASK_BY];\n}", "    return task_cells(task)[TASK_END];\n}"),
+    ("the ended-by row answers no asker", "int64_t avra_task_ended_by(void* task) {\n    return task_cells(task)[TASK_BY];\n}", "int64_t avra_task_ended_by(void* task) {\n    (void)task;\n    return 0;\n}"),
     ("a virtual claim names whoever the host runs", "    return gate_claimed(gate, id_of(virtual_at(t)));", "    return gate_claimed(gate, id_of(g_current));"),
     ("a virtual task's end is not traced", "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", ""),
     ("a virtual task keeps the policy's count for its id", "    virtual_at(t)->own.id = id;\n", ""),
@@ -265,6 +284,22 @@ HOST_MUTATIONS = [
 ]
 TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
 BOUND = 60
+# A BREAK LIVES INSIDE ITS OWN TEST. A mutation that makes the scheduler
+# spawn threads or processes without bound would otherwise exhaust the
+# runner's process ceiling before any FAILING line is read — the runner
+# itself, not the keeper, is what dies. So each mutated test runs with a
+# ceiling on the processes it may own and on its address space (a thread's
+# stack is address space, which caps a thread bomb even where RLIMIT_NPROC
+# is not enforced for root). Both are fixed here, never derived from the
+# machine or the mutation count; a test that hits one fails as any broken
+# test does, and the mutation is recorded killed.
+TEST_PROCS = 2048
+TEST_AS_KB = 4 * 1024 * 1024
+# THE WORKER COUNT IS A FIXED BOUND, NEVER A FUNCTION OF THE RUNNER. Each
+# worker runs a compiler and then a test, so a count derived from the CPU
+# count multiplied the live process tree until a large runner hit its fork
+# limit. Four workers on every machine.
+WORKERS = 4
 # A MUTATED TEST CAN PRINT WITHOUT BOUND: `capture_output` would hold every
 # byte in THIS process, so a print loop would grow the suite's memory until it
 # was gone. A test's words go to a file whose size RLIMIT_FSIZE caps (SIGXFSZ
@@ -306,7 +341,8 @@ def tried(numbered):
         subprocess.run(["cc", "-O2", *flags, "-o", f"{here}/{test}", f"{out}/{test}.o", f"{here}/{which}.o", *rest[which]], check=True, capture_output=True)
         log = f"{here}/{test}.log"
         with open(log, "wb") as lf:
-            ran = subprocess.Popen(["sh", "-c", f'ulimit -f {LOG_CAP_BLOCKS}; exec "$0"', f"{here}/{test}"],
+            limiter = (f'ulimit -f {LOG_CAP_BLOCKS}; ulimit -u {TEST_PROCS}; ulimit -v {TEST_AS_KB}; exec "$0"')
+            ran = subprocess.Popen(["sh", "-c", limiter, f"{here}/{test}"],
                                    stdout=lf, stderr=subprocess.STDOUT, start_new_session=True)
             try:
                 rc = ran.wait(timeout=BOUND)
@@ -325,7 +361,8 @@ def tried(numbered):
     return name, "alive", ""
 
 
-with ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) // 2)) as pool:
+print(f"runtime-mutations: {WORKERS} workers over {len(ALL)} breaks", file=sys.stderr)
+with ThreadPoolExecutor(max_workers=WORKERS) as pool:
     results = list(pool.map(tried, enumerate(ALL)))
 for name, how, by in results:
     print(f"  {name}: " + {"killed": f"killed by {by}", "alive": "SURVIVED every runtime test", "rotten": by}[how])
