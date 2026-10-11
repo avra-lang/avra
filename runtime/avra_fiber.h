@@ -42,8 +42,15 @@ void avra_task_settle_all(void* list);
 // owner first sheds the tasks that have finished.
 void avra_tasks_push(void* owner, void* task);
 
-// The task's answer, owned — parking the caller until it is done.
+// The task's answer, owned — parking the caller until it is done. A
+// task that ended cancelled passes its cancel to the caller (the
+// unwind bit is set) and hands back NULL.
 void* avra_task_join(void* task);
+
+// A caught join: waits for the task to end WITHOUT passing its cancel
+// to the caller; answers a two-cell `Cancelled` box (the asker's id,
+// the site) when the task ended cancelled, NULL when it answered.
+void* avra_task_join_caught(void* task);
 
 // 1 when the task has answered, else 0. Never parks.
 int64_t avra_task_done(void* task);
@@ -105,8 +112,9 @@ void* avra_task_at(int64_t at_ns);
 void avra_task_answer(void* task, void* v);
 // Records a cancel on the task and claims its set when nothing has —
 // a claim is never displaced: the task resumes on its arm and hears the
-// cancel at its next cancel point. A sleep and a descriptor park are
-// cut; a join is cut and traps. A fiberless task ends, unanswered.
+// cancel at its next cancel point. A sleep, a descriptor park and a
+// join are cut; a join passes the cancel on. A fiberless task ends,
+// unanswered.
 void avra_task_cancel(void* task);
 
 // A `within`'s scope opens on the calling task with its own limit, `ms`
