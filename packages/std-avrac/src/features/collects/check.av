@@ -9,10 +9,12 @@ use core.{
     StmtId,
     TypeId,
     FileId,
+    DeclId,
     CollectKind,
     CollectScope,
     Projection,
     Plain,
+    same_file,
     joined,
     sorted_by,
     list_eq,
@@ -75,9 +77,23 @@ fn checked_trait(mut cx: TypeCx, owner: string, t: ExprId, members: List<Decl>) 
         if cx.bound_decl(t) != null { cx.emit(no_trait(cx.loc_of(t), owner, word)) }
         return
     }
+    let derive: DeclId? = cx.view.decls.trait_derive(tr)
     for m in members {
-        if !cx.view.decls.implements(m.id, tr) { cx.emit(unimplemented(member_loc(cx.view.decls, m), owner, word, m.name)) }
+        if !cx.view.decls.implements(m.id, tr) && !derived_from_elsewhere(cx.view.decls, derive, m) {
+            cx.emit(unimplemented(member_loc(cx.view.decls, m), owner, word, m.name))
+        }
     }
+}
+
+/// Whether a member's impl of the trait is DERIVED rather than written:
+/// the trait declares `derive`, and its derive runs from another file —
+/// one in the member's own file would re-enter a file still
+/// registering, the same guard a written `@derive(T)` keeps. Such a
+/// member is filled by the collect enum's own expansion, never refused
+/// here.
+fn derived_from_elsewhere(decls: Decls, derive: DeclId?, m: Decl) -> bool {
+    if derive == null { return false }
+    !same_file(decls.decl(derive!).file, m.file)
 }
 
 /// Where a member is declared, in its own file.

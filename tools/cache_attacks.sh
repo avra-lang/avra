@@ -161,7 +161,7 @@ import sys
 for line in sys.stdin:
     f = line.rstrip("\n").split("\t")
     if len(f) > 3 and f[1].endswith(sys.argv[1]):
-        print("".join(bytes.fromhex(r).decode().split("/")[-1] + " " for r in f[3].split("|") if r), end="")
+        print("".join(bytes.fromhex(r.split("~")[0]).decode().split("/")[-1] + " " for r in f[3].split("|") if r), end="")
 ' "$1"
 }
 kr_runs() { record_runs cache-attacks/kr/src/f/held.av; } # the files the record says held.av's compile-time runs read, by name
@@ -209,6 +209,32 @@ case "$kv_out" in *"f/held.av"*"g/top.av"*|*"g/top.av"*"f/held.av"*) [ -n "${VER
 S "kv: and the binary follows" kv
 steps=$((steps+1)); kv_out=$($R/kv/src/main 2>&1)
 [ "$kv_out" = "18 19 5" ] || { fails=$((fails+1)); echo "FAIL  kv: a const on the chain kept the value of the body J ran before: printed '$kv_out', wanted '18 19 5'"; }
+
+fi
+
+if section tw; then
+# TWO EDITS, ONE READ FILE. A run reads a DECLARATION of a file, never the file: editing a
+# body ELSEWHERE in that file leaves its readers held, while editing the declaration the run
+# read reads them in the FIRST attempt, none thrown away.
+mkdir -p $R/tw/src/f $R/tw/src/x $R/tw/src/y
+printf '[package]\nname = "rt-tw"\nversion = "0.1.0"\n' > $R/tw/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\nexport fn unused(n: int) -> int { n + 1 }\n' > $R/tw/src/y/calc.av
+printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/tw/src/x/mid.av
+printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n' > $R/tw/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/tw/src/main.av
+HR "cold tw" check tw 0
+S "tw: built with K's verdict kept" tw
+ed $R/tw/src/y/calc.av "n + 1" "n + 7"
+steps=$((steps+1)); tw_out=$(./avra check --time $R/tw 2>&1)
+case "$tw_out" in *"discarded 0, refused 0"*|*"cache hit"*) ;; *) fails=$((fails+1)); echo "FAIL  tw: an unreached body moved and an attempt was thrown away: $(printf '%s' "$tw_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$tw_out" in *"f/held.av"*) fails=$((fails+1)); echo "FAIL  tw: an unreached body moved and its reader was read all the same: $(printf '%s' "$tw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    tw: an unreached body moved -> the reader held" ;; esac
+ed $R/tw/src/y/calc.av "n * 2" "n * 3"
+steps=$((steps+1)); tw_out=$(./avra check --time $R/tw 2>&1)
+case "$tw_out" in *"discarded 0, refused 0"*) ;; *) fails=$((fails+1)); echo "FAIL  tw: the read declaration moved and an attempt was thrown away: $(printf '%s' "$tw_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$tw_out" in *"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    tw: the read declaration moved -> the reader read in the first attempt" ;; *) fails=$((fails+1)); echo "FAIL  tw: the read declaration moved and the reader was not read: $(printf '%s' "$tw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "tw: and the binary follows" tw
+steps=$((steps+1)); tw_out=$($R/tw/src/main 2>&1)
+[ "$tw_out" = "18" ] || { fails=$((fails+1)); echo "FAIL  tw: the published value did not follow the declaration the run read: printed '$tw_out', wanted '18'"; }
 
 fi
 

@@ -2,37 +2,56 @@
 //! closure over `e`'s TASK lift, which answers `e`'s value in a
 //! one-cell list — one box for every shape, so the runtime makes one
 //! call; `.await` joins and reads that cell.
-use core.{ExprId, Reg, Type, TypeId}
-use features.{LowerCx, MethodCall, DirectCall}
+use core.{ExprId, Reg, Type, TypeId, RtFlag}
+use features.{LowerCx, MethodCall}
 
 fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Spawn(body) -> cx.task_spawn(cx.shape_at(e), task_box(cx, body)),
-        .Within(limit, body) -> within_reg(cx, limit, body),
+        .Within(limit, body) -> within_reg(cx, e, limit, body),
         rest -> cx.lower_defect(e, "a foreign node reached the task lowering"),
     }
 }
 
-/// The body lowers inside the scope its deadline arms, and the scope
-/// ENDS through the frame — so a `return` or a `?` out of the body
-/// runs it, exactly as a `defer` there would.
-fn within_reg(mut cx: LowerCx, limit: ExprId, body: ExprId) -> Reg {
+/// The body lowers in a one-turn loop whose end is the scope's own
+/// landing: the scope opens inside the turn and ends through the
+/// frame, so a `return` or a `?` out of the body runs it, as a
+/// `defer` there would, and an unwind jumps here rather than leaving
+/// the fn. The epilogue answers the body as written.
+fn within_reg(mut cx: LowerCx, e: ExprId, limit: ExprId, body: ExprId) -> Reg {
+    let body_ty = cx.type_at(body)
+    let limit_reg = cx.reg_of(limit)
+    // The body's answer and the scope end's landing, each written on
+    // its own path and read after the loop, in the epilogue.
+    let answer = cx.seeded_cell(body_ty, cx.hollow_of(body_ty))
+    let landing = cx.seeded_cell(cx.type(int), cx.const_int(0))
+    cx.loop_start()
+    let at = cx.loops.length - 1
+    cx.loop_cond(cx.const_bool(true))
     cx.scope_enter()
-    let scope = cx.fiber_within(Type.Int, cx.reg_of(limit))
+    let scope = cx.fiber_within(Type.Int, limit_reg)
+    cx.open_landing(scope, landing)
+    cx.stored(answer, cx.reg_of(body))
+    cx.scope_exit(null)
+    cx.close_landing()
+    cx.jumped(at, false)
+    cx.loop_end()
+    within_epilogue(cx, e, body_ty, answer)
+}
+
+/// The Ok/Err region the landing leaves: set, the fn is unwinding, so
+/// the frames above have run and it leaves; clear, the body's own
+/// answer stands.
+fn within_epilogue(mut cx: LowerCx, e: ExprId, body_ty: TypeId, answer: Reg) -> Reg {
+    let unwinding = cx.flag_read(RtFlag.Unwinding)
     cx
-        .call_at_exit(
-            DirectCall {
-                callee: "avra_fiber_within_end",
-                host: true,
-                args: [scope],
-                ret: cx.type(void),
-            },
-            false,
-        )
-    let r = cx.reg_of(body)
-    cx.scope_exit(r)
-    r
+        .region(unwinding, e) { cx ->
+            cx.unwinds()
+            cx.hollow_of(body_ty)
+        } else { cx ->
+            cx.loaded_as(body_ty, answer)
+        }
 }
 
 /// The closure the task runs: `body`'s captures, and its task lift.

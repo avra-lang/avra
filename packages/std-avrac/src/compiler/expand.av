@@ -28,6 +28,8 @@ use core.{
     spelled,
     Scoped,
     DeclKind,
+    CollectKind,
+    CollectScope,
 }
 use features.{
     Unsettled,
@@ -360,9 +362,66 @@ impl Workspace {
         if parts.traits.is_empty() || self.decls.meta_disagreement() != null { return [] }
         let made_by? = self.decls.meta_named("delegate") else { return [] }
         let sig? = self.decls.sig(made_by)?.fn_sig() else { return [] }
+        mut made: List<DeclId> = []
+        for t in parts.traits {
+            if !self.names_trait(p, vis, t) { continue }
+            // the derive FIRST: `delegate`'s crossing must see the member's impl
+            let tr = self.named_arg(p, vis, t)!
+            made = made.concat(self.derived_members(f, parts.kind, parts.scope, tr, t))
+            made = made
+                .concat(
+                    self
+                        .materialized(f, self.delegation(made_by, sig.ret, written, d, t, p), p, vis),
+                )
+        }
+        made
+    }
+
+    /// Every gathered member with no `impl T` of its own, DERIVED: the
+    /// trait's associated `derive` over the member's record, exactly as
+    /// a written `@derive(T)` on it would run. A member that writes its
+    /// own impl is left to it.
+    fn derived_members(f: FileId, kind: CollectKind, scope: CollectScope, tr: DeclId, t: ExprId) -> List<
+        DeclId,
+    > {
+        let derive? = self.decls.trait_derive(tr) else { return [] }
+        let tr_name = self.decls.decl(tr).name
         flatten(
-            [self.materialized(f, self.delegation(made_by, sig.ret, written, d, t, p), p, vis) for t in parts.traits if self.names_trait(p, vis, t)],
+            [self.derived_member(m, derive, t) for m in self.decls.gathered_into(kind, scope, f) if !self.implemented_by(m).contains(tr_name)],
         )
+    }
+
+    /// One member's derived impl, materialized in the member's OWN file
+    /// so the generated `impl T for M` aims at it. A derive whose own
+    /// file is the member's would re-enter a file still registering —
+    /// the same guard a written `@derive(T)` keeps — so it generates
+    /// nothing.
+    fn derived_member(m: Decl, derive: DeclId, t: ExprId) -> List<DeclId> {
+        let fm = m.file
+        let pm = self.parsed(fm)
+        if same_file(self.decls.decl(derive).file, fm) { return [] }
+        let stmt = self.written_stmt(fm, m.id)
+        let sig? = self.decls.sig(derive)?.fn_sig() else { return [] }
+        let callee = pm.store.annotations_of(stmt).first()?.callee ?? t
+        self
+            .materialized(
+                fm,
+                DeclareWork {
+                    ann: derive,
+                    stmt: stmt,
+                    callee: callee,
+                    args: [],
+                    ret: sig.ret,
+                    tparams: [],
+                    params: [],
+                    answer: named_ref("void"),
+                    original: m.name,
+                    at: pm.store.stmt_span(stmt),
+                    annotated: m.id,
+                },
+                pm,
+                self.visible(fm),
+            )
     }
 
     /// `delegate`'s work over one trait, as an annotation's would be.

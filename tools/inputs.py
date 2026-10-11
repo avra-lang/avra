@@ -66,7 +66,7 @@ WORLD = {
         "IoError": T, "Entry": T, "Opened": T, "AppendFile": T, "Watch": T, "OwnDir": T,
     },
     "process": {
-        "tool": "tool", "tool_from_env": "tool", "host": "spawn", "run_through": "spawn",
+        "tool": "tool", "tool_from_env": "tool", "tool_at": P, "host": "spawn", "run_through": "spawn",
         "parallel": "spawn", "race": "spawn", "serving": "spawn",
         "minimal": "env", "developer": "env", "signalled": "pid",
         "cmd": P, "inherited": P, "exit_text": P,

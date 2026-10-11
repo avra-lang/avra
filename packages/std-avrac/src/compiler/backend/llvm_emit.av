@@ -58,10 +58,13 @@ impl Emit {
         let _ = self.call("avra_once_slot_commit", [key, self.vals[value.index], slot])
     }
 
-    /// A runtime flag's byte, loaded and asked whether it is set.
+    /// A runtime flag's byte, loaded and asked whether it is set. The
+    /// load is ATOMIC: the scheduler's own thread writes the byte, so a
+    /// plain load could be hoisted out of the loop whose back-edge reads
+    /// it and the write would then never be seen.
     fn flag_value(flag: RtFlag) -> ptr {
         let i8 = avra_llvm_int8_type(self.lc)
-        let byte = avra_llvm_build_load(
+        let byte = avra_llvm_build_load_atomic(
             self.b,
             i8,
             avra_llvm_runtime_byte(self.m, flag_symbol(flag)),

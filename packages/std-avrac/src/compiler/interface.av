@@ -6,6 +6,8 @@ use core.{
     flatten,
     distinct,
     sorted_texts,
+    sorted_by,
+    text_before,
     module_path,
     digest_of,
     same_decl,
@@ -505,7 +507,7 @@ impl Workspace {
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
-        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${hex_fields(self.ran_by(store, f.path))}\t${f.iface}" for f in parts]
+        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.ran_by(store, f.path))}\t${f.iface}" for f in parts]
         let iface = ifaces_digest([f.iface for f in parts])
         joined(
             ["iface\t${iface}"]
@@ -562,22 +564,25 @@ impl Workspace {
 
     /// EVERY FILE WHOSE TEXT A FILE'S COMPILE-TIME RUNS READ — its own runs', and the
     /// runs of every const those read. In name order.
-    fn ran_by(store: Store, path: string) -> List<string> {
+    fn ran_by(store: Store, path: string) -> List<RunRead> {
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
-        mut seen: List<string> = [path]
+        mut seen: List<RunRead> = [self.plain_read(path)]
         mut at = 0
         while at < seen.length {
-            for q in self.ran_directly(store, seen[at]) {
-                if !seen.contains(q) { seen.push(q) }
+            for q in self.ran_directly(store, seen[at].path) {
+                if !seen.any(it.path == q.path && it.ref == q.ref) { seen.push(q) }
             }
             at = at + 1
         }
-        sorted_texts(seen.slice(1, seen.length))
+        sorted_by(
+            seen.slice(1, seen.length),
+            (a: RunRead, b: RunRead) -> text_before(a.path, b.path),
+        )
     }
 
     /// What one file's runs read: as this build met them, or, for a held file, as
     /// its module's last record kept them.
-    fn ran_directly(store: Store, path: string) -> List<string> {
+    fn ran_directly(store: Store, path: string) -> List<RunRead> {
         if self.read_here(path) { return self.hold.runs.get().get(path) ?? [] }
         kept_runs(record_places(self, store, self.module_path_of(path)).get(path))
     }

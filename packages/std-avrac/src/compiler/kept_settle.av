@@ -77,7 +77,7 @@ impl Workspace {
         // this settlement's reads alone, then joined to what its file's runs read before
         let reader = self.decls.file(ask.file).path
         let before = self.hold.runs.get().get(reader) ?? []
-        self.hold.runs.put(reader, no_paths())
+        self.hold.runs.put(reader, no_read_list())
         let touched_from = self.decls.touched_types.get().length
         let r = self
             .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
@@ -85,7 +85,7 @@ impl Workspace {
         self.note_touched(touched_from)
         let frame = self.popped_settle_frame()
         let read = self.hold.runs.get().get(reader) ?? []
-        self.hold.runs.put(reader, distinct(before.concat(read)))
+        self.hold.runs.put(reader, distinct_reads(before.concat(read)))
         self.hold.settle_reads.put(id, read)
         let kept? = at else { return r }
         if self.hold.body_asks.get().length == asked { self.keep_verdict(kept.key, r, frame, kept.layout, read) }
@@ -111,10 +111,12 @@ impl Workspace {
         let runs = kept_runs(record_places(self, store, m).get(path))
         let consts = [parts[5] for parts in record_fields(self, store, m) if parts.length > 5 && parts[0] == "const" && parts[1] == path]
         let kept = [kept_reads(store, kept_key_for(path, n)) for n in consts]
-        if consts.is_empty() || kept.any(it == null) { return runs }
+        if consts.is_empty() || kept.any(it == null) { return [r.path for r in runs] }
         let read = flatten([r ?? [] for r in kept])
-        let answered = distinct(read.concat(flatten([self.ran_by(store, p) for p in read])))
-        if runs.all((p) -> answered.contains(p)) { [] } else { runs }
+        let answered = distinct_reads(
+            read.concat(flatten([self.ran_by(store, p.path) for p in read])),
+        )
+        if runs.all((r) -> answered.any(it.path == r.path)) { [] } else { [r.path for r in runs] }
     }
 
     /// A KEPT VERDICT THAT DID NOT STAND ASKS ALL IT READ AT ONCE: the run
@@ -124,8 +126,8 @@ impl Workspace {
     fn ask_kept_reads(key: string) {
         let store? = self.store.get() else { return }
         let read = kept_reads(store, key) ?? []
-        let all = distinct(read.concat(flatten([self.ran_by(store, p) for p in read])))
-        let held = [p for p in all if self.held_path(p)]
+        let all = distinct_reads(read.concat(flatten([self.ran_by(store, p.path) for p in read])))
+        let held = [p.path for p in all if self.held_path(p.path)]
         if !held.is_empty() { self.hold.body_asks.set(self.hold.body_asks.get().concat(held)) }
     }
 
@@ -212,7 +214,7 @@ impl Workspace {
         r: Result<Settled, Unsettled>,
         frame: List<KeptLine>,
         layout: string,
-        read: List<string>,
+        read: List<RunRead>,
     ) {
         let store? = self.store.get() else { return }
         if frame.any(it.line == "x") { return }
@@ -230,7 +232,13 @@ impl Workspace {
             .concat(
                 [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
             )
-            .concat([budget_line(self.budgets()), layout, joined(["r"].concat(read), "\t")])
+            .concat(
+                [
+                    budget_line(self.budgets()),
+                    layout,
+                    joined(["r"].concat([read_wire(r) for r in read]), "\t"),
+                ],
+            )
             .concat([joined(["e", path, self.embed_said(path)], "\t") for path in distinct(embedded)])
         let _ = store.keep(Stored.Unit, key, value!, [])
         let _ = store.keep(Stored.Unit, "${key}#lines", joined(lines, "\n"), [])
@@ -254,7 +262,9 @@ impl Workspace {
         let mods = [module_path(r[1].split(".")) for r in rows if r[0] == "m"]
         if !rows.all((r: List<string>) -> r[0] != "n" || r[1] == self.names_digest(mods)) { return null }
         let reads? = rows.find(it[0] == "r") else { return null }
-        let read = reads.slice(1, reads.length)
+        let decoded = [read_of_wire(w) for w in reads.slice(1, reads.length)]
+        if decoded.any(it == null) { return null }
+        let read = [r! for r in decoded]
         self.read_by(self.decls.file(f).path, read)
         self.hold.settle_reads.put(id, read)
         let v = settled_from_wire(value)
@@ -460,10 +470,12 @@ impl Workspace {
 type KeptAt = { key: string, layout: string }
 
 /// What a kept verdict's run read — its `r` line — or null when none is kept.
-fn kept_reads(store: Store, key: string) -> List<string>? {
+fn kept_reads(store: Store, key: string) -> List<RunRead>? {
     let lines? = store.get(Stored.Unit, "${key}#lines") else { return null }
     let reads? = [l.split("\t") for l in lines.split("\n") if !l.is_empty()].find(it[0] == "r") else { return null }
-    reads.slice(1, reads.length)
+    let xs = [read_of_wire(w) for w in reads.slice(1, reads.length)]
+    if xs.any(it == null) { return null }
+    [x! for x in xs]
 }
 
 /// Where a const's kept verdict lives: its file's path and its name.

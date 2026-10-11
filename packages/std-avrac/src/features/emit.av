@@ -174,10 +174,18 @@ impl LowerCx {
         r
     }
 
-    /// The fn leaves unwinding: what a failure runs, then the exit.
+    /// The fn leaves unwinding: with a `within` open, that scope's own
+    /// landing catches it — the frames inside run, and control jumps
+    /// to the landing; with none, what a failure runs, then the exit.
     mut fn unwinds() {
-        self.failing()
-        self.emit(Ins.FnExit(self.exit_answer()))
+        let landing = self.within_loops.last()
+        if landing == null {
+            self.failing()
+            self.emit(Ins.FnExit(self.exit_answer()))
+            return
+        }
+        self.run_from(landing!.frame, null)
+        self.emit(Ins.LoopJump(self.loops.length - 1 - landing!.loop, false))
     }
 
     /// What the cold exit answers. A task's answer rides a CELL, so it
@@ -468,6 +476,16 @@ impl LowerCx {
         self.emit(Ins.LoopEnd)
         let _ = self.loops.pop()
     }
+
+    /// A `while` back-edge's check: one read of the tick byte and, taken,
+    /// the cold side — which hears a done timer, a standing cancel and
+    /// lets others run. The hot path is the load and its branch.
+    mut fn checked_back_edge() {
+        self.void_region(self.flag_read(RtFlag.Tick)) { cx -> cx.back_edge_cold() }
+    }
+
+    /// The taken side of a checked back-edge: the row that hears the tick.
+    mut fn back_edge_cold() { self.tick_cold() }
 
     /// The walk a source opens. A string's `chars` view is no list
     /// until one is asked for: a walk over it walks the text.
