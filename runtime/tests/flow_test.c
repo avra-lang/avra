@@ -2386,6 +2386,93 @@ static void a_plain_shield_wait_still_cuts(void) {
     avra_rc_release(g_silent);
     avra_clock_run_ends();
 }
+// ── the unwind's frame list ─────────────────────────────────────
+// A frame is one pointer, and the list lives on the task's record:
+// sixteen kept, the middle dropped and counted once they fill, and the
+// list emptied at the cancel point that begins an unwind.
+
+static int64_t g_frame_marks[24];
+static int64_t g_frame_n = -1;
+static int64_t g_frame_dropped = -1;
+
+static void* frame_marked(int64_t v) {
+    void* a = avra_array_sized(1);
+    avra_array_push(a, v);
+    return a;
+}
+static int64_t frame_mark(void* box) { return box ? ((AvraArray*)box)->data[0] : -1; }
+
+static void* pushes_twenty(void* self) {
+    (void)self;
+    void* held[20];
+    for (int i = 0; i < 20; i++) { held[i] = frame_marked(i); avra_unwind_push(held[i]); }
+    g_frame_n = avra_unwind_count();
+    for (int64_t i = 0; i < g_frame_n && i < 24; i++) g_frame_marks[i] = frame_mark(avra_unwind_at(i));
+    g_frame_dropped = avra_unwind_dropped();
+    for (int i = 0; i < 20; i++) avra_rc_release(held[i]);
+    return answer(0);
+}
+
+static void the_cap_drops_the_middle(void) {
+    static const int64_t want[16] = { 0, 1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 18, 19 };
+    g_frame_n = -1;
+    g_frame_dropped = -1;
+    joined(spawn1(pushes_twenty, 0));
+    CHECK(g_frame_n == 16, "twenty pushes leave sixteen frames");
+    CHECK(memcmp(g_frame_marks, want, sizeof want) == 0, "the first eight stand, the middle is dropped, the newest eight follow");
+    CHECK(g_frame_dropped == 4, "and four drops are counted");
+}
+
+// The program's own run keeps its frames as a task's record keeps its
+own.
+static void the_programs_own_run_pushes(void) {
+    void* a = frame_marked(7);
+    avra_unwind_push(a);
+    avra_unwind_push(a);
+    CHECK(avra_unwind_count() == 2, "main's own frames stand");
+    CHECK(avra_unwind_at(2) == NULL && avra_unwind_at(-1) == NULL, "and a read past them answers null");
+    avra_rc_release(a);
+}
+
+static int64_t g_frame_before = -1;
+static int64_t g_frame_after = -1;
+static int64_t g_frame_again = -1;
+static int64_t g_frame_held = -1;
+
+static void* pushes_then_waits(void* self) {
+    (void)self;
+    void* a = frame_marked(1);
+    void* b = frame_marked(2);
+    avra_unwind_push(a);
+    avra_unwind_push(b);
+    g_frame_before = avra_unwind_count();
+    avra_fiber_sleep(10000);
+    g_frame_after = avra_unwind_count();
+    void* c = frame_marked(3);
+    avra_unwind_push(c);
+    g_frame_again = avra_unwind_count();
+    avra_fiber_sleep(10000);
+    g_frame_held = avra_unwind_count();
+    avra_rc_release(a);
+    avra_rc_release(b);
+    avra_rc_release(c);
+    return answer(0);
+}
+
+static void a_cancel_point_begins_the_list(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    g_frame_before = g_frame_after = g_frame_again = g_frame_held = -1;
+    void* t = spawn1(pushes_then_waits, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "the task ends cancelled");
+    CHECK(g_frame_before == 2, "two frames stood before the cancel point");
+    CHECK(g_frame_after == 0, "and none after it: the list begins there");
+    CHECK(g_frame_again == 1, "a frame pushed after it stands");
+    CHECK(g_frame_held == 1, "and a later cancel point does not clear it again");
+    avra_clock_run_ends();
+}
 
 int main(int argc, char** argv) {
     alarm(120);
@@ -2456,6 +2543,9 @@ int main(int argc, char** argv) {
     a_cancel_while_a_shield_scope_waits_does_not_claim_it();
     a_shield_scope_sleep_is_not_cut();
     a_plain_shield_wait_still_cuts();
+    the_cap_drops_the_middle();
+    the_programs_own_run_pushes();
+    a_cancel_point_begins_the_list();
     fork_forgets_gate_waiters();
     fiberless_tasks();
     joins_of_tasks_nothing_runs();

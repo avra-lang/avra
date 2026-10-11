@@ -57,6 +57,13 @@ type Job = {
     id: int,
     frames: List<List<Val?>>,
     callers: List<Resume>,
+    // the frames the running task's unwind has passed, each pushed by a
+    // fn's cold exit; never the call stack `frames` above
+    unwound: List<Val>,
+    // how many frames a full list has dropped, for the landing to say
+    dropped: int,
+    // its unwind bit read set: a cancel point clears the list once
+    unwound_bit: bool,
     at: Place?,
     // its RECORD in the array table, as the runtime's task is one: its
     // id, the body it owns, and the answer it leaves. The handle a
@@ -97,6 +104,9 @@ fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -
         id: id,
         frames: frames,
         callers: [],
+        unwound: [],
+        dropped: 0,
+        unwound_bit: false,
         at: at,
         record: record,
         done: false,
@@ -300,8 +310,11 @@ impl Machine {
     fn tick_cold_val() -> Val {
         self.rooted()
         if self.woke() { return Val.I(0) }
-        if avra_vtask_tick_cold(self.tasks[self.running].vt) == 0 { return Val.I(0) }
-        avra_vtask_ready(self.tasks[self.running].vt)
+        let vt = self.tasks[self.running].vt
+        let cold = avra_vtask_tick_cold(vt)
+        self.unwind_met(vt)
+        if cold == 0 { return Val.I(0) }
+        avra_vtask_ready(vt)
         self.policy_parked()
         Val.I(0)
     }
@@ -654,6 +667,44 @@ impl Machine {
         self.rooted()
         let id = self.task_of(vals[0])
         Val.I(self.tasks[id].ended_by)
+    }
+
+    /// The running task's frame list and its drop count — the runtime's
+    /// task record, mirrored here for the evaluator's own tasks.
+    fn unwind_push_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let held = self.tasks[self.running].unwound
+        if held.length < 16 {
+            self.tasks[self.running].unwound.push(vals[0])
+            return Val.I(0)
+        }
+        self.tasks[self.running].unwound = held.removed_at(8).concat([vals[0]])
+        self.tasks[self.running].dropped = self.tasks[self.running].dropped + 1
+        Val.I(0)
+    }
+
+    fn unwind_count_val() -> Val {
+        self.rooted()
+        Val.I(self.tasks[self.running].unwound.length)
+    }
+
+    fn unwind_at_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let i = self.whole(vals[0])
+        let held = self.tasks[self.running].unwound
+        if i < 0 || i >= held.length { return Val.N }
+        held[i]
+    }
+
+    /// A cancel point: the first read of a set unwind bit begins an
+    /// unwind, whose list is exactly the frames from here on.
+    fn unwind_met(vt: int) {
+        let bit = avra_vtask_unwinding(vt) != 0
+        if bit && !self.tasks[self.running].unwound_bit {
+            self.tasks[self.running].unwound = []
+            self.tasks[self.running].dropped = 0
+        }
+        self.tasks[self.running].unwound_bit = bit
     }
 }
 
