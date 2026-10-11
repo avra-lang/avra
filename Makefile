@@ -350,7 +350,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -715,14 +715,6 @@ http-cites:
 dogfooding-rules:
 	@./build/avra rules --check-markdown DOGFOODING.md
 
-# THE PIPELINE DOCUMENT'S COMMANDS RESOLVE: every `make <target>` and
-# `tools/` path in docs/2026_10_11_THE_PIPELINE.md names something the
-# tree holds. A command the tree no longer carries is refused here
-# rather than read as current. A name kept as a HISTORICAL negative
-# example stands in tools/pipeline_doc.allow with its reason.
-pipeline-doc:
-	@python3 tools/pipeline_doc.py
-
 # THE FAMILY ORDINALS ARE APPEND-ONLY. A family ordinal is a durable
 # address — rows, kept caches and witnesses key by it — so the enum's
 # declared order is a contract. tools/families.order is that contract;
@@ -927,8 +919,9 @@ no-threads:
 # drives the same clocked tests, so it stands here beside them.
 KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost speed-ratchet warm-edit codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
-KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack pipeline-doc \
-            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
+KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads \
+            ci-invariants pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
 	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
@@ -941,18 +934,52 @@ keepers keepers-alone keepers-a keepers-b:
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
-                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh witness_compiler_release.sh witness_ci_wall.sh work_test.sh reclaim_test.sh
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh work_test.sh reclaim_test.sh
 tool-witnesses:
+	@python3 tools/pipeline_status.py --self-test
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
+
+# THE CI STRUCTURE RATCHET: the release path, the compiler-free keepers a
+# PR must reach and the watcher's fixtures are held before a green PR can
+# break them. It reads the workflow and this Makefile alone, so no compiler.
+ci-invariants:
+	@python3 tools/ci_invariants.py --self-test
+	@python3 tools/ci_invariants.py
+
+# THE WATCHER'S DECISION IS A KEEPER: its fixtures run wherever the gate
+# runs, so a change to what the watcher may do refuses before it can land,
+# not one schedule pass later.
+pr-watcher:
+	@python3 tools/pr_watcher.py --self-test
+
+# THE PIPELINE DOCUMENT'S COMMANDS RESOLVE: every `make <target>` and
+# `tools/` path in docs/2026_10_11_THE_PIPELINE.md names something the
+# tree holds. A command the tree no longer carries is refused here
+# rather than read as current. A name kept as a HISTORICAL negative
+# example stands in tools/pipeline_doc.allow with its reason.
+pipeline-doc:
+	@python3 tools/pipeline_doc.py
+
+# THE ONE-LINE BLOCKER: why nothing is landing, in a handful of lines.
+# Read-only and safe any time — `main`'s SHA and age; the last runs'
+# failures COUNTED BY JOB; each open PR's blocker in one word; whether the
+# local watchdog driver is loaded and has run recently; and a one-line
+# VERDICT naming the single most likely blocker. A signal it cannot read
+# prints `unknown` and is skipped, never given a plausible default. The
+# verdict is a pure function over a state, proved on synthetic fixtures
+# with no network (`--self-test`, held by `make tool-witnesses`);
+# `ARGS=--witness` prints each verdict firing.
+pipeline-status:
+	@python3 tools/pipeline_status.py $(ARGS)
 
 # THE KEEPERS THAT NEED NO COMPILER, which a pull request's own check runs
 # before it builds anything: each reads the tree alone and all of them
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites pipeline-doc
-.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr pipeline-doc
+KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites ci-invariants pr-watcher pipeline-doc
+.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@fail=0; for k in $(KEEPERS_STATIC); do \
