@@ -350,7 +350,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept warm-edit
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept warm-edit
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -957,8 +957,16 @@ keepers-pr:
 # decode(encode(x)) compared to x field by field; tools/codecs.py
 # refuses any encoder/decoder-shaped pair in the tree the registry
 # does not name.
-codecs: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+#
+# THE SCAN IS ITS OWN TARGET because it needs no compiler: a pull request
+# whose diff reaches the compiler's source runs `codecs-static` in seconds
+# (it is what names an unregistered pair — the refusal #537 failed a train
+# on), so the defect is heard on the PR, not one train later. The
+# registry's round trip needs a whole compiler and stays with the train.
+codecs: codecs-static $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@./build/avra test packages/std-avrac/src/compiler/tests/codecs_test.av
+
+codecs-static:
 	@python3 tools/codecs.py
 
 # THE ROWS' CLAIM ON THE C. `runtime/avra_rt.h` is generated from
