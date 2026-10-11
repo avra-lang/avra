@@ -350,7 +350,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -935,8 +935,23 @@ keepers keepers-alone keepers-a keepers-b:
 TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
                  witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh witness_compiler_release.sh witness_ci_wall.sh work_test.sh reclaim_test.sh
 tool-witnesses:
+	@python3 tools/pipeline_status.py --self-test
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
+
+# THE ONE-LINE BLOCKER: why nothing is landing, in a handful of lines.
+# Read-only and safe any time — `main`'s SHA and age; the last trains'
+# failures COUNTED BY JOB (`keepers-a failed 9 of the last 15 trains`);
+# the merge queue and any entry with no train; each open PR's blocker in
+# one word; whether the local watchdog driver is loaded and has run in
+# the last five minutes; and a one-line VERDICT naming the single most
+# likely blocker. A signal it cannot read prints `unknown` and is
+# skipped, never given a plausible default. The verdict is a pure
+# function over a state, proved on synthetic fixtures with no network
+# (`python3 tools/pipeline_status.py --self-test`, held by
+# `make tool-witnesses`); `ARGS=--witness` prints each verdict firing.
+pipeline-status:
+	@python3 tools/pipeline_status.py $(ARGS)
 
 # THE KEEPERS THAT NEED NO COMPILER, which a pull request's own check runs
 # before it builds anything: each reads the tree alone and all of them
