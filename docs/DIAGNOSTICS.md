@@ -2332,6 +2332,28 @@ help: call something — `defer child.stop()` — or write the work in a block: 
 
 No witness yet.
 
+## flow.unbounded_cleanup
+
+a waiting `defer` needs its own `within`
+
+```avra
+extern fn avra_fiber_sleep(ms: int)
+fn clean() {
+    defer avra_fiber_sleep(1)
+}
+clean()
+```
+
+```
+error[flow.unbounded_cleanup]: this `defer`'s body waits, and no `within` it writes bounds the wait — it calls the runtime row `avra_fiber_sleep`
+  ╭─[witness.av:3:11]
+3 │     defer avra_fiber_sleep(1)
+  ·           ┬
+  ·           ╰── waits here
+──╯
+help: bound the cleanup in its own body — `defer { within ms(100) { … } }`
+```
+
 ## type.duplicate_param
 
 a fn's parameters have distinct names
