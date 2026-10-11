@@ -407,21 +407,25 @@ jobs:
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
-        shell: bash
         run: |
-          # DEBUG: sample pids.current with builtins only, and log per-mutation starts.
-          rm -f /tmp/pidlog /tmp/mutlog
-          ( peak=0; while :; do read -r p < /sys/fs/cgroup/pids.current 2>/dev/null || p=0; if [ "${p:-0}" -gt "$peak" ] 2>/dev/null; then peak=$p; echo "peak=$peak t=$SECONDS" >> /tmp/pidlog; fi; sleep 1; done ) &
-          probe=$!
-          rc=0; sh tools/memcap.sh 6000 make -s -o avra runtime-mutations 2>&1 | tee /tmp/mutlog || rc=$?
-          echo "DEBUG keeper rc=$rc"
-          kill "$probe" 2>/dev/null || true
-          echo "DEBUG pids.current peaks:"
-          while IFS= read -r line; do echo "$line"; done < /tmp/pidlog
-          echo "DEBUG last 12 mutation starts:"
-          while IFS= read -r line; do echo "$line"; done < <(grep -E '^start ' /tmp/mutlog | tail -12)
-          echo "DEBUG summary line:"; grep -E 'runtime-mutations:|Cannot fork|memcap:' /tmp/mutlog | tail -5
-          exit "$rc"
+          log=build/keepers-alone.log
+          # `if cmd; then` keeps a failing keeper from tripping the step
+          # shell's `-e` before the status is read; the else branch still
+          # holds the guarded command's own exit status.
+          if sh tools/memcap.sh 6000 make -s -o avra keepers-alone > "$log" 2>&1; then
+            cat "$log"
+            exit 0
+          else
+            rc=$?
+            cat "$log"
+            # ONE annotation, carrying the cause: memcap's own KILLED line,
+            # the fork limit's word, or the keeper that refused. Never a
+            # bare exit code.
+            cause=$(grep -m1 -E 'memcap: KILLED|Cannot fork|fork: |refused' "$log" 2>/dev/null || true)
+            [ -n "$cause" ] || cause=$(tail -n 1 "$log")
+            echo "::error::runtime-keep refused (exit $rc) — $cause"
+            exit "$rc"
+          fi
   # THE SECOND HALF, alone on its own runner. It needs only the lowercase
   # build artifact, and it shares the Makefile's one list with keepers-a —
   # never a second list kept in step by hand.
