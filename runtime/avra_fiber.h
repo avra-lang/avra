@@ -49,6 +49,9 @@ void* avra_task_join(void* task);
 int64_t avra_task_done(void* task);
 // How a task ended: 0 live, 1 answered, 2 cancelled.
 int64_t avra_task_ended(void* task);
+// Who asked the cancel that ended the task: the asker's id, a scope's id,
+// or the task's own id for an answer.
+int64_t avra_task_ended_by(void* task);
 
 // Every other ready task runs once before the caller resumes.
 void avra_fiber_yield(void);
