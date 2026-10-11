@@ -9,7 +9,8 @@ type Toy = { db: Kernel, input: int, double_family: int, runs: Cell<int>, values
 
 fn toy() -> Toy {
     let db = new_kernel()
-    let input = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
+    let input = db.family()
+    db.set_verify(input, (arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
     let t = Toy {
         db: db,
         input: input,
@@ -17,7 +18,8 @@ fn toy() -> Toy {
         runs: Cell.new(0),
         values: Cell.new([0, 0, 0, 0]),
     }
-    let double_family = db.family(verified_double(t, it))
+    let double_family = db.family()
+    db.set_verify(double_family, verified_double(t, it))
     t with { double_family: double_family }
 }
 
@@ -105,7 +107,7 @@ spec "relation/engine — the kernel's laws" {
     given "cycles and sweeps" {
         then "a query that reaches itself is answered Cycle, not recursed" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let key = Key { family: fam, arg: 0 }
             db.begin(key)
             let v = db.ask(key)
@@ -128,10 +130,12 @@ spec "relation/engine — the kernel's laws" {
     given "verification that re-enters or moves the database" {
         then "a verifier re-asking the key under verification reuses rather than recursing" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let key = Key { family: fam, arg: 0 }
-            let dep = db
-                .family(
+            let dep = db.family()
+            db
+                .set_verify(
+                    dep,
                     (arg: int) -> {
                         let _ = db.ask(key)
                         0
@@ -146,10 +150,12 @@ spec "relation/engine — the kernel's laws" {
         then "a revision that moves during the walk leaves the cell stale, so the next ask walks again" {
             mut db = new_kernel()
             let walks: Cell<int> = Cell.new(0)
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let key = Key { family: fam, arg: 0 }
-            let dep = db
-                .family(
+            let dep = db.family()
+            db
+                .set_verify(
+                    dep,
                     (arg: int) -> {
                         walks.set(walks.get() + 1)
                         db.bump()
@@ -168,12 +174,12 @@ spec "relation/engine — the kernel's laws" {
     given "the open stack — `active` is the bracket, seen from outside" {
         then "an unopened key is not active" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             !db.active(Key { family: fam, arg: 0 })
         }
         then "a key is active between begin and settle, and not after" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let key = Key { family: fam, arg: 0 }
             db.begin(key)
             let during = db.active(key)
@@ -182,7 +188,7 @@ spec "relation/engine — the kernel's laws" {
         }
         then "the OUTER key stays active while an inner one is open" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let outer = Key { family: fam, arg: 0 }
             let inner = Key { family: fam, arg: 1 }
             db.begin(outer)
@@ -219,7 +225,7 @@ spec "relation/engine — the kernel's laws" {
     given "an input set again before any reader read it" {
         then "it holds the new hash, and no revision moves" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let key = Key { family: fam, arg: 0 }
             db.input_unread(key, 1)
             db.input_unread(key, 2)
@@ -227,7 +233,7 @@ spec "relation/engine — the kernel's laws" {
         }
         then "once read, it keeps the hash its reader saw" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let key = Key { family: fam, arg: 0 }
             db.input_unread(key, 1)
             let reader = Key { family: fam, arg: 1 }
@@ -241,7 +247,7 @@ spec "relation/engine — the kernel's laws" {
     given "the last-reader stamp" {
         then "repeat reads of one key within one query record one dep, not N" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let key = Key { family: fam, arg: 0 }
             db.set_input(key, 1)
             let outer = Key { family: fam, arg: 1 }
@@ -252,7 +258,7 @@ spec "relation/engine — the kernel's laws" {
         }
         then "reads of two different keys record two deps, never merged" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let a = Key { family: fam, arg: 0 }
             let b = Key { family: fam, arg: 1 }
             db.set_input(a, 1)
@@ -266,7 +272,7 @@ spec "relation/engine — the kernel's laws" {
         }
         then "a later query's read of the same key is its own dep, never skipped as an earlier reader's" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let key = Key { family: fam, arg: 0 }
             db.set_input(key, 1)
             let first = Key { family: fam, arg: 1 }
@@ -281,7 +287,7 @@ spec "relation/engine — the kernel's laws" {
         }
         then "a nested query's read of a shared key does not cost the outer query a second dep" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let shared = Key { family: fam, arg: 0 }
             db.set_input(shared, 1)
             let outer = Key { family: fam, arg: 1 }
@@ -297,7 +303,7 @@ spec "relation/engine — the kernel's laws" {
         }
         then "two nested levels both reading the shared key unwind their restores in order" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let shared = Key { family: fam, arg: 0 }
             db.set_input(shared, 1)
             let outer = Key { family: fam, arg: 1 }
@@ -322,7 +328,7 @@ spec "relation/engine — the kernel's laws" {
     given "the frame-local last key" {
         then "the outer frame's own last key survives a nested frame reading a different key" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let shared = Key { family: fam, arg: 0 }
             let other = Key { family: fam, arg: 1 }
             db.set_input(shared, 1)
@@ -343,7 +349,7 @@ spec "relation/engine — the kernel's laws" {
         }
         then "a deeper nested frame's own last key does not leak into any ancestor's, three levels unwinding" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let shared = Key { family: fam, arg: 0 }
             db.set_input(shared, 1)
             let outer = Key { family: fam, arg: 1 }
@@ -372,7 +378,8 @@ spec "relation/engine — typed answers" {
     given "a typed family" {
         then "copies share values and dependency state" {
             let db = new_kernel()
-            let family = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
+            let family = db.family()
+            db.set_verify(family, (arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
             let memo = new_memo<int>(db, family)
             let copy = memo
             let runs = Cell.new(0)
@@ -398,7 +405,7 @@ spec "relation/engine — typed answers" {
         }
         then "a memo's query is open between begin and finish, and not after" {
             let db = new_kernel()
-            let family = db.family((arg: int) -> 0)
+            let family = db.family()
             let memo = new_memo<int>(db, family)
             let before = memo.open(3)
             memo.begin(3)
@@ -408,7 +415,8 @@ spec "relation/engine — typed answers" {
         }
         then "eviction removes values and kernel reuse together" {
             let db = new_kernel()
-            let family = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
+            let family = db.family()
+            db.set_verify(family, (arg: int) -> db.changed_at(Key { family: 0, arg: arg }))
             let memo = new_memo<int>(db, family)
             let _ = memo.demand(0, () -> 21, (v: int) -> v)
             memo.evict()
@@ -416,8 +424,8 @@ spec "relation/engine — typed answers" {
         }
         then "eviction leaves neighboring families intact" {
             let db = new_kernel()
-            let left_family = db.family((arg: int) -> 0)
-            let right_family = db.family((arg: int) -> 0)
+            let left_family = db.family()
+            let right_family = db.family()
             let left = new_memo<int>(db, left_family)
             let right = new_memo<int>(db, right_family)
             let _ = left.demand(0, () -> 11, (v: int) -> v)
@@ -436,13 +444,13 @@ spec "relation/engine — typed answers" {
 spec "relation/engine — the kernel: a family registers without disturbing cells already written" {
     then "an existing family's settled cell answers the same after a new family joins, over many args" {
         mut db = new_kernel()
-        let early = db.family((arg: int) -> 0)
+        let early = db.family()
         for i in 0..50 {
             db.begin(Key { family: early, arg: i })
             db.settle(Key { family: early, arg: i }, i * 7)
         }
         let before = [db.value_hash_of(Key { family: early, arg: i }) for i in 0..50]
-        let _ = db.family((arg: int) -> 0)
+        let _ = db.family()
         let after = [db.value_hash_of(Key { family: early, arg: i }) for i in 0..50]
         before.all((h: int?) -> h != null) &&
             before.length == after.length &&
@@ -450,21 +458,21 @@ spec "relation/engine — the kernel: a family registers without disturbing cell
     }
     then "an existing family's cell still answers Reuse after a new family joins" {
         mut db = new_kernel()
-        let early = db.family((arg: int) -> 0)
+        let early = db.family()
         let key = Key { family: early, arg: 3 }
         db.begin(key)
         db.settle(key, 9)
-        let _ = db.family((arg: int) -> 0)
+        let _ = db.family()
         db.ask(key) is .Reuse
     }
     then "a relation reached for the first time after other families are busy still answers its own values, never another family's" {
         mut db = new_kernel()
-        let busy = db.family((arg: int) -> 0)
+        let busy = db.family()
         for i in 0..20 {
             db.begin(Key { family: busy, arg: i })
             db.settle(Key { family: busy, arg: i }, i)
         }
-        let late = new_memo<int>(db, db.family((arg: int) -> 0))
+        let late = new_memo<int>(db, db.family())
         late.demand(3, () -> 999, (v: int) -> v) == 999
     }
 }
@@ -473,7 +481,7 @@ spec "relation/engine — the kernel: an abandoned frame" {
     given "an inner query abandoned inside an outer one" {
         then "keeps no cell for the inner key, and its reads are the outer's" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let read = Key { family: fam, arg: 0 }
             db.set_input(read, 1)
             let outer = Key { family: fam, arg: 1 }
@@ -487,7 +495,7 @@ spec "relation/engine — the kernel: an abandoned frame" {
         }
         then "a read the outer already made is still one dep" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let read = Key { family: fam, arg: 0 }
             db.set_input(read, 1)
             let outer = Key { family: fam, arg: 1 }
@@ -503,7 +511,7 @@ spec "relation/engine — the kernel: an abandoned frame" {
         }
         then "asked again, the abandoned key computes" {
             mut db = new_kernel()
-            let fam = db.family((arg: int) -> 0)
+            let fam = db.family()
             let inner = Key { family: fam, arg: 2 }
             db.begin(inner)
             db.abandon(inner)
@@ -515,7 +523,8 @@ spec "relation/engine — the kernel: an abandoned frame" {
 /// A family whose verifier answers each cell's own changed_at.
 fn plain_family(db: Kernel) -> int {
     let at: Cell<int> = Cell.new(0)
-    let fam = db.family((arg: int) -> db.changed_at(Key { family: at.get(), arg: arg }))
+    let fam = db.family()
+    db.set_verify(fam, (arg: int) -> db.changed_at(Key { family: at.get(), arg: arg }))
     at.set(fam)
     fam
 }
