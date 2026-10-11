@@ -265,6 +265,11 @@ HOST_MUTATIONS = [
 ]
 TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
 BOUND = 60
+# THE WORKER COUNT IS A FIXED BOUND, NEVER A FUNCTION OF THE RUNNER. Each
+# worker runs a compiler and then a test, so a count derived from the CPU
+# count multiplied the live process tree until a large runner hit its fork
+# limit. Four workers on every machine.
+WORKERS = 4
 # A MUTATED TEST CAN PRINT WITHOUT BOUND: `capture_output` would hold every
 # byte in THIS process, so a print loop would grow the suite's memory until it
 # was gone. A test's words go to a file whose size RLIMIT_FSIZE caps (SIGXFSZ
@@ -325,7 +330,8 @@ def tried(numbered):
     return name, "alive", ""
 
 
-with ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 2) // 2)) as pool:
+print(f"runtime-mutations: {WORKERS} workers over {len(ALL)} breaks", file=sys.stderr)
+with ThreadPoolExecutor(max_workers=WORKERS) as pool:
     results = list(pool.map(tried, enumerate(ALL)))
 for name, how, by in results:
     print(f"  {name}: " + {"killed": f"killed by {by}", "alive": "SURVIVED every runtime test", "rotten": by}[how])

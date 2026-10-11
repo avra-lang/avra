@@ -318,8 +318,8 @@ jobs:
           printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
       # THE RUNTIME KEEPERS HELD TO A CLOCK (KEEPERS_ALONE: runtime-tests,
       # runtime-mutations) ARE NOT THIS JOB'S: a runner that held them beside
-      # this half was killed mid-mutation, and their own job is a follow-up.
-      # The Makefile's `make keepers` still holds them.
+      # this half was killed mid-mutation. They have their own job
+      # (runtime-keep), one keeper at a time under `memcap`.
       #
       # EACH HEAVY make PRINTS ITS PEAK (max RSS of the tree it waited on,
       # read from `getrusage`), so a runner grown past its memory is read
@@ -367,6 +367,65 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-keepers-${{ github.sha }}
+  # THE RUNTIME KEEPERS HELD TO A CLOCK, ALONE ON THEIR OWN RUNNER. The
+  # scheduler's own C tests, then the mutation run that breaks one line of
+  # the scheduler at a time and demands a test fail for each — the longest
+  # and heaviest keeper in the tree. They run ONE AT A TIME under `memcap`:
+  # a runner that held them beside another keeper, or let the mutation run
+  # scale its workers by the CPU count, walked into the fork limit ("Cannot
+  # fork") and died with nothing said. `memcap` bounds the tree's memory;
+  # `mutations.py` fixes its worker count at four, on every machine. A
+  # refusal is a NAMED one: the guarded tree's own last word goes out as ONE
+  # `::error::` annotation, so a runaway is read, never inferred from an
+  # exit code.
+  runtime-keep:
+    needs: [prepare]
+    if: github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      # Handed-down objects stand newer than this checkout's sources, so no
+      # job rebuilds what prepare built from the same commit.
+      - name: built
+        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
+      # measured against, and it is not the VM's published spec.
+      - name: room
+        run: |
+          echo "room: cpu=$(nproc)"
+          awk '/MemTotal/{t=$2} /MemAvailable/{a=$2} END{printf "room: memory total %d MB, available %d MB\n", t/1024, a/1024}' /proc/meminfo
+          printf 'room: cgroup memory.max %s B\n' "$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo n/a)"
+      - name: keepers held to a clock
+        env:
+          # the landing tool's supervisor checks need a machine with an init
+          AVRA_NO_SUPERVISOR_TESTS: "1"
+        run: |
+          log=build/keepers-alone.log
+          # `if cmd; then` keeps a failing keeper from tripping the step
+          # shell's `-e` before the status is read; the else branch still
+          # holds the guarded command's own exit status.
+          if sh tools/memcap.sh 6000 make -s -o avra keepers-alone > "$log" 2>&1; then
+            cat "$log"
+            exit 0
+          else
+            rc=$?
+            cat "$log"
+            # ONE annotation, carrying the cause: memcap's own KILLED line,
+            # the fork limit's word, or the keeper that refused. Never a
+            # bare exit code.
+            cause=$(grep -m1 -E 'memcap: KILLED|Cannot fork|fork: |refused' "$log" 2>/dev/null || true)
+            [ -n "$cause" ] || cause=$(tail -n 1 "$log")
+            echo "::error::runtime-keep refused (exit $rc) — $cause"
+            exit "$rc"
+          fi
   # THE SECOND HALF, alone on its own runner. It needs only the lowercase
   # build artifact, and it shares the Makefile's one list with keepers-a —
   # never a second list kept in step by hand.
@@ -589,7 +648,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers-a, keepers-b, seed-check, flow-gate, cache-attacks, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, seed-check, runtime-keep, flow-gate, cache-attacks, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
