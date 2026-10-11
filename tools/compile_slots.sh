@@ -21,7 +21,7 @@ cat > "$D/holder.c" <<'C'
 int64_t avra_io_compile_slot(void);
 int main(void) { printf("%lld\n", (long long)avra_io_compile_slot()); fflush(stdout); pause(); return 0; }
 C
-cc -O1 -o "$D/holder" "$D/holder.c" build/std_io.o || { echo "compile-slots: the holder did not build"; exit 1; }
+cc -O1 -o "$D/holder" "$D/holder.c" build/std_io.o build/libavra_runtime.a || { echo "compile-slots: the holder did not build"; exit 1; }
 
 row() {
     rows=$((rows + 1))

@@ -1,0 +1,42 @@
+//! AN ENTRY'S BUILD MEETS NO TEST IT DOES NOT REACH: `avra build` of a
+//! package's entry parses its `tests/` only when the entry stands there or
+//! a `use` reaches in, while `check` of the package still reads every test.
+//! `scratch_dir`, `avra_ran` and `built_printed` are the neighbouring
+//! tests' own: this module shares one namespace.
+use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
+
+/// A package whose entry prints the support module's answer when `reaches`,
+/// a literal otherwise, beside a test file that does not parse. Answers the
+/// package's root.
+fn broken_test_package(reaches: bool) -> string {
+    let root = "${scratch_dir()}/entry_tests_${now_ns()}"
+    let _ = make_dirs("${root}/src/tests/support")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"entry-tests\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text(
+        "${root}/src/tests/broken_test.av",
+        "spec \"broken\" {\n    then \"never parses\" { (( }\n}\n",
+    )
+    let _ = write_text("${root}/src/tests/support/support.av", "export fn answer() -> int { 42 }\n")
+    let main = if reaches { "use tests.support.{answer}\n\nprintln(\"\${answer()}\")\n" } else { "println(\"7\")\n" }
+    let _ = write_text("${root}/src/main.av", main)
+    root
+}
+
+spec "build — an entry's build meets no test it does not reach" {
+    then "a test that does not parse leaves the entry's build standing" {
+        built_printed("${broken_test_package(false)}/src/main.av") == "7\n"
+    }
+    then "a test module the entry uses is read all the same" {
+        built_printed("${broken_test_package(true)}/src/main.av") == "42\n"
+    }
+    then "a check of the package still reads every test, and refuses the one that does not parse" {
+        match avra_ran(["check", broken_test_package(false)]) {
+            .Ok(o) -> !exit_is_zero(o.exit) && (o.out.stdout + o.out.stderr).contains("broken_test.av"),
+            .Err(_) -> false,
+        }
+    }
+}

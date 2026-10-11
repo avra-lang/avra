@@ -1,6 +1,6 @@
 //! The manifest closure: the root package, its path dependencies, and
 //! the module path each names. Moved out of the workspace god-object.
-use core.{ModulePath, key_spelled, fp_str, flatten}
+use core.{ModulePath, key_spelled, flatten}
 use @std.path.{under_dir, joined_path, normalized, relative_path}
 use features.{nothing, Budgets, budgets_of}
 use diagnostics.{SourceFile, new_source_file, Diag, refusal}
@@ -17,6 +17,8 @@ use compiler.host.{
     name_mismatch,
     prelude_depends,
     read_manifest,
+    row_at,
+    unset_link_variable,
 }
 
 // ── The packages ──
@@ -41,6 +43,21 @@ fn empty_manifest() -> Manifest {
     }
 }
 
+/// A manifest row whose words are filled from the environment.
+type LinkRow = { section: string, key: string, words: List<string> }
+
+/// The rows a link fills from the environment — `[link.raw]` only for the
+/// program's own manifest, the one it is heard from.
+fn link_rows(m: Manifest, own: bool) -> List<LinkRow> {
+    [
+        LinkRow { section: "link", key: "objects", words: m.objects },
+        LinkRow { section: "link", key: "wasm_objects", words: m.wasm_objects },
+        LinkRow { section: "link", key: "search", words: m.search },
+        LinkRow { section: "link", key: "libs", words: m.libs },
+    ]
+        .concat(if own { [LinkRow { section: "link.raw", key: "flags", words: m.raw }] } else { [] })
+}
+
 impl Workspace {
     /// A package's manifest, read from its `avra.toml` — an INPUT: the
     /// revision moves only when the text did. A root without a manifest
@@ -56,19 +73,19 @@ impl Workspace {
             )
         }
         manifest_of(
-            self
-                .relation(Family.Manifest)
-                .input_loaded(
-                    i,
-                    () -> {
-                        let text = self.host.read(path)
-                        Loaded {
-                            value: DbRow.Manifest(read_manifest(new_source_file(path, text))),
-                            fingerprint: fp_str(text),
-                        }
-                    },
-                ),
+            self.relation(Family.Manifest).input_loaded(i, () -> self.loaded_manifest(path)),
         )
+    }
+
+    /// A manifest's row over its Text input, cut by the word that cell
+    /// is. Loaded once a package, so its text's cell is marked once: a
+    /// manifest's text is the one text the package graph is shaped by.
+    fn loaded_manifest(path: string) -> Loaded<DbRow> {
+        self.manifest_texts.push(self.text_key(path))
+        Loaded {
+            value: DbRow.Manifest(read_manifest(new_source_file(path, self.listed_text(path)))),
+            fingerprint: self.text_word(path),
+        }
     }
 
     /// What a settlement may spend: the ROOT package's `[lifted]` rows,
@@ -78,12 +95,12 @@ impl Workspace {
     }
 
     fn has_manifest(pkg: Package) -> bool {
-        self.host.exists(joined_path(pkg.root, "avra.toml"))
+        self.there(joined_path(pkg.root, "avra.toml"))
     }
 
     fn manifest_source(pkg: Package) -> SourceFile {
         let path = joined_path(pkg.root, "avra.toml")
-        new_source_file(path, self.host.read(path))
+        new_source_file(path, self.listed_text(path))
     }
 
     /// The root package, then every path dependency reachable from its
@@ -130,7 +147,7 @@ impl Workspace {
             if self.host.absolute(known!.root) != self.host.absolute(dir) { self.speak_package(duplicate_package(at, key, known!.root, dir)) }
             return
         }
-        if !self.host.exists(joined_path(dir, "avra.toml")) { return self.speak_package(bad_dependency_path(at, key, dir)) }
+        if !self.there(joined_path(dir, "avra.toml")) { return self.speak_package(bad_dependency_path(at, key, dir)) }
         self.entered(key, dir, at, Origin.Declared, chain)
     }
 
@@ -142,7 +159,7 @@ impl Workspace {
     /// graph. A key the toolchain does not carry is nobody's here.
     fn std_admitted(key: string) -> bool {
         let dir? = self.host.std_dir(key) else { return false }
-        if !self.host.exists(joined_path(dir, "avra.toml")) { return false }
+        if !self.there(joined_path(dir, "avra.toml")) { return false }
         if self.packages().any(it.key == key) { return true }
         self.entered(key, dir, null, Origin.Toolchain, [])
         true
@@ -180,7 +197,27 @@ impl Workspace {
     fn packages_voiced() -> List<Diag> {
         flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages()])
             .concat([borrowed_raw(pkg) for pkg in self.packages() if self.raw_from_dependency(pkg)])
+            .concat(flatten([self.unset_link_holes(pkg) for pkg in self.packages()]))
             .concat(self.package_voices.get())
+    }
+
+    /// Every hole inside a longer `[link]` word whose variable is unset,
+    /// refused by name.
+    fn unset_link_holes(pkg: Package) -> List<Diag> {
+        flatten(
+            [self.unset_in(pkg, row, w) for row in link_rows(self.manifest(pkg.ordinal), pkg.ordinal == 0) for w in row.words],
+        )
+    }
+
+    /// One word's unset holes; none for a word that is only its hole.
+    fn unset_in(pkg: Package, row: LinkRow, word: string) -> List<Diag> {
+        if whole_hole(word) { return [] }
+        [unset_link_variable(
+            row_at(self.manifest_source(pkg), row.section, row.key),
+            row.key,
+            word,
+            name,
+        ) for name in holes(word) if self.env(name) == null]
     }
 
     /// A dependency asking for raw linker options: `[link.raw]` is the
@@ -250,7 +287,7 @@ impl Workspace {
         let line = "\"${k}\" = { path = \"${relative_path(from.root, known.root)}\" }"
         let manifest_path = joined_path(from.root, "avra.toml")
         let text = if m.deps_at == null { "\n[dependencies]\n${line}\n" } else { "\n${line}" }
-        let at = deps_offset(m) ?? self.host.read(manifest_path).length
+        let at = deps_offset(m) ?? self.listed_text(manifest_path).length
         [
             Suggestion {
                 confidence: Confidence.High,

@@ -16,6 +16,7 @@ use core.{
     Reg,
     BinOp,
     UnOp,
+    RtFlag,
     RtSig,
     RtKind,
     Takes,
@@ -137,9 +138,16 @@ type Machine = {
     parking: bool,
     // how many tasks the run has spawned: the newest one's id
     spawned: int = 0,
+    // the schedule the run is seeded with, or -1 for none; and how many
+    // choices it made
+    schedule: int = -1,
+    choices: int = 0,
     // the runtime's gate behind a program's, by the id of the box the
     // program holds; let go when that box dies
     gates: List<ptr?> = [],
+    // the tasks a timer ends that have not ended, by place: the heap
+    // ends each where its time comes, and the machine hears it here
+    clocked: List<int> = [],
     arrays: List<List<Val>>,
     // an aggregate's reference count, index-aligned with `arrays`:
     // a box holds one on creation, Retain/Release move it, and zero
@@ -360,6 +368,20 @@ export fn run_live(l: Lowered) -> Ended {
 /// One PROGRAM of a programs binary, run in the evaluator: its body by
 /// symbol, its printed lines as the answer — what `run_lowered` does
 /// for the entry.
+/// What a program printed under one schedule, and how many choices that
+/// schedule made: none means the program has one order.
+export type Scheduled = { out: string, choices: int }
+
+/// A program run as an evaluated leg runs one: seeded with `schedule`,
+/// and on the virtual clock when the suite's cases are.
+export fn run_scheduled(l: Lowered, symbol: string, schedule: int) -> Result<Scheduled, string> {
+    let body = named_body(l, symbol)?
+    mut m = fresh_machine(l) with { freeing: true, schedule: schedule }
+    let _ = m.run_body(body)
+    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
+    .Ok(Scheduled { out: joined(m.out, "\n"), choices: m.choices })
+}
+
 export fn run_program(l: Lowered, symbol: string) -> Result<string, string> {
     let body = named_body(l, symbol)?
     .Ok(printed(ran(l, body)?))
@@ -676,6 +698,7 @@ impl Machine {
     fn run_body(handed: Body, args: List<Val> = []) -> Val? {
         let b = if self.hosts { body_named(self.l, handed.name) ?? handed } else { handed }
         let floor = self.callers.length
+        self.run_begun()
         self.frames.push(self.frame_for(b, args))
         mut body = b
         mut pc = 0
@@ -754,6 +777,7 @@ impl Machine {
         }
         self.unwound(floor)
         self.retired()
+        self.run_ended()
         answer
     }
 
@@ -809,6 +833,7 @@ impl Machine {
             .ConstInt(d, v) -> self.put_at(d, self.const_int_val(b, d, v), pc),
             .ConstFloat(d, bits) -> self.put_at(d, Val.F(bits), pc),
             .ConstBool(d, v) -> self.put_at(d, Val.B(v), pc),
+            .FlagRead(d, flag) -> self.put_at(d, Val.B(self.flag_now(flag)), pc),
             .ConstStr(d, s) -> self.put_at(d, Val.S(s), pc),
             .Bin(d, op, a, x) -> self.put_at(d, self.bin_val(op, a, x), pc),
             .Un(d, op, src) -> self.put_at(d, self.un_val(op, src), pc),
@@ -969,6 +994,17 @@ impl Machine {
 
     fn trapped(msg: string) {
         self.failures.push(msg)
+    }
+
+    /// A runtime flag as the running task reads it: the task's own bit,
+    /// which the runtime keeps and both engines read — and the tick, which
+    /// the evaluator holds set: its own machine counts the turns at a
+    /// checked back-edge, so no thread and no byte gate it.
+    fn flag_now(flag: RtFlag) -> bool {
+        match flag {
+            .Unwinding -> self.running >= 0 && avra_vtask_unwinding(self.tasks[self.running].vt) != 0,
+            .Tick -> true,
+        }
     }
 
     fn trapped_val(msg: string) -> Val {
@@ -1481,8 +1517,10 @@ impl Machine {
             .TaskSettleAll -> self.task_settle_all_val(vals),
             .TasksPush -> self.tasks_push_val(vals),
             .FiberYield -> self.fiber_yield_val(),
+            .TickCold -> self.tick_cold_val(),
             .FiberSleep -> self.fiber_sleep_val(vals),
             .FiberParkFd -> self.fiber_park_fd_val(vals),
+            .FiberInterrupted -> self.fiber_interrupted_val(),
             .FiberWithin -> self.fiber_within_val(vals),
             .FiberWithinEnd -> self.fiber_within_end_val(vals),
             .WaitFd -> self.wait_fd_val(vals),

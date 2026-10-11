@@ -13,6 +13,7 @@ use core.{
     PatId,
     Type,
     TypeLit,
+    ResSides,
     SyntaxArena,
     TypeRegistry,
     Binding,
@@ -530,6 +531,24 @@ impl TypeCx {
     fn sig_of(e: ExprId) -> FnSig? { sig_of_at(self.names, self.view.decls, e) }
     fn fields_of(ty: TypeId) -> StructSig? { self.view.decls.fields_of_type(ty) }
     fn variants_of(ty: TypeId) -> EnumSig? { self.view.decls.variants_of_type(ty) }
+    /// THE FAILURE VIEW a subject carries: a `Result`'s own sides, or
+    /// the view the row its READ selected declares (`await` answers
+    /// `(T, Cancelled)`). `catch` asks this ONE verb; the pair is never
+    /// interned as a `Result`.
+    fn failure_view(e: ExprId) -> ResSides? {
+        let direct: ResSides? = self.view.types.res_parts(self.type_at(e))
+        if direct != null { return direct }
+        let row? = property_prop(
+            self.view.types,
+            self.view.lang.properties,
+            self.view.store,
+            e,
+            (s) -> self.type_at(s),
+        ) else {
+            return null
+        }
+        row.view(self, self.type_at(e))
+    }
     fn method_sig(target: DeclId, mname: string) -> FnSig? { self.view.decls.method_sig_of(target, mname) }
     fn trait_sig(tname: string, mname: string) -> FnSig? { self.view.decls.trait_sig_of(self.names, tname, mname) }
     fn implements(ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }

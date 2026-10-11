@@ -1,0 +1,71 @@
+// proves: a kept answer is read back only for the arguments it was kept
+// for. Two calls whose argument hashes collide share one durable key;
+// the second must answer its own value and not the first call's, while a
+// repeat of the first call still reads its record back, computed once.
+use @std.relation.{query}
+use @std.relation.db.{Db, Durable, durable_db}
+
+// splitmix64's finalizer, as stable.av states it, and its inverse
+const C1: int = -4658895280553007687
+const C2: int = -7723592293110705685
+
+fn shifted(z: int, k: int) -> int { (z >> k) & (1 << 64 - k) - 1 }
+
+fn unshift(y: int, k: int) -> int {
+    mut x = y
+    mut s = k
+    while s < 64 {
+        x = x ^ shifted(y, s)
+        s = s + k
+    }
+    x
+}
+
+fn inverse_odd(c: int) -> int {
+    mut x = c
+    for i in 0..5 { x = x * (2 - c * x) }
+    x
+}
+
+/// The state before a stable hash's finish, from the finished hash.
+fn unmix(y: int) -> int {
+    let b = unshift(y, 31)
+    let a = unshift(b * inverse_odd(C2), 27)
+    unshift(a * inverse_odd(C1), 30)
+}
+
+/// The owner's disk: each record under the key it was kept at.
+once fn disk() -> Cell<Map<string, Bytes>> { Cell.new({}) }
+
+/// The hash each kept record was kept at, in order.
+once fn kept_args() -> Cell<List<int>> { Cell.new([]) }
+
+once fn computes() -> Cell<int> { Cell.new(0) }
+
+fn read_record(query: string, args: int) -> Bytes? { disk().get().get("${query}|${args}") }
+
+fn keep_record(query: string, args: int, record: Bytes) {
+    kept_args().push(args)
+    disk().put("${query}|${args}", record)
+}
+
+@query
+fn pair(_db: Db, a: int, _b: int) -> int {
+    computes().set(computes().get() + 1)
+    a
+}
+
+/// A Db standing for a fresh process over the same disk.
+fn process() -> Db { durable_db(Durable { answer: read_record, keep: keep_record }) }
+
+fn main_run() -> string {
+    let first = pair(process(), 1, 0)
+    let repeat = pair(process(), 1, 0)
+    let first_computed = computes().get()
+    let second = pair(process(), 2, 0)
+    let collide = unmix(unmix(kept_args().get()[0])) ^ unmix(unmix(kept_args().get()[1]))
+    let third = pair(process(), 2, collide)
+    "first=${first} repeat=${repeat} computed=${first_computed} second=${second} third=${third} computed=${computes().get()}"
+}
+
+main_run()

@@ -3,13 +3,14 @@
 // climbs past it looking for a directory `.git`, and never lets a HIGHER
 // `avra.toml` outrank it. `avra.toml` only decides the root when no `.git`
 // stands anywhere above: the fallback for a tree with no git history yet.
-use @std.avrac.compiler.{avra, new_workspace, build_cache_root}
+use @std.avrac.testing.{test_workspace}
+use @std.avrac.compiler.{build_cache_root}
 use compiler.host.{memory_host}
 
 spec "compiler/build — tree_root's checkout boundary" {
     given "a worktree nested under a checkout, `.git` and `avra.toml` at both levels" {
         then "the NEAREST `.git` wins — the worktree owns its own store, not the checkout above it" {
-            let ws = new_workspace(
+            let ws = test_workspace(
                 memory_host(
                     {
                         "/root/.git": "",
@@ -22,14 +23,13 @@ spec "compiler/build — tree_root's checkout boundary" {
                     ["/root/wt/pkg/avra.toml", "/root/wt/pkg/src/main.av"],
                 ),
                 "/root/wt/pkg",
-                avra(),
             )
             build_cache_root(ws).starts_with("/root/wt/.avra-cache/")
         }
     }
     given "a package subdirectory under a plain checkout" {
         then "the checkout's `.git` is the root" {
-            let ws = new_workspace(
+            let ws = test_workspace(
                 memory_host(
                     {
                         "/checkout/.git": "",
@@ -39,14 +39,13 @@ spec "compiler/build — tree_root's checkout boundary" {
                     ["/checkout/pkg/avra.toml", "/checkout/pkg/src/main.av"],
                 ),
                 "/checkout/pkg",
-                avra(),
             )
             build_cache_root(ws).starts_with("/checkout/.avra-cache/")
         }
     }
     given "no `.git` anywhere in the ancestry" {
         then "the HIGHEST `avra.toml` is the root" {
-            let ws = new_workspace(
+            let ws = test_workspace(
                 memory_host(
                     {
                         "/top/avra.toml": "[package]\nname = \"top\"\nversion = \"0.1.0\"\n",
@@ -57,7 +56,6 @@ spec "compiler/build — tree_root's checkout boundary" {
                     ["/top/mid/pkg/avra.toml", "/top/mid/pkg/src/main.av"],
                 ),
                 "/top/mid/pkg",
-                avra(),
             )
             build_cache_root(ws).starts_with("/top/.avra-cache/")
         }

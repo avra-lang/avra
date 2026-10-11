@@ -19,9 +19,10 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use @std.meta.{derive}
+use @std.meta.{derive, delegates}
 use core.{
     Expr,
+    Stmt,
     ExprId,
     StmtId,
     PatId,
@@ -37,8 +38,8 @@ use core.{
     Binding,
 }
 use core.{SeatMark, SideTable, Fingerprint, nothing_bound}
-// LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use core.{fp, fp_list, fp_str}
+// LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
@@ -257,6 +258,9 @@ export type TypeCx = {
     // for this file's own
     elsewhere: Elsewhere,
     writer: Namespace?,
+    // what a written type being read is written in — what an unknown
+    // name's refusal says it stands in
+    written_in: WrittenIn = WrittenIn.Signature,
     facts: TypeFacts,
     error_type: TypeId,
     // the language's semantics and keywords: the walk dispatches
@@ -290,6 +294,13 @@ export type TypeCx = {
     // alias-copy law has spoken for it — the first writing call through
     // it is the tell, later ones on the same local repeat nothing new.
     aliased_warned: List<int>,
+}
+
+/// What a written type stands in: a declaration's signature, or a type
+/// pattern's test.
+export enum WrittenIn {
+    Signature
+    Pattern
 }
 
 /// One loop whose turn is being typed: the statement that wrote it —
@@ -356,10 +367,27 @@ export type LowerCx = {
     gathers: List<Reg> = [],
     // the open loops, innermost last — what a `break` aims at
     loops: List<LoopMark> = [],
+    // the open `within` landing loops, innermost last — where an
+    // unwind is caught at its own scope's landing
+    within_loops: List<WithinMark> = [],
     // THE LAMBDAS LOWERED IN PLACE: a lambda literal at a verb seat
     // lowers its body here instead of lifting a closure, so its
     // params resolve to the registers the site hands them.
     inline_seats: List<InlineSeat> = [],
+    // a deferred body is being lowered: it runs whole, so its calls
+    // carry no test after them
+    deferring: bool = false,
+    // what an early exit answers where the body's answer is not its
+    // declared one — a task's, the cell its answer rides
+    exit: TypeId? = null,
+    // an `@unbroken` fn's own `while`s carry NO back-edge check: nothing
+    // may run between its test and its park, so a checked back-edge
+    // would break the law it promises
+    unbroken: bool = false,
+    // whether a `while` back-edge carries its tick check at all. A
+    // COMPILE-TIME RUN emits none (it links no source), and so does a
+    // program the cancel pass says links no scheduler.
+    checks: bool = true,
 }
 
 /// A lambda literal lowered where it is CALLED rather than lifted:
@@ -372,17 +400,24 @@ export type InlineSeat = { lam: ExprId, regs: List<Reg> }
 /// `defer`s.
 export type LoopMark = { owner: StmtId?, frame: int }
 
+/// One open `within`'s landing: the one-turn loop its body runs in and
+/// the frame its scope opens (where its end runs).
+export type WithinMark = { loop: int, frame: int }
+
 /// One registered `defer`: the fn box to call, the depth of the
 /// frame that registered it, and whether only a failing exit runs it.
 /// What a closing frame runs: a deferred closure, called; a deferred
-/// call, made; or an owner's tasks, joined — the owner's register, or
-/// the cell it lives in.
+/// call, made; an owner's tasks, joined; or a `within`'s scope, ended.
 export enum Deferral {
     Call(box: Reg)
     Settle(owner: Reg, cell: bool)
     /// a call whose arguments were fixed where the `defer` stands —
     /// no box to build, the callee named directly at every exit
     Direct(call: DirectCall)
+    /// a `within` scope's end: the scope ends where its frame closes,
+    /// and its answer — whether the cancel it met was its own — lands
+    /// in `cell`
+    Landing(scope: Reg, cell: Reg)
 }
 
 /// A deferred call with its arguments in hand: a declared fn's symbol,
@@ -403,9 +438,13 @@ export trait NodeSemantics {
     fn heirs(e: Expr) -> List<ExprId> {
         []
     }
-    fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nothing()
-    }
+}
+
+/// A syntax node's meaning at resolve, typing and lowering, delegated
+/// over `Expr`: each record writes its own impl.
+@delegates(Expr)
+export trait Meaning {
+    fn resolve(mut cx: ResolveCx, e: ExprId)
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg
 }
@@ -416,6 +455,7 @@ export trait NodeSemantics {
 /// value-producing statement answers its register (lower), which the
 /// DRIVER records as the statement's slot; what a program SHOWS is
 /// its final expression statement's, read through the store.
+@delegates(Stmt)
 export trait StmtSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
         nothing()

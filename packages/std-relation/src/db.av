@@ -25,9 +25,9 @@
 //! asked again holds the Db. `close` lets both go. A Db that only ever
 //! held rows is let go with its last holder.
 //!
-use rows.{Rows, named_rows, Stamp}
+use rows.{Rows, named_rows, Stamp, INT_CAP}
 use engine.{Kernel, Key, new_kernel, Relation, new_memo, Table, new_table}
-use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with}
+use stable.{Writer, Reader, CodecFault, encoded_with, decoded_with, spelled_with}
 
 extern fn avra_trap(message: string)
 
@@ -44,6 +44,8 @@ extern fn avra_trap(message: string)
 export type Db = {
     id: int,
     closed: Cell<bool>,
+    /// What a reach after the close is refused with: the law its owner closed it under.
+    closed_voice: Cell<string>,
     hashes: Cell<List<fn() -> int>>,
     closers: Cell<List<fn() -> void>>,
     kernel: Cell<Kernel?>,
@@ -60,6 +62,8 @@ export type Db = {
     names: Cell<List<string>>,
     asking: Cell<int>,
     written: Cell<int>,
+    /// Settled calls one query keeps under this Db before an epoch drops them; 0 keeps all.
+    cap: Cell<int>,
 }
 
 /// Whose kernel a Db's cells live in, and so how a write is heard.
@@ -137,6 +141,7 @@ fn made(durable: Durable) -> Db {
     Db {
         id: id,
         closed: Cell.new(false),
+        closed_voice: Cell.new(closed_db(id)),
         hashes: hashes,
         closers: closers,
         kernel: Cell.new(none),
@@ -152,11 +157,19 @@ fn made(durable: Durable) -> Db {
         runs: runs,
         names: names,
         asking: Cell.new(0),
+        cap: Cell.new(0),
         written: Cell.new(0),
     }
 }
 
 impl Db {
+    /// This Db, keeping at most `n` settled calls per query before an epoch drops
+    /// them. A Db made without it keeps every call, as before.
+    fn with_cap(n: int) -> Db {
+        self.cap.set(n)
+        self
+    }
+
     /// A relation reached here for the first time: its set hash and its
     /// close, each already bound to this Db.
     fn joined(hash: fn() -> int, close: fn() -> void) {
@@ -385,6 +398,13 @@ impl Db {
         self.closed.set(true)
         for c in self.closers.get() { c() }
     }
+
+    /// `close`, a later reach refused with `voice` — the law the owner let
+    /// its rows go under.
+    fn close_saying(voice: string) {
+        self.closed_voice.set(voice)
+        self.close()
+    }
 }
 
 /// One Db's rows of one relation: never reached, open, or let go when
@@ -453,7 +473,7 @@ impl Stores<R> {
     }
 
     fn refused(db: Db) -> Rows<R> {
-        avra_trap(closed_db(db.id))
+        avra_trap(db.closed_voice.get())
         self.fresh()
     }
 
@@ -482,7 +502,7 @@ export type Answers<V> = { held: Cell<List<AnswersUnder<V>?>> }
 /// One query's answers under one Db: its kernel family with the typed
 /// values, every call's spelled arguments interned to a dense arg, and
 /// how each call is asked again when the kernel verifies it.
-type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, again: Table<fn() -> V> }
+type AnswersUnder<V> = { memo: Relation<V>, args: Cell<Map<string, int>>, ints: Cell<List<int>>, again: Table<fn() -> V>, cap: int, since: Cell<int>, next: Cell<int>, free: Cell<List<int>> }
 
 export fn answers<V>() -> Answers<V> {
     let none: List<AnswersUnder<V>?> = []
@@ -504,7 +524,15 @@ impl Answers<V> {
         let slots = self.held
         let id = db.id
         let kernel = db.engine()
-        self.placed(db, held_in(kernel, kernel.family((arg: int) -> reasked(slots.get()[id], arg))))
+        self
+            .placed(
+                db,
+                held_in(
+                    kernel,
+                    kernel.family((arg: int) -> reasked(slots.get()[id], arg)),
+                    db.cap.get(),
+                ),
+            )
     }
 
     /// `made` kept as the answers under `db`, until the Db closes or is
@@ -520,11 +548,32 @@ impl Answers<V> {
 }
 
 /// A query's empty answers in one kernel family.
-fn held_in<V>(kernel: Kernel, family: int) -> AnswersUnder<V> {
+fn held_in<V>(kernel: Kernel, family: int, cap: int) -> AnswersUnder<V> {
+    let free: Cell<List<int>> = Cell.new([])
     let memo: Relation<V> = new_memo(kernel, family)
     let args: Cell<Map<string, int>> = Cell.new({})
+    let ints: Cell<List<int>> = Cell.new([])
     let again: Table<fn() -> V> = new_table()
-    AnswersUnder { memo: memo, args: args, again: again }
+    AnswersUnder {
+        memo: memo,
+        args: args,
+        ints: ints,
+        again: again,
+        cap: cap,
+        since: Cell.new(0),
+        next: Cell.new(0),
+        free: free,
+    }
+}
+
+/// A kept record's answer, read back only when it was kept for `spelled`.
+fn proved<V>(r: Reader, spelled: string, read: fn(Reader) -> Result<V, CodecFault>) -> Result<
+    V,
+    CodecFault,
+> {
+    let kept = r.text()?
+    if kept != spelled { fail CodecFault.OtherArguments }
+    read(r)
 }
 
 /// A call verified: asked again when it is a query's, then the revision
@@ -541,14 +590,74 @@ fn reasked<V>(held: AnswersUnder<V>?, arg: int) -> int {
 }
 
 impl AnswersUnder<V> {
-    /// A call's dense arg: its spelled arguments, interned.
+    /// A new call's room. Past the cap, every settled call not in flight is dropped at
+    /// once — its value, its cell, its `again`, its spelled-key entry and its int slot —
+    /// the revision moves once so dependents re-verify, and the count starts over. A
+    /// dropped call is new the next time it is asked: its arg number is never reused.
+    fn make_room() {
+        if self.cap == 0 { return }
+        if self.since.get() < self.cap {
+            self.since.set(self.since.get() + 1)
+            return
+        }
+        mut kept: Map<string, int> = {}
+        mut dropped: List<int> = []
+        for e in self.args.get().entries() {
+            if self.memo.open(e.value) {
+                kept.set(e.key, e.value)
+            } else {
+                self.memo.evict_call(e.value)
+                self.again.drop(e.value)
+                dropped.push(e.value)
+            }
+        }
+        self.args.set(kept)
+        self.free.set(self.free.get().concat(dropped))
+        self.ints.set([if x >= 0 && self.memo.open(x) { x } else { -1 } for x in self.ints.get()])
+        self.memo.kernel.bump()
+        self.since.set(1)
+    }
+
+    /// A dense arg for a new call: the newest one an epoch freed, else one never used before.
+    /// A freed arg comes back with a new cell, which settles at a revision past any stale
+    /// dependent's verification, so that dependent re-verifies and never reuses.
+    fn take_arg() -> int {
+        let free = self.free.get()
+        let reused? = free.last() else {
+            let made = self.next.get()
+            self.next.set(made + 1)
+            return made
+        }
+        self.free.set(free.slice(0, free.length - 1))
+        reused
+    }
+
     fn arg(spelled: string) -> int {
         let known? = self.args.get().get(spelled) else {
-            let made = self.args.get().length
+            self.make_room()
+            let made = self.take_arg()
             self.args.put(spelled, made)
             return made
         }
         known
+    }
+
+    /// An int argument's dense arg: read from the int table below the cap, else
+    /// interned by its spelled form, as `arg` interns it.
+    fn int_arg(n: int) -> int {
+        let inside = n >= 0 && n < INT_CAP
+        if inside {
+            let known = self.ints.get()
+            if n < known.length && known[n] >= 0 { return known[n] }
+        }
+        let made = self.arg(spelled_with([(w: Writer) -> w.int(n)]))
+        if inside { self.remember_int(n, made) }
+        made
+    }
+
+    fn remember_int(n: int, made: int) {
+        while self.ints.get().length <= n { self.ints.push(-1) }
+        self.ints.set_at(n, made)
     }
 
     /// An open call computed: `body` run, its answer settled under the
@@ -570,17 +679,29 @@ impl AnswersUnder<V> {
     fn ran_lasting(
         db: Db,
         arg: int,
+        spelled: string,
         body: fn() -> V,
         again: fn() -> V,
         digest: fn(V) -> int,
         record: KeptRecord<V>,
     ) -> V {
+        let query? = record.query else { return self.ran(db, arg, body, again, digest) }
         if self.answered(arg) { return self.ran(db, arg, body, again, digest) }
-        let restored? = self.restored(db, record) else {
+        let restored? = self.restored(db, query, record, spelled) else {
             let done = self.run(db, arg, body, again, digest)
             if !done.wrote && db.rows_alone(self.memo.kernel.deps_of(self.memo.query_key(arg))) {
                 let keep = db.durable.keep
-                keep(record.query, record.args, encoded_with(done.value, record.write))
+                keep(
+                    query,
+                    record.args,
+                    encoded_with(
+                        done.value,
+                        (w, v) -> {
+                            w.text(spelled)
+                            record.write(w, v)
+                        },
+                    ),
+                )
             }
             return done.value
         }
@@ -596,10 +717,13 @@ impl AnswersUnder<V> {
 
     /// The owner's record for a call, read back — one that does not read
     /// back is recomputed, never guessed at.
-    fn restored(db: Db, record: KeptRecord<V>) -> V? {
+    fn restored(db: Db, query: string, record: KeptRecord<V>, spelled: string) -> V? {
         let answer = db.durable.answer
-        let bytes? = answer(record.query, record.args) else { return null }
-        match decoded_with(bytes, record.read) { .Ok(value) -> value, .Err(_) -> null }
+        let bytes? = answer(query, record.args) else { return null }
+        match decoded_with(bytes, (r: Reader) -> proved(r, spelled, record.read)) {
+            .Ok(value) -> value,
+            .Err(_) -> null,
+        }
     }
 
     fn run(db: Db, arg: int, body: fn() -> V, again: fn() -> V, digest: fn(V) -> int) -> Run<V> {
@@ -634,7 +758,14 @@ type Run<V> = { value: V, wrote: bool }
 
 /// How an answer is kept past the process: the query's durable name, the
 /// call's arguments' stable hash, and the answer's codec.
-export type KeptRecord<V> = { query: string, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
+/// The name a query's answers are kept under: its durable name and its
+/// code's hash — none when the code has no hash, so nothing is kept.
+export fn code_keyed(name: string, hash: string?) -> string? {
+    let h? = hash else { return null }
+    "${name}#${h}"
+}
+
+export type KeptRecord<V> = { query: string?, args: int, write: fn(Writer, V) -> void, read: fn(Reader) -> Result<V, CodecFault> }
 
 // ── voices ──
 

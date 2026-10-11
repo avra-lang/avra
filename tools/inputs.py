@@ -2,8 +2,8 @@
 """EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR, and this counts
 the reads that are not: a call in the compiler or its CLI that asks the
 disk, the environment, a tool, a child process, the clock, the process
-table or argv, outside the door — the one file that defines the input
-verbs (DOOR), never the directory it stands in.
+table or argv, outside the door — the files that define the input verbs
+and the disk's answers to them (DOOR), never the directories they stand in.
 
 A SITE IS FOUND FROM WHAT ITS FILE IMPORTS, never from a verb's
 spelling: a name taken from a world package is looked up in that
@@ -42,9 +42,10 @@ import re
 import sys
 
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
-# The door is the FILE that defines the input verbs. A read beside it,
-# in the same directory, is outside like any other.
-DOOR = {"packages/std-avrac/src/compiler/host/host.av"}
+# The door is the FILES that define the input verbs and the disk's
+# answers to them. A read beside one, in the same directory, is outside
+# like any other.
+DOOR = {"packages/std-avrac/src/compiler/host/host.av", "packages/cli/src/commands/disk_host.av"}
 BASELINE = "tools/inputs.baseline"
 
 # What a call asks of the world. A kind in COUNTED is a read; the rest
@@ -57,22 +58,22 @@ WORLD = {
     "io": {
         "read_text": "read", "read_bytes": "read", "exists": "read", "is_file": "read",
         "is_dir": "read", "list_dir": "read", "stamp": "read", "kind_of": "read",
-        "open_beneath": "read", "watch": "read", "env": "env", "env_or": "env", "compile_slot": "env",
+        "open_beneath": "read", "watch": "read", "own_dir": "read", "user_dir": "read", "env": "env", "env_or": "env", "compile_slot": "env",
         "write_text": W, "write_bytes": W, "append_bytes": W, "synced": W,
         "opened_for_append": W, "truncate_to": W, "make_dirs": W, "remove": W,
         "println": E, "eprintln": E,
         "one_path": P, "refused": P, "enoent": P, "eacces": P, "enotdir": P,
-        "IoError": T, "Entry": T, "Opened": T, "AppendFile": T, "Watch": T,
+        "IoError": T, "Entry": T, "Opened": T, "AppendFile": T, "Watch": T, "OwnDir": T,
     },
     "process": {
-        "tool": "tool", "tool_from_env": "tool", "host": "spawn", "run_through": "spawn",
+        "tool": "tool", "tool_from_env": "tool", "tool_at": P, "host": "spawn", "run_through": "spawn",
         "parallel": "spawn", "race": "spawn", "serving": "spawn",
-        "minimal": "env", "developer": "env",
+        "minimal": "env", "developer": "env", "signalled": "pid",
         "cmd": P, "inherited": P, "exit_text": P,
         "status_of": P, "scripted": P, "plan": P, "exit": E,
         "Tool": T, "Command": T, "Exit": T, "Output": T, "Outcome": T, "Env": T,
         "EnvPair": T, "Stdin": T, "Streams": T, "Ready": T, "Stream": T,
-        "ProcessError": T, "Child": T, "Pipeline": T, "PipeOutcome": T, "Script": T,
+        "ProcessError": T, "Child": T, "Pipeline": T, "PipeOutcome": T, "Script": T, "Signal": T, "Signalled": T,
         "Runner": T,
     },
     "time": {
@@ -128,19 +129,21 @@ ROWS = {
     "avra_spawn_in": "spawn", "avra_spawn_status": "spawn", "avra_exec_self": "spawn",
     "avra_self_dir": "tool", "avra_now_ns": "clock",
     "avra_own_pid": "pid", "avra_pid_alive": "pid",
+    "avra_sched_runs_wanted": "env", "avra_sched_schedule_at": "env", "avra_case_clock_virtual": "env",
     "avra_selfhost_argc": "argv", "avra_selfhost_get_arg_cstr": "argv",
 }
 INERT_ROWS = re.compile(
     r"^(LLVM\w*|avra_(llvm|float|int|str|bytes|vtask|fiber|ffi)_\w+|avra_(debug|eputs|puts|"
     r"errno_text|ptr_at|qtrace|trap|utf8_bad_at|mem_live|fd_taken|fd_write|type_named|"
-    r"vgate_open|vgate_claim|gate_new|rc_release)|"
+    r"vgate_open|vgate_claim|gate_new|rc_release|task_at|task_done|task_cancel|"
+    r"sched_seed|sched_settle|sched_run_begins|sched_run_ends|sched_guest_waits|clock_virtual)|"
     r"host|println)$")
 
 # A read through the filesystem seam: behind `Host`, not yet an input —
 # called as a member, as a field's value (`(host.beneath)(…)`), or on
 # the line under a chain that ends in `host`.
-HOSTED = re.compile(r"\bhost\.(read|exists|beneath|list|is_dir|stamp)\)?\(")
-CHAINED = re.compile(r"^\s*\.(read|exists|beneath|list|is_dir|stamp)\)?\(")
+HOSTED = re.compile(r"\bhost\.(read|exists|beneath|list|is_dir|stamp|octets)\)?\(")
+CHAINED = re.compile(r"^\s*\.(read|exists|beneath|list|is_dir|stamp|octets)\)?\(")
 
 SEG = r"[a-z_][a-z_0-9]*"
 USE = re.compile(r"^use\s+@std\.(" + SEG + r")((?:\." + SEG + r")*)\.(\{[^}]*\}|[A-Za-z_][A-Za-z_0-9]*)", re.M | re.S)
@@ -421,6 +424,8 @@ def selftest():
         ("packages/std-avrac/src/compiler/x.av", "fn f() { avra_now_ns() }\n", "ROW"),
         # accepts: the door, a licence, a write, a local fn, a method, a comment, a longer name
         (sorted(DOOR)[0], io + "fn f() { env(\"HOME\") }\n", [(3, "env", "door")]),
+        (sorted(DOOR)[1], io + "fn f() { env(\"HOME\") }\n", [(3, "env", "door")]),
+        (os.path.dirname(sorted(DOOR)[1]) + "/manifest.av", io + "fn f() { read_text(\"/etc/passwd\") catch \"\" }\n", [(3, "read", "outside")]),
         # the door is its file: a neighbour in the directory is outside
         (os.path.dirname(sorted(DOOR)[0]) + "/manifest.av", io + "fn f() { read_text(\"/etc/passwd\") catch \"\" }\n", [(3, "read", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.debug_flag: read once, changes no answer\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "licensed")]),

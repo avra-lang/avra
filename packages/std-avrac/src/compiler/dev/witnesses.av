@@ -124,10 +124,13 @@ export fn unwitnessed(runs: List<Shown>) -> List<Shown> {
 /// that triggers it, and what the compiler says. Generated, compared
 /// by `make witnesses`, and the golden for every voice it reaches.
 export fn diagnostics_index(runs: List<Shown>) -> string {
-    joined([index_head(runs)].concat([entry(s) for s in runs]), "\n")
+    joined([index_head()].concat([entry(s) for s in runs]), "\n")
 }
 
-fn index_head(runs: List<Shown>) -> string {
+/// The index's head: what it is and who makes it — never a running total,
+/// which every change adding a code would rewrite (`avra diagnostics` says
+/// the totals on stderr).
+fn index_head() -> string {
     joined(
         [
             "# The diagnostics index",
@@ -136,8 +139,7 @@ fn index_head(runs: List<Shown>) -> string {
             "`make witnesses` refuses an index the compiler did not make. Each",
             "entry's rendering is the compiler's own words over the witness",
             "beside it, so a voice whose wording drifts shows up here as a diff.",
-            "",
-            "${runs.length} codes registered · ${[s for s in runs if s.fired].length} witnessed · ${unwitnessed(runs).length} with no witness yet",
+            "Its totals are `avra diagnostics`' own line on stderr, never this file's.",
         ],
         "\n",
     )
@@ -189,6 +191,8 @@ fn witnesses() -> List<CodeWitness> {
             witness: Witness.Source("type P = { x: int, x: bool }\nlet p = P { x: 1 }\n2"),
         },
         CodeWitness { code: "type.identity_field", witness: Witness.Beyond(identity_golden) },
+        CodeWitness { code: "shape.identity_clash", witness: Witness.Beyond(identity_clash_golden) },
+        CodeWitness { code: "flow.broken", witness: Witness.Beyond(unbroken_golden) },
         CodeWitness { code: "type.lacks", witness: Witness.Beyond(lacks_golden) },
         CodeWitness {
             code: "type.struct_fields",
@@ -214,6 +218,13 @@ fn witnesses() -> List<CodeWitness> {
         CodeWitness {
             code: "type.enum_payload",
             witness: Witness.Source("enum E {\n    a(void)\n    b\n}\n1"),
+        },
+        CodeWitness {
+            code: "collect_enum.trait",
+            witness: Witness
+                .Source(
+                    "type Nope = {}\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n1",
+                ),
         },
         CodeWitness { code: "type.coalesce", witness: Witness.Source("null ?? 1") },
         CodeWitness {
@@ -267,6 +278,10 @@ fn witnesses() -> List<CodeWitness> {
         CodeWitness {
             code: "type.map_entry",
             witness: Witness.Source("let m = {\"a\": 1}\nm.entries().length"),
+        },
+        CodeWitness {
+            code: "type.member_pattern",
+            witness: Witness.Source("enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a as x -> 1\n}"),
         },
         CodeWitness {
             code: "type.or_binds",
@@ -501,5 +516,7 @@ const planned_golden: string = "a planned relation's `@plans` marks come from `@
 /// Where the identity law's refusal is witnessed: `@identity` is judged
 /// by resolving to `@std/meta`'s own declaration, which a lone source
 /// cannot import.
+const identity_clash_golden: string = "two variant names fold to one 64-bit identity, which no source can be written to produce — the refusal is reached only by a hash collision"
 const identity_golden: string = "`@identity` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/structs/tests/identity_test.av"
+const unbroken_golden: string = "`@unbroken` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is compiler/tests/unbroken_test.av"
 const lacks_golden: string = "`@lacks` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/structs/tests/lacks_test.av"

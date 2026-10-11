@@ -14,7 +14,7 @@ mkdir -p "$out"
 probes=""
 [ "$(uname -s)" = Darwin ] || probes=-fstack-clash-protection
 rest=""
-for c in "$root"/runtime/*.c; do
+for c in "$root"/runtime/*.c "$root"/runtime/host/*.c; do
     [ "$(basename "$c")" = avra_fiber.c ] && continue
     cc -c -O2 -fPIC $probes -I"$root/runtime" -o "$out/$(basename "$c" .c).o" "$c"
     rest="$rest $out/$(basename "$c" .c).o"

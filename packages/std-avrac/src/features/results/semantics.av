@@ -2,7 +2,9 @@
 //! check.av, lowering in lower.av. The arms are hidden kids — each
 //! types and lowers under its own bind, inside its own bracket.
 use core.{Expr, ExprId, TypeId, Reg}
-use features.{named_bind, NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use features.{named_bind, NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{Catch}
 
 export type CatchSemantics = {}
 
@@ -12,19 +14,15 @@ impl NodeSemantics for CatchSemantics {
         match e { .Catch(subject, _, _, _) -> [subject], _ -> [] }
     }
 
-    fn resolve(mut cx: ResolveCx, e: ExprId) {
-        match cx.view.store.expr(e) {
-            .Catch(_, _, binds, values) -> {
-                for j, v in values { cx.arm_scope(cx.bound_at(e, named_bind(binds[j].of)), v) }
-            },
-            _ -> nothing(),
-        }
-    }
+}
 
+impl Meaning for Catch {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        for j, v in self.values { cx.arm_scope(cx.bound_at(e, named_bind(self.binds[j].of)), v) }
+    }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
         catch_type(cx, e)
     }
-
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         catch_reg(cx, e)
     }

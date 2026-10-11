@@ -1,0 +1,74 @@
+// A kept binary is reused only while every tool that made it stands as it
+// did: each build mints a fresh workspace, so two builds over one root share
+// only the store.
+use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
+use @std.avrac.compiler.{build_program}
+use @std.avrac.compiler.host.{Stamp}
+use commands.{root_workspace, toolchain}
+
+/// One directory per run, so no earlier run's cache answers for this one.
+once fn run_base() -> string { "/tmp/avra-build-tools-test/${now_ns()}" }
+
+/// A program of one line.
+fn program(name: string) -> string {
+    let r = "${run_base()}/${name}"
+    let _ = make_dirs("${r}/src")
+    let _ = write_text("${r}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${r}/src/main.av", "1 + 1\n")
+    r
+}
+
+/// Whether a build of the program at `r`, under the host's own toolchain
+/// with `tools` as the tools that made it, reused a kept binary.
+fn reused(r: string, tools: List<Stamp>) -> bool? {
+    let ws = root_workspace(r)
+    let host = match toolchain(ws, "", false, false) { .Ok(t) -> t, .Err(_) -> { return null } }
+    match build_program(ws, "${r}/src/main.av", host with { tools: tools }) {
+        .Ok(b) -> b.reused,
+        .Err(_) -> null,
+    }
+}
+
+fn marked(mark: int?) -> List<Stamp> { [Stamp { path: "/opt/cc", mark: mark }] }
+
+spec "cli build — a kept binary names its tools" {
+    given "a toolchain that names no tools" {
+        then "no build under it reuses a binary, however often asked" {
+            let r = program("none")
+            let _ = reused(r, [])
+            reused(r, []) == false
+        }
+    }
+    given "a program built twice under one toolchain" {
+        then "the second build reuses the first's binary" {
+            let r = program("same")
+            let _ = reused(r, marked(7))
+            reused(r, marked(7)) == true
+        }
+    }
+    given "a program built again after a tool moved" {
+        then "the binary is linked again" {
+            let r = program("moved")
+            let _ = reused(r, marked(7))
+            reused(r, marked(8)) == false
+        }
+    }
+    given "a tool the host cannot tell" {
+        then "no build reuses a binary it made, however often asked" {
+            let r = program("untold")
+            let _ = reused(r, marked(null))
+            reused(r, marked(null)) == false
+        }
+        then "a build that names no tools never reuses a binary made under it" {
+            let r = program("untold-then-none")
+            let _ = reused(r, marked(null))
+            reused(r, []) == false
+        }
+        then "a binary made under it is linked again once the tool can be told" {
+            let r = program("told-later")
+            let _ = reused(r, marked(null))
+            reused(r, marked(7)) == false
+        }
+    }
+}

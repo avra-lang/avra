@@ -1,0 +1,73 @@
+// The one-writer lock on an append-mode file: who holds it, who is
+// refused, and when it ends.
+use @std.io.{AppendFile, IoError, opened_for_append, make_dirs, remove, env_or}
+
+/// A path under a scratch directory, nothing standing at it.
+fn fresh_lock(name: string) -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/avra-io-lock-spec"
+    let _ = make_dirs(dir)
+    let p = "${dir}/${name}"
+    let _ = remove(p)
+    p
+}
+
+fn opened(path: string) -> AppendFile {
+    match opened_for_append(path) { .Ok(f) -> f, .Err(e) -> AppendFile { path: path, fd: -1 } }
+}
+
+fn held(f: AppendFile) -> string {
+    match f.locked() { .Ok(b) -> "${b}", .Err(e) -> "refused" }
+}
+
+spec "std/io lock" {
+    given "one open file" {
+        then "takes the lock" {
+            let f = opened(fresh_lock("one"))
+            let got = held(f)
+            let _ = f.closed()
+            got == "true"
+        }
+        then "takes it again while holding it" {
+            let f = opened(fresh_lock("again"))
+            let got = "${held(f)} ${held(f)}"
+            let _ = f.closed()
+            got == "true true"
+        }
+    }
+    given "two open files of one path" {
+        then "the second is refused while the first holds it" {
+            let p = fresh_lock("two")
+            let a = opened(p)
+            let b = opened(p)
+            let got = "${held(a)} ${held(b)}"
+            let _ = a.closed()
+            let _ = b.closed()
+            got == "true false"
+        }
+        then "the second takes it once the first closes" {
+            let p = fresh_lock("handover")
+            let a = opened(p)
+            let b = opened(p)
+            let first = held(a)
+            let _ = a.closed()
+            let got = "${first} ${held(b)}"
+            let _ = b.closed()
+            got == "true true"
+        }
+        then "two paths do not contend" {
+            let a = opened(fresh_lock("left"))
+            let b = opened(fresh_lock("right"))
+            let got = "${held(a)} ${held(b)}"
+            let _ = a.closed()
+            let _ = b.closed()
+            got == "true true"
+        }
+    }
+    given "a closed descriptor" {
+        then "is refused, never read as held elsewhere" {
+            let f = opened(fresh_lock("closed"))
+            let _ = f.closed()
+            held(f) == "refused"
+        }
+    }
+}

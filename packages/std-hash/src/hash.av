@@ -1,0 +1,56 @@
+//! @std.hash — BLAKE3, the content digest: 32 octets naming any octets.
+//! `blake3(b)` digests in one call; a `Hasher` takes its input in
+//! pieces (`hasher().update(a).update(b).digest()`), so a large input is
+//! digested without one whole copy. A hasher is a VALUE: `update`
+//! answers a new one and leaves the old standing, so a copy forks and
+//! nothing is ever closed. The work is the vendored BLAKE3 1.8.7, its
+//! SIMD units (NEON, SSE2 to AVX-512) chosen at run time.
+
+extern fn avra_b3_state_len() -> int
+extern fn avra_b3_fresh() -> ptr
+extern fn avra_b3_update(state: Bytes, sn: int, input: Bytes, n: int) -> ptr?
+extern fn avra_b3_digest(state: Bytes, sn: int) -> ptr?
+extern fn avra_b3_oneshot(input: Bytes, n: int) -> ptr?
+extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
+extern fn avra_trap(message: string)
+
+/// A digest's length in octets.
+export const DIGEST_LEN: int = 32
+
+/// The BLAKE3 digest of `b`: 32 octets.
+export fn blake3(b: Bytes) -> Bytes { held(avra_b3_oneshot(b, b.length), DIGEST_LEN) }
+
+/// A digest begun: nothing seen yet.
+export fn hasher() -> Hasher { Hasher { state: avra_bytes_adopted(avra_b3_fresh(), avra_b3_state_len()) } }
+
+/// What a digest has seen so far, as octets the C reads back. The octets
+/// are the C's working state, not a canonical form: two hashers that saw
+/// the same input may hold different octets, and the layout may change
+/// with the vendored C — never compare them, and never persist them.
+export type Hasher = { state: Bytes }
+
+impl Hasher {
+    /// The hasher that has also seen `b`.
+    fn update(b: Bytes) -> Hasher {
+        Hasher {
+            state: held(avra_b3_update(self.state, self.state.length, b, b.length), avra_b3_state_len()),
+        }
+    }
+
+    /// The digest of everything seen: 32 octets. The hasher stands, and
+    /// more input may follow.
+    fn digest() -> Bytes { held(avra_b3_digest(self.state, self.state.length), DIGEST_LEN) }
+}
+
+/// `n` octets the C answered, copied into a value of ours. Absent only
+/// for a state no hasher made.
+fn held(at: ptr?, n: int) -> Bytes {
+    let p? = at else { return forged() }
+    avra_bytes_adopted(p, n)
+}
+
+/// A state's octets that no hasher made.
+fn forged() -> Bytes {
+    avra_trap("a hasher's state was not made by `hasher`")
+    "".bytes()
+}

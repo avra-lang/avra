@@ -5,19 +5,22 @@
 //! a collect carries none; its body is synthesised at lowering
 //! (compiler/lower/lower.av) from these same recorded parts.
 use core.{
+    ExprId,
     StmtId,
     TypeId,
     FileId,
+    DeclId,
     CollectKind,
     CollectScope,
     Projection,
     Plain,
+    same_file,
     joined,
     sorted_by,
     list_eq,
 }
 use features.{TypeCx, Decl, Decls, nothing, duplicate_names}
-use diagnostics.{refusal, Diag}
+use diagnostics.{refusal, Diag, loc_at}
 use @std.errors.{Loc}
 
 /// The generic `it` vocabulary every kind answers, beside its own.
@@ -41,38 +44,96 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
 }
 
 /// `check_collect`'s twin over `collect enum` — no declared type, no
-/// projection: the members ARE the variants, so the one extra law is
-/// theirs — two members naming the same variant.
+/// projection: the members ARE the variants, so the extra laws are
+/// theirs — two members naming the same variant, and a member whose
+/// record cannot be a payload.
 export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     let p? = cx.view.store.collect_enum_parts(s) else { return }
     checked_kind(cx, s, p.kind)
     checked_scope(cx, s, p.scope)
     if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
     checked_order(cx, s, p.kind, p.scope, p.order, p.dense)
-    let members = gathered_members(cx.view.decls, p.kind, p.scope, cx.view.file)
-    for d in duplicate_names(
+    let members = cx.view.decls.gathered_into(p.kind, p.scope, cx.view.file)
+    let twice = duplicate_names(
         "collect_enum.variant",
         p.name,
         [m.name for m in members],
         cx.stmt_loc(s),
-    ) {
-        cx.emit(d)
+    )
+    for d in twice { cx.emit(d) }
+    for m in members { checked_member(cx, s, p.name, m) }
+    for t in p.traits { checked_trait(cx, p.name, t, members) }
+    checked_enum_scope(cx, s, p.name, p.scope)
+    // two members of one name are refused as that; their shared key is the same mistake
+    if !p.dense && twice.is_empty() { checked_ties(cx, s, p.kind, p.order, members) }
+}
+
+/// Every member implements each trait the enum is written over; one
+/// that does not is refused where it is declared.
+fn checked_trait(mut cx: TypeCx, owner: string, t: ExprId, members: List<Decl>) {
+    let word = cx.view.store.ident_name(t) ?? ""
+    let tr? = cx.view.decls.trait_named(cx.names, word) else {
+        // a name nothing declares is resolve's to refuse
+        if cx.bound_decl(t) != null { cx.emit(no_trait(cx.loc_of(t), owner, word)) }
+        return
+    }
+    let derive: DeclId? = cx.view.decls.trait_derive(tr)
+    for m in members {
+        if !cx.view.decls.implements(m.id, tr) && !derived_from_elsewhere(cx.view.decls, derive, m) {
+            cx.emit(unimplemented(member_loc(cx.view.decls, m), owner, word, m.name))
+        }
     }
 }
 
-/// The kind's own gathering door — A REGISTRY, exhaustive over
-/// `CollectKind`: `.Component`'s instances read `Decls.gathered`,
-/// `.Annotated`'s every declaration wearing that mark reads
-/// `Decls.gathered_by_mark`; `.UnknownKind` was already refused at
-/// its own check — it gathers nothing, honestly.
-export fn gathered_members(decls: Decls, kind: CollectKind, scope: CollectScope, owner: FileId) -> List<
-    Decl,
-> {
-    match kind {
-        .Component(w) -> decls.gathered(w, scope, owner),
-        .Annotated(w) -> decls.gathered_by_mark(w, scope, owner),
-        .UnknownKind(_) -> [],
+/// Whether a member's impl of the trait is DERIVED rather than written:
+/// the trait declares `derive`, and its derive runs from another file —
+/// one in the member's own file would re-enter a file still
+/// registering, the same guard a written `@derive(T)` keeps. Such a
+/// member is filled by the collect enum's own expansion, never refused
+/// here.
+fn derived_from_elsewhere(decls: Decls, derive: DeclId?, m: Decl) -> bool {
+    if derive == null { return false }
+    !same_file(decls.decl(derive!).file, m.file)
+}
+
+/// Where a member is declared, in its own file.
+fn member_loc(decls: Decls, m: Decl) -> Loc? { loc_at(decls.file(m.file).path, decls.facts_of(m.id)?.span) }
+
+/// A REGISTRY match over `CollectScope`: an enum's variants are the
+/// same set whoever asks and whenever, so it gathers what its own
+/// file or package holds — never what imports happen to have reached.
+fn checked_enum_scope(mut cx: TypeCx, s: StmtId, owner: string, scope: CollectScope) {
+    match scope {
+        .Self or .Package or .UnknownScope(_) -> nothing(),
+        .Closure -> cx.emit(closure_enum(cx.stmt_loc(s), owner)),
     }
+}
+
+/// An enum's ordinals are its `by` order, so two members may not
+/// share a key: a tie would leave their order to the order files
+/// were read in.
+fn checked_ties(
+    mut cx: TypeCx,
+    s: StmtId,
+    kind: CollectKind,
+    order: List<Plain>,
+    members: List<Decl>,
+) {
+    let keys = [[sort_value(cx.view.decls, kind, k, m) for k in order] for m in members]
+    // no order, or a key nothing can compare, is refused as that already
+    if order.is_empty() || keys.any((key) -> key.any(it is .Other)) { return }
+    let ordered = sorted_by(keys, sort_key_before)
+    if [j for j in 1..ordered.length if !sort_key_before(ordered[j - 1], ordered[j])].is_empty() { return }
+    cx.emit(tied_order(cx.stmt_loc(s)))
+}
+
+/// A gathered variant's payload is the fields its member's record
+/// WRITES, at fixed types: a record that takes type parameters or
+/// spreads another's fields refuses.
+fn checked_member(mut cx: TypeCx, s: StmtId, owner: string, m: Decl) {
+    let record? = cx.view.decls.store_of(m.file).struct_parts(m.stmt) else { return }
+    if !record.tparams.is_empty() { cx.emit(generic_member(cx.stmt_loc(s), owner, m.name)) }
+    if !record.spreads.is_empty() { cx.emit(spread_member(cx.stmt_loc(s), owner, m.name)) }
 }
 
 /// A REGISTRY match over `CollectKind` — the next kind (fn, case)
@@ -209,7 +270,7 @@ fn order_comparable(kind: CollectKind, text: Plain) -> bool {
 /// cannot compare, or a column mixing int and string, refuses.
 fn checked_column(mut cx: TypeCx, s: StmtId, kind: CollectKind, scope: CollectScope, key: Plain) {
     if !order_comparable(kind, key) { return cx.emit(uncomparable_order(cx.stmt_loc(s), key)) }
-    let members = gathered_members(cx.view.decls, kind, scope, cx.view.file)
+    let members = cx.view.decls.gathered_into(kind, scope, cx.view.file)
     let values = [sort_value(cx.view.decls, kind, key, d) for d in members]
     if values.any(it is .Other) { return cx.emit(uncomparable_order(cx.stmt_loc(s), key)) }
     if values.any(it is .Int) && values.any(it is .Text) { cx.emit(mixed_order(cx.stmt_loc(s), key)) }
@@ -226,7 +287,7 @@ fn checked_dense(
 ) {
     if order.length != 1 { return cx.emit(dense_shape(cx.stmt_loc(s))) }
     if !order_known(kind, order[0]) || !order_comparable(kind, order[0]) { return }
-    let members = gathered_members(cx.view.decls, kind, scope, cx.view.file)
+    let members = cx.view.decls.gathered_into(kind, scope, cx.view.file)
     let values = [sort_value(cx.view.decls, kind, order[0], d) for d in members]
     if !values.all(it is .Int) { return cx.emit(dense_int(cx.stmt_loc(s), order[0])) }
     let ns = sorted_by(
@@ -361,6 +422,66 @@ fn mixed_order(at: Loc?, key: Plain) -> Diag {
 /// The label every `by` key's refusal shares — one spelling for one
 /// seat, so the same sentence is not duplicated per voice.
 fn order_at() -> string { "in this collect's order" }
+
+fn no_trait(at: Loc?, owner: string, word: string) -> Diag {
+    refusal(
+        "collect_enum.trait",
+        at,
+        "every member of a `collect enum E: T` implements `T` — `${word}` names no trait here",
+        "`${owner}` implements it over its members",
+        "name a trait this file can see",
+    )
+}
+
+fn unimplemented(at: Loc?, owner: string, word: string, member: string) -> Diag {
+    refusal(
+        "collect_enum.trait",
+        at,
+        "every member of a `collect enum E: T` implements `T`",
+        "`${member}` is gathered into `${owner}` and has no `impl ${word} for ${member}`",
+        "write `impl ${word} for ${member} { … }` — an empty `impl ${word} for ${member} {}` takes every default",
+    )
+}
+
+fn closure_enum(at: Loc?, owner: string) -> Diag {
+    refusal(
+        "collect_enum.scope",
+        at,
+        "an enum's variants are one set for every reader — `${owner}` gathers `in closure`, which is what imports have reached so far",
+        "in this collect",
+        "gather `in self` or `in package`",
+    )
+}
+
+fn tied_order(at: Loc?) -> Diag {
+    refusal(
+        "collect_enum.tie",
+        at,
+        "an enum's `by` order is its variants' ordinals — two members share a key",
+        order_at(),
+        "order by a key every member holds apart, or number them: `by it.mark.args[0] dense`",
+    )
+}
+
+fn generic_member(at: Loc?, owner: string, member: string) -> Diag {
+    refusal(
+        "collect_enum.member",
+        at,
+        "a gathered variant carries fixed types — `${member}` takes type parameters",
+        "`${owner}` gathers it here",
+        "write `${member}`'s fields at the types the variant carries",
+    )
+}
+
+fn spread_member(at: Loc?, owner: string, member: string) -> Diag {
+    refusal(
+        "collect_enum.member",
+        at,
+        "a gathered variant carries the fields its record writes — `${member}` spreads another record's",
+        "`${owner}` gathers it here",
+        "write the fields in `${member}` itself, in payload order",
+    )
+}
 
 fn dense_shape(at: Loc?) -> Diag {
     refusal(

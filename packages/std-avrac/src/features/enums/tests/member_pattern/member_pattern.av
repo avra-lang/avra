@@ -1,0 +1,31 @@
+// proves: `.V as r` takes a gathered variant whole, as its member's
+// record, and `r`'s own impl answers through it.
+use @std.meta.{Named}
+
+fn node(_t: Named, _rank: int) {}
+
+trait Size {
+    fn size() -> int
+}
+
+@node(0)
+type Dot = { at: int }
+
+impl Size for Dot {
+    fn size() -> int { 1 }
+}
+
+@node(1)
+type Line = { from: int, to: int }
+
+impl Size for Line {
+    fn size() -> int { self.to - self.from }
+}
+
+collect enum Shape = @node in self by it.mark.args[0] dense
+
+fn size_of(s: Shape) -> int {
+    match s { .Dot as d -> d.size() + d.at, .Line as l -> l.size() }
+}
+
+"${size_of(Shape.Dot(4))} ${size_of(Shape.Line(2, 9))}"

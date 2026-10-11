@@ -62,6 +62,7 @@ const mib_ceiling: int = 8796093022207
 /// Why a const did not SETTLE — three laws, each its own voice: the
 /// value reached the world, ran past its budget, or trapped. And
 /// `Spoken`: an earlier read already said so, and this one is silent.
+@derive(Exemplar)
 export enum Unsettled {
     Reach(string)
     Budget(string)
@@ -127,11 +128,6 @@ export enum SettleRoot {
     Expr(ExprId)
 }
 
-/// The unit a const's initializer lowers as, named for its statement.
-export fn const_symbol(f: FileId, s: StmtId) -> string {
-    "const\$${f.index}\$${s.index}"
-}
-
 /// A const's PER-UNIT name: its plain symbol, plus the settled seats'
 /// fingerprints when a unit fixes them. The settlement key AND the
 /// materialized unit's name — so one unit's settled value never serves
@@ -141,24 +137,11 @@ export fn settled_symbol(base: string, seats: List<SeatValue>) -> string {
     "${base}@${joined([sv.fp for sv in seats], "_")}"
 }
 
-/// A settled SEAT's static data, named by the seat's type and its
-/// value's fingerprint — one layout per value, however many units
-/// read it.
-export fn seat_symbol(ty: TypeId, fp: string) -> string {
-    "seat\$${ty.index}\$${fp}"
-}
-
-/// A generated declaration's table key — under no WRITTEN name can
-/// collide, so a twin mints once and re-minting is identity.
-/// `name` is the generated fn's TWIN name.
-export fn generated_key(f: FileId, name: string) -> string {
-    "generated\$${f.index}\$${name}"
-}
-
-/// The unit an expression lowers as on its own — an annotation's
-/// argument, settled like a const's value.
-export fn expr_symbol(f: FileId, e: ExprId) -> string {
-    "expr\$${f.index}\$${e.index}"
+/// A settled SEAT's static data, named by the seat's type (as a symbol
+/// spells it) and its value's fingerprint — one layout per value,
+/// however many units read it.
+export fn seat_symbol(ty: string, fp: string) -> string {
+    "seat\$${ty}\$${fp}"
 }
 
 /// A value CROSSING between the compiler and a lifted call: scalar,
@@ -218,10 +201,17 @@ impl Settled {
 /// What a LIFTED call answered, with the heap its records live in —
 /// the crossing's answer side, shared by validation and generated
 /// declarations.
+@derive(Exemplar)
 export type Lifted = { answer: MetaVal, heap: MetaHeap }
+
+impl Lifted {
+    /// `@derive(Exemplar)`'s seed.
+    static fn codec_zero() -> Lifted { Lifted { answer: MetaVal.Absent, heap: MetaHeap.codec_zero() } }
+}
 
 /// A settlement query's held answer. A refusal remains in full for
 /// fingerprinting; repeated reads turn it into silent `Spoken`.
+@derive(Exemplar)
 export enum Settlement { Held(Settled), Refused(Unsettled) }
 
 export fn new_meta_heap() -> MetaHeap { MetaHeap { nodes: [], maps: [] } }
@@ -345,7 +335,7 @@ export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: Lis
 /// value a seat names (`@std/meta`'s `Fn`/`Type`/`Named`/`Trait`),
 /// the same door an annotation's own receiver crosses through —
 /// `collect`'s bare `it` is its one caller today.
-export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, statics: List<Static>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted }
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, callees: Map<string, DeclId> = {}, lifts: List<Lift>, wraps: List<Wrap>, statics: List<Static>, hashes: List<string> = [], externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>, cross: fn(DeclId, TypeId) -> Lifted }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
@@ -383,4 +373,4 @@ export enum LiftKind {
     Task
 }
 
-export type Lift = { lam: ExprId, name: string, sub: Sub?, kind: LiftKind }
+export type Lift = { lam: ExprId, name: string, sub: Sub?, kind: LiftKind, unbroken: bool = false }

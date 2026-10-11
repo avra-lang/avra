@@ -6,9 +6,9 @@
 // the digest still reads the bytes. It did not, confirmed failing
 // against the pre-fix code; the durable stamp cache is gone now, so
 // every digest is read fresh and this suite proves that law directly.
-use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace}
-use compiler.host.{Host, unlinked}
+use compiler.host.{Host, unlinked, plainly, unrefusing, unset, no_print, no_tool}
 use @std.io.{exists, read_text, write_text, list_dir, is_dir, make_dirs}
 use @std.path.{dir_of}
 use @std.time.{now_ns}
@@ -32,13 +32,17 @@ fn no_read_ahead(_files: int) {}
 fn real_disk_host() -> Host {
     Host {
         exists: (p: string) -> exists(p),
-        read: (p: string) -> read_text(p) catch "",
+        refused: unrefusing,
+        peek: plainly((p: string) -> exists(p), (p: string) -> read_text(p) catch ""),
         beneath: unlinked((p: string) -> exists(p), (p: string) -> read_text(p) catch ""),
         write: (p: string, t: string) -> write_file_safe(p, t),
         list: (dir: string) -> list_dir(dir) catch [],
         is_dir: (dir: string) -> is_dir(dir),
         stamp: fixed_stamp,
         reads_ahead: no_read_ahead,
+        env: unset,
+        tool: no_tool,
+        print: no_print,
         cwd: "",
     }
 }
@@ -53,7 +57,7 @@ fn srcstamp_root(name: string) -> string {
 }
 
 fn srcstamp_workspace(root: string) -> Workspace {
-    new_workspace(real_disk_host(), root, avra())
+    test_workspace(real_disk_host(), root)
 }
 
 spec "compiler/build — text_digest's durable stamp cache, attacked with a stamp that never moves" {

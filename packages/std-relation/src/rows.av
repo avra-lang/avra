@@ -39,6 +39,13 @@ export fn int_key(v: int) -> IndexKey { IndexKey.Text("${v}") }
 /// the index is a list, never a hash of its text.
 export fn dense_key(v: int) -> IndexKey { IndexKey.Slot(v) }
 
+/// The ints a single-int key files under their own slot, below this bound; any
+/// other int files under its text. Shared by the int-arg and int-key paths.
+export const INT_CAP: int = 4096
+
+/// Whether an int key files under its own slot, rather than its text.
+export fn int_fits(v: int) -> bool { v >= 0 && v < INT_CAP }
+
 /// One key field as text no other split can spell: its length, then
 /// itself — `("ab", "c")` and `("a", "bc")` never meet.
 export fn key_part(v: string) -> string { "${v.length}:${v}" }
@@ -55,6 +62,9 @@ fn ordered_step(h: int, x: int) -> int { mix(h + x) }
 fn same_keys(a: List<List<IndexKey>>, b: List<List<IndexKey>>) -> bool {
     a.length == b.length && [same_run(ks, b[i]) for i, ks in a].all(it)
 }
+
+/// Whether `key` is among `run`, a row's keys in one index.
+fn holds_key(run: List<IndexKey>, key: IndexKey) -> bool { run.any((k: IndexKey) -> same_key(k, key)) }
 
 fn same_run(a: List<IndexKey>, b: List<IndexKey>) -> bool {
     a.length == b.length && [same_key(k, b[i]) for i, k in a].all(it)
@@ -95,6 +105,8 @@ export type Filing<R> = { keyed: bool, keys: fn(R) -> List<List<IndexKey>>, hash
 export type Stamp = { owner: int, run: int }
 
 export const unowned: Stamp = Stamp { owner: 0, run: 0 }
+
+const no_unfiled: List<List<IndexKey>> = []
 
 /// A cell never read.
 fn unread() -> ReadMark { ReadMark { revision: Cell.new(-1), reader: Cell.new(-1) } }
@@ -152,6 +164,10 @@ export type Rows<R> = {
     hashes: Cell<List<int>>,
     filed: Cell<List<List<List<IndexKey>>>>,
     stamps: Cell<List<Stamp>>,
+    // The stamp a removed id keeps: one value for the relation, shared by every tombstone.
+    vacant: Stamp,
+    // The index keys a removed id keeps: one empty list for the relation, shared by every tombstone.
+    unfiled: List<List<IndexKey>>,
     stamped: Cell<Map<string, Cell<List<int>>>>,
     writers: Cell<Map<string, int>>,
     set: Cell<int>,
@@ -181,6 +197,8 @@ export fn named_rows<R>(name: string, ordered: List<bool>) -> Rows<R> {
         hashes: hashes,
         filed: filed,
         stamps: stamps,
+        vacant: unowned,
+        unfiled: no_unfiled,
         stamped: stamped,
         writers: writers,
         set: Cell.new(0),
@@ -288,6 +306,12 @@ impl Rows<R> {
     /// there later moves what this read saw.
     fn read_key(db: Db, index: int, key: IndexKey) -> int { self.seen(db, self.opened_bucket(index, key)) }
 
+    /// `read_key`'s slot twin, with no key boxed on a hit.
+    fn read_slot(db: Db, index: int, n: int) -> int {
+        let have = if n >= 0 && n < self.indexes[index].slots.get().length { self.indexes[index].slots.get()[n] } else { -1 }
+        self.seen(db, if have >= 0 { have } else { self.opened_bucket(index, dense_key(n)) })
+    }
+
     /// `read_key`'s text twin, with no key boxed on a hit.
     fn read_text(db: Db, index: int, v: string) -> int {
         let b = self.indexes[index].texts.get().get(v) ?? self.opened_bucket(index, text_key(v))
@@ -361,7 +385,13 @@ impl Rows<R> {
             db.refuse(replaced_whole(self.name, owner, why!))
             return rows.slice(0, 0)
         }
-        let cells = if heard { self.moving(cell, keyed, named, ids) } else { [] }
+        let live = self.live_of(cell)
+        // a keyless owner's rows, held in filing order and the same, are rewritten in place
+        let identical = !keyed &&
+            live.length == rows.length &&
+            [self.hashes.get()[live[i]] == how.hash(r) for i, r in rows].all(it)
+        let same = if keyed { [self.filed_same(ids[n], how.hash(r), named[n]) for n, r in rows] } else { [] }
+        let cells = if heard && !identical { self.moving(cell, keyed, named, ids, same) } else { [] }
         let torn = if heard { self.held(db, self.name, cells) } else { null }
         if torn != null {
             db.refuse(replaced_whole(self.name, owner, torn!))
@@ -370,8 +400,10 @@ impl Rows<R> {
         // A CELL MOVES ONCE A CALL, however many rows file under it. Where
         // no query read the relation there is no cell to tell, and the
         // whole-relation move alone says the Db was written — what an
-        // answer read back from a record stands on.
-        if db.read_ever() { self.moves(db, cells) }
+        // answer read back from a record stands on. Rows filed as they stood, and
+        // none removed, write nothing, so nothing moves.
+        let unchanged = identical || keyed && same.all(it) && live.length == rows.length
+        if db.read_ever() && !unchanged { self.moves(db, cells) }
         let stamp = Stamp { owner: cell, run: renewed(db, cell) }
         let mine = self.stamped_by(cell)
         let hash = how.hash
@@ -380,7 +412,7 @@ impl Rows<R> {
         mut stored = rows.slice(0, 0)
         for i, r in rows {
             let ks = if asked { named[i] } else { keys(r) }
-            let id = if keyed && ids[i] < next { ids[i] } else { self.next_id() }
+            let id = if keyed && ids[i] < next { ids[i] } else if identical { live[i] } else { self.next_id() }
             if id == self.next_id() { mine.push(id) }
             let row = seated(r, id)
             self.placed(id, row, hash(r), ks, stamp)
@@ -432,9 +464,13 @@ impl Rows<R> {
     /// Every bucket a replacement of `owner`'s rows by ones with these keys
     /// moves, each ONCE: the ones a row names, the ones a named row stood
     /// in, and the ones a row it no longer names stood in.
-    fn moving(owner: int, keyed: bool, named: List<List<List<IndexKey>>>, ids: List<int>) -> List<
-        int,
-    > {
+    fn moving(
+        owner: int,
+        keyed: bool,
+        named: List<List<List<IndexKey>>>,
+        ids: List<int>,
+        same: List<bool>,
+    ) -> List<int> {
         let next = self.next_id()
         let none: List<int> = []
         let moved = Marks {
@@ -448,7 +484,7 @@ impl Rows<R> {
             for i, per in ks {
                 for k in per { moved.mark(self.bucket_of(i, k)) }
             }
-            if keyed { self.mark_named(moved, kept, ids[n], next) }
+            if keyed { self.mark_named(moved, kept, ids[n], next, same[n]) }
         }
         for id in self.live_of(owner) {
             if !keyed || !kept.get()[id] { self.mark_filed(moved, id) }
@@ -456,11 +492,20 @@ impl Rows<R> {
         moved.out.get()
     }
 
-    /// A keyed row's own id kept, and the buckets its row stood in marked.
-    fn mark_named(moved: Marks, kept: Cell<List<bool>>, id: int, next: int) {
+    /// A keyed row's own id kept, and the buckets its row stood in marked —
+    /// unless the row is filed as it already stood, which moves nothing.
+    fn mark_named(moved: Marks, kept: Cell<List<bool>>, id: int, next: int, same: bool) {
         if id >= next { return }
         kept.set_at(id, true)
-        self.mark_filed(moved, id)
+        if !same { self.mark_filed(moved, id) }
+    }
+
+    /// Whether a keyed row is already filed under `id` with this content and these keys.
+    fn filed_same(id: int, hash: int, named: List<List<IndexKey>>) -> bool {
+        id < self.next_id() &&
+            self.row(id) != null &&
+            self.hashes.get()[id] == hash &&
+            same_keys(self.filed.get()[id], [distinct_keys(ks) for ks in named])
     }
 
     /// Every bucket the row at `id` is filed in, marked.
@@ -660,7 +705,10 @@ impl Rows<R> {
                 self.rows.set_at(id, row)
                 return
             }
-            self.unfile(id)
+            if self.row(id) != null {
+                self.refiled(id, row, hash, keys)
+                return
+            }
             self.rows.set_at(id, row)
             self.hashes.set_at(id, hash)
             self.filed.set_at(id, keys)
@@ -677,6 +725,43 @@ impl Rows<R> {
         }
     }
 
+    /// A live row filed again under another hash or other keys: it leaves
+    /// the buckets it no longer names and enters the ones it newly names;
+    /// a bucket it STAYS in keeps its members as they are and its hash
+    /// follows the row's. The same members, order and hashes as taking
+    /// the row out of every bucket and filing it afresh.
+    fn refiled(id: int, row: R, hash: int, keys: List<List<IndexKey>>) {
+        let was = self.filed.get()[id]
+        if was.length != keys.length { avra_trap(key_lists_moved(self.name, was.length, keys.length)) }
+        let old = self.hashes.get()[id]
+        for i, ks in was {
+            for k in ks {
+                if !holds_key(keys[i], k) { self.unfile_from(i, k, id, old) }
+            }
+        }
+        self.rows.set_at(id, row)
+        self.hashes.set_at(id, hash)
+        self.filed.set_at(id, keys)
+        self.set.set(self.set.get() - old + hash)
+        for i, ks in keys {
+            for k in ks {
+                if holds_key(was[i], k) { self.rehashed(i, k, old, hash) } else { self.file(i, k, id, hash) }
+            }
+        }
+    }
+
+    /// A bucket whose member's hash went from `old` to `hash`, its members
+    /// standing: the sum follows, an ordered fold is taken again.
+    fn rehashed(index: int, key: IndexKey, old: int, hash: int) {
+        if old == hash { return }
+        let bucket = self.buckets.get()[self.bucket_of(index, key)]
+        bucket
+            .hash
+            .set(
+                if self.indexes[index].ordered { self.ordered_fold(bucket.members.get()) } else { bucket.hash.get() - old + hash },
+            )
+    }
+
     /// A live row whose stable hash and keys stand as they were — only its `@local`
     /// columns moved — replaced in place: no bucket, stamp or set hash moves.
     fn reseat(id: int, row: R) {
@@ -689,7 +774,8 @@ impl Rows<R> {
         if self.row(id) == null { return }
         self.unfile(id)
         self.rows.set_at(id, null)
-        self.filed.set_at(id, [])
+        self.filed.set_at(id, self.unfiled)
+        self.stamps.set_at(id, self.vacant)
     }
 
     /// The rows at `ids` gone, each bucket they stood in rebuilt once.
@@ -714,7 +800,8 @@ impl Rows<R> {
                 self.live.set(self.live.get() - 1)
                 self.set.set(self.set.get() - self.hashes.get()[id])
                 self.rows.set_at(id, null)
-                self.filed.set_at(id, [])
+                self.filed.set_at(id, self.unfiled)
+                self.stamps.set_at(id, self.vacant)
             }
         }
     }
@@ -890,7 +977,7 @@ impl SideRows<R> {
     /// answers no read through this column, the same refusal a closed
     /// relation's rows give.
     fn mark_read(db: Db, verify: fn(int) -> int, id: int) {
-        if self.closed.get() { avra_trap(closed_db(db.id)) }
+        if self.closed.get() { avra_trap(db.closed_voice.get()) }
         let fam = self.opened(db, verify)
         self.grow_to(id + 1)
         self.recorded(db, fam, id + 1, self.marks.get()[id])
@@ -899,13 +986,17 @@ impl SideRows<R> {
     /// The whole column read under `db` — for an id outside the window,
     /// where no specific slot exists yet to blame a future write on.
     fn mark_whole(db: Db, verify: fn(int) -> int) {
-        if self.closed.get() { avra_trap(closed_db(db.id)) }
+        if self.closed.get() { avra_trap(db.closed_voice.get()) }
         let fam = self.opened(db, verify)
         self.recorded(db, fam, 0, self.whole.get())
     }
 }
 
 // ── voices ──
+
+fn key_lists_moved(relation: string, was: int, now: int) -> string {
+    "a row files one key list per index — a `${relation}` row filed under ${was} is filed again under ${now}"
+}
 
 fn late_write(relation: string, cell: string, reader: string) -> string {
     "a `${relation}` write moved ${cell} after ${reader} read it this revision — a producer runs before its readers"

@@ -1,0 +1,49 @@
+// Every kind of implementor narrows by its own tag — a named type over a
+// scalar, an enum, a record — and a subject read through a name (`W` over
+// `dyn Shape`) narrows as the `dyn` it names.
+
+trait Shape {
+    fn area() -> int
+}
+
+type M = int
+
+type Sq = { s: int, t: int }
+
+enum Dot {
+    Small
+    Big(int)
+}
+
+impl Shape for M {
+    fn area() -> int { 1 }
+}
+
+impl Shape for Sq {
+    fn area() -> int { self.s }
+}
+
+impl Shape for Dot {
+    fn area() -> int { 2 }
+}
+
+type W = dyn Shape
+
+fn which(x: dyn Shape) -> string {
+    match x {
+        m: M -> "m${m}",
+        q: Sq -> "q${q.s}",
+        d: Dot -> match d { .Small -> "small", .Big(n) -> "big${n}" },
+        _ -> "none",
+    }
+}
+
+fn named(w: W) -> string {
+    match w { q: Sq -> "w${q.t}", _ -> "w-" }
+}
+
+let m: dyn Shape = M(7)
+let q: dyn Shape = Sq { s: 3, t: 4 }
+let d: dyn Shape = Dot.Big(5)
+let e: dyn Shape = Dot.Small
+"${which(m)} ${which(q)} ${which(d)} ${which(e)} ${named(W(q))} ${named(W(m))}"

@@ -31,6 +31,7 @@ use core.{
 use diagnostics.{refusal, Diag}
 use features.{
     TypeCx,
+    WrittenIn,
     FnSig,
     StructSig,
     slot_want,
@@ -129,14 +130,18 @@ impl TypeCx {
     }
 
     /// A collect enum's table: every gathered member, in `by` order,
-    /// one payload-free variant each, named by the member's own
-    /// declaration name — `declare_enum_sig`'s twin, computed rather
-    /// than written. Duplicate names are left in the table as found;
-    /// `check_collect_enum` (features/collects/check.av) is where
-    /// that refuses, the same split `declare_enum_sig`/`check_enum_decl`
-    /// already keep.
+    /// one variant each, named by the member's own declaration name
+    /// and carrying the fields its record writes — `declare_enum_sig`'s
+    /// twin, computed rather than written. Duplicate names are left in
+    /// the table as found; `check_collect_enum`
+    /// (features/collects/check.av) is where that refuses, the same
+    /// split `declare_enum_sig`/`check_enum_decl` already keep.
     fn declare_collect_enum(s: StmtId) {
         let p? = self.view.store.collect_enum_parts(s) else { return }
+        let record = self.decl_of(s)
+        let ty = self.view.types.intern(Type.Enum(record, self.view.decls.decl(record).name))
+        self.view.types.begin_declare(ty)
+        defer { self.view.types.end_declare(ty) }
         let members = ordered_collect_members(
             self.view.decls,
             p.kind,
@@ -144,12 +149,35 @@ impl TypeCx {
             p.order,
             self.view.file,
         )
-        let no_payload: List<TypeId> = []
         let sig = EnumSig {
             names: [m.name for m in members],
-            payloads: [no_payload for m in members],
+            payloads: [self.gathered_payload(s, m) for m in members],
         }
         self.declare(s, DeclSig.Enum(sig))
+    }
+
+    /// What a gathered variant carries: the fields its member's record
+    /// WRITES, each read in the member's own file — never the member's
+    /// signature, which may be the very one asking for this enum. A
+    /// member that is no record carries nothing.
+    mut fn gathered_payload(s: StmtId, m: Decl) -> List<TypeId> {
+        // the member's signature is this table's recorded input: its answer is
+        // not read, so a member in flight costs nothing but the edge
+        let _ = self.view.decls.sig(m.id)
+        [self.gathered_slot(s, m, f) for f in self.view.decls.store_of(m.file).declared_fields(m.stmt)]
+    }
+
+    /// One written field of a member as a payload's type, read in the
+    /// member's file and held to the slot law: a refused slot is the
+    /// Error type, as a written variant's is. The member's own
+    /// declaration speaks for the same field, so only the verdict lands.
+    mut fn gathered_slot(s: StmtId, m: Decl, f: Param) -> TypeId {
+        let ty? = f.ty else { return self.error_type }
+        let spoken = self.facts.voices
+        let at = self.stmt_loc(s)
+        let held = self.payload_verdict(at, "`${f.name}`", ty, self.written_by(m.file, at, ty))
+        self.facts.voices = spoken
+        held
     }
 
     /// What a variant carries, in order — each payload judged by the
@@ -163,13 +191,20 @@ impl TypeCx {
     fn carried_type(s: StmtId, variant: string, p: Param) -> TypeId? {
         if p.ty == null { return null }
         let who = if p.name.is_empty() { "`.${variant}`" } else { "`${p.name}`" }
+        let at = self.stmt_loc(s)
+        self.payload_verdict(at, who, p.ty!, self.full_type(at, p.ty!))
+    }
+
+    /// The slot law's verdict on a payload `who` carries, written `ty`
+    /// and read as `named`.
+    fn payload_verdict(at: Loc?, who: string, ty: TypeRef, named: TypeId) -> TypeId {
         self
-            .held_slot(
-                s,
+            .held_verdict(
+                at,
                 "type.enum_payload",
                 "an enum payload cannot hold nothing",
-                "${who} carries `${spelled(p.ty!)}`",
-                p.ty!,
+                "${who} carries `${spelled(ty)}`",
+                named,
             )
     }
 
@@ -301,9 +336,7 @@ impl TypeCx {
     /// declaration, never a bare compare of the word: a package's own
     /// fn of the same name answers none.
     fn meta_annotations(d: DeclId, word: string) -> List<AnnotationFact> {
-        let decls = self.view.decls
-        let file = decls.annotation_home(d)
-        [a for a in decls.annotations_of(d) if decls.is_meta_annotation(a, file, word)]
+        self.view.decls.meta_annotations(d, word)
     }
 
     /// Whether a declaration carries `@std/meta`'s `@identity`.
@@ -443,19 +476,30 @@ impl TypeCx {
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
     fn slot_law(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
-        let named = self.full_type(self.stmt_loc(s), ty)
+        self
+            .slot_verdict(self.stmt_loc(s), kind, message, label, self.full_type(self.stmt_loc(s), ty))
+    }
+
+    /// The slot law's verdict on a type already read.
+    fn slot_verdict(at: Loc?, kind: string, message: string, label: string, named: TypeId) -> TypeId {
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
         if slot_worthy(sh) { return named }
-        self.emit(refusal(kind, self.stmt_loc(s), message, label, null))
+        self.emit(refusal(kind, at, message, label, null))
         self.error_type
     }
 
     /// A slot inside a record or a payload — which outlives the block,
     /// so a task never rides in one.
     fn held_slot(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
-        let held = self.slot_law(s, kind, message, label, ty)
-        if self.escapes_with_task(self.stmt_loc(s), label, held) { return self.error_type }
+        self
+            .held_verdict(self.stmt_loc(s), kind, message, label, self.full_type(self.stmt_loc(s), ty))
+    }
+
+    /// `held_slot`'s verdict on a type already read.
+    fn held_verdict(at: Loc?, kind: string, message: string, label: string, named: TypeId) -> TypeId {
+        let held = self.slot_verdict(at, kind, message, label, named)
+        if self.escapes_with_task(at, label, held) { return self.error_type }
         held
     }
 
@@ -876,6 +920,16 @@ impl TypeCx {
         ty
     }
 
+    /// A type pattern's written type, read as `written_by` reads one —
+    /// an unknown name's refusal says it stands in a pattern.
+    mut fn written_in_pattern(origin: FileId?, at: Loc?, t: TypeRef) -> TypeId {
+        let was = self.written_in
+        self.written_in = WrittenIn.Pattern
+        let ty = self.written_by(origin, at, t)
+        self.written_in = was
+        ty
+    }
+
     /// A written type in full — its arguments and its `?` both. The
     /// element of an application comes back through here, so
     /// `List<int?>` and `List<List<int>>` need no rule of their own.
@@ -1143,7 +1197,7 @@ impl TypeCx {
                     "type.unknown",
                     at,
                     "`${name}` names no type",
-                    "in this signature",
+                    written_label(self.written_in),
                     "the types today are `int`, `string`, `bool`, and your declared types",
                 ),
             )
@@ -1188,7 +1242,9 @@ impl TypeCx {
         // enum or a box — so it is asked before the id is handed out
         if self.view.decls.is_enum(d) {
             let _ = self.view.decls.sig(d)
-            return self.view.types.intern(Type.Enum(d, name))
+            let t = self.view.types.intern(Type.Enum(d, name))
+            self.view.decls.note_type(t)
+            return t
         }
         if self.view.decls.is_alias(d) { return self.aliased(at, d, name, []) }
         // A NAMED TYPE'S MARK IS MADE AT ITS DECLARATION, so the
@@ -1197,7 +1253,9 @@ impl TypeCx {
         // a driver that signs types first, wrong under one that
         // types a body first, and only the first reader is wrong.
         if self.view.decls.is_named(d) { let _ = self.view.decls.sig(d) }
-        self.view.types.intern(Type.Struct(d, name))
+        let t = self.view.types.intern(Type.Struct(d, name))
+        self.view.decls.note_type(t)
+        t
     }
 
     /// What an alias stands for, its type parameters landed. An alias
@@ -1320,4 +1378,9 @@ impl TypeCx {
                 ),
             )
     }
+}
+
+/// Where an unknown type name stands, as its refusal's label says it.
+fn written_label(w: WrittenIn) -> string {
+    match w { .Signature -> "in this signature", .Pattern -> "in this type pattern" }
 }

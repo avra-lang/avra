@@ -5,7 +5,7 @@
 //! stay the size of what was live at once. The `kept_*` programs are
 //! the other half: each fails when a retain is taken out of the
 //! evaluator, where a missing retain leaves `held` at zero all the same.
-use @std.avrac.compiler.{avra, new_workspace}
+use @std.avrac.testing.{test_workspace}
 use @std.avrac.testing.{floored}
 use @std.meta.{embed}
 use compiler.backend.{Kept, freed_read_words}
@@ -54,14 +54,15 @@ const LONG: string = "type Row = { cells: List<int> }\nfn made(i: int) -> Row {\
 
 /// What a program's run left behind; null when it did not run.
 fn left_by(text: string) -> Kept? {
-    match new_workspace(memory_host({"/w/src/main.av": text}, [ENTRY]), "/w", avra())
-        .program(ENTRY)
-        .kept() { .Ok(k) -> k, .Err(_) -> null }
+    match test_workspace(memory_host({"/w/src/main.av": text}, [ENTRY]), "/w").program(ENTRY).kept() {
+        .Ok(k) -> k,
+        .Err(_) -> null,
+    }
 }
 
 /// What reading a freed box says, on any program's machine.
 fn freed_words() -> string {
-    match new_workspace(memory_host({"/w/src/main.av": "1"}, [ENTRY]), "/w", avra())
+    match test_workspace(memory_host({"/w/src/main.av": "1"}, [ENTRY]), "/w")
         .program(ENTRY)
         .lowered_checked() { .Ok(l) -> freed_read_words(l) ?? "silent", .Err(e) -> e }
 }

@@ -42,7 +42,7 @@ which) · `PROBED` I ran it; the command and its output are beside it · `MEASUR
 | D5 | **`rule` is the one way to write a lint**, for third parties too. | no `@check @query` |
 | D6 | **A plugin reads the outside only through what its manifest grants.** | every such read is a recorded input; the grant policy is the sources design's |
 | D7 | **The speed bar**, `packages/cli`, cold process, no daemon. | unchanged `check` ≤ 60 ms · one body edit ≤ 300 ms (goal 150) · `build` after one edit ≤ 500 ms |
-| D8 | **One store per compiler binary now**; answers keyed by their query's own code later. | the later step is ticket `.57.186` |
+| D8 | **The store, decided row by row (2026-10-07): §6.0, S1–S8.** | two tiers with content-only keys; an answer is stale when its query's own code hash moves, so one store serves every compiler; BLAKE3 is the content hash. Absorbs `.57.186` |
 | D10 | **The re-ask of the sources is retired at DB 07, with no switch.** | Today a *failure* under a held answer is asked again of the sources. After DB 07 an answer stands on the digests of its reads; the edit corpus and the attack cases in CI are the net. No flag, no CI mode |
 | D9 | **A tool is identified by path + size + modified-time**; full digest on demand. | for tools and the compiler binary only. Source files are always read |
 | D11 | **The engine lives in `@std/relation`**, the library that already holds `@relation`/`@query`/`@input`. No new package. "ok fine do this" | the compiler and a running program share ONE engine (§5.1). It is a library, not `avrac-*`, because a running program imports it too |
@@ -409,7 +409,7 @@ exists("tests/x.expected")       // bool
 env("DATABASE_URL")              // string?        unset is not empty
 tool("wasm-opt")                 // Tool?          identity by D9
 target()                         // Target
-pinned("https://…/pet.yaml", "sha256:…")   // Bytes — refused unless the pin matches
+pinned("https://…/pet.yaml", "blake3:…")   // Bytes — refused unless the pin matches
 ```
 
 Names are `package:relative/path`. Sources are always read and digested; only tools and
@@ -453,35 +453,59 @@ Two defects are fixed first, each with its probe as the acceptance test: the ann
 
 ## 6. The store
 
-### 6.1 Format (DB 05)
+Decided by the owner on 2026-10-07, row by row (ticket `.57.174`, comments). The rows are
+S1–S8 below. They replace one store per compiler binary, and SHA-256 as the content hash.
+
+### 6.0 The decisions
+
+| row | decided | in one line |
+|---|---|---|
+| S1 two tiers | an **action table** (key → value digest) and a **content store** (value digest → bytes), REAPI-shaped | keys are content-only: no path, machine, time or store-local id. A local name id is compression inside one file, never a key. A remote tier plugs in later with no format change. A Merkle or prolly-tree sync index can be added later over the same objects |
+| S2 staleness | the **semantic hash of the query's own code** (§6.4) | replaces one store per binary. A compiler rebuild keeps every answer whose query's code did not change. Absorbs `.57.186` |
+| S3 size | reads are **name ids**; validity by **revisions** (`changed_at`, `verified_at`); identical read sets **interned** (a record holds a set id); **Roaring** bitmaps for large sets | plus **columnar** families (meta region and value region, so verification never pages values), **zstd with a trained dictionary per family** on values (kept only where measured to pay), and a **front-coded** sorted name table, id = position |
+| S3b hash | **BLAKE3** is the one content hash (`@std/hash`, vendored, SIMD at run time) | the fast in-process digest stays for keys inside one process |
+| S4 lookup | a **git-idx** per sealed body (256-entry fan-out, sorted digests, parallel offsets; built once at compaction, never at open) plus a **live tail** hashed in memory at open | compaction keeps ≤ 2 runs, so no Bloom or ribbon filter. Inside the store an id is `offset[id]`. A minimal perfect hash only later, for a remote index |
+| S5 validity | push-dirty, pull-verify, early cutoff, plus **durability tiers** and **one hash per interned read set per revision** | §6.5 |
+| S6 plugins | a family registers by stable name; a record carries its **codec shape fingerprint**; a plugin's identity is its **code hash** | the manifest pins name → code hash. Two versions coexist. **No declared migrations**: recomputing is always correct |
+| S7 concurrency | **one segment file per writer**; readers merge segments at open; compaction folds them into the sealed body under the **flock** (#392), its only use | a key is an answer CLAIM: two values for one key is a reproducibility defect, reported |
+| S8 gc | **reachability** from roots now; Bazel-style size, age and LRU limits on the shared byte store; a **time-travel window** of N revisions | §6.7. A remote tier checks a hit's blobs exist (an evicted blob is a miss) |
+
+### 6.1 Layout
 
 ```
-.avra-cache/<compiler print>/store        ONE file · memory-mapped · append-only
-    header    magic · format · compiler print
-    segment*  each ends in a commit marker (length + checksum); a torn tail is ignored
-        names     name bytes → name id            interned once; ids are this store's own
-        inputs    name id · kind · digest         THE MANIFEST: every input any saved answer read
-        records   name id · shape · value digest · reads[(name id, digest)] · value
-                  value = Inline(bytes) | Blob(sha256, size) | None (digest only)
-        readers   name id → [record name id]      the reverse index
-        index     name digest → newest record offset
-.avra-cache/<compiler print>/obj/, bin/   object files and binaries stay files (the linker opens them)
-~/.avra/cache/bytes/<hh>/<sha256>         big values by content; shared across worktrees (DB 11)
+.avra-cache/store/                      one store per tree, for every compiler (S2)
+  body-<rev>.pack    SEALED: header · names · sets · per family: meta | values · footer
+  body-<rev>.idx     action key → record offset: fan-out[256] · keys · offsets (S4)
+  seg-<writer>.log   LIVE TAIL, one per writer process, append-only (S7)
+  lock               flock, taken by compaction only
+.avra-cache/obj/, bin/                   object files and binaries stay files, named by content
+~/.avra/cache/cas/<hh>/<blake3>          the shared content store (DB 11): big values, across worktrees
 ```
 
-Why not a file per record: one cold check writes 8,964 files today (M2); 1,300 opens cost 60–100 ms.
+| part | holds | encoding |
+|---|---|---|
+| header | magic · format version | — |
+| names | every name this body uses (input, answer, family), sorted | front-coded; id = position |
+| sets | interned read sets: set id → name ids (+ the set's hash per revision, S5) | delta varints; Roaring above a size cut measured at M4 |
+| family meta | per record: action key · name id · value digest · set id · `changed_at` · `verified_at` · durability · codec shape fingerprint · producer code hash | fixed-width columns, so verification reads no value |
+| family values | the value bytes, Inline under a size cut, else a CAS digest | zstd, one trained dictionary per family where M4 shows a gain |
+| live segment | frames of new records, sets and names, each frame ended by a **commit marker**: length · BLAKE3 of the frame (truncated) | a torn frame (short or failing the check) ends that segment's read |
+| action key | BLAKE3(family name · family code hash · codec shape fingerprint · the key's canonical encoding) | content-only (S1); the same on every machine |
+
+Today's rows (`Stored.Sig`, `Fp`, `Unit`, `Warn`, `Rows`) move in as opaque values first, so
+the first store PR changes no meaning. `Obj` and `Bin` stay files.
 
 ### 6.2 What a warm command does, in order
 
 | # | step | cost on `packages/cli` |
 |---|---|---|
-| 1 | start; map the store; find the last commit marker | ~15 ms (MEASURED 09-21: "startup 15") + < 2 ms |
-| 2 | **the manifest first**: digest every input it names | 20–40 ms for ~730 sources (PROBED by the review) |
+| 1 | start; map each sealed body and its idx; read the live segments into a hash | ~15 ms (MEASURED 09-21: "startup 15") + < 2 ms |
+| 2 | **the inputs first**: digest every input the records name, by durability tier — a tier whose revision did not move is confirmed by one compare (S5) | 20–40 ms for ~730 sources (PROBED by the review); BLAKE3 over the tree in M5 |
 | 3 | each changed input → the reverse index → its transitive readers are *suspect* (ids only; nothing decoded) | microseconds per reader |
 | 4 | the command asks its roots. An answer that is not suspect stands **untouched** | < 2 ms when nothing moved |
-| 5 | a suspect answer is verified root-down: its suspect reads first; recompute only on a real mismatch; **early cutoff** — same digest, so its readers stand | one declaration re-typed: 5–30 ms |
+| 5 | a suspect answer is verified root-down: its read set's hash at this revision first (one compare for 438 `MethodDiags`), then its suspect reads; recompute only on a real mismatch; **early cutoff** — same digest, so its readers stand | one declaration re-typed: 5–30 ms |
 | 6 | whatever a recomputation needs is loaded **by name**, in place, on demand | no load or admit phase |
-| 7 | append the new records, the reverse-index delta and one commit marker | 2–10 ms |
+| 7 | append the new records, sets and names to this process's segment, then one commit marker. A green record not rewritten stays indexed (rustc's cache promotion: checking never shrinks the cache) | 2–10 ms |
 
 Floors (ESTIMATED from the measured parts): unchanged 40–60 ms · one body edit 60–110 ms.
 The 09-21 tree measured 0.046 s and 0.36–0.51 s at file grain on the same Sprite (§7.1).
@@ -494,7 +518,76 @@ local id is (owner declaration, index). A span is (anchor declaration, offset). 
 its spelling, never the interned id. The full table, and why an ordinal is the honest cost:
 appendix A17.
 
-Processes, crashes, other compilers, gc: A12. The codec: A13.
+### 6.4 A query's code hash (S2, S6)
+
+| part | rule |
+|---|---|
+| what is hashed | the query fn's **lowered IR** — `Ins.fingerprint()` already exists (`core/ir.av`) — never source text, so names, comments and spans do not move it |
+| callees | a Merkle hash over the call graph: H(own IR, sorted callee hashes). A recursion cycle (SCC) is hashed as one unit |
+| also folded | each `CallRt` row's C body digest (first the runtime and package C as a whole); `StaticAddr` data; types by their spelling, never an interned id |
+| the builder | the code hash of the **building** compiler's memory pass and backend, which change behaviour without moving the IR. Never the builder's whole print: every `make avra` would then miss everything |
+| where it is computed | one pass after lowering, when the compiler (or a plugin) is built. It is emitted as a static table, name → hash (the shape of #379's site table), and the kernel reads its family's row. Nothing is computed at run time |
+| **`CallPtr`** (a call through a fn value) | the call site is in the closure, the callee is not. Rule: fold every fn whose address is taken anywhere in the program with that fn type (a sound over-approximation). Otherwise a loud fallback to the binary's print, naming the site |
+| `dyn` dispatch | fold every impl of the trait method |
+| the keeper | per family, list the closure's `CallPtr` sites; refuse one that is neither type-folded nor a named fallback. A new indirection cannot ship unhashed |
+| cost | one hashing pass per compiler build (seconds); 32 bytes per answer |
+
+**Its attack suite.** User `@query` (`@std/relation`) uses the same mechanism, so each reach
+path is one small program: build v1, run it to fill the store, edit a leaf so the answer
+changes, build v2, run warm; the answer must equal v2's cold oracle. One case per path —
+direct call · closure stored in a record · fn value passed in · `dyn` trait method · generic
+instantiation · const aggregate · runtime C row — each seen failing with that path's fold
+off. Plus one case on the compiler itself: edit a leaf reached only through `dyn`, `make
+avra`, and the warm `check` equals the cold one.
+
+### 6.5 Validity (S5)
+
+| rule | what it means |
+|---|---|
+| push-dirty, pull-verify, early cutoff | unchanged (§5.3) |
+| durability tiers | `@std` and dependency packages HIGH, the workspace's own sources LOW; one revision counter per tier. An answer that read only HIGH inputs is confirmed by one compare |
+| one hash per read set per revision | a read set is interned once; its hash at a revision is computed once and shared by every record holding it |
+| cache promotion | a green record not rewritten stays indexed from the new segment |
+| the oracle | `AVRA_DB_CHECK`'s edit corpus |
+| later, not decided | parallel verification (when the kernel runs parallel); package-grain answers as the unit of remote sharing |
+
+### 6.6 Concurrency and crashes (S7)
+
+| case | answer |
+|---|---|
+| two processes write | each appends to its own `seg-<writer>.log`; no lock. Readers merge every segment at open |
+| a kill mid-append | that segment's last frame is torn (short, or its check fails) and is ignored; every earlier frame stands |
+| compaction | the one rewriting step: under the flock, fold the sealed body and the segments into a new body and idx, then rename. A process that cannot take the lock does not compact, and says so (one trace line). A reader holding the old body keeps its mapping |
+| two values for one key | a reproducibility defect: reported, naming the key, the two value digests and their writers. The shared cache doubles as a nondeterminism detector |
+| two processes saw different inputs | each record carries what *it* read; a reader validates against the world *now* |
+| a record of another codec shape | its shape fingerprint differs: not read. Nothing decodes across shapes |
+| another compiler | the same store. A record whose producer code hash differs is never read (S2) |
+
+### 6.7 gc and time travel (S8)
+
+| rule | what it means |
+|---|---|
+| roots | DB 08's: the check verdict, the linked binary, the proved suite. Until DB 08, the latest command's answers |
+| compaction is gc | it copies the reachable records into the new sealed body (Nix gcroots). No daemon |
+| time travel | compaction keeps the last N revisions (default 10, configurable), so `explain` can say what changed |
+| the shared byte store | size, age and LRU limits (Bazel) |
+| a remote tier | checks every referenced blob exists before reporting a hit; an evicted blob is a miss, never an error |
+
+### 6.8 The store's attacks
+
+Written first and seen failing on main (`tools/store_attacks.sh`, held to a cold check's
+words and status).
+
+| attack | passes when |
+|---|---|
+| one store | `ls .avra-cache/` shows `store/`, `obj/`, `bin/` and nothing else |
+| one open | a no-op check maps the store once (a trace line, counted) |
+| kill mid-append | a writer killed between a frame and its marker leaves every earlier frame; the next run answers the oracle and reports the torn frame once |
+| two writers | two checks at once both answer the oracle, and their two segments both stand |
+| compaction contended | the process without the lock says it did not compact, and both answer the oracle |
+| a flipped byte | in the last frame, or in the middle of a body, is seen as torn and recomputed, never read |
+| another compiler | a record whose producer code hash differs is never read, and a check after a rebuild that changed one query recomputes that query's answers only |
+| a claim conflict | two values written for one key are reported |
 
 ---
 
@@ -579,13 +672,15 @@ Each lands alone and leaves main green. "Ladder" is what the seed and generation
 | **DB 02** `avra explain` | `.57.171` | A14.4 over the in-memory graph: `--stats` and "what did this read". `--why` re-derives in process, as `avra cache why` does today, until DB 05–06 give it the store | `build/avra explain --stats packages/cli` · `explain <file>` prints its reads | none | — |
 | **DB 03** names, the id codec, as a–c | `.57.172` | §6.3, A13: (a) the name scheme and `Decl`'s key — waits on `file` leaving `@local` (`decl_rows.av:26`, owner: ERRORS); (b) the codec grows payload enums and recursive records; (c) one codec per family answer, ~20, each its own small PR | `make codecs` · a declaration inserted above changes no other declaration's bytes | none expected | — |
 | **DB 04** the input door a–e | `.57.173` | §5.2 as five PRs: (a) the digest row; (b) `Source`, `Manifest`; (c) `embed`, listings; (d) env, tool, target, compiler; (e) the rest | `make inputs` prints the count outside the door and fails on a new one | (a) is **two landings** | `.57.184` |
-| **DB 05** the store | `.57.174` | §6.1, A12; today's rows move in as opaque values, so no meaning changes; M4–M6 | one `store` file · `make cache-attacks` · the kill and two-process attacks | none | — |
+| **DB 05a** `@std/hash` | `.57.217` | BLAKE3 vendored with its SIMD units, one-shot and incremental; `make hash-door` | `build/avra test packages/std-hash` · the 35 published vectors | none (package C) | — |
+| **DB 05b** the query code hash | `.57.186` | §6.4: the Merkle code hash per query, the static table, the `CallPtr` and `dyn` folds, the fallback, the keeper, the per-path attack suite | edit one leaf reached only through `dyn`, `make avra`: the warm `check` equals the cold one and recomputes that query's answers only | none | `.57.186` |
+| **DB 05c** the store format | `.57.174` | §6.0–6.8: two tiers, sealed body + idx, per-writer segments, compaction under the flock with reachability gc and the time-travel window; today's rows move in as opaque values, so no meaning changes; M4–M6 | `ls .avra-cache/` shows `store/`, `obj/`, `bin/` · `make cache-attacks` · `tools/store_attacks.sh` (§6.8) · a no-op `check packages/cli` opens the store once | none | — |
 | **DB 06** the saved-answer rule | `.57.175` | §5.3, on by default. First on formats that are already pure lists: the two docs queries and the links witness. The edit corpus | `build/avra docs LanguageFeature` twice: the second ≤ 0.05 s · `make db-corpus` · the 17 attack cases (A5), ported — they were written against deleted code | none | `.57.9.7`; absorbs `.57.101.12`, `.57.12.5` |
 | **DB 07** per-declaration answers; the hold deleted, as a–f | `.57.176` | (a) rows and buckets become named parts of their producer's answer (A11) — "minted by one query, filed by another" ends; (b) `Resolved`, `Folded` split per declaration; (c) the four whole-program families split; (d) by-name loading replaces load/admit; (e) the hold, its record lines and the memo maps deleted; (f) `Analysis` dissolves | `warm_edit.sh`: unchanged ≤ 60 ms, one body edit ≤ 300 ms · the `.57.163` repro peaks ≤ cold | none for the seed; the riskiest — behind the edit corpus on a Sprite. The re-ask of the sources is deleted with the hold (D10: no switch) | `.57.163`; absorbs `.57.101.11` |
 | **DB 08** roots | `.57.177` | `Verdict`, `Linked`, `Proved`; formats 4, 7–9 and the remembered rows deleted (A2); tools and env are inputs | `build` after one edit ≤ 500 ms · change `CC` → relink | none | links `avra-8sb5.68`, `.69`, `.31`, `.25.20` |
 | **DB 09** `Settled` and `Lifted` | `.57.178` | `kept_settle.av` deleted (A4); `Lifted` saved with relative spans | a comment above 1,000 generated types: ≤ 0.06 s (0.25 s today) | none | — |
 | **DB 10** the plugin crossing | `.57.179` | §5.4; `…Row` relations; `collect` membership; the lint arm of `rule`; manifest grants | the two-package probe prints `a_close \| b_open` (a trap today) | each host row is **two landings** | `.57.182`, `.57.183` |
-| **DB 11** byte store, `Blob`, gc | `.57.180` | §6.1's byte store; `avra cache gc` | `build/avra cache gc` · two worktrees share one copy of a 5 MB input | none | links `avra-8sb5.37`, `.40.17` |
+| **DB 11** the shared content store | `.57.180` | §6.1's `~/.avra/cache/cas`, across worktrees; its size, age and LRU limits; `avra cache gc` over it (S8) | `build/avra cache gc` · two worktrees share one copy of a 5 MB input | none | links `avra-8sb5.37`, `.40.17` |
 | **DB 12** families → `@query` | `.57.181` | not one PR: `make families-left` prints N of 32 and may only fall. At 0 `@family` and the compiler's `Db`/`DbRow`/`DbKind` are deleted | `make families-left` | a bridge only where the compiler checks its own source | `.57.12` on adoption |
 
 **Live bugs stay open with their repros** until the PR above passes them: `.57.163`,
@@ -642,7 +737,7 @@ Deleting the old documents loses nothing below. Sources: **C** `2026_09_21_COMPI
 | a refusal is never kept | | C:118 | §2 |
 | an incomplete query result must not be memoized | "`methods(target)` cached empty while resolving" | C:273 | §2 |
 | a whole-program pass never runs inside a resolve | | C:271 | §4.1: the four whole-program families are split |
-| a store is one compiler's | "`.avra-cache/<print>/` … the newest four kept" | C:114 | A12, D8 |
+| a store is one compiler's | "`.avra-cache/<print>/` … the newest four kept" | C:114 | overturned: one store for every compiler; a record whose query code hash differs is never read (S2, §6.6) |
 | move the content, not the key | | C:191 | L3 |
 | held by name is held by accident | | C:195 | L5 |
 | a symbol outlives every id a run hands out | | C:197 | L5 |
@@ -667,7 +762,7 @@ Deleting the old documents loses nothing below. Sources: **C** `2026_09_21_COMPI
 | a row with no owning query is an input | | TH:2166 | L6 |
 | a relation's stable name is its import path | | TH:2312 | §6.3 |
 | a key says what the source declares, never where | | TH:2324 | §6.3 `sibling` |
-| a missing dep is a mismatch | | TH:2349 | A12 |
+| a missing dep is a mismatch | | TH:2349 | §6.6 |
 | a phantom read: a new row under a key someone looked up | "an index bucket is itself a Kernel cell" | TH:2366 | §3.2 two-level buckets |
 | a bucket hash is a sum through a nonlinear finalizer | "(a,1),(b,2) and (a,2),(b,1) sum alike" without it | TH:2370 | A0 |
 | registration is the declaration | "a dense family slot by its STABLE name … never persisted" | TH:2647 | §5.1 |
@@ -831,13 +926,16 @@ two-package repro is written out in ticket `.57.182`.
 | saved answers under L4, cold `check cli` (simulated) | 54,947 of 70,015 cells; reads 1,091,224 (median 2, p95 19, max 32,114) strictly; 3,359,012 (median 3, p95 510, max 41,435) with name buckets durable | M2, `graph.py`, `origin/db-measure` @ `6b12cf8` | MEASURED |
 | the same at file grain (what main saves) | 4,184 answers; 2.67 M reads; median 5, p95 5,090 | M2 | MEASURED |
 | digest (`core/digest.av`, native) | 362 MB/s; 0.63 µs at 72 B, 1.35 µs at 288 B, 8.3 µs at 2.3 KB | M2, `digest_bench.sh` | MEASURED |
+| M5: content hash over every package source (1,674 files, 11.7 MB), best of 5 | Sprite (EPYC, SHA-NI unused): portable SHA-256 216 MB/s, today's digest 195 MB/s · Mac: 208 and 365 MB/s. BLAKE3: owed in DB 05c | `db-store` lane, `hash_bench` | MEASURED |
+| M4 baseline: today's store after a cold `check cli` (main, Sprite) | 9,216 files, 58.8 MB, half of them `.deps` edges: rows 1,170 / 25.4 MB (median 0 B, p95 37 KB, max 4.05 MB) · unit 5,232 / 33.3 MB (median 29 B, p95 27.7 KB) · warn 2,814 / 0.14 MB | `tools/db_measure/store_baseline.sh` | MEASURED |
+| M6 baseline: cache syscalls, `check cli` (strace) | cold 63.1 s wall, 85,647 calls (stat 32,121 · mkdir 18,446 · open 10,008 · rename 9,220 · write 4,274 · read 1,568) · no-op 0.61 s, 696 calls (stat 619 · open 19 · read 27) | same | MEASURED |
 | today's store after a cold `check cli` | 8,964 files, 58 MB (unit 5,010 / 30.8 MB · rows 1,172 / 26.7 MB · warn 2,752 / 0.13 MB) | M2 | MEASURED |
 | `perf/witness-folded` reproduced in kind, std-avrac today | `Analysis`: 867 files, 37,258 direct deps, 43 a file, median 23 | M2 | MEASURED |
 | packed dep ≈ 9 B · cold encoding cost | — | review E2 | ESTIMATED; encoding unmeasured |
 | rustc pays ~15–25 % of a cold build for incremental bookkeeping | — | review E1 | RECALLED, unchecked |
 
-Not measured anywhere: bytes per relation row · codec throughput · digest MB/s
-(`digest_bytes` is an Avra loop) · lines per kept settlement. Owed by M4–M5 inside DB 05.
+Not measured anywhere: bytes per relation row in the new format · codec throughput · BLAKE3
+MB/s · zstd's gain per family · lines per kept settlement. Owed by M4–M5 inside DB 05c.
 
 `READ(agent)` in this document means one of: `agent-facts.md`, `agent-consumers.md`,
 `agent-history.md`, `agent-sweep.md` (the review's evidence, 2026-10-05) or the prior-art
@@ -867,7 +965,7 @@ extraction made for this rewrite. The line numbers were read by those agents at
 | D3 `KeyParts.runs` → typed parts | deleted with `KeyParts` at DB 07; until then only text reads un-hold a file | **open**: a listing read by a lift is not covered before DB 07 |
 | D4 where a build's inputs are remembered | the manifest (§6.1) | answered |
 | D5 a kept lift must be span-free | §6.3: spans are (anchor declaration, offset), also across files | **open** until DB 03 lands the codec |
-| D6 hashing large inputs | a C row; SHA-256 for content, the fast digest for keys; M5 | answered |
+| D6 hashing large inputs | BLAKE3 for content (`@std/hash`, S3b), the fast digest for keys; M5 | answered |
 | D7 raw bytes outside the tree | `~/.avra/cache/bytes`, verified on first use | answered |
 | D8 the witness atom | (name, digest) where the name is an input or a saved answer; A4 lists the answers that replace each tier | **open** until M2 counts them |
 | D9 the store's read slot | deleted; the record carries its reads (§6.1) | answered |
@@ -910,18 +1008,9 @@ call sites read `.decl(…)` (PROBED by grep at `05fe643`).
 This is decided before DB 06, where `@relation(from: …)` first exists. It is the reason D4
 is one question: "a query never writes rows" only works if producers can be listed.
 
-## A12. The store under processes, crashes and other compilers (DB 05)
+## A12. The store under processes, crashes and other compilers
 
-| case | answer |
-|---|---|
-| crash mid-commit | no commit marker → the tail is ignored; the previous state is whole |
-| two processes | a segment is one `write` on an append descriptor under an advisory lock; a reader sees whole segments. A process that cannot take the lock skips saving — a lost write is a recompute |
-| two processes that saw different inputs | each record carries the digests *it* saw; a reader validates against the world *now* |
-| a store from another compiler | a different directory (the compiler print), and the header repeats the print. Never read |
-| a compiler rebuild | a new store; nothing derived survives (D8-B). Bytes in the byte store survive |
-| a record of another shape | the shape fingerprint differs → not read. Nothing decodes across shapes |
-| growth of the file | records only append. `avra cache gc` rewrites the live ones and renames; the newest four compilers are kept (today's rule) |
-| a value's blob is gone | the record does not stand; a swept blob is a miss, never an error |
+Decided as S7 and S8: §6.6 and §6.7.
 
 ## A13. The codec (L7; DB 03)
 
@@ -930,7 +1019,9 @@ lists, one presence byte per `?` layer, an enum by its variant's **name**, every
 folded to one value. It must grow payload enums and recursive records (refused today:
 READ(agent) `relation.av:296-306`), or `Lifted`'s generated code cannot be saved. A `fn`,
 `Cell` or `Map` field is refused at the declaration, naming the field: that answer is
-digest-only.
+digest-only. A record carries its codec's **shape fingerprint** (S6): a record of another
+shape is never decoded, and there are no declared migrations. A family's values are zstd
+under a dictionary trained on that family, kept only where M4 measures a gain (S3).
 
 ## A14. Two plugins, the existing consumers, inspection
 

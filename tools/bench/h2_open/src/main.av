@@ -1,0 +1,104 @@
+//! ONE H2 CONNECTION ASKED AGAIN AND AGAIN BESIDE MANY OPEN ONES. A
+//! real server on loopback; `H2_OPEN` connections (default 1000) each
+//! send the preface and then say nothing, so each one's task is parked;
+//! one more, opened last, asks `H2_N` streams one after another and
+//! reads each answer to its end. What a request costs must not grow
+//! with the connections that are merely open. Prints `h2_open <idle>
+//! idle: <ns> ns a request …`.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.net.{Conn, NetError, listen, connect}
+use @std.time.{ms, secs, now_ns, sleep}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Timing, served}
+use @std.http.hpack.{header_field, encoder}
+use @std.http.h2.{frame_bytes, preface, end_headers, end_stream, u32_bytes}
+
+type App = { hits: Cell<int> }
+
+fn number(name: string, fallback: int) -> int { parse_int(env_or(name, "")) ?? fallback }
+
+/// Whether `got` holds, whole, a HEADERS or DATA frame that ends its
+/// stream.
+fn ended(got: Bytes) -> bool {
+    mut pos = 0
+    while pos + 9 <= got.length {
+        let size = got.at(pos) * 65536 + got.at(pos + 1) * 256 + got.at(pos + 2)
+        if pos + 9 + size > got.length { return false }
+        if got.at(pos + 3) <= 1 && got.at(pos + 4) & 1 == 1 { return true }
+        pos = pos + 9 + size
+    }
+    false
+}
+
+/// One stream asked on `c`, its answer read to the end: the octets
+/// that came back.
+fn asked(c: Conn, id: int, block: Bytes) -> Result<int, NetError> {
+    c.write(frame_bytes(.Headers, end_headers | end_stream, id, block))?
+    mut got = "".bytes()
+    while !ended(got) {
+        let read = c.read(65536)?
+        let more? = read else { return .Ok(-1) }
+        got = got.concat(more)
+    }
+    .Ok(got.length)
+}
+
+/// A connection that has said the preface, opened its window wide as
+/// a browser does, and nothing more.
+fn opened(port: int) -> Result<Conn, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    c
+        .write(
+            preface
+                .concat(frame_bytes(.Settings, 0, 0, "".bytes()))
+                .concat(frame_bytes(.WindowUpdate, 0, 0, u32_bytes(2147483647 - 65535))),
+        )?
+    .Ok(c)
+}
+
+/// The line a run prints when a stream fails before the last.
+fn cut_short(idle: int, stream: int, e: NetError) -> string {
+    "h2_open ${idle} idle: stream ${stream} failed — ${e.describe().message}"
+}
+
+fn run() -> Result<string, NetError> {
+    let idle = number("H2_OPEN", 1000)
+    let n = number("H2_N", 20000)
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> App { hits: Cell.new(0) }, limits(), Timing { requests: 1000000000 }) { app, _q ->
+        app.hits.set(app.hits.get() + 1)
+        text(200, "hello")
+    }
+    spawn s.run()
+    defer s.stop()
+    mut held: List<Conn> = []
+    for _i in 0..idle { held.push(opened(l.port)?) }
+    let hot = opened(l.port)?
+    sleep(ms(300))
+    mut client = encoder(true)
+    let head = [
+        header_field(":method", "GET"),
+        header_field(":scheme", "http"),
+        header_field(":path", "/"),
+        header_field(":authority", "bench"),
+    ]
+    let opening = client.encoded(head)
+    let block = client.encoded(head)
+    let _ = asked(hot, 1, opening)?
+    let t0 = now_ns()
+    mut back = 0
+    for i in 0..n {
+        match asked(hot, 2 * i + 3, block) {
+            .Ok(octets) -> { back = back + octets },
+            .Err(e) -> { return .Ok(cut_short(idle, i, e)) },
+        }
+    }
+    let each = (now_ns() - t0) / n
+    .Ok(
+        "h2_open ${idle} idle: ${each} ns a request (${back / n} octets back), ${s.connections()} open, ${held.length} held",
+    )
+}
+
+println(match run() { .Ok(t) -> t, .Err(e) -> "failed: ${e.describe().message}" })

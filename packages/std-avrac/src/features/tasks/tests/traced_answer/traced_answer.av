@@ -1,0 +1,17 @@
+// proves: a task nothing runs, answered by a spawned task, wakes its
+// joiner BY THAT TASK in both engines (tools/flow_trace_engines.sh reads
+// the trace).
+extern fn avra_task_pending() -> ptr
+extern fn avra_task_answer(t: ptr, v: ptr)
+extern fn avra_task_join(t: ptr) -> ptr
+extern fn avra_array_sized(n: int) -> ptr
+use @std.time.{ms, sleep}
+
+let pending = avra_task_pending()
+let answerer = spawn {
+    sleep(ms(1))
+    avra_task_answer(pending, avra_array_sized(1))
+    7
+}
+let _ = avra_task_join(pending)
+"${answerer.await}"

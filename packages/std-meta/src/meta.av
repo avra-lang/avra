@@ -202,8 +202,10 @@ export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unsp
 /// capture label binds to, beside its spelling and its shape. A
 /// payload IS a parameter compiler-side, so `fields` runs with
 /// `payload` and says what `payload` cannot. `doc`/`annotations`
-/// read as `Fn`'s.
-export type Variant = { name: string, payload: List<string>, at: Loc?, fields: List<Field> = [], marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [] }
+/// read as `Fn`'s. `impls` is the traits a GATHERED variant's member
+/// record implements by an `impl … for` it can see — empty for a
+/// written variant.
+export type Variant = { name: string, payload: List<string>, at: Loc?, fields: List<Field> = [], marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], impls: List<string> = [] }
 
 /// A type declaration as an annotation's first seat receives it: a
 /// record has fields, an enum has variants. `doc`/`annotations` read
@@ -259,8 +261,9 @@ export fn warn(message: string) -> Diagnostic {
 /// Any declaration, for an annotation that only needs to NAME it.
 export type Named = { name: string, at: Loc? }
 
-/// A trait as an annotation's argument sees it (`@derive(Show)`).
-export type Trait = { name: string, at: Loc? }
+/// A trait as an annotation's argument sees it (`@derive(Show)`):
+/// `fns` is its instance methods, as a `Fn` each.
+export type Trait = { name: string, at: Loc?, fns: List<Fn> = [] }
 
 /// The declaration is out of favour; every use is warned with the
 /// note. A warning, so the build still runs.
@@ -319,6 +322,15 @@ export fn identity(_t: Type) {}
 /// `@bracket` with the matching name is a missing dependency.
 export fn bracket(_f: Fn, _name: string) {}
 
+/// The fn is UNBROKEN: no other task runs inside it, so a test and the
+/// park it decides, or a claim and the append it owes, stand together.
+/// Its `while`s carry no preemption check, and every call it makes is
+/// to C (a runtime row or an extern — a park row is where it may switch
+/// out, and nowhere else), to a vocabulary row that does not wait, to
+/// a constructor, or to another `@unbroken` fn. A marker the compiler's
+/// own checker reads (`compiler/typing/unbroken.av`).
+export fn unbroken(_f: Fn) {}
+
 /// `_field`, on an `@identity` type, is licensed PLAIN: a scalar or a
 /// fn value set once at construction and never reassigned, so no
 /// writing path ever reaches it to fork it. Written once per plain
@@ -345,6 +357,19 @@ export fn lacks(_t: Type, _field: string, _why: string) {}
 export fn embed(path: string) -> string {
     avra_embed(path)
 }
+
+/// THE HASH OF `f`'S CODE: a key that moves when what `f` does moves,
+/// and only then. It folds `f`'s lowered code and everything it can
+/// reach — what it calls, a closure it makes, a value of a const it
+/// reads, and, when it calls through a fn value or `dyn`, every fn
+/// whose address the program takes — and leaves out every name,
+/// comment and span, so a rename moves nothing. A C fn it calls — a
+/// package's extern or a runtime row — is folded by its name alone, so
+/// an edit to C moves nothing. The compiler answers it; `f` is a
+/// declared fn, named. ABSENT when the compiler cannot compute it — it
+/// reaches a body held from an earlier build, or no compiler answered
+/// the call — so whatever is keyed by it is never kept, never read stale.
+export fn code_hash<F>(_f: F) -> string? { null }
 
 /// The whole `Type` a name resolves to from where the CALLER stands
 /// — this file, its imports included, through the same resolution
@@ -553,4 +578,71 @@ export type Derived = { made: List<Directive> }
 // LICENSED fns.dead_parameter: an annotation's decoder wears the annotation's argument list
 export fn derive(what: Named, tr: Trait) -> Derived {
     Derived { made: [] }
+}
+
+/// A MARK's answer. An annotation fn answering `Marker` is never run:
+/// its word is data for a reader that claims it — a `@derive` whose
+/// trait declares `marks` — on a gathered member as on a written variant.
+export type Marker = {}
+
+// ── `collect enum E: T` — `T` implemented over a gathered enum ──
+
+/// The impl of `tr` over `what`: each instance method matches the
+/// variant and calls the member record's own.
+export fn delegate(what: Type, tr: Trait) -> List<Directive> {
+    [
+        Directive {
+            twin: "",
+            name: what.name,
+            at: what.at,
+            source: quote {
+                impl ${tr} for ${what} {
+                    ${[delegated(what, tr, f) for f in tr.fns]}
+                }
+            },
+        },
+    ]
+}
+
+/// The impl of `tr` over `over`, written on the trait: a trait whose
+/// methods name what the enum's own layer cannot (`@delegates(Expr)`).
+/// A gathered member with no impl of `tr` is refused, naming it; the
+/// impl is still made, so the enum keeps the method and one mistake
+/// is one refusal.
+export fn delegates(tr: Trait, over: Type) -> Declared {
+    let problems = [unimplemented_member(tr, over, v) for v in over.variants if !v.impls.contains(tr.name)]
+    Declared { made: delegate(over, tr), problems: problems }
+}
+
+fn unimplemented_member(tr: Trait, over: Type, v: Variant) -> Diagnostic {
+    refuse_as_at(
+        "delegates-member",
+        v.at,
+        "`${v.name}` is gathered into `${over.name}` and has no `impl ${tr.name} for ${v.name}`",
+        "write `impl ${tr.name} for ${v.name}` beside the record",
+    )
+}
+
+fn delegated(t: Type, tr: Trait, f: Fn) -> Decls {
+    let seats = [seat(p) for p in f.params]
+    quote {
+        fn ${f.name}(..${seats}) -> ${f.answer} {
+            match self { ${[delegated_arm(tr, f, v) for v in t.variants]} }
+        }
+    }
+}
+
+/// One parameter of a delegated method, keeping its `mut` mark.
+fn seat(p: Param) -> Decls {
+    if p.mutable { return quote { fn _(mut ${p.name}: ${p.ty}) {} } }
+    quote { fn _(${p.name}: ${p.ty}) {} }
+}
+
+/// One variant's arm. A member with no impl of `tr` is refused where it
+/// is declared (`collect_enum.trait`), so its arm exists only in
+/// a build already refused, and never runs.
+fn delegated_arm(tr: Trait, f: Fn, v: Variant) -> Arms {
+    let args = [name(p.name) for p in f.params]
+    if !v.impls.contains(tr.name) { return quote { .${v} -> self.${f.name}(${..args}) } }
+    quote { .${v} as member -> member.${f.name}(${..args}) }
 }

@@ -1,0 +1,35 @@
+// A `dyn` narrowed by its type: each implementor's arm, the catch-all
+// for the rest, and a test nested in a variant's payload.
+
+trait Shape {
+    fn area() -> int
+}
+
+type Sq = { s: int }
+
+type Rect = { w: int, h: int }
+
+impl Shape for Sq {
+    fn area() -> int { self.s * self.s }
+}
+
+impl Shape for Rect {
+    fn area() -> int { self.w * self.h }
+}
+
+enum Held {
+    One(dyn Shape)
+    Empty
+}
+
+fn side(x: dyn Shape) -> int {
+    match x { q: Sq -> q.s, r: Rect -> r.w + 100, _ -> 0 }
+}
+
+fn held(h: Held) -> int {
+    match h { .One(q: Sq) -> q.s, .One(_) -> 7, .Empty -> 9 }
+}
+
+let a: dyn Shape = Sq { s: 3 }
+let b: dyn Shape = Rect { w: 2, h: 5 }
+"${side(a)} ${side(b)} ${held(Held.One(a))} ${held(Held.One(b))} ${held(Held.Empty)} ${a.area()}"

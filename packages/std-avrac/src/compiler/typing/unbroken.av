@@ -1,0 +1,135 @@
+//! THE UNBROKEN LAW: a fn wearing `@std/meta`'s `@unbroken` lets no
+//! other task run inside it except at a park row it calls, so "nothing
+//! runs between a test and its park, or a claim and its append" holds by
+//! construction. Its own `while`s carry no check (compiler/cancel_reach.av).
+//! Every node it holds — a lambda's inside it included — is asked what
+//! it waits through (`node_waits`, the one answer the cancel fact reads
+//! too): a call to C (a runtime row or an extern; a park row is where it
+//! may switch out), to a constructor, or to another `@unbroken` fn is
+//! allowed; a spawn, a read or a row that waits, a call through a value,
+//! and a call to any other fn or a default that may wait are refused.
+//! Judged from the body's own types and its callees' declarations alone,
+//! so the law costs nothing where the mark is absent and asks no other
+//! body.
+use core.{DeclId, ExprId, same_file}
+use features.{TypeCx, Decl}
+use compiler.{WaitReader, NodeWait, wait_probe, may_wait, is_default}
+use diagnostics.{refusal}
+use @std.errors.{Loc}
+
+impl TypeCx {
+    mut fn unbroken_law(x: Decl) {
+        if !self.view.decls.marks_unbroken(x.id) { return }
+        let reader = WaitReader { view: self.view, names: self.names, facts: self.facts }
+        for i in x.lo..x.hi {
+            let e = ExprId { index: i }
+            for w in reader.node_waits(e) { self.judged(x, e, w) }
+        }
+    }
+
+    /// One wait in an `@unbroken` fn, allowed or refused.
+    mut fn judged(x: Decl, e: ExprId, w: NodeWait) {
+        match w {
+            .Spawns -> self.broken_spawn(self.loc_of(e), x.name),
+            .Reads(name) -> self.broken_wait(self.loc_of(e), x.name, name),
+            .Value -> self.broken_value(self.loc_of(e), x.name),
+            .Calls(g, name) -> self.judged_call(x, e, g, name),
+        }
+    }
+
+    /// A call: a default left out speaks as the seat it fills.
+    mut fn judged_call(x: Decl, e: ExprId, g: DeclId, name: string) {
+        if !self.may_break(g) { return }
+        if is_default(self.view.decls.decl(g).kind) { return self.broken_default(self.loc_of(e), x.name, name) }
+        self.broken_call(self.loc_of(e), x.name, name)
+    }
+
+    /// Whether a call to `g` may let another task run, by its
+    /// declaration alone: C never does, a constructor never does, an
+    /// `@unbroken` fn never does, a default does when any node of its
+    /// own may wait, any other fn may, and a value may be any fn.
+    fn may_break(g: DeclId) -> bool {
+        let x = self.view.decls.decl(g)
+        if is_default(x.kind) { return self.default_may_wait(g) }
+        match x.kind {
+            .Fn or .Method or .Default or .Main or .Case -> !x.external && !self.view.decls.marks_unbroken(g),
+            .Const or .State -> true,
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Builtin -> false,
+        }
+    }
+
+    /// A default's own nodes, by kind alone — no other body is typed.
+    /// One in another file has no nodes here to read, and may.
+    fn default_may_wait(d: DeclId) -> bool {
+        let x = self.view.decls.decl(d)
+        if !same_file(x.file, self.view.file) { return true }
+        (x.lo..x.hi).any((i) -> may_wait(wait_probe(self.view.store.expr(ExprId { index: i }))))
+    }
+
+    // ── The voices ──
+
+    mut fn broken_call(at: Loc?, owner: string, callee: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and `${callee}` may let another task run",
+                    "called here",
+                    "mark `${callee}` `@unbroken` if nothing in it can wait, or make the call outside `${owner}`",
+                ),
+            )
+    }
+
+    mut fn broken_default(at: Loc?, owner: string, seat: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and the default this call leaves to `${seat}` may wait",
+                    "called here",
+                    "pass `${seat}` explicitly, or make the call outside `${owner}`",
+                ),
+            )
+    }
+
+    mut fn broken_value(at: Loc?, owner: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and a call through a value may be any fn",
+                    "called here",
+                    "call the fn by its name, and mark it `@unbroken`",
+                ),
+            )
+    }
+
+    mut fn broken_spawn(at: Loc?, owner: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and a task it spawns is joined where its scope ends",
+                    "spawned here",
+                    "spawn outside `${owner}`",
+                ),
+            )
+    }
+
+    mut fn broken_wait(at: Loc?, owner: string, what: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.broken",
+                    at,
+                    "`${owner}` is `@unbroken`, and `${what}` waits",
+                    "waits here",
+                    "wait outside `${owner}`",
+                ),
+            )
+    }
+}

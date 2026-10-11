@@ -4,6 +4,8 @@
 #ifndef AVRA_PLATFORM_H
 #define AVRA_PLATFORM_H
 
+#include <stdint.h>
+
 // The caller's own address, where the accounting names a site. A
 // WebAssembly module has no return-address read, so the instruments
 // that use it carry no site there rather than fail to compile.
@@ -28,5 +30,22 @@
 #ifndef AVRA_INSTRUMENTS
 #define AVRA_INSTRUMENTS 1
 #endif
+
+// THE TICK: the scheduler's nudge that time passed while tasks were
+// ready — one byte the scheduler reads (`avra_tick`) and its source
+// sets. The SOURCE is the target's: a hosted target runs a thread, a
+// target with a timer interrupt sets the byte there, wasm has neither
+// and never preempts. The scheduler calls these two verbs to bring the
+// source up and let it stand down; a target with no source defines
+// them empty. They live in an object of their own, never in the
+// scheduler's `runtime/*.c`, so a kernel with no threads still builds
+// the scheduler (D7).
+void avra_tick_armed(void);
+void avra_tick_stood_down(void);
+// How many times the arm's own reader has taken the process id — one per
+// cold arm. A test holds the hot arm to taking none: the count stands
+// still across it. It counts THIS reader; a pid taken elsewhere in the
+// source is not its business.
+uint64_t avra_tick_cold_pid_reads(void);
 
 #endif

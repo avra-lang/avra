@@ -51,6 +51,14 @@ static int64_t joined(void* task) {
     avra_rc_release(task);
     return v;
 }
+// How a task ended, once it has: 0 live, 1 answered, 2 cancelled.
+static int64_t ended(void* task) {
+    avra_task_settle(task);
+    int64_t how = avra_task_ended(task);
+    avra_rc_release(task);
+    return how;
+}
+
 static int filed(void* gate) { return ((AvraArray*)gate)->data[0] != 0; }
 
 static int64_t g_log[64];
@@ -67,14 +75,19 @@ static int64_t g_seen = 0;
 
 // ── a trap, in a child: its words and its status ────────────────
 
-static void trapped(const char* what, void (*body)(void), const char* words) {
+// A CASE ON THE VIRTUAL CLOCK RUNS IN A CHILD UNDER A SHORT BOUND: a
+// clock that never moves hangs it, and the bound turns the hang into a
+// failing check.
+// Whether the bound ended it.
+static int trapped_within(const char* what, void (*body)(void), const char* words, unsigned seconds) {
     int out[2];
     if (pipe(out) != 0) { perror("pipe"); exit(1); }
     pid_t pid = fork();
     if (pid == 0) {
+        avra_fiber_forked();
         dup2(out[1], 2);
         close(out[0]);
-        alarm(60);
+        alarm(seconds);
         body();
         _exit(0);
     }
@@ -90,7 +103,10 @@ static void trapped(const char* what, void (*body)(void), const char* words) {
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2, label);
     snprintf(label, sizeof label, "%s says \"%s\"", what, words);
     CHECK(strstr(buf, words) != NULL, label);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM;
 }
+
+static void trapped(const char* what, void (*body)(void), const char* words) { trapped_within(what, body, words, 60); }
 
 // ── three sources in one set ────────────────────────────────────
 
@@ -153,7 +169,7 @@ static void claim_then_cancel(void) {
     CHECK(avra_gate_claim(g_gate) == 7, "the taker is claimed");
     g_handed = 41;
     avra_task_cancel(t);
-    joined(t);
+    ended(t);
     int64_t want[] = { 307, 41, -100 };
     CHECK(logged(want, 3), "a cancel after a claim: the task resumes on its arm, takes what was handed, and its next wait answers the cancel");
     CHECK(!filed(g_gate), "the cancelled wait left the gate");
@@ -165,26 +181,360 @@ static void claim_then_cancel(void) {
     avra_fiber_sleep(2);
     avra_task_cancel(t);
     CHECK(avra_gate_claim(g_gate) == -1, "a claim after a cancel finds the set taken and moves on");
-    joined(t);
+    ended(t);
     CHECK(g_log_len == 3 && g_log[0] == -100 && g_log[2] == -100, "a cancel first: the wait answers -1:0, and so does the next");
     avra_rc_release(g_gate);
 }
 
 // ── a cancel and the rows that predate the set ──────────────────
 
-static void* sleeper(void* self) { int64_t t0 = now_ns(); avra_fiber_sleep(cap(self)); return answer((now_ns() - t0) / 1000000); }
-static void* joiner(void* self) { (void)self; avra_rc_retain(g_task); return answer(joined(g_task)); }
+// What it slept, by the process's own clock: virtual where the case is.
+static void* sleeper(void* self) { int64_t t0 = avra_now_ns(); avra_fiber_sleep(cap(self)); return answer((avra_now_ns() - t0) / 1000000); }
 
-static void cancel_and_old_rows(void) {
-    g_task = spawn1(sleeper, 30);
-    void* j = spawn1(joiner, 0);
+static int64_t g_byte_a = -1, g_byte_b = -1, g_byte_c = -1, g_byte_d = -1;
+static int64_t g_spent_ms = -1;
+static void bytes_unseen(void) { g_byte_a = g_byte_b = g_byte_c = g_byte_d = g_spent_ms = -1; }
+static int64_t ms_since(int64_t t0) { return (avra_now_ns() - t0) / 1000000; }
+
+// A ten-second sleep, and what the task held when it came back.
+static void* sleeps_long(void* self) {
+    (void)self;
+    int64_t t0 = avra_now_ns();
+    avra_fiber_sleep(10000);
+    g_byte_a = avra_unwinding;
+    g_spent_ms = ms_since(t0);
+    return answer(0);
+}
+
+// EVERY CASE BELOW RUNS ON THE VIRTUAL CLOCK, in a child of its own: a
+// wait the cancel does not cut jumps the clock to its end, so a cut is
+// told from a whole wait by the time spent, never by wall time.
+static void cancel_cuts_sleep(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    int64_t live = avra_mem_live();
+    void* t = spawn1(sleeps_long, 0);
     avra_fiber_sleep(2);
-    avra_task_cancel(g_task);
+    avra_task_cancel(t);
+    avra_rc_retain(t);
+    CHECK(ended(t) == 2, "a task whose sleep a cancel cut ends cancelled");
+    CHECK(g_byte_a == 1, "its sleep comes back with the unwind bit set");
+    CHECK(g_spent_ms < 1000, "at once, not after its ten seconds");
+    CHECK(avra_sched_timers() == 0, "its time leaves the heap");
+    CHECK(avra_unwinding == 0, "the bit is the task's: the canceller's own stays clear");
+    avra_rc_release(t);
+    CHECK(avra_mem_live() == live, "a cancelled end leaves nothing behind");
+    avra_clock_run_ends();
+}
+
+// A JOIN A CANCEL CUTS HAS NO ANSWER TO HAND BACK: until the compiled
+// code tests the unwind bit after the call, a cut join traps by name.
+static void* joins_long(void* self) {
+    (void)self;
+    g_task = spawn1(sleeper, 10000);
+    void* r = avra_task_join(g_task);
+    avra_rc_release(r);
+    return answer(0);
+}
+
+static void cut_join(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    void* j = spawn1(joins_long, 0);
+    avra_fiber_sleep(2);
     avra_task_cancel(j);
-    avra_fiber_sleep(5);
-    CHECK(!avra_task_done(g_task) && !avra_task_done(j), "a cancel wakes neither a sleep nor a join");
-    CHECK(joined(j) >= 29, "the join answers what the sleeper answered, after its whole sleep");
-    CHECK(joined(g_task) >= 29, "the sleeper slept its time");
+    avra_task_settle(j);
+}
+
+// A task cut at a sleep, then ending its scope with what it owns.
+static void* owns_long(void* self) {
+    (void)self;
+    avra_fiber_sleep(10000);
+    g_byte_a = avra_unwinding;
+    g_task = spawn1(sleeper, 10000);
+    avra_rc_retain(g_task);
+    avra_task_settle(g_task);
+    avra_rc_release(g_task);
+    return answer(0);
+}
+
+static void a_scopes_end_cancels_what_it_owns(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    int64_t t0 = avra_now_ns();
+    void* t = spawn1(owns_long, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_a == 1, "a cut owner ends cancelled");
+    CHECK(avra_task_ended(g_task) == 2 && ms_since(t0) < 1000, "its scope's end cancels what it owns, then joins it");
+    CHECK(avra_sched_timers() == 0, "so no time of either stays filed");
+    avra_rc_release(g_task);
+    avra_clock_run_ends();
+}
+
+static void* parks_long(void* self) {
+    (void)self;
+    g_byte_b = avra_fiber_park_fd(g_pipe[0], 0, -1);
+    g_byte_a = avra_unwinding;
+    return answer(0);
+}
+
+static void cancel_cuts_fd_park(void) {
+    bytes_unseen();
+    void* t = spawn1(parks_long, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "a task whose descriptor park a cancel cut ends cancelled");
+    CHECK(g_byte_a == 1 && g_byte_b == 0, "the park answers that the descriptor did not wake it, and the bit is set");
+    CHECK(avra_sched_fd_waiters() == 0, "and it leaves the descriptor");
+}
+
+// A wait set on a gate nobody opens, parked once under `ms` of deadline
+// (no deadline when negative).
+static void* parks_on_a_shut_gate(void* self) {
+    int64_t ms = cap(self);
+    int64_t outer = ms >= 0 ? avra_fiber_within(ms) : 0;
+    avra_wait_gate(g_gate, 0, 0);
+    g_byte_b = avra_wait_park();
+    g_byte_a = avra_unwinding;
+    if (ms >= 0) avra_fiber_within_end(outer);
+    return answer(0);
+}
+
+static void wait_park_sets_the_bit(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    g_gate = avra_gate_new();
+    bytes_unseen();
+    void* t = spawn1(parks_on_a_shut_gate, -1);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_b == (int64_t)0xffffffff00000000LL && g_byte_a == 1, "a park a cancel claims answers -1:0 with the bit set");
+    bytes_unseen();
+    t = spawn1(parks_on_a_shut_gate, 5);
+    CHECK(ended(t) == 1, "a task whose park its deadline ended answers, as before this step");
+    CHECK(g_byte_b == (int64_t)0xffffffff00000001LL && g_byte_a == 0, "a deadline is no cancel point yet: -1:1, and the bit stays clear");
+    avra_rc_release(g_gate);
+    avra_clock_run_ends();
+}
+
+// Two yields: the first before the cancel, the second after it.
+static void* yields_twice(void* self) {
+    (void)self;
+    avra_fiber_yield();
+    g_byte_a = avra_unwinding;
+    avra_fiber_yield();
+    g_byte_b = avra_unwinding;
+    return answer(0);
+}
+
+static void a_yield_is_a_cancel_point(void) {
+    bytes_unseen();
+    void* t = spawn1(yields_twice, 0);
+    avra_fiber_yield();
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "a task cancelled while ready ends cancelled");
+    CHECK(g_byte_a == 0, "a cancel claims no task that is ready: the bit stays clear until its next cancel point");
+    CHECK(g_byte_b == 1, "and that point is its next yield");
+}
+
+static void* sleeps_then_sleeps(void* self) {
+    (void)self;
+    avra_fiber_sleep(3);
+    g_byte_a = avra_unwinding;
+    int64_t t0 = avra_now_ns();
+    avra_fiber_sleep(10000);
+    g_byte_b = avra_unwinding;
+    g_spent_ms = ms_since(t0);
+    return answer(0);
+}
+
+// THE CLAIM COMES FIRST: both times fall due at once, the canceller's
+// asked first, so it runs while the sleeper is claimed and not yet back.
+static void claim_first_then_cancel(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    void* t = spawn1(sleeps_then_sleeps, 0);
+    avra_fiber_sleep(3);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "the sleeper ends cancelled");
+    CHECK(g_byte_a == 0, "a sleep its time claimed before the cancel comes back whole, the bit clear");
+    CHECK(g_byte_b == 1 && g_spent_ms < 1000, "and its next sleep is cut at once");
+    avra_clock_run_ends();
+}
+
+static void* sleeps_once(void* self) {
+    (void)self;
+    int64_t t0 = avra_now_ns();
+    avra_fiber_sleep(10000);
+    g_byte_a = avra_unwinding;
+    g_spent_ms = ms_since(t0);
+    return answer(0);
+}
+
+static void cancelled_before_it_runs(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    void* t = spawn1(sleeps_once, 0);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "a task cancelled before it ran ends cancelled");
+    CHECK(g_byte_a == 1 && g_spent_ms < 1000, "it runs to its first cancel point, which answers at once");
+    avra_clock_run_ends();
+}
+
+// The child reads its own bit before and after its own cut sleep.
+static void* reads_its_bit(void* self) {
+    (void)self;
+    g_byte_c = avra_unwinding;
+    avra_fiber_sleep(10000);
+    g_byte_d = avra_unwinding;
+    return answer(0);
+}
+
+// Cut, then owning a child whose join (its scope's end) switches out.
+static void* cut_then_owns(void* self) {
+    (void)self;
+    avra_fiber_sleep(10000);
+    g_byte_a = avra_unwinding;
+    void* c = spawn1(reads_its_bit, 0);
+    avra_task_settle(c);
+    g_byte_b = avra_unwinding;
+    avra_rc_release(c);
+    return answer(0);
+}
+
+static void the_bit_is_the_running_tasks(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    void* t = spawn1(cut_then_owns, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "the owner ends cancelled");
+    CHECK(g_byte_a == 1, "its cut sleep set its bit");
+    CHECK(g_byte_c == 0, "the child it then made reads its own bit, clear, while the owner is switched out");
+    CHECK(g_byte_d == 1, "and the cancel its owner's scope end gave it cut the child's sleep");
+    CHECK(g_byte_b == 1, "back in the owner the bit is the owner's again");
+    CHECK(avra_unwinding == 0, "and main's stays clear");
+    avra_clock_run_ends();
+}
+
+// Cut once, then a descriptor park under the cancel that stands.
+static void* cut_then_parks(void* self) {
+    (void)self;
+    avra_fiber_sleep(10000);
+    g_byte_b = avra_fiber_park_fd(g_pipe[0], 0, -1);
+    g_byte_a = avra_unwinding;
+    return answer(0);
+}
+
+static void a_standing_cancel_parks_no_descriptor(void) {
+    bytes_unseen();
+    void* t = spawn1(cut_then_parks, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "the task ends cancelled");
+    CHECK(g_byte_b == 0 && g_byte_a == 1, "a descriptor park under a standing cancel answers at once, the bit set");
+}
+
+// Cut once, then a join under the cancel that stands.
+static void* cut_then_joins(void* self) {
+    (void)self;
+    avra_fiber_sleep(10000);
+    g_task = spawn1(sleeper, 10000);
+    void* r = avra_task_join(g_task);
+    avra_rc_release(r);
+    return answer(0);
+}
+
+static void standing_join(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    void* t = spawn1(cut_then_joins, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    avra_task_settle(t);
+}
+
+// A CUT YIELD STILL SWITCHES: it waits for nothing, so there is nothing
+// to cut — a cancelled task that polls lets the one it polls run.
+static int64_t g_done = 0;
+static void* sets_done(void* self) {
+    (void)self;
+    for (int i = 0; i < 3; i++) avra_fiber_yield();
+    g_done = 1;
+    return answer(0);
+}
+
+static void* polls_done(void* self) {
+    (void)self;
+    while (!g_done) avra_fiber_yield();
+    g_byte_a = avra_unwinding;
+    return answer(0);
+}
+
+static void a_cut_yield_still_switches(void) {
+    bytes_unseen();
+    g_done = 0;
+    void* p = spawn1(polls_done, 0);
+    void* s = spawn1(sets_done, 0);
+    avra_task_cancel(p);
+    CHECK(ended(p) == 2 && g_byte_a == 1, "a cancelled task that polls by yielding lets the task it polls run, and ends cancelled");
+    CHECK(ended(s) == 1, "the task it polled ran to its end");
+}
+
+// An owner whose scope's end is already joining when the cancel comes.
+static void* owns_a_sleeper(void* self) {
+    (void)self;
+    g_task = spawn1(sleeper, 10000);
+    avra_rc_retain(g_task);
+    avra_task_settle(g_task);
+    g_byte_a = avra_unwinding;
+    avra_rc_release(g_task);
+    return answer(0);
+}
+
+static void cancel_passes_down_a_scopes_join(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    int64_t t0 = avra_now_ns();
+    void* t = spawn1(owns_a_sleeper, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 1, "an owner whose only wait was its scope's end met no cancel point: it ends answered");
+    CHECK(g_byte_a == 0, "its bit stays clear");
+    CHECK(avra_task_ended(g_task) == 2 && ms_since(t0) < 1000, "the cancel passed down the join it was waiting in, and cut what it owns");
+    avra_rc_release(g_task);
+    avra_clock_run_ends();
+}
+
+// A cancelled task has no answer, and a join that reads one refuses it.
+static void* cancelled_sleeper(void* self) { (void)self; avra_fiber_sleep(10000); return answer(5); }
+static void join_of_cancelled(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    void* t = spawn1(cancelled_sleeper, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    avra_task_settle(t);
+    avra_task_join(t);
+}
+
+static void cancel_twice(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    void* t = spawn1(sleeps_long, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_a == 1, "a second cancel by the same asker changes nothing");
+    avra_clock_run_ends();
 }
 
 // ── one set at a time ───────────────────────────────────────────
@@ -198,23 +548,32 @@ static void park_in_set(void) { g_gate = avra_gate_new(); joined(spawn1(parks_in
 
 // ── a time falls due on a set already claimed ───────────────────
 
+// THE ORDER IS MADE, NOT WAITED FOR: under the virtual clock the time is
+// far, the gate is claimed, and only then does the clock reach the time.
+// Each such case is a run of its own, so the hour it jumps ends with it
+// and the cases after it read the wall again.
+static int64_t g_due_at = 0;
 static void* gate_or_time(void* self) {
+    (void)self;
     avra_wait_gate(g_gate, 0, 1);
-    avra_wait_until(in_ms(cap(self)), 1, 2);
+    g_due_at = avra_now_ns() + (int64_t)60000 * 1000000;
+    avra_wait_until(g_due_at, 1, 2);
     int64_t claim = avra_wait_park();
     return answer(arm_of(claim) * 100 + member_of(claim) + avra_sched_timers() * 1000);
 }
 
 static void due_on_a_claimed_set(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
     g_gate = avra_gate_new();
-    void* t = spawn1(gate_or_time, 3);
-    avra_fiber_sleep(1);
+    void* t = spawn1(gate_or_time, 0);
+    avra_fiber_yield();
     CHECK(avra_gate_claim(g_gate) == 1, "the gate claims first");
-    int64_t until = in_ms(6);
-    while (now_ns() < until) {}
+    CHECK(avra_clock_jumped(g_due_at) == 1, "and then the clock reaches the time");
     avra_fiber_yield();
     CHECK(joined(t) == 1, "a time due on a claimed set is dropped: the task resumes on the gate's arm, the heap empty");
     avra_rc_release(g_gate);
+    avra_clock_run_ends();
 }
 
 // ── a forked child keeps no other task's waiters ────────────────
@@ -326,8 +685,11 @@ static void joins_of_tasks_nothing_runs(void) {
 
 // ── the trace names a virtual task by its machine's id ──────────
 
+static void* answers_cap(void* body) { return answer(cap(body)); }
+
 // Run alone, in a process started with the trace on.
 static int traced_scene(void) {
+    if (joined(spawn1(answers_cap, 3)) != 3) return 1;
     void* gate = avra_gate_new();
     int64_t claimant = avra_vtask_new_at(7, 41);
     int64_t waiter = avra_vtask_new_at(8, 42);
@@ -338,12 +700,42 @@ static int traced_scene(void) {
     if (avra_vtask_next() != waiter) return 1;
     avra_vtask_claim(waiter);
     avra_vtask_end(waiter);
+    int64_t joiner = avra_vtask_new_at(9, 43);
+    avra_vtask_joins(joiner, 41);
+    avra_vtask_joined(joiner, 41);
+    if (avra_vtask_next() != joiner) return 1;
+    avra_vtask_joins(joiner, -2);
+    avra_vtask_end(joiner);
     avra_vtask_free(claimant);
     avra_rc_release(gate);
     return 0;
 }
 
-static void trace_names_virtual_tasks(const char* self) {
+// Task bodies with a row in the site table, as the backend files one.
+// Spawned and never run.
+static void* sited_body(void* body) { return answer(cap(body)); }
+static void* other_sited(void* body) { return answer(cap(body) + 1); }
+#if defined(__APPLE__)
+#define SITES_SECTION AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION
+#else
+#define SITES_SECTION AVRA_SITES_ELF_SECTION
+#endif
+__attribute__((used, section(SITES_SECTION))) static const AvraSiteRow g_sited = { (const void*)sited_body, "pkg/main.av:7" };
+__attribute__((used, section(SITES_SECTION))) static const AvraSiteRow g_other_sited = { (const void*)other_sited, "pkg/two.av:12" };
+
+// Run alone, traced: a task whose code carries a site, one whose code
+// carries none, and a virtual task told its own.
+static int sited_scene(void) {
+    spawn1(sited_body, 0);
+    spawn1(answers_cap, 0);
+    spawn1(other_sited, 0);
+    avra_vtask_sited(avra_vtask_new_at(0, 51), "pkg/other.av:3");
+    return 0;
+}
+
+// What `scene` wrote to its trace, run alone in a process started with
+// the trace on; its exit status.
+static int traced_run(const char* self, const char* scene, char* buf, size_t cap) {
     int out[2];
     if (pipe(out) != 0) { perror("pipe"); exit(1); }
     pid_t pid = fork();
@@ -351,21 +743,42 @@ static void trace_names_virtual_tasks(const char* self) {
         dup2(out[1], 2);
         close(out[0]);
         setenv("AVRA_FLOW_TRACE", "1", 1);
-        execl(self, self, "traced-scene", (char*)NULL);
+        execl(self, self, scene, (char*)NULL);
         _exit(9);
     }
     close(out[1]);
-    char buf[4096] = {0};
+    memset(buf, 0, cap);
     size_t got = 0;
-    for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
+    for (ssize_t n; got < cap - 1 && (n = read(out[0], buf + got, cap - 1 - got)) > 0;) got += (size_t)n;
     close(out[0]);
     int status = 0;
     waitpid(pid, &status, 0);
+    return status;
+}
+
+static void trace_names_sites(const char* self) {
+    char buf[4096];
+    int status = traced_run(self, "sited-scene", buf, sizeof buf);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the sited scene runs");
+    CHECK(strstr(buf, "site id=1 pkg/main.av:7\n") != NULL, "a task whose body has a row is traced by its source line");
+    CHECK(strstr(buf, "site id=2 0x") != NULL, "a task whose body has none is traced by its address");
+    CHECK(strstr(buf, "site id=3 pkg/two.av:12\n") != NULL, "each body by its own row");
+    CHECK(strstr(buf, "site id=51 pkg/other.av:3\n") != NULL, "a virtual task is traced by the line its machine names");
+}
+
+static void trace_names_virtual_tasks(const char* self) {
+    char buf[4096];
+    int status = traced_run(self, "traced-scene", buf, sizeof buf);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the traced scene runs");
     CHECK(strstr(buf, "spawn-at id=42 8") != NULL, "a virtual task is traced under the id it was given, at its site");
     CHECK(strstr(buf, "claim id=42 by=41 arm=0:5") != NULL, "a virtual claim names the virtual claimant");
     CHECK(strstr(buf, "end id=42 0") != NULL, "a virtual task's end is traced");
     CHECK(strstr(buf, "end id=41") == NULL, "and a task freed unfinished says no end");
+    CHECK(strstr(buf, "join id=0 on=1\n") != NULL, "a compiled join names the task it waits for");
+    CHECK(strstr(buf, "claim id=0 by=1 arm=0:0") != NULL, "and the joined task's end claims the joiner");
+    CHECK(strstr(buf, "join id=43 on=41\n") != NULL, "a virtual join names the task it waits for");
+    CHECK(strstr(buf, "claim id=43 by=41 arm=0:0") != NULL, "and its waking names the task that ended");
+    CHECK(strstr(buf, "join id=43 on=unrun") != NULL, "a join of a task nothing runs says so");
 }
 
 // ── more waiters than a fiber holds inline ──────────────────────
@@ -616,7 +1029,7 @@ static void claim_before_cancel(void) {
     void* t = spawn1(cancelled_then_handed, 0);
     avra_fiber_sleep(2);
     avra_task_cancel(t);
-    joined(t);
+    ended(t);
     int64_t want[] = { -1, 508, -1 };
     CHECK(logged(want, 3), "under a standing cancel a wait a source claims while arming answers that source, and the next answers the cancel");
     avra_rc_release(g_gate);
@@ -627,12 +1040,70 @@ static void claim_before_cancel(void) {
 
 static void* parks_on_pipe(void* self) { (void)self; return answer(avra_fiber_park_fd(g_pipe[0], 0, -1)); }
 
-static void interrupt_is_time(void) {
-    void* t = spawn1(parks_on_pipe, 0);
+// A descriptor park, and whether it was interrupted: 10 + the latter
+// when the park answered 0, else the park's own answer.
+static void* parks_and_tells(void* self) {
+    int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, cap(self));
+    return answer(woken ? woken : 10 + avra_fiber_interrupted());
+}
+
+// Under a scope of its own, the interrupt asks nothing of it.
+static void* parks_under_a_scope(void* self) {
+    (void)self;
+    int64_t scope = avra_fiber_within(5000);
+    int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, -1);
+    int64_t landed = avra_scope_end(scope);
+    return answer(woken == 0 && avra_fiber_interrupted() == 1 && landed == 0);
+}
+
+// Interrupted once, then a park a passed deadline answers at once.
+static void* interrupted_then_late(void* self) {
+    (void)self;
+    avra_fiber_park_fd(g_pipe[0], 0, -1);
+    int64_t first = avra_fiber_interrupted();
+    int64_t scope = avra_fiber_within(0);
+    int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, -1);
+    avra_scope_end(scope);
+    return answer(first == 1 && woken == 0 && avra_fiber_interrupted() == 0);
+}
+
+static void* waits_on_the_pipe(void* self) {
+    (void)self;
+    avra_wait_fd(g_pipe[0], 0, 0, 0);
+    return answer(avra_wait_park());
+}
+
+// AN INTERRUPT IS NOT A DEADLINE: its own claim, `-1:2`. A descriptor
+// park still answers 0 for it, and says it was interrupted.
+static void interrupt_is_its_own_claim(void) {
+    void* t = spawn1(parks_and_tells, -1);
     avra_fiber_sleep(2);
     avra_fiber_fd_interrupt(g_pipe[0]);
-    CHECK(joined(t) == 0, "a descriptor park that is interrupted answers as one whose time ran out");
+    CHECK(joined(t) == 11, "a descriptor park that is interrupted answers 0, and says it was interrupted");
     CHECK(avra_sched_fd_waiters() == 0, "and leaves the descriptor");
+    CHECK(joined(spawn1(parks_and_tells, 5)) == 10, "one whose own time ran out says it was not");
+    int64_t scope = avra_fiber_within(5);
+    t = spawn1(parks_and_tells, -1);
+    avra_scope_end(scope);
+    CHECK(joined(t) == 10, "nor does one a deadline ended");
+    t = spawn1(parks_under_a_scope, 0);
+    avra_fiber_sleep(2);
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    CHECK(joined(t) == 1, "an interrupt under a scope makes no request, and the scope's end lands nothing");
+    t = spawn1(interrupted_then_late, 0);
+    avra_fiber_sleep(2);
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    CHECK(joined(t) == 1, "a park after an interrupted one says only what ended it");
+    t = spawn1(waits_on_the_pipe, 0);
+    avra_fiber_sleep(2);
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    int64_t claim = joined(t);
+    CHECK(arm_of(claim) == -1 && member_of(claim) == 2, "a wait set's descriptor wait is claimed -1:2");
+    int64_t v = avra_vtask_new();
+    CHECK(avra_vtask_park_fd(v, g_pipe[0], 0, -1) == 1, "a virtual task parks on the descriptor");
+    avra_fiber_fd_interrupt(g_pipe[0]);
+    CHECK(avra_vtask_timed_out(v) == 1 && avra_vtask_interrupted(v) == 1, "and is told its park was interrupted");
+    avra_vtask_free(v);
 }
 
 // ── an edge belongs to whoever waited when it came ──────────────
@@ -707,32 +1178,39 @@ static void* sleeps_counting(void* self) {
     return answer(g_due_turn ? g_turns - g_due_turn : 0);
 }
 
-static void* deadline_five(void* self) {
+// A 5 ms deadline on a gate nobody claims; answers how many turns of the
+// others passed between its time and its waking, or -1.
+static void* deadline_counting(void* self) {
     (void)self;
-    int64_t t0 = now_ns();
     int64_t outer = avra_fiber_within(5);
+    g_due = now_ns() + 5000000;
     avra_wait_gate(g_gate, 0, 0);
     int64_t claim = avra_wait_park();
     avra_fiber_within_end(outer);
-    return answer(arm_of(claim) == -1 ? (now_ns() - t0) / 1000000 : -1);
+    return answer(arm_of(claim) == -1 ? (g_due_turn ? g_turns - g_due_turn : 0) : -1);
 }
 
 // Eight tasks that each compute 2 ms between yields: a 5 ms sleep and a
-// 5 ms deadline are heard at the first switch after they are due — one
-// round of the eight at most, never a window of rounds.
-static void timers_among_workers(void) {
-    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+// 5 ms deadline are heard within AVRA_TIMER_TURNS switches of due or one
+// tick, whichever is sooner — the switch reads the timer heap every that
+// many switches, never every switch — plus one round of the eight. The
+// deadline is read at most that late too. COUNTED IN TURNS, never timed:
+// a loaded machine stretches a turn, never adds one.
+static void timers_heard_within_the_window(void) {
     g_gate = avra_gate_new();
     void* workers[8];
+    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
     for (int i = 0; i < 8; i++) workers[i] = spawn1(works_between_yields, 2);
-    void* s = spawn1(sleeper, 5);
-    void* d = spawn1(deadline_five, 0);
-    int64_t slept = joined(s);
-    int64_t heard = joined(d);
+    int64_t slept = joined(spawn1(sleeps_counting, 5));
     g_stop = 1;
     for (int i = 0; i < 8; i++) joined(workers[i]);
-    CHECK(slept >= 5 && slept <= 45, "a sleep among tasks that compute between yields wakes within one round of them");
-    CHECK(heard >= 5 && heard <= 45, "a deadline among them is heard within one round too");
+    g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+    for (int i = 0; i < 8; i++) workers[i] = spawn1(works_between_yields, 2);
+    int64_t heard = joined(spawn1(deadline_counting, 0));
+    g_stop = 1;
+    for (int i = 0; i < 8; i++) joined(workers[i]);
+    CHECK(slept >= 0 && slept <= avra_sched_timer_turns() + 8 + 2, "a sleep among tasks that compute between yields is heard within AVRA_TIMER_TURNS or one tick, plus a round");
+    CHECK(heard >= 0 && heard <= avra_sched_timer_turns() + 8 + 2, "a deadline among them is heard within AVRA_TIMER_TURNS or one tick, plus a round");
     avra_rc_release(g_gate);
 
     // counted, not timed: two such tasks, a 46 ms sleep — woken at the
@@ -742,51 +1220,86 @@ static void timers_among_workers(void) {
     int64_t late = joined(spawn1(sleeps_counting, 46));
     g_stop = 1;
     for (int i = 0; i < 2; i++) joined(workers[i]);
-    CHECK(late <= 5, "a sleep among them is asked about at the first switch after its time, not a window of switches later");
+    CHECK(late <= avra_sched_timer_turns() + 5, "a sleep among them is asked about within AVRA_TIMER_TURNS or one tick, not a window of rounds later");
 }
 
 // Yields `g_quick` times at once, then computes 2 ms between yields
 // `g_slow` times; over and over.
 static int g_quick, g_slow;
+static void burst_turn(void) {
+    g_turns++;
+    if (g_due && !g_due_turn && now_ns() >= g_due) g_due_turn = g_turns;
+    avra_fiber_yield();
+}
 static void* works_in_bursts(void* self) {
     (void)self;
     while (!g_stop) {
-        for (int i = 0; i < g_quick && !g_stop; i++) avra_fiber_yield();
+        for (int i = 0; i < g_quick && !g_stop; i++) burst_turn();
         for (int i = 0; i < g_slow && !g_stop; i++) {
             int64_t until = now_ns() + 2000000;
             while (now_ns() < until) {}
-            avra_fiber_yield();
+            burst_turn();
         }
     }
     return answer(0);
 }
 
-// `cap` sleeps of 5 ms; the worst any of them ran over, in ms.
+// `cap` sleeps of 5 ms; the most turns of the others any of them was
+// woken past its time.
 static void* naps(void* self) {
     int64_t worst = 0;
     for (int64_t i = 0; i < cap(self); i++) {
-        int64_t t0 = now_ns();
+        g_due_turn = 0;
+        g_due = now_ns() + 5000000;
         avra_fiber_sleep(5);
-        int64_t late = (now_ns() - t0) / 1000000 - 5;
+        int64_t late = g_due_turn ? g_turns - g_due_turn : 0;
+        g_due = 0;
+        if (late > worst) worst = late;
+    }
+    return answer(worst);
+}
+
+// Files a timer ALREADY DUE on an empty heap — the empty-to-filed edge
+// the window is zeroed at — and parks; answers the most turns of the
+// others before it woke.
+static void* naps_due_now(void* self) {
+    int64_t worst = 0;
+    for (int64_t i = 0; i < cap(self); i++) {
+        g_due_turn = 0;
+        g_due = now_ns();
+        avra_wait_until(now_ns(), 0, 0);
+        avra_wait_park();
+        int64_t late = g_due_turn ? g_turns - g_due_turn : 0;
+        g_due = 0;
         if (late > worst) worst = late;
     }
     return answer(worst);
 }
 
 // Tasks that alternate a run of quick yields with a run of long slices:
-// a sleep is never later than one round of the long slices, however the
-// quick run before it went.
-static void timers_among_bursts(void) {
+// a sleep is heard within AVRA_TIMER_TURNS or one tick, plus one round of
+// them, however the quick run before it went; a timer filed ALREADY DUE
+// on an empty heap is heard at the next switch, a round of them at most
+// — the window's zeroing at the empty-to-filed edge is what arms that
+// read. Counted in turns.
+static void timers_heard_within_the_window_among_bursts(void) {
     static const int shapes[2][3] = { { 8, 100, 8 }, { 2, 300, 40 } };
     for (int s = 0; s < 2; s++) {
         int workers = shapes[s][0];
-        g_stop = 0; g_quick = shapes[s][1]; g_slow = shapes[s][2];
+        g_stop = 0; g_quick = shapes[s][1]; g_slow = shapes[s][2]; g_turns = 0; g_due = 0; g_due_turn = 0;
         void* w[8];
         for (int i = 0; i < workers; i++) w[i] = spawn1(works_in_bursts, 0);
         int64_t worst = joined(spawn1(naps, 20));
         g_stop = 1;
         for (int i = 0; i < workers; i++) joined(w[i]);
-        CHECK(worst <= workers * 2 + 12, s == 0 ? "twenty sleeps among eight bursting tasks are each late by one round of slices at most" : "twenty sleeps among two bursting tasks are each late by one round of slices at most");
+        CHECK(worst <= avra_sched_timer_turns() + workers + 2, s == 0 ? "twenty sleeps among eight bursting tasks are each heard within AVRA_TIMER_TURNS or one tick, plus a round" : "twenty sleeps among two bursting tasks are each heard within AVRA_TIMER_TURNS or one tick, plus a round");
+
+        g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
+        for (int i = 0; i < workers; i++) w[i] = spawn1(works_in_bursts, 0);
+        int64_t at_once = joined(spawn1(naps_due_now, 20));
+        g_stop = 1;
+        for (int i = 0; i < workers; i++) joined(w[i]);
+        CHECK(at_once >= 0 && at_once <= workers + 2, s == 0 ? "a sleep already due among eight bursting tasks is heard within a round of them, not a window later" : "a sleep already due among two bursting tasks is heard within a round of them, not a window later");
     }
 }
 
@@ -832,13 +1345,15 @@ static void* writes_once_parked(void* self) {
 }
 
 static void world_within_reach(void) {
-    enum { YIELDERS = 4, MOST = 1000000, REACH = 2 * 64 + 4 * YIELDERS };
+    enum { YIELDERS = 4, MOST = 1000000 };
+    // two windows (the timer heap's and the poller's) plus a round.
+    int64_t reach = 2 * avra_sched_timer_turns() + 4 * YIELDERS;
     void* y[YIELDERS];
     g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
     for (int i = 0; i < YIELDERS; i++) y[i] = spawn1(yields_counting, MOST);
     int64_t late = joined(spawn1(sleeps_among_yielders, 0));
     for (int i = 0; i < YIELDERS; i++) joined(y[i]);
-    CHECK(late >= 0 && late <= REACH, "a sleep filed among yielding tasks wakes within a window of switches of its time");
+    CHECK(late >= 0 && late <= reach, "a sleep filed among yielding tasks wakes within a window of switches of its time");
 
     g_stop = 0; g_turns = 0; g_due = 0; g_due_turn = 0;
     for (int i = 0; i < YIELDERS; i++) y[i] = spawn1(yields_counting, MOST);
@@ -847,18 +1362,20 @@ static void world_within_reach(void) {
     late = joined(r);
     joined(w);
     for (int i = 0; i < YIELDERS; i++) joined(y[i]);
-    CHECK(late >= 0 && late <= REACH + 64, "a reader parked among yielding tasks wakes within a window of switches of its byte");
+    CHECK(late >= 0 && late <= reach + avra_sched_timer_turns(), "a reader parked among yielding tasks wakes within a window of switches of its byte");
 }
 
 // ── laws whose breaking would hang the rest: each in a child ────
 
 // `body` in a child that a hang cannot outlive; passes when every check
 // the child made held.
-static void in_child(const char* what, void (*body)(void)) {
+// Whether the bound ended it.
+static int in_child_within(const char* what, void (*body)(void), unsigned seconds) {
     fflush(stderr);
     pid_t pid = fork();
     if (pid == 0) {
-        alarm(30);
+        avra_fiber_forked();
+        alarm(seconds);
         g_fails = 0;
         body();
         _exit(g_fails ? 1 : 0);
@@ -866,6 +1383,23 @@ static void in_child(const char* what, void (*body)(void)) {
     int status = 0;
     waitpid(pid, &status, 0);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, what);
+    return WIFSIGNALED(status) && WTERMSIG(status) == SIGALRM;
+}
+
+static void in_child(const char* what, void (*body)(void)) { in_child_within(what, body, 30); }
+
+// A CLOCK THAT NEVER MOVES HANGS EVERY CASE ON IT: the first one its
+// bound ends says so, and each after it fails at once, unrun.
+static int g_clock_stuck = 0;
+
+static void on_virtual_clock(const char* what, void (*body)(void)) {
+    if (g_clock_stuck) { CHECK(0, what); return; }
+    g_clock_stuck = in_child_within(what, body, 5);
+}
+
+static void trapped_on_virtual_clock(const char* what, void (*body)(void), const char* words) {
+    if (g_clock_stuck) { CHECK(0, what); return; }
+    g_clock_stuck = trapped_within(what, body, words, 5);
 }
 
 static void winner_leaves_at_claim(void) {
@@ -1020,6 +1554,7 @@ static void* holds_bytes(void* self) {
 static int uncaught_overrun(void) {
     pid_t pid = fork();
     if (pid == 0) {
+        avra_fiber_forked();
         alarm(60);
         setenv("AVRA_FIBER_STACK", "65536", 1);
         setenv("AVRA_FIBER_GUARDS", "0", 1);
@@ -1173,16 +1708,424 @@ static void as_virtual(void) {
     CHECK(avra_sched_timers() == 0 && avra_mem_live() == live, "the virtual tasks leave nothing behind");
 }
 
+// ── every scope's own limit, and which request stands ───────────
+
+// A park on a gate nothing opens, so the clock stays frozen: 0 when a
+// deadline cut it.
+static void* g_silent;
+static int64_t parks_silent(void) {
+    avra_wait_gate(g_silent, 0, 0);
+    int64_t claim = avra_wait_park();
+    return arm_of(claim) == -1 && member_of(claim) == 1 ? 0 : 1;
+}
+
+static int64_t g_outer = 0, g_inner = 0;
+static void* g_me;      // the task the case runs as
+static void* g_kid;     // the task it spawns
+
+static void* outer_fires_inner_passes(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_inner = avra_fiber_within(5000);
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
+    g_byte_b = avra_scope_end(g_inner) == 0 && avra_task_request(g_me) == g_outer;
+    g_byte_c = avra_scope_end(g_outer) == 1 && avra_task_request(g_me) == 0;
+    return answer(0);
+}
+
+static void* inner_fires_outer_stands(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(5000);
+    g_inner = avra_fiber_within(20);
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
+    g_byte_b = avra_sched_timers() == 1;
+    int64_t under = avra_fiber_within(10);
+    avra_fiber_sleep(20);
+    g_byte_c = avra_scope_end(under) == 0 && avra_task_request(g_me) == g_inner && avra_sched_timers() == 1;
+    g_byte_c = g_byte_c && avra_scope_end(g_inner) == 1 && avra_task_request(g_me) == 0 && avra_sched_timers() == 1;
+    int64_t t0 = avra_now_ns();
+    avra_fiber_sleep(30);
+    g_spent_ms = ms_since(t0);
+    g_byte_d = avra_scope_end(g_outer) == 0 && avra_sched_timers() == 0;
+    return answer(0);
+}
+
+// A child copies the owner: which scope owns a tie is seen in its request.
+static void* hears_the_outer(void* self) {
+    (void)self;
+    g_byte_d = parks_silent() == 0 && avra_task_request(g_kid) == g_outer;
+    return answer(0);
+}
+
+static void* equal_limits_outer_owns(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_inner = avra_fiber_within(20);
+    g_kid = spawn1(hears_the_outer, 0);
+    ended(g_kid);
+    g_byte_a = g_byte_d == 1 && parks_silent() == 0 && avra_task_request(g_me) == g_outer;
+    g_byte_b = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
+    // the tie found again: once an earlier inner scope has ended, and
+    // once one has asked
+    g_outer = avra_fiber_within(20);
+    int64_t mid = avra_fiber_within(20);
+    avra_scope_end(avra_fiber_within(10));
+    g_byte_d = 0;
+    g_kid = spawn1(hears_the_outer, 0);
+    ended(g_kid);
+    g_byte_c = g_byte_d == 1 && avra_scope_end(mid) == 0 && avra_scope_end(g_outer) == 0;
+    g_outer = avra_fiber_within(20);
+    mid = avra_fiber_within(20);
+    g_inner = avra_fiber_within(10);
+    g_byte_c = g_byte_c && parks_silent() == 0 && avra_task_request(g_me) == g_inner;
+    g_byte_c = g_byte_c && parks_silent() == 0 && avra_task_request(g_me) == g_inner;
+    avra_fiber_sleep(30);
+    g_byte_d = avra_task_request(g_me) == g_outer && avra_scope_end(g_inner) == 0 && avra_scope_end(mid) == 0 && avra_scope_end(g_outer) == 1;
+    return answer(0);
+}
+
+// The inner limit passes while nothing heeds it: the next park hears it.
+static void* fires_while_running(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(5000);
+    g_inner = avra_fiber_within(20);
+    avra_fiber_sleep(30);
+    g_byte_a = avra_task_request(g_me) == 0;
+    g_byte_b = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
+    g_byte_c = avra_scope_end(g_inner) == 1 && avra_scope_end(g_outer) == 0;
+    return answer(0);
+}
+
+// A limit that passes after the block's last park asks nothing.
+static void* late_limit(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    avra_fiber_sleep(30);
+    g_byte_a = avra_scope_end(g_outer) == 0 && avra_task_request(g_me) == 0;
+    return answer(0);
+}
+
+static void* child_under_the_outer(void* self) {
+    (void)self;
+    int64_t own = avra_fiber_within(5000);
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_kid) == g_outer;
+    g_byte_b = avra_scope_end(own) == 0 && avra_task_request(g_kid) == g_outer;
+    return answer(0);
+}
+
+static void* spawns_under_the_outer(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_kid = spawn1(child_under_the_outer, 0);
+    g_byte_c = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
+    ended(g_kid);
+    g_byte_d = avra_scope_end(g_outer) == 1;
+    return answer(0);
+}
+
+// A spawner whose inner limit has asked: its child starts under that.
+static void* child_of_a_request(void* self) {
+    (void)self;
+    int64_t t0 = avra_now_ns();
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_kid) == g_inner && ms_since(t0) < 1000;
+    return answer(0);
+}
+
+static void* spawns_under_a_request(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(5000);
+    g_inner = avra_fiber_within(20);
+    parks_silent();
+    g_kid = spawn1(child_of_a_request, 0);
+    ended(g_kid);
+    g_byte_b = avra_scope_end(g_inner) == 1 && avra_scope_end(g_outer) == 0;
+    return answer(0);
+}
+
+// `body` as a task on the frozen clock, with a gate nothing opens.
+static void scopes_on(void* (*body)(void*)) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    g_silent = avra_gate_new();
+    g_me = spawn1(body, 0);
+    ended(g_me);
+    avra_rc_release(g_silent);
+    avra_clock_run_ends();
+}
+
+static void every_scope_its_own_limit(void) {
+    scopes_on(outer_fires_inner_passes);
+    CHECK(g_byte_a == 1, "an outer limit that passes first is the request, whichever scope is innermost");
+    CHECK(g_byte_b == 1, "the inner scope's end passes it on");
+    CHECK(g_byte_c == 1, "and the outer's end lands it");
+    scopes_on(inner_fires_outer_stands);
+    CHECK(g_byte_a == 1, "an inner limit that passes first is the inner's request");
+    CHECK(g_byte_b == 1, "and the outer's limit is filed in its place, the one entry");
+    CHECK(g_byte_c == 1, "a scope opened under the request never asks; the inner's end lands it, and the outer's entry stands");
+    CHECK(g_spent_ms >= 30 && g_byte_d == 1, "the outer scope runs on, and its end takes its entry out");
+    scopes_on(equal_limits_outer_owns);
+    CHECK(g_byte_a == 1 && g_byte_b == 1, "two limits on one instant are the outer's");
+    CHECK(g_byte_c == 1 && g_byte_d == 1, "and the outer's again when an inner one has asked first");
+    scopes_on(fires_while_running);
+    CHECK(g_byte_a == 1, "a limit that passes while nothing heeds it asks nothing yet");
+    CHECK(g_byte_b == 1 && g_byte_c == 1, "the next park hears it as the inner's");
+    scopes_on(late_limit);
+    CHECK(g_byte_a == 1, "a limit that passes after the last park leaves the scope's end nothing to land");
+    scopes_on(spawns_under_the_outer);
+    CHECK(g_byte_a == 1 && g_byte_b == 1, "a child under an inherited limit hears the spawner's scope, and passes its own");
+    CHECK(g_byte_c == 1 && g_byte_d == 1, "and the spawner's scope lands its own request");
+    scopes_on(spawns_under_a_request);
+    CHECK(g_byte_a == 1 && g_byte_b == 1, "a child spawned under a standing request starts under it, and hears it at once");
+}
+
+enum { SCOPE_TASKS = 10, SCOPES_EACH = 10000 };
+static int64_t g_scope_ids[SCOPE_TASKS * SCOPES_EACH];
+static int64_t g_task_ids[SCOPE_TASKS + 1];
+
+static void* opens_scopes(void* self) {
+    int64_t k = cap(self);
+    g_task_ids[k] = avra_task_id();
+    for (int i = 0; i < SCOPES_EACH; i++) {
+        int64_t id = avra_fiber_within(1000);
+        g_scope_ids[k * SCOPES_EACH + i] = id;
+        avra_scope_end(id);
+        if (i % 1000 == 0) avra_fiber_yield();
+    }
+    return answer(0);
+}
+
+static int ids_ordered(const void* a, const void* b) {
+    int64_t x = *(const int64_t*)a, y = *(const int64_t*)b;
+    return (x > y) - (x < y);
+}
+
+static void scope_ids(void) {
+    void* ts[SCOPE_TASKS];
+    for (int k = 0; k < SCOPE_TASKS; k++) ts[k] = spawn1(opens_scopes, k);
+    for (int k = 0; k < SCOPE_TASKS; k++) joined(ts[k]);
+    g_task_ids[SCOPE_TASKS] = avra_task_id();
+    qsort(g_scope_ids, SCOPE_TASKS * SCOPES_EACH, sizeof(int64_t), ids_ordered);
+    int unique = 1, apart = 1;
+    for (int i = 1; i < SCOPE_TASKS * SCOPES_EACH; i++) unique = unique && g_scope_ids[i] != g_scope_ids[i - 1];
+    for (int i = 0; i < SCOPE_TASKS * SCOPES_EACH; i++)
+        for (int k = 0; k <= SCOPE_TASKS; k++) apart = apart && g_scope_ids[i] != g_task_ids[k] && g_scope_ids[i] != g_task_ids[k] + 1;
+    CHECK(unique, "a hundred thousand scopes across ten tasks have a hundred thousand ids");
+    CHECK(apart, "and none is a task's, nor a task's request");
+}
+
+static void one_entry_under_three_scopes(void) {
+    int64_t a = avra_fiber_within(7000), b = avra_fiber_within(6000), c = avra_fiber_within(5000);
+    g_gate = avra_gate_new();
+    void* helper = spawn1(claims_when_filed, 1000);
+    int most = 0;
+    for (int i = 0; i < 1000; i++) {
+        avra_wait_gate(g_gate, 0, i);
+        avra_wait_park();
+        if (avra_sched_timers() > most) most = (int)avra_sched_timers();
+    }
+    joined(helper);
+    CHECK(most == 1, "a thousand parks under three scopes keep one deadline entry");
+    CHECK(avra_scope_end(c) == 0 && avra_sched_timers() == 0, "the owner's end takes it out");
+    helper = spawn1(claims_when_filed, 1);
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_park();
+    joined(helper);
+    CHECK(avra_sched_timers() == 1, "and the next park files the next owner's");
+    CHECK(avra_scope_end(b) == 0 && avra_scope_end(a) == 0 && avra_sched_timers() == 0, "nothing is left after the last scope");
+    avra_rc_release(g_gate);
+}
+
+// Six scopes, the innermost earliest, then the outermost: the records
+// past the inline four behave as the four do.
+static void* six_deep(void* self) {
+    (void)self;
+    int64_t ids[6];
+    for (int i = 0; i < 6; i++) ids[i] = avra_fiber_within(i == 5 ? 20 : 5000 + i);
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == ids[5];
+    int landed = 0;
+    for (int i = 5; i >= 0; i--) landed += (int)avra_scope_end(ids[i]) << i;
+    g_byte_b = landed == 1 << 5;
+    for (int i = 0; i < 6; i++) ids[i] = avra_fiber_within(i == 0 ? 20 : 5000 + i);
+    g_byte_c = parks_silent() == 0 && avra_task_request(g_me) == ids[0];
+    landed = 0;
+    for (int i = 5; i >= 0; i--) landed += (int)avra_scope_end(ids[i]) << i;
+    g_byte_d = landed == 1 && avra_sched_timers() == 0;
+    return answer(0);
+}
+
+static void a_fifth_scope(void) {
+    scopes_on(six_deep);
+    CHECK(g_byte_a == 1 && g_byte_b == 1, "a sixth scope's limit is its own request, and only its end lands it");
+    CHECK(g_byte_c == 1 && g_byte_d == 1, "the outermost of six owns its limit over five inner ones");
+}
+
+// A hundred thousand nested scopes, each earlier than the one outside
+// it, so each owns the limit while it stands: they open and end in
+// time proportional to their number.
+static void a_deep_nest_ends_in_linear_time(void) {
+    enum { DEEP = 100000 };
+    static int64_t ids[DEEP];
+    int64_t t0 = avra_now_ns();
+    for (int i = 0; i < DEEP; i++) ids[i] = avra_fiber_within(10000000 - i);
+    for (int i = DEEP - 1; i >= 0; i--) avra_scope_end(ids[i]);
+    CHECK(ms_since(t0) < 500, "a hundred thousand nested scopes, each the owner, open and end in linear time");
+}
+
+static void scope_ended_out_of_order(void) {
+    int64_t outer = avra_fiber_within(1000);
+    avra_fiber_within(2000);
+    avra_scope_end(outer);
+}
+
+// A deadline's request stands; then the task is cancelled.
+static void* fired_then_cancelled(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
+    avra_fiber_sleep(10000);
+    g_byte_b = avra_task_request(g_me) == 1;
+    g_byte_c = avra_scope_end(g_outer) == 0 && avra_task_request(g_me) == 1;
+    return answer(0);
+}
+
+// A cancel stands; then the deadline passes.
+static void* cancelled_then_fired(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_park();
+    int64_t t0 = avra_now_ns();
+    while (ms_since(t0) < 40) avra_fiber_yield();
+    g_byte_a = avra_task_request(g_me) == 1;
+    g_byte_b = avra_scope_end(g_outer) == 0 && avra_task_request(g_me) == 1;
+    return answer(0);
+}
+
+static void task_cancel_outranks_a_scope(void) {
+    bytes_unseen();
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    g_silent = avra_gate_new();
+    void* t = g_me = spawn1(fired_then_cancelled, 0);
+    avra_fiber_sleep(30);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_a == 1, "a deadline's request stands, and the task is cancelled after");
+    CHECK(g_byte_b == 1 && g_byte_c == 1, "the task's request displaces the scope's, and the scope's end lands nothing");
+    avra_rc_release(g_silent);
+    avra_clock_run_ends();
+}
+
+static void a_scope_does_not_displace_a_task_cancel(void) {
+    bytes_unseen();
+    g_gate = avra_gate_new();
+    void* t = g_me = spawn1(cancelled_then_fired, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_a == 1, "a limit that passes under a task's cancel leaves the task's request standing");
+    CHECK(g_byte_b == 1, "and the scope's end lands nothing");
+    avra_rc_release(g_gate);
+}
+
+// Two limits pass during one sleep, the inner's first: the outer's stands.
+static void* inner_then_outer(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(40);
+    g_inner = avra_fiber_within(20);
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
+    avra_fiber_sleep(60);
+    g_byte_b = avra_task_request(g_me) == g_outer;
+    g_byte_c = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
+    return answer(0);
+}
+
+// The outer's first: the inner's limit asks nothing.
+static void* outer_then_inner(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(20);
+    g_inner = avra_fiber_within(40);
+    g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
+    avra_fiber_sleep(60);
+    g_byte_b = avra_task_request(g_me) == g_outer && avra_sched_timers() == 0;
+    g_byte_c = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
+    return answer(0);
+}
+
+static void the_outer_request_stands(void) {
+    scopes_on(inner_then_outer);
+    CHECK(g_byte_a == 1, "the inner limit passes first");
+    CHECK(g_byte_b == 1, "the outer's, passing later, displaces it");
+    CHECK(g_byte_c == 1, "and only the outer's end lands it");
+    scopes_on(outer_then_inner);
+    CHECK(g_byte_a == 1, "the outer limit passes first");
+    CHECK(g_byte_b == 1, "the inner's, passing later, asks nothing and files nothing");
+    CHECK(g_byte_c == 1, "and only the outer's end lands it");
+}
+
+// Run alone, traced: a cancel stands when a deadline passes.
+static int dropped_scene(void) {
+    a_scope_does_not_displace_a_task_cancel();
+    return g_fails ? 1 : 0;
+}
+
+static void a_dropped_request_is_traced(const char* self) {
+    char buf[8192];
+    int status = traced_run(self, "dropped-scene", buf, sizeof buf);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the dropped scene runs");
+    char want[64];
+    snprintf(want, sizeof want, "request-dropped id=1 by=scope:");
+    CHECK(strstr(buf, want) != NULL && strstr(buf, " for=task:0") != NULL, "a request a standing one outranks is one line naming both askers");
+}
+
+static void forked_keeps_the_callers_scopes(void) {
+    int64_t outer = avra_fiber_within(5000), inner = avra_fiber_within(6000);
+    g_gate = avra_gate_new();
+    void* helper = spawn1(claims_when_filed, 1);
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_park();
+    joined(helper);
+    pid_t pid = fork();
+    if (pid == 0) {
+        avra_fiber_forked();
+        int kept = avra_sched_timers() == 1;
+        kept = kept && avra_scope_end(inner) == 0 && avra_sched_timers() == 1;
+        kept = kept && avra_scope_end(outer) == 0 && avra_sched_timers() == 0;
+        _exit(kept ? 0 : 1);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "a forked child keeps the caller's scopes and their one entry");
+    avra_scope_end(inner);
+    avra_scope_end(outer);
+    avra_rc_release(g_gate);
+}
+
+// A virtual task inherits a scope as a fiber does.
+static void virtual_scopes(void) {
+    int64_t parent = avra_vtask_new(), child = avra_vtask_new();
+    int64_t outer = avra_vtask_within(parent, 1000);
+    avra_vtask_inherits(child, parent);
+    CHECK(avra_vtask_deadline(child) == avra_vtask_deadline(parent) && avra_vtask_deadline(child) != 0, "a virtual child inherits its spawner's limit");
+    avra_vtask_within_end(parent, outer);
+    CHECK(avra_vtask_deadline(parent) == 0 && avra_vtask_deadline(child) != 0, "and keeps it after the spawner's scope ends");
+    avra_vtask_free(child);
+    avra_vtask_free(parent);
+}
+
 int main(int argc, char** argv) {
     alarm(120);
     if (argc > 1 && strcmp(argv[1], "traced-scene") == 0) return traced_scene();
+    if (argc > 1 && strcmp(argv[1], "sited-scene") == 0) return sited_scene();
+    if (argc > 1 && strcmp(argv[1], "dropped-scene") == 0) return dropped_scene();
     if (pipe(g_pipe) != 0) { perror("pipe"); return 1; }
     fcntl(g_pipe[0], F_SETFL, O_NONBLOCK);
     in_child("a claimant takes the winner out of its list at the claim", winner_leaves_at_claim);
     in_child("a freed virtual task leaves every source it was filed with", freed_vtask_leaves_its_sources);
     in_child("a closed descriptor's number is watched afresh for its next tenant", closed_number_is_watched_afresh);
     in_child("a sleep and a reader among yielding tasks wake within reach", world_within_reach);
-    in_child("timers among tasks that compute between yields fire at the first switch after", timers_among_workers);
+    in_child("a sleep and a deadline among tasks that compute between yields are heard within the window", timers_heard_within_the_window);
+    in_child_within("a deadline is filed once, and heard", deadline_once, 10);
+    in_child_within("a deadline reaches what it must, and no further", deadline_reach, 10);
     if (g_fails) {
         printf("flow: %d checks, %d failed — the rest would hang on what these hold\n", g_checks, g_fails);
         return 1;
@@ -1196,28 +2139,56 @@ int main(int argc, char** argv) {
     int64_t live = avra_mem_live();
     three_sources_as_fibers();
     claim_then_cancel();
-    cancel_and_old_rows();
-    due_on_a_claimed_set();
+    // ON THE VIRTUAL CLOCK, each in a child: a clock that never moves is
+    // a hang, which the short alarm turns into a failing check, and the
+    // cases after them run on a clock nothing here can have left moved
+    on_virtual_clock("a cancel cuts a sleep, on the virtual clock", cancel_cuts_sleep);
+    trapped_on_virtual_clock("a join a cancel cuts", cut_join, "a join was cut by a cancel, and its task has not answered");
+    trapped_on_virtual_clock("a join under a standing cancel", standing_join, "a join was cut by a cancel, and its task has not answered");
+    on_virtual_clock("a scope's end cancels what it owns, then joins it", a_scopes_end_cancels_what_it_owns);
+    in_child_within("a cut yield still switches", a_cut_yield_still_switches, 5);
+    in_child_within("a cancel cuts a descriptor park", cancel_cuts_fd_park, 5);
+    on_virtual_clock("a park a cancel claims sets the bit, a deadline does not yet", wait_park_sets_the_bit);
+    in_child_within("a yield is a cancel point", a_yield_is_a_cancel_point, 5);
+    on_virtual_clock("a claim made before a cancel is taken first", claim_first_then_cancel);
+    on_virtual_clock("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs);
+    on_virtual_clock("the unwind bit is the running task's", the_bit_is_the_running_tasks);
+    on_virtual_clock("a second cancel changes nothing", cancel_twice);
+    in_child_within("a standing cancel parks no descriptor", a_standing_cancel_parks_no_descriptor, 5);
+    on_virtual_clock("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join);
+    trapped_on_virtual_clock("a join of a cancelled task", join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
+    on_virtual_clock("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set);
+    on_virtual_clock("every scope keeps its own limit", every_scope_its_own_limit);
+    in_child_within("scope ids never collide", scope_ids, 10);
+    in_child_within("three scopes keep one deadline entry", one_entry_under_three_scopes, 5);
+    on_virtual_clock("a fifth scope behaves as the four", a_fifth_scope);
+    in_child_within("a deep nest of scopes ends in linear time", a_deep_nest_ends_in_linear_time, 30);
+    trapped("a scope ended while one inside it stands", scope_ended_out_of_order, "a `within` ended while one inside it stands");
+    on_virtual_clock("a task's cancel outranks a scope's request", task_cancel_outranks_a_scope);
+    in_child_within("a scope's request does not displace a task's cancel", a_scope_does_not_displace_a_task_cancel, 5);
+    on_virtual_clock("the outer scope's request stands", the_outer_request_stands);
+    a_dropped_request_is_traced(argv[0]);
+    in_child_within("a fork keeps the caller's scopes", forked_keeps_the_callers_scopes, 5);
+    in_child_within("a virtual task inherits a scope", virtual_scopes, 5);
     fork_forgets_gate_waiters();
     fiberless_tasks();
     joins_of_tasks_nothing_runs();
     overflow_list();
     opened_gate();
-    deadline_once();
     slots();
     ends_without_parking();
-    deadline_reach();
     fork_forgets_deadlines();
     claim_before_cancel();
-    interrupt_is_time();
+    interrupt_is_its_own_claim();
     late_parker();
     late_parker_after_interrupt();
-    timers_among_workers();
-    timers_among_bursts();
+    timers_heard_within_the_window();
+    timers_heard_within_the_window_among_bursts();
     world_within_reach();
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     as_virtual();
     trace_names_virtual_tasks(argv[0]);
+    trace_names_sites(argv[0]);
     closed(g_pipe[0]);
     closed(g_pipe[1]);
 

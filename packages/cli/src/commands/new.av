@@ -5,7 +5,7 @@
 //! questions that gate growth, then the consumers a new
 //! instruction owes. Both end at `make gate`.
 use @std.cli.{CliResult, Runnable, command, arg}
-use @std.io.{write_text, exists, make_dirs}
+use @std.io.{write_text, make_dirs}
 use @std.process.{exit, Exit}
 
 type NewCmd = {}
@@ -49,7 +49,9 @@ fn initial_upper(name: string) -> string {
 
 fn scaffold_feature(name: string) -> int {
     let dir = "packages/std-avrac/src/features/${name}"
-    if exists("${dir}/mod.av") {
+    // LICENSED compiler.host_asked_directly: a command's read of the path it writes to, at this instant — no query frame is open
+    let there = match disk_host().there("${dir}/mod.av") { .Exists(_, t) -> t, rest -> false }
+    if there {
         eprintln("avra new: `${dir}` already exists")
         return 2
     }

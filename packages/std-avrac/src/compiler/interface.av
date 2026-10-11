@@ -6,6 +6,8 @@ use core.{
     flatten,
     distinct,
     sorted_texts,
+    sorted_by,
+    text_before,
     module_path,
     digest_of,
     same_decl,
@@ -20,6 +22,7 @@ use core.{
 }
 use features.{
     Decl,
+    LANGUAGE_HOME,
     DeclAt,
     FnSig,
     StructSig,
@@ -329,7 +332,7 @@ impl Workspace {
         let fields = record_fields(self, store, m)
         let places = record_places(self, store, m)
         let held = [path for path in self.module_files(m) if self.decls.held.get().get(path) != null]
-        for path in held { self.mint_file(path, file_rows(fields, places.get(path))) }
+        for path in held { self.mint_file(path, file_rows(fields, places.get(path)), makers_in(fields, path)) }
         for path in held { self.hold.reexports.put(path, reexports_in(fields, path)) }
         for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
     }
@@ -337,22 +340,24 @@ impl Workspace {
     /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
     /// file's statement table is written ONCE: read out and stored back per line, it
     /// is held twice while it is written, and every line copies it.
-    fn mint_file(path: string, rows: List<List<string>>) {
+    fn mint_file(path: string, rows: List<List<string>>, makers: Map<string, string>) {
         let f = self.file_id(path)
+        self.decls.held_opened(f, makers.values())
         mut by_stmt = self.decls.decl_ids.get()[f.index].get()
         for parts in rows {
-            let id: DeclId? = self.minted(f, path, parts)
+            let id: DeclId? = self.minted(f, path, parts, makers)
             let stmt_index = read_row(parts)?.stmt ?? 0
             by_stmt.grow_to(stmt_index + 1)
             if id != null && by_stmt.get(stmt_index).decl == null { by_stmt.set(stmt_index, DeclAt { decl: id }) }
         }
+        self.decls.held_closed(f, makers.values())
         self.decls.keep_stmt_decls(f, by_stmt)
     }
 
     /// One record line as a declaration — null for a line that names nothing. A line
     /// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
     /// sources answer.
-    fn minted(f: FileId, path: string, parts: List<string>) -> DeclId? {
+    fn minted(f: FileId, path: string, parts: List<string>, makers: Map<string, string>) -> DeclId? {
         let row? = read_row(parts) else { return null }
         let kind = declared_kind(row.shape, row.kind)
         let facts = facts_unblocked(row.facts)
@@ -361,12 +366,9 @@ impl Workspace {
             return null
         }
         let root: ExprId? = if row.root < 0 { null } else { ExprId { index: row.root } }
-        // the ordinal is the record's identity within a held file: a name/kind key
-        // collapses generated members and same-named methods
         let id = self
             .decls
-            .mint(
-                "${f.index}#held#${row.ordinal}",
+            .mint_faced(
                 f,
                 StmtId { index: row.stmt },
                 row.name,
@@ -374,18 +376,21 @@ impl Workspace {
                 row.exported,
                 row.owner,
                 null,
-                row.nested,
+                row.enclosing,
                 root,
+                makers.get("${row.ordinal}") ?? "",
+                facts!,
             )
         self.decls.held_joins(f, id, kind! is .Main, row.item)
-        self.decls.adopt_facts(id, facts!)
+        // the cancel bit is read before any signature is asked, so it lands with the row
+        self.decls.record_cancel(id, row.reach())
         id
     }
 
     fn record_line(d: Decl, ordinal: int, item: bool) -> string {
         let shape = self.record_shape(d)
         let at = shape.index_of("\t")
-        let visibility = if d.exported { "1" } else { "0" }
+        let visibility = bit_word(d.exported)
         // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
         // and a held file has no store, so the record must carry it: the word is the one
         // column every kind already has, and the payload's layout is unchanged.
@@ -407,7 +412,7 @@ impl Workspace {
         // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
         // back is a defect said now, never a check every reader pays
         if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
-        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${block}\t${payload}"
+        "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${field_text(d.enclosing)}\t${root}\t${bit_word(item)}\t${block}\t${payload}"
     }
 
     /// The shape word and payload a declaration's record line carries.
@@ -422,8 +427,8 @@ impl Workspace {
             // an impl is filed under its target's NAME, and a held one has no namespace to
             // ask which declaration of that name it means
             .Impl -> "aims\t${self.decl_ref(self.decls.target_of(d.id))}",
-            .Fn or .Method -> self.fn_shape(d),
-            .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Main or .Case or .CollectEnum -> self.signed_shape(d),
+            .Fn or .Method or .Default or .Case -> self.fn_shape(d),
+            .Builtin or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Main or .CollectEnum -> self.signed_shape(d),
         }
     }
 
@@ -434,7 +439,8 @@ impl Workspace {
             .type_wire(self.decls.type_of_const(d.file, d.stmt) ?? self.decls.types.intern(Type.Error))
     }
 
-    /// A fn's or a method's shape: its signature, then its seats' contracts and written bits.
+    /// A fn's or a method's shape: its signature, then its seats' contracts and written
+    /// bits, its bounds, and whether a call to it may reach a cancel point.
     fn fn_shape(d: Decl) -> string {
         let sig? = self.sig(d.id) else { return "opaque" }
         // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
@@ -456,7 +462,10 @@ impl Workspace {
             [if self.decls.seat_written(d.id, j) { "1" } else { "0" } for j in 0..n],
             "",
         )
-        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}"
+        // a record is kept once the build has lowered every body, never inside a resolve,
+        // so the cancel bit is the settled pass's and not its conservative stand-in
+        let reach = self.reach_of(d.id)
+        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}\t${bit_word(reach.parks)}\t${bit_word(reach.spins)}"
     }
 
     /// A type's shape from its signature — `opaque` for a declaration that has none.
@@ -481,9 +490,11 @@ impl Workspace {
         let files = self.module_files(m)
         let kept = lines_by_file(prior_lines)
         let fresh = flatten([self.imported_by(path) for path in files if self.read_here(path)])
+        let gathers = flatten([self.gathers_lines(path) for path in files if self.read_here(path)])
         let here = distinct(
-            [line for line in prior_lines if line.starts_with("import\t")]
-                .concat(["import\t${d.text()}" for d in fresh]),
+            [line for line in prior_lines if line.starts_with("import\t") || kept_gathers(self, line)]
+                .concat(["import\t${d.text()}" for d in fresh])
+                .concat(gathers),
         )
         // EVERY FILE'S OWN OUTGOING REFERENCES, kept beside its
         // declarations — never inside `iface_digest`'s own fold, since a
@@ -496,7 +507,7 @@ impl Workspace {
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
-        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${joined(self.ran_by(store, f.path), "|")}\t${f.iface}" for f in parts]
+        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.ran_by(store, f.path))}\t${f.iface}" for f in parts]
         let iface = ifaces_digest([f.iface for f in parts])
         joined(
             ["iface\t${iface}"]
@@ -535,7 +546,11 @@ impl Workspace {
     fn lines_of(path: string) -> List<string> {
         let f = self.file_id(path)
         let top = self.items(f)
-        [self.record_line(self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in self.decls.decls_of_file(f)]
+        let ids = self.decls.decls_of_file(f)
+        [self.record_line(self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in ids]
+            .concat(
+                [maker_line(path, ordinal, self.decl_at(id).maker) for ordinal, id in ids if self.decl_at(id).maker != ""],
+            )
             .concat([reexport_line(path, r) for r in self.file_reexports(path)])
     }
 
@@ -549,22 +564,25 @@ impl Workspace {
 
     /// EVERY FILE WHOSE TEXT A FILE'S COMPILE-TIME RUNS READ — its own runs', and the
     /// runs of every const those read. In name order.
-    fn ran_by(store: Store, path: string) -> List<string> {
+    fn ran_by(store: Store, path: string) -> List<RunRead> {
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
-        mut seen: List<string> = [path]
+        mut seen: List<RunRead> = [self.plain_read(path)]
         mut at = 0
         while at < seen.length {
-            for q in self.ran_directly(store, seen[at]) {
-                if !seen.contains(q) { seen.push(q) }
+            for q in self.ran_directly(store, seen[at].path) {
+                if !seen.any(it.path == q.path && it.ref == q.ref) { seen.push(q) }
             }
             at = at + 1
         }
-        sorted_texts(seen.slice(1, seen.length))
+        sorted_by(
+            seen.slice(1, seen.length),
+            (a: RunRead, b: RunRead) -> text_before(a.path, b.path),
+        )
     }
 
     /// What one file's runs read: as this build met them, or, for a held file, as
     /// its module's last record kept them.
-    fn ran_directly(store: Store, path: string) -> List<string> {
+    fn ran_directly(store: Store, path: string) -> List<RunRead> {
         if self.read_here(path) { return self.hold.runs.get().get(path) ?? [] }
         kept_runs(record_places(self, store, self.module_path_of(path)).get(path))
     }
@@ -578,7 +596,7 @@ impl Workspace {
     /// collect's synthesized aggregate by its own answer type. A NESTED
     /// declaration joins no namespace, so no symbol names it.
     fn stub_of(d: Decl) -> Body? {
-        if d.nested { return null }
+        if d.nested() { return null }
         if self.decls.is_instance(d.id) { return self.instance_stub(d) }
         if d.kind is .Collect { return self.collect_own_stub(d) }
         let s? = self.sig(d.id) else { return null }
@@ -633,9 +651,6 @@ impl Workspace {
 /// its own text; `wire_decl` reads too few words from it to decode.
 const NO_ORDINAL: int = 0 - 1
 
-/// Where a builtin's wire says it lives — no path, so no reader takes it for a file.
-const BUILTIN_HOME: string = "@language"
-
 impl Decls {
 
     /// A declaration as a wire: its file, kind, owner and name — never a
@@ -648,15 +663,18 @@ impl Decls {
     /// kind the law does not police (defaults, generated members) — a tilde in
     /// owner or name (case labels are sentences) has none of decl_wire's
     /// callers, and wears NO_ORDINAL rather than corrupt the tilde stream.
-    fn decl_wire(d: DeclId) -> string {
+    fn decl_wire(d: DeclId) -> string { self.decl_wire_from(d, (f: FileId) -> self.file(f).path) }
+
+    /// `decl_wire`, its file spelled by `home`.
+    fn decl_wire_from(d: DeclId, home: fn(FileId) -> string) -> string {
         let x = self.decl(d)
-        if x.owner.contains("~") || x.name.contains("~") { return "${self.file(x.file).path}~${NO_ORDINAL}" }
+        if x.owner.contains("~") || x.name.contains("~") { return "${home(x.file)}~${NO_ORDINAL}" }
         let kind = kind_word(x.kind)
         // A BUILTIN SITS IN NO FILE OF THE PROGRAM'S: its wire names the language, so
         // one declaration has one spelling whichever file a process met first.
-        if self.is_builtin(d) { return "${BUILTIN_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
+        if self.is_builtin(d) { return "${LANGUAGE_HOME}~${kind}~${field_text(x.owner)}~${field_text(x.name)}" }
         let siblings = self.wire_siblings(x.file, kind, x.owner, x.name)
-        let base = "${self.file(x.file).path}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
+        let base = "${home(x.file)}~${kind}~${field_text(x.owner)}~${field_text(x.name)}"
         if siblings.length <= 1 { return base }
         let at = [j for j, id in siblings if same_decl(id, d)].first() ?? 0
         "${base}~${at}"
@@ -798,10 +816,15 @@ impl Decls {
     }
 
     /// A type as a record writes it.
-    fn type_wire(id: TypeId) -> string { "^${self.wire_body(id)}" }
+    fn type_wire(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).path)}" }
 
-    /// The wire without its mark — what a wire nests.
-    fn wire_body(id: TypeId) -> string {
+    /// A type as a SYMBOL spells it: the record's wire with each file named
+    /// by its package and its path within it, never where the building
+    /// machine keeps the tree — an object is the same bytes on every machine.
+    fn type_symbol(id: TypeId) -> string { "^${self.wire_body(id, (f: FileId) -> self.file(f).name)}" }
+
+    /// The wire without its mark — what a wire nests — each file spelled by `home`.
+    fn wire_body(id: TypeId, home: fn(FileId) -> string) -> string {
         match self.types.shape_of(id) {
             .Int -> "i",
             .Float -> "f",
@@ -814,34 +837,37 @@ impl Decls {
             .EmptyList -> "e",
             .EmptyMap -> "h",
             .Error -> "x",
-            .Struct(d, _) -> "S~${self.decl_wire(d)}",
-            .Enum(d, _) -> "E~${self.decl_wire(d)}",
-            .Dyn(d, _) -> "D~${self.decl_wire(d)}",
-            .TypeName(d, _) -> "N~${self.decl_wire(d)}",
-            .Var(d, j, _) -> "R~${self.decl_wire(d)}~${j}",
-            .App(d, _, args) -> "A~${self.decl_wire(d)}~${args.length}~${joined([self.wire_body(a) for a in args], "~")}",
-            .List(t) -> "L~${self.wire_body(t)}",
-            .Cell(t) -> "C~${self.wire_body(t)}",
-            .Task(t) -> "K~${self.wire_body(t)}",
+            .Struct(d, _) -> "S~${self.decl_wire_from(d, home)}",
+            .Enum(d, _) -> "E~${self.decl_wire_from(d, home)}",
+            .Dyn(d, _) -> "D~${self.decl_wire_from(d, home)}",
+            .TypeName(d, _) -> "N~${self.decl_wire_from(d, home)}",
+            .Var(d, j, _) -> "R~${self.decl_wire_from(d, home)}~${j}",
+            .App(d, _, args) -> "A~${self.decl_wire_from(d, home)}~${args.length}~${joined([self.wire_body(a, home) for a in args], "~")}",
+            .List(t) -> "L~${self.wire_body(t, home)}",
+            .Cell(t) -> "C~${self.wire_body(t, home)}",
+            .Task(t) -> "K~${self.wire_body(t, home)}",
             .Tasks -> "T",
-            .Opt(t) -> "O~${self.wire_body(t)}",
-            .Map(k, v) -> "M~${self.wire_body(k)}~${self.wire_body(v)}",
-            .Res(ok, err) -> "Q~${self.wire_body(ok)}~${self.wire_body(err)}",
+            .Opt(t) -> "O~${self.wire_body(t, home)}",
+            .Map(k, v) -> "M~${self.wire_body(k, home)}~${self.wire_body(v, home)}",
+            .Res(ok, err) -> "Q~${self.wire_body(ok, home)}~${self.wire_body(err, home)}",
             .Fn(params, marks, ret) -> joined(
                 ["F", "${params.length}"]
-                    .concat([self.wire_body(t) for t in params])
+                    .concat([self.wire_body(t, home) for t in params])
                     .concat(
                         [
                             joined(
                                 [mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length],
                                 "",
                             ),
-                            self.wire_body(ret),
+                            self.wire_body(ret, home),
                         ],
                     ),
                 "~",
             ),
-            .Union(members) -> joined(["U", "${members.length}"].concat([self.wire_body(m) for m in members]), "~"),
+            .Union(members) -> joined(
+                ["U", "${members.length}"].concat([self.wire_body(m, home) for m in members]),
+                "~",
+            ),
             .Range -> "g",
         }
     }
@@ -879,3 +905,22 @@ type WireDeclRef = { id: DeclId, next: int }
 
 /// One bounded seat in the fn row's bounds column.
 fn bound_entry(j: int, wires: List<string>) -> string { "${j}=${joined(wires, "|")}" }
+
+/// What generated the declaration at `ordinal` of `path` — written only for a generated one.
+fn maker_line(path: string, ordinal: int, maker: string) -> string {
+    "maker\t${path}\t${ordinal}\t${field_text(maker)}"
+}
+
+/// A file's makers as its record keeps them, by the declaration's ordinal.
+export fn makers_in(fields: List<List<string>>, path: string) -> Map<string, string> {
+    mut out: Map<string, string> = {}
+    for p in fields {
+        if p.length == 4 && p[0] == "maker" && p[1] == path { out.set(p[2], text_of_field(p[3])) }
+    }
+    out
+}
+
+/// A bit as a record field writes it.
+fn bit_word(b: bool) -> string {
+    if b { "1" } else { "0" }
+}

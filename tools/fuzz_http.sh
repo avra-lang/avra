@@ -79,7 +79,7 @@ done
 
 rows_secs=$((secs / 3))
 if "$clang" -O1 -g -fsanitize=fuzzer,undefined -fno-sanitize-recover=undefined -Iruntime \
-    -o "$out/bytes_rows" "$dir/c/bytes_rows_fuzz.c" runtime/*.c > "$out/rows-build.log" 2>&1; then
+    -o "$out/bytes_rows" "$dir/c/bytes_rows_fuzz.c" runtime/*.c runtime/host/avra_tick.c > "$out/rows-build.log" 2>&1; then
     rows=$(ls "$dir/rows-crashes" | sed "s|^|$dir/rows-crashes/|")
     # shellcheck disable=SC2086
     [ -z "$rows" ] || "$out/bytes_rows" $rows > "$out/rows-replay.log" 2>&1 || { echo "fuzz-http: a kept rows input fails again"; found=$((found + 1)); }

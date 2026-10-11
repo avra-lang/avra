@@ -1,7 +1,10 @@
 //! The if-expression's NodeSemantics: dispatch only. The typing rule
 //! lives in check.av; lowering — the MEANING — in lower.av.
 use core.{Expr, ExprId, StmtId, TypeId, Reg}
-use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use core.stmt.{IfStmt}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
+
+use core.expr.{If}
 
 export type IfSemantics = {}
 
@@ -17,28 +20,18 @@ impl NodeSemantics for IfSemantics {
         match e { .If(_, t, f) -> [t, f], _ -> [] }
     }
 
-    fn resolve(mut cx: ResolveCx, e: ExprId) {
-        match cx.view.store.expr(e) {
-            .If(_, t, f) -> {
-                cx.arm_scope([], t)
-                cx.arm_scope([], f)
-            },
-            _ -> nothing(),
-        }
-    }
-
-    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
-        if_type(cx, e)
-    }
-
-    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
-        if_lower(cx, e)
-    }
-
 }
 
 /// The STATEMENT form's semantics: a valueless region — the guard
 /// idiom's home. Each branch scopes its own statements.
+impl StmtSemantics for IfStmt {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { IfStmtSemantics {}.resolve_stmt(cx, s) }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) { IfStmtSemantics {}.type_stmt(cx, s) }
+
+    fn lower_stmt(mut cx: LowerCx, s: StmtId) -> Reg? { IfStmtSemantics {}.lower_stmt(cx, s) }
+}
+
 export type IfStmtSemantics = {}
 
 impl StmtSemantics for IfStmtSemantics {
@@ -81,4 +74,17 @@ impl StmtSemantics for IfStmtSemantics {
 /// reads it. A branch that RETURNS never reaches its yield.
 fn lower_if_stmt(mut cx: LowerCx, c: ExprId, t: List<StmtId>, e: List<StmtId>) {
     cx.void_branches(cx.reg_of(c)) { cx -> cx.arm_stmts(t) } else { cx -> cx.arm_stmts(e) }
+}
+
+impl Meaning for If {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        cx.arm_scope([], self.on_true)
+        cx.arm_scope([], self.on_false)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        if_type(cx, e)
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        if_lower(cx, e)
+    }
 }

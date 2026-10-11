@@ -22,6 +22,22 @@ export enum Level { Application, Systems, Bare, Hardware }
 @derive(Fingerprint)
 export enum UnOp { Not }
 
+/// A byte the runtime keeps about the running task, which compiled code
+/// reads in place: its unwind bit, and the tick the source sets so a
+/// checked back-edge can hear time passed.
+@derive(Fingerprint)
+export enum RtFlag { Unwinding, Tick }
+
+/// The runtime's own name for the byte.
+export fn flag_symbol(f: RtFlag) -> string {
+    match f { .Unwinding -> "avra_unwinding", .Tick -> "avra_tick" }
+}
+
+/// The flag's word in the IR's text.
+export fn flag_word(f: RtFlag) -> string {
+    match f { .Unwinding -> "unwinding", .Tick -> "tick" }
+}
+
 /// The operator's surface symbol — the projection beside its enum.
 export fn un_symbol(op: UnOp) -> string {
     match op { .Not -> "!" }
@@ -110,6 +126,11 @@ export enum Ins {
     /// value won. `value` is BORROWED, as a runtime row's seats are:
     /// the commit takes its own reference.
     OnceCommit(sym: string, value: Reg)
+    /// A runtime FLAG, READ as a bool: one load of a byte the runtime
+    /// writes, with no call. The runtime keeps it for the running task
+    /// and a switch swaps it, so a read always answers for the task
+    /// that reads. Nothing is owed for it: the answer is a scalar.
+    FlagRead(@dst dst: Reg, flag: RtFlag)
 
     // Structure: scopes, regions, and calls — all BRACKETS in the
     // one flat list, never labels or jumps. Each branch of a region
@@ -224,6 +245,7 @@ impl Ins {
             .StaticAddr(dst, sym) -> derived([fp_str("Ins"), 11, dst.fingerprint(), fp_str(sym)]),
             .OnceRead(dst, sym) -> derived([fp_str("Ins"), 31, dst.fingerprint(), fp_str(sym)]),
             .OnceCommit(sym, value) -> derived([fp_str("Ins"), 32, fp_str(sym), value.fingerprint()]),
+            .FlagRead(dst, flag) -> derived([fp_str("Ins"), 34, dst.fingerprint(), flag.fingerprint()]),
             .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
             .ScopeExit(gives) -> derived(
                 [
@@ -270,6 +292,65 @@ impl Ins {
     }
 }
 
+/// `i` absorbed into `d` WHOLE — its variant, every number and every
+/// text, each sequence folded with its length — so two instructions
+/// that differ anywhere digest apart. `fingerprint`'s strong twin, for
+/// identities that outlive the process.
+export fn digest_ins(d: Digest, i: Ins) -> Digest {
+    let w = ins_words(i)
+    let numbers = w
+        .ints
+        .fold(digest_int(digest_int(d, w.tag), w.ints.length), (acc, n) -> digest_int(acc, n))
+    w.texts.fold(digest_int(numbers, w.texts.length), (acc, t) -> digest_text(acc, t))
+}
+
+/// An instruction's payload as words: its tag, its numbers (a register
+/// by its index, a list by its length then its members), its texts.
+type InsWords = { tag: int, ints: List<int>, texts: List<string> }
+
+fn ins_words(i: Ins) -> InsWords {
+    match i {
+        .ConstInt(dst, v) -> InsWords { tag: 0, ints: [dst.index, v], texts: [] },
+        .ConstFloat(dst, bits) -> InsWords { tag: 1, ints: [dst.index, bits], texts: [] },
+        .ConstStr(dst, s) -> InsWords { tag: 2, ints: [dst.index], texts: [s] },
+        .ConstBool(dst, v) -> InsWords { tag: 3, ints: [dst.index, if v { 1 } else { 0 }], texts: [] },
+        .Bin(dst, op, a, b) -> InsWords { tag: 4, ints: [dst.index, op.fingerprint(), a.index, b.index], texts: [] },
+        .Un(dst, op, src) -> InsWords { tag: 5, ints: [dst.index, op.fingerprint(), src.index], texts: [] },
+        .CallRtVoid(callee, args) -> InsWords { tag: 6, ints: indices(args), texts: [callee] },
+        .CallRt(dst, callee, args) -> InsWords { tag: 7, ints: [dst.index].concat(indices(args)), texts: [callee] },
+        .Pack(dst, elems) -> InsWords { tag: 8, ints: [dst.index].concat(indices(elems)), texts: [] },
+        .Extract(dst, src, at) -> InsWords { tag: 9, ints: [dst.index, src.index, at], texts: [] },
+        .FnAddr(dst, sym) -> InsWords { tag: 10, ints: [dst.index], texts: [sym] },
+        .StaticAddr(dst, sym) -> InsWords { tag: 11, ints: [dst.index], texts: [sym] },
+        .OnceRead(dst, sym) -> InsWords { tag: 31, ints: [dst.index], texts: [sym] },
+        .OnceCommit(sym, value) -> InsWords { tag: 32, ints: [value.index], texts: [sym] },
+        .FlagRead(dst, flag) -> InsWords { tag: 34, ints: [dst.index, flag.fingerprint()], texts: [] },
+        .ScopeEnter(tier) -> InsWords { tag: 12, ints: [tier.fingerprint()], texts: [] },
+        .ScopeExit(gives) -> InsWords { tag: 13, ints: if gives == null { [0] } else { [1, gives!.index] }, texts: [] },
+        .IfStart(cond) -> InsWords { tag: 14, ints: [cond.index], texts: [] },
+        .SwitchStart(selector, cases) -> InsWords { tag: 15, ints: [selector.index, cases.length].concat(cases), texts: [] },
+        .ArmEnd(gives) -> InsWords { tag: 16, ints: [gives.index], texts: [] },
+        .RegionEnd(dst, gives) -> InsWords { tag: 17, ints: [dst.index, gives.index], texts: [] },
+        .Call(dst, callee, args) -> InsWords { tag: 18, ints: [dst.index].concat(indices(args)), texts: [callee] },
+        .CallPtr(dst, f, args) -> InsWords { tag: 19, ints: [dst.index, f.index].concat(indices(args)), texts: [] },
+        .RetVal(r) -> InsWords { tag: 20, ints: [r.index], texts: [] },
+        .FnExit(gives) -> InsWords { tag: 21, ints: [gives.index], texts: [] },
+        .Alloca(dst) -> InsWords { tag: 22, ints: [dst.index], texts: [] },
+        .Load(dst, slot) -> InsWords { tag: 23, ints: [dst.index, slot.index], texts: [] },
+        .Store(slot, src) -> InsWords { tag: 24, ints: [slot.index, src.index], texts: [] },
+        .LoopStart -> InsWords { tag: 25, ints: [], texts: [] },
+        .LoopCond(c) -> InsWords { tag: 26, ints: [c.index], texts: [] },
+        .LoopEnd -> InsWords { tag: 27, ints: [], texts: [] },
+        .LoopJump(outward, again) -> InsWords { tag: 33, ints: [outward, if again { 1 } else { 0 }], texts: [] },
+        .Retain(r) -> InsWords { tag: 28, ints: [r.index], texts: [] },
+        .Release(r) -> InsWords { tag: 29, ints: [r.index], texts: [] },
+        .Ret(code) -> InsWords { tag: 30, ints: [code], texts: [] },
+    }
+}
+
+/// A register list as its length, then each index — one fixed arity.
+fn indices(rs: List<Reg>) -> List<int> { [rs.length].concat([r.index for r in rs]) }
+
 /// `i` WITH EVERY REGISTER PASSED THROUGH `m` — every `Reg`-typed
 /// payload, destination and operands alike, one arm per variant
 /// (compiler.refusal_assembled's registry: a new instruction owes this arm or the rewrite
@@ -294,6 +375,7 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .StaticAddr(dst, sym) -> Ins.StaticAddr(m(dst), sym),
         .OnceRead(dst, sym) -> Ins.OnceRead(m(dst), sym),
         .OnceCommit(sym, value) -> Ins.OnceCommit(sym, m(value)),
+        .FlagRead(dst, flag) -> Ins.FlagRead(m(dst), flag),
         .ScopeEnter(tier) -> Ins.ScopeEnter(tier),
         .ScopeExit(gives) -> Ins.ScopeExit(remapped_opt(gives, m)),
         .IfStart(cond) -> Ins.IfStart(m(cond)),
@@ -314,6 +396,29 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .Retain(r) -> Ins.Retain(m(r)),
         .Release(r) -> Ins.Release(m(r)),
         .Ret(code) -> Ins.Ret(code),
+    }
+}
+
+/// `i` WITH EVERY SYMBOL IT NAMES PASSED THROUGH `s` — a callee, a fn
+/// address, a once slot, a static; registers and runtime rows stand.
+/// `remapped`'s sibling, one arm per variant for the same reason: a
+/// rewrite that misses a variant compares two bodies wrongly.
+export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
+    match i {
+        .FnAddr(dst, sym) -> Ins.FnAddr(dst, s(sym)),
+        .StaticAddr(dst, sym) -> Ins.StaticAddr(dst, s(sym)),
+        .OnceRead(dst, sym) -> Ins.OnceRead(dst, s(sym)),
+        .OnceCommit(sym, value) -> Ins.OnceCommit(s(sym), value),
+        .Call(dst, callee, args) -> Ins.Call(dst, s(callee), args),
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
+    }
+}
+
+/// The symbols `i` names — `resymbolled`'s read.
+export fn symbols_of(i: Ins) -> List<string> {
+    match i {
+        .FnAddr(_, sym) or .StaticAddr(_, sym) or .OnceRead(_, sym) or .OnceCommit(sym, _) or .Call(_, sym, _) -> [sym],
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
     }
 }
 
@@ -649,6 +754,7 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .StaticAddr(d1, s1) -> match b { .StaticAddr(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
         .OnceRead(d1, s1) -> match b { .OnceRead(d2, s2) -> same_reg(d1, d2) && s1 == s2, rest -> false },
         .OnceCommit(s1, v1) -> match b { .OnceCommit(s2, v2) -> s1 == s2 && same_reg(v1, v2), rest -> false },
+        .FlagRead(d1, f1) -> match b { .FlagRead(d2, f2) -> same_reg(d1, d2) && f1 == f2, rest -> false },
         .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
         .ScopeExit(g1) -> match b { .ScopeExit(g2) -> same_reg_opt(g1, g2), rest -> false },
         .IfStart(c1) -> match b { .IfStart(c2) -> same_reg(c1, c2), rest -> false },
@@ -711,7 +817,10 @@ export enum RtKind { I64, Ptr, Void, I32, U32, F64 }
 
 /// Where the interpreter HOSTS a runtime fn — one variant per host
 /// body, so the interpreter's dispatch is exhaustive: a new row
-/// names its host and the compiler demands the arm.
+/// names its host and the compiler demands the arm. A variant's PLACE
+/// means nothing: every reader matches it by name, and neither file
+/// generated from the rows (`avra_rt.h`, `features/rt.av`) spells it,
+/// so a new one goes where it reads best.
 export enum RtHost {
     Puts
     Streq
@@ -834,8 +943,12 @@ export enum RtHost {
     TaskSettleAll
     TasksPush
     FiberYield
+    /// The checked back-edge's cold side: the source's tick was set, so
+    /// hear a done timer, a standing cancel, and let others run.
+    TickCold
     FiberSleep
     FiberParkFd
+    FiberInterrupted
     FiberWithin
     FiberWithinEnd
     /// A named TYPE, resolved from where the calling annotation
@@ -962,9 +1075,13 @@ export enum RtHost {
 /// the once cache's, the seat `!` was handed — retained on the way
 /// out, never minted. Together they are every count a row's body
 /// moves, so an engine that hosts the row moves the same ones.
+///
+/// `waits` says the body may switch the calling task out — a CANCEL
+/// POINT: a cancel or a deadline standing there is heard there, so
+/// every caller that may reach the row tests for one after the call.
 export enum Reach { Pure, Embed, Lookup, World }
 
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], writes: List<bool> = [], aliases_arg0: bool = false, cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false, has_reusing_twin: bool = false, has_moving_twin: bool = false, wasm: bool = true, takes: Takes = Takes.Never, stood: bool = false, waits: bool = false }
 
 /// WHEN A ROW'S BODY TAKES ITS OWN REFERENCE to a seat it keeps — the
 /// `avra_rc_retain` the C makes, as data. `keeps` says a seat escapes;

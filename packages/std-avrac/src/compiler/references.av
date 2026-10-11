@@ -101,9 +101,17 @@ impl Workspace {
         let restored = if store == null { [] } else { [self.restored_refs(store!, f) for f in held] }
         // THE RELATION IS ONE VALUE: every row stands before one is filed,
         // so nothing asked here lands among the rows it writes.
-        let rows = Ref
-            .replaced(self.decls.rows_db.get(), "references", flatten(surveyed.concat(restored)))
-        self.decls.mark_refs_incomplete(store == null && !held.is_empty())
+        let found = flatten(surveyed.concat(restored))
+        let db = self.decls.rows_db.get()
+        // A REPLACEMENT THAT LANDS IS ONE WRITE on the Db's own count,
+        // whatever it hands over; a refused one is none — so a refusal of
+        // no rows at all is seen as one too.
+        let before = db.written.get()
+        let rows = Ref.replaced(db, "references", found)
+        let refused = db.written.get() == before
+        if refused { self.defect(references_refused(found.length)) }
+        // refused, the relation holds the LAST pass's rows: no "used nowhere" is read off it
+        self.decls.mark_refs_incomplete(refused || store == null && !held.is_empty())
         self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in rows])]))
         rows.length
     }
@@ -224,7 +232,7 @@ impl Workspace {
             .StructLit(name, _, _) -> some_list(self.named_type_ref(f, names, e, name)),
             .Component(word, _, _, _, _) -> some_list(self.component_ref(f, names, e, word)),
             .Env(tr) -> some_list(self.type_name_ref(f, names, e, tr.name)),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Within(_, _) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
         }
     }
 
@@ -423,3 +431,9 @@ fn spanned_in(store: SyntaxArena, e: ExprId, quotes: List<Span>) -> bool {
 
 /// One expression's use of a declaration.
 fn expr_use(d: DeclId, f: FileId, e: ExprId, kind: UseKind) -> Ref { Ref { decl: d, file: f, at: At.Expr(e), kind: kind } }
+
+// ── voices ──
+
+fn references_refused(found: int) -> string {
+    "the references relation is filed whole or not at all — its ${found} rows were refused, so every answer from it is the last pass's"
+}

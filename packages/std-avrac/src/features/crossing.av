@@ -101,7 +101,7 @@ fn meta_records() -> List<MetaShape> {
         MetaShape {
             pkg: "@std.meta",
             name: "Variant",
-            fields: ["name", "payload", "at", "fields", "marks", "doc", "annotations"],
+            fields: ["name", "payload", "at", "fields", "marks", "doc", "annotations", "impls"],
         },
         MetaShape { pkg: "@std.meta", name: "Seat", fields: ["kind", "mutable", "settled"] },
         MetaShape {
@@ -127,7 +127,7 @@ fn meta_records() -> List<MetaShape> {
             fields: ["message", "help", "at", "warning", "kind"],
         },
         MetaShape { pkg: "@std.meta", name: "Named", fields: ["name", "at"] },
-        MetaShape { pkg: "@std.meta", name: "Trait", fields: ["name", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Trait", fields: ["name", "at", "fns"] },
         MetaShape {
             pkg: "@std.meta",
             name: "Directive",
@@ -462,8 +462,16 @@ export fn meta_of_named(x: Named, mut heap: MetaHeap) -> MetaVal {
     written("Named", [MetaVal.Text(x.name), meta_of_loc(x.at, heap)], heap)
 }
 
-export fn meta_of_trait(x: MetaTrait, mut heap: MetaHeap) -> MetaVal {
-    written("Trait", [MetaVal.Text(x.name), meta_of_loc(x.at, heap)], heap)
+export fn meta_of_trait(x: MetaTrait, loaded: int, mut heap: MetaHeap) -> MetaVal {
+    written(
+        "Trait",
+        [
+            MetaVal.Text(x.name),
+            meta_of_loc(x.at, heap),
+            heap.node([meta_of_fn(f, loaded, heap) for f in x.fns]),
+        ],
+        heap,
+    )
 }
 
 fn meta_of_param(x: MetaParam, mut heap: MetaHeap) -> MetaVal {
@@ -516,6 +524,7 @@ fn meta_of_variant(x: MetaVariant, mut heap: MetaHeap) -> MetaVal {
             meta_of_marks(x.marks, heap),
             meta_of_opt_text(x.doc),
             meta_of_annotations(x.annotations, heap),
+            heap.node([MetaVal.Text(t) for t in x.impls]),
         ],
         heap,
     )

@@ -5,9 +5,9 @@
 //! future check will ever reach it either.
 use @std.io.{make_dirs, write_text, read_text}
 use @std.time.{now_ns}
-use @std.avrac.compiler.{Checked, findings_of}
+use @std.avrac.compiler.{Checked, Finding, finding_line}
 use @std.avrac.core.{joined}
-use commands.{accepted, checked_at, sites_of, Site}
+use commands.{accepted, checked_at, sites_of}
 
 /// `root`'s live `Checked` — absent reads as clean, which no probe
 /// fixture here should ever hit.
@@ -32,17 +32,15 @@ fn probe_root(name: string, text: string) -> string {
 /// One site a live check of `root` reports, of `kind` — its OWN
 /// `file`/`text` fields, never a hand-typed guess at what `here()`
 /// resolves to under the test runner.
-fn live_site(root: string, kind: string) -> Site {
-    sites_of(findings_of(checked_of(root).program!)).find(it.kind == kind)!
+fn live_site(root: string, kind: string) -> Finding {
+    sites_of(checked_of(root).findings).find(it.rule == kind)!
 }
 
-fn baseline_of(root: string, sites: List<Site>) -> string {
+fn baseline_of(root: string, sites: List<Finding>) -> string {
     let path = "${root}/baseline.txt"
-    let _ = write_text(path, "# header\n" + joined([site_line(s) for s in sites], "\n") + "\n")
+    let _ = write_text(path, "# header\n" + joined([finding_line(s) for s in sites], "\n") + "\n")
     path
 }
-
-fn site_line(s: Site) -> string { "${s.kind}\t${s.file}\t${s.text}" }
 
 fn baseline_text(path: string) -> string { read_text(path) catch "" }
 
@@ -81,8 +79,8 @@ spec "commands/check idiom_baseline_accept" {
     given "a row whose file is gone from disk entirely" {
         then "it is dropped — no future check will ever reach it either" {
             let root = probe_root("file_gone", "let a = 0\na\n")
-            let ghost = Site {
-                kind: unmutated_mut,
+            let ghost = Finding {
+                rule: unmutated_mut,
                 file: "${root}/src/does_not_exist.av",
                 text: "mut z = 0",
             }

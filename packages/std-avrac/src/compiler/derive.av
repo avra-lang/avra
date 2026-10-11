@@ -8,6 +8,8 @@
 //! hold is answered again from the sources alone.
 use core.{
     distinct,
+    in_file,
+    flatten,
     joined,
     sorted_texts,
     digest_of,
@@ -22,9 +24,9 @@ use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered}
+use compiler.lower.{Lowered, code_facts, code_facts_wire}
 use compiler.host.{no_source}
-use compiler.findings.{findings_text, file_findings_text}
+use compiler.findings.{Finding, findings_read, findings_text, file_findings}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -35,6 +37,12 @@ export enum Want { Diagnostics, Binary }
 /// whether it holds anything, how many times the records moved under it, and
 /// the attempts that gave way to it.
 type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0, left: List<Left> = [] }
+
+/// The entry a derivation trims its root walk by: a build's, whose program is
+/// what the entry reaches; a check reads every file of the package.
+fn built_entry(at: Attempt) -> string? {
+    match at.want { .Binary -> at.entry, .Diagnostics -> null }
+}
 
 /// AN ATTEMPT THAT DID NOT STAND: what it spent, phase by phase up to where it
 /// left, and what the attempt made instead does that it did not.
@@ -145,7 +153,7 @@ fn or_refused<T>(r: Result<T, string>) -> Result<T, Turn> {
 
 /// What a file SAID the last time it parsed: its warnings, rendered, and the
 /// cases it declares — what stands in for it under every want.
-export type Said = { path: string, warnings: string, cases: List<CaseCall> }
+export type Said = { path: string, warnings: string, cases: List<CaseCall>, findings: List<Finding> = [] }
 
 /// A program derived: clean, every parsed body lowered, its records and what
 /// each file said kept. `program.ws` is the workspace the attempt that stood
@@ -241,12 +249,11 @@ fn ruled(store: Store, okey: string) -> bool {
     store.has(Stored.Warn, rules_key(okey)) && store.has(Stored.Warn, findings_key(okey))
 }
 
-/// What a parsed file says now: its `Said`, and its rule findings when
-/// the want asks for them.
-type Spoken = { said: Said, rules: Ruled? }
+/// What a parsed file says now: its `Said`, and its rule findings.
+type Spoken = { said: Said, rules: Ruled }
 
 /// A file's rule findings: rendered for what it says, and as findings rows.
-type Ruled = { rendered: string, rows: string }
+type Ruled = { rendered: string, rows: List<Finding> }
 
 /// A `Said` as its row: the case count, a line per case, then the warnings.
 fn said_wire(s: Said) -> string {
@@ -298,16 +305,17 @@ fn remember(store: Store, key: string, paths: List<string>) {
 
 /// What `check` says of a clean program: its warnings, its stale
 /// `// LICENSED` citations (compiler/licenses.av) and its rule
-/// findings (compiler/findings.av, TSV-encoded — a cache hit reads
-/// all three back, never rescanning or rebuilding), and whether they
+/// findings (compiler/findings.av's rows — a cache hit reads all
+/// three back, never rescanning or rebuilding), and whether they
 /// were kept from a check of these exact inputs — plus the PROGRAM
 /// this answer was derived from, when one was: a cache hit costs a
 /// hash and builds none, so a caller wanting the Program itself (a
 /// baseline ratchet's own `--baseline_accept` prune, which needs the
 /// files a check REACHED and not merely what it found) falls back to
 /// building its own rather than forcing every `check` to pay for a
-/// Program it does not otherwise need.
-export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: string? = null }
+/// Program it does not otherwise need. `held` names the files a derived
+/// answer stood in for from the store rather than read.
+export type Checked = { warnings: string, reused: bool, timed: string, program: Program? = null, licenses: string = "", findings: List<Finding> = [], held: List<string> = [] }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -319,16 +327,15 @@ impl Workspace {
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
         let key0 = self.program_key(under.named, under.beside)
         let kept: string? = self.db.warn(store, key0)
-        if kept != null {
+        let found: string? = self.db.findings(store, key0)
+        // A missing findings row is UNKNOWN, never EMPTY: no hit.
+        if kept != null && found != null {
             return Checked {
                 warnings: kept!,
                 reused: true,
                 timed: "",
                 licenses: self.db.licenses(store, key0) ?? "",
-                // A missing row reads as UNKNOWN, never as EMPTY — the
-                // empty-value law applied to a cache row. A caller reads
-                // null as "derive it yourself", "" as "no findings".
-                findings: self.db.findings(store, key0),
+                findings: findings_read(found!),
             }
         }
         let d = self.derived(entry, Want.Diagnostics)?
@@ -336,26 +343,19 @@ impl Workspace {
         // the key only when a binary or an object is what is kept
         let key = d.program.ws.kept_key(under)
         let licenses = stale_license_lines(d.program)
-        let findings = d.program.ws.all_findings(d.store, d.program)
+        let found = flatten([s.findings for s in d.said])
         self.db.insert_warn(store, key, d.warnings)
         self.db.insert_licenses(store, key, licenses)
-        self.db.insert_findings(store, key, findings)
+        self.db.insert_findings(store, key, findings_text(found))
         Checked {
             warnings: d.warnings,
             reused: false,
             timed: d.timed([]),
             program: d.program,
             licenses: licenses,
-            findings: findings,
+            findings: found,
+            held: held_paths(d.program.ws),
         }
-    }
-
-    /// EVERY RULE FINDING THE PROGRAM HOLDS: a read file's found now, a held
-    /// file's answered by the rows it kept — the hold read every file whose
-    /// rows were missing (`unruled`).
-    fn all_findings(store: Store, p: Program) -> string {
-        let held = [store.get(Stored.Warn, findings_key(self.held_okey(store, fi.path))) ?? "" for fi in self.decls.all_files() if self.is_held(fi.id)]
-        joined([t for t in [findings_text(p)].concat(held) if t != ""], "\n")
     }
 
     /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —
@@ -472,7 +472,11 @@ impl Workspace {
 
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
     fn stands_in(s: Store, okey: string, want: Want) -> bool {
-        if !s.has(Stored.Warn, said_key(okey)) || !s.has(Stored.Unit, self.asks_key(okey)) { return false }
+        if !s.has(Stored.Warn, said_key(okey)) ||
+            !s.has(Stored.Unit, self.asks_key(okey)) ||
+            !s.has(Stored.Unit, self.codes_key(okey)) {
+            return false
+        }
         want is .Diagnostics || s.has(Stored.Obj, okey)
     }
 
@@ -481,9 +485,11 @@ impl Workspace {
     /// which of its rows the store is missing.
     fn hold_report(want: Want) -> Result<List<FileHold>, string> {
         let d = self.derived(null, want)?
-        let ws = d.program.ws
-        [ws.file_hold(d, fi.path, fi.id) for fi in ws.decls.all_files()]
+        d.program.ws.holds_of(d)
     }
+
+    /// Every file's hold under the derivation that stood in this workspace.
+    fn holds_of(d: Derived) -> List<FileHold> { [self.file_hold(d, fi.path, fi.id) for fi in self.decls.all_files()] }
 
     fn file_hold(d: Derived, path: string, f: FileId) -> FileHold {
         if self.is_held(f) { return FileHold { path: path, held: true, why: null, missing: [], moved: [] } }
@@ -515,6 +521,10 @@ impl Workspace {
             StoreRow {
                 says: "what its bodies ask",
                 kept: store.has(Stored.Unit, self.asks_key(okey)),
+            },
+            StoreRow {
+                says: "what its code is",
+                kept: store.has(Stored.Unit, self.codes_key(okey)),
             },
             match want {
                 .Diagnostics -> StoreRow { says: "its rule findings", kept: ruled(store, okey) },
@@ -599,7 +609,7 @@ impl Workspace {
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
         if at.hold {
-            for m in held_modules(self, store) { load_interface(self, store, m, at.entry, at.want) }
+            for m in held_modules(self, store, built_entry(at)) { load_interface(self, store, m, at.entry, at.want) }
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
             self.settle_holds(store)
@@ -612,11 +622,14 @@ impl Workspace {
     /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
     /// its held asks reach read beside it, or the attempt that reads them.
     fn analysed(at: Attempt, store: Store) -> Result<Program, Turn> {
-        let p = self.program(at.entry)
+        let p = self.program(at.entry, built_entry(at))
         at.having_read(self.bodies_asked())?
+        // a held collector judged against what it gathers now, before a stale set is refused
+        at.having_read(self.gathered_moved())?
         if !p.clean() { fail Turn.Refused(p.report()) }
         if self.layouts_moved(store, p) { fail at.unheld("a sealed layout moved") }
         at.having_read(self.read_held_asks(store))?
+        at.having_read(self.read_held_codes(store))?
         p
     }
 
@@ -646,7 +659,11 @@ impl Workspace {
         let _ = self.keep_const_units(store, moved)
         let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
         if !adrift.is_empty() { fail at.adrift(adrift) }
-        for a in p.files { self.keep_asks(store, lo, a) }
+        for a in p.files {
+            self.keep_asks(store, lo, a)
+            self.keep_codes(store, lo, a)
+        }
+        self.keep_instances(store, lo)
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
         said
     }
@@ -659,6 +676,40 @@ impl Workspace {
                 Stored.Unit,
                 self.asks_key(self.held_okey(store, a.view.source.file)),
                 self.wanted_list_wire(asks),
+            )
+    }
+
+    /// Each fresh instantiation's code, kept under its own key — what a held
+    /// home's stub reads back in a later build.
+    fn keep_instances(store: Store, lo: Lowered) {
+        for ic in lo.instances {
+            let key = self.inst_key(store, ic.key)
+            let facts = code_facts(self.decls, ic.bodies, ic.statics, [])
+            let _ = store.keep_once(Stored.Unit, key, code_facts_wire(facts))
+            let rows = flatten([[c.symbol, self.inst_key(store, c)] for c in ic.callees])
+            let _ = store
+                .keep_once(
+                    Stored.Unit,
+                    self.callees_key(key),
+                    ["${ic.callees.length}"].concat(rows).join("\n"),
+                )
+        }
+    }
+
+    /// What one read file's code is, kept under the file's key.
+    fn keep_codes(store: Store, lo: Lowered, a: Analysis) {
+        let f = a.view.file
+        let facts = code_facts(
+            self.decls,
+            [b for b in lo.unmanaged if in_file(b.file, f)],
+            [s for s in lo.statics if in_file(s.file, f)],
+            [h.target for h in lo.hash_asks if in_file(h.by, f)],
+        )
+        let _ = store
+            .keep_once(
+                Stored.Unit,
+                self.codes_key(self.held_okey(store, a.view.source.file)),
+                code_facts_wire(facts),
             )
     }
 
@@ -749,7 +800,7 @@ impl Workspace {
         for a in p.files {
             for d in self.decls.decls_of_file(a.view.file) {
                 let x = self.decl_at(d)
-                if x.kind is .Const && !x.nested { let _ = self.settled(x.file, SettleRoot.Const(x.stmt), []) }
+                if x.kind is .Const && !x.nested() { let _ = self.settled(x.file, SettleRoot.Const(x.stmt), []) }
             }
         }
     }
@@ -762,11 +813,55 @@ impl Workspace {
     /// Whether a remembered home still stands and is no longer the text its
     /// module's record was written from.
     fn home_moved(store: Store, path: string) -> bool {
-        if path.is_empty() || !self.host.exists(path) { return false }
+        if path.is_empty() || !self.there(path) { return false }
         !written_from(
             record_places(self, store, self.module_path_of(path)).get(path),
             self.text_digest(path),
         )
+    }
+
+    /// A READER'S PENDING READS, RESOLVED: a reader whose kept read names a
+    /// declaration holds when that declaration's syntax still stands — the read
+    /// file is parsed here, after the walk, never inside a key. A reader whose
+    /// read moved, or whose declaration can no longer be named, is read instead.
+    fn resolve_pending_reads(store: Store) {
+        let pending = self.hold.pending_reads.get()
+        if pending.is_empty() { return }
+        for p in pending {
+            let key = pending_key(p.reader, p.read)
+            let _ = self.resolved(self.file_id(p.read.path))
+            let d = self.decl_from_ref(p.read.ref)
+            if d == null {
+                self.hold.pending_resolved.put(key, self.run_said(p.read.path))
+                self.force_read(p.reader, Reads.RunBy(relative_path(self.root, p.read.path)))
+            } else {
+                let now = "${self.syntax(d!)}"
+                self.hold.pending_resolved.put(key, now)
+                // THE DECLARATION READ STANDS, BUT ITS FILE'S OUTLINE MAY NOT: a
+                // renamed, added or removed declaration beside it moves the module
+                // interface the reader's key follows, so the reader is read, never
+                // held to discover the move a turn later.
+                if now != p.read.print || self.outline(p.read.path) != p.read.outline {
+                    self.force_read(p.reader, Reads.RunBy(relative_path(self.root, p.read.path)))
+                }
+            }
+        }
+        for reader in distinct([p.reader for p in pending]) {
+            let m = self.module_path_of(reader)
+            let fresh = self.key_parts(store, m, reader)
+            self.keys.object_parts.put("${m.text()}\t${reader}", fresh)
+            self.keys.object_keys.put("${m.text()}\t${reader}", key_of_parts(fresh))
+        }
+        self.hold.pending_reads.set([])
+    }
+
+    /// A file this attempt now reads, its reason standing beside the holds it turns.
+    fn force_read(path: string, why: Reads) {
+        self.hold.forced.put(path, why)
+        self.hold.read_with.set(self.hold.read_with.get().concat([path]))
+        if !self.hold.read_files.get().any(it.path == path) {
+            self.hold.read_files.push(ReadFile { path: path, why: why })
+        }
     }
 
     /// THE HOLDS, SETTLED: every hold asked for, but a file a read file's
@@ -776,6 +871,7 @@ impl Workspace {
     /// the noting below is the same one the worklist does for what IT finds,
     /// never a second law.
     fn settle_holds(store: Store) {
+        self.resolve_pending_reads(store)
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut reads: List<string> = distinct(self.hold.read_with.get())
         for rf in self.hold.read_seeds.get() {
@@ -833,7 +929,7 @@ impl Workspace {
     /// it sees. An ask a home's own body makes is that home's content. A home the
     /// tree no longer has is gone from the print, so the print moves with it.
     fn asked_print(store: Store, known_as: string, roots: List<Wanted>) -> string {
-        let homes = [path for path in sorted_texts(remembered(store, homes_key(known_as))) if !path.is_empty() && self.host.exists(path)]
+        let homes = [path for path in sorted_texts(remembered(store, homes_key(known_as))) if !path.is_empty() && self.there(path)]
         digest_of(
             joined(
                 sorted_texts(distinct([self.wanted_wire(w) for w in roots]))
@@ -848,22 +944,21 @@ impl Workspace {
     /// table knows and nothing read said nothing.
     fn all_said(store: Store, p: Program, want: Want) -> List<Said>? {
         mut fresh: Map<string, Spoken> = {}
-        for a in p.files { fresh.set(a.view.source.file, self.says(p, a, want)) }
+        for a in p.files { fresh.set(a.view.source.file, self.says(p, a)) }
         let said = [self.file_said(store, fi.path, fresh.get(fi.path), want) for fi in self.decls.all_files() if fresh.get(fi.path) != null || self.is_held(fi.id)]
         if said.any(it == null) { return null }
         [s! for s in said]
     }
 
-    /// What a parsed file says now: its warnings, and under a diagnostics want
-    /// its rule findings — a build reads no lint.
-    fn says(p: Program, a: Analysis, want: Want) -> Spoken {
+    /// What a parsed file says now: its warnings, and its rule findings —
+    /// kept under every want, printed only under a diagnostics want.
+    fn says(p: Program, a: Analysis) -> Spoken {
         let said = Said {
             path: a.view.source.file,
             warnings: p.warned(a.diagnostics),
             cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
         }
-        let rules: Ruled? = if want is .Diagnostics { ruled_now(p, a, rule_findings(analysed(a), a.view.stmts)) } else { null }
-        Spoken { said: said, rules: rules }
+        Spoken { said: said, rules: ruled_now(p, a, rule_findings(analysed(a), a.view.stmts)) }
     }
 
     /// A read file's key parts: its own under its path, the modules it sees
@@ -900,7 +995,8 @@ impl Workspace {
     }
 
     /// One file's `Said`: kept under its key when it parsed, read from there
-    /// when it did not — its rule findings beside it under a diagnostics want.
+    /// when it did not. Its rule findings are kept under every want; only a
+    /// diagnostics want speaks them.
     fn file_said(store: Store, path: string, fresh: Spoken?, want: Want) -> Said? {
         let okey = self.held_okey(store, path)
         let told? = fresh else {
@@ -910,16 +1006,19 @@ impl Workspace {
         }
         let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
         self.keep_parts(store, path)
-        let rules? = told.rules else { return told.said }
+        let rules = told.rules
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
-        let _ = store.keep_once(Stored.Warn, findings_key(okey), rules.rows)
-        told.said with { warnings: spoken([told.said.warnings, rules.rendered]) }
+        let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
+        match want {
+            .Diagnostics -> told.said with { warnings: spoken([told.said.warnings, rules.rendered]), findings: rules.rows },
+            .Binary -> told.said,
+        }
     }
 }
 
 /// A file's rule findings found now.
 fn ruled_now(p: Program, a: Analysis, found: List<Diag>) -> Ruled {
-    Ruled { rendered: p.warned(found), rows: file_findings_text(a, found) }
+    Ruled { rendered: p.warned(found), rows: file_findings(p.ws.host, a, found) }
 }
 
 /// A `boxed` row's name, when it names `path` — null for every other row.
@@ -934,7 +1033,8 @@ fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
     match want {
         .Diagnostics -> {
             let rules? = store.get(Stored.Warn, rules_key(okey)) else { return null }
-            said with { warnings: spoken([said.warnings, rules]) }
+            let rows? = store.get(Stored.Warn, findings_key(okey)) else { return null }
+            said with { warnings: spoken([said.warnings, rules]), findings: findings_read(rows) }
         },
         .Binary -> said,
     }

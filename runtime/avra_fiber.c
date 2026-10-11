@@ -13,19 +13,30 @@
 // any number at once — and is woken by exactly one of them.
 
 #include <errno.h>
+#include <stdbool.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "avra_box.h"
+#include "avra_door.h"
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
+#endif
 #include "avra_fiber.h"
 #include "avra_runtime.h"
+#include "avra_platform.h"
 
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/event.h>
@@ -165,6 +176,12 @@ struct Waiter {
 typedef struct Over Over;
 struct Over { Waiter w; Over* next; };
 
+// A `within`'s scope on its task: its id, its limit in ns, and the scope
+// with the earliest limit of it and every scope outside it — the outer
+// one on a tie — so a window's owner is read, never searched for.
+typedef struct { int64_t id, at; uint32_t first; } Scope;
+enum { SCOPES = 4 };
+
 enum { HELD = 4 };
 
 // A fiber's record is the task's place in the scheduler, apart from
@@ -180,7 +197,10 @@ struct Fiber {
     uintptr_t floor;        // a saved stack top below this has left the stack; 0 for main
     const uint64_t* canary; // the word under the floor; non-zero when a neighbour was written
     AvraTaskLocal* local;   // the slots and id a program reads: main's are the core's
-    void* task;             // the task this fiber answers; NULL for main
+    union {
+        void* task;         // the task this fiber answers; NULL for main
+        const char* site;   // a virtual task's: where its body was written, or NULL
+    };
     Fiber* next;            // the run queue
     void* joining;          // the task this fiber waits to join, else NULL
     int state;
@@ -188,15 +208,25 @@ struct Fiber {
     uint8_t claimed;        // the set has been claimed
     uint8_t parked;         // switched out on an unclaimed set
     uint8_t legacy;         // parked by a sleep, a join or a descriptor park: cleared at its claim
+    uint8_t deaf;           // a scope's end joining what it owns: no cancel cuts the join
     uint8_t heeds;          // the task's deadline may claim this set
-    uint8_t expired;        // the deadline passed while a `within` stood
     uint8_t timed_out;      // whether the last legacy park ended by time
-    uint8_t unwinding;      // a cancel met a cancel point
+    uint8_t interrupted;    // whether the last descriptor park ended by an interrupt
+    uint8_t unwinding;      // the unwind bit while switched out (`avra_unwinding` while running)
+    uint8_t wide;           // a case's own task: it runs on the wide stack
     int32_t arm, member;    // the claim
     uint32_t held_n;
     int64_t cancel_by;      // 1 + the id of the task that asked, else 0
-    int64_t deadline;       // the innermost `within`'s end, in ns; 0 when none
+    int64_t scope_by;       // the scope whose limit passed and whose request stands, else 0
+    int64_t deadline;       // the owner's limit, in ns; 0 when no scope may still ask
     int64_t due_at;         // the deadline `due` is filed under
+    uint32_t scopes_n;      // the scopes open, outermost first
+    uint32_t armed;         // the scopes below this depth may still ask
+    uint32_t owner;         // the armed scope whose limit is `deadline`
+    uint32_t deeper_cap;
+    uint32_t tick_turns;    // the seeded back-edge's countdown to its next yield
+    Scope scope[SCOPES];
+    Scope* deeper;          // the scopes past the inline ones
     Waiter held[HELD];
     Waiter due;             // the deadline's own waiter
     Over* more;
@@ -233,7 +263,14 @@ static uint64_t g_fiber_seq = 0;
 // fiber to run does.
 static Fiber* g_finished = NULL;
 
+static int g_seeded;
+static int pinned(void);
+
 static void ready_push(Fiber* f) {
+    // A TASK BECOMES READY WITH THE QUEUE EMPTY: the source must run.
+    // The call is on the transition, never on a switch; a seeded run
+    // and a virtual clock hold the byte and run no source.
+    if (!g_ready_head && !pinned()) avra_tick_armed();
     f->state = FIBER_READY;
     f->next = NULL;
     if (g_ready_tail) g_ready_tail->next = f; else g_ready_head = f;
@@ -277,11 +314,30 @@ static void fiber_unlisted(Fiber* f) {
 
 static void fiber_freed(Fiber* f) {
     fiber_unlisted(f);
+    free(f->deeper);
     f->next = g_fiber_pool;
     g_fiber_pool = f;
 }
 
 static int64_t id_of(const Fiber* f) { return f->local->id; }
+
+// THE TICK: the source's nudge that time passed while tasks were ready.
+// The scheduler reads it — the switch, and a checked back-edge through
+// `avra_tick_cold`; a hosted target's thread sets it, a no-OS target's
+// timer sets it, and a seeded run HOLDS it set. One relaxed byte: a lost
+// tick costs one period.
+uint8_t avra_tick = 0;
+// What the source reads to know tasks are running. The scheduler stores
+// it — a store, not a call — so a switch pays nothing to stand down.
+uint8_t avra_tick_wanted = 0;
+// The source's period, in microseconds. Read once, in `tick_settle`.
+int64_t avra_tick_us = 10000;
+static int64_t g_timer_turns = 64;
+// Switches left before the timer heap is read again. THE SAME COUNTDOWN
+// SEEDED AND UNSEDED: a schedule holds `avra_tick` for its back-edges,
+// and this is what the switch's clock read is gated on, so the two
+// engines fire a timer at the same switch.
+static int64_t g_timer_until = 0;
 
 // ── The trace ───────────────────────────────────────────────────
 //
@@ -296,8 +352,13 @@ static int64_t g_trace_left = 0;
 
 static int64_t now_ns(void);
 
+static void clock_turned(void);
+static void case_spun(const char* words);
+
 __attribute__((constructor))
 static void trace_settle(void) {
+    avra_clock_turned_hook = clock_turned;
+    avra_clock_spun_hook = case_spun;
     const char* env = getenv("AVRA_FLOW_TRACE");
     if (!env || !*env) return;
     if (strcmp(env, "1") != 0) {
@@ -309,12 +370,38 @@ static void trace_settle(void) {
     g_flow_trace = 1;
 }
 
+// A SETTING IS A WHOLE NUMBER ABOVE ZERO, or a trap names it.
+static int64_t whole_above_zero(const char* name, const char* value) {
+    char* end = NULL;
+    errno = 0;
+    long long n = *value >= '0' && *value <= '9' ? strtoll(value, &end, 10) : 0;
+    if (!end || *end != 0 || errno != 0 || n <= 0) {
+        char words[200];
+        avra_fmt(words, sizeof words, "%s is `%s` — it is a whole number above zero", name, value);
+        avra_trap(words);
+    }
+    return (int64_t)n;
+}
+
+// THE TICK'S TWO SETTINGS, read once beside the trace flag so a running
+// program pays no `getenv`. AVRA_TICK_US is the source's period; a
+// spinning `while` holds its core at most that long. AVRA_TIMER_TURNS
+// bounds a due timer's lateness to that many switches or one tick,
+// whichever is sooner.
+__attribute__((constructor))
+static void tick_settle(void) {
+    const char* us = getenv("AVRA_TICK_US");
+    if (us && *us) avra_tick_us = whole_above_zero("AVRA_TICK_US", us);
+    const char* turns = getenv("AVRA_TIMER_TURNS");
+    if (turns && *turns) g_timer_turns = whole_above_zero("AVRA_TIMER_TURNS", turns);
+}
+
 #define TRACING __builtin_expect(g_flow_trace, 0)
 
 // A LOG HAS A CEILING: past it one line says so and the trace is over.
 __attribute__((noinline, cold))
 static void traced(const char* line) {
-    char out[256];
+    char out[512];
     avra_fmt(out, sizeof out, "ts=%lld %s\n", (long long)now_ns(), line);
     size_t n = strlen(out);
     if ((g_trace_left -= (int64_t)n) < 0) {
@@ -359,13 +446,77 @@ static void traced_fiber(const char* what, const Fiber* f, long long n) {
     traced(line);
 }
 
+// A join, about to wait: who the joiner waits for. A task nothing runs
+// has no id, and is named as that.
+__attribute__((noinline, cold))
+static void traced_join(const Fiber* f, int64_t on) {
+    char line[160];
+    if (on < 0) avra_fmt(line, sizeof line, "join id=%lld on=unrun", (long long)id_of(f));
+    else avra_fmt(line, sizeof line, "join id=%lld on=%lld", (long long)id_of(f), (long long)on);
+    traced(line);
+}
+
+// A joiner readied by the end of the task it waited for.
+__attribute__((noinline, cold))
+static void traced_joined(const Fiber* f, int64_t by) {
+    char line[160];
+    if (by < 0) avra_fmt(line, sizeof line, "claim id=%lld by=unrun arm=0:0", (long long)id_of(f));
+    else avra_fmt(line, sizeof line, "claim id=%lld by=%lld arm=0:0", (long long)id_of(f), (long long)by);
+    traced(line);
+}
+
+// The program's site table (avra_box.h): its rows and their count.
+#if defined(__APPLE__)
+static const AvraSiteRow* site_rows(size_t* n) {
+    unsigned long bytes = 0;
+    const struct mach_header_64* image = (const struct mach_header_64*)_dyld_get_image_header(0);
+    const uint8_t* at = getsectiondata(image, AVRA_SITES_MACHO_SEGMENT, AVRA_SITES_MACHO_SECTION, &bytes);
+    *n = at ? bytes / sizeof(AvraSiteRow) : 0;
+    return (const AvraSiteRow*)at;
+}
+#else
+extern const AvraSiteRow __start_avra_sites[] __attribute__((weak));
+extern const AvraSiteRow __stop_avra_sites[] __attribute__((weak));
+static const AvraSiteRow* site_rows(size_t* n) {
+    *n = __start_avra_sites ? (size_t)(__stop_avra_sites - __start_avra_sites) : 0;
+    return __start_avra_sites;
+}
+#endif
+
+// Where a task's body was written — the row that names its entry — or
+// NULL for code no row names.
+static const char* site_of(void* body) {
+    const void* code = (const void*)(uintptr_t)((AvraArray*)body)->data[0];
+    size_t n = 0;
+    const AvraSiteRow* rows = site_rows(&n);
+    for (size_t i = 0; i < n; i++) {
+        if (rows[i].code == code) return rows[i].site;
+    }
+    return NULL;
+}
+
+// A spawn, and where its body was written.
+static void traced_site(const Fiber* f, const char* site, const void* code);
+__attribute__((noinline, cold))
+static void traced_spawn(const Fiber* f, void* body) {
+    traced_fiber("spawn", f, (long long)id_of(g_current));
+    traced_site(f, site_of(body), (const void*)(uintptr_t)((AvraArray*)body)->data[0]);
+}
+
+// A task's site, said once: its source line, or — for code that
+// carries none — its address.
+__attribute__((noinline, cold))
+static void traced_site(const Fiber* f, const char* site, const void* code) {
+    char line[400];
+    if (site) avra_fmt(line, sizeof line, "site id=%lld %s", (long long)id_of(f), site);
+    else avra_fmt(line, sizeof line, "site id=%lld %p", (long long)id_of(f), code);
+    traced(line);
+}
+
 // ── Time ────────────────────────────────────────────────────────
 
-static int64_t now_ns(void) {
-    struct timespec t;
-    clock_gettime(CLOCK_MONOTONIC, &t);
-    return (int64_t)t.tv_sec * 1000000000 + t.tv_nsec;
-}
+// The process's one clock, read as the scheduler's own.
+static inline int64_t now_ns(void) { return avra_clock_read(); }
 
 // `ms` from now, saturating: a wait too long to spell in nanoseconds
 // is a wait for ever, never one already due.
@@ -437,23 +588,42 @@ static void timer_down(size_t i) {
 // `g_until_poll` counts the switches left; with no waiter filed it is
 // out of reach.
 #define FAIR_TURNS 64
+// A seeded task yields within TICK_TURNS back-edges of its last yield.
+#define TICK_TURNS 64
 #define POLL_IDLE ((int64_t)1 << 62)
 static int64_t g_until_poll = POLL_IDLE;
+
+// THE LISTING'S DOOR (at the end of this file): asks a signal has
+// counted and the world has not answered; whether the scheduler stands
+// in the world's path; whether the door is open; whether this process
+// evaluates.
+static volatile sig_atomic_t g_asked;
+static volatile sig_atomic_t g_in_world;
+static int g_door_open = 0;
+static volatile sig_atomic_t g_evaluated;
 
 // SEEDED, THE QUEUE ALONE NEVER DECIDES: `g_until_poll` is held at zero,
 // so every switch fails the fast path's own test and reaches the pick —
 // and an unseeded switch carries nothing for it. The poller's turn is
-// then counted here, by the same law.
+// then counted here, by the same law. A VIRTUAL CLOCK PINS THE SWITCH
+// the same way: the slow half is where a task that parks is seen to.
 static int g_seeded = 0;
 static int64_t g_schedule = 0;
 static uint64_t g_seed_state = 0;
 static int64_t g_choices = 0;
 static int64_t g_pick_links = 0;
-static int64_t g_seeded_until_poll = 0;
+static int64_t g_world_visits = 0;
+static int64_t g_pinned_until_poll = 0;
 
 static int64_t g_polls = 0;
 
 static void timer_set(uint32_t kind, void* who, int64_t at) {
+    // THE FIRST TIMER OF A BURST SETS THE WINDOW: the clock is read at
+    // the next switch, then every AVRA_TIMER_TURNS. Measured from the
+    // heap's own empty-to-filed edge, so both engines and both runs of
+    // one schedule read the clock at the same switch — and the switch
+    // is not left on the fast path past that edge.
+    if (g_timers_len == 0) { g_timer_until = 0; g_until_poll = 0; }
     if (g_timers_len == g_timers_cap) {
         g_timers_cap = g_timers_cap ? g_timers_cap * 2 : 64;
         g_timers = realloc(g_timers, g_timers_cap * sizeof(Timer));
@@ -463,6 +633,10 @@ static void timer_set(uint32_t kind, void* who, int64_t at) {
     g_timers[i] = (Timer){ at, g_timer_seq++, kind, who };
     timer_placed(i);
     timer_up(i);
+    // A TIMER IS FILED: the switch returns to the clock within
+    // AVRA_TIMER_TURNS switches, or at the first tick, whichever is
+    // sooner — so a due timer is never late by a whole tick.
+    if (g_until_poll > g_timer_turns) g_until_poll = g_timer_turns;
 }
 
 // The entry at `i` leaves the heap; its owner's place is its to clear.
@@ -493,14 +667,18 @@ static int64_t g_parked_fds = 0;
 static FdWaits* g_fds = NULL;
 static size_t g_fds_cap = 0;
 
+static int pinned(void) { return g_seeded || avra_clock.virtual; }
+
 // The poller has been asked, or its count begins: when it is next due.
 static void poll_counted(void) {
-    if (g_seeded) {
+    if (pinned()) {
         g_until_poll = 0;
-        g_seeded_until_poll = FAIR_TURNS;
+        g_pinned_until_poll = FAIR_TURNS;
         return;
     }
-    g_until_poll = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
+    int64_t next = g_parked_fds > 0 ? FAIR_TURNS : POLL_IDLE;
+    if (g_timers_len > 0 && g_timer_turns < next) next = g_timer_turns;
+    g_until_poll = next;
 }
 
 static void poller_open(void) {
@@ -554,6 +732,7 @@ static int fd_arm(int fd) {
     int n = 0;
     if (missing & ARMED_READ) { EV_SET(&evs[n], fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL); n++; }
     if (missing & ARMED_WRITE) { EV_SET(&evs[n], fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL); n++; }
+    // the clock: not a wait on time — a change list, no event asked for
     int ok = kevent(g_poller, evs, n, NULL, 0, NULL) == 0;
     if (ok) { w->armed |= missing; w->ready |= missing; }
 #else
@@ -644,6 +823,7 @@ static int set_claimed(Fiber* f, int32_t arm, int32_t member, int64_t by) {
     if (TRACING) traced_claim(f, by);
     if (f->legacy) {
         f->timed_out = arm != 0;
+        f->interrupted = arm == -1 && member == 2;
         f->legacy = 0;
         f->heeds = 0;
         f->claimed = 0;
@@ -732,10 +912,13 @@ static void poller_wait(int64_t timeout_ns) {
     poller_open();
     g_polls++;
     poll_counted();
+    // an ask that came since the world last looked is answered before a sleep
+    if (__builtin_expect(g_asked, 0)) timeout_ns = 0;
     enum { BATCH = 256 };
 #if AVRA_KQUEUE
     struct kevent evs[BATCH];
     struct timespec ts = { (time_t)(timeout_ns / 1000000000), (long)(timeout_ns % 1000000000) };
+    // the clock: held by the caller whenever this waits (`next_with_world`)
     int n = kevent(g_poller, NULL, 0, evs, BATCH, timeout_ns < 0 ? NULL : &ts);
     for (int i = 0; i < n; i++) {
         if (evs[i].filter == EVFILT_READ && (evs[i].flags & EV_EOF)) fd_closed((int)evs[i].ident);
@@ -744,6 +927,7 @@ static void poller_wait(int64_t timeout_ns) {
 #else
     struct epoll_event evs[BATCH];
     int ms = timeout_ns < 0 ? -1 : (int)((timeout_ns + 999999) / 1000000);
+    // the clock: held by the caller whenever this waits (`next_with_world`)
     int n = epoll_wait(g_poller, evs, BATCH, ms);
     for (int i = 0; i < n; i++) {
         int fd = evs[i].data.fd;
@@ -759,46 +943,150 @@ static void poller_wait(int64_t timeout_ns) {
 
 // ── The deadline ────────────────────────────────────────────────
 
-// THE DEADLINE IS THE TASK'S: a `within` narrows it for its scope and
-// every wait inside heeds it; a nested `within` never widens it.
-// Answers the outer one, which the scope's end restores.
-static int64_t within_opened(Fiber* f, int64_t ms) {
-    int64_t outer = f->deadline;
-    int64_t at = deadline_after(ms < 0 ? 0 : ms);
-    f->deadline = outer != 0 && outer < at ? outer : at;
-    return outer;
+// EVERY SCOPE KEEPS ITS OWN LIMIT. The task's deadline is the earliest
+// limit of the scopes that may still ask; the scope holding it OWNS it,
+// the outer one on a tie, and the heap holds that one limit.
+#define SCOPE_IDS ((int64_t)1 << 62)
+static int64_t g_scope_seq = 0;
+
+static Scope* scope_at(const Fiber* f, uint32_t i) {
+    return i < SCOPES ? (Scope*)&f->scope[i] : &f->deeper[i - SCOPES];
 }
 
-static void within_ended(Fiber* f, int64_t outer) {
-    f->deadline = outer;
-    f->expired = 0;
-    if (f->due.filed && f->due_at != outer) waiter_out(&f->due);
-}
-
-// IT IS ARMED AT THE FIRST WAIT UNDER IT, ONCE: that wait reads the
-// clock and files the deadline's waiter, which stays until the scope
-// ends — so a `within` nothing waits under does no heap work, and a
-// second wait under one reads no clock. Whether it has passed.
-static int deadline_passed(Fiber* f) {
-    if (f->deadline == 0) return 0;
-    if (f->expired) return 1;
-    if (f->due.filed && f->due_at == f->deadline) return 0;
-    waiter_out(&f->due);
-    if (now_ns() >= f->deadline) {
-        f->expired = 1;
-        return 1;
+static void owner_found(Fiber* f) {
+    if (f->armed == 0) {
+        f->deadline = 0;
+        return;
     }
+    f->owner = scope_at(f, f->armed - 1)->first;
+    f->deadline = scope_at(f, f->owner)->at;
+}
+
+__attribute__((noinline, cold))
+static void scopes_deepened(Fiber* f) {
+    uint32_t cap = f->deeper_cap ? f->deeper_cap * 2 : SCOPES;
+    Scope* more = realloc(f->deeper, cap * sizeof(Scope));
+    if (!more) avra_trap("the scheduler ran out of memory for a `within`");
+    f->deeper = more;
+    f->deeper_cap = cap;
+}
+
+// Answers the scope's id. A scope opened under a standing request is
+// inside the scope that asked, so it may never ask.
+static int64_t within_opened(Fiber* f, int64_t ms) {
+    uint32_t i = f->scopes_n;
+    if (i >= SCOPES && i - SCOPES >= f->deeper_cap) scopes_deepened(f);
+    int64_t at = deadline_after(ms < 0 ? 0 : ms);
+    int64_t id = SCOPE_IDS | ++g_scope_seq;
+    uint32_t first = i;
+    if (i > 0) {
+        uint32_t outer = scope_at(f, i - 1)->first;
+        if (scope_at(f, outer)->at <= at) first = outer;
+    }
+    *scope_at(f, i) = (Scope){ id, at, first };
+    f->scopes_n = i + 1;
+    // A STANDING DEADLINE ARMS THE SOURCE: a task that never waits files
+    // no timer, so the tick must fire for the cold side to see it.
+    __atomic_store_n(&avra_tick_wanted, 1, __ATOMIC_RELAXED);
+    if (f->armed != i) return id;
+    f->armed = i + 1;
+    owner_found(f);
+    return id;
+}
+
+// Only a `within` whose end is not its `defer` reaches this: a deferred
+// end runs innermost first, whatever leaves the block.
+__attribute__((noinline, cold, noreturn))
+static void scope_out_of_order(Fiber* f, int64_t id) {
+    for (uint32_t i = 0; i < f->scopes_n; i++)
+        if (scope_at(f, i)->id == id) avra_trap("a `within` ended while one inside it stands");
+    avra_trap("a `within` ended that its task never opened");
+}
+
+// The innermost scope ends: 1 when the request that stands was its own.
+static int64_t scope_ended(Fiber* f, int64_t id) {
+    uint32_t n = f->scopes_n;
+    if (n == 0 || scope_at(f, n - 1)->id != id) scope_out_of_order(f, id);
+    f->scopes_n = --n;
+    int64_t landed = f->scope_by == id;
+    if (landed) f->scope_by = 0;
+    if (f->armed > n) {
+        f->armed = n;
+        owner_found(f);
+    }
+    if (f->due.filed && f->due_at != f->deadline) waiter_out(&f->due);
+    return landed;
+}
+
+static void due_filed(Fiber* f) {
     f->due = (Waiter){ .fiber = f, .arm = -1, .member = 1, .kind = W_DEADLINE, .filed = 1 };
     f->due_at = f->deadline;
     timer_set(T_WAITER, &f->due, f->deadline);
     if (TRACING) traced_fiber("deadline-set", f, (long long)f->deadline);
+}
+
+// A request a standing one outranks: the scope that asked, and the
+// request that stands — a scope's id, or 1 + the asking task's.
+__attribute__((noinline, cold))
+static void traced_dropped(const Fiber* f, int64_t scope, int64_t standing) {
+    char line[160];
+    if (standing & SCOPE_IDS) avra_fmt(line, sizeof line, "request-dropped id=%lld by=scope:%lld for=scope:%lld", (long long)id_of(f), (long long)scope, (long long)standing);
+    else avra_fmt(line, sizeof line, "request-dropped id=%lld by=scope:%lld for=task:%lld", (long long)id_of(f), (long long)scope, (long long)(standing - 1));
+    traced(line);
+}
+
+// THE OWNER'S LIMIT HAS PASSED, AND ITS SCOPE ASKS. A task's cancel
+// outranks it, and then no scope of the task asks again; otherwise it
+// stands, displacing an inner scope's request, and only the scopes
+// outside it may still ask — the next of them is filed at once.
+static void deadline_reached(Fiber* f) {
+    int64_t id = scope_at(f, f->owner)->id;
+    if (f->cancel_by != 0) {
+        if (TRACING) traced_dropped(f, id, f->cancel_by);
+        f->armed = 0;
+        f->deadline = 0;
+        return;
+    }
+    if (TRACING && f->scope_by != 0) traced_dropped(f, f->scope_by, id);
+    f->scope_by = id;
+    f->armed = f->owner;
+    owner_found(f);
+    if (f->deadline != 0) due_filed(f);
+}
+
+// IT IS ARMED AT THE FIRST WAIT UNDER IT, ONCE: that wait reads the
+// clock and files the deadline's waiter, which stays until its owner
+// changes — so a `within` nothing waits under does no heap work, and a
+// second wait under one reads no clock. Whether a scope's request stands.
+static int deadline_passed(Fiber* f) {
+    if (f->scope_by != 0) return 1;
+    if (f->deadline == 0) return 0;
+    if (f->due.filed && f->due_at == f->deadline) return 0;
+    waiter_out(&f->due);
+    if (now_ns() >= f->deadline) {
+        deadline_reached(f);
+        return f->scope_by != 0;
+    }
+    due_filed(f);
     return 0;
 }
 
 static void deadline_fired(Fiber* f) {
-    f->expired = 1;
     if (TRACING) traced_fiber("deadline-fired", f, (long long)f->deadline);
+    deadline_reached(f);
     if (f->parked && f->heeds) set_claimed(f, -1, 1, BY_DEADLINE);
+}
+
+// A TASK STARTS UNDER ITS SPAWNER'S LIMIT: one record, the scope whose
+// request stands or else the owner, copied whole — its id is the
+// spawner's scope's, so no scope of the child's own lands it.
+static void scope_inherited(Fiber* child, const Fiber* from) {
+    const Scope* s = from->scope_by != 0 ? scope_at(from, from->armed) : from->deadline != 0 ? scope_at(from, from->owner) : NULL;
+    if (!s) return;
+    child->scope[0] = (Scope){ s->id, s->at, 0 };
+    child->scopes_n = child->armed = 1;
+    child->owner = 0;
+    child->deadline = s->at;
 }
 
 // ── Stacks ──────────────────────────────────────────────────────
@@ -834,6 +1122,8 @@ static Pool g_guarded = {0};
 static Pool g_shared = {0};
 
 static void guard_handler_install(void);
+static void tasks_door_opened(void);
+static void tasks_door_named(void);
 
 #ifndef MADV_GUARD_INSTALL
 #define MADV_GUARD_INSTALL 102
@@ -925,6 +1215,7 @@ static void stacks_settle(void) {
     g_stack_bytes = (want + g_page - 1) / g_page * g_page;
     guards_settle();
     guard_handler_install();
+    tasks_door_opened();
 }
 
 static int own_guard(Stack s) { return s.guard == s.base - g_page; }
@@ -1057,22 +1348,63 @@ static void fire_due_timers(int64_t now) {
     }
 }
 
+// EVERY TASK WAITS, ON TIME ALONE: a frozen clock jumps to the earliest
+// timer and nothing is waited for. With a descriptor waiter filed the
+// world is waited on in real time instead, and the clock is HELD across
+// that wait — it flows by the wall time the wait took, so a deadline
+// around a real descriptor means what it says.
+static int world_waited_virtually(void) {
+    return g_parked_fds == 0 && g_timers_len > 0 && avra_clock_jumped(g_timers[0].at);
+}
+
 static void fiber_start(void);
+static int case_deadlocked(void);
+static int run_deadlocked(void);
+static void deadlock_reported(void);
+static void tasks_answered(void);
+typedef struct DoorNames DoorNames;
+static void listing_written(int dfd, const DoorNames* names);
+static void ages_noted(int64_t now);
 
 // A fiber's first run: a stack from the pool, and at its top a frame
 // `avra_fiber_switch` will restore — zeroed callee-saved registers and
 // `fiber_start` where the return goes. The top word stays untouched:
 // it is the word the stack above reads as its canary.
-static void fiber_bound(Fiber* f) {
-    Stack s = stack_take();
-    f->base = s.base;
+static void fiber_framed(Fiber* f, Stack s, size_t bytes) {
     f->guard = s.guard;
     f->floor = (uintptr_t)s.base;
     f->canary = own_guard(s) ? &g_untouched : (const uint64_t*)(s.base - sizeof(uint64_t));
-    uint64_t* frame = (uint64_t*)((((uintptr_t)s.base + g_stack_bytes - 16) & ~(uintptr_t)15) - FIBER_FRAME);
+    uint64_t* frame = (uint64_t*)((((uintptr_t)s.base + bytes - 16) & ~(uintptr_t)15) - FIBER_FRAME);
     memset(frame, 0, FIBER_FRAME);
     frame[FIBER_RETURN] = (uint64_t)(uintptr_t)fiber_start;
     f->sp = frame;
+}
+
+// THE WIDE STACK: one reservation the size of the main thread's stack,
+// its own guard page under it, for the one task at a time that runs a
+// case's body — which recurses as far as `main` would let it. It is
+// never pooled: a fiber on it keeps no `base`, so nothing gives it back.
+#define WIDE_STACK_LEAST ((size_t)8 << 20)
+static Stack g_wide = { NULL, NULL };
+static size_t g_wide_bytes = 0;
+
+static Stack wide_stack(void) {
+    if (g_wide.base) return g_wide;
+    struct rlimit main_stack;
+    g_wide_bytes = WIDE_STACK_LEAST;
+    if (getrlimit(RLIMIT_STACK, &main_stack) == 0 && main_stack.rlim_cur != RLIM_INFINITY && main_stack.rlim_cur > g_wide_bytes) g_wide_bytes = (size_t)main_stack.rlim_cur;
+    g_wide_bytes &= ~(g_page - 1);
+    char* low = reserved(g_wide_bytes + g_page);
+    if (mprotect(low, g_page, PROT_NONE) != 0) avra_trap("the scheduler could not guard a case's stack");
+    g_wide = (Stack){ low + g_page, low };
+    return g_wide;
+}
+
+static void fiber_bound(Fiber* f) {
+    if (f->wide) { fiber_framed(f, wide_stack(), g_wide_bytes); return; }
+    Stack s = stack_take();
+    f->base = s.base;
+    fiber_framed(f, s, g_stack_bytes);
 }
 
 // Where the switch goes when it finds a fiber under its floor or its
@@ -1092,8 +1424,11 @@ void avra_fiber_overflowed(const Fiber* f) {
 __attribute__((noinline, cold))
 static void switched_to_fresh(Fiber* self, Fiber* next) {
     fiber_bound(next);
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
+    self->unwinding = avra_unwinding;
+    avra_unwinding = next->unwinding;
     avra_fiber_switch(&self->sp, next->sp);
     bury_finished();
 }
@@ -1106,8 +1441,13 @@ static inline void switch_to(Fiber* next) {
     next->state = FIBER_RUNNING;
     if (next == self) return;
     if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
+    // PRECOMPTION WORK STANDS exactly while a task runs with others
+    // ready or a deadline filed; the source stands down otherwise.
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
+    self->unwinding = avra_unwinding;
+    avra_unwinding = next->unwinding;
     avra_fiber_switch(&self->sp, next->sp);
     bury_finished();
 }
@@ -1119,8 +1459,8 @@ static inline void switch_to(Fiber* next) {
 // The poller's turn among ready tasks: every FAIR_TURNS switches while a
 // descriptor waiter is filed, seeded or not.
 static void poller_turn(void) {
-    if (g_seeded) {
-        if (g_parked_fds > 0 && --g_seeded_until_poll <= 0) poller_wait(0);
+    if (pinned()) {
+        if (g_parked_fds > 0 && --g_pinned_until_poll <= 0) poller_wait(0);
         return;
     }
     if (g_until_poll > 0) return;
@@ -1166,15 +1506,64 @@ static Fiber* ready_picked(void) {
 
 __attribute__((noinline))
 static Fiber* next_with_world(void) {
+    g_world_visits++;
+    // A TASK THAT PARKS HAS WAITED: its count of reads of a frozen clock
+    // begins again.
+    if (avra_clock.virtual && g_current->state == FIBER_PARKED) g_current->local->clock_asks = 0;
+    g_in_world = 1;
     for (;;) {
-        if (g_timers_len > 0) fire_due_timers(now_ns());
+        if (__builtin_expect(g_asked, 0)) tasks_answered();
+        if (g_timers_len > 0) {
+            // THE CLOCK IS READ EVERY AVRA_TIMER_TURNS SWITCHES while
+            // tasks are ready, or at a real tick — the SAME quantity
+            // whether or not a schedule holds the byte for its
+            // back-edges. With NOBODY READY it is read at once: a parked
+            // task's deadline is not deferred behind the window, and a
+            // virtual clock hands its timers over by JUMPING.
+            int forced = !g_seeded && __atomic_load_n(&avra_tick, __ATOMIC_RELAXED);
+            if (g_ready_head == NULL || avra_clock.virtual || forced || g_timer_until <= 0) {
+                g_timer_until = g_timer_turns;
+                int64_t now = now_ns();
+                ages_noted(now);
+                fire_due_timers(now);
+            }
+        }
+        // the switch heard the tick: clear it so the fast path stands
+        // again. A seeded run HOLDS it set — every back-edge must hear.
+        if (!g_seeded) __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
         poller_turn();
+        // the countdown is spent: give the next stretch back, so the
+        // timer heap is read again within AVRA_TIMER_TURNS switches. A
+        // pinned switch stays pinned — its own cadence is the poller's.
+        if (!pinned()) {
+            if (g_timers_len > 0) g_until_poll = g_timer_turns;
+            else if (g_parked_fds > 0) g_until_poll = FAIR_TURNS;
+            else g_until_poll = POLL_IDLE;
+        }
         Fiber* next = g_seeded ? ready_picked() : ready_pop();
-        if (next) return next;
-        if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
+        if (next) {
+            // an ask counted during this pass, after its count was reset,
+            // brings the next switch back here
+            if (__builtin_expect(g_asked, 0)) g_until_poll = 0;
+            g_in_world = 0;
+            return next;
+        }
+        if (g_timers_len == 0 && g_parked_fds == 0) {
+            if (case_deadlocked()) continue;
+            if (run_deadlocked()) { g_in_world = 0; return NULL; }
+            deadlock_reported();
+            avra_trap("every task is waiting — deadlock");
+        }
         pool_trim();
+        if (world_waited_virtually()) continue;
         int64_t wait = g_timers_len > 0 ? g_timers[0].at - now_ns() : -1;
+        int held = g_parked_fds > 0;
+        __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);   // nothing runs: the source may park
+        if (held) avra_clock_hold(1);
         poller_wait(g_timers_len > 0 && wait < 0 ? 0 : wait);
+        if (held) avra_clock_hold(-1);
+        // a wait that blocked may have lasted: the clock is asked again
+        if (wait != 0) ages_noted(now_ns());
     }
 }
 
@@ -1183,7 +1572,8 @@ static Fiber* next_with_world(void) {
 __attribute__((always_inline))
 static inline int queue_alone(void) {
     int64_t left = --g_until_poll;
-    return __builtin_expect(g_timers_len == 0 && left > 0, 1);
+    if (g_timer_until > 0) --g_timer_until;
+    return __builtin_expect(!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED) && left > 0, 1);
 }
 
 // THE POLICY, ONE FOR BOTH ENGINES: who runs next. A compiled program
@@ -1297,6 +1687,20 @@ static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
     if (TRACING) traced_waiter(f, w);
 }
 
+// A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set.
+static void cancel_met(void) { avra_unwinding = 1; }
+
+// Whether the claim a task resumed on was a cancel's: `-1:0`.
+static int claimed_by_cancel(const Fiber* f) { return f->arm == -1 && f->member == 0; }
+
+// A row that predates the wait set, about to park: under a standing
+// cancel it parks nothing and the cancel is met at once.
+static int cancel_stands(const Fiber* f) {
+    if (__builtin_expect(f->cancel_by == 0, 1)) return 0;
+    cancel_met();
+    return 1;
+}
+
 // The set is about to be waited on: whether the task must switch out.
 // A CLAIM COMES FIRST — a value handed while the set was arming is
 // taken before anything else is heard — then a cancel that stands, then
@@ -1331,6 +1735,7 @@ void avra_wait_task(void* task, int64_t arm, int64_t member) { waits_gate(g_curr
 int64_t avra_wait_park(void) {
     Fiber* self = g_current;
     if (park_begun(self)) run_next();
+    if (claimed_by_cancel(self)) cancel_met();
     return claim_taken(self);
 }
 
@@ -1390,7 +1795,9 @@ static void fiber_start(void) {
     int64_t* cells = task_cells(task);
     cells[TASK_ANSWER] = (int64_t)(uintptr_t)answer;
     cells[TASK_FIBER] = 0;
-    cells[TASK_END] = END_ANSWERED;
+    // A BODY THAT COMES BACK UNWINDING LEFT AT A CANCEL POINT: it ended
+    // cancelled, and a join refuses what it answered.
+    cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;
     gate_opened(task, id_of(self));
     // A TASK THAT ENDS WAITS ON NOTHING: what it registered and never
     // parked on leaves with it, before its record is anyone else's.
@@ -1416,9 +1823,9 @@ void* avra_task_spawn(void* body) {
     Fiber* f = fiber_new(NULL, 0);
     void* task = task_made(f, body);
     f->task = task;
-    f->deadline = g_current->deadline;          // a task inherits its spawner's `within`
+    scope_inherited(f, g_current);
     avra_rc_retain(task);                       // the running fiber's own reference
-    if (TRACING) traced_fiber("spawn", f, (long long)id_of(g_current));
+    if (TRACING) traced_spawn(f, body);
     ready_push(f);
     return task;
 }
@@ -1445,28 +1852,47 @@ static void legacy_parked(Fiber* self) {
     self->state = FIBER_PARKED;
 }
 
+// The id of the fiber that runs `task`, or -1 when nothing runs it.
+static int64_t task_id(void* task) {
+    Fiber* f = (Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER];
+    return f ? id_of(f) : -1;
+}
+
+static void task_cancelled(void* task, int64_t by);
+
 // The calling task parked until `task` has ended; its cells, read after.
-static int64_t* task_awaited(void* task) {
+// A JOIN IS A CANCEL POINT and a scope's end joining what it owns is NOT
+// (`deaf`): the owner leaving cancels the task, then waits it out.
+static int64_t* task_awaited(void* task, int deaf) {
     int64_t* cells = task_cells(task);
     if (cells[GATE_OPEN]) return cells;
     Fiber* self = g_current;
+    if (!deaf && cancel_stands(self)) return cells;
     refuse_join_ring(task, self);
     alone(self);
+    if (TRACING) traced_join(self, task_id(task));
     self->joining = task;
+    self->deaf = (uint8_t)deaf;
     waits_gate(self, task, 0, 0);
     legacy_parked(self);
     run_next();
     self->joining = NULL;
+    self->deaf = 0;
     return task_cells(task);
 }
 
 __attribute__((noinline, cold, noreturn))
 static void join_refused(void) { avra_trap("a join takes a task that answers, and this one was cancelled"); }
 
+__attribute__((noinline, cold, noreturn))
+static void join_cut(void) { avra_trap("a join was cut by a cancel, and its task has not answered"); }
+
 // A JOIN TAKES A TASK THAT ANSWERS: a cancelled one has no answer, and
-// none is made up for it.
+// none is made up for it. A join a cancel cut has none either — until
+// the code after it tests the unwind bit, it traps.
 void* avra_task_join(void* task) {
-    int64_t* cells = task_awaited(task);
+    int64_t* cells = task_awaited(task, 0);
+    if (!cells[GATE_OPEN]) join_cut();
     if (cells[TASK_END] == END_CANCELLED) join_refused();
     void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];
     avra_rc_retain(answer);
@@ -1478,7 +1904,8 @@ void* avra_task_join(void* task) {
 // settle costs nothing.
 void avra_task_settle(void* task) {
     if (!task) return;
-    task_awaited(task);
+    if (g_current->cancel_by != 0) task_cancelled(task, id_of(g_current));
+    task_awaited(task, 1);
 }
 
 // A FULL OWNER SHEDS ITS FINISHED TASKS before it grows: each is
@@ -1515,6 +1942,10 @@ void avra_task_settle_all(void* list) {
 
 int64_t avra_task_done(void* task) {
     return task_cells(task)[GATE_OPEN];
+}
+
+int64_t avra_task_ended(void* task) {
+    return task_cells(task)[TASK_END];
 }
 
 // ── Tasks nothing runs ──────────────────────────────────────────
@@ -1570,37 +2001,115 @@ static void task_fired(void* task) {
 
 // A CANCEL IS A CLAIMANT THAT NEVER DISPLACES A CLAIM. It is recorded
 // on the task, and claims the task's set only when nothing has: a task
-// already claimed resumes on its arm, and hears the cancel at its next
-// wait. A task parked by a sleep, a join or a descriptor park is not
-// woken by it. A fiberless task simply ends.
+// already claimed resumes on its arm, and meets the cancel at its next
+// cancel point. A sleep, a join and a descriptor park are cut by it; a
+// scope's end joining what it owns is not, and passes the cancel down
+// to the task it waits on. An evaluated task's old rows hear it once
+// the evaluator's arms read the unwind bit. A fiberless task simply
+// ends.
 static void fiber_cancelled(Fiber* f, int64_t by) {
     f->cancel_by = by + 1;
     if (TRACING) traced_fiber("cancel", f, (long long)by);
-    if (f->parked && !f->legacy) set_claimed(f, -1, 0, by);
+    if (f->scope_by != 0) {
+        if (TRACING) traced_dropped(f, f->scope_by, by + 1);
+        f->scope_by = 0;
+    }
+    if (f->deaf && f->joining) { task_cancelled(f->joining, by); return; }
+    if (f->parked && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);
 }
 
-void avra_task_cancel(void* task) {
+static void task_cancelled(void* task, int64_t by) {
     int64_t* cells = task_cells(task);
     Fiber* f = (Fiber*)(uintptr_t)cells[TASK_FIBER];
-    if (f) { fiber_cancelled(f, id_of(g_current)); return; }
-    if (cells[TASK_END] == END_LIVE) task_ended(task, END_CANCELLED, id_of(g_current));
+    if (f) { fiber_cancelled(f, by); return; }
+    if (cells[TASK_END] == END_LIVE) task_ended(task, END_CANCELLED, by);
 }
+
+void avra_task_cancel(void* task) { task_cancelled(task, id_of(g_current)); }
 
 // ── The rows that predate the wait set ──────────────────────────
 
+// A YIELD WAITS FOR NOTHING, SO A CANCEL CUTS NOTHING: it is met here
+// and the task still lets the others run.
 void avra_fiber_yield(void) {
+    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
     if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;
     ready_push(g_current);
     run_next();
 }
 
+// How many back-edges a seeded task runs before its next yield: a draw
+// from the schedule's own stream, so the same schedule yields at the
+// same turn. Never less than one.
+static uint32_t tick_turns_drawn(void) {
+    return (uint32_t)chosen(TICK_TURNS) + 1;
+}
+
+// One seeded back-edge's countdown: 1 when the task must yield now, 0
+// when it goes on. Schedule 0 draws nothing and never preempts. The
+// compiled task and the evaluator's virtual task share it, so both
+// engines yield at the same turn.
+static int tick_turn_comes(Fiber* f) {
+    if (g_schedule == 0) { return 0; }
+    if (f->tick_turns == 0) f->tick_turns = tick_turns_drawn();
+    if (--f->tick_turns > 0) return 0;
+    f->tick_turns = tick_turns_drawn();
+    return 1;
+}
+
+// THE CHECKED BACK-EDGE'S COLD SIDE: the emitted `while` check calls
+// this when the tick byte is set. Under a schedule there is no source —
+// the byte is held set, a per-task count falls, and at zero the task
+// yields at a turn DRAWN from the schedule (one counted choice);
+// schedule 0 draws nothing and never preempts, its order the queue's
+// own. With a source, the switch has already heard the tick: a task that
+// does not switch hears its cancel here and lets others run.
+//
+// AN EVALUATED RUN IS THE INTERPRETER'S OWN: while it stands, a compiled
+// back-edge here is the compiler's, so it draws nothing from the guest's
+// schedule and yields nothing. The guest's turns are the evaluator's own
+// arm (`avra_vtask_tick_cold`).
+static size_t g_runs;
+static Fiber* virtual_at(int64_t t);
+void avra_tick_cold(void) {
+    if (g_runs > 0) return;
+    Fiber* f = g_current;
+    if (g_seeded) {
+        if (!tick_turn_comes(f)) return;
+        avra_fiber_yield();
+        return;
+    }
+    if (!__atomic_load_n(&avra_tick, __ATOMIC_RELAXED)) return;
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:
+    // a task that never waits files no deadline, so the cold side asks here.
+    if (g_timers_len > 0) fire_due_timers(now_ns());
+    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
+    if (g_ready_head != NULL) avra_fiber_yield();
+}
+
+// THE EVALUATOR'S OWN COLD SIDE, over its virtual task `t`: the same
+// turn count and the same draw from the schedule as a compiled
+// back-edge, so both engines yield at the same turn. Answers 1 when the
+// evaluator must yield, 0 when the task goes on. The evaluator holds the
+// tick set (no thread exists), so this counts every back-edge.
+int64_t avra_vtask_tick_cold(int64_t t) {
+    Fiber* f = virtual_at(t);
+    if (g_seeded) return tick_turn_comes(f);
+    if (g_timers_len > 0) fire_due_timers(now_ns());
+    if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
+    return g_ready_head != NULL;
+}
+
 __attribute__((noinline))
 static void slept(int64_t ms) {
     Fiber* self = g_current;
+    if (cancel_stands(self)) return;
     alone(self);
     waits_until(self, deadline_after(ms), 0, 0);
     legacy_parked(self);
     run_next();
+    if (claimed_by_cancel(self)) cancel_met();
 }
 
 // A sleep of no time is a yield, and costs what a yield costs.
@@ -1623,7 +2132,7 @@ void avra_fiber_fd_interrupt(int64_t fd) {
     while (w->head[0]) {
         Fiber* f = w->head[0]->fiber;
         waiter_out(w->head[0]);
-        set_claimed(f, -1, 1, BY_CLOSE);
+        set_claimed(f, -1, 2, BY_CLOSE);
     }
 }
 
@@ -1632,7 +2141,9 @@ void avra_fiber_fd_interrupt(int64_t fd) {
 // already (`timed_out` says which).
 static int park_fd_filed(Fiber* f, int64_t fd, int64_t writable, int64_t timeout_ms) {
     f->timed_out = 0;
+    f->interrupted = 0;
     if (fd < 0 || fd > INT32_MAX) return 0;
+    if (!f->virtual && cancel_stands(f)) { f->timed_out = 1; return 0; }
     alone(f);
     if (deadline_passed(f)) { f->timed_out = 1; return 0; }
     f->legacy = 1;
@@ -1647,13 +2158,25 @@ static int park_fd_filed(Fiber* f, int64_t fd, int64_t writable, int64_t timeout
 
 int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
     Fiber* self = g_current;
-    if (park_fd_filed(self, fd, writable, timeout_ms)) run_next();
+    if (park_fd_filed(self, fd, writable, timeout_ms)) {
+        run_next();
+        if (claimed_by_cancel(self)) cancel_met();
+    }
     return self->timed_out ? 0 : 1;
 }
 
+int64_t avra_fiber_interrupted(void) { return g_current->interrupted; }
+
 int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
 
-void avra_fiber_within_end(int64_t outer) { within_ended(g_current, outer); }
+int64_t avra_scope_end(int64_t id) { return scope_ended(g_current, id); }
+
+int64_t avra_fiber_within_end(int64_t id) { return scope_ended(g_current, id); }
+
+int64_t avra_task_request(void* task) {
+    const Fiber* f = (const Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER];
+    return !f ? 0 : f->cancel_by ? f->cancel_by : f->scope_by;
+}
 
 // A FORKED CHILD KEEPS THE CALLING TASK ALONE: every other fiber leaves
 // every list it is filed in — a gate lives in memory the child copied,
@@ -1684,6 +2207,34 @@ void avra_fiber_forked(void) {
     g_ready_head = g_ready_tail = NULL;
     g_parked_fds = 0;
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
+    // the child is asked under its own id, and owes no ask its parent had
+    g_asked = 0;
+    tasks_door_named();
+    // a schedule is its run's: the child's order is the queue's own
+    g_seeded = 0;
+    // THE SOURCE IS THE CALLING THREAD'S: a forked child has no tick
+    // thread, so it brings its own up, and starts with no stale tick.
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    if (!pinned()) avra_tick_armed();
+}
+
+// A task leaves every place the policy files it — its waiters and the
+// gates they keep, its deadline, the ready queue — and its record goes
+// back to the pool.
+static void gone(Fiber* f) {
+    retract(f);
+    waiter_out(&f->due);
+    if (f->state == FIBER_READY) {
+        Fiber* prev = NULL;
+        for (Fiber* q = g_ready_head; q; prev = q, q = q->next) {
+            if (q != f) continue;
+            if (prev) prev->next = q->next; else g_ready_head = q->next;
+            if (g_ready_tail == q) g_ready_tail = prev;
+            break;
+        }
+    }
+    f->state = FIBER_DONE;
+    fiber_freed(f);
 }
 
 // ── The evaluator's tasks ───────────────────────────────────────
@@ -1696,6 +2247,8 @@ void avra_fiber_forked(void) {
 static Fiber* virtual_at(int64_t t) { return (Fiber*)(uintptr_t)t; }
 
 int64_t avra_vtask_new(void) {
+    if (!g_door_open) tasks_door_opened();
+    g_evaluated = 1;
     Fiber* f = fiber_new(NULL, 1);
     f->state = FIBER_PARKED;
     return (int64_t)(uintptr_t)f;
@@ -1712,21 +2265,7 @@ int64_t avra_vtask_new_at(int64_t site, int64_t id) {
 
 // A task leaves every place the policy files it before it goes: its
 // waiters and the gates they keep, its deadline, the ready queue.
-void avra_vtask_free(int64_t t) {
-    Fiber* f = virtual_at(t);
-    retract(f);
-    waiter_out(&f->due);
-    if (f->state == FIBER_READY) {
-        Fiber* prev = NULL;
-        for (Fiber* q = g_ready_head; q; prev = q, q = q->next) {
-            if (q != f) continue;
-            if (prev) prev->next = q->next; else g_ready_head = q->next;
-            if (g_ready_tail == q) g_ready_tail = prev;
-            break;
-        }
-    }
-    fiber_freed(f);
-}
+void avra_vtask_free(int64_t t) { gone(virtual_at(t)); }
 
 // A virtual task whose body answered: said, then gone.
 void avra_vtask_end(int64_t t) {
@@ -1734,7 +2273,34 @@ void avra_vtask_end(int64_t t) {
     avra_vtask_free(t);
 }
 
+void avra_vtask_sited(int64_t t, const char* site) {
+    virtual_at(t)->site = site;
+    if (TRACING) traced_site(virtual_at(t), site, NULL);
+}
+
 void avra_vtask_ready(int64_t t) { ready_push(virtual_at(t)); }
+
+void avra_vtask_joins(int64_t t, int64_t on) {
+    if (TRACING) traced_join(virtual_at(t), on);
+}
+
+__attribute__((noinline, cold))
+static void joined_traced(Fiber* f, int64_t by) {
+    traced_joined(f, by);
+    ready_push(f);
+}
+
+void avra_vtask_joined(int64_t t, int64_t by) {
+    if (TRACING) { joined_traced(virtual_at(t), by); return; }
+    ready_push(virtual_at(t));
+}
+
+// The evaluator's reads of the clock are its host's: when one of its
+// tasks parks, that count begins again.
+static int64_t host_waited(int64_t parked) {
+    if (parked) avra_task_local->clock_asks = 0;
+    return parked;
+}
 
 void avra_vtask_sleep(int64_t t, int64_t ms) {
     Fiber* f = virtual_at(t);
@@ -1742,22 +2308,31 @@ void avra_vtask_sleep(int64_t t, int64_t ms) {
     alone(f);
     waits_until(f, deadline_after(ms), 0, 0);
     legacy_parked(f);
+    host_waited(1);
 }
 
 int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms) {
     Fiber* f = virtual_at(t);
-    if (park_fd_filed(f, fd, writable, timeout_ms)) return 1;
+    if (park_fd_filed(f, fd, writable, timeout_ms)) return host_waited(1);
     if (!f->timed_out) ready_push(f);
     return 0;
 }
 
 int64_t avra_vtask_timed_out(int64_t t) { return virtual_at(t)->timed_out; }
 
+int64_t avra_vtask_interrupted(int64_t t) { return virtual_at(t)->interrupted; }
+
+// The task's unwind bit, as the task itself wears it: what a read of
+// the flag inside that task answers.
+int64_t avra_vtask_unwinding(int64_t t) { return virtual_at(t)->unwinding; }
+
 int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_at(t), ms); }
 
-void avra_vtask_within_end(int64_t t, int64_t outer) { within_ended(virtual_at(t), outer); }
+int64_t avra_vtask_within_end(int64_t t, int64_t id) { return scope_ended(virtual_at(t), id); }
 
 int64_t avra_vtask_deadline(int64_t t) { return virtual_at(t)->deadline; }
+
+void avra_vtask_inherits(int64_t t, int64_t from) { scope_inherited(virtual_at(t), virtual_at(from)); }
 
 void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(virtual_at(t), fd, writable, arm, member); }
 
@@ -1765,7 +2340,16 @@ void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member
 
 void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member) { waits_gate(virtual_at(t), gate, arm, member); }
 
-int64_t avra_vtask_park(int64_t t) { return park_begun(virtual_at(t)); }
+int64_t avra_vtask_join(int64_t t, void* task) {
+    Fiber* f = virtual_at(t);
+    if (task_cells(task)[GATE_OPEN]) return 0;
+    alone(f);
+    waits_gate(f, task, 0, 0);
+    legacy_parked(f);
+    return host_waited(1);
+}
+
+int64_t avra_vtask_park(int64_t t) { return host_waited(park_begun(virtual_at(t))); }
 
 int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
 
@@ -1780,12 +2364,26 @@ int64_t avra_vgate_claim(int64_t t, void* gate) {
     return gate_claimed(gate, id_of(virtual_at(t)));
 }
 
+// The evaluator is asking for its next task: a deadlock is its answer
+// to file, while a run stands.
+static int g_vnext_asking = 0;
+
 int64_t avra_vtask_next(void) {
+    g_vnext_asking = 1;
     Fiber* next = next_ready();
+    g_vnext_asking = 0;
+    if (!next) { deadlock_reported(); return 0; }
     if (!next->virtual) avra_trap("defect: the evaluator's scheduler met a compiled task");
     next->state = FIBER_RUNNING;
     return (int64_t)(uintptr_t)next;
 }
+
+// The clock became virtual, or real again: the switch is pinned to the
+// slow half, or let go.
+static void clock_turned(void) { poll_counted(); }
+
+// The timer window's length, for a test that asserts its bound.
+int64_t avra_sched_timer_turns(void) { return g_timer_turns; }
 
 // ── The seeded order ────────────────────────────────────────────
 
@@ -1794,6 +2392,11 @@ void avra_sched_seed(int64_t schedule) {
     g_schedule = schedule;
     g_seed_state = (uint64_t)schedule;
     g_choices = 0;
+    // NO SOURCE, AND THE TICK IS HELD: every checked back-edge takes
+    // its cold side, where the turn is drawn from the schedule.
+    __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);
+    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);
+    g_timer_until = 0;
     poll_counted();
 }
 
@@ -1801,7 +2404,556 @@ void avra_sched_seed(int64_t schedule) {
 // sets it again.
 int64_t avra_sched_settle(void) {
     g_seeded = 0;
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
     return g_choices;
+}
+
+// A run inside a run keeps the outer schedule whole, to put it back.
+typedef struct { int seeded; int64_t schedule; uint64_t state; int64_t choices; uint8_t tick; } Schedule;
+static Schedule* g_outer_schedules = NULL;
+static size_t g_runs = 0;
+static int run_deadlocked(void) { return g_vnext_asking && g_runs > 0; }
+static size_t g_runs_cap = 0;
+
+void avra_sched_run_begins(void) {
+    if (g_runs == g_runs_cap) {
+        g_runs_cap = g_runs_cap ? g_runs_cap * 2 : 8;
+        g_outer_schedules = realloc(g_outer_schedules, g_runs_cap * sizeof(Schedule));
+        if (!g_outer_schedules) avra_trap("the scheduler ran out of memory for a run's schedule");
+    }
+    g_outer_schedules[g_runs++] = (Schedule){ g_seeded, g_schedule, g_seed_state, g_choices, avra_tick };
+    g_seeded = 0;
+    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    avra_clock_run_begins();
+}
+
+void avra_sched_run_ends(void) {
+    if (g_runs == 0) avra_trap("defect: a run's schedule ended that never began");
+    Schedule outer = g_outer_schedules[--g_runs];
+    g_seeded = outer.seeded;
+    g_schedule = outer.schedule;
+    g_seed_state = outer.state;
+    g_choices = outer.choices;
+    __atomic_store_n(&avra_tick, outer.tick, __ATOMIC_RELAXED);
+    // THE RUN'S SOURCE STANDS DOWN: an evaluated run's tasks are gone,
+    // and the host's own stand again exactly as they stood.
+    if (!pinned()) avra_tick_stood_down();
+    // THE SCHEDULE IS PUT BACK BEFORE THE CLOCK: ending the clock's run
+    // asks the switch whether it is pinned, which reads the schedule —
+    // the outer one, or the next switches run on the inner run's pin.
+    avra_clock_run_ends();
+}
+
+// THE TRIPWIRE: a run evaluated inside its host shares the host's one
+// scheduler — its timer heap, its poller. Its first task row asks here:
+// a host timer or descriptor waiter filed beside a run that will wait
+// would be fired by the run's clock, or would hide the run's deadlock.
+void avra_sched_guest_waits(void) {
+    if (g_runs == 0 || (g_timers_len == 0 && g_parked_fds == 0)) return;
+    char words[200];
+    avra_fmt(words, sizeof words, "a program waits inside a host that is itself waiting (%lld timer(s), %lld descriptor waiter(s) filed) — the two share one scheduler, so its clock would fire the host's timers", (long long)g_timers_len, (long long)g_parked_fds);
+    avra_trap(words);
+}
+
+// ── A case in its own task ──────────────────────────────────────
+
+// THE RUNNER WAITS ON TWO THINGS: its case's end, and an ALARM gate the
+// scheduler claims when every task waits and nothing can wake one.
+static void* g_case_alarm = NULL;
+static int g_case_waited = 0;
+static uint64_t g_case_first = 0;       // every task with a later id is the case's
+static int64_t g_case_answer = 0;
+
+// Every task waits and nothing can wake one, while a runner waits on a
+// case: the runner is woken to say so. 0 when no case is running.
+static int case_deadlocked(void) {
+    return g_case_waited && avra_gate_claim(g_case_alarm) >= 0;
+}
+
+typedef long long (*Numbered)(const Fiber*);
+
+// A task's number in its case: 0 the case's own, then in spawn order.
+static long long case_id(const Fiber* f) { return (long long)((uint64_t)id_of(f) - g_case_first - 1); }
+
+// A task's number in its process: the order it was spawned, `main` at 0.
+static long long process_id(const Fiber* f) { return (long long)id_of(f); }
+
+// What a waiter waits on, in words, its task numbered by `no`.
+static void waiter_said(FILE* out, Numbered no, const Fiber* f, const Waiter* w) {
+    if (!w->filed) return;
+    if (w->kind == W_AT) { fputs(" waits on a time", out); return; }
+    if (w->kind == W_DEADLINE) return;
+    if (w->kind != W_GATE) { fprintf(out, " waits on descriptor %d", w->on.fd); return; }
+    if (w->on.gate == f->joining) return;
+    if (((AvraArray*)w->on.gate)->len != TASK_CELLS) { fprintf(out, " waits on gate %p", w->on.gate); return; }
+    const Fiber* on = (const Fiber*)(uintptr_t)task_cells(w->on.gate)[TASK_FIBER];
+    if (on) fprintf(out, " waits on task %lld's end", no(on));
+    else fputs(" waits on a task nothing runs", out);
+}
+
+// One task: who it is — the program's own run, a case, or where its
+// body was written.
+static void task_said(FILE* out, Numbered no, const Fiber* f) {
+    fprintf(out, "task %lld,", no(f));
+    if (f == &g_main) { fputs(" the program's own run,", out); return; }
+    if (f->wide) { fputs(" the case,", out); return; }
+    if (f->virtual) {
+        if (f->site) fprintf(out, " spawned at %s,", f->site);
+        else fputs(" the evaluated program's own run,", out);
+        return;
+    }
+    void* body = (void*)(uintptr_t)task_cells(f->task)[TASK_BODY];
+    const char* site = site_of(body);
+    if (site) fprintf(out, " spawned at %s,", site);
+    else fprintf(out, " spawned at %p,", (void*)(uintptr_t)((AvraArray*)body)->data[0]);
+}
+
+// What a task is doing: ready, or each thing it waits on.
+// The case's task stopped for spinning on the frozen clock, if one was.
+static const Fiber* g_case_spinner = NULL;
+
+static void waits_said(FILE* out, Numbered no, const Fiber* f) {
+    if (f->state == FIBER_READY) { fputs(" ready to run", out); return; }
+    if (f == g_case_spinner) { fputs(" stopped: it waited on the frozen clock without sleeping", out); return; }
+    if (f->joining) {
+        const Fiber* on = (const Fiber*)(uintptr_t)task_cells(f->joining)[TASK_FIBER];
+        if (on) fprintf(out, " joins task %lld", no(on));
+        else fputs(" joins a task nothing runs", out);
+    }
+    for (uint32_t i = 0; i < f->held_n; i++) waiter_said(out, no, f, &f->held[i]);
+    for (const Over* o = f->more; o; o = o->next) waiter_said(out, no, f, &o->w);
+}
+
+// A DEADLOCK NAMES ITS TASKS: the header the case report uses, then one
+// line per live task, oldest first — who it is, where it was spawned and
+// each thing it waits on. The SAME two writers the case report uses, so
+// the walk exists once. A cold path: stderr only, no allocation, so it
+// is legal where `avra_trap` is called. `main` is static and not on
+// `g_all`, so a compiled run names it first; an evaluated run has no
+// `main` among its tasks.
+__attribute__((noinline, cold))
+static void deadlock_reported(void) {
+    fputs("avra: every task is waiting, and nothing can wake one:\n", stderr);
+    int evaluated = 0;
+    for (const Fiber* f = g_all; f; f = f->all_next) evaluated |= f->virtual;
+    if (!evaluated) {
+        fputs("  ", stderr);
+        task_said(stderr, process_id, &g_main);
+        waits_said(stderr, process_id, &g_main);
+        fputc('\n', stderr);
+    }
+    const Fiber* last = g_all;
+    while (last && last->all_next) last = last->all_next;
+    for (const Fiber* f = last; f; f = f->all_prev) {
+        if (f->state == FIBER_DONE) continue;
+        fputs("  ", stderr);
+        task_said(stderr, process_id, f);
+        waits_said(stderr, process_id, f);
+        fputc('\n', stderr);
+    }
+}
+
+// A TASK ABANDONED LEAVES EVERY PLACE IT IS FILED and never runs again:
+// no `defer` of its runs, and what its frames held is not released.
+// Whoever waited on its end is woken; its task reads as cancelled.
+static void abandoned(Fiber* f) {
+    for (int i = 0; i < AVRA_TASK_SLOTS; i++) {
+        avra_rc_release(f->own.slot[i]);
+        f->own.slot[i] = NULL;
+    }
+    void* task = f->task;
+    Stack own = { f->base, f->guard };
+    if (own.base) stack_give(own);
+    int64_t* cells = task_cells(task);
+    cells[TASK_FIBER] = 0;
+    cells[TASK_END] = END_CANCELLED;
+    gone(f);
+    avra_vgate_open(task);
+    avra_rc_release(task);
+}
+
+// A TIMER'S TASK LEFT FILED outlives the case as surely as a task it
+// spawned: the next case would run beside it. A case begins with no
+// timer filed, so every one in the heap now is the case's. Each is
+// named and ended, cancelled, through the row a program would use.
+// How many.
+static int g_case_spoiled = 0;
+static int64_t case_timers_cleared(void) {
+    int64_t n = 0;
+    for (size_t i = 0; i < g_timers_len; i++) n += g_timers[i].kind == T_TASK;
+    if (n == 0) return 0;
+    void** made = malloc((size_t)n * sizeof(void*));
+    if (!made) avra_trap("the scheduler ran out of memory naming a case's timers");
+    int64_t at = 0;
+    int64_t now = now_ns();
+    for (size_t i = 0; i < g_timers_len; i++) {
+        if (g_timers[i].kind != T_TASK) continue;
+        made[at++] = g_timers[i].who;
+        fprintf(stderr, "avra: a task the timer ends, made by the case, outlived it — due in %lld ms\n", (long long)((g_timers[i].at - now) / 1000000));
+    }
+    for (int64_t i = 0; i < n; i++) avra_task_cancel(made[i]);
+    free(made);
+    return n;
+}
+
+// A CASE THAT ENDS HOLDING THE WORLD has leaked the hold: it is let go,
+// said, and the case fails. 1 when it held one.
+static int64_t case_holds_cleared(void) {
+    int64_t held = g_current->own.clock_holds;
+    if (held <= 0) return 0;
+    g_current->own.clock_holds = 0;
+    avra_clock_holds_let_go(held);
+    fprintf(stderr, "avra: the case ended holding the clock %lld time(s); let go\n", (long long)held);
+    return 1;
+}
+
+static int of_the_case(const Fiber* f) { return f != g_current && !f->virtual && (uint64_t)id_of(f) > g_case_first && f->state != FIBER_DONE; }
+
+// The two settings a schedule is named by.
+#define SCHED_RUNS_SETTING "AVRA_SCHED_RUNS"
+#define SCHED_SEED_SETTING "AVRA_SCHED_SEED"
+
+// Every task of the case still alive, named oldest first — as a
+// deadlock's, or as outliving the case — and then abandoned. How many.
+static int64_t case_cleared(int dead) {
+    int64_t n = 0;
+    for (const Fiber* f = g_all; f; f = f->all_next) n += of_the_case(f);
+    if (n == 0) return 0;
+    Fiber** alive = malloc((size_t)n * sizeof(Fiber*));
+    if (!alive) avra_trap("the scheduler ran out of memory naming a case's tasks");
+    // the list holds the newest first
+    int64_t at = n;
+    for (Fiber* f = g_all; f; f = f->all_next) if (of_the_case(f)) alive[--at] = f;
+    if (dead) fputs("avra: every task is waiting, and nothing can wake one:\n", stderr);
+    for (int64_t i = 0; i < n; i++) {
+        fputs(dead ? "  " : "avra: ", stderr);
+        task_said(stderr, case_id, alive[i]);
+        if (!dead) fputs(" outlived the case —", stderr);
+        waits_said(stderr, case_id, alive[i]);
+        fputc('\n', stderr);
+    }
+    if (g_seeded) fprintf(stderr, "avra: under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", (long long)g_schedule, (long long)g_schedule);
+    // What abandoned tasks held of the world is let go, or every later
+    // case's clock would flow at wall rate — and only that share: a live
+    // task's holds stand. A task that ENDED holding is not charged back
+    // here; no hold can outlive the C call that took it today.
+    int64_t held = 0;
+    for (int64_t i = 0; i < n; i++) held += alive[i]->own.clock_holds;
+    for (int64_t i = 0; i < n; i++) abandoned(alive[i]);
+    free(alive);
+    avra_clock_holds_let_go(held);
+    if (held > 0) fprintf(stderr, "avra: they held the clock %lld time(s); let go\n", (long long)held);
+    return n;
+}
+
+// The case's own task: its body, and then — before any other task can
+// run — whoever it made that is still alive, named as outliving it.
+static void* case_ran(void* self) {
+    int64_t (*body)(void) = (int64_t (*)(void))(uintptr_t)((AvraArray*)self)->data[1];
+    int64_t answer = body();
+    int64_t left = case_cleared(0) + case_timers_cleared() + case_holds_cleared();
+    g_case_answer = left == 0 && !g_case_spoiled ? answer : 0;
+    return NULL;
+}
+
+enum { CASE_ENDED, CASE_ALARMED };
+
+// A TASK OF A CASE THAT WAITS ON A FROZEN CLOCK WITHOUT SLEEPING FAILS
+// THAT CASE, never the process: it is said, the runner is woken by the
+// alarm, and the task parks for good — the runner abandons it with the
+// case's others. Outside a case this returns, and the caller traps.
+static int g_case_spun = 0;
+static Fiber* g_case_runner = NULL;
+static void case_spun(const char* words) {
+    if (!g_case_waited || g_current == g_case_runner) return;
+    fprintf(stderr, "avra: %s\n", words);
+    g_case_spun = 1;
+    g_case_spinner = g_current;
+    avra_gate_claim(g_case_alarm);
+    Fiber* self = g_current;
+    self->state = FIBER_PARKED;
+    run_next();
+    avra_trap("defect: a task stopped for spinning on the clock ran again");
+}
+
+// The wide stack's pages back to the kernel: a deep case leaves none
+// resident for the cases after it.
+static void wide_given_back(void) {
+    if (!g_wide.base) return;
+#ifdef __linux__
+    madvise(g_wide.base, g_wide_bytes, MADV_DONTNEED);
+#else
+    madvise(g_wide.base, g_wide_bytes, MADV_FREE);
+#endif
+}
+
+// A CASE RUNS WHERE NOTHING ELSE WAITS: a timer or a descriptor filed
+// beside it would keep the scheduler waiting on the world, and the
+// case's deadlock would never be seen. And a case runs inside no case:
+// a case's tasks are told apart from its runner's by when they were
+// made. Either FAILS THE CASE with its words — never the process, which
+// would hide every later verdict.
+__attribute__((noinline, cold))
+static int64_t case_refused(void) {
+    if (g_case_waited) {
+        fputs("avra: a case ran inside a case — a case's tasks are told apart from its runner's by when they were made\n", stderr);
+        g_case_spoiled = 1;
+        return 0;
+    }
+    fprintf(stderr, "avra: a case runs where nothing else waits — %lld timer(s) and %lld descriptor waiter(s) are filed beside it, and would hide its deadlock\n", (long long)g_timers_len, (long long)g_parked_fds);
+    return 0;
+}
+
+int64_t avra_case_run(int64_t (*body)(void)) {
+    if (g_case_waited || g_timers_len > 0 || g_parked_fds > 0) return case_refused();
+    if (!g_case_alarm) g_case_alarm = avra_gate_new();
+    g_case_first = g_fiber_seq;
+    g_case_spoiled = 0;
+    g_case_spun = 0;
+    g_case_spinner = NULL;
+    g_case_answer = 0;
+    void* box = avra_array_sized(2);
+    avra_array_push(box, (int64_t)(uintptr_t)case_ran);
+    avra_array_push(box, (int64_t)(uintptr_t)body);
+    void* task = avra_task_spawn(box);
+    avra_rc_release(box);
+    ((Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER])->wide = 1;
+    avra_wait_task(task, CASE_ENDED, 0);
+    avra_wait_gate(g_case_alarm, CASE_ALARMED, 0);
+    // RUNS THE CASE OPENS END WITH IT: a case stopped inside one — the
+    // evaluator opens a run for every program — leaves it open, so the
+    // runner closes it, the schedule's first (which closes its own clock),
+    // then any clock run left.
+    int64_t runs = (int64_t)g_runs;
+    int64_t clocks = avra_clock_run_depth();
+    g_case_waited = 1;
+    g_case_runner = g_current;
+    int64_t claim = avra_wait_park();
+    g_case_waited = 0;
+    if (claim >> 32 == CASE_ALARMED) {
+        while ((int64_t)g_runs > runs) avra_sched_run_ends();
+        while (avra_clock_run_depth() > clocks) avra_clock_run_ends();
+        case_cleared(!g_case_spun);
+    }
+    avra_rc_release(task);
+    wide_given_back();
+    return g_case_answer;
+}
+
+// ── The runner's verdict ────────────────────────────────────────
+
+// HOW MANY SCHEDULES, AND WHICH: settings read once, at the first case.
+// ONE UNTIL TIME IS VIRTUAL: a suite whose tasks wait in real time
+// would pay each extra schedule in wall time.
+enum { SCHED_RUNS_DEFAULT = 1 };
+static int64_t g_sched_runs = 0;
+static int64_t g_sched_only = -1;
+static int g_sched_settled = 0;
+static int g_any_chose = 0;
+
+static int64_t whole_setting(const char* name, int64_t least, int64_t fallback) {
+    const char* said = getenv(name);
+    if (!said || !*said) return fallback;
+    char* end = NULL;
+    long long n = strtoll(said, &end, 10);
+    if (*end != 0 || n < least) {
+        char words[160];
+        avra_fmt(words, sizeof words, "%s takes a whole number%s", name, least > 0 ? " above zero" : "");
+        avra_trap(words);
+    }
+    return n;
+}
+
+// A CASE RUNS ON THE VIRTUAL CLOCK unless `AVRA_CLOCK=real` says the
+// wall's: a sleep in it takes no time, and a wait on the world still
+// takes the world's (`make clock-holds`).
+#define CLOCK_SETTING "AVRA_CLOCK"
+static int g_case_clock_virtual = 1;
+static int g_any_failed = 0;
+
+static void case_clock_settled(void) {
+    const char* said = getenv(CLOCK_SETTING);
+    if (!said || !*said || !strcmp(said, "virtual")) return;
+    if (strcmp(said, "real")) avra_trap(CLOCK_SETTING " is `virtual` or `real`");
+    g_case_clock_virtual = 0;
+}
+
+static void schedules_settled(void) {
+    if (g_sched_settled) return;
+    g_sched_runs = whole_setting(SCHED_RUNS_SETTING, 1, SCHED_RUNS_DEFAULT);
+    g_sched_only = whole_setting(SCHED_SEED_SETTING, 0, -1);
+    case_clock_settled();
+    g_sched_settled = 1;
+}
+
+// A CASE'S BODY ANSWERS AN LLVM `i1`, which the backend returns with no
+// extension: only its lowest bit is the answer. So it is called as a
+// byte and that bit read — never as a C `bool`, whose caller may trust
+// the bits above it.
+static uint8_t (*g_case_body)(void) = NULL;
+static int64_t case_body_called(void) { return g_case_body() & 1; }
+static int64_t case_body_held(void) { return avra_case_run(case_body_called); }
+
+// One schedule of `run`: its verdict, and how many choices it made.
+static int64_t scheduled(int64_t schedule, int64_t* choices, int64_t (*run)(void)) {
+    avra_sched_seed(schedule);
+    avra_case_schedule = schedule;
+    // the case's clock is a run of its own: what it jumps ends with it
+    if (g_case_clock_virtual) {
+        avra_clock_run_begins();
+        avra_clock_virtual(1);
+    }
+    int64_t held = run();
+    if (g_case_clock_virtual) avra_clock_run_ends();
+    avra_case_schedule = -1;
+    *choices = avra_sched_settle();
+    if (!held) g_any_failed = 1;
+    return held;
+}
+
+__attribute__((noinline, cold))
+static int64_t case_failed_under(const char* what, const char* label, int64_t schedule) {
+    fprintf(stderr, "avra: %s%s failed under schedule %lld — " SCHED_SEED_SETTING "=%lld replays it\n", what, label, (long long)schedule, (long long)schedule);
+    return 0;
+}
+
+static int64_t case_under(int64_t schedule, int64_t* choices) { return scheduled(schedule, choices, case_body_held); }
+
+// THE SCHEDULES A VERDICT RUNS: schedule 0, then — only when it chose —
+// the next, up to the setting; or the one AVRA_SCHED_SEED names.
+static int64_t over_schedules(const char* what, const char* label, int64_t (*one)(int64_t, int64_t*)) {
+    schedules_settled();
+    int64_t choices = 0;
+    if (g_sched_only >= 0) return one(g_sched_only, &choices) ? 1 : case_failed_under(what, label, g_sched_only);
+    for (int64_t k = 0; k < g_sched_runs; k++) {
+        // A CASE WITH ONE ORDER FAILS IN EVERY ORDER: no schedule replays
+        // anything, so none is named.
+        if (!one(k, &choices)) return choices == 0 && k == 0 ? 0 : case_failed_under(what, label, k);
+        // A CASE THAT MADE NO CHOICE HAS ONE ORDER: no other schedule differs.
+        if (choices == 0) return 1;
+        g_any_chose = 1;
+    }
+    return 1;
+}
+
+int64_t avra_case_verdict(int64_t code, const char* label) {
+    g_case_body = (uint8_t (*)(void))(uintptr_t)code;
+    return over_schedules("", label, case_under);
+}
+
+// The runtime's: the capture of what a program prints, and its words.
+void avra_capture_begin(void);
+const char* avra_capture_end(void);
+int64_t avra_streq(const char* a, const char* b);
+void avra_puts(const char* s);
+
+// A PROGRAM TEST RUNS AS A PROGRAM DOES: its top level on the process's
+// own root, never in a case's task, under each schedule a case runs and
+// on the same clock — its output captured, and every schedule must print
+// what it must. The first that prints otherwise is said with what it
+// printed.
+static int64_t (*g_program_body)(void) = NULL;
+static const char* g_program_label = NULL;
+static const char* g_program_expected = NULL;
+static int64_t program_body_called(void) { g_program_body(); return 1; }
+
+__attribute__((noinline, cold))
+static void program_said_otherwise(const char* got, int ended, int status) {
+    printf("%s: native != expected\n", g_program_label);
+    if (!ended && WIFSIGNALED(status)) printf("(it ended on signal %d)\n", WTERMSIG(status));
+    else if (!ended) printf("(it ended with status %d)\n", WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+    avra_puts(got);
+    fflush(stdout);
+    g_any_failed = 1;
+}
+
+// ONE SCHEDULE IS ONE CHILD, forked before the program runs: what the
+// program leaves dies with it, so the next schedule starts from the image
+// as it stood and a failure replays from its seed alone; a trap or a
+// deadlock ends the child, never the suite. The child's choices come back
+// over a pipe, and a child that never says them made an unknown number.
+static int64_t program_under(int64_t schedule, int64_t* choices) {
+    int told[2];
+    if (pipe(told) != 0) avra_trap("a program test has no pipe to its schedule");
+    // the runtime owns the capture: begun before the fork, ended and
+    // released after the child
+    avra_capture_begin();
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid < 0) avra_trap("a program test cannot fork its schedule");
+    if (pid == 0) {
+        close(told[0]);
+        int64_t made = 0;
+        scheduled(schedule, &made, program_body_called);
+        fflush(stdout);
+        _exit(write(told[1], &made, sizeof made) == sizeof made ? 0 : 3);
+    }
+    close(told[1]);
+    int64_t made = -1;
+    // the clock: the suite waits on its child, outside every clock run
+    ssize_t heard = read(told[0], &made, sizeof made);
+    close(told[0]);
+    int status = 0;
+    // the clock: the suite waits on its child, outside every clock run
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    const char* got = avra_capture_end();
+    int ended = heard == sizeof made && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    *choices = ended ? made : -1;
+    int64_t same = ended && avra_streq(got, g_program_expected);
+    if (!same) program_said_otherwise(got, ended, status);
+    avra_rc_release((void*)got);
+    return same;
+}
+
+int64_t avra_program_verdict(int64_t code, const char* label, const char* expected) {
+    g_program_body = (int64_t (*)(void))(uintptr_t)code;
+    g_program_label = label;
+    g_program_expected = expected;
+    return over_schedules("program ", label, program_under);
+}
+
+int64_t avra_sched_runs_wanted(void) {
+    schedules_settled();
+    return g_sched_only >= 0 ? 1 : g_sched_runs;
+}
+
+int64_t avra_sched_schedule_at(int64_t i) {
+    schedules_settled();
+    return g_sched_only >= 0 ? g_sched_only : i;
+}
+
+int64_t avra_case_clock_virtual(void) {
+    schedules_settled();
+    return g_case_clock_virtual;
+}
+
+void avra_case_schedules_said(void) {
+    if (g_any_failed && g_case_clock_virtual) fputs("avra: the cases ran on the virtual clock — " CLOCK_SETTING "=real runs them on the wall's\n", stderr);
+    if (!g_any_chose || g_sched_only >= 0) return;
+    fprintf(stderr, "avra: a case that chose an order ran up to %lld schedule%s — " SCHED_RUNS_SETTING "=8 runs more, as the nightly `orders` run does; orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
+}
+
+int64_t avra_sched_wide_resident(void) {
+    if (!g_wide.base) return 0;
+    size_t pages = g_wide_bytes / g_page;
+#ifdef __APPLE__
+    char* in = malloc(pages);
+#else
+    unsigned char* in = malloc(pages);
+#endif
+    if (!in || mincore(g_wide.base, g_wide_bytes, in) != 0) { free(in); return -1; }
+    int64_t n = 0;
+    for (size_t i = 0; i < pages; i++) n += in[i] & 1;
+    free(in);
+    return n;
+}
+
+int64_t avra_sched_run_depth(void) { return (int64_t)g_runs; }
+
+int64_t avra_sched_tasks(void) {
+    int64_t n = 0;
+    for (const Fiber* f = g_all; f; f = f->all_next) n += f->state != FIBER_DONE;
+    return n;
 }
 
 // ── What a test and a dump read ─────────────────────────────────
@@ -1813,3 +2965,272 @@ int64_t avra_sched_fd_waiters(void) { return g_parked_fds; }
 int64_t avra_sched_polls(void) { return g_polls; }
 
 int64_t avra_sched_pick_links(void) { return g_pick_links; }
+
+int64_t avra_sched_world_visits(void) { return g_world_visits; }
+
+// ── The listing: `avra tasks <pid>` ─────────────────────────────
+//
+// THE WALK AND WRITE IS ONE PLAIN FUNCTION, `avra_tasks_listed`: every
+// live task, one line each — who, where it was spawned, what it waits
+// on, and how long it has run at most. A signal is one door to it;
+// a target with no signals calls it from its own.
+//
+// THE SIGNAL DOOR. `avra tasks` writes an ASK FILE, then sends SIGURG,
+// whose default action is to be ignored — so a process that never
+// spawned, or is not ours, is unharmed. The HANDLER does only what a
+// handler may: it counts the ask and zeroes the switch's countdown (the
+// word the fast switch already tests), so the next switch takes the
+// world's path, which writes the listing; a process asleep in the
+// poller is woken by the signal itself. The countdown's own decrement
+// is a load and a store on some machines, so the zero can be lost to a
+// switch the signal interrupted; a switch since then has moved the
+// count. So a SECOND signal while the first is unanswered finds the
+// count either still zero — no task has switched, and the handler
+// writes that one line itself, with open, write, close and rename
+// alone — or moved, and zeroes it again. The
+// listing is written beside the ask, renamed into place, and the ask
+// removed; with no ask file of ours there, a signal answers nothing.
+
+// THE DOOR'S NAMES, TWICE: they are written into the copy no handler
+// reads and then made the one it does by a single store, so a signal
+// landing while they are rewritten — at an answer, at a fork — reads
+// the whole of the old names or the whole of the new, never half.
+struct DoorNames { char dir[256]; char ask[64], out[64], tmp[64], line[64]; };
+static DoorNames g_doors[2];
+static volatile sig_atomic_t g_door_at;
+static struct sigaction g_prior_urg;
+
+// AGES BY ID: a task's id is minted in order, so a clock reading taken
+// when `g_fiber_seq` stood at n is a time every later task was spawned
+// after. The world's path notes one wherever it already reads the
+// clock; a task's age is at most the time since the latest reading
+// taken before it was spawned. The first stands for good.
+enum { AGES = 64 };
+typedef struct { uint64_t seq; int64_t at; } Aged;
+static Aged g_ages[AGES];
+static Aged g_first_age;
+static uint32_t g_ages_next = 0;
+
+__attribute__((noinline, cold))
+static void ages_noted(int64_t now) {
+    if (!g_door_open) return;
+    Aged* last = &g_ages[(g_ages_next + AGES - 1) % AGES];
+    if (g_ages_next && last->seq == g_fiber_seq) { last->at = now; return; }
+    g_ages[g_ages_next++ % AGES] = (Aged){ g_fiber_seq, now };
+}
+
+// The latest reading taken before task `id` was spawned.
+static int64_t spawned_after(uint64_t id) {
+    int64_t at = g_first_age.at;
+    uint32_t n = g_ages_next < AGES ? g_ages_next : AGES;
+    for (uint32_t i = 0; i < n; i++) {
+        if (g_ages[i].seq < id && g_ages[i].at > at) at = g_ages[i].at;
+    }
+    return at;
+}
+
+// THE LISTING IS A TRACE: every live task as the trace's own lines, all
+// stamped now — its spawn and site, a `join` or a `park` for each wait
+// it has filed, and its `age` — so one reader prints a trace and a live
+// process alike (`avra trace`, `avra tasks`). The program's own run is
+// task 0 and needs no spawn.
+
+// What a waiter waits on, as a trace's `park` line; nothing for a
+// deadline, which is no wait of its own, or a join's gate, which the
+// `join` line says.
+static void waiter_listed(FILE* out, int64_t now, const Fiber* f, const Waiter* w) {
+    if (!w->filed || w->kind == W_DEADLINE) return;
+    if (w->kind == W_GATE && w->on.gate == f->joining) return;
+    fprintf(out, "ts=%lld park id=%lld src=", (long long)now, (long long)id_of(f));
+    switch (w->kind) {
+        case W_FD_READ: fprintf(out, "fd:r:%d", w->on.fd); break;
+        case W_FD_WRITE: fprintf(out, "fd:w:%d", w->on.fd); break;
+        case W_GATE: fprintf(out, "gate:%p", w->on.gate); break;
+        case W_AT: fputs("at", out); break;
+        case W_DEADLINE: break;
+    }
+    fprintf(out, " arm=%d:%d\n", w->arm, w->member);
+}
+
+static void task_listed(FILE* out, const Fiber* f, int64_t now) {
+    long long id = (long long)id_of(f);
+    if (f != &g_main && id != 0) fprintf(out, "ts=%lld %s id=%lld\n", (long long)now, f->virtual ? "spawn-at" : "spawn", id);
+    const char* site = f->virtual ? f->site : f != &g_main ? site_of((void*)(uintptr_t)task_cells(f->task)[TASK_BODY]) : NULL;
+    if (site) fprintf(out, "ts=%lld site id=%lld %s\n", (long long)now, id, site);
+    else if (!f->virtual && f != &g_main) fprintf(out, "ts=%lld site id=%lld %p\n", (long long)now, id, (void*)(uintptr_t)((AvraArray*)task_cells(f->task)[TASK_BODY])->data[0]);
+    if (f->joining) {
+        const Fiber* on = (const Fiber*)(uintptr_t)task_cells(f->joining)[TASK_FIBER];
+        if (on) fprintf(out, "ts=%lld join id=%lld on=%lld\n", (long long)now, id, (long long)id_of(on));
+        else fprintf(out, "ts=%lld join id=%lld on=unrun\n", (long long)now, id);
+    }
+    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);
+    for (const Over* o = f->more; o; o = o->next) waiter_listed(out, now, f, &o->w);
+    if (!f->virtual && f != &g_main) fprintf(out, "ts=%lld age id=%lld ms=%lld\n", (long long)now, id, (long long)((now - spawned_after((uint64_t)id_of(f))) / 1000000));
+}
+
+void avra_tasks_listed(FILE* out) {
+    int64_t now = now_ns();
+    // whose listing this is: an asker holds it to the process it asked
+    fprintf(out, "ts=%lld listing id=0 pid=%lld\n", (long long)now, (long long)getpid());
+    int evaluated = 0;
+    for (const Fiber* f = g_all; f; f = f->all_next) evaluated |= f->virtual;
+    if (!evaluated) task_listed(out, &g_main, now);
+    // the list holds the newest first: walk it from its end
+    const Fiber* last = g_all;
+    while (last && last->all_next) last = last->all_next;
+    for (const Fiber* f = last; f; f = f->all_prev) {
+        if (f->state != FIBER_DONE) task_listed(out, f, now);
+    }
+}
+
+// THE DOOR'S DIRECTORY IS THE USER'S OWN, never a name in a shared one:
+// `AVRA_TASKS_DIR` when it is set, else the user's own directory
+// (runtime/avra_door.h, the one definition `avra tasks` shares). It is
+// CHOSEN AGAIN AT EVERY ANSWER, so a program started outside a login
+// is answered in the directory an asker inside one finds. It is opened
+// with no link followed and held to its owner and mode at every use,
+// and every file in it is named relative to that open directory. Its
+// file names carry this process's id: what a fork renames.
+static void tasks_door_named(void) {
+    if (!g_door_open) return;
+    DoorNames* next = &g_doors[!g_door_at];
+    const char* chosen = getenv("AVRA_TASKS_DIR");
+    if (chosen && *chosen) {
+        // a relative directory means two places to the asker and to us: none
+        snprintf(next->dir, sizeof next->dir, "%s", chosen[0] == '/' ? chosen : "");
+        size_t n = strlen(next->dir);
+        while (n > 1 && next->dir[n - 1] == '/') next->dir[--n] = 0;
+    } else {
+        avra_user_dir(next->dir, sizeof next->dir);
+    }
+    long long pid = (long long)getpid();
+    snprintf(next->ask, sizeof next->ask, "avra-tasks.%lld.ask", pid);
+    snprintf(next->out, sizeof next->out, "avra-tasks.%lld", pid);
+    snprintf(next->tmp, sizeof next->tmp, "avra-tasks.%lld.tmp", pid);
+    snprintf(next->line, sizeof next->line, "avra-tasks.%lld.line", pid);
+    atomic_signal_fence(memory_order_release);
+    g_door_at = !g_door_at;
+}
+
+// A decimal, written as a handler may.
+static size_t digits_put(char* at, long long v) {
+    char rev[24];
+    size_t n = 0;
+    unsigned long long u = v < 0 ? (unsigned long long)-v : (unsigned long long)v;
+    do { rev[n++] = (char)('0' + u % 10); u /= 10; } while (u);
+    size_t k = 0;
+    if (v < 0) at[k++] = '-';
+    while (n) at[k++] = rev[--n];
+    return k;
+}
+
+// The ask in the open door is ours: a plain file, no link, owned by
+// whoever this process runs as.
+static int ask_ours(int dfd, const DoorNames* names) {
+    struct stat st;
+    return fstatat(dfd, names->ask, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISREG(st.st_mode) && st.st_uid == geteuid();
+}
+
+// No task has switched since the last ask: said by the handler itself,
+// as a trace line under a name of its own, so it never touches a
+// listing being written. An evaluated program's running task is its
+// machine's, which the handler cannot name.
+static void unswitched_said(int dfd, const DoorNames* names) {
+    char line[128];
+    static const char evaluated[] = " unswitched id=0 evaluated pid=";
+    static const char head[] = " unswitched id=";
+    static const char whose[] = " pid=";
+    size_t k = 0;
+    line[k++] = 't';
+    line[k++] = 's';
+    line[k++] = '=';
+    k += digits_put(line + k, (long long)now_ns());
+    if (g_evaluated) {
+        memcpy(line + k, evaluated, sizeof evaluated - 1);
+        k += sizeof evaluated - 1;
+    } else {
+        memcpy(line + k, head, sizeof head - 1);
+        k += sizeof head - 1;
+        k += digits_put(line + k, (long long)id_of(g_current));
+        memcpy(line + k, whose, sizeof whose - 1);
+        k += sizeof whose - 1;
+    }
+    k += digits_put(line + k, (long long)getpid());
+    line[k++] = '\n';
+    unlinkat(dfd, names->line, 0);
+    int fd = openat(dfd, names->line, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+    ssize_t w = write(fd, line, k);
+    (void)w;
+    close(fd);
+    renameat(dfd, names->line, dfd, names->out);
+}
+
+// A handler that stood before ours is still called.
+static void prior_called(int sig, siginfo_t* info, void* context) {
+    if (g_prior_urg.sa_flags & SA_SIGINFO) {
+        if (g_prior_urg.sa_sigaction) g_prior_urg.sa_sigaction(sig, info, context);
+        return;
+    }
+    if (g_prior_urg.sa_handler != SIG_DFL && g_prior_urg.sa_handler != SIG_IGN) g_prior_urg.sa_handler(sig);
+}
+
+// A SECOND ask while the first is unanswered is answered here only when
+// no task has switched since — the count still at the zero the first
+// stored — and the scheduler is not in the world's path, which answers
+// asks itself and may be sleeping or writing the listing.
+static void tasks_asked(int sig, siginfo_t* info, void* context) {
+    int saved = errno;
+    if (g_asked++ > 0 && !g_in_world && g_until_poll == 0) {
+        const DoorNames* names = &g_doors[g_door_at];
+        int dfd = avra_dir_held(names->dir);
+        if (dfd >= 0) {
+            if (ask_ours(dfd, names)) unswitched_said(dfd, names);
+            close(dfd);
+        }
+    }
+    g_until_poll = 0;
+    prior_called(sig, info, context);
+    errno = saved;
+}
+
+// At a switch, after a signal: the listing, if one was asked of us.
+__attribute__((noinline, cold))
+static void tasks_answered(void) {
+    g_asked = 0;
+    tasks_door_named();
+    const DoorNames* names = &g_doors[g_door_at];
+    int dfd = avra_dir_held(names->dir);
+    if (dfd < 0) return;
+    if (ask_ours(dfd, names)) listing_written(dfd, names);
+    close(dfd);
+}
+
+// The listing beside the ask, then into place — the ask taken first, so
+// an asker who asks again on seeing the answer is answered again.
+static void listing_written(int dfd, const DoorNames* names) {
+    unlinkat(dfd, names->tmp, 0);
+    int fd = openat(dfd, names->tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd < 0) return;
+    FILE* out = fdopen(fd, "w");
+    if (!out) { close(fd); return; }
+    avra_tasks_listed(out);
+    fclose(out);
+    unlinkat(dfd, names->ask, 0);
+    renameat(dfd, names->tmp, dfd, names->out);
+}
+
+// Once, at the first spawn or the evaluator's first task.
+__attribute__((noinline))
+static void tasks_door_opened(void) {
+    if (g_door_open) return;
+    g_door_open = 1;
+    g_first_age = (Aged){ g_fiber_seq, now_ns() };
+    tasks_door_named();
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = tasks_asked;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART | SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGURG, &sa, &g_prior_urg);
+}

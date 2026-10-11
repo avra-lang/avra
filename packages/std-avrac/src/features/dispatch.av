@@ -3,7 +3,11 @@
 //! node's. A new node kind breaks the map at compile time, and the
 //! impl it names owes every pass, enforced by the traits. The walk
 //! order every pass shares lives here too.
-use core.{Expr, Stmt, ExprId, SyntaxArena, flatten, Pat, body_behavior}
+use core.{Expr, Stmt, ExprId, SyntaxArena, flatten, Pat, body_behavior, TypeId, Reg}
+use core.expr.{Body}
+use features.str_lit.{str_type, str_lower}
+use features.quote.{quote_type, quote_reg}
+use features.sublang.{block_type, block_reg}
 
 /// Every feature's boxed semantics, built ONCE per assembly — the
 /// exhaustive maps below only SELECT. The language builds it (the
@@ -58,6 +62,7 @@ export type Dispatch = {
     jumps: dyn StmtSemantics,
     enumpats: dyn PatSemantics,
     formatpats: dyn PatSemantics,
+    narrowpats: dyn PatSemantics,
     quotepats: dyn PatSemantics,
 }
 
@@ -90,7 +95,7 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
         .Catch(_, _, _, _) -> d.catches,
         .MethodCall(_, _, _) or .Receiver -> d.methods,
         .Lambda(_, _) or .CallValue(_, _) -> d.lambdas,
-        .Spawn(_) -> d.tasks,
+        .Spawn(_) or .Within(_, _) -> d.tasks,
         .Range(_, _) -> d.ranges,
         .Env(_) -> d.spine,
     }
@@ -99,12 +104,12 @@ export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
 /// The semantics of each PATTERN kind — the pattern ladder's twin
 /// of semantics_of. A new `Pat` variant breaks HERE at compile
 /// time, and the impl it names owes all three methods, enforced by
-/// the trait. Enums owns every variant today; a second owner adds
-/// its arms here and nowhere else.
+/// the trait. An owner adds its arms here and nowhere else.
 export fn pat_semantics_of(d: Dispatch, p: Pat) -> dyn PatSemantics {
     match p {
-        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Lit(_) -> d.enumpats,
+        .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Lit(_) or .Member(_, _) -> d.enumpats,
         .Format(_, _) -> d.formatpats,
+        .Typed(_, _) -> d.narrowpats,
         .Quote(_) -> d.quotepats,
     }
 }
@@ -137,7 +142,7 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
         .Spec(_, _) -> d.specs,
         .Defer(_, _) -> d.defers,
         .Collect(_, _, _, _, _, _) -> d.collects,
-        .CollectEnum(_, _, _, _) -> d.collectenums,
+        .CollectEnum(_, _, _, _, _) -> d.collectenums,
         .Jump(_, _) -> d.jumps,
         // a setting lives in an instance's body, consumed where the
         // instance is built — it reaches a pass only as a hole would
@@ -152,4 +157,26 @@ export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
 export fn post_order(d: Dispatch, store: SyntaxArena, root: ExprId) -> List<ExprId> {
     let node = store.expr(root)
     flatten([post_order(d, store, k) for k in semantics_of(d, node).kids(node)]).concat([root])
+}
+
+impl Meaning for Body {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        let bp? = cx.view.store.expr(e).body_of() else { return cx.error_type }
+        match body_behavior(bp.word) {
+            .Text -> str_type(cx, e),
+            .Quote -> quote_type(cx, e),
+            .Foreign -> block_type(cx, e),
+        }
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
+        let bp? = cx.view.store.expr(e).body_of() else { return cx.lower_defect(e, "a body node without its parts") }
+        match body_behavior(bp.word) {
+            .Text -> str_lower(cx, e),
+            .Quote -> quote_reg(cx, e),
+            .Foreign -> block_reg(cx, e),
+        }
+    }
 }

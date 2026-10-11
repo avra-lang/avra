@@ -1,0 +1,27 @@
+// proves: a member naming its own gathered enum carries that field
+// whichever is signed first — the member is written before the enum,
+// and nothing asks the enum ahead of it.
+use @std.meta.{Named}
+
+fn shape(_t: Named, _rank: int) {}
+
+@shape(0)
+type Dot = {}
+
+@shape(1)
+type Neg = { inner: Shape? }
+
+@shape(2)
+type Both = { left: Shape, right: List<Shape> }
+
+collect enum Shape = @shape in self by it.mark.args[0] dense
+
+fn depth(s: Shape) -> int {
+    match s {
+        .Dot -> 0,
+        .Neg(inner) -> 1 + if inner == null { 0 } else { depth(inner!) },
+        .Both(left, right) -> 1 + depth(left) + right.length,
+    }
+}
+
+"${depth(Shape.Neg(Shape.Neg(null)))} ${depth(Shape.Both(Shape.Neg(Shape.Dot), [Shape.Dot]))}"

@@ -13,7 +13,7 @@ use @std.http.http.{Request, Unrouted, Response, Pulled}
 use @std.http.body.{Body}
 use @std.http.route.{compiled, dispatch}
 use @std.http.fetch.{get}
-use commands.{Page, page_of, toolchain}
+use commands.{Page, page_of, toolchain, root_workspace}
 
 /// A page package in scratch: one text, mounted.
 once fn dev_page() -> string {
@@ -200,9 +200,13 @@ fn page_source(words: string) -> string {
 /// yet, with the tree's own compiler and glue — none on a machine with no
 /// wasm toolchain, which the compiler has then said.
 fn serving(source: string) -> Page? {
-    let tools = match toolchain("wasm", true, false) { .Ok(t) -> t, .Err(_) -> { return null } }
+    let lister = root_workspace(package_of("dev_loop", source))
+    let tools = match toolchain(lister, "wasm", true, false) {
+        .Ok(t) -> t,
+        .Err(_) -> { return null },
+    }
     match tool("${tree_root()}/build/avra") {
-        .Ok(compiler) -> page_of(package_of("dev_loop", source), tools, compiler, "${tree_root()}/runtime/dom"),
+        .Ok(compiler) -> page_of(lister, tools, compiler, "${tree_root()}/runtime/dom"),
         .Err(_) -> null,
     }
 }

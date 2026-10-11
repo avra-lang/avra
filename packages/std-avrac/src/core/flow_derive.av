@@ -1,0 +1,169 @@
+//! `@derive(Flow)` — how control runs through a node's children,
+//! decided ON the variant: each wears exactly one control word.
+//!
+//! `@apart` — its children run elsewhere or never here.
+//! `@sequence` — its fields' expressions run in field order.
+//! `@branches` — its own fn decides: `<arena>_<variant>_control`,
+//! handed the payload in order.
+//!
+//! A variant wearing none or two is refused, so the next variant
+//! decides as every one before it did. It stands ALONE in this file: a
+//! derive is typed while the annotated file is still registering.
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Declared,
+    Diagnostic,
+    Code,
+    Arms,
+    name,
+    refuse_as_at,
+}
+use @std.text.{codepoints, from_codepoints}
+
+/// The control words, one of which every variant wears.
+const flow_words: List<string> = ["apart", "sequence", "branches"]
+
+/// The compiler's derive for control flow through a node's children.
+export trait Flow {
+    static fn derive(t: MetaType) -> Declared {
+        let problems = flatten([flow_problems(v) for v in t.variants])
+        if !problems.is_empty() { return Declared { made: [refused_flow(t)], problems: problems } }
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
+                        impl SyntaxArena {
+                            fn ${control_of(t.name)}(id: ${holder_of(t.name)}) -> Control {
+                                match self.${reader_of(t.name)}(id) { ${[flow_arm(t.name, v) for v in t.variants]} }
+                            }
+                        }
+                    },
+                },
+            ],
+            problems: [],
+        }
+    }
+
+    static fn marks(t: MetaType) -> List<string> { flow_words }
+}
+
+/// What a refused enum is given: the walk, answering nothing anyone
+/// wrote — the build is already refused, so no caller is blamed for a
+/// method that was never made.
+fn refused_flow(t: MetaType) -> Directive {
+    Directive {
+        twin: "",
+        name: t.name,
+        at: t.at,
+        source: quote {
+            impl SyntaxArena {
+                fn ${control_of(t.name)}(_id: ${holder_of(t.name)}) -> Control { Control.Apart }
+            }
+        },
+    }
+}
+
+/// One variant's arm, by the word it wears.
+fn flow_arm(owner: string, v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${flow_answer(owner, v)} } }
+    quote { .${v}(${binders(v)}) -> ${flow_answer(owner, v)} }
+}
+
+fn flow_answer(owner: string, v: MetaVariant) -> Code {
+    if marked(v, "apart") != null { return quote { Control.Apart } }
+    if marked(v, "sequence") != null { return quote { Control.Seq(${concatenated(steps_of(v))}) } }
+    let args = [name(f.name) for f in v.fields]
+    quote { ${branch_of(owner, v.name)}(${..args}) }
+}
+
+/// What a `@sequence` variant runs, field by field.
+fn steps_of(v: MetaVariant) -> List<Code> { [c for f in v.fields for c in runs(step(f))] }
+
+fn runs(s: Step) -> List<Code> {
+    match s { .Runs(c) -> [c], .Still or .Unknown -> [] }
+}
+
+/// HOW A FIELD'S TYPE STEPS — the whole registry: a type that runs
+/// expressions, one that runs none, or one this walk does not know,
+/// which a `@sequence` variant is refused for.
+enum Step {
+    Runs(code: Code)
+    Still
+    Unknown
+}
+
+fn step(f: Field) -> Step {
+    let b = name(f.name)
+    match f.ty {
+        "ExprId" -> Step.Runs(quote { [At.Expr(${b})] }),
+        "ExprId?" -> Step.Runs(quote { exprs_at(some_list(${b})) }),
+        "List<ExprId>" -> Step.Runs(quote { exprs_at(${b}) }),
+        "List<StmtId>" -> Step.Runs(quote { stmts_at(${b}) }),
+        "int" or "bool" or "string" or "List<string>" or "Scoped" or "Scoped?" or "Plain" or "List<Plain>" or "Nominal" or "TypeRef" or "TypeRef?" or "List<TypeRef>" or "BodyView" -> Step.Still,
+        _ -> Step.Unknown,
+    }
+}
+
+fn unknown(s: Step) -> bool {
+    match s { .Unknown -> true, .Runs(_) or .Still -> false }
+}
+
+/// What is wrong with a variant's word, when anything is.
+fn flow_problems(v: MetaVariant) -> List<Diagnostic> {
+    let worn = [w for w in flow_words if marked(v, w) != null]
+    if worn.is_empty() { return [wordless(v)] }
+    if worn.length > 1 { return [two_words(v, worn)] }
+    if worn[0] != "sequence" { return [] }
+    [unsteppable(v, f) for f in v.fields if unknown(step(f))]
+}
+
+/// The walk's name per arena.
+fn control_of(owner: string) -> string { "${reader_of(owner)}_control" }
+
+/// The fn a `@branches` variant is decided by.
+fn branch_of(owner: string, variant: string) -> string { "${reader_of(owner)}_${snake(variant)}_control" }
+
+/// `MatchOpt` → `match_opt`.
+fn snake(word: string) -> string { from_codepoints([c for j, u in codepoints(word) for c in lowered(u, j)]) }
+
+/// One code point of a name in snake case: a capital is its lower
+/// letter, behind `_` unless it opens the name.
+fn lowered(u: int, at: int) -> List<int> {
+    if u < 65 || u > 90 { return [u] }
+    if at == 0 { [u + 32] } else { [95, u + 32] }
+}
+
+// ── voices ──
+
+fn wordless(v: MetaVariant) -> Diagnostic {
+    refuse_as_at(
+        "flow-word",
+        v.at,
+        "a node variant wears exactly one control word — `${v.name}` wears none",
+        "mark it `@apart`, `@sequence` or `@branches`",
+    )
+}
+
+fn two_words(v: MetaVariant, worn: List<string>) -> Diagnostic {
+    refuse_as_at(
+        "flow-word",
+        v.at,
+        "a node variant wears exactly one control word — `${v.name}` wears ${worn.length}",
+        "keep one of ${["`@${w}`" for w in worn].join(", ")}",
+    )
+}
+
+fn unsteppable(v: MetaVariant, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "flow-step",
+        v.at,
+        "a `@sequence` variant runs its fields' expressions in order — `${v.name}`'s `${f.name}` is `${f.ty}`, which no step reads",
+        "mark it `@branches` and decide it in its own fn",
+    )
+}

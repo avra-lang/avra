@@ -1,0 +1,256 @@
+//! THE WORLD, AS CELLS. Every read of the world a query makes is one
+//! `Family.Input` cell: asked through the door once, kept, and cut by
+//! its digest, so a query that read it is ordered after it. A cell
+//! stands until the DRIVER says the world may have moved — then every
+//! input is read again, and only one whose digest differs moves the
+//! revision.
+use compiler.families.{Family}
+use compiler.host.{Read, InputName, InputKind, Listed, Stamp}
+use @std.relation.engine.{Loaded}
+
+/// What reading the world again found.
+export enum Moved {
+    /// Every input that can move under a running process was read again
+    /// — so many — and each one that
+    /// differed moved the revision.
+    Reread(inputs: int)
+    /// The set of files moved, or a manifest's text did. The package
+    /// graph is no longer this workspace's to answer: the driver lets
+    /// it go and opens another.
+    Graph
+}
+
+/// What a turn's first question answers: the files the build reads, or
+/// that the package graph moved.
+export enum Looked { Inputs(files: List<string>), Graph }
+
+/// A name as it is interned and shown: its kind's word, then its key.
+fn spelled(name: InputName) -> string { "${kind_word(name.kind)} ${name.key}" }
+
+fn kind_word(k: InputKind) -> string {
+    match k {
+        .Text -> "text",
+        .Octets -> "octets",
+        .Range -> "range",
+        .Listing -> "listing",
+        .Exists -> "exists",
+        .Env -> "env",
+        .Tool -> "tool",
+        .Compiler -> "compiler",
+        .Embedded -> "embedded",
+    }
+}
+
+/// Whether a kind of input says WHAT FILES THERE ARE, rather than what
+/// one holds.
+fn names_the_set(k: InputKind) -> bool {
+    match k {
+        .Exists or .Listing -> true,
+        .Text or .Octets or .Range or .Env or .Tool or .Compiler or .Embedded -> false,
+    }
+}
+
+/// The name a file's text is asked by.
+fn text_named(path: string) -> InputName { InputName { kind: .Text, key: path } }
+
+fn loaded(seen: Read) -> Loaded<DbRow> {
+    Loaded { value: DbRow.Input(seen), fingerprint: seen.input().digest.word }
+}
+
+impl Workspace {
+    /// Whether anything stands at `path` — one cell, read once.
+    fn there(path: string) -> bool {
+        match self.input(InputName { kind: .Exists, key: path }) {
+            .Exists(_, there) -> there,
+            _ -> false,
+        }
+    }
+
+    /// A directory's entries, sorted; null where no directory stands.
+    fn listing(dir: string) -> List<Listed>? {
+        match self.input(InputName { kind: .Listing, key: dir }) {
+            .Listing(_, entries) -> entries,
+            _ -> null,
+        }
+    }
+
+    /// The names in a directory, sorted; none where no directory stands.
+    fn listed(dir: string) -> List<string> {
+        [e.name for e in self.listing(dir) ?? []]
+    }
+
+    /// Whether a directory stands at `dir`.
+    fn is_dir(dir: string) -> bool { self.listing(dir) != null }
+
+    /// A LISTED file's text, through its cell. No text there — nothing
+    /// stands, or the host will not give it — is the host's to refuse,
+    /// on the first read and on every read after: it is never an empty
+    /// file passed on in silence. Under a host that refuses nothing it
+    /// reads as no text.
+    fn listed_text(path: string) -> string {
+        let text? = self.input(text_named(path)).as_text() else {
+            (self.host.refused)(path)
+            return ""
+        }
+        text
+    }
+
+    /// A variable's value, through its cell; none when it is unset.
+    fn env(name: string) -> string? {
+        match self.input(InputName { kind: .Env, key: name }) { .Env(_, value) -> value, _ -> null }
+    }
+
+    /// A tool by its word, through its cell; none when no tool answers.
+    fn tool(word: string) -> Stamp? {
+        match self.input(InputName { kind: .Tool, key: word }) {
+            .Tool(_, stamp) -> stamp,
+            _ -> null,
+        }
+    }
+
+    /// The running compiler's bytes as one digest, through its cell — read
+    /// once for the process; none when the host cannot name or read it.
+    fn running_print() -> string? {
+        match self.input(InputName { kind: .Compiler, key: "" }) {
+            .Compiler(print) -> print,
+            _ -> null,
+        }
+    }
+
+    /// The cell a file's text stands in, when it was read — asking mints
+    /// nothing.
+    fn text_cell(path: string) -> int? { self.known_key(spelled(text_named(path))) }
+
+    /// The cell key of a file's text.
+    fn text_key(path: string) -> int { self.world_key(text_named(path)) }
+
+    /// A name's cell key, minted the first time it is asked.
+    fn world_key(name: InputName) -> int {
+        let key = spelled(name)
+        self.known_key(key) ?? self.minted_key(name, key)
+    }
+
+    /// The cell key a spelled name already holds, or none.
+    fn known_key(key: string) -> int? { self.input_index.get().get(key) }
+
+    fn minted_key(name: InputName, key: string) -> int {
+        let next = self.names_count()
+        self.input_index.put(key, next)
+        self.input_names.push(name)
+        next
+    }
+
+    fn names_count() -> int { self.input_names.get().length }
+
+    /// One read of the world by name, through its cell.
+    fn input(name: InputName) -> Read {
+        let at = self.world_key(name)
+        read_of(self.relation(Family.Input).input_loaded(at, () -> loaded(self.asked(name))))
+    }
+
+    fn input_at(at: int) -> Read { self.input(self.input_names.get()[at]) }
+
+    /// The word a file's Text input is cut by; zero before it is read.
+    fn text_word(path: string) -> int { self.db.value_hash_of(key(Family.Input, self.text_key(path))) ?? 0 }
+
+    /// THE WORLD MAY HAVE MOVED: every input read so far is read again
+    /// through the door, but one that stands for the running process. A TEXT that differs moves the revision — a
+    /// source and a scan are queries over their text's input, so they
+    /// follow. The SET of files that differs — something stands or no
+    /// longer stands, a directory lists otherwise — or a manifest's
+    /// text, moves the package graph instead, and this workspace
+    /// answers nothing after. The driver's verb, at the start of a
+    /// request — never a query's, which would move the ground it stands
+    /// on.
+    export fn world_moved() -> Result<Moved, string> {
+        if !self.db.kernel.asker.open.get().is_empty() { fail world_moved_in_query() }
+        if self.let_go() { fail stand_voice(self.stand.get()) }
+        let again = [at for at, name in self.input_names.get() if !name.kind.stands_for_process()]
+        if [at for at in again if self.input_reread(at, self.input_names.get()[at])]
+            .any((at) -> self.shapes_graph(at)) {
+            self.discarded()
+            return .Ok(Moved.Graph)
+        }
+        .Ok(Moved.Reread(again.length))
+    }
+
+    /// Whether an input cell is one the package graph is shaped by: one
+    /// that says what files there are, or a manifest's text.
+    fn shapes_graph(at: int) -> bool {
+        names_the_set(self.input_names.get()[at].kind) || self.manifest_texts.get().contains(at)
+    }
+
+    /// One input read again and set. Answers whether it differed.
+    fn input_reread(at: int, name: InputName) -> bool {
+        let seen = self.asked(name)
+        let word = seen.input().digest.word
+        let differed = self.db.value_hash_of(key(Family.Input, at)) ?? 0 != word
+        self.relation(Family.Input).set(at, DbRow.Input(seen), word)
+        differed
+    }
+
+    /// Every file the root program's build reads, as the world stands
+    /// NOW — the driver's question at the start of a turn: the world is
+    /// read again first, so a file added, removed or changed since the
+    /// last turn is seen. None for a package with no entry.
+    export fn inputs_now() -> Result<Looked, string> {
+        match self.world_moved()? {
+            .Graph -> .Ok(Looked.Graph),
+            .Reread(_) -> {
+                let entry? = self.entry_of() else { return .Ok(Looked.Inputs([])) }
+                .Ok(Looked.Inputs(self.build_inputs(entry)))
+            },
+        }
+    }
+
+    /// THE WORKSPACE AFTER ITS PACKAGE GRAPH MOVED: this one let go
+    /// first — its values, its hooks, its relations' rows — and only
+    /// then the same program opened with nothing remembered. Never two
+    /// standing at once.
+    export fn regraphed() -> Workspace {
+        if !self.let_go() { self.discarded() }
+        self.anew()
+    }
+
+    /// The door's answer for a name. A kind no cell asks for is a
+    /// defect: its door verb is not built.
+    fn asked(name: InputName) -> Read {
+        match name.kind {
+            .Exists -> self.host.there(name.key),
+            .Listing -> self.host.listing(name.key),
+            .Text -> self.host.spared_text(name.key),
+            .Embedded -> self.embedded_asked(name.key),
+            .Env -> self.host.variable(name.key),
+            .Compiler -> self.host.running(),
+            .Tool -> self.host.found(name.key),
+            .Octets -> self.host.spared_octets(name.key),
+            .Range -> {
+                avra_trap("defect: no door verb reads a `${kind_word(name.kind)}` input")
+                Read.Refused(name, "")
+            },
+        }
+    }
+}
+
+/// A TURN'S FIRST QUESTION, asked of the workspace a driver holds
+/// across turns: what the build reads now. A workspace whose package
+/// graph moved is let go and replaced in `held`, and the replacement
+/// answers — so the driver never holds two, and never one that answers
+/// nothing.
+export fn inputs_this_turn(held: Cell<Workspace>) -> Result<List<string>, string> {
+    match held.get().inputs_now()? {
+        .Inputs(files) -> .Ok(files),
+        .Graph -> {
+            held.set(held.get().regraphed())
+            inputs_this_turn(held)
+        },
+    }
+}
+
+fn asked_after_let_go() -> string {
+    "this workspace was let go — it answers nothing more; open another (`regraphed`)"
+}
+
+fn world_moved_in_query() -> string {
+    "`world_moved` is the driver's verb — a query cannot re-read the world it is answering from"
+}

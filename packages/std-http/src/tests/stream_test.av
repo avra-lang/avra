@@ -2,6 +2,11 @@
 //! framed by its length or in chunks, and ended ONCE however the
 //! pulling stops. Every exchange is exact bytes.
 use @std.net.{Conn, NetError, listen, connect}
+
+/// The case's clock virtual, or the wall's: a virtual clock moves only
+/// when every task waits, so a case that measures time a task spends
+/// COMPUTING runs on the wall's.
+extern fn avra_clock_virtual(on: int)
 use @std.time.{ms, secs, sleep}
 use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, Header, Stream, Pulled, stream_of, text}
@@ -282,6 +287,8 @@ fn spinning(t: Tally, q: Request<Unrouted>) -> Response {
 /// second client is answered while it spins, and its quiet is cut by
 /// the idle deadline as a silent producer's is.
 fn spinner_starves_nobody() -> Result<bool, NetError> {
+    // the producer never parks, and its quiet is time it spends computing
+    avra_clock_virtual(0)
     let t = tally()
     let b = bed_with(
         (_app: App, q: Request<Unrouted>) -> spinning(t, q),

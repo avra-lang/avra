@@ -1,0 +1,46 @@
+//! The scalar family answers' own codecs: an `int`, `bool` or `string`
+//! answer is one `MetaVal` scalar — the value codec the store already
+//! keeps — so each reads back through the SAME `wire_value`/
+//! `WireReader` pair. `compiler/codecs.av` exercises each.
+use features.{MetaVal}
+
+/// One `MetaVal` value out of a whole wire — `null` when the wire
+/// carries more or less than one.
+fn read_meta_value(w: string) -> MetaVal? {
+    mut r = WireReader { raw: w, pos: 0 }
+    let v? = r.value() else { return null }
+    if r.pos != w.length { return null }
+    v
+}
+
+fn int_wire(n: int) -> string { wire_value(MetaVal.Int(n)) }
+
+fn int_of_wire(w: string) -> int? {
+    let v? = read_meta_value(w) else { return null }
+    match v { .Int(n) -> n, _ -> null }
+}
+
+fn bool_wire(b: bool) -> string { wire_value(MetaVal.Bool(b)) }
+
+fn bool_of_wire(w: string) -> bool? {
+    let v? = read_meta_value(w) else { return null }
+    match v { .Bool(b) -> b, _ -> null }
+}
+
+fn text_wire(s: string) -> string { wire_value(MetaVal.Text(s)) }
+
+fn text_of_wire(w: string) -> string? {
+    let v? = read_meta_value(w) else { return null }
+    match v { .Text(s) -> s, _ -> null }
+}
+
+/// A `bool?` answer: absence is the absent value, distinct from a
+/// present false.
+fn presence_wire(b: bool?) -> string {
+    if b == null { wire_value(MetaVal.Absent) } else { wire_value(MetaVal.Bool(b!)) }
+}
+
+fn presence_of_wire(w: string) -> bool? {
+    let v? = read_meta_value(w) else { return null }
+    match v { .Bool(b) -> b, _ -> null }
+}

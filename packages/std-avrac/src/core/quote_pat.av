@@ -160,6 +160,24 @@ export fn root_kind_of(store: SyntaxArena, arms: List<Arm>) -> List<int>? {
     [k! for k in kinds]
 }
 
+/// EVERY NODE KIND A RULE'S PATTERNS NAME, as `kind_at` folds them — what
+/// a running compiler checks a rule another compiler baked against.
+export fn pattern_kinds(store: SyntaxArena, arms: List<Arm>) -> List<int> {
+    let roots = flatten([some_list(quote_root(store, p)) for a in arms for p in a.pats])
+    let kinds = [store.kind_at(at) for root in roots for at in nodes_under(store, root)]
+    [k for i, k in kinds if kinds.index_of(k) == i]
+}
+
+fn quote_root(store: SyntaxArena, p: PatId) -> At? {
+    let body? = match store.pat(p) { .Quote(b) -> b, rest -> null } else { return null }
+    quote_pat_root(store, body)
+}
+
+/// A node and every node under it.
+fn nodes_under(store: SyntaxArena, at: At) -> List<At> {
+    [at].concat(flatten([nodes_under(store, k) for k in store.kids_at(at)]))
+}
+
 /// One pattern's own INDEX: when it is a `Pat.Quote`, rooted
 /// (`quote_pat_root`), its root folded to its shallow kind
 /// (`shallow_at` — Expr vs Stmt, which variant, and every field). A

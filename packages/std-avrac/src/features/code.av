@@ -46,8 +46,7 @@ use features.{
 use features.enums.{answering_arms, binders}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
-use @std.relation.{relation}
-use @std.relation.db.{Db as RelDb, new_db}
+use @std.meta.{Subject}
 
 /// What every bound hole shares: the file a rule reads, and the two
 /// pass tables a fact comes from — one per analysis, never copied or
@@ -80,14 +79,17 @@ export fn run_coded(of: Analysed, ats: List<At>) -> List<Code> {
     [Code { of: of, at: a } for a in ats]
 }
 
-impl Code {
+/// The compiler's own handle IS a rule's subject.
+impl Subject for Code {
     /// The node's own source, verbatim — "" for one no span names
     /// (a generated node).
     fn text() -> string {
         let sp? = self.of.view.store.span_at(self.at) else { return "" }
         self.of.view.source.text.substring(sp.lo, sp.hi)
     }
+}
 
+impl Code {
     /// This node's children, each still carrying this Code's facts —
     /// `kids_at`'s walk, wrapped.
     fn kids() -> List<Code> {
@@ -317,7 +319,7 @@ impl Code {
             .Expr(id) -> match self.of.view.store.expr(id) {
                 .Call(_, _, _) -> self.kids(),
                 .MethodCall(_, _, _) or .CallValue(_, _) -> self.kids().slice(1, self.kids().length),
-                .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Named(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) or .Range(_, _) or .Env(_) -> [],
+                .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Named(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Within(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) or .Range(_, _) or .Env(_) -> [],
             },
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
@@ -936,7 +938,7 @@ export fn spliced_text(c: Code) -> string {
 fn atomic_at(e: Expr) -> bool {
     match e {
         .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .VariantLit(_, _) or .Call(_, _, _) or .MethodCall(_, _, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Range(_, _) or .Env(_) -> true,
-        .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Named(_, _) or .Error -> false,
+        .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Within(_, _) or .Named(_, _) or .Error -> false,
     }
 }
 
@@ -1054,37 +1056,29 @@ fn enclosing_decl_scanned(view: FileView, at: At) -> DeclId? {
 
 // ── the assign-roots index: `write_roots`' per-file cache ──
 
-/// One statement's own assignment root, filed once per file: the
-/// declaration whose body holds the write, and the root its place
-/// (or its writing method's receiver) targets — `@index owner` answers
-/// `write_roots`' whole-file walk with one lookup.
-@relation
-type AssignRoot = { @local @index owner: DeclId, @local root: ExprId }
-
 /// Every assign root filed under `at`'s own enclosing declaration —
 /// `write_roots`' bound, read from the file's index instead of a
 /// fresh arena walk.
 fn assign_roots_at(view: FileView, at: At) -> List<ExprId> {
     let d? = enclosing_decl(view, at) else { return [] }
-    [r.root for r in AssignRoot.by_owner(view.assign_roots(), d)]
+    view.assign_roots().get("${d.index}") ?? []
 }
 
-/// This file's assignment roots, one row per statement whose target
-/// has a place root: built once, from the WHOLE ARENA — never
-/// `view.stmts` (the file's TOP LEVEL alone), since an assignment
-/// almost always nests inside a fn's body — and cached on `view`
+/// This file's assignment roots, the roots a declaration's own statements
+/// write to keyed by its index: built once, from the WHOLE ARENA — never
+/// `view.stmts` (the file's TOP LEVEL alone), since an assignment almost
+/// always nests inside a fn's body — and cached on `view`
 /// (`FileView.assign_roots`), never rewalked per local or param.
-fn filed_assign_roots(view: FileView) -> RelDb {
-    let db = new_db()
-    for s in view.store.stmt_ids() { file_assign_root(db, view, s) }
-    db
-}
-
-fn file_assign_root(db: RelDb, view: FileView, s: StmtId) {
-    let t? = view.store.assign_target(s) else { return }
-    let root? = view.store.place_root(t) else { return }
-    let d? = enclosing_decl(view, At.Stmt(s)) else { return }
-    let _ = AssignRoot.insert(db, owner: d, root: root)
+fn filed_assign_roots(view: FileView) -> Map<string, List<ExprId>> {
+    mut out: Map<string, List<ExprId>> = {}
+    for s in view.store.stmt_ids() {
+        let t? = view.store.assign_target(s) else { continue }
+        let root? = view.store.place_root(t) else { continue }
+        let d? = enclosing_decl(view, At.Stmt(s)) else { continue }
+        let owner = "${d.index}"
+        out.set(owner, (out.get(owner) ?? []).concat([root]))
+    }
+    out
 }
 
 // ── pure(): a registry over Expr, folded through kids_at ──
@@ -1107,7 +1101,7 @@ fn could_be_pure(of: Analysed, id: ExprId) -> bool {
     match of.view.store.expr(id) {
         .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Force(_) or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Coalesce(_, _) or .Chain(_, _) or .Is(_, _) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> true,
         .MethodCall(_, _, _) -> method_could_be_pure(of, id),
-        .Comp(_, _) or .Collect(_) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Call(_, _, _) or .Match(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Error -> false,
+        .Comp(_, _) or .Collect(_) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Call(_, _, _) or .Match(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Within(_, _) or .Error -> false,
     }
 }
 

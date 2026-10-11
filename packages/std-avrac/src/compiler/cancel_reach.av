@@ -1,0 +1,350 @@
+//! WHETHER A CALL MAY REACH A CANCEL POINT — the fact a caller's test
+//! after the call is emitted by, in two bits: `parks`, a cancel point it
+//! waits at, and `spins`, a `while` whose back-edge is one, each here or
+//! in a callee. A fn MAY REACH when either holds: its body calls a
+//! runtime row that may switch the task out (`RtSig.waits`), reads a
+//! property or calls a vocabulary method that may (`waits` on the
+//! row), spawns (the task is joined where its owner's scope ends),
+//! holds a `while` (its back-edge is a cancel point), or calls through
+//! a value — a closure, a fn-typed field, a contract or a bounded
+//! parameter, any of which may be anything — or calls a fn that may.
+//! A lambda's body counts as its maker's: where it runs, it runs
+//! inside a call the maker made, and where it runs elsewhere that call
+//! is through a value. A WHOLE-PROGRAM PASS: each member surveyed ONCE
+//! from its typed facts — every node through `node_waits` (node_waits.av,
+//! the one answer every reader asks) — into its own evidence and the
+//! members it calls, then
+//! the answer spreads from every member with evidence to its callers —
+//! linear in the call graph. A held fn answers from its interface,
+//! where the bit is contract (`interface_form`): a callee that starts
+//! to wait moves its dependents' key.
+use core.{DeclId, DeclKind, ExprId, FileId, Stmt, fp, fp_list, rt_waits, flatten}
+use features.{NameFacts, TypeFacts, FileView, Decls, CancelReach}
+use compiler.families.{Family}
+use @std.relation.engine.{Table, new_table}
+
+/// One member's survey: what its own body may reach, and the members it
+/// calls, whose answers it takes.
+type CancelSummary = { own: CancelReach, callees: List<DeclId> }
+
+/// What one call answers a survey: known now, or a member's answer.
+enum CallAnswer {
+    Known(reach: CancelReach)
+    Via(member: DeclId)
+}
+
+impl Workspace {
+    /// The pass: every member's answer, settled once per program state
+    /// and keyed by `Family.CancelReach`.
+    fn cancel_reach() -> int {
+        // A pass that ran inside a resolve would read a half-built
+        // namespace; the caller answers conservatively instead.
+        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
+        let k = key(Family.CancelReach, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let fns = [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
+        self.decls.clear_cancels(fns)
+        self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
+        self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns])]))
+        fns.length
+    }
+
+    /// Whether any MEMBER's body waits through a row that links a
+    /// scheduler: a spawn, a waiting property, or a call to a fn the
+    /// pass settled as parking. PURE: it reads the bits the pass settled
+    /// and writes nothing.
+    fn members_link_scheduler() -> bool {
+        let _ = self.cancel_reach()
+        [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
+            .any((d) -> self.cancel_survey(d).waits().any((w) -> self.wait_links(w)))
+    }
+
+    /// Whether a FILE's own expressions wait through a row that links a
+    /// scheduler. A program's entry root is no declaration, so its
+    /// top-level `spawn` or waiting read is surveyed here by the driver
+    /// (`Program.lowered_bodies`), which knows the entry; the pass cannot.
+    fn file_links_scheduler(f: FileId) -> bool {
+        let reader = WaitReader {
+            view: file_view(self.lang, self.parsed(f), self.decls, f),
+            names: self.resolved(f),
+            facts: self.folded(f),
+        }
+        let store = self.decls.store_of(f)
+        flatten([reader.node_waits(ExprId { index: i }) for i in 0..store.exprs.count()])
+            .any((w: NodeWait) -> self.wait_links(w))
+    }
+
+    /// Whether a call to `d` may reach a cancel point.
+    fn reaches_cancel(d: DeclId) -> bool { self.reach_of(d).may() }
+
+    /// Whether the program links a scheduler at all — the bit the
+    /// DRIVER settled from the members and the entry root
+    /// (`Program.lowered_bodies`), which alone knows the entry. A program
+    /// that links none emits no while check.
+    fn scheduler_linked() -> bool { self.decls.links_scheduler() }
+
+    /// What a call to `d` may reach. A member the pass could not settle
+    /// (asked mid-resolve) answers that it may, both ways.
+    fn reach_of(d: DeclId) -> CancelReach {
+        if !self.cancel_member(d) { return self.callee_cancels(d) }
+        let _ = self.cancel_reach()
+        if self.db.value_hash_of(key(Family.CancelReach, 0)) == null { return reaches_both() }
+        self.decls.cancel_bits(d) ?? reaches_both()
+    }
+
+    /// A declaration the pass surveys: a body this compile holds.
+    fn cancel_member(d: DeclId) -> bool {
+        let x = self.decls.decl(d)
+        !x.external && x.root != null && !self.is_held(x.file) && calls_kind(x.kind)
+    }
+
+    /// What a call to a declaration that is no member answers: a
+    /// runtime row by its column, a held fn by its interface, a sig
+    /// with no body as a value would. A value bound to a name may be
+    /// any fn; a type answers no call that waits.
+    fn callee_cancels(g: DeclId) -> CancelReach {
+        let x = self.decls.decl(g)
+        match x.kind {
+            .Fn or .Method or .Default or .Main or .Case -> when {
+                // a row by its column; any other extern is package C,
+                // which never switches a task out — it reaches the
+                // scheduler only through a row
+                x.external -> CancelReach { parks: rt_waits(x.name), spins: false }
+                self.is_held(x.file) -> self.decls.cancel_bits(g) ?? reaches_both()
+                _ -> reaches_both()
+            },
+            .Const or .State -> reaches_both(),
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Builtin -> reaches_nothing(),
+        }
+    }
+
+    /// A call's answer to a survey: a member's, through the spread;
+    /// any other declaration's, now.
+    fn call_answer(g: DeclId) -> CallAnswer {
+        if self.cancel_member(g) { CallAnswer.Via(g) } else { CallAnswer.Known(self.callee_cancels(g)) }
+    }
+
+    /// What one member's survey reads.
+    fn cancel_survey(d: DeclId) -> CancelSurvey {
+        let x = self.decls.decl(d)
+        CancelSurvey {
+            ws: self,
+            view: file_view(self.lang, self.parsed(x.file), self.decls, x.file),
+            names: self.names_of(d),
+            facts: self.typed(d),
+            lo: x.lo,
+            hi: x.hi,
+        }
+    }
+
+    /// One member surveyed: its own evidence, and the members it calls.
+    fn cancel_summary(d: DeclId) -> CancelSummary {
+        let s = self.cancel_survey(d)
+        let answers = s.answers()
+        // an `@unbroken` fn's `while`s carry no check
+        let spins = !self.decls.marks_unbroken(d) && s.spins()
+        let known = [known_reach(a) for a in answers]
+        CancelSummary {
+            own: CancelReach { parks: known.any(it.parks), spins: spins || known.any(it.spins) },
+            callees: flatten([via_member(a) for a in answers]),
+        }
+    }
+}
+
+impl Workspace {
+    /// What `explain` says of every fn named `name`: whether a call to it
+    /// may reach a cancel point, then each bit with what earned it.
+    fn cancel_lines(name: string) -> List<string> {
+        flatten(
+            [self.cancel_said(x.id) for x in self.decls.all_decls() if x.name == name && calls_kind(x.kind)],
+        )
+    }
+
+    fn cancel_said(d: DeclId) -> List<string> {
+        let name = self.decls.decl(d).name
+        let r = self.reach_of(d)
+        [
+            if r.may() { "`${name}` may reach a cancel point" } else { "`${name}` reaches no cancel point" },
+            "  parks — ${if r.parks { self.parks_why(d) } else { "no" }}",
+            "  spins — ${if r.spins { self.spins_why(d) } else { "no" }}",
+        ]
+    }
+
+    /// What earned `d` its parks bit: the first wait in its body that
+    /// parks, a callee's among them.
+    fn parks_why(d: DeclId) -> string {
+        if !self.cancel_member(d) { return self.unseen_why(d) }
+        let w? = self.cancel_survey(d).waits().find((w) -> self.wait_parks(w)) else { return interface_says() }
+        self.wait_said(w)
+    }
+
+    /// What earned `d` its spins bit: a `while` of its own, else the
+    /// first callee that spins.
+    fn spins_why(d: DeclId) -> string {
+        if !self.cancel_member(d) { return self.unseen_why(d) }
+        let s = self.cancel_survey(d)
+        if !self.decls.marks_unbroken(d) && s.spins() { return "a `while` here" }
+        let w? = s.waits().find((w) -> self.wait_spins(w)) else { return interface_says() }
+        self.wait_said(w)
+    }
+
+    /// Why a declaration this compile holds no body for may reach.
+    fn unseen_why(d: DeclId) -> string {
+        let x = self.decls.decl(d)
+        when {
+            x.external -> "the runtime row `${x.name}`"
+            self.is_held(x.file) -> interface_says()
+            _ -> "a body this compile cannot see"
+        }
+    }
+
+    fn wait_parks(w: NodeWait) -> bool {
+        match w { .Calls(g, _) -> self.reach_of(g).parks, .Spawns or .Reads(_) or .Value -> true }
+    }
+
+    /// Whether one wait LINKS A SCHEDULER: a spawn, a waiting property,
+    /// or a call to a fn whose OWN body parks — a member by its settled
+    /// bit, a runtime row by its column. A call to a bodiless
+    /// declaration, or through a value, does not: it may be any fn, and
+    /// it says nothing about this program's rows. Read AFTER the pass
+    /// settled, when every member's bit is set.
+    fn wait_links(w: NodeWait) -> bool {
+        match w {
+            .Calls(g, _) -> self.call_links(g),
+            .Spawns or .Reads(_) -> true,
+            .Value -> false,
+        }
+    }
+
+    /// Whether a call to `g` runs a body that parks: a runtime row by its
+    /// column, a member or held fn by its settled may-reach bit,
+    /// anything else no.
+    fn call_links(g: DeclId) -> bool {
+        let x = self.decls.decl(g)
+        if x.external { return rt_waits(x.name) }
+        if self.cancel_member(g) || self.is_held(x.file) { return self.decls.cancel_bits(g)?.parks ?? false }
+        false
+    }
+
+    fn wait_spins(w: NodeWait) -> bool {
+        match w {
+            .Calls(g, _) -> self.reach_of(g).spins,
+            .Spawns or .Reads(_) -> false,
+            .Value -> true,
+        }
+    }
+
+    /// A wait as `explain` says it.
+    fn wait_said(w: NodeWait) -> string {
+        match w {
+            .Calls(g, name) -> if self.decls.decl(g).external { "calls the runtime row `${name}`" } else { "calls `${name}`" },
+            .Spawns -> "spawns a task",
+            .Reads(name) -> "reads `${name}`, which waits",
+            .Value -> "calls through a value",
+        }
+    }
+}
+
+/// A declaration a call can enter.
+fn calls_kind(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Method or .Default or .Main or .Case -> true,
+        .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .State or .Builtin -> false,
+    }
+}
+
+impl Decls {
+    /// Every member's bits fall before the pass re-earns them; a held
+    /// fn's bits are its interface's, never the pass's.
+    fn clear_cancels(fns: List<DeclId>) {
+        for d in fns { self.record_cancel(d, reaches_nothing()) }
+    }
+
+    /// Each member reaches what its own body does, and every member that
+    /// calls one reaches what it does too — breadth first over the
+    /// callers; a member grows at most twice, once a bit.
+    fn spread_cancels(fns: List<DeclId>, sums: List<CancelSummary>) {
+        let callers: Table<List<DeclId>> = new_table<List<DeclId>>()
+        for j, d in fns {
+            for c in sums[j].callees { callers.keep(c.index, (callers.at(c.index) ?? []).concat([d])) }
+        }
+        mut reached = [d for j, d in fns if sums[j].own.may()]
+        for j, d in fns { self.record_cancel(d, sums[j].own) }
+        mut at = 0
+        while at < reached.length {
+            let r = self.cancel_bits(reached[at]) ?? reaches_nothing()
+            for c in callers.at(reached[at].index) ?? [] {
+                let had = self.cancel_bits(c) ?? reaches_nothing()
+                if !had.covers(r) {
+                    self.record_cancel(c, had.with_reach(r))
+                    reached.push(c)
+                }
+            }
+            at = at + 1
+        }
+    }
+}
+
+/// What one member's survey reads: its file, its names, its typed
+/// facts, its expression range — a lambda's nodes among them.
+type CancelSurvey = { ws: Workspace, view: FileView, names: NameFacts, facts: TypeFacts, lo: int, hi: int }
+
+impl CancelSurvey {
+    fn in_reach(e: ExprId) -> bool {
+        e.index >= self.lo && e.index < self.hi
+    }
+
+    /// A `while` whose condition stands in the range.
+    fn spins() -> bool {
+        let store = self.view.store
+        let tag = store.tag_stmt(Stmt.While(ExprId { index: 0 }, []))
+        store.stmts_by_kind(0, store.stmts.count(), tag).any((s) -> self.spins_at(store.stmt(s)))
+    }
+
+    fn spins_at(s: Stmt) -> bool {
+        match s { .While(cond, _) -> self.in_reach(cond), rest -> false }
+    }
+
+    /// Every wait in the range — a lambda's, a `defer`'s and a component
+    /// instance's expansion among them.
+    fn waits() -> List<NodeWait> {
+        let reader = WaitReader { view: self.view, names: self.names, facts: self.facts }
+        flatten([reader.node_waits(ExprId { index: i }) for i in self.lo..self.hi])
+    }
+
+    /// Every wait in the range, answered.
+    fn answers() -> List<CallAnswer> { [self.answer(w) for w in self.waits()] }
+
+    /// A wait as the spread reads it: a callee's answer through the
+    /// spread, or now; every other wait here.
+    fn answer(w: NodeWait) -> CallAnswer {
+        match w {
+            .Calls(g, _) -> self.ws.call_answer(g),
+            .Spawns or .Reads(_) -> CallAnswer.Known(CancelReach { parks: true, spins: false }),
+            .Value -> CallAnswer.Known(reaches_both()),
+        }
+    }
+}
+
+fn known_reach(a: CallAnswer) -> CancelReach {
+    match a { .Known(r) -> r, .Via(_) -> reaches_nothing() }
+}
+
+fn reaches_nothing() -> CancelReach { CancelReach { parks: false, spins: false } }
+
+/// The answer of a call nothing can see into.
+fn reaches_both() -> CancelReach { CancelReach { parks: true, spins: true } }
+
+fn via_member(a: CallAnswer) -> List<DeclId> {
+    match a { .Known(_) -> [], .Via(m) -> [m] }
+}
+
+/// The bits as the settled fingerprint reads them — unsettled ones as `4`.
+fn cancel_word(bits: CancelReach?) -> int {
+    let r? = bits else { return 4 }
+    if r.parks { 1 } else { 0 } + if r.spins { 2 } else { 0 }
+}
+
+/// A bit a held interface answers for.
+fn interface_says() -> string { "its interface says so" }

@@ -32,7 +32,8 @@
 #   76   BUSY: the lane's Sprite already runs something
 #   70   this tree's compiler does not build
 #   124  the command passed its bound      125  the build passed its bound
-#   137  the Sprite ran out of memory      130/143  interrupted, and the run stopped
+#   137  the Sprite ran out of memory      130  Ctrl-C, and the run stopped
+#   143/129  this client was terminated or hung up, and the run goes on
 # A dropped connection is none of these: the run goes on and is followed
 # again from the byte it stood at. A failure's last line begins with the
 # one of three that failed — SPRITE, CONNECTION or COMMAND.
@@ -61,6 +62,59 @@ main_tree() {
     git -C "$repo" worktree list --porcelain | awk '/^worktree /{w=$2} $0=="branch refs/heads/main"{print w}'
 }
 
+# WHAT A BUILT COMPILER WAS BUILT FROM, said by `make avra` beside the
+# binary (build/.avra-built-from): the compiler source's hash, then the
+# commit it stood at — or `edited` when that source differed from the
+# commit, which only its own tree can account for.
+built_from() {
+    tree=${1:-$PWD}
+    at=$(git -C "$tree" rev-parse HEAD 2>/dev/null) || at=edited
+    if [ -n "$(git -C "$tree" status --porcelain -- $(compiler_paths "$tree") 2>/dev/null | grep -v '/tests/' | head -n 1)" ]; then at=edited; fi
+    echo "$(compiler_hash "$tree") $at"
+}
+
+# A NEW WORKTREE STARTS FROM A COMPILER THAT CAN BUILD IT, OR FROM NONE.
+# Every worktree's binary says what it was built from; the one built from
+# THIS tree's compiler source is this tree's, and failing that the one
+# fewest compiler commits behind origin/main is a start that `make avra`
+# brings level. A binary that does not say, one built from a lane's own
+# edits, and one more than AVRA_SEED_BEHIND (10) compiler commits behind
+# are never copied: a stale compiler types nothing and says so badly. $1
+# the new worktree, standing at origin/main.
+seed_local() {
+    want=$(compiler_hash "$1")
+    paths=$(compiler_paths "$1")
+    best=
+    best_n=
+    for tree in $(git -C "$1" worktree list --porcelain | sed -n 's/^worktree //p'); do
+        [ -x "$tree/build/avra" ] && [ -s "$tree/build/.avra-built-from" ] || continue
+        read -r hash at < "$tree/build/.avra-built-from" || continue
+        if [ "$hash" = "$want" ]; then best=$tree; best_n=0; break; fi
+        [ "$at" != edited ] && git -C "$1" merge-base --is-ancestor "$at" origin/main 2>/dev/null || continue
+        n=$(git -C "$1" rev-list --count "$at..origin/main" -- $paths ':(exclude,glob)**/tests/**' 2>/dev/null) || continue
+        if [ -z "$best_n" ] || [ "$n" -lt "$best_n" ]; then best=$tree; best_n=$n; fi
+    done
+    limit=${AVRA_SEED_BEHIND:-10}
+    if [ -z "$best" ]; then
+        echo "work: no worktree holds a compiler that says what it was built from — this lane starts with none. \`make bootstrap\` here builds one from the seed, or \`work run\` builds it on the Sprite."
+        return 0
+    fi
+    if [ "$best_n" -gt "$limit" ]; then
+        echo "work: the nearest compiler ($best) is $best_n compiler commits behind origin/main, past $limit — not copied; this lane starts with none. \`make bootstrap\` here builds one from the seed, or \`work run\` builds it on the Sprite."
+        return 0
+    fi
+    mkdir -p "$1/build"
+    for f in avra libavra_runtime.a .avra-built-from; do
+        [ ! -f "$best/build/$f" ] || cp -p "$best/build/$f" "$1/build/$f"
+    done
+    made=$(date -r "$best/build/avra" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "an unknown time")
+    if [ "$best_n" = 0 ]; then
+        echo "work: compiler from $best, built $made — it is this tree's"
+    else
+        echo "work: compiler from $best, built $made — $best_n compiler commit(s) behind origin/main; \`make avra\` twice brings it level"
+    fi
+}
+
 new() {
     [ $# -eq 1 ] || die "usage: work new <name>"
     name=$1
@@ -72,10 +126,7 @@ new() {
     [ -n "$free" ] || { echo "$held" | sed 's/^/  /' >&2; die "every Sprite is bound to a lane — \`work done\` in one frees its Sprite"; }
     git -C "$main" fetch -q origin main
     git -C "$main" worktree add -q -b "$name" "$wt" origin/main
-    mkdir -p "$wt/build"
-    for f in avra libavra_runtime.a; do
-        [ -f "$main/build/$f" ] && cp "$main/build/$f" "$wt/build/$f"
-    done
+    seed_local "$wt" >&2
     (cd "$wt" && bind) >&2 || die "$wt stands, with no Sprite — free one with \`work done\`, then \`work bind\` there"
     echo "$wt"
 }
@@ -139,25 +190,7 @@ bind_locked() {
 # seed and the Makefile — never a package's tests/, which a build never
 # reads. A tree whose hash moved gets its compiler rebuilt on its Sprite.
 compiler_paths() {
-    (
-        cd "$1"
-        pending="cli"
-        seen=""
-        while [ -n "$pending" ]; do
-            d=${pending%% *}
-            case $pending in *' '*) pending=${pending#* } ;; *) pending= ;; esac
-            case " $seen " in *" $d "*) continue ;; esac
-            seen="$seen $d"
-            [ -d "packages/$d/src" ] || continue
-            for dep in $(grep -rhoE 'use +@std\.[A-Za-z0-9_]+' "packages/$d/src" 2>/dev/null | sed -E 's/^use +@std\.//' | sort -u); do
-                pending="$pending std-$dep"
-            done
-        done
-        {
-            for d in $seen; do [ ! -d "packages/$d/src" ] || echo "packages/$d"; done
-            printf '%s\n' Makefile backend runtime bootstrap packages/std-prelude
-        } | sort -u
-    )
+    sh "$tools/compiler_paths.sh" "$1"
 }
 compiler_hash() {
     (
@@ -268,9 +301,10 @@ seed() {
 # awake; then it attaches at a byte offset and prints what arrives. A
 # connection that drops is attached again from where it stood, so the
 # command's own status is what `run` answers however many times that
-# happens. An interrupt (Ctrl-C, TERM) stops the run; a hangup, or this
-# process killed outright, leaves it running to its bound — `work attach`
-# follows it again and `work stop` ends it.
+# happens. ONLY A STOP THAT WAS MEANT ENDS A RUN: Ctrl-C, or `work stop`.
+# This process terminated, hung up or killed outright — a session that
+# ended does all three — leaves it running to its bound, and `work
+# attach` follows it again.
 client=
 side=
 run_id=
@@ -288,9 +322,11 @@ interrupted() {
     [ -z "$run_id" ] || remote "$sprite" 30 stop "$run_id" >/dev/null 2>&1 || echo "work: $sprite did not confirm the stop — \`sh tools/work stop\` asks again" >&2
     exit "$1"
 }
+# detached <status> <how>. Said once: a group signalled whole delivers it twice.
 detached() {
-    [ -z "$run_id" ] || echo "work: hung up — the run goes on on $sprite; \`sh tools/work attach\` follows it, \`sh tools/work stop\` ends it" >&2
-    exit 129
+    trap '' HUP TERM
+    [ -z "$run_id" ] || echo "work: detached ($2) — the run goes on on $sprite; \`sh tools/work attach\` follows it, \`sh tools/work stop\` ends it" >&2
+    exit "$1"
 }
 # The lane's live run on its Sprite, else the last one that ended: "<id> <live|ended>".
 last_run() {
@@ -524,9 +560,9 @@ run() {
     echo "$$ $(born $$)" > "$lockfile"
     runlock=$lockfile
     trap leave EXIT
-    trap detached HUP
+    trap 'detached 129 "hung up"' HUP
     trap 'interrupted 130' INT
-    trap 'interrupted 143' TERM
+    trap 'detached 143 terminated' TERM
     hash=$(compiler_hash "$tree")
     remote_tree=${AVRA_SPRITE_HOME:-/home/sprite}/avra-build/$slug/tree
     wake_s=${AVRA_WAKE_S:-150}
@@ -541,7 +577,7 @@ run() {
     # A run that stands is never synced under.
     live=$(printf '%s\n' "$info" | sed -n 's/^run=//p' | awk '$2 == "live" { print $1 }' | head -n 1)
     busy() {
-        echo "work: BUSY — $sprite still runs $1; \`sh tools/work attach\` follows it, \`sh tools/work stop\` ends it" >&2
+        echo "work: BUSY — $1 is live on $sprite with nobody here following it; \`sh tools/work attach\` follows it to its status, \`sh tools/work stop\` ends it" >&2
         exit 76
     }
     [ -z "$live" ] || busy "$live"
@@ -791,8 +827,8 @@ queued() {
     $gh_ api graphql -F owner='{owner}' -F name='{repo}' -F number="$1" -f query='
         query($owner: String!, $name: String!, $number: Int!) {
           repository(owner: $owner, name: $name) { pullRequest(number: $number) {
-            mergeQueueEntry { position enqueuedAt } } } }' \
-        --jq '.data.repository.pullRequest.mergeQueueEntry | select(. != null) | "\(.position) \(now - (.enqueuedAt | fromdateiso8601) | floor)"'
+            mergeQueueEntry { position enqueuedAt enqueuer { login } } } } }' \
+        --jq '.data.repository.pullRequest.mergeQueueEntry | select(. != null) | "\(.position) \(now - (.enqueuedAt | fromdateiso8601) | floor) \(.enqueuer.login // "")"'
 }
 # Whether a train carries PR number $1: the queue's own runs name it.
 train() {
@@ -806,13 +842,23 @@ enqueue() {
 # A QUEUED PR WITH NO TRAIN IS STUCK, AND WAITING DOES NOT START ONE: an
 # entry can sit in the queue with no merge_group run until it is taken
 # out and put back. One queued past AVRA_STUCK_S (300) seconds with no
-# train is requeued, once, and said aloud. $1 number, $2 node id.
+# train is requeued, and said aloud. AN ENTRY A BOT ADDED NEVER GETS ONE —
+# GitHub starts no workflow for an event a workflow's token caused — so
+# it is requeued at once, as this user. $1 number, $2 node id.
 requeue_stuck() {
     q=$(queued "$1") || return 0
     [ -n "$q" ] || return 0
-    [ "${q#* }" -ge "${AVRA_STUCK_S:-300}" ] || return 0
+    set -- "$1" "$2" $q
     ! train "$1" || return 0
-    echo "work: #$1 has been queued ${q#* }s with no train — taking it out and queueing it again" >&2
+    case "${5:-}" in
+        *'[bot]' | github-actions)
+            echo "work: #$1 was queued by $5, whose entry starts no train — taking it out and queueing it again" >&2
+            ;;
+        *)
+            [ "$4" -ge "${AVRA_STUCK_S:-300}" ] || return 0
+            echo "work: #$1 has been queued ${4}s with no train — taking it out and queueing it again" >&2
+            ;;
+    esac
     $gh_ api graphql -f query="mutation{dequeuePullRequest(input:{id:\"$2\"}){mergeQueueEntry{position}}}" >/dev/null
     enqueue "$2" >&2
 }
@@ -877,7 +923,7 @@ status() {
             elif train "$n"; then
                 where="queued #${q%% *}, train running"
             else
-                where="queued #${q%% *}, NO TRAIN for ${q#* }s"
+                where="queued #${q%% *}, NO TRAIN for $(echo "$q" | cut -d' ' -f2)s"
             fi
             echo "#$n  $branch  $where  checks: ${checks:-none}  $title"
             [ -z "$q" ] || requeue_stuck "$n" "$id"
@@ -929,7 +975,7 @@ wait_landed() {
 usage() {
     case ${1:-} in
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
-        run) echo "usage: sh tools/work run [--for <minutes>] <cmd…>   — run it on this lane's Sprite, followed to its exit status through any dropped connection (bound: 15 minutes)" ;;
+        run) echo "usage: sh tools/work run [--for <minutes>] <cmd…>   — run it on this lane's Sprite, followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
         land) echo "usage: sh tools/work land   — push, PR, queue; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and the queue; each lane and its Sprite" ;;
@@ -958,6 +1004,8 @@ case "${1:-}" in
     command) shift; assemble "$@"; echo ;;
     seed) shift; seed "$@" ;;
     compiler-hash) compiler_hash "${2:-$PWD}" ;;
+    built-from) built_from "${2:-$PWD}" ;;
+    seed-local) seed_local "$2" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
     land) land ;;
     status) status ;;

@@ -1,0 +1,102 @@
+//! The family answers' own codecs: a record or enum whose fields are
+//! plain data reads back through one length-prefixed wire — free text
+//! by its byte length, a list by its count, an enum by its variant's
+//! name. `compiler/codecs.av` exercises each beside its decoder.
+use features.{Unsettled, Settlement, Settled, Lifted}
+use diagnostics.{SourceFile}
+use @std.text.{parse_int}
+
+/// A source file: its path and text (free text, length-prefixed), and
+/// its line index as a nested run of ints.
+fn source_file_wire(f: SourceFile) -> string {
+    packed([f.file, f.text, packed(["${n}" for n in f.line_starts])])
+}
+
+fn source_file_of_wire(w: string) -> SourceFile? {
+    let p = unpacked(w)
+    if p.length < 3 { return null }
+    let starts = [parse_int(x) for x in unpacked(p[2])]
+    if starts.any(it == null) { return null }
+    SourceFile { file: p[0], text: p[1], line_starts: [n! for n in starts] }
+}
+
+/// Why a const did not settle: its variant's name, then the one word
+/// every payload carries (a nullary variant writes an empty one).
+fn unsettled_wire(u: Unsettled) -> string {
+    packed(
+        match u {
+            .Reach(words) -> ["reach", words],
+            .Budget(words) -> ["budget", words],
+            .Trap(words) -> ["trap", words],
+            .Param(words) -> ["param", words],
+            .Spoken -> ["spoken", ""],
+            .Recursive -> ["recursive", ""],
+        },
+    )
+}
+
+fn unsettled_of_wire(w: string) -> Unsettled? {
+    let p = unpacked(w)
+    if p.length < 2 { return null }
+    match p[0] {
+        "reach" -> Unsettled.Reach(p[1]),
+        "budget" -> Unsettled.Budget(p[1]),
+        "trap" -> Unsettled.Trap(p[1]),
+        "param" -> Unsettled.Param(p[1]),
+        "spoken" -> Unsettled.Spoken,
+        "recursive" -> Unsettled.Recursive,
+        rest -> null,
+    }
+}
+
+/// A settlement's held answer: its variant's name, then either the
+/// settled wire (`settled_wire`'s own) or the refusal's.
+fn settlement_enum_wire(s: Settlement) -> string {
+    match s {
+        .Held(held) -> packed(["held", settled_wire(held)]),
+        .Refused(why) -> packed(["refused", unsettled_wire(why)]),
+    }
+}
+
+fn settlement_enum_of_wire(w: string) -> Settlement? {
+    let p = unpacked(w)
+    if p.length < 2 { return null }
+    if p[0] == "held" {
+        let held? = settled_from_wire(p[1]) else { return null }
+        return Settlement.Held(held)
+    }
+    if p[0] == "refused" {
+        let why? = unsettled_of_wire(p[1]) else { return null }
+        return Settlement.Refused(why)
+    }
+    null
+}
+
+/// A lifted call's answer: the same shaped enum as a settlement, its
+/// `Crossed` payload a `Lifted` wrapped as the `Settled` whose heap
+/// codec already covers it.
+fn lift_result_wire(r: LiftResult) -> string {
+    match r {
+        .Crossed(lifted) -> packed(["crossed", settled_wire(lifted_settled(lifted))]),
+        .Refused(why) -> packed(["refused", unsettled_wire(why)]),
+    }
+}
+
+fn lift_result_of_wire(w: string) -> LiftResult? {
+    let p = unpacked(w)
+    if p.length < 2 { return null }
+    if p[0] == "crossed" {
+        let held? = settled_from_wire(p[1]) else { return null }
+        return LiftResult.Crossed(Lifted { answer: held.answer, heap: held.heap })
+    }
+    if p[0] == "refused" {
+        let why? = unsettled_of_wire(p[1]) else { return null }
+        return LiftResult.Refused(why)
+    }
+    null
+}
+
+/// The `Settled` a `Lifted` is, so both ride ONE heap codec.
+fn lifted_settled(lifted: Lifted) -> Settled {
+    Settled { answer: lifted.answer, heap: lifted.heap, fingerprint: 0 }
+}

@@ -90,6 +90,30 @@ const sealing = "fn bump(mut t: Tick) { t.n = t.n + 1 }\nmut bumped = tick()\nbu
 /// A world call, as a body's statement before its answer.
 fn loud(answer: string) -> string { "avra_puts(\"x\")\n    ${answer}" }
 
+/// A package whose two consts settle through ONE shared fn, which reads a
+/// third file's const: the shared unit is lowered by one run and reused by
+/// the other. Answers the package's root.
+fn shared_package(name: string) -> string {
+    let root = "${scratch_dir()}/kept_settle_${name}_${now_ns()}"
+    for d in ["k", "s", "a", "b"] { let _ = make_dirs("${root}/src/${d}") }
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"kept\"\nversion = \"0.1.0\"\n")
+    let _ = write_text("${root}/src/k/k.av", forty_text("40"))
+    let _ = write_text(
+        "${root}/src/s/s.av",
+        "use k.{K}\n\nexport fn shared() -> int { K[0] + 1 }\n",
+    )
+    let _ = write_text("${root}/src/a/a.av", "use s.{shared}\n\nexport const A: int = shared()\n")
+    let _ = write_text(
+        "${root}/src/b/b.av",
+        "use s.{shared}\n\nexport const B: int = shared() * 2\n",
+    )
+    let _ = write_text("${root}/src/main.av", "use a.{A}\nuse b.{B}\n\nprintln(\"\${A} \${B}\")\n")
+    root
+}
+
+/// The shared fn's const, its value in a body the const's own run enters.
+fn forty_text(n: string) -> string { "fn forty() -> List<int> { [${n}] }\n\nexport const K: List<int> = forty()\n" }
+
 /// `avra check --time` over the package: everything it printed.
 fn checked_words(root: string) -> string {
     match avra_ran(["check", "--time", root]) {
@@ -150,6 +174,9 @@ spec "a kept settlement — reused only while what it read stands" {
         then "a world call added to another file's impl the run dispatches to refuses the const" {
             rechecked(kept_package("impl_world"), "shapes/shapes.av", shapes_text(loud("self.n")))
                 .contains("reaches `avra_puts`")
+        }
+        then "a const read by a unit two runs share answers anew in both runs when it moves" {
+            settled_after_edit(shared_package("shared_unit"), "k/k.av", forty_text("50")) == "51 102\n"
         }
     }
 }

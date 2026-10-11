@@ -58,7 +58,7 @@ export LLVM_PREFIX
 # by nobody while its manifest linked the runtime. Our own C is held
 # to -Wall -Werror; a vendored unit takes its author's flags
 # (CFLAGS_<stem>) and no warning of ours.
-TREE_C := $(wildcard packages/*/src/c/*.c packages/*/vendor/*.c backend/*.c runtime/*.c)
+TREE_C := $(wildcard packages/*/src/c/*.c packages/*/vendor/*.c backend/*.c runtime/*.c runtime/host/*.c)
 vpath %.c $(sort $(dir $(TREE_C)))
 
 # A STEM NAMES ITS OBJECT, so a stem is UNIQUE TREE-WIDE. One flat
@@ -108,11 +108,12 @@ TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
 # compiler one, and belongs here the day its package lands.
 # The runtime's objects are GLOBBED, one per runtime/*.c, so a new
 # runtime file joins the library without a line here.
-RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c))
+RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c)) build/avra_tick.o
 RUNTIME_LIB = build/libavra_runtime.a
 
 COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
-                build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o
+                build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o \
+                build/std_hash.a
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
@@ -124,8 +125,10 @@ PACKAGE_OBJS = $(TREE_STEM_LAW)$(sort $(foreach o,$(shell sed -n \
 # PER-OBJECT FLAGS, by stem. The LLVM binding needs its headers; the
 # vendored amalgamation takes its author's whole flag set, which its
 # own suite asks the LIBRARY to confirm.
+CFLAGS_avra_tick := -Iruntime
 CFLAGS_llvm_wrapper := -I$(LLVM_PREFIX)/include
 CFLAGS_ffi := -Iruntime
+CFLAGS_std_io := -Iruntime
 CFLAGS_sqlite3 = $(SQLITE_FLAGS)
 CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 
@@ -171,6 +174,40 @@ build/std_compress.a: $(COMPRESS_OBJS)
 	@rm -f $@
 	ar rcs $@ $^
 
+# THE VENDORED BLAKE3, one object per upstream unit
+# (packages/std-hash/vendor/import.sh writes the wrappers), ARCHIVED
+# with @std/hash's own C. Only this machine's SIMD units are built, each
+# under the flags its intrinsics need, and blake3_dispatch asks the CPU
+# at run time which of them to run; any other machine runs the portable
+# unit alone.
+HASH_ARCH := $(shell uname -m)
+B3_SIMD := $(if $(filter arm64 aarch64,$(HASH_ARCH)),neon,$(if $(filter x86_64 amd64,$(HASH_ARCH)),sse2 sse41 avx2 avx512))
+HASH_OBJS := build/std_hash.o $(patsubst %,build/b3_%.o,blake3 blake3_dispatch blake3_portable $(addprefix blake3_,$(B3_SIMD)))
+$(foreach o,$(HASH_OBJS),$(eval CFLAGS_$(basename $(notdir $(o))) := -Ipackages/std-hash/vendor))
+CFLAGS_b3_blake3_sse2 += -msse2
+CFLAGS_b3_blake3_sse41 += -msse4.1
+CFLAGS_b3_blake3_avx2 += -mavx2
+CFLAGS_b3_blake3_avx512 += -mavx512f -mavx512vl
+
+build/std_hash.a: $(HASH_OBJS)
+	@rm -f $@
+	ar rcs $@ $^
+
+# THE HASHER'S DOOR, FORGED: @std/hash takes a hasher's state back as a
+# value, so forged states are pushed through it with the package's C
+# rebuilt under ASan and UBSan, each unit under its own flags. A machine
+# whose compiler carries no sanitizer runtime says so and runs nothing.
+HASH_DOOR_SAN := -g -O1 -fsanitize=address,undefined -fno-sanitize-recover=all
+hash-door: packages/std-hash/src/c/tests/door_test.c $(HASH_OBJS)
+	@mkdir -p build/hash-door
+	@if ! { printf 'int main(void) { return 0; }\n' | cc $(HASH_DOOR_SAN) -x c - -o build/hash-door/probe 2>/dev/null && build/hash-door/probe; }; then \
+	  echo "hash-door: ASan unavailable — not run"; \
+	else \
+	  $(foreach o,$(HASH_OBJS),cc -c $(HASH_DOOR_SAN) $(CFLAGS_$(basename $(notdir $(o)))) -o build/hash-door/$(notdir $(o)) $(if $(filter build/std_hash.o,$(o)),packages/std-hash/src/c/std_hash.c,packages/std-hash/vendor/$(basename $(notdir $(o))).c) &&) \
+	  cc $(HASH_DOOR_SAN) -Ipackages/std-hash/vendor -o build/hash-door/door_test $< $(addprefix build/hash-door/,$(notdir $(HASH_OBJS))) && \
+	  build/hash-door/door_test; \
+	fi
+
 # A HEADER IS A SOURCE. cc writes each object's dependency list beside
 # it and the next make reads it back, so editing a .h rebuilds what
 # includes it — without this a package that grows a header links a
@@ -188,7 +225,7 @@ build/%.o: %.c build/%.sha
 	@mkdir -p build
 	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(SECTIONS) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
--include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS) $(COMPRESS_OBJS))))
+-include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS) $(TLS_OBJS) $(COMPRESS_OBJS) $(HASH_OBJS))))
 
 # THE HOT LEAVES AS BYTES THE COMPILER CARRIES (runtime/avra_hot.h):
 # runtime/avra_hot.c compiled to bitcode by the LLVM the compiler links,
@@ -237,18 +274,24 @@ WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wi
 WASM_RUNTIME_OBJS := $(patsubst runtime/%.c,build/wasm32/%.o,$(WASM_RUNTIME_SRCS))
 WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
 
-build/wasm32/%.o: runtime/%.c
+# A WASM OBJECT FOLLOWS ITS SOURCE'S CONTENT AS A HOST OBJECT DOES: it rides
+# the same stamp (`build/<stem>.sha`, the headers it names included) and writes
+# its own dependency list, so neither a source older than its object nor an
+# edited header links a stale member.
+build/wasm32/%.o: runtime/%.c build/%.sha
 	@mkdir -p build/wasm32
-	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
 
 # A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
 # A package opts in by naming its wasm objects; one that names none is refused
 # by the build, never compiled here.
 WASM_PACKAGE_OBJS := $(sort $(foreach o,$(shell sed -n 's/.*wasm_objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml 2>/dev/null | tr ',' '\n' | tr -d ' "'),build/wasm32/$(notdir $(o))))
 
-build/wasm32/%.o: %.c
+build/wasm32/%.o: %.c build/%.sha
 	@mkdir -p build/wasm32
-	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -I$(dir $<) -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -Iruntime -I$(dir $<) -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+
+-include $(patsubst %.o,%.d,$(WASM_RUNTIME_OBJS) $(WASM_PACKAGE_OBJS))
 
 $(WASM_RUNTIME_LIB): $(WASM_RUNTIME_OBJS)
 	@mkdir -p build/wasm32
@@ -302,10 +345,12 @@ wasm-archive:
 # the manifests (tools/suites.py), never listed: a hand-kept list is a
 # registry that forgets its next member, and the gate would report
 # green over a suite it never ran. `suites` is the keeper that speaks.
-SUITES := $(shell python3 tools/suites.py 2>/dev/null)
+# DEFERRED, so only a recipe that reads it pays for the walk — an immediate
+# `$(shell)` runs on every make, `try` included.
+SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests cache-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept
+.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept warm-edit
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -381,7 +426,26 @@ avra: $(COMPILER_OBJS)
 	@cp packages/cli/src/main build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
+	@# what this binary was built from, for a worktree that wants to start from it
+	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
 	@echo "avra: build/avra"
+
+# THE EDIT LOOP: the source built by the STANDING compiler into
+# build/avra-try, never over it — so the builder's print, and every row its
+# store holds, stands from one edit to the next. `./avra-try` runs it. A
+# change the compiler must READ to build itself (codegen, the front end, a
+# refusal about its own source) reaches the product only through `make avra`.
+try: $(COMPILER_OBJS)
+	@sh tools/capped.sh build/avra-try-build.out 200000 ./avra build packages/cli --time || { cat build/avra-try-build.out; exit 1; }
+	@grep '^time: ast' build/avra-try-build.out | grep -oE 'held [0-9]+/[0-9]+' || true
+	@cp packages/cli/src/main build/avra-try
+	@codesign -f -s - build/avra-try 2>/dev/null || true
+	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
+	@echo "try: build/avra-try — ./avra-try runs it"
+
+# THE WARM EDIT LOOP, measured: a one-edit check and build of the cli, and `make try` on a leaf and a core edit.
+edit-loop:
+	@sh tools/db_measure/edit_loop.sh
 
 # THE INSTALL: the binary under bin/, and what it finds from its own
 # directory — the runtime's object and every std package — under
@@ -437,21 +501,12 @@ test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites libs
 # repeated build recompiles nothing. ONE RULE FOR EVERY OBJECT: the
 # stem resolves the source through vpath exactly as `build/%.o` does,
 # so a named-object copy of this rule would be the stem law's second
-# definition. One cost, stated: the stamp depends on FORCE, so
-# `make -q` always reports work pending for these objects even when
-# none is — nothing here reads `make -q`, and the alternative is to
-# trust the timestamps again.
-.PHONY: FORCE
-FORCE:
+# definition.
 
-# THE STAMP IS A LINK IN A CHAIN — `a.c -> a.sha -> a.o`, made by one
-# pattern rule and consumed by another — and make deletes the middle
-# of a chain as an intermediate file once the end is built. A stamp
-# rule with no source prerequisite (`%.sha: FORCE`, hashing a named
-# path) never joins a chain and needs none of this; the generic form
-# does, and without it every stamp is minted afresh on the next run
-# and every object rebuilds every time — which reads as a slow build,
-# never as a wrong rule. Precious keeps the stamps.
+# A STAMP IS NEVER AN INTERMEDIATE: make deletes the middle of a
+# pattern chain once its end is built, and a deleted stamp is minted
+# afresh next run, rebuilding every object every time — which reads as
+# a slow build, never as a wrong rule. Precious keeps the stamps.
 .PRECIOUS: build/%.sha
 
 # A HEADER RIDES THE CONTENT HASH when a named list says so. The chain
@@ -461,17 +516,21 @@ FORCE:
 # it instead of trusting a mtime. AN OBJECT'S FLAGS RIDE ITS STAMP TOO
 # (`CFLAGS_<stem>`), so a census build's -DAVRA_CENSUS object is rebuilt
 # the moment the flag is dropped, and never ships as the runtime.
-build/avra_runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
-build/avra_hot.sha: SHA_SRC := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
-build/avra_fiber.sha: SHA_SRC := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
-build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h runtime/avra_hot.c runtime/avra_hot.h
-build/ffi.sha: SHA_SRC := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
+SHA_SRC_avra_runtime := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
+SHA_SRC_avra_hot := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
+SHA_SRC_avra_fiber := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
+SHA_SRC_avra_tick := runtime/host/avra_tick.c runtime/avra_fiber.h
+SHA_SRC_llvm_wrapper := backend/llvm_wrapper.c runtime/avra_box.h runtime/avra_hot.c runtime/avra_hot.h
+SHA_SRC_ffi := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
-build/%.sha: %.c FORCE
-	@mkdir -p build
-	@{ shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<); echo 'flags: $(SECTIONS) $(CFLAGS_$*)'; } | shasum -a 256 | cut -d' ' -f1 > $@.tmp
-	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
-	@rm -f $@.tmp
+# EVERY STAMP IN ONE PROCESS, SETTLED WHILE MAKE READS THIS FILE:
+# tools/stamps.py is handed every source's stamp — its sources and its
+# flags — and rewrites only those whose digest moved, before make looks
+# at any object's mtime, so the first build after a change sees it. One
+# process where six a stamp ran, and the same content-hash law.
+quoted = '$(subst ','\'',$1)'
+stamp_args = $(call quoted,build/$1.sha) $(call quoted,$(or $(SHA_SRC_$1),$2)) $(call quoted,$(SECTIONS) $(CFLAGS_$1))
+build/%.sha: ;
 
 
 # THE RUNTIME'S OWN TESTS: C programs under runtime/tests/, each linked
@@ -490,6 +549,11 @@ runtime-tests: $(RUNTIME_TESTS)
 # runtime test must fail for each (runtime/tests/mutations.py).
 runtime-mutations: $(RUNTIME_OBJS)
 	@python3 runtime/tests/mutations.py build/runtime-mutations "$(STACK_PROBES)" $(filter-out build/avra_fiber.o,$(RUNTIME_OBJS))
+
+# A TRACE HAS ONE SHAPE IN BOTH ENGINES: one program traced compiled
+# and evaluated, the reader's shape of each held to a committed text.
+flow-trace: $(COMPILER_OBJS) $(PACKAGE_OBJS) build/runtime-tests/tasks_door_test
+	@sh tools/flow_trace_engines.sh
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No program test can hold it — a suite runs every program in
@@ -513,6 +577,17 @@ cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
 	@sh tools/link_cache_attack.sh
 	@sh tools/turn_memory_attack.sh
+	@sh tools/gathered_cache_attack.sh
+	@sh tools/static_names_attack.sh
+	@sh tools/moved_tree_attack.sh
+	@sh tools/held_runs_attack.sh
+	@sh tools/cancel_cache_attack.sh
+
+# A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
+# reaches and must recompute it, edits what it never reaches and must read it back. It
+# CLEARS the store it builds through, as the attacks above do.
+code-hash-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/code_hash_attacks.sh
 
 # ONE DERIVATION ALIVE AT A TIME, held by memory: a rebuild that turns once per
 # link of a chain of held bodies, under a ceiling one attempt clears and their
@@ -610,6 +685,7 @@ libs: avra $(PACKAGE_OBJS)
 # The suites, derived and counted: a cycle or a dependency that is no
 # package refuses here, before a silent empty list runs nothing.
 suites:
+	@python3 tools/shards.py --self-test
 	@python3 tools/suites.py --self-test
 	@python3 tools/suites.py --report
 
@@ -658,6 +734,11 @@ layers:
 inputs:
 	@python3 tools/inputs.py
 
+# EVERY BLOCKING CALL IN C HOLDS THE WORLD: a virtual clock flows across
+# it, or the call says why it waits on no time (tools/clock_holds.py).
+clock-holds:
+	@python3 tools/clock_holds.py
+
 inputs-accept:
 	@python3 tools/inputs.py --accept
 
@@ -666,6 +747,35 @@ inputs-accept:
 # Its bench links the tree's own package objects, so it names them.
 read-cost: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/db_measure/read_cost.sh
+
+# THE SPEED RATCHET, HARD: each phase of `packages/cli`'s own build and
+# check held against a ceiling in tools/speed.budget, refusing past it and
+# naming the phase with its before and after ms. The measurement is the
+# LEAST of warm one-edit rounds (tools/speed_measure.sh), run on the
+# machine the keeper stands on; on macOS it goes to the lane's Sprite
+# (`tools/work run`), since a loaded Mac supplies no number. The gate's
+# fixtures prove the gate before it judges. `speed-accept` lowers the
+# ceilings to what was measured and never raises one.
+speed-ratchet:
+	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@python3 tools/speed_ratchet.py
+speed-accept:
+	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@python3 tools/speed_ratchet.py --accept
+
+# THE DB 07 WARM-EDIT GATE, HARD (avra-8sb5.57.176): an unchanged
+# `check packages/cli` <= 60 ms and one body edit <= 300 ms (goal 150),
+# wall, on a warm store. tools/warm_edit_bench.sh measures it and judges
+# it through tools/speed_ratchet.py --warm, whose ceilings are the same
+# tools/speed.budget the phase ratchet reads — ONE file, ONE reader. A
+# cold store SKIPS with a word (never a silent pass), and on macOS the
+# measurement goes to the lane's Sprite, as speed-ratchet does. The gate's
+# fixtures prove it before it judges. There is no accept: the ceilings are
+# the ticket's targets, and only a human edit of tools/speed.budget moves
+# them.
+warm-edit:
+	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@sh tools/warm_edit_bench.sh
 
 idioms:
 	@STATUS=0; CHECKED=0; \
@@ -741,33 +851,122 @@ ui-browser:
 fingerprints:
 	@python3 tools/fingerprints.py
 
-# THE KEEPERS, ONE LIST. The train's keepers job and
+# THE FOOTPRINT: a program that spawns nothing links no scheduler, and the
+# smallest programs' bytes stay under a relative cap (tools/footprint.py).
+footprint: $(RUNTIME_LIB)
+	@python3 tools/footprint.py --self-test
+	@python3 tools/footprint.py
+
+# Re-accept this platform's sizes deliberately.
+footprint-accept: $(RUNTIME_LIB)
+	@python3 tools/footprint.py --accept
+
+# THE FLOW G1 GATE: the scheduler's transition rows (a gate round trip,
+# spawn+join, a cold parked spawn) against tools/flow_bench/gate.baseline,
+# refusing past 2x. A change under runtime/ can cost the transition hot
+# path without touching a test, so a runtime PR runs this before its own
+# checks (the `flow-gate` job in .github/workflows/checks.yml, which fires
+# on a diff under runtime/). `--require` makes a machine with no baseline
+# row a REFUSAL; a lane measuring a runtime saved elsewhere points
+# FLOW_RUNTIME at it.
+flow-gate:
+	@python3 tools/flow_bench/gate.py --self-test
+	@sh tools/flow_bench/run.sh --gate $(FLOW_GATE_ARGS)
+# Re-accept this machine's rows deliberately (FLOW_RUNTIME for another tree).
+flow-gate-accept:
+	@sh tools/flow_bench/run.sh --record
+
+# THE TICK'S TWO KEEPERS. `tick-object` holds the hosted source's
+# undefined symbols to the no-lock set a forked child may inherit;
+# `no-threads` holds the scheduler's own `runtime/*.c` free of threads
+# and thread-locals (D7).
+tick-object: $(RUNTIME_LIB)
+	@python3 tools/tick.py object --self-test
+
+no-threads:
+	@python3 tools/tick.py threads --self-test
+
+# THE KEEPERS, ONE LIST. The train's keepers job and a lane's own
 # tools/gate_changed.sh both run `make keepers`, so a keeper named here
-# is held on every pull request and every train, and one left off is
-# held by nobody. Each names what it links as its own prerequisites.
+# is held on every train, and one left off is held by nobody. A pull
+# request's own check runs only those that need no compiler
+# (KEEPERS_STATIC); the train runs them all, before anything merges.
+# Each names what it links as its own prerequisites.
 # Every keeper runs, and each that refuses is named.
-KEEPERS = fingerprints vocab families layers inputs read-cost cited http-cites externs suites stems rt-header rt-ns witnesses dogfooding-rules runtime-tests attack \
-          ui-host ui-host-test ui-board ui-browser codecs fmt-lossless traps compile-slots witness tool-witnesses
-keepers:
-	@fail=0; for k in $(KEEPERS); do \
+# TWO HALVES OF ABOUT EQUAL COST, so the train's one keepers job can run
+# them side by side, each in its own copy of the tree (keepers-a,
+# keepers-b). KEEPERS is their union and the ones that run alone: a keeper
+# joins one of the three, never a list of its own. Each keeper's seconds
+# are printed, which is what balances the halves — the second is the
+# lighter because the train runs the seed check after it.
+# KEEPERS_ALONE are held to a clock (a timer firing within one round of the
+# scheduler), so nothing may compete with them for a core. The mutation run
+# drives the same clocked tests, so it stands here beside them.
+KEEPERS_ALONE = runtime-tests runtime-mutations
+KEEPERS_A = read-cost speed-ratchet warm-edit codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
+KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
+KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
+keepers keepers-alone keepers-a keepers-b:
+	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
+	  t0=$$(date +%s); \
+	  echo "keepers: running $$k" >&2; \
 	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
+	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \
 	done; exit $$fail
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
-                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh reclaim_test.sh
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh witness_compiler_release.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
+
+# THE KEEPERS THAT NEED NO COMPILER, which a pull request's own check runs
+# before it builds anything: each reads the tree alone and all of them
+# together take half a minute, so a refusal stops on the PR instead of
+# failing a train and every PR riding it. Each is one of KEEPERS, which the
+# train runs whole.
+KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites
+.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr
+keepers-static:
+	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
+	@fail=0; for k in $(KEEPERS_STATIC); do \
+	  $(MAKE) -s $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
+	done; exit $$fail
+
+# THE KEEPERS A PULL REQUEST CAN BREAK ALONE, which its own check runs once
+# its compiler is built: each holds a file the tree generates or carries to
+# what that compiler says — the runtime header and namespace, the
+# diagnostics index, the idiom registry, the runtime's footprint — or
+# attacks a feature mechanically, in seconds. A refusal stops on the PR
+# instead of failing a train. Each is one of KEEPERS, which the train runs
+# whole.
+KEEPERS_PR = rt-header rt-ns witnesses dogfooding-rules footprint attack speed-ratchet warm-edit
+keepers-pr:
+	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
+	@fail=0; for k in $(KEEPERS_PR); do \
+	  t0=$$(date +%s); \
+	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
+	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \
+	done; exit $$fail
 
 # THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
 # compiler/codecs.av's registry runs every pair over its exemplars,
 # decode(encode(x)) compared to x field by field; tools/codecs.py
 # refuses any encoder/decoder-shaped pair in the tree the registry
 # does not name.
-codecs: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+#
+# THE SCAN IS ITS OWN TARGET because it needs no compiler: a pull request
+# whose diff reaches the compiler's source runs `codecs-static` in seconds
+# (it is what names an unregistered pair — the refusal #537 failed a train
+# on), so the defect is heard on the PR, not one train later. The
+# registry's round trip needs a whole compiler and stays with the train.
+codecs: codecs-static $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@./build/avra test packages/std-avrac/src/compiler/tests/codecs_test.av
+
+codecs-static:
 	@python3 tools/codecs.py
 
 # THE ROWS' CLAIM ON THE C. `runtime/avra_rt.h` is generated from
@@ -931,9 +1130,16 @@ bench-collections: build/libavra_runtime.a
 # THE FLOW BENCH: tasks, waits and wakes, each Avra program beside its Go
 # twin on this machine (tools/flow_bench/run.sh); `flow-probes` is the
 # stack allocator's own measurements.
-.PHONY: flow-bench flow-probes
+#
+# `flow-g1` is the GATE a runtime/*.c change answers: the same rows, each
+# Avra row's ratio against Go's best judged (2x time, 3x memory, in
+# table.py), and a row that FAILs fails the target. It needs Go and the
+# compiler and SKIPS, spoken, where either is absent.
+.PHONY: flow-bench flow-probes flow-g1 flow-trace
 flow-bench: build/libavra_runtime.a
 	@sh tools/flow_bench/run.sh
+flow-g1: build/libavra_runtime.a
+	@FLOW_GATE=1 sh tools/flow_bench/run.sh
 flow-probes:
 	@sh tools/flow_bench/run.sh probes
 
@@ -993,3 +1199,7 @@ scaffold-check: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	  rm -rf packages/std-avrac/src/features/zz_probe; \
 	  if [ $$s -ne 0 ]; then echo "scaffold-check FAILED"; tail -20 build/scaffold.out; exit 1; fi; \
 	  echo "scaffold-check: the templates compile and their test passes"
+
+# THE STAMPS SETTLE LAST, once every flag they read is defined (see
+# `stamp_args`, above): an earlier settling would hash a flag still empty.
+STAMPS_SETTLED := $(shell python3 tools/stamps.py $(foreach c,$(TREE_C),$(call stamp_args,$(basename $(notdir $(c))),$(c))))

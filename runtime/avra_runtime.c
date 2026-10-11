@@ -1027,11 +1027,16 @@ const char* avra_case_now(void) {
 // The program's own lines come first: stdout is block-buffered into a
 // pipe, so without the flush a trap's words land AHEAD of lines printed
 // before it, in exactly the logs a reader reads after a wreck.
+// The schedule the case in flight runs under, or -1: a trap names it
+// with the number that replays it.
+int64_t avra_case_schedule = -1;
+
 void avra_trap(const char* msg) {
     fflush(stdout);
     if (g_case) {
         fputs("avra: while running ", stderr);
         fputs(g_case, stderr);
+        if (avra_case_schedule >= 0) fprintf(stderr, " under schedule %lld — AVRA_SCHED_SEED=%lld replays it", (long long)avra_case_schedule, (long long)avra_case_schedule);
         fputc('\n', stderr);
     }
     fputs("avra: ", stderr);
@@ -3425,6 +3430,11 @@ AvraTaskLocal avra_main_local;
 AvraTaskLocal* avra_task_local = &avra_main_local;
 _Static_assert(AVRA_SLOT_ASKER < AVRA_TASK_SLOTS && AVRA_SLOT_FLOW < AVRA_TASK_SLOTS, "a slot key outside the table");
 
+// THE RUNNING TASK'S UNWIND BIT: set where a cancel meets a cancel
+// point, and read after every call that may reach one. A switch saves
+// it into the task it leaves and loads the next task's.
+uint8_t avra_unwinding = 0;
+
 __attribute__((noinline, cold, noreturn))
 static void slot_refused(void) { avra_trap("a task has four slots, and this is none of them"); }
 
@@ -3457,7 +3467,10 @@ int64_t avra_fd_read(int64_t fd, int64_t max) {
     if (max == 0) return fd_landed(0);
     size_t n = max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
     for (;;) {
+        // A DESCRIPTOR MAY BLOCK: stdin, a pipe a program opened itself.
+        avra_clock_hold(1);
         ssize_t got = read((int)fd, g_fd_buf, n);
+        avra_clock_hold(-1);
         if (got > 0) {
             if ((size_t)got < n && avra_fd_drained_hook) avra_fd_drained_hook(fd);
             return fd_landed(got);
@@ -3785,11 +3798,139 @@ const char* avra_host_env(const char* name) {
     return str_static(v ? v : "");
 }
 
-int64_t avra_now_ns(void) {
+// ── The clock ───────────────────────────────────────────────────
+
+AvraClock avra_clock;
+void (*avra_clock_turned_hook)(void) = NULL;
+void (*avra_clock_spun_hook)(const char* words) = NULL;
+static int64_t g_clock_jumps = 0;
+
+static int64_t clock_real(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
+
+// A FROZEN CLOCK MOVES ONLY WHEN EVERY TASK WAITS, so a task that reads
+// it again and again without waiting between is waiting on a time that
+// cannot come: a hang, and a hang is spoken. The count is each task's
+// own and begins again when that task waits. HOW MANY READS IS A
+// SETTING, `AVRA_CLOCK_ASKS`, read once when a clock first freezes; 0
+// never traps. It is a watchdog, not a law: a task that reads the clock
+// that often while working, and never waits, is told the same.
+#define CLOCK_ASKS_SETTING "AVRA_CLOCK_ASKS"
+enum { CLOCK_ASKS_UNSET = -1, CLOCK_ASKS_DEFAULT = 1 << 24 };
+static int64_t g_clock_asks_most = CLOCK_ASKS_UNSET;
+
+static void clock_asks_settled(void) {
+    if (g_clock_asks_most != CLOCK_ASKS_UNSET) return;
+    const char* said = getenv(CLOCK_ASKS_SETTING);
+    g_clock_asks_most = CLOCK_ASKS_DEFAULT;
+    if (!said || !*said) return;
+    char* end = NULL;
+    long long n = strtoll(said, &end, 10);
+    if (*end != 0 || n < 0) avra_trap(CLOCK_ASKS_SETTING " takes a whole number of reads, or 0 for never");
+    g_clock_asks_most = n;
+}
+
+// The state follows `virtual` and `held`, the reading kept across it.
+static void clock_settled(void) {
+    int frozen = avra_clock.virtual && avra_clock.held == 0;
+    if (frozen == avra_clock.frozen) return;
+    if (frozen) {
+        clock_asks_settled();
+        avra_clock.at = clock_real() + avra_clock.skew;
+    } else avra_clock.skew = avra_clock.at - clock_real();
+    avra_clock.frozen = frozen;
+}
+
+__attribute__((noinline, cold, noreturn))
+static void clock_never_comes(void) {
+    char words[240];
+    avra_fmt(words, sizeof words, "a task is waiting on the clock without sleeping — the clock is virtual and moves only when every task waits (task %lld read it %lld times with no wait between; " CLOCK_ASKS_SETTING " sets how many, 0 for never)", (long long)avra_task_local->id, (long long)g_clock_asks_most);
+    if (avra_clock_spun_hook) avra_clock_spun_hook(words);
+    avra_trap(words);
+    abort();
+}
+
+__attribute__((noinline, cold))
+static int64_t clock_asked(void) {
+    if (g_clock_asks_most > 0 && ++avra_task_local->clock_asks > g_clock_asks_most) clock_never_comes();
+    return avra_clock.at;
+}
+
+int64_t avra_now_ns(void) {
+    if (__builtin_expect(avra_clock.frozen, 0)) return clock_asked();
+    return clock_real() + avra_clock.skew;
+}
+
+void avra_clock_virtual(int64_t on) {
+    avra_clock.virtual = on != 0;
+    clock_settled();
+    if (avra_clock_turned_hook) avra_clock_turned_hook();
+}
+
+int64_t avra_clock_jumped(int64_t at) {
+    if (!avra_clock.frozen) return 0;
+    if (at > avra_clock.at) avra_clock.at = at;
+    g_clock_jumps++;
+    return 1;
+}
+
+void avra_clock_hold(int64_t by) {
+    avra_clock.held += (int32_t)by;
+    avra_task_local->clock_holds += by;
+    if (by < 0) avra_task_local->clock_asks = 0;
+    if (avra_clock.held < 0) avra_trap("the world was let go more often than it was held — a hold on the clock is a count");
+    clock_settled();
+}
+
+void avra_clock_holds_let_go(int64_t n) {
+    if (n <= 0) return;
+    avra_clock.held -= (int32_t)n;
+    if (avra_clock.held < 0) avra_trap("defect: abandoned tasks were charged more holds on the world than stand");
+    clock_settled();
+}
+
+int64_t avra_clock_holds_dropped(void) {
+    int64_t held = avra_clock.held;
+    avra_clock.held = 0;
+    clock_settled();
+    return held;
+}
+
+// A run inside a run keeps the outer clock whole, to put it back, and
+// the count of reads its host had made.
+static AvraClock* g_clock_outer = NULL;
+static size_t g_clock_runs = 0;
+static size_t g_clock_runs_cap = 0;
+
+static void clock_run_turned(void) {
+    avra_task_local->clock_asks = 0;
+    if (avra_clock_turned_hook) avra_clock_turned_hook();
+}
+
+void avra_clock_run_begins(void) {
+    if (g_clock_runs == g_clock_runs_cap) {
+        g_clock_runs_cap = g_clock_runs_cap ? g_clock_runs_cap * 2 : 8;
+        g_clock_outer = realloc(g_clock_outer, g_clock_runs_cap * sizeof(AvraClock));
+        if (!g_clock_outer) avra_trap("the runtime ran out of memory for a run's clock");
+    }
+    g_clock_outer[g_clock_runs++] = avra_clock;
+    avra_clock.held = 0;
+    clock_settled();
+    clock_run_turned();
+}
+
+int64_t avra_clock_run_depth(void) { return (int64_t)g_clock_runs; }
+
+void avra_clock_run_ends(void) {
+    if (g_clock_runs == 0) avra_trap("defect: a run's clock ended that never began");
+    avra_clock = g_clock_outer[--g_clock_runs];
+    clock_run_turned();
+}
+
+int64_t avra_clock_jumps(void) { return g_clock_jumps; }
 
 void avra_process_exit(int64_t code) {
     exit((int)code);
@@ -4042,7 +4183,10 @@ int64_t avra_spawn_status(const char* prog, void* args) {
     free(argv);
     if (started != 0) return 127;
     int status;
-    if (waitpid(pid, &status, 0) < 0) return 127;
+    avra_clock_hold(1);
+    pid_t waited = waitpid(pid, &status, 0);
+    avra_clock_hold(-1);
+    if (waited < 0) return 127;
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return (int64_t)WEXITSTATUS(status);
 }
@@ -4070,7 +4214,10 @@ int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
     free(argv);
     if (started != 0) return 127;
     int status;
-    if (waitpid(pid, &status, 0) < 0) return 127;
+    avra_clock_hold(1);
+    pid_t waited = waitpid(pid, &status, 0);
+    avra_clock_hold(-1);
+    if (waited < 0) return 127;
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return (int64_t)WEXITSTATUS(status);
 }
@@ -4183,6 +4330,7 @@ const char* avra_capture_end(void) {
     char* buf = (char*)malloc((size_t)size + 1);
     size_t got = 0;
     while (got < (size_t)size) {
+        // the clock: a regular file of this process's own, read back whole
         ssize_t n = read(g_cap_file, buf + got, (size_t)size - got);
         if (n <= 0) break;
         got += (size_t)n;

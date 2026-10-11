@@ -85,10 +85,11 @@ use features.loops.{WhileSemantics, ForSemantics, ForEachSemantics, JumpSemantic
 use features.structs.{StructsSemantics, StructDeclSemantics, NamedTypeSemantics}
 use features.enums.{EnumsSemantics, EnumDeclSemantics, EnumPatSemantics}
 use features.formats.{FormatPatSemantics}
+use features.narrows.{NarrowPatSemantics}
 use features.collects.{CollectStmtSemantics, CollectEnumStmtSemantics}
 use diagnostics.{SourceFile, Voices}
 use compiler.backend.{run_lowered, run_kept, run_live, Ended, Kept}
-use compiler.lower.{Lowered}
+use compiler.lower.{Lowered, Instance}
 use compiler.memory.{memory}
 use compiler.host.{no_target}
 use compiler.format.{render_statement, render_expression}
@@ -116,6 +117,7 @@ export type DocRow = { address: string, kind: string, signature: string, prose_l
 export fn new_dispatch() -> Dispatch {
     let enumpats: dyn PatSemantics = EnumPatSemantics {}
     let formatpats: dyn PatSemantics = FormatPatSemantics {}
+    let narrowpats: dyn PatSemantics = NarrowPatSemantics {}
     let quotepats: dyn PatSemantics = QuotePatSemantics {}
     Dispatch {
         spine: SpineSemantics {},
@@ -166,6 +168,7 @@ export fn new_dispatch() -> Dispatch {
         jumps: JumpSemantics {},
         enumpats: enumpats,
         formatpats: formatpats,
+        narrowpats: narrowpats,
         quotepats: quotepats,
     }
 }
@@ -365,12 +368,6 @@ impl Program {
         if self.entry == null { return null }
         self.files[self.entry!.at]
     }
-
-    /// Every rule the compiler carries (rules_table.av's `rules`
-    /// collect), by module then name — `avra docs rules` (P7: the
-    /// rule table a native idiom finding's kind is checked against
-    /// is inspectable the same way any other registry is).
-    fn rule_listing() -> List<RuleEntry> { rules }
 
     /// An annotation fn's signature, which IS its effect — `avra
     /// explain @name`. Null when no declared fn wears the name. Asks
@@ -687,14 +684,33 @@ impl Program {
         self.lowered_as(entry, every, false)
     }
 
+    /// Whether the program's ROOT waits: the entry file's own
+    /// expressions, or every file's when a `programs` binary runs them
+    /// all. A top-level `spawn` or waiting read is no declaration, so the
+    /// cancel pass cannot survey it; the driver knows the entry.
+    fn root_links(entry: int?, programs: bool) -> bool {
+        if entry != null { return self.ws.file_links_scheduler(self.files[entry!].view.file) }
+        if !programs { return false }
+        self.files.any((a) -> self.ws.file_links_scheduler(a.view.file))
+    }
+
     fn lowered_bodies(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
         // Every file this program reaches is typed by now (the
         // driver's own law: analysis before lowering). Settle the
         // references relation HERE, once, so the consuming pass
         // reads it below as an ordinary dependency rather than
-        // computing it lazily mid-lower.
+        // computing it lazily mid-lower. The test after a call reads
+        // its callee's cancel bits, so that fact settles here too.
         touch(ws.references())
+        touch(ws.cancel_reach())
+        // WHETHER THE PROGRAM LINKS A SCHEDULER: a member that spawns or
+        // waits, or a wait at the ENTRY ROOT's top level — the root is no
+        // declaration, so the cancel pass cannot see it. Settled once
+        // here, before any body lowers, so every `while` of the program
+        // is judged by one bit. A library that runs no top-level
+        // statement (`entry` null, `programs` false) has no root.
+        ws.decls.record_schedulers(ws.members_link_scheduler() || self.root_links(entry, programs))
         memory(
             self
                 .ws
@@ -705,9 +721,11 @@ impl Program {
                     every,
                     programs,
                     ws.hold.held_wants.get(),
+                    ws.hold.held_codes.get(),
                     (w: Wanted) -> ws.lowered(ws.spec_id(w)),
                     (f: FileId) -> ws.is_held(f),
                     (f: FileId) -> ws.is_program_file(f),
+                    (i: Instance) -> ws.kept_instance(i),
                 ),
         ) with { libraries: ws.linked_packages() }
     }

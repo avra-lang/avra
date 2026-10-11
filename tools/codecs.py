@@ -140,17 +140,10 @@ def label_pair(label):
 # registry does not exercise, named with why, read here rather than
 # left for the reader to wonder whether it was forgotten. ──
 ACKNOWLEDGED_GAPS = {
-    ("decl_wire", "wire_decl"):
-        "needs an ADMITTED declaration's real DeclId — the fixture workspace "
-        "(compiler/codecs.av's codec_workspace, matching compiler/tests/"
-        "fn_wire_marks_test.av's own shape) mints no declaration, only scalar "
-        "and structural types. type_wire/interface_type's own exemplars stay "
-        "at scalars and composites for the same reason.",
-    ("type_wire", "read_type_wire"):
-        "read_type_wire is the lower-level primitive (words, at) both "
-        "registered decoders wrap — interface.type_wire/interface_type and "
-        "interface.type_wire/settlement_wire.type_from_wire already exercise "
-        "it through those two call sites.",
+    # `Row.of_wire` is a WIRE-FIELD ACCESSOR on a record row, not an encoder: the
+    # `_wire` suffix rule pairs it with `read_of_wire` by name alone. The real
+    # pair is `read_wire`/`read_of_wire`, which IS registered.
+    ("of_wire", "read_of_wire"): "record.av: `Row.of_wire` reads one field of a wire row; `read_wire` is `read_of_wire`'s encoder",
 }
 
 

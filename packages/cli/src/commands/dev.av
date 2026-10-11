@@ -16,7 +16,7 @@
 //! instead. The loop turns on the program's first task and the server
 //! answers on another.
 use @std.cli.{CliResult, Runnable, command, option, flag, arg}
-use @std.avrac.compiler.{Workspace, Toolchain}
+use @std.avrac.compiler.{Workspace, Toolchain, inputs_this_turn}
 use @std.http.frame.{Method}
 use @std.http.http.{Request, Unrouted, Response, Header, text}
 use @std.http.route.{Route, fixed}
@@ -24,10 +24,10 @@ use @std.http.server.{server}
 use @std.http.files.{Files, directory}
 use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
 use @std.net.{Bell, Listener}
-use @std.io.{IoError, read_bytes, read_text, exists, is_dir, stamp}
+use @std.io.{IoError, read_text, stamp}
 use @std.io.watch.{Watch, watch}
 use @std.path.{joined_path, file_name}
-use @std.process.{Tool, tool, cmd, inherited}
+use @std.process.{Tool, cmd, inherited}
 use @std.text.{parse_int}
 use @std.time.{Duration, ms, sleep, now_ms}
 
@@ -62,8 +62,13 @@ fn mounts_a_page(ws: Workspace) -> bool {
 /// What `path` is. A package is a directory with a manifest; what it holds
 /// is the workspace's to say.
 export fn pointed(path: string) -> Pointed {
-    if !is_dir(path) { return .File }
-    if !exists(joined_path(path, "avra.toml")) { return .Files }
+    if !is_a_dir(path) { return .File }
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    let there = match disk_host().there(joined_path(path, "avra.toml")) {
+        .Exists(_, t) -> t,
+        rest -> false,
+    }
+    if !there { return .Files }
     let ws = root_workspace(path)
     if ws.entry_of() == null { return .Library }
     if mounts_a_page(ws) { .Page } else { .Program }
@@ -72,7 +77,9 @@ export fn pointed(path: string) -> Pointed {
 impl Runnable for DevCmd {
     fn run(args: CliResult) -> int {
         let path = rooted(args.arg("path"))
-        if !exists(path) {
+        // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+        let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+        if !there {
             no_such_file(path)
             return 2
         }
@@ -206,10 +213,13 @@ enum Mark {
 }
 
 fn mark_of(path: string) -> Mark {
-    if !exists(path) { return .Gone }
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+    if !there { return .Gone }
     match stamp(path) {
         s? -> .Settled(s)
-        null -> .Young(read_text(path) catch "")
+        // LICENSED compiler.host_asked_directly: a command's read of the file it was given, at this instant — no query frame is open
+        null -> .Young(disk_host().spared_text(path).as_text() ?? "")
     }
 }
 
@@ -245,7 +255,7 @@ export type Page = {
     tools: Toolchain,
     compiler: Tool,
     glue: string,
-    lister: Workspace,
+    lister: Cell<Workspace>,
     standing: Cell<Standing>,
     watched: Cell<List<Watched>>,
     moved: Bell,
@@ -253,32 +263,32 @@ export type Page = {
 
 /// The page glue beside the compiler: `runtime/dom` in a checkout,
 /// `lib/avra/dom` in an install.
-fn glue_dir() -> string? { toolchain_files(["../runtime/dom", "../lib/avra/dom"]).find(is_dir(it)) }
+fn glue_dir() -> string? { toolchain_files(["../runtime/dom", "../lib/avra/dom"]).find(is_a_dir(it)) }
 
 /// The page of the package at `root`, nothing built yet — or the exit
 /// code of the refusal spoken: what this machine lacks to build one.
 fn page_at(root: string, target: string) -> Result<Page, int> {
-    let tools = toolchain(target, true, false)?
+    let lister = root_workspace(root)
+    let tools = toolchain(lister, target, true, false)?
     let glue? = glue_dir() else { return .Err(unequipped(no_glue())) }
     let own? = own_binary() else { return .Err(unequipped(no_compiler())) }
     match tool(own) {
-        .Ok(compiler) -> page_of(root, tools, compiler, glue),
+        .Ok(compiler) -> page_of(lister, tools, compiler, glue),
         .Err(e) -> .Err(refused_by_host(e)),
     }
 }
 
-/// The page of the package at `root`, built by `compiler` for `tools` and
-/// served with the glue standing in `glue`; nothing built yet.
-export fn page_of(root: string, tools: Toolchain, compiler: Tool, glue: string) -> Page {
-    let lister = root_workspace(root)
+/// The page of the package `lister` stands over, built by `compiler` for
+/// `tools` and served with the glue standing in `glue`; nothing built yet.
+export fn page_of(lister: Workspace, tools: Toolchain, compiler: Tool, glue: string) -> Page {
     lister.built_for(tools)
     let none: List<Watched> = []
     Page {
-        root: root,
+        root: lister.root,
         tools: tools,
         compiler: compiler,
         glue: glue,
-        lister: lister,
+        lister: Cell.new(lister),
         standing: Cell.new(Standing { module: "".bytes(), number: 0, failure: "" }),
         watched: Cell.new(none),
         moved: Bell {},
@@ -288,8 +298,13 @@ export fn page_of(root: string, tools: Toolchain, compiler: Tool, glue: string) 
 impl Page {
     /// Every file the build reads, each as it stands now.
     fn looked() -> List<Watched> {
-        let entry? = self.lister.entry_of() else { return [] }
-        [Watched { path: p, mark: mark_of(p) } for p in self.lister.build_inputs(entry)]
+        match inputs_this_turn(self.lister) {
+            .Ok(read) -> [Watched { path: p, mark: mark_of(p) } for p in read],
+            .Err(why) -> {
+                eprintln("avra: ${why}")
+                []
+            },
+        }
     }
 
     /// Whether no build has been asked for yet.
@@ -376,9 +391,12 @@ impl Page {
             .Err(e) -> { return .Err(e.describe().message) },
         }
         if status_of_exit(o.exit) != 0 { return .Err([o.out.stdout.trim(), o.out.stderr.trim()].filter(it != "").join("\n")) }
-        match read_bytes(o.out.stdout.trim().split("\n").last() ?? "") {
-            .Ok(module) -> module,
-            .Err(e) -> .Err(e.describe().message),
+        let module_path = o.out.stdout.trim().split("\n").last() ?? ""
+        // LICENSED compiler.host_asked_directly: the module a build just wrote is read as it stands at this instant
+        match disk_host().octets(module_path) {
+            .Bytes(module) -> module,
+            .Missing -> .Err(IoError.NotFound(module_path).describe().message),
+            .Refused(why) -> .Err(why),
         }
     }
 

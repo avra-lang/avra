@@ -11,6 +11,8 @@ use @std.meta.{derive}
 use @std.io.{env}
 use @std.errors.{Frame}
 use core.{
+    text_before,
+    rt_sigs,
     Fingerprint,
     StmtId,
     ExprId,
@@ -25,6 +27,8 @@ use core.{
     flatten,
     sorted_by,
     root_kind_of,
+    pattern_kinds,
+    Arm,
     SyntaxArena,
     DeclId,
     FileId,
@@ -43,7 +47,6 @@ use core.{
     CollectScope,
     Plain,
     DeclKind,
-    body_symbol,
 }
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{
@@ -69,14 +72,7 @@ use features.{
     MetaVal,
     new_meta_heap,
 }
-use features.collects.{
-    generic_words,
-    gathered_members,
-    collect_field_text,
-    sort_value,
-    sort_key_before,
-    SortValue,
-}
+use features.collects.{generic_words, collect_field_text, sort_value, sort_key_before, SortValue}
 use features.specs.{show_case_failure}
 use compiler.{Analysis, any_root}
 
@@ -98,10 +94,9 @@ export type Body = {
     file: FileId? = null,
     /// Instantiations may be emitted by more than one cached object.
     weak: bool = false,
-    /// A `once fn`'s own — its runtime guard runs every call, its
-    /// computation at most one. A GROWTH: every other construction
-    /// site answers false.
-    memoized: bool = false,
+    /// Where a task's body was written, `file:line` — what a trace and
+    /// a listing name the task by. Absent for a body that is no task's.
+    site: string? = null,
     /// The declared fn's own seat marks, `mut`/`const`/`isolated`
     /// written and `consumed` inferred (R3) — what the memory pass
     /// reads to seed a consuming param scope-owned at entry, and what
@@ -164,6 +159,8 @@ export type Lowered = {
     /// Every file an instantiation lowers FROM. Its generic's body is what
     /// each asking program reads, so such a file is never held.
     homes: List<FileId> = [],
+    /// The roaming instantiations lowered fresh, each with its unit's code.
+    instances: List<InstanceCode> = [],
     types: TypeRegistry,
     diagnostics: List<Diag>,
     // the host fns the program declares `extern` — rows the backend
@@ -174,10 +171,22 @@ export type Lowered = {
     libraries: List<LinkedPackage> = [],
     // the settled aggregates its bodies read by address, each once
     statics: List<Static>,
-    /// Bodies reachable from a `once fn` alone — the backend compiles
-    /// them for size, never speed. `cold_bodies` names the members.
-    cold: Map<string, bool> = {},
+    /// The code hashes the program answers, each `target=hash` — what
+    /// the program's own module, which holds their bodies, is keyed by.
+    code_hashes: List<string> = [],
+    /// Each code hash asked, and the file whose body asked it — what a
+    /// file keeps beside its object, so a build that holds it still
+    /// answers its asks.
+    hash_asks: List<HashAsk> = [],
+    /// The bodies as lowered, before the memory pass — what a file's
+    /// code is kept as, so a held file's record and a fresh body hash
+    /// alike.
+    unmanaged: List<Body> = [],
 }
+
+/// A code hash a body asks, and the file the body is in — none for a
+/// body no file owns.
+export type HashAsk = { by: FileId?, target: string }
 
 impl Decls {
     /// The program's extern fns by symbol — what every emitter refuses
@@ -245,6 +254,7 @@ fn new_lower_cx(
     seats: List<SeatValue>,
     seat_marks: List<SeatMark>,
     jobs: Jobs,
+    checks: bool = true,
 ) -> LowerCx {
     LowerCx {
         view: a.view,
@@ -263,6 +273,7 @@ fn new_lower_cx(
         seat_marks: seat_marks,
         fn_ret: fn_ret,
         jobs: jobs,
+        checks: checks,
         deferred: [],
         depth: 0,
     }
@@ -280,9 +291,11 @@ export fn lower(a: Analysis) -> Lowered {
             false,
             false,
             [],
+            [],
             (w: Wanted) -> lower_unit(a, externs, w, no_settle, no_cross),
             (_f: FileId) -> false,
             (_f: FileId) -> false,
+            no_kept,
         )
 }
 
@@ -290,7 +303,7 @@ export fn lower(a: Analysis) -> Lowered {
 /// wrappers it minted (they never escape it), the bodies of OTHER
 /// declarations it wants — the program asks for those, and asking
 /// twice reuses — and every voice lowering earned.
-export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static> }
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [] }
 
 /// A unit lowered in its file's analysis: the body, then its own
 /// lifts and wrappers drained locally — a lambda's body may mint
@@ -305,6 +318,7 @@ export fn lower_unit(
     w: Wanted,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> Unit {
     // a `collect` carries no body of its own — SYNTHESISED, never
     // parsed (`is_collect_decl`) — so it is exempt from the guard a
@@ -326,6 +340,7 @@ export fn lower_unit(
             externs,
             settle,
             cross,
+            checks,
         )
         w.root != null -> lower_root(
             a,
@@ -336,8 +351,9 @@ export fn lower_unit(
             settle,
             cross,
             if w.decl == null { null } else { a.view.file },
+            checks,
         )
-        w.decl == null -> lower_main(a, w.name, externs, settle, cross)
+        w.decl == null -> lower_main(a, w.name, externs, settle, cross, checks)
         is_collect_decl(a, w.decl!) -> lower_collect(
             a,
             a.view.decls.decl(w.decl!),
@@ -345,8 +361,19 @@ export fn lower_unit(
             externs,
             settle,
             cross,
+            checks,
         )
-        _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle, cross)
+        _ -> lower_fn(
+            a,
+            a.view.decls.decl(w.decl!),
+            w.name,
+            w.sub,
+            w.seats,
+            externs,
+            settle,
+            cross,
+            checks,
+        )
     }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
@@ -354,6 +381,7 @@ export fn lower_unit(
     mut lifts: List<Lift> = first.jobs.lifts
     mut wraps: List<Wrap> = first.jobs.wraps
     mut statics: List<Static> = first.jobs.statics
+    mut hashes: List<string> = first.jobs.hashes
     // a wrapper may be wanted by several of the unit's bodies — once
     mut wrapped: Map<string, bool> = {}
     while !lifts.is_empty() || !wraps.is_empty() {
@@ -367,16 +395,23 @@ export fn lower_unit(
                     )
             }
         } else {
-            let lf = lower_lambda(a, lifts.pop(), externs, settle, cross)
+            let lf = lower_lambda(a, lifts.pop(), externs, settle, cross, checks)
             bodies.push(lf.body)
             spoken = spoken.concat(lf.voices.list)
             wants = wants.concat(lf.jobs.pending)
             lifts = lifts.concat(lf.jobs.lifts)
             wraps = wraps.concat(lf.jobs.wraps)
             statics = statics.concat(lf.jobs.statics)
+            hashes = hashes.concat(lf.jobs.hashes)
         }
     }
-    Unit { bodies: bodies, wants: wants, voices: Voices { list: spoken }, statics: statics }
+    Unit {
+        bodies: bodies,
+        wants: wants,
+        voices: Voices { list: spoken },
+        statics: statics,
+        hashes: hashes,
+    }
 }
 
 impl Decls {
@@ -398,9 +433,11 @@ impl Decls {
         every: bool,
         programs: bool,
         held_asks: List<Wanted>,
+        held_codes: List<CodeFacts>,
         unit_of: fn(Wanted) -> Unit,
         is_held: fn(FileId) -> bool,
         is_program: fn(FileId) -> bool,
+        kept_instance: fn(Instance) -> KeptInstance,
     ) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
@@ -420,7 +457,7 @@ impl Decls {
                 Wanted {
                     file: files[at].view.file,
                     decl: null,
-                    name: program_symbol(self.file(files[at].view.file).path),
+                    name: program_symbol(self.file(files[at].view.file).name),
                     sub: null,
                     seats: [],
                     root: null,
@@ -429,6 +466,7 @@ impl Decls {
         }
         mut entry_body: Body = empty_main(self.types).body
         mut statics: List<Static> = []
+        mut hashes: List<HashAsk> = []
         if main_unit != null {
             let mu = main_unit!
             entry_body = mu.bodies.first() ?? entry_body
@@ -436,6 +474,7 @@ impl Decls {
             spoken = spoken.concat(mu.voices.list)
             wants = wants.concat(mu.wants)
             statics = mu.statics
+            hashes = [HashAsk { by: files[at].view.file, target: h } for h in mu.hashes]
         }
         let d = drained(
             wants.concat(held_asks),
@@ -443,9 +482,24 @@ impl Decls {
             is_held,
             (w: Wanted) -> self.instantiated(w),
             (w: Wanted) -> self.unlowered_stub(w),
+            (w: Wanted) -> instance_of(self, w),
+            kept_instance,
         )
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
+        let laid_out = distinct_statics(statics.concat(d.statics))
+        let asked = hashes.concat(d.hashes)
+        let unmanaged = fns
+        let answered = code_hashes(
+            self,
+            fns.concat([entry_body]),
+            laid_out,
+            d.held,
+            [h.target for h in asked],
+            held_codes.concat(d.kept),
+            [r.name for r in rt_sigs()].concat([r.name for r in self.extern_rows()]),
+        )
+        fns = fns.concat(answered.bodies)
         let every_body = fns.concat([entry_body])
         spoken = spoken.concat(minted_pointers(self.types, every_body))
         Lowered {
@@ -456,9 +510,12 @@ impl Decls {
             types: self.types,
             diagnostics: spoken,
             externs: self.extern_rows(),
-            statics: distinct_statics(statics.concat(d.statics)),
+            statics: laid_out,
             libraries: [],
-            cold: cold_bodies(every_body),
+            code_hashes: answered.keys,
+            hash_asks: asked,
+            unmanaged: unmanaged,
+            instances: d.instances,
         }
     }
 
@@ -467,6 +524,16 @@ impl Decls {
     /// where it stands.
     fn host_fns_twice(hosted: List<DeclId>) -> List<Diag> {
         [self.host_fn_twice(d, hosted[first_named(self, hosted, d)]) for j, d in hosted if first_named(self, hosted, d) < j]
+    }
+
+    fn code_hash_in_const(root: Wanted) -> Diag {
+        refusal(
+            "lower.code_hash_const",
+            if root.decl == null { null } else { self.loc(root.decl!) },
+            "a const's value cannot hold a code hash — at compile time the program is only what the const reaches",
+            "reaches `code_hash`",
+            "ask `code_hash` where the program runs, in a fn body",
+        )
     }
 
     fn host_fn_twice(d: DeclId, first: DeclId) -> Diag {
@@ -501,6 +568,7 @@ impl Decls {
     /// no stub answered for, and `program_closed` found it undeclared).
     fn unlowered_stub(w: Wanted) -> Body? {
         let d? = w.decl else { return null }
+        // LICENSED input.debug_flag: a debug flag is the process's own, not an input
         if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("unlowered_stub: name=${w.name} is_collect=${self.decl(d).kind is .Collect}") }
         match self.decl(d).kind {
             .Fn or .Method or .Default -> self.fn_stub(w, d),
@@ -575,11 +643,11 @@ impl Decls {
         )
     }
 
-    /// A const's initializer as a program of its own: the root unit's
-    /// first body is the entry, and everything it reaches follows —
-    /// through the same `unit_of`, so a body the program also runs
-    /// lowers once.
-    fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit) -> Lowered {
+    /// A settled run as a program of its own: the root unit's first body
+    /// is the entry, and everything it reaches follows — through the same
+    /// `unit_of`, so a body the program also runs lowers once. A code hash
+    /// it reaches is refused where `refuses_hash` holds, else answered absent.
+    fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit, refuses_hash: bool) -> Lowered {
         let ru = unit_of(root)
         let d = drained(
             ru.wants,
@@ -587,20 +655,30 @@ impl Decls {
             (_f: FileId) -> false,
             (_w: Wanted) -> false,
             (_w: Wanted) -> null,
+            (w: Wanted) -> instance_of(self, w),
+            no_kept,
         )
         let entry = ru.bodies.first() ?? empty_main(self.types).body
-        let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
+        let lowered_fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
+        let laid_out = distinct_statics(ru.statics.concat(d.statics))
+        let reached = ru.hashes.concat([h.target for h in d.hashes])
+        let fns = lowered_fns
+            .concat(if refuses_hash { [] } else { absent_hashes(self.types, reached) })
         let every_body = fns.concat([entry])
-        let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, every_body))
+        let spoken = ru
+            .voices
+            .list
+            .concat(d.spoken)
+            .concat(minted_pointers(self.types, every_body))
+            .concat(if refuses_hash && !reached.is_empty() { [self.code_hash_in_const(root)] } else { [] })
         Lowered {
             fns: fns,
             entry: entry,
             types: self.types,
             diagnostics: spoken,
             externs: self.extern_rows(),
-            statics: distinct_statics(ru.statics.concat(d.statics)),
+            statics: laid_out,
             libraries: [],
-            cold: cold_bodies(every_body),
         }
     }
 
@@ -640,7 +718,32 @@ impl Decls {
 
 /// The bodies a worklist reaches, each name once, the statics they
 /// read, and what they spoke.
-type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId> }
+/// A roaming instantiation as the workspace keys its code: the symbol it is
+/// lowered under, the file its generic lowers from, and its type arguments'
+/// shapes, one per line.
+export type Instance = { symbol: string, home: FileId, shapes: string }
+
+/// An instantiation lowered fresh: its key, the bodies and statics of the unit it lowered as, and
+/// the roaming instantiations that unit calls.
+export type InstanceCode = { key: Instance, bodies: List<Body>, statics: List<Static>, callees: List<Instance> }
+
+/// What the store kept of an instantiation and the roaming instantiations it reaches: the
+/// facts found, and the symbols whose facts are missing — held, so a hash reaching one is absent.
+export type KeptInstance = { facts: List<CodeFacts>, held: List<string> }
+
+/// Nothing kept: the pure lowering's answer.
+fn no_kept(_i: Instance) -> KeptInstance { KeptInstance { facts: [], held: [] } }
+
+/// The key an instantiation's code is kept under.
+fn instance_of(decls: Decls, w: Wanted) -> Instance {
+    Instance {
+        symbol: w.name,
+        home: w.file,
+        shapes: [type_shape_cached(decls, t) for t in w.sub?.args ?? []].join("\n"),
+    }
+}
+
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId>, hashes: List<HashAsk>, held: List<string>, instances: List<InstanceCode>, kept: List<CodeFacts> }
 
 fn drained(
     pending: List<Wanted>,
@@ -648,11 +751,17 @@ fn drained(
     is_held: fn(FileId) -> bool,
     instantiated: fn(Wanted) -> bool,
     held_stub: fn(Wanted) -> Body?,
+    instance_key: fn(Wanted) -> Instance,
+    kept_instance: fn(Instance) -> KeptInstance,
 ) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
     mut statics: List<Static> = []
+    mut hashes: List<HashAsk> = []
+    mut held: List<string> = []
+    mut instances: List<InstanceCode> = []
+    mut kept: List<CodeFacts> = []
     mut asks: List<Ask> = []
     mut homes: List<FileId> = []
     mut seen: Map<string, bool> = {}
@@ -675,12 +784,30 @@ fn drained(
             // (held, unseen) release still performs, and the caller reads
             // freed memory (.66 hole 3).
             let stub: Body? = held_stub(w)
+            // LICENSED input.debug_flag: a debug flag is the process's own, not an input
             if env("AVRA_STUB_DEBUG") ?? "" != "" && w.name.contains("rules") { eprintln("drained: name=${w.name} stub_null=${stub == null}") }
             if stub != null { fns.push(stub!) }
+            held.push(w.name)
+            if roams {
+                let k = kept_instance(instance_key(w))
+                kept = kept.concat(k.facts)
+                held = held.concat(k.held)
+            }
         }
         if fresh && !is_held(w.file) {
             minted = minted + 1
             let u = unit_of(w)
+            if roams {
+                instances
+                    .push(
+                        InstanceCode {
+                            key: instance_key(w),
+                            bodies: u.bodies,
+                            statics: u.statics,
+                            callees: [instance_key(more) for more in u.wants if instantiated(more)],
+                        },
+                    )
+            }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
             for b in u.bodies { fns.push(if roams { b with { file: null, weak: true } } else { b }) }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
@@ -692,6 +819,8 @@ fn drained(
             }
             // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
             for st in u.statics { statics.push(st) }
+            // LICENSED loops.push_loop: a comprehension would COPY the list, which is the bug.
+            for h in u.hashes { hashes.push(HashAsk { by: if roams { null } else { w.file }, target: h }) }
         }
     }
     if !wants.is_empty() {
@@ -703,7 +832,17 @@ fn drained(
                 ),
             )
     }
-    Drained { fns: fns, spoken: spoken, statics: statics, asks: asks, homes: homes }
+    Drained {
+        fns: fns,
+        spoken: spoken,
+        statics: statics,
+        asks: asks,
+        homes: homes,
+        hashes: hashes,
+        held: held,
+        instances: instances,
+        kept: kept,
+    }
 }
 
 /// Each static once: units read one const independently and each
@@ -748,67 +887,6 @@ fn pointer_constant(name: string) -> Diag {
     )
 }
 
-/// A body reachable from a `once fn` alone: every caller into it is
-/// itself one, so nothing under a once-memoized root runs more than
-/// the root does. The backend compiles the set for size, not speed.
-/// `body_symbol` names a call's target and an address taken alike, so
-/// a hot reference either way keeps a body hot — the set is
-/// self-correcting, never a hand-kept list.
-export fn cold_bodies(bodies: List<Body>) -> Map<string, bool> {
-    let g = call_graph(bodies)
-    mut cold: Map<string, bool> = {}
-    mut queue: List<string> = []
-    for b in bodies {
-        if b.memoized {
-            cold.set(b.name, true)
-            queue.push(b.name)
-        }
-    }
-    mut at = 0
-    while at < queue.length {
-        let name = queue[at]
-        at = at + 1
-        for callee in edges_of(g.callees, name) {
-            if cold.get(callee) == null &&
-                edges_of(g.callers, callee).all((c: string) -> cold.get(c) != null) {
-                cold.set(callee, true)
-                queue.push(callee)
-            }
-        }
-    }
-    cold
-}
-
-/// The program's call edges, forward and reverse, by name. Each
-/// adjacency is a `Cell` so an edge grows in PLACE (`claim_seen`'s
-/// law, above) — a list read back out of a `Map` on every edge would
-/// copy the list whole.
-type CallGraph = { callees: Map<string, Cell<List<string>>>, callers: Map<string, Cell<List<string>>> }
-
-fn call_graph(bodies: List<Body>) -> CallGraph {
-    mut callees: Map<string, Cell<List<string>>> = {}
-    mut callers: Map<string, Cell<List<string>>> = {}
-    for b in bodies {
-        for i in b.ins {
-            let target = body_symbol(i)
-            if target != null {
-                grown(callees, b.name, target!)
-                grown(callers, target!, b.name)
-            }
-        }
-    }
-    CallGraph { callees: callees, callers: callers }
-}
-
-fn grown(mut adj: Map<string, Cell<List<string>>>, from: string, to: string) {
-    let cell = adj.get(from)
-    if cell != null { cell!.push(to) } else { adj.set(from, Cell.new([to])) }
-}
-
-fn edges_of(adj: Map<string, Cell<List<string>>>, name: string) -> List<string> {
-    adj.get(name)?.get() ?? []
-}
-
 /// The ceiling on DISTINCT bodies one program mints. A source
 /// bounds its own count; only polymorphic recursion — each turn a
 /// wider substitution, none ever repeated — climbs forever.
@@ -821,22 +899,23 @@ fn program_main(a: Analysis) -> Wanted {
     Wanted {
         file: a.view.file,
         decl: null,
-        name: program_symbol(a.view.decls.file(a.view.file).path),
+        name: program_symbol(a.view.decls.file(a.view.file).name),
         sub: null,
         seats: [],
         root: null,
     }
 }
 
-/// The symbol a program's body wears in a programs binary: its whole
-/// PATH, every separator written as `_`, so a wreck names its file
-/// and no two programs collide. A STEM ALONE COLLIDED: a package's
-/// program test is named after the module it proves
-/// (`std-path/src/tests/path/path.av` beside `std-path/src/path.av`), both
-/// wanted `program$path`, and the one the worklist minted was the
-/// module's — an empty body that printed nothing.
-export fn program_symbol(path: string) -> string {
-    "program\$${path.replace("/", "_").replace(".", "_")}"
+/// The symbol a program's body wears in a programs binary: its file's
+/// NAME (`Workspace.file_name` — its package and its path within it), every
+/// separator written as `_`, so a wreck names its file, no two programs
+/// collide, and no symbol carries where the building machine keeps the tree.
+/// A STEM ALONE COLLIDED: a package's program test is named after the module
+/// it proves (`std-path/src/tests/path/path.av` beside
+/// `std-path/src/path.av`), both wanted `program$path`, and the one the
+/// worklist minted was the module's — an empty body that printed nothing.
+export fn program_symbol(name: string) -> string {
+    "program\$${name.replace("/", "_").replace(".", "_").replace(":", "_")}"
 }
 
 fn declared(a: Analysis) -> List<Wanted> {
@@ -935,6 +1014,7 @@ fn lower_fn(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
     let root: ExprId = x.root!
     let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
@@ -958,13 +1038,16 @@ fn lower_fn(
     // `seat_marks` above, which stays the currency a fn VALUE's TYPE
     // carries.
     let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
-    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross), checks)
+    // an `@unbroken` fn's own `while`s carry no back-edge check — the
+    // cancel pass already decided it: a fn that SPINS has one, and its
+    // bit is false for an `@unbroken` fn
+    lo.unbroken = !(a.view.decls.cancel_bits(x.id)?.spins ?? true)
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.mint_ty(pt) }
     lo.seeded()
     lo.seats_enter()
-    let memoized = a.view.store.is_once(x.stmt)
-    let r = if memoized { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
+    let r = if a.view.store.is_once(x.stmt) { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
     // A `then` case is a body like any fn's, but a FAILURE shows its
     // two sides when its answer is one equality — the driver knows
     // the case kind, as typing's `case_body` does, and the rule lives
@@ -982,7 +1065,6 @@ fn lower_fn(
             reg_types: lo.out.reg_types,
             file: a.view.file,
             weak: sub != null,
-            memoized: memoized,
             marks: body_marks,
             hosted: a.view.decls.is_host_fn(x.id),
         },
@@ -1001,13 +1083,18 @@ fn lower_lambda(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
     let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
     let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross), checks)
+    // a lambda's `while`s wear its maker's law: an `@unbroken` fn's lifted
+    // body carries no back-edge check either
+    lo.unbroken = lj.unbroken
+    if lj.kind is .Task { lo.exit = lo.answer_cell(rt) }
     // register 0 is the env box, 1..N the seats
     let _ = lo.mint_ty(lam_ty)
     for pt in seats { let _ = lo.mint_ty(pt) }
@@ -1031,10 +1118,19 @@ fn lower_lambda(
             reg_types: lo.out.reg_types,
             file: a.view.file,
             weak: true,
+            site: if lj.kind is .Task { written_at(a, lj.lam) } else { null },
         },
         voices: lo.out.voices,
         jobs: lo.jobs,
     }
+}
+
+/// Where `e` was written, `file:line`. Absent for code a template
+/// copied from another file: its offsets are that file's.
+fn written_at(a: Analysis, e: ExprId) -> string? {
+    if a.view.store.spanned_elsewhere(e) { return null }
+    let at? = a.view.store.expr_span(e) else { return null }
+    "${a.view.decls.file_named(a.view.file)}:${a.view.source.linecol(at.lo).line}"
 }
 
 /// The wrapper, built directly in IR — no AST exists for it: env
@@ -1128,10 +1224,11 @@ fn lower_collect(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
     let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
     let rt: TypeId = collect_answer_type(a.view.decls, x.file, x.stmt)
-    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle, cross), checks)
     lo.out.seeded()
     lo.seats_enter()
     let r = collect_table_reg(lo, a, rt, p, x.file)
@@ -1164,8 +1261,9 @@ fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, 
 }
 
 /// A member beside its `by` key — one TYPED value per `by` field, a
-/// TUPLE, so two different keys never read as one and a tie keeps both.
-type SortedMember = { key: List<SortValue>, decl: Decl }
+/// TUPLE, so two different keys never read as one and a tie keeps both —
+/// and its qualified name, which orders a tie.
+type SortedMember = { key: List<SortValue>, named: string, decl: Decl }
 
 /// Every matching declaration, in `by` order — shared by both collect
 /// flavors (a value's rows, an enum's variants); only `Decls` is
@@ -1178,12 +1276,20 @@ export fn ordered_collect_members(
     order: List<Plain>,
     owner: FileId,
 ) -> List<Decl> {
-    let found = gathered_members(decls, kind, scope, owner)
-    let keyed = [SortedMember { key: [sort_value(decls, kind, k, d) for k in order], decl: d } for d in found]
+    let found = decls.gathered_into(kind, scope, owner)
+    let keyed = [SortedMember {
+        key: [sort_value(decls, kind, k, d) for k in order],
+        named: decls.qualified_name(d),
+        decl: d,
+    } for d in found]
     [m.decl for m in sorted_by(keyed, member_before)]
 }
 
-fn member_before(x: SortedMember, y: SortedMember) -> bool { sort_key_before(x.key, y.key) }
+/// `by` order, and a tie by qualified name — never by the order files were read in.
+fn member_before(x: SortedMember, y: SortedMember) -> bool {
+    if sort_key_before(x.key, y.key) { return true }
+    !sort_key_before(y.key, x.key) && text_before(x.named, y.named)
+}
 
 /// One entry: its fields read by NAME off the projected type's own
 /// signature, filled from `p.proj.fields` — so their declared order
@@ -1197,14 +1303,60 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
     lo.packed_struct(entry_ty, [byname.get(n)! for n in sig.names])
 }
 
-/// One field's register: the declaration crossed WHOLE as the
-/// `@std/meta` value its seat names (`Fn`/`Type`/`Named`/`Trait`) for
-/// a bare `it` whose seat asks for one — the declaration ITSELF (a
-/// callable fn value) for a bare `it` that asks for anything else;
-/// an `.Annotated` kind's matched mark, for `it.mark`; a component's
-/// OWN field, read off its instance's built value, for a named path
-/// that is not one of the generic words; else the GENERIC text
-/// projection, const.
+/// WHAT ONE PROJECTED FIELD READS OFF EACH MEMBER — decided once per field
+/// from the collect's own types, and dispatched on by the lowering and by a
+/// held collector's key alike, so a read the lowering learns is one the key
+/// folds.
+export enum FieldPlan {
+    /// The declaration crossed WHOLE as the `@std/meta` value its seat names
+    /// (`Fn`/`Type`/`Named`/`Trait`), for a bare `it` whose seat asks for one.
+    Crossed
+    /// The declaration ITSELF, a callable fn value, for any other bare `it`.
+    Value
+    /// A component instance's root-kind indices, off its written body.
+    RootKind
+    /// Every node kind a component instance's patterns name, off its written body.
+    NodeKinds
+    /// An `.Annotated` kind's matched mark, for `it.mark`.
+    Mark
+    /// A component's OWN field, read off its instance's built value.
+    Component(word: string)
+    /// The GENERIC text projection, const.
+    Text(path: List<Plain>)
+}
+
+/// The read one projected field makes, by its seat's type and its path.
+export fn field_plan(
+    decls: Decls,
+    entry_ty: TypeId,
+    name: string,
+    path: List<Plain>,
+    kind: CollectKind,
+) -> FieldPlan {
+    if path.is_empty() {
+        return if decls.takes_a_decl(field_seat(decls, entry_ty, name)) { FieldPlan.Crossed } else { FieldPlan.Value }
+    }
+    if is_root_kind_path(path) { return FieldPlan.RootKind }
+    if is_node_kinds_path(path) { return FieldPlan.NodeKinds }
+    if is_mark_path(path) && by_mark(kind) { return FieldPlan.Mark }
+    if path.length == 1 && !generic_words.contains(path[0].of) && by_component(kind) { return FieldPlan.Component(path[0].of) }
+    FieldPlan.Text(path)
+}
+
+/// A projected field's declared type; the absorbing one when none is.
+fn field_seat(decls: Decls, entry_ty: TypeId, name: string) -> TypeId {
+    decls.field_type_named(entry_ty, name) ?? decls.types.intern(Type.Error)
+}
+
+fn by_mark(kind: CollectKind) -> bool {
+    match kind { .Annotated(_) -> true, .Component(_) or .UnknownKind(_) -> false }
+}
+
+fn by_component(kind: CollectKind) -> bool {
+    match kind { .Component(_) -> true, .Annotated(_) or .UnknownKind(_) -> false }
+}
+
+/// One field's register: what its plan reads off the member, lowered.
 fn collect_field_reg(
     mut lo: LowerCx,
     a: Analysis,
@@ -1214,24 +1366,15 @@ fn collect_field_reg(
     kind: CollectKind,
     d: Decl,
 ) -> Reg {
-    if path.is_empty() {
-        let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
-            .view
-            .types
-            .intern(Type.Error)
-        if a.view.decls.takes_a_decl(fnty) { return decl_crossed_reg(lo, fnty, d.id) }
-        return collect_fn_reg(lo, d.id, fnty)
+    match field_plan(a.view.decls, entry_ty, name, path, kind) {
+        .Crossed -> decl_crossed_reg(lo, field_seat(a.view.decls, entry_ty, name), d.id),
+        .Value -> collect_fn_reg(lo, d.id, field_seat(a.view.decls, entry_ty, name)),
+        .RootKind -> int_list_box(lo, component_root_kind(a.view.decls, d)),
+        .NodeKinds -> int_list_box(lo, component_node_kinds(a.view.decls, d)),
+        .Mark -> mark_field_reg(lo, field_seat(a.view.decls, entry_ty, name), kind, d),
+        .Component(word) -> component_field_reg(lo, a, field_seat(a.view.decls, entry_ty, name), word, d),
+        .Text(p) -> lo.const_str(collect_field_text(a.view.decls, d, p)),
     }
-    if is_root_kind_path(path) { return int_list_box(lo, component_root_kind(a.view.decls, d)) }
-    mark_field_reg(lo, a, entry_ty, name, path, kind, d) ?? component_field_reg(
-        lo,
-        a,
-        entry_ty,
-        name,
-        path,
-        kind,
-        d,
-    ) ?? lo.const_str(collect_field_text(a.view.decls, d, path))
 }
 
 /// A declaration crossed WHOLE as the meta value `want` names — the
@@ -1241,7 +1384,13 @@ fn collect_field_reg(
 /// fact about the declaration, laid out once as static data.
 fn decl_crossed_reg(mut lo: LowerCx, want: TypeId, d: DeclId) -> Reg {
     let crossed = lo.jobs.cross(d, want)
-    lo.materialized(crossed.answer, crossed.heap, want, "crossed\$${d.index}\$${want.index}")
+    lo
+        .materialized(
+            crossed.answer,
+            crossed.heap,
+            want,
+            "crossed\$${lo.view.decls.symbol(d)}\$${lo.view.decls.type_symbol(want)}",
+        )
 }
 
 /// `root_kind` — the one kind-typed (non-string) field a
@@ -1250,6 +1399,11 @@ fn decl_crossed_reg(mut lo: LowerCx, want: TypeId, d: DeclId) -> Reg {
 /// so it is read off the WRITTEN body rather than the built value.
 fn is_root_kind_path(path: List<Plain>) -> bool {
     path.length == 1 && path[0].of == "root_kind"
+}
+
+/// `node_kinds` — the other field read off a component instance's written body.
+fn is_node_kinds_path(path: List<Plain>) -> bool {
+    path.length == 1 && path[0].of == "node_kinds"
 }
 
 /// A component instance's ROOT-KIND INDICES: its one-seat fn field's
@@ -1262,12 +1416,26 @@ fn is_root_kind_path(path: List<Plain>) -> bool {
 /// (docs/2026_09_22_COLLECTIONS.md §5 — nodes touched, never nodes
 /// × rules).
 export fn component_root_kind(decls: Decls, d: Decl) -> List<int> {
+    let arms? = component_arms(decls, d) else { return [any_root] }
+    root_kind_of(decls.store_of(d.file), arms) ?? [any_root]
+}
+
+/// EVERY NODE KIND A COMPONENT INSTANCE'S PATTERNS NAME — read off the
+/// PARSED body as `component_root_kind` is, settled once at lowering by
+/// the compiler that builds it, so a running compiler can tell a rule it
+/// cannot match.
+export fn component_node_kinds(decls: Decls, d: Decl) -> List<int> {
+    let arms? = component_arms(decls, d) else { return [] }
+    pattern_kinds(decls.store_of(d.file), arms)
+}
+
+/// A component instance's one-seat fn field's written arms, when it has them.
+fn component_arms(decls: Decls, d: Decl) -> List<Arm>? {
     let store = decls.store_of(d.file)
-    let v? = store.stmt_value(d.stmt) else { return [any_root] }
-    let block? = match store.expr(v) { .Component(_, _, b, _, _) -> b, rest -> null } else { return [any_root] }
-    let parts? = store.lambda_parts(block) else { return [any_root] }
-    let arms? = match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null } else { return [any_root] }
-    root_kind_of(store, arms) ?? [any_root]
+    let v? = store.stmt_value(d.stmt) else { return null }
+    let block? = match store.expr(v) { .Component(_, _, b, _, _) -> b, rest -> null } else { return null }
+    let parts? = store.lambda_parts(block) else { return null }
+    match store.expr(parts.body) { .Match(_, ar) -> ar, rest -> null }
 }
 
 /// `mark` — the one field an `.Annotated` kind's declarations may
@@ -1280,24 +1448,19 @@ fn is_mark_path(path: List<Plain>) -> bool {
     path.length == 1 && path[0].of == "mark"
 }
 
-fn mark_field_reg(
-    mut lo: LowerCx,
-    a: Analysis,
-    entry_ty: TypeId,
-    name: string,
-    path: List<Plain>,
-    kind: CollectKind,
-    d: Decl,
-) -> Reg? {
-    if !is_mark_path(path) { return null }
-    let word? = match kind { .Annotated(w) -> w, rest -> null } else { return null }
-    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
-        .view
-        .types
-        .intern(Type.Error)
-    let matched? = a.view.decls.annotations_of(d.id).find(it.name == word) else { return lo.mint_ty(field_ty) }
+fn mark_field_reg(mut lo: LowerCx, field_ty: TypeId, kind: CollectKind, d: Decl) -> Reg {
+    let matched? = gathering_mark(lo.view.decls, kind, d) else { return lo.mint_ty(field_ty) }
     let sig? = lo.fields_of(field_ty) else { return lo.mint_ty(field_ty) }
     lo.packed_struct(field_ty, [mark_part_reg(lo, matched, n) for n in sig.names])
+}
+
+/// The mark a member was gathered by; none for a kind that gathers by no mark,
+/// or a member that no longer wears it.
+export fn gathering_mark(decls: Decls, kind: CollectKind, d: Decl) -> AnnotationFact? {
+    match kind {
+        .Annotated(w) -> decls.annotations_of(d.id).find(it.name == w),
+        .Component(_) or .UnknownKind(_) -> null,
+    }
 }
 
 /// `mark`'s own record, filled by field NAME — `name` the matched
@@ -1329,21 +1492,7 @@ fn int_list_box(mut lo: LowerCx, ns: List<int>) -> Reg {
 /// declared type stands in), then the named field read off it
 /// (`values.av`'s `field_named`, whose own DEFECT is the honest
 /// answer for a word that names no field).
-fn component_field_reg(
-    mut lo: LowerCx,
-    a: Analysis,
-    entry_ty: TypeId,
-    name: string,
-    path: List<Plain>,
-    kind: CollectKind,
-    d: Decl,
-) -> Reg? {
-    if path.length != 1 || generic_words.contains(path[0].of) || !(kind is .Component) { return null }
-    let word = path[0].of
-    let field_ty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo
-        .view
-        .types
-        .intern(Type.Error)
+fn component_field_reg(mut lo: LowerCx, a: Analysis, field_ty: TypeId, word: string, d: Decl) -> Reg {
     let inst_ty: TypeId = a.view.decls.type_of_const(d.file, d.stmt) ?? lo
         .view
         .types
@@ -1396,9 +1545,10 @@ fn lower_root(
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
     home: FileId?,
+    checks: bool = true,
 ) -> LoweredBody {
     let rt: TypeId = a.facts.type_at(root)
-    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle, cross), checks)
     lo.seeded()
     // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
     // `const` seat as its called value, so the settlement computes on
@@ -1443,6 +1593,7 @@ fn lower_state_root(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
     let read_ty: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a
         .view
@@ -1468,7 +1619,7 @@ fn lower_state_root(
     }
     let init = root
     let maybe: TypeId = a.view.decls.types.type(cell_ty?)
-    mut lo = new_lower_cx(a, cell_ty, null, [], [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, cell_ty, null, [], [], new_jobs(externs, settle, cross), checks)
     lo.seeded()
     lo.seats_enter()
     let held = lo.once_read(lo.view.decls.types.shape_of(maybe), w.name)
@@ -1514,8 +1665,9 @@ fn lower_main(
     externs: List<string>,
     settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>,
     cross: fn(DeclId, TypeId) -> Lifted,
+    checks: bool = true,
 ) -> LoweredBody {
-    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle, cross))
+    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle, cross), checks)
     lo.scope_enter()
     lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)
@@ -1587,7 +1739,7 @@ fn claim_seen(mut seen: Map<string, bool>, name: string) -> bool {
 impl Decls {
 
     fn mangle(name: string, sub: Sub) -> string {
-        let ids = joined([self.type_wire(a) for a in sub.args], "_")
+        let ids = joined([self.type_symbol(a) for a in sub.args], "_")
         if sub.consts.is_empty() { return "${name}\$${ids}" }
         "${name}\$${ids}@${joined(sub.consts, "_")}"
     }

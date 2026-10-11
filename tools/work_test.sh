@@ -25,7 +25,7 @@ git init -q --bare "$scratch/origin.git"
 git init -q -b main "$scratch/avra"
 main=$scratch/avra
 mkdir -p "$main/tools" "$main/.github/ci"
-cp "$here/work" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$main/tools/"
+cp "$here/work" "$here/compiler_paths.sh" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$main/tools/"
 # No fixture installs anything: the toolchain list is empty.
 echo "# none" > "$main/.github/ci/packages.txt"
 git -C "$main" add -A
@@ -207,6 +207,30 @@ seeded env AVRA_SPRITES="A B C"
 check "$(grep -c 'bootstrapping from the seed' "$scratch/out") $(grep -c 'cat > ' "$SPRITE_LOG")" "1 0" "work seed: with neither, it says the Sprite bootstraps and hands it nothing" "$scratch/out"
 unset SPRITE_LOG
 
+# ══ A NEW LANE'S LOCAL COMPILER: the one built from its tree, the nearest behind, or none
+sl=$scratch/seedlab
+git clone -q "$scratch/origin.git" "$sl/main" 2>/dev/null
+mkdir -p "$sl/main/tools"
+cp "$here/work" "$here/compiler_paths.sh" "$here/sprite-lib.sh" "$here/sprite-remote.sh" "$here/sprite-rsh.sh" "$sl/main/tools/"
+slc() { git -C "$sl/main" -c user.name=t -c user.email=t@t "$@"; }
+echo one > "$sl/main/Makefile"; slc add -A; slc commit -q -m one
+old_at=$(slc rev-parse HEAD)
+echo two > "$sl/main/Makefile"; slc commit -q -am two
+slc update-ref refs/remotes/origin/main HEAD
+slw="$sl/main/tools/work"
+lane() { rm -rf "$sl/$1"; slc worktree prune; slc worktree add -q --detach "$sl/$1" "${2:-HEAD}"; }
+holds() { lane held "${2:-HEAD}"; mkdir -p "$sl/held/build"; echo bin > "$sl/held/build/avra"; chmod +x "$sl/held/build/avra"; [ -z "$1" ] || echo "$1" > "$sl/held/build/.avra-built-from"; }
+seeds() { lane fresh; (cd "$sl/main" && "$@" sh "$slw" seed-local "$sl/fresh") > "$scratch/out" 2>&1; [ -x "$sl/fresh/build/avra" ] && echo copied || echo none; }
+holds ""
+check "$(seeds env) $(grep -c 'starts with none' "$scratch/out")" "none 1" "work new: a compiler that does not say what it was built from is never copied" "$scratch/out"
+holds "$(sh "$slw" compiler-hash "$sl/main") edited"
+check "$(seeds env) $(grep -c 'it is this tree.s' "$scratch/out")" "copied 1" "work new: the compiler built from this tree's compiler source is taken, and said" "$scratch/out"
+holds "somethingelse edited"
+check "$(seeds env)" "none" "work new: a compiler built from a lane's own edits is never copied" "$scratch/out"
+holds "olderhash $old_at" "$old_at"
+check "$(seeds env) $(grep -c '1 compiler commit(s) behind' "$scratch/out")" "copied 1" "work new: failing that, the nearest behind origin/main is a start, and says how far" "$scratch/out"
+check "$(seeds env AVRA_SEED_BEHIND=0) $(grep -c 'not copied' "$scratch/out")" "none 1" "work new: one past the bound is refused with the distance, never copied" "$scratch/out"
+
 # ══ HELP: asked after any verb it prints that verb's line, and touches nothing
 export SPRITE_LOG="$scratch/sprite.log"
 : > "$SPRITE_LOG"; : > "$GH_LOG"
@@ -259,7 +283,7 @@ check "$? $(grep -c '^work: COMMAND — stopped at its bound' "$scratch/err")" "
 
 scene 0; echo Other-9 > "$scratch/fake/live"
 ran true
-check "$? $(grep -c 'BUSY — A still runs Other-9.*work attach.*work stop' "$scratch/err") $(cat "$scratch/fake/rsync" 2>/dev/null | wc -l | tr -d ' ') $(grep -c '^start' "$scratch/fake/calls")" "76 1 0 0" "work run: a Sprite with a run standing is BUSY — nothing is synced under it, nothing started" "$scratch/err"
+check "$? $(grep -c 'BUSY — Other-9 is live on A with nobody here following it.*work attach.*work stop' "$scratch/err") $(cat "$scratch/fake/rsync" 2>/dev/null | wc -l | tr -d ' ') $(grep -c '^start' "$scratch/fake/calls")" "76 1 0 0" "work run: a Sprite with a run standing is BUSY — nothing is synced under it, nothing started" "$scratch/err"
 
 scene 0; echo 9 > "$scratch/fake/ending"; : > "$scratch/fake/lost"; echo 3 > "$scratch/fake/cut"
 ran true
@@ -293,12 +317,21 @@ scene 0; echo 4 > "$scratch/fake/cut"; echo 0 > "$scratch/fake/ending"
 ran true
 check "$? $(tr '\n' ' ' < "$scratch/out")| $(grep -c '^attach' "$scratch/fake/calls")" "0 one two three | 2" "work run: a run that ended while its last connection delivered half is read to its last byte" "$scratch/err"
 
-scene 0; echo 99 > "$scratch/fake/ending"; : > "$scratch/fake/hang"
-PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" run true > "$scratch/out" 2> "$scratch/err" &
-job=$!
-i=0; while [ "$i" -lt 50 ] && ! grep -q '^attach' "$scratch/fake/calls" 2>/dev/null; do sleep 0.2; i=$((i + 1)); done
-kill -TERM "$job"; wait "$job"
-check "$? $(grep -c '^stop' "$scratch/fake/calls") $([ -f "$(git rev-parse --absolute-git-dir)/avra-run" ] && echo locked || echo free)" "143 1 free" "work run: a TERM stops the run on the Sprite and frees the lane" "$scratch/err"
+# ONLY A STOP THAT WAS MEANT ENDS A RUN. A client that is terminated or
+# hung up — a session that ended, a harness reaping its jobs — detaches,
+# and the run goes on; Ctrl-C is the one signal that stops it. A shell's
+# background job has INT ignored, so the client is started with it restored.
+signalled() {
+    scene 0; echo 99 > "$scratch/fake/ending"; : > "$scratch/fake/hang"
+    PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV' sh "$work" run true > "$scratch/out" 2> "$scratch/err" &
+    job=$!
+    i=0; while [ "$i" -lt 50 ] && ! grep -q '^attach' "$scratch/fake/calls" 2>/dev/null; do sleep 0.2; i=$((i + 1)); done
+    kill -"$1" "$job"; wait "$job"
+    echo "$? $(grep -c '^stop' "$scratch/fake/calls") $(grep -c "^work: detached ($2) — the run goes on on A; .sh tools/work attach. follows it, .sh tools/work stop. ends it" "$scratch/err") $([ -f "$(git rev-parse --absolute-git-dir)/avra-run" ] && echo locked || echo free)"
+}
+check "$(signalled TERM terminated)" "143 0 1 free" "work run: a TERM to the client detaches — the run goes on, nothing is stopped, and it says how to follow and how to end it" "$scratch/err"
+check "$(signalled HUP 'hung up')" "129 0 1 free" "work run: a hangup detaches the same way" "$scratch/err"
+check "$(signalled INT -)" "130 1 0 free" "work run: Ctrl-C stops the run on the Sprite and frees the lane" "$scratch/err"
 
 scene 3; echo Mine-1 > "$scratch/fake/live"
 PATH="$scratch/bin:$PATH" FAKE="$scratch/fake" sh "$work" attach > "$scratch/out" 2> "$scratch/err"
@@ -411,7 +444,12 @@ git -C "$main" worktree remove --force "$lane"
 # real supervisor, every exec run here — and its connection killed whole
 # when `drop` says after how many seconds. Linux only: the Sprite's half
 # reads /proc and takes its own session.
-if [ "$(uname -s)" = Linux ]; then
+# The end-to-end checks count a run's processes in /proc and need an init
+# that reaps what a killed supervisor leaves: a Sprite, never a container
+# job, where AVRA_NO_SUPERVISOR_TESTS says so and the skip is spoken.
+if [ "$(uname -s)" = Linux ] && [ -n "${AVRA_NO_SUPERVISOR_TESTS:-}" ]; then
+    echo "work_test: SKIPPED the supervisor's end-to-end checks and the Sprite's half (tools/sprite_remote_test.sh) — AVRA_NO_SUPERVISOR_TESTS is set; \`sh tools/work run sh tools/work_test.sh\` runs them"
+elif [ "$(uname -s)" = Linux ]; then
     carrier=${AVRA_RUN:-none}
     unset AVRA_RUN SILENT OFFLINE FAKE
     cat > "$scratch/sprite-here" <<'STUB'
@@ -477,7 +515,7 @@ STUB
     timeout 60 sh "$work" run true > "$scratch/out2" 2> "$scratch/busy"
     busy=$?
     timeout 90 sh "$work" attach > "$scratch/out" 2> "$scratch/err"
-    check "$?|$([ "$going" -gt 0 ] && echo going)|$busy $(grep -c '^work: BUSY — L still runs' "$scratch/busy")|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(quiet 10)" "9|going|76 1|$want|0" \
+    check "$?|$([ "$going" -gt 0 ] && echo going)|$busy $(grep -c '^work: BUSY — .* is live on L with nobody here following it' "$scratch/busy")|$(grep '^line' "$scratch/out" | tr '\n' ' ')|$(quiet 10)" "9|going|76 1|$want|0" \
         "end to end: with its follower killed outright the run goes on, a second run is BUSY, and attach has every line and the status" "$scratch/err"
 
     timeout 90 sh "$work" run 'setsid sleep 4260 & sleep 4261' > "$scratch/out" 2> "$scratch/err" &

@@ -1,0 +1,39 @@
+//! The ID-WRITING CODECS: a `DeclId` crosses as its durable declaration
+//! wire — path, kind, owner, name — and a `TypeId` as `type_wire`'s own
+//! spelling, never as the process-local number its `@local` column
+//! holds. `compiler/codecs.av` exercises each beside its decoder.
+use core.{DeclId, TypeId}
+use compiler.{Workspace}
+use compiler.failures.{Raised}
+
+impl Workspace {
+    /// A run of declarations as their durable wires, one per count.
+    fn decls_wire(ids: List<DeclId>) -> string { packed([self.decls.decl_wire(d) for d in ids]) }
+
+    fn decls_of_wire(raw: string) -> List<DeclId>? {
+        let back = [self.decl_from_ref(p) for p in unpacked(raw)]
+        if back.any(it == null) { return null }
+        [d! for d in back]
+    }
+
+    /// A run of types as `type_wire`'s own spellings.
+    fn types_wire(ts: List<TypeId>) -> string { packed([self.decls.type_wire(t) for t in ts]) }
+
+    fn types_of_wire(raw: string) -> List<TypeId>? {
+        let back = [self.read_type_wire_of_wire(p) for p in unpacked(raw)]
+        if back.any(it == null) { return null }
+        [t! for t in back]
+    }
+
+    /// A settled error set: its owner declaration's wire, then its
+    /// errors' type wires.
+    fn raised_wire(r: Raised) -> string { packed([self.decls.decl_wire(r.owner), self.types_wire(r.errors)]) }
+
+    fn raised_of_wire(raw: string) -> Raised? {
+        let p = unpacked(raw)
+        if p.length < 2 { return null }
+        let owner? = self.decl_from_ref(p[0]) else { return null }
+        let errors? = self.types_of_wire(p[1]) else { return null }
+        Raised { owner: owner, errors: errors }
+    }
+}

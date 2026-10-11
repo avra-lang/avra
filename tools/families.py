@@ -26,12 +26,19 @@ THE LIVE ORDER IS THE MARKERS' RANKS. `Family` is a `collect enum`
 over the `@family(rank, …)` markers in compiler/families/families.av
 (.148 landed); the collect orders by each marker's rank, so sorting
 the markers by rank IS the enum's order.
+
+THE HAND-WRITTEN COUNT falls to 0 (.181): every `@family(` marker in
+non-test std-avrac source is a family not yet a `@query`. The count
+may only fall; `tools/families.ceiling` holds the most it may be.
 """
 import os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAMILIES = "packages/std-avrac/src/compiler/families/families.av"
 ORDER_FILE = "tools/families.order"
+CEILING_FILE = "tools/families.ceiling"
+SOURCE_ROOT = "packages/std-avrac/src"
+HAND_WRITTEN = re.compile(r'^\s*@family\(', re.M)
 
 def read(path):
     return open(os.path.join(ROOT, path)).read()
@@ -90,6 +97,33 @@ def check(committed, live):
     return None
 
 
+def hand_written_count(root):
+    """`@family(` markers in non-test std-avrac source: the families not
+    yet `@query`. Test trees hold fixtures, not families, and are skipped."""
+    total = 0
+    for dirpath, dirnames, filenames in os.walk(os.path.join(root, SOURCE_ROOT)):
+        dirnames[:] = [d for d in dirnames if d != "tests"]
+        for name in filenames:
+            if name.endswith(".av"):
+                total += len(HAND_WRITTEN.findall(read(os.path.join(dirpath, name))))
+    return total
+
+
+def ceiling():
+    """`tools/families.ceiling` — one integer, the most markers may remain."""
+    text = read(CEILING_FILE).strip()
+    return int(text) if text.isdigit() else None
+
+
+def ceiling_check(count, ceil):
+    """None when `count` does not rise above `ceil`, else the refusal."""
+    if count > ceil:
+        return (f"families: {count} family marker(s) still wear `@family`, above the "
+                f"ceiling {ceil} in {CEILING_FILE} — a family is converted to `@query`, "
+                f"never added as a `@family`. The count may only fall.")
+    return None
+
+
 # ── Fixtures: what the reader REFUSES and what it ACCEPTS ──
 
 MARKER_CASE = """@family(2, "FileId", "Parsed")
@@ -118,6 +152,13 @@ CHECK_CASES = [
     (["A", "B", "C"], ["X", "B", "C"], True),             # RENAMED
 ]
 
+# (count, ceiling, refused?) — the hand-written count may not rise.
+CEILING_CASES = [
+    (37, 37, False),                                      # at the ceiling
+    (36, 37, False),                                      # fallen
+    (38, 37, True),                                       # rose
+]
+
 def selftest():
     for text, want in PARSE_CASES:
         got = marker_order(text)
@@ -127,6 +168,11 @@ def selftest():
         got = check(committed, live) is not None
         if got != refused:
             sys.exit(f"families: check self-test failed on {committed} / {live}: "
+                     f"refused={got}, want={refused}")
+    for count, ceil, refused in CEILING_CASES:
+        got = ceiling_check(count, ceil) is not None
+        if got != refused:
+            sys.exit(f"families: ceiling self-test failed on {count} / {ceil}: "
                      f"refused={got}, want={refused}")
 
 
@@ -147,6 +193,16 @@ def main():
     extra = len(live) - len(committed)
     print(f"families: {len(committed)} committed ordinal(s) in order, "
           f"{len(live)} variant(s) read" + (f", {extra} appended" if extra else ""))
+    ceil = ceiling()
+    if ceil is None:
+        print(f"families: {CEILING_FILE} holds no integer — the keeper examined nothing")
+        return 1
+    count = hand_written_count(ROOT)
+    bad = ceiling_check(count, ceil)
+    if bad:
+        print(bad)
+        return 1
+    print(f"families: {count} still hand-written (@family), falling to 0 (ceiling {ceil})")
     return 0
 
 

@@ -27,52 +27,9 @@ fn stmts_at(ss: List<StmtId>) -> List<At> { [At.Stmt(s) for s in ss] }
 /// A choice between running `rest` and running nothing.
 fn maybe(head: List<ExprId>, rest: List<At>) -> Control { Control.Branch(exprs_at(head), [[], rest]) }
 
-impl SyntaxArena {
-    /// How control runs through an expression's children.
-    fn expr_control(e: ExprId) -> Control {
-        match self.expr(e) {
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .NullLit or .Error or .Env(_) -> Control.Seq([]),
-            .Range(lo, hi) -> Control.Seq(exprs_at([lo, hi])),
-            .Binary(op, l, r) -> binary_control(op, l, r),
-            .Not(v) or .Force(v) or .Propagate(v) or .Named(_, v) or .Collect(v) -> Control.Seq(exprs_at([v])),
-            .Is(s, _) or .Prop(s, _) or .Chain(s, _) -> Control.Seq(exprs_at([s])),
-            .ListLit(es) or .Call(_, _, es) or .StructLit(_, _, es) or .VariantLit(_, es) or .Body(_, _, es, _) -> Control.Seq(exprs_at(es)),
-            .MapLit(ks, vs) -> Control.Seq(exprs_at(flatten([[k, vs[i]] for i, k in ks]))),
-            .Index(s, i) -> Control.Seq(exprs_at([s, i])),
-            .With(s, _, es) or .CallValue(s, es) or .MethodCall(s, _, es) -> Control.Seq(exprs_at([s].concat(es))),
-            .Block(stmts, value) -> Control.Seq(stmts_at(stmts).concat(exprs_at(some_list(value)))),
-            .Comp(elem, clauses) -> comp_control(elem, clauses),
-            .If(c, t, f) -> Control.Branch(exprs_at([c]), [exprs_at([t]), exprs_at([f])]),
-            .When(conds, values, fallback) -> Control
-                .Branch(exprs_at(conds.slice(0, 1)), [exprs_at([v]) for v in values.concat([fallback])]),
-            .Match(s, arms) -> Control
-                .Branch(exprs_at([s]), [exprs_at(some_list(a.guard).concat([a.value])) for a in arms]),
-            .MatchOpt(s, _, p, a) -> Control.Branch(exprs_at([s]), [exprs_at([p]), exprs_at([a])]),
-            .Coalesce(l, r) -> maybe([l], exprs_at([r])),
-            .Catch(s, _, _, vs) -> Control.Branch(exprs_at([s]), [exprs_at([])].concat([exprs_at([v]) for v in vs])),
-            .Lambda(_, _) or .Spawn(_) or .Component(_, _, _, _, _) -> Control.Apart,
-        }
-    }
-
-    /// How control runs through a statement's children.
-    fn stmt_control(s: StmtId) -> Control {
-        match self.stmt(s) {
-            .Let(_, _, v) or .MutLet(_, _, v) or .ExprStmt(v) or .Discard(v) -> Control.Seq(exprs_at([v])),
-            .Jump(_, _) -> Control.Seq([]),
-            .Assign(t, v) -> Control.Seq(exprs_at([v, t])),
-            .Return(v) -> Control.Returns(v),
-            .Fail(v) -> Control.Fails(v),
-            .IfStmt(c, t, e) -> Control.Branch(exprs_at([c]), [stmts_at(t), stmts_at(e)]),
-            .While(c, ss) or .LetElse(_, c, ss) or .ForEach(_, _, c, ss) -> maybe([c], stmts_at(ss)),
-            .For(_, from, to, cond, step, ss) -> maybe([from, to, cond], stmts_at(ss).concat(exprs_at([step]))),
-            .Defer(_, _) or .ConstDecl(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .Use(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _) or .Error -> Control.Apart,
-        }
-    }
-}
-
 /// `&&` and `||` run their right side only when the left does not
 /// decide; every other operator runs both.
-fn binary_control(op: BinOp, l: ExprId, r: ExprId) -> Control {
+fn expr_binary_control(op: BinOp, l: ExprId, r: ExprId) -> Control {
     match op {
         .And or .Or -> maybe([l], exprs_at([r])),
         .Add or .Sub or .Mul or .Div or .Mod or .Eq or .Ne or .Lt or .Le or .Gt or .Ge or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> Control.Seq(exprs_at([l, r])),
@@ -81,8 +38,66 @@ fn binary_control(op: BinOp, l: ExprId, r: ExprId) -> Control {
 
 /// A comprehension's first source always runs; the rest of its heads,
 /// its filters and its element run once per element, or never.
-fn comp_control(elem: ExprId, clauses: List<CompClause>) -> Control {
+fn expr_comp_control(elem: ExprId, clauses: List<CompClause>) -> Control {
     let first = flatten([comp_clause_reach(c) for c in clauses.slice(0, 1)])
     let rest = flatten([comp_clause_reach(c) for c in clauses.slice(1, clauses.length)])
     maybe(first, exprs_at(rest.concat([elem])))
 }
+
+// ── the `@branches` variants' own control (core/flow_derive.av) ──
+
+fn expr_map_lit_control(keys: List<ExprId>, values: List<ExprId>) -> Control {
+    Control.Seq(exprs_at(flatten([[k, values[i]] for i, k in keys])))
+}
+
+fn expr_if_control(c: ExprId, t: ExprId, f: ExprId) -> Control { Control.Branch(exprs_at([c]), [exprs_at([t]), exprs_at([f])]) }
+
+fn expr_when_control(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId) -> Control {
+    Control.Branch(exprs_at(conds.slice(0, 1)), [exprs_at([v]) for v in values.concat([fallback])])
+}
+
+fn expr_match_control(s: ExprId, arms: List<Arm>) -> Control {
+    Control.Branch(exprs_at([s]), [exprs_at(some_list(a.guard).concat([a.value])) for a in arms])
+}
+
+fn expr_coalesce_control(l: ExprId, r: ExprId) -> Control { maybe([l], exprs_at([r])) }
+
+fn expr_match_opt_control(s: ExprId, _bind: Scoped, p: ExprId, a: ExprId) -> Control {
+    Control.Branch(exprs_at([s]), [exprs_at([p]), exprs_at([a])])
+}
+
+fn expr_catch_control(s: ExprId, _variants: List<Plain>, _binds: List<Scoped>, vs: List<ExprId>) -> Control {
+    Control.Branch(exprs_at([s]), [exprs_at([])].concat([exprs_at([v]) for v in vs]))
+}
+
+fn stmt_assign_control(t: ExprId, v: ExprId) -> Control { Control.Seq(exprs_at([v, t])) }
+
+/// A loop's head runs, then its body, or never.
+fn loop_control(head: ExprId, body: List<StmtId>) -> Control { maybe([head], stmts_at(body)) }
+
+fn stmt_while_control(c: ExprId, ss: List<StmtId>) -> Control { loop_control(c, ss) }
+
+fn stmt_let_else_control(_name: Scoped, c: ExprId, ss: List<StmtId>) -> Control { loop_control(c, ss) }
+
+fn stmt_for_each_control(_index: Scoped?, _name: Scoped, c: ExprId, ss: List<StmtId>) -> Control { loop_control(c, ss) }
+
+fn stmt_for_control(
+    _name: Scoped,
+    from: ExprId,
+    to: ExprId,
+    cond: ExprId,
+    step: ExprId,
+    ss: List<StmtId>,
+) -> Control {
+    maybe([from, to, cond], stmts_at(ss).concat(exprs_at([step])))
+}
+
+fn stmt_if_stmt_control(c: ExprId, t: List<StmtId>, e: List<StmtId>) -> Control {
+    Control.Branch(exprs_at([c]), [stmts_at(t), stmts_at(e)])
+}
+
+fn stmt_return_control(v: ExprId?) -> Control { Control.Returns(v) }
+
+fn stmt_fail_control(v: ExprId) -> Control { Control.Fails(v) }
+
+fn stmt_jump_control(_label: ExprId?, _again: bool) -> Control { Control.Seq([]) }

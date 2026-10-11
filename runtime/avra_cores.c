@@ -170,7 +170,9 @@ int64_t avra_cores_fork(int64_t g, int64_t serving) {
             int64_t err = -errno;
             close(gr->stop_write);
             gr->stop_write = -1;
+            avra_clock_hold(1);
             for (int64_t j = 0; j < i; j++) waitpid(gr->core[j].pid, NULL, 0);
+            avra_clock_hold(-1);
             group_free(gr);
             return err;
         }
@@ -189,6 +191,7 @@ int64_t avra_cores_stop_fd(int64_t g) { return group_at(g)->stop_read; }
 // else 0. A core parks on the stop pipe while this answers 0.
 int64_t avra_cores_stopped(int64_t g) {
     char b;
+    // the clock: the stop pipe's read end is O_NONBLOCK, a read answers at once
     ssize_t got = read(group_at(g)->stop_read, &b, 1);
     return got == 0 || (got < 0 && errno != EAGAIN && errno != EINTR);
 }
@@ -224,10 +227,15 @@ int64_t avra_cores_heard(int64_t g, int64_t core) {
     Group* gr = group_at(g);
     if (gr->core[core].ended) return 0;
     char b[16];
+    // the clock: the end pipe's read end is O_NONBLOCK, a read answers at once
     ssize_t got = read(gr->core[core].end_read, b, sizeof b);
     if (got != 0 && !(got < 0 && errno != EAGAIN && errno != EINTR)) return -EAGAIN;
     int status = 0;
+    // A CLOSED END PIPE IS NOT AN ENDED CORE: a read that failed, or a
+    // child that closed its end and runs on, leaves this waiting on it.
+    avra_clock_hold(1);
     while (waitpid(gr->core[core].pid, &status, 0) < 0 && errno == EINTR) {}
+    avra_clock_hold(-1);
     gr->core[core].status = status;
     gr->core[core].ended = 1;
     avra_fiber_fd_closing(gr->core[core].end_read);

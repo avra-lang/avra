@@ -1,0 +1,43 @@
+# A GREEN PR ALWAYS ENTERS THE QUEUE, with nobody in the loop.
+#
+# A lane pushes a PR and moves on; if auto-merge is not set, a green PR
+# sits unqueued until a human notices, which is the failure that cost a
+# day. This workflow enables auto-merge on every open, non-draft change,
+# so the merge queue takes it the moment its checks pass.
+#
+# It is a second, independent path from the watcher (`pr-watcher.yml`):
+# this one fires the instant a PR is opened or its head moves, the
+# watcher sweeps on a five-minute cadence and after every `checks` run for
+# anything either missed.
+name: auto-merge
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, synchronize, reopened]
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    # A draft is a lane saying "not yet"; a fork's token cannot enqueue.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: enable auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.AVRA_QUEUE_TOKEN || secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh pr merge "$PR" -R "$REPO" --auto --squash \
+            && echo "auto-merge: #$PR — autoMerge=true (the queue takes it when checks pass)" \
+            || { echo "::error::auto-merge: could not enable for #$PR — see the log above"; exit 1; }

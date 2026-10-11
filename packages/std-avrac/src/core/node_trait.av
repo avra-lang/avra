@@ -1,0 +1,60 @@
+//! A syntax node's own behaviour: how control runs through its
+//! children. A record that writes no `impl Node` is DERIVED — its
+//! fields' expressions run in field order, or nowhere when it wears
+//! `@apart` — exactly as `@derive(Node)` written on it would be.
+//!
+//! It stands ALONE with `@std/meta`: running a derive TYPES the file
+//! that declares it, and node_trait.av is typed while a record wearing
+//! `@derive(Node)` still registers, so it names nothing that record
+//! declares. `Control` and `At` are this module's own (`control.av`,
+//! `shape.av`), resolved where the generated impl LANDS.
+use @std.meta.{Type as MetaType, Field, Directive, Code}
+
+/// The control a node's children run, as data a must-analysis reads.
+export trait Node {
+    fn control() -> Control
+
+    /// The record's own impl, generated: a `@apart` record runs
+    /// nowhere here, every other runs its fields' expressions in order.
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl Node for ${t.name} {
+                        fn control() -> Control { ${control_body(t)} }
+                    }
+                },
+            },
+        ]
+    }
+
+    /// The words this derive reads off a record — and no others.
+    static fn marks(t: MetaType) -> List<string> { ["apart"] }
+}
+
+fn control_body(t: MetaType) -> Code {
+    if t.annotations.any(it.name == "apart") { return quote { Control.Apart } }
+    quote { Control.Seq(${concatenated(steps_of(t))}) }
+}
+
+/// What a record runs, field by field.
+fn steps_of(t: MetaType) -> List<Code> { [step(f) for f in t.fields] }
+
+/// HOW A FIELD'S TYPE STEPS — the whole registry, one row per shape the
+/// node model runs, an empty run for one that carries no expression,
+/// and a defect the build refuses at the generated code for a type
+/// absent here — never a silent zero.
+fn step(f: Field) -> Code {
+    let b = f.name
+    match f.ty {
+        "ExprId" -> quote { [At.Expr(self.${b})] },
+        "ExprId?" -> quote { [At.Expr(x) for x in some_list(self.${b})] },
+        "List<ExprId>" -> quote { [At.Expr(x) for x in self.${b}] },
+        "List<StmtId>" -> quote { [At.Stmt(x) for x in self.${b}] },
+        "int" or "bool" or "string" or "List<string>" or "Scoped" or "Scoped?" or "Plain" or "List<Plain>" or "Nominal" or "TypeRef" or "TypeRef?" or "List<TypeRef>" or "BodyView" -> quote { [] },
+        _ -> quote { a_node_field_type_the_control_derive_has_no_step_for() },
+    }
+}

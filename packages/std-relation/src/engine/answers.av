@@ -82,6 +82,13 @@ impl Relation {
 
     fn begin(arg: int) { self.kernel.begin(self.query_key(arg)) }
 
+    /// `arg`'s value and kernel cell dropped together, unless the call is in flight.
+    fn evict_call(arg: int) {
+        if self.open(arg) { return }
+        self.values.drop(arg)
+        self.kernel.forget(self.query_key(arg))
+    }
+
     /// Whether the query at `arg` is in flight — asked by a query that
     /// would otherwise re-enter it from another family.
     fn open(arg: int) -> bool { self.kernel.active(self.query_key(arg)) }

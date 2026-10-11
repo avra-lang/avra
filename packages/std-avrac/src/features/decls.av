@@ -50,7 +50,7 @@ use core.{
     Annotation,
     At,
 }
-use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck}
+use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind}
 use @std.relation.db.{Db, new_db}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
@@ -67,7 +67,6 @@ use features.{
     MetaVal,
     StructSig,
     EnumSig,
-    generated_key,
     Decl,
     DeclAt,
     Origin,
@@ -84,22 +83,75 @@ use @std.relation.engine.{list_cell, map_cell, Table, new_table, Kernel, Key, ne
 /// `test` is the caller's structural fact (the package's own test
 /// root, `Workspace.is_test_path`), never recomputed here by
 /// matching the path.
-export type FileInfo = { id: FileId, path: string, module_id: ModuleId, test: bool }
+export type FileInfo = { id: FileId, path: string, name: string, module_id: ModuleId, test: bool }
 
 /// A range-owning declaration and the source span it holds.
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
 
-/// `Decl`'s indexes, numbered in field order: its name, a component
-/// instance's `word`, every `@name` it wears, its interning key, the
+/// `Decl`'s indexes: its key's first, then in field order its name, a component
+/// instance's `word`, every `@name` it wears, the
 /// file that homes it, and whether it is an `extern fn`. `word` and `marks` are TWO INDEXES, never one —
 /// sharing a bucket would let a component named `rule` and an annotation
 /// `@rule` answer for each other.
-const name_index: int = 0
-const word_index: int = 1
-const marks_index: int = 2
-const key_index: int = 3
+const key_index: int = 0
+const name_index: int = 1
+const word_index: int = 2
+const marks_index: int = 3
 const home_index: int = 4
 const external_index: int = 5
+
+/// SIBLINGS, COUNTED. A declaration's `sibling` is its place among the
+/// declarations of its group that ONE RUN of one maker over one file mints:
+/// a file's admission is a run of the empty maker, an annotation's expansion
+/// a run of its own, a held file's rows a run of each maker its record names.
+/// A run opened again counts from nothing, so what it mints again takes the
+/// places it took. A run opened INSIDE another of its name — an expansion
+/// re-entered from a resolve it asked — counts on its own, and the outer
+/// one resumes its counts when the inner closes. A closed run with none
+/// around it is gone, so a run of a maker stands only while it is open; a
+/// file's admission is the one run that stands until the next.
+type Siblings = { runs: Cell<Map<string, Cell<Map<string, int>>>> }
+
+/// The counts of a run of the same name already open when another opened —
+/// none when it was the only one.
+export type RunPrior = { counts: Cell<Map<string, int>>? }
+
+impl Siblings {
+    /// A new run of `maker` over `f`; answers the run it stands inside.
+    fn opened(f: FileId, maker: string) -> RunPrior {
+        let prior = RunPrior { counts: self.runs.get().get(run_named(f, maker)) }
+        let fresh: Cell<Map<string, int>> = map_cell()
+        self.runs.put(run_named(f, maker), fresh)
+        prior
+    }
+
+    /// A run closed: the run it stood inside counts on from where it was,
+    /// and with none around it the run is gone.
+    fn resumed(f: FileId, maker: string, prior: RunPrior) {
+        let counts? = prior.counts else { return self.closed(f, maker) }
+        self.runs.put(run_named(f, maker), counts)
+    }
+
+    /// The run of `maker` over `f` is no longer.
+    fn closed(f: FileId, maker: string) {
+        mut open = self.runs.get()
+        open.remove(run_named(f, maker))
+        self.runs.set(open)
+    }
+
+    /// The next place in `group` within the open run of `maker` over `f` —
+    /// a run nothing opened is opened by its first taking.
+    fn taken(f: FileId, maker: string, group: string) -> int {
+        if self.runs.get().get(run_named(f, maker)) == null { let _ = self.opened(f, maker) }
+        let counts = self.runs.get().get(run_named(f, maker))!
+        let place = counts.get().get(group) ?? 0
+        counts.put(group, place + 1)
+        place
+    }
+}
+
+/// One maker's run over one file, as the table files it.
+fn run_named(f: FileId, maker: string) -> string { "${f.index} ${maker}" }
 
 /// `sigs`, `children`, `methods` and `impls` are dense by
 /// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
@@ -297,6 +349,10 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
     // tables do not cover — `statics`, `grammars`, the parts tables trap past their end.
     // Absence there is "declares nothing", not a defect.
     let readable = x.stmt.index < store.stmts.count()
+    // A declaration riding another's statement (a field's default)
+    // wears none of that statement's own words: its seats, its doc, its
+    // annotations are the owner's.
+    let owns = readable && names_its_stmt(x.kind)
     DeclFacts {
         external: readable && x.kind is .Fn && store.extern_parts(x.stmt) != null,
         stat: store.is_static(x.stmt),
@@ -305,14 +361,14 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         span: occupied(store, x),
         tparams: if readable { store.decl_tparams(x.stmt) } else { [] },
         bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },
-        seats: if readable && !(x.kind is .Default) { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
+        seats: if owns { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
         host: if readable { extern_host(store, x.stmt) } else { [] },
-        annotated: readable && !store.annotations_of(x.stmt).is_empty(),
+        annotated: owns && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
         word: if x.kind is .Const { store.instance_of(x.stmt) } else { null },
-        doc: if readable { store.doc_comment(x.stmt) } else { null },
-        annotations: if readable { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
+        doc: if owns { store.doc_comment(x.stmt) } else { null },
+        annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
         trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
         hosted: readable && x.kind is .Fn && store.is_host_fn(x.stmt),
@@ -384,6 +440,12 @@ export type WireIndex = { count: int, by: Map<string, List<DeclId>> }
 export type Decls = {
     types: TypeRegistry,
     mains: Cell<List<DeclId?>>,
+    /// Each file's name, dense by FileId — what a row's key spells its file by.
+    file_names: Cell<List<string>>,
+    /// Every named type the typer resolved, in order: a settlement keeps the ones it resolved.
+    touched_types: Cell<List<TypeId>>,
+    /// The sibling each group's next declaration takes, per run.
+    counted: Cell<Siblings>,
     stores: Cell<List<SyntaxArena?>>,
     ensure_store: Cell<fn(FileId) -> void>,
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
@@ -587,7 +649,7 @@ export type Decls = {
     /// pass ran — that file was never surveyed, so the relation
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
-    ensure_refs: Cell<fn() -> void>,
+    ensure_refs: Cell<fn() -> bool>,
     /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
     /// write it, kept by `face` as every declaration's facts land, so it covers
     /// a module minted after the first ask as well as one parsed before it.
@@ -600,6 +662,33 @@ export type Decls = {
     // structurally resolve — a refusal, never a silently missing member
     inferred_unresolved: Table<bool>,
     ensure_failures: Cell<fn() -> void>,
+    // what a call to each fn may reach — a held fn's as its interface
+    // recorded it, every other as the pass found it
+    cancels: Table<CancelReach>,
+    // whether ANY member parks or spawns: a program that reaches no
+    // scheduler links none, so it emits no while check
+    schedulers: Cell<bool>,
+    /// each type's TOP-LEVEL shape text, shared across a build: the walk
+    /// starts at the type with an empty path, so the text is a function of
+    /// the type alone and one answer serves every caller
+    shape_texts: Table<string>,
+}
+
+/// What a call to a fn may reach, here or in a callee: a cancel point it
+/// waits at (`parks`), or a `while` whose back-edge is one (`spins`).
+export type CancelReach = { parks: bool, spins: bool }
+
+impl CancelReach {
+    /// Whether the call may reach a cancel point at all.
+    fn may() -> bool { self.parks || self.spins }
+
+    /// Whether this already reaches everything `o` does.
+    fn covers(o: CancelReach) -> bool { (self.parks || !o.parks) && (self.spins || !o.spins) }
+
+    /// What either reaches.
+    fn with_reach(o: CancelReach) -> CancelReach {
+        CancelReach { parks: self.parks || o.parks, spins: self.spins || o.spins }
+    }
 }
 
 /// Where no workspace stands behind the table, nothing lifts.
@@ -644,7 +733,7 @@ fn no_store(f: FileId) {}
 fn no_audit(_r: Bypassed) {}
 
 /// Whether a scope gathers from every file of the owner's package.
-fn admits_package(scope: CollectScope) -> bool {
+export fn admits_package(scope: CollectScope) -> bool {
     match scope { .Package -> true, .Self or .Closure or .UnknownScope(_) -> false }
 }
 
@@ -655,7 +744,8 @@ fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
 fn no_entry_ensure() -> bool { false }
 
 // LICENSED fns.dead_parameter: a fn VALUE filling the references-ensure seat — no pass runs before the workspace arms it
-fn no_refs_ensure() {}
+/// No pass to run: what the relation holds is what stands.
+fn no_refs_ensure() -> bool { true }
 
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
@@ -694,6 +784,9 @@ export fn new_decls() -> Decls {
     let d = Decls {
         types: new_type_registry(),
         mains: Cell.new(no_mains),
+        file_names: list_cell(),
+        touched_types: list_cell(),
+        counted: Cell.new(Siblings { runs: map_cell() }),
         // LICENSED compiler.repeated_projection: each `Cell.new` mints its own cell — one binding would make two hooks one slot
         stores: Cell.new(no_stores),
         auditing: Cell.new(false),
@@ -759,6 +852,9 @@ export fn new_decls() -> Decls {
         inferred_errs: new_table(),
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
+        cancels: new_table(),
+        schedulers: Cell.new(false),
+        shape_texts: new_table(),
         consumed: Cell.new(empty_consumed),
         ensure_consumed: Cell.new(no_ensure),
         lifter: Cell.new(no_lifter),
@@ -815,6 +911,18 @@ export fn kind_word(k: DeclKind) -> string {
 }
 
 impl Decls {
+    /// A type a declaration's expression carries, kept when it is a named type.
+    fn note_named(t: TypeId) {
+        let named = match self.types.shape_of(t) {
+            .Struct(_, _) or .Enum(_, _) -> true,
+            rest -> false,
+        }
+        if named { self.note_type(t) }
+    }
+
+    /// A named type the typer resolved, kept in order.
+    fn note_type(t: TypeId) { self.touched_types.set(self.touched_types.get().concat([t])) }
+
     // ── files ──
 
     /// A declaration's row — THE ONE DOOR every pass reads it through.
@@ -1226,6 +1334,14 @@ impl Decls {
     /// A declaration's package — its module's, by `package_named`.
     fn package_of(d: DeclId) -> string { self.package_named(self.module_of(d)) }
 
+    /// A declaration's name as its package and module spell it (`@std.meta.Named`)
+    /// — one per declaration, whatever order the files were read in.
+    fn qualified_name(d: Decl) -> string {
+        let module = self.module_name(self.file(d.file).module_id)
+        let lead = if package_of_module(module).is_empty() { [self.package_named(module), module] } else { [module] }
+        [part for part in lead.concat([d.name]) if !part.is_empty()].join(".")
+    }
+
     /// A module's package in the DOTTED spelling every package read
     /// compares (`@std.meta`): the prefix a dependency's module carries,
     /// or the root's manifest name for a root module, which none
@@ -1401,10 +1517,13 @@ impl Decls {
             // THE DECLARATION'S name, never the WRITTEN spelling: a
             // `use @std.meta.{Fn as F}` gives the type the alias in its
             // written name, and the boundary must still read `Fn`.
-            .Struct(d, _) -> self.is_meta_fn(d, name),
+            .Struct(d, _) or .Enum(d, _) or .Dyn(d, _) -> self.is_meta_fn(d, name),
             rest -> false,
         }
     }
+
+    /// Whether a type is a rule's answer: `@std/meta`'s `Fix` or the compiler's.
+    fn rule_fix(ty: TypeId) -> bool { self.meta_type(ty, "Fix") || self.avrac_type(ty, "Fix") }
 
     /// Whether slot `j` is a SITE: a field typed `@std/meta`'s `Site`,
     /// which a literal that leaves it unset fills with where it was
@@ -1494,8 +1613,8 @@ impl Decls {
     /// A TABLE NOTHING ASKS AGAIN, LET GO: every hook, the ones a one-shot
     /// keeps armed among them, so it holds no closure back to its workspace —
     /// and its relations closed, since a relation's rows stand in the process
-    /// under their Db until it closes. A read after this is refused.
-    fn let_go() {
+    /// under their Db until it closes. A read after this is refused with `voice`.
+    fn let_go(voice: string) {
         self.disarm()
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_ensure)
@@ -1503,7 +1622,7 @@ impl Decls {
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
         self.types.disarm_declare()
-        self.rows_db.get().close()
+        self.rows_db.get().close_saying(voice)
     }
 
     /// The workspace arms the sig hook once.
@@ -1541,6 +1660,29 @@ impl Decls {
     fn gathered(word: string, scope: CollectScope, owner: FileId) -> List<Decl> {
         self.admit_scope(scope, owner)
         [d for d in self.indexed(word) if self.collectible(d, scope, owner)]
+    }
+
+    /// A collect's members — A REGISTRY, exhaustive over `CollectKind`:
+    /// `.Component`'s instances read `gathered`, `.Annotated`'s every
+    /// declaration wearing that mark reads `gathered_by_mark`;
+    /// `.UnknownKind` was refused at its own check and gathers nothing.
+    fn gathered_into(kind: CollectKind, scope: CollectScope, owner: FileId) -> List<Decl> {
+        match kind {
+            .Component(w) -> self.gathered(w, scope, owner),
+            .Annotated(w) -> self.gathered_by_mark(w, scope, owner),
+            .UnknownKind(_) -> [],
+        }
+    }
+
+    /// The record a gathered variant was gathered from — the member
+    /// named `variant` of the `collect enum` whose type is `e`; absent
+    /// for a written enum's variant.
+    fn member_record(e: TypeId, variant: string) -> TypeId? {
+        let d? = enum_decl(self.types.shape_of(e)) else { return null }
+        let x = self.decl(d)
+        let parts? = self.store_of(x.file).collect_enum_parts(x.stmt) else { return null }
+        let m? = self.gathered_into(parts.kind, parts.scope, x.file).find(it.name == variant) else { return null }
+        self.record_type(m.id)
     }
 
     /// `gathered`'s mark twin: every declaration wearing `@name`,
@@ -1817,7 +1959,11 @@ impl Decls {
     }
 
     /// A record declaration's own type.
-    fn record_type(record: DeclId) -> TypeId { self.types.intern(Type.Struct(record, self.decl(record).name)) }
+    fn record_type(record: DeclId) -> TypeId {
+        let t = self.types.intern(Type.Struct(record, self.decl(record).name))
+        self.note_type(t)
+        t
+    }
 
     fn tparams(d: DeclId) -> List<string> {
         let x = self.decl(d)
@@ -1955,6 +2101,21 @@ impl Decls {
         self.inferred_unresolved.at(d.index) ?? false
     }
 
+    /// What a call to `d` may reach, recorded.
+    fn record_cancel(d: DeclId, r: CancelReach) {
+        self.cancels.keep(d.index, r)
+    }
+
+    /// The recorded answer — null where nothing has said.
+    fn cancel_bits(d: DeclId) -> CancelReach? {
+        self.cancels.at(d.index)
+    }
+
+    /// The program-wide bit the cancel pass settled.
+    fn record_schedulers(v: bool) { self.schedulers.set(v) }
+
+    fn links_scheduler() -> bool { self.schedulers.get() }
+
     fn mark_inferred_unresolved(d: DeclId) {
         self.inferred_unresolved.keep(d.index, true)
     }
@@ -2035,13 +2196,25 @@ impl Decls {
     /// Every named USE of `d`, of any kind, across the program —
     /// asking runs the references pass.
     fn refs_of(d: DeclId) -> List<Ref> {
-        (self.ensure_refs.get())()
+        if !self.refs_stand() { return [] }
         Ref.by_decl(self.rows_db.get(), d)
     }
+
+    /// Whether the references relation stands to be read — asking runs
+    /// the pass. While it cannot run the answer is no, and NOTHING IS
+    /// READ: a read then would be one the pass's own write must answer to.
+    fn refs_stand() -> bool { (self.ensure_refs.get())() }
 
     /// Every CALL or METHOD CALL naming `d`.
     fn callers(d: DeclId) -> List<Ref> {
         [r for r in self.refs_of(d) if r.kind is .Call || r.kind is .MethodCall]
+    }
+
+    /// Whether a plain read names `d`, or null where the references do not
+    /// stand: an absence of a finding is no finding of absence.
+    fn read_found(d: DeclId) -> bool? {
+        if !self.refs_stand() { return null }
+        Ref.by_decl(self.rows_db.get(), d).any((r: Ref) -> r.kind is .Read)
     }
 
     /// Every plain read of `d` — never a call, never a write.
@@ -2074,12 +2247,12 @@ impl Decls {
 
     /// One file's own rows, as `references.av`'s pass wrote them.
     fn refs_in_file(f: FileId) -> List<Ref> {
-        (self.ensure_refs.get())()
+        if !self.refs_stand() { return [] }
         Ref.by_file(self.rows_db.get(), f)
     }
 
     /// The workspace arms the references hook once.
-    fn arm_references(ensure: fn() -> void) {
+    fn arm_references(ensure: fn() -> bool) {
         self.ensure_refs.set(ensure)
     }
 
@@ -2170,18 +2343,7 @@ impl Decls {
 
     fn admit_builtin(r: TypeRow) {
         let id = self
-            .mint(
-                "builtin::${r.name}",
-                FileId { index: 0 },
-                no_stmt,
-                r.name,
-                DeclKind.Builtin,
-                true,
-                "",
-                null,
-                false,
-                null,
-            )
+            .mint(FileId { index: 0 }, no_stmt, r.name, DeclKind.Builtin, true, "", null, "", null)
         self.builtins.push(id)
         self.declare_builtin(id, r)
     }
@@ -2315,9 +2477,46 @@ impl Decls {
     /// the same name answers false. Call with `annotation_home(d)`,
     /// never `decl(d).file`: a generated declaration's annotation is
     /// the TEMPLATE's word, not the landing file's.
+    /// `d`'s own annotations resolving to `@std/meta`'s `word` — by
+    /// declaration, never a bare compare of the word: a package's own
+    /// fn of the same name answers none.
+    fn meta_annotations(d: DeclId, word: string) -> List<AnnotationFact> {
+        let file = self.annotation_home(d)
+        [a for a in self.annotations_of(d) if self.is_meta_annotation(a, file, word)]
+    }
+
+    /// Whether `d` wears `@std/meta`'s `@unbroken`.
+    fn marks_unbroken(d: DeclId) -> bool { !self.meta_annotations(d, "unbroken").is_empty() }
+
     fn is_meta_annotation(a: AnnotationFact, file: FileId, word: string) -> bool {
         let callee? = self.annotation_callee(a, file) else { return false }
         self.is_meta_fn(callee, word)
+    }
+
+    /// Whether an annotation on `d` is a MARK — a word a reader claims
+    /// — rather than work it runs: its callee answers `Marker`. The fn a
+    /// `collect` gathers `d` by (`gathering`) is never one of its marks.
+    fn is_mark(d: DeclId, a: AnnotationFact, gathering: DeclId?) -> bool {
+        let callee? = self.annotation_callee(a, self.annotation_home(d)) else { return false }
+        if gathering != null && same_decl(callee, gathering!) { return false }
+        let ret? = self.sig(callee)?.fn_sig()?.ret else { return false }
+        self.answers_mark(ret)
+    }
+
+    /// The fn a `collect` in `file` gathers by — absent for a kind that
+    /// gathers by anything else.
+    fn gathering_fn(kind: CollectKind, file: FileId) -> DeclId? {
+        let word? = kind.mark() else { return null }
+        (self.namespace_of.get())(file).fn_decl(word)
+    }
+
+    /// Whether an answer is `@std.meta.Marker` — a mark's answer.
+    fn answers_mark(ret: TypeId) -> bool { self.meta_type(ret, "Marker") }
+
+    /// A gathered member's marks: the annotations on it that are marks,
+    /// as a written variant's `@word`s are.
+    fn member_marks(d: DeclId, gathering: DeclId?) -> List<Mark> {
+        [Mark { name: a.name, args: [x.text for x in a.args], span: a.span } for a in self.annotations_of(d) if self.is_mark(d, a, gathering)]
     }
 
     /// The file an annotation on `d` resolves in. A COPIED TEMPLATE'S
@@ -2544,12 +2743,34 @@ impl Decls {
     }
 
     /// THE symbol a LIFTED body lowers to. A lambda has no name of
-    /// its own, so it takes its FILE's — module and stem — and the
-    /// node that wrote it: program-unique, as every body's symbol
-    /// must be (a node id is unique in its file alone).
-    fn lifted_symbol(f: FileId, e: ExprId) -> string {
+    /// its own, so it takes its file's and the node that wrote it.
+    fn lifted_symbol(f: FileId, e: ExprId) -> string { self.file_symbol(f, "l${e.index}") }
+
+    /// The unit a const's initializer lowers as, named for its statement.
+    fn const_symbol(f: FileId, s: StmtId) -> string { self.file_symbol(f, "const${s.index}") }
+
+    /// The unit an expression lowers as on its own — an annotation's
+    /// argument, settled like a const's value.
+    fn expr_symbol(f: FileId, e: ExprId) -> string { self.file_symbol(f, "expr${e.index}") }
+
+    /// A NAME MINTED FOR ONE OF A FILE'S NODES: the file's module and stem, and
+    /// the node's own word — program-unique (a node id is unique in its file
+    /// alone), and never a FileId, which is the order a derivation met its
+    /// files: a kept object names what it named when it was made.
+    fn file_symbol(f: FileId, local: string) -> string {
         let info = self.file(f)
-        module_symbol(self.module_name(info.module_id), "${stem_of(info.path)}\$l${e.index}")
+        module_symbol(self.module_name(info.module_id), "${stem_of(info.path)}\$${local}")
+    }
+
+    /// A file as a reader names it wherever it was built: its package,
+    /// its module's directories and its own name — never the building
+    /// machine's path.
+    fn file_named(f: FileId) -> string {
+        let info = self.file(f)
+        let module = self.module_name(info.module_id)
+        let root = if package_of_module(module).is_empty() { self.root_name.get() } else { "" }
+        let dirs = [d.replace(".", "/") for d in [root, module] if !d.is_empty()]
+        "${dirs.concat([stem_of(info.path)]).join("/")}.av"
     }
 
     /// A literal's SITE: its file — module and stem — its own content,
@@ -2756,14 +2977,6 @@ impl Decls {
     }
 }
 
-/// A key seen already in this admit is a repeated declaration: the
-/// repeat is keyed by its statement, so it stays a declaration of
-/// its own for the namespace law to refuse.
-fn fresh_key(key: string, s: StmtId, seen: List<string>) -> string {
-    if seen.contains(key) { return "${key}#${s.index}" }
-    key
-}
-
 /// A range whose first expression never landed starts at zero.
 fn started_at(i: int) -> int {
     if i < 0 { 0 } else { i }
@@ -2848,4 +3061,9 @@ fn gone_decl(d: DeclId) {
     wreck(
         "declaration ${d.index} was read after its file was admitted again without it — a DeclId lives only as long as the admission that mints it",
     )
+}
+
+/// An enum type's declaration; absent for every other shape.
+fn enum_decl(t: Type) -> DeclId? {
+    match t { .Enum(d, _) -> d, _ -> null }
 }

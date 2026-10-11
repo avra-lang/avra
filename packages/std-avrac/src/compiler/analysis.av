@@ -22,6 +22,7 @@ use features.{
     lowering_plan_of,
 }
 use compiler.lower.{Lowered}
+use @std.relation.engine.{list_cell}
 
 /// One source, fully analyzed: the tree, every pass's facts, every
 /// diagnostic in pipeline order, and the registry to render them —
@@ -150,11 +151,25 @@ impl Language {
     /// The whole pipeline over ONE file — a program of one: its own
     /// declarations are its scope, and a `use` has no package to
     /// reach.
+    ///
+    /// ONE IS ALIVE AT A TIME: its rows stand in the process until its
+    /// workspace is let go, and nothing but the next analysis knows the
+    /// last one is done with — so the next lets it go.
     fn analyze(src: SourceFile) -> Analysis {
+        one_shot_let_go()
         let ws = lone_workspace(src.file, src.text, self)
+        ws.alone()
         let a = ws.analysis(ws.file_id(src.file))
         ws.disarmed()
-        a
+        let program = a.program
+        let decl_reads = a.decl_reads
+        a with { program: () -> {
+            ws.standing()
+            program()
+        }, decl_reads: (d: DeclId) -> {
+            ws.standing()
+            decl_reads(d)
+        } }
     }
 
     /// Everything wrong with one source, rendered; "" means clean.
@@ -164,4 +179,57 @@ impl Language {
     fn check(src: SourceFile) -> string {
         self.analyze(src).check()
     }
+}
+
+/// The one-shot workspace that stands: the one whose answers may still be read.
+once fn standing_one_shot() -> Cell<List<Workspace>> { list_cell() }
+
+/// ONE ONE-SHOT WORKSPACE IS ALIVE AT A TIME: its rows stand in the
+/// process until it is let go, and nothing but the next one knows the last
+/// is done with — so the next lets it go BEFORE it is made, and two never
+/// stand at once.
+export fn one_shot_let_go() {
+    for prior in standing_one_shot().get() { prior.superseded() }
+    let none: List<Workspace> = []
+    standing_one_shot().set(none)
+}
+
+/// Whether a workspace stands, or was let go — by its holder, or by the
+/// next one-shot workspace made after it.
+export enum Stand { Open, LetGo, Superseded }
+
+impl Workspace {
+    /// This one-shot workspace is the one that stands — made only after
+    /// `one_shot_let_go` let the last go.
+    fn alone() { standing_one_shot().set([self]) }
+
+    fn superseded() {
+        if self.let_go() { return }
+        self.ended(Stand.Superseded)
+    }
+
+    fn let_go() -> bool {
+        match self.stand.get() { .Open -> false, .LetGo or .Superseded -> true }
+    }
+
+    /// THE ONE GUARD every read through a workspace passes: it stands, or
+    /// the read is refused with why it does not.
+    fn standing() {
+        if self.let_go() { avra_trap(stand_voice(self.stand.get())) }
+    }
+}
+
+/// What a read through a workspace that does not stand is refused with.
+fn stand_voice(s: Stand) -> string {
+    match s {
+        .Open -> standing_refused(),
+        .LetGo -> asked_after_let_go(),
+        .Superseded -> read_after_superseded(),
+    }
+}
+
+fn standing_refused() -> string { "defect: a workspace that stands was refused as let go" }
+
+fn read_after_superseded() -> string {
+    "a one-shot workspace is read while it stands; this one was let go when the next was made — read what it answers before making another"
 }

@@ -8,6 +8,7 @@ use core.{
     digest_bytes,
     digest_key,
     digest_of,
+    digest_of_octets,
     joined,
     distinct,
     flatten,
@@ -37,8 +38,9 @@ use compiler.backend.{
     unsupported_on_wasm,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
+use compiler.memory.{sound_checked}
 use compiler.store.{Store, Stored, Keeping, node_key}
-use compiler.host.{Host, no_target, read_manifest}
+use compiler.host.{no_target, read_manifest, Stamp, Read}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
 use @std.relation.engine.{map_cell}
@@ -157,9 +159,10 @@ export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<
 /// A case the entry calls, and the path of the file its body is in.
 export type CaseHome = { call: CaseCall, path: string }
 
-/// What one build links with: the optimisation level, the runtime object and
-/// the linker the host found.
-export type Toolchain = { opt: string, runtime: string, linker: string, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false }
+/// What one build links with: the optimisation level, the runtime object,
+/// the linker the host found, and the stamp of the driver of each tool it
+/// runs — never what a driver runs in its turn.
+export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false }
 
 impl Workspace {
     /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
@@ -280,7 +283,8 @@ fn unnamed_print() -> string {
 
 /// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest and the mode
 /// it emits under (`codegen_mode`), since one binary writes two kinds of
-/// object. The digest is hashed FRESH every ask. A STAMP-KEYED SHORTCUT STOOD
+/// object. The digest is the Compiler input's: the binary's bytes, hashed
+/// at the door once for the running process. A STAMP-KEYED SHORTCUT STOOD
 /// HERE ONCE, trusting a size/time/inode match to skip the hash — the `compiler_id()` memoization already pays that
 /// hash at most once a workspace, and the shortcut bought a few milliseconds
 /// against a law it could not keep: a rebuilt binary at the SAME path can land
@@ -302,10 +306,11 @@ fn unnamed_print() -> string {
 fn compiler_print(ws: Workspace) -> string {
     let at? = ws.host.compiler else { return unnamed_print() }
     let roll = joined_path(stores_dir(ws), "compilers")
+    // LICENSED compiler.host_asked_directly: the store's roll is read as it stands at this instant — a cell would answer what was read earlier
     let lines = [line for line in if ws.host.exists(roll) { ws.host.read(roll) } else { "" }.split("\n") if !line.is_empty()]
-    let digest? = digest_of_binary(at) else { return unnamed_print() }
+    let digest? = ws.running_print() else { return unnamed_print() }
     let mode = ws.keys.build_mode.get()
-    let print = "${digest}${codegen_mode()}${if mode == "" { "" } else { "@${mode}" }}"
+    let print = "${digest}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
     rolled(
         ws,
         roll,
@@ -330,23 +335,41 @@ fn links_text(files: List<string>) -> string {
     joined(["${f}\t${digest_of_binary(f) ?? "-"}" for f in files], "\n")
 }
 
-/// Whether every file a kept binary linked still holds the bytes it linked. A
-/// binary kept with no such record is not trusted.
-fn links_unchanged(store: Store, key: string) -> bool {
+/// Whether every file a kept binary linked still holds the bytes it linked,
+/// and every tool that made it still stands as it did. A binary kept with
+/// no such record is not trusted.
+fn links_unchanged(store: Store, key: string, tools: Toolchain) -> bool {
     let kept? = store.get(Stored.Unit, links_key(key)) else { return false }
     let files = [line.split("\t")[0] for line in kept.split("\n") if !line.is_empty()]
-    links_text(files) == kept
+    let now? = told(tools.tools) else { return false }
+    links_text(files) == kept && store.get(Stored.Unit, tools_key(key)) == now
+}
+
+/// Where a kept binary's tools are listed.
+fn tools_key(key: string) -> string { node_key(Stored.Unit, ["tools", key]) }
+
+/// The tools as their inputs' digests, one per line — none for no tools,
+/// and none when the host cannot tell one: a toolchain that names nothing
+/// it can tell makes nothing a kept binary can be trusted for.
+fn told(tools: List<Stamp>) -> string? {
+    if tools.is_empty() || tools.any(it.mark == null) { return null }
+    joined([Read.Tool(s.path, s).input().digest.key for s in tools], "\n")
 }
 
 /// HOW THIS PROCESS EMITS, as a suffix on the compiler's print: the runtime's
 /// hot leaves inlined, or kept as calls.
 fn codegen_mode() -> string { if inlines_runtime() { "" } else { "-calls" } }
 
+/// WHAT THIS PROCESS PROVES, as a suffix on the compiler's print: the
+/// memory pass's proof adds findings to a check, so a check made with it
+/// is kept apart from one made without.
+fn proof_mode() -> string { if sound_checked() { "+sound" } else { "" } }
+
 /// A roll line's print: its first field. A roll holds no empty line.
 fn print_of(line: string) -> string { line.split("\t")[0] }
 
 /// A binary's bytes as one digest — null when it cannot be read back.
-fn digest_of_binary(at: string) -> string? {
+export fn digest_of_binary(at: string) -> string? {
     match read_bytes(at) {
         .Ok(bytes) -> digest_key(digest_bytes(new_digest(), bytes)),
         .Err(_) -> null,
@@ -369,7 +392,13 @@ fn user_pid_alive(name: string) -> bool {
 // LICENSED compiler.free_state_verb: a pure PROJECTION's write-back — a workspace and a store directory in.
 fn has_live_user(ws: Workspace, store: string) -> bool {
     let users = joined_path(store, ".users")
-    if !ws.host.is_dir(users) { return false }
+    // LICENSED compiler.host_asked_directly: whether another process uses this store is asked of the disk at this instant, never of what was read earlier
+    let stands = match ws.host.listing(users) {
+        .Listing(_, entries) -> entries != null,
+        rest -> false,
+    }
+    if !stands { return false }
+    // LICENSED compiler.host_asked_directly: the users of this store are listed as they stand at this instant
     let names = ws.host.list(users)
     for name in names {
         if !user_pid_alive(name) { let _ = remove(joined_path(users, name)) }
@@ -394,6 +423,7 @@ fn rolled(ws: Workspace, roll: string, lines: List<string>) {
     let _ = ws.host.write(staged, joined(kept, "\n"))
     let _ = published(staged, roll)
     let named = [print_of(line) for line in kept].concat(["compilers", LEGACY_UNNAMED_STORE])
+    // LICENSED compiler.host_asked_directly: the stores that stand are listed at this instant — a sweep judges the disk, not a cell
     for name in ws.host.list(stores_dir(ws)) {
         let dir = joined_path(stores_dir(ws), name)
         let live = has_live_user(ws, dir)
@@ -411,16 +441,12 @@ fn tree_root(ws: Workspace) -> string {
     mut manifest_root = ws.root
     mut up = dir_of(ws.root)
     while up != dir_of(up) {
-        if has_git(ws.host, up) { return up }
-        if has_manifest(ws.host, up) { manifest_root = up }
+        if ws.there(joined_path(up, ".git")) { return up }
+        if ws.there(joined_path(up, "avra.toml")) { manifest_root = up }
         up = dir_of(up)
     }
     manifest_root
 }
-
-fn has_git(host: Host, dir: string) -> bool { host.exists(joined_path(dir, ".git")) }
-
-fn has_manifest(host: Host, dir: string) -> bool { host.exists(joined_path(dir, "avra.toml")) }
 
 /// What names a kept program: its name among the root's, and the inputs beside
 /// its sources.
@@ -481,7 +507,7 @@ impl Workspace {
         BuildError,
     > {
         self.built_for(tools)
-        let kept = self.kept_binary(self.program_key(entry, []), binary)
+        let kept = self.kept_binary(self.program_key(entry, []), binary, tools)
         if kept != null { return .Ok(kept!) }
         let d = diagnosed(
             self
@@ -489,22 +515,28 @@ impl Workspace {
                     entry,
                     Want.Binary,
                     [],
-                    (met: Derived) -> link_owes(met, runner_module(entry), tools),
+                    (met: Derived) -> link_owes(met, runner_module(self.file_name(entry)), tools),
                 ),
         )?
         let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(self.root)])) }
         if main.view.stmts.is_empty() { fail BuildError.Empty }
         let _ = make_dirs(dir_of(binary))
-        d.linked(runner_module(entry), Keyed { named: entry, beside: [] }, binary, tools)
+        d
+            .linked(
+                runner_module(self.file_name(entry)),
+                Keyed { named: entry, beside: [] },
+                binary,
+                tools,
+            )
     }
 
     /// A binary these exact inputs linked before, placed where a fresh one would
     /// be — with the warnings that build spoke.
-    fn kept_binary(key: string, binary: string) -> BuildOutcome? {
+    fn kept_binary(key: string, binary: string, tools: Toolchain) -> BuildOutcome? {
         let store = self.opened_store()
         let staged = staged_beside(binary)
         if !store.has(Stored.Bin, key) ||
-            !links_unchanged(store, key) ||
+            !links_unchanged(store, key, tools) ||
             !store.place(Stored.Bin, key, staged) {
             return null
         }
@@ -547,25 +579,16 @@ impl Workspace {
         )
     }
 
-    /// Where the files a program EMBEDS are remembered.
-    fn embeds_key(named: string) -> string { node_key(Stored.Unit, ["embeds", self.root, named]) }
-
-    /// EVERY FILE A PROGRAM'S CONSTS EMBED, as its last derivation admitted
-    /// them: an embedded file is no source, so no package's listing names
-    /// it, and its edit must still move the key. Remembered as the closure
-    /// is, and for its reason — the key is asked before anything is read.
-    fn embeds(named: string) -> List<string> {
+    /// EVERY FILE A PROGRAM'S COMPILE-TIME RUNS READ THAT IS NOT ONE OF ITS
+    /// INPUTS, as each input's record names it: an embedded file is no
+    /// source of the program, so no package's listing names it, and its edit
+    /// must still move the key.
+    fn embeds(inputs: List<string>) -> List<string> {
+        let store = self.opened_store()
         sorted_texts(
-            [line for line in remembered(self.opened_store(), self.embeds_key(named)) if !line.is_empty()],
-        )
-    }
-
-    /// The embedded files as they stand now, remembered for the next key.
-    fn keep_embeds(named: string) {
-        remember(
-            self.opened_store(),
-            self.embeds_key(named),
-            [path for path in self.decls.file_paths() if !self.reads_as_source(path)],
+            distinct(
+                [r.path for path in inputs for r in kept_runs(record_places(self, store, self.module_path_of(path)).get(path)) if !inputs.contains(r.path)],
+            ),
         )
     }
 
@@ -579,12 +602,11 @@ impl Workspace {
     /// An embedded file's line of the key.
     fn embed_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.embed_said(path)}" }
 
-    /// The key a finished derivation keeps under: its closure and its
-    /// embedded files remembered first, so the next ask — before anything
-    /// is read — names the same inputs.
+    /// The key a finished derivation keeps under: its closure remembered
+    /// first, so the next ask — before anything is read — names the same
+    /// inputs.
     fn kept_key(under: Keyed) -> string {
         self.keep_closure(under.named)
-        self.keep_embeds(under.named)
         self.program_key(under.named, under.beside)
     }
 
@@ -600,10 +622,10 @@ impl Workspace {
     /// kept binary that linked them is still the one these bytes would
     /// produce.
     fn program_key(named: string, beside: List<string>) -> string {
-        let named_inputs = self.build_inputs(named).concat(beside)
+        let named_inputs = self.source_inputs(named).concat(beside)
         let inputs = joined(
             [self.input_line(f) for f in named_inputs]
-                .concat([self.embed_line(f) for f in self.embeds(named)]),
+                .concat([self.embed_line(f) for f in self.embeds(named_inputs)]),
             "\n",
         )
         let objects = joined([self.object_line(o) for o in self.reached_objects(named)], "\n")
@@ -638,9 +660,9 @@ impl Workspace {
     /// ordinal — a closure root has no ordinal before analysis admits it.
     fn manifest_objects(root: string) -> List<string> {
         let path = joined_path(root, "avra.toml")
-        if !self.host.exists(path) { return [] }
-        let m = read_manifest(new_source_file(path, self.host.read(path)))
-        [joined_path(root, o) for o in filled_words(m.objects)]
+        if !self.there(path) { return [] }
+        let m = read_manifest(new_source_file(path, self.listed_text(path)))
+        [joined_path(root, o) for o in self.filled_words(m.objects)]
     }
 
     /// An object's path paired with its CURRENT bytes' digest, read fresh —
@@ -648,19 +670,17 @@ impl Workspace {
     /// and nothing here keeps a memo across the one key this answers.
     fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
 
-    /// A file's bytes as one digest, memoized in memory for the build — always
-    /// read and hashed fresh. A DURABLE STAMP-KEYED SHORTCUT STOOD HERE ONCE,
-    /// trusting a size/time/inode match to skip the read across PROCESSES: the
-    /// SAME shape `compiler_print`'s roll cache used for the compiler's own
-    /// binary (avra-8sb5.57.25), and it failed the identical attack — a stamp
-    /// that does not move while the file's bytes do, which an edit between two
-    /// `avra test` runs is the ordinary way to hit (avra-8sb5.57.19). A stamp
-    /// match is a claim about the bytes, never the bytes; only the digest is.
+    /// A file's text as one digest, through its Text input: kept per read
+    /// of that input, so a turn that reads the file again digests the text
+    /// it read. Never a stamp — a stamp match is a claim about the bytes,
+    /// never the bytes.
     fn text_digest(path: string) -> string {
-        let known: string? = self.keys.text_digests.get().get(path)
+        let text = self.listed_text(path)
+        let at = "${self.text_word(path)}\t${path}"
+        let known: string? = self.keys.text_digests.get().get(at)
         if known != null { return known! }
-        let made = digest_of_file(self.host.read(path))
-        self.keys.text_digests.put(path, made)
+        let made = digest_of_file(text)
+        self.keys.text_digests.put(at, made)
         made
     }
 
@@ -704,20 +724,9 @@ impl Workspace {
     fn bytes_keyed(full: Lowered, bc: string, tools: Toolchain) -> Result<string, BuildError> {
         let broke = emit_closed(full, bc, Owned.Program, tools.target)
         if broke != null { fail BuildError.EmitFailed(broke!) }
-        match read_bytes(bc) {
-            .Ok(bytes) -> .Ok(
-                node_key(
-                    Stored.Obj,
-                    [
-                        "entry",
-                        digest_key(digest_bytes(new_digest(), bytes)),
-                        tools.opt,
-                        tools.runtime,
-                    ],
-                ),
-            ),
-            .Err(_) -> .Err(BuildError.ModuleUnreadable(bc)),
-        }
+        // LICENSED compiler.host_asked_directly: the module's bytes are read as they stand at this instant
+        let bytes? = self.host.spared_octets(bc).as_octets() else { return .Err(BuildError.ModuleUnreadable(bc)) }
+        .Ok(node_key(Stored.Obj, ["entry", digest_of_octets(bytes), tools.opt, tools.runtime]))
     }
 
     /// THE BUILD: every object the program links — the read files' and the program's
@@ -756,6 +765,7 @@ impl Workspace {
                 self,
                 tools.runtime,
                 staged,
+                binary,
                 tools.target,
                 tools.reactor,
                 tools.debug,
@@ -777,6 +787,8 @@ impl Workspace {
                 links_text(self.linked_files(tools.runtime, tools.target)),
                 [key],
             )
+        let row = told(tools.tools)
+        if row != null { let _ = d.store.keep(Stored.Unit, tools_key(key), row!, [key]) }
         let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
         let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
@@ -808,13 +820,21 @@ impl Workspace {
     /// builds of one tree share a file only when they would write the same bytes.
     fn object_of(store: Store, a: Analysis) -> Made {
         let path = a.view.source.file
-        let key = self.held_okey(store, path)
+        let key = self.read_okey(store, path)
         Made {
             which: Owned.File(a.view.file),
             key: key,
             obj: "${build_cache_root(self)}/${key}.o",
             source: path,
         }
+    }
+
+    /// A read file's object key: its parts, with the sets its collects gather now —
+    /// a member that moved what a collect bakes moves the object its collector builds.
+    fn read_okey(store: Store, path: string) -> string {
+        let parts = self.key_parts_cached(store, self.module_path_of(path), path)
+        let now = [self.gathered_set(g, self.file_id(path)) for g in self.gatherings(path)]
+        if fields_wire(now) == fields_wire(parts.gathered) { self.held_okey(store, path) } else { key_of_parts(parts with { gathered: now }) }
     }
 
     /// THE PROGRAM'S MODULE AS AN OBJECT: keyed by its own bytes when it was lowered
@@ -874,8 +894,8 @@ impl Workspace {
 }
 
 /// A program's own module.
-fn runner_module(entry: string) -> ProgramModule {
-    ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)) }
+fn runner_module(named: string) -> ProgramModule {
+    ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(named)) }
 }
 
 /// WHETHER A LINK OWES THE INSTANTIATIONS A DERIVATION LEFT UNLOWERED: no build
@@ -894,6 +914,7 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
             "program",
             d.asked,
             "${fp_list([i.fingerprint() for i in main.body.ins])}",
+            joined(d.lowered.code_hashes, "\n"),
             tools.opt,
             tools.runtime,
         ],

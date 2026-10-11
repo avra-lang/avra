@@ -147,6 +147,7 @@ static int os_dir_open(Watch* w, const char* path, int at) {
     struct kevent ev;
     EV_SET(&ev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
            NOTE_WRITE | NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE, 0, (void*)(intptr_t)(at << 1));
+    // the clock: not a wait on time — a change list, no event asked for
     if (kevent(w->fd, &ev, 1, NULL, 0, NULL) != 0) { int e = errno; close(fd); return -e; }
     return fd;
 #endif
@@ -265,6 +266,7 @@ static int file_open(Watch* w, int at) {
     EV_SET(&ev, fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
            NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_DELETE | NOTE_RENAME | NOTE_REVOKE,
            0, (void*)(intptr_t)((at << 1) | 1));
+    // the clock: not a wait on time — a change list, no event asked for
     if (kevent(w->fd, &ev, 1, NULL, 0, NULL) != 0) { int err = errno; close(fd); return -err; }
     e->fd = fd;
     return 0;
@@ -371,6 +373,7 @@ static void routed(Watch* w, const struct inotify_event* ev) {
 static int drained(Watch* w) {
     static _Alignas(struct inotify_event) char buf[1 << 16];
     for (;;) {
+        // the clock: the inotify descriptor is IN_NONBLOCK, a read answers at once
         ssize_t n = read(w->fd, buf, sizeof buf);
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) return errno == EAGAIN ? 0 : -errno;
@@ -420,6 +423,7 @@ static int drained(Watch* w) {
     struct kevent evs[BATCH];
     struct timespec now = { 0, 0 };
     for (;;) {
+        // the clock: not a wait on time — a zero timeout, a look
         int n = kevent(w->fd, NULL, 0, evs, BATCH, &now);
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) return -errno;

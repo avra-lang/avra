@@ -9,6 +9,17 @@ use core.{RtKind, RtSig, RtHost, Reach, Takes, TypeRegistry, TypeId, TypeRef, jo
 
 export once fn rt_sigs() -> List<RtSig> {
     let sigs: List<RtSig> = [
+        // A trace line: written to stderr under AVRA_QTRACE, read by no answer.
+        RtSig {
+            name: "avra_qtrace",
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.Pure,
+            boxes: [Box.Text],
+        },
         RtSig {
             name: "avra_puts",
             ret: RtKind.Void,
@@ -1496,6 +1507,7 @@ export once fn rt_sigs() -> List<RtSig> {
         // an owner's scope ends: its task, or each in its list, joined
         RtSig {
             name: "avra_task_settle",
+            waits: true,
             wasm: false,
             ret: RtKind.Void,
             params: [RtKind.Ptr],
@@ -1522,6 +1534,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_task_settle_all",
+            waits: true,
             wasm: false,
             ret: RtKind.Void,
             params: [RtKind.Ptr],
@@ -1534,6 +1547,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_task_join",
+            waits: true,
             stood: true,
             wasm: false,
             ret: RtKind.Ptr,
@@ -1558,6 +1572,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_fiber_yield",
+            waits: true,
             wasm: false,
             ret: RtKind.Void,
             params: [],
@@ -1567,8 +1582,25 @@ export once fn rt_sigs() -> List<RtSig> {
             reach: Reach.World,
             inert: true,
         },
+        // THE CHECKED BACK-EDGE'S COLD SIDE: reached only when the tick
+        // byte was set. It hears a done timer, raises a standing cancel,
+        // and lets others run; a program that never spawns links none of
+        // its object.
+        RtSig {
+            name: "avra_tick_cold",
+            waits: true,
+            wasm: false,
+            ret: RtKind.Void,
+            params: [],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.TickCold,
+            reach: Reach.World,
+            inert: true,
+        },
         RtSig {
             name: "avra_fiber_sleep",
+            waits: true,
             wasm: false,
             ret: RtKind.Void,
             params: [RtKind.I64],
@@ -1580,12 +1612,26 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_fiber_park_fd",
+            waits: true,
             wasm: false,
             ret: RtKind.I64,
             params: [RtKind.I64, RtKind.I64, RtKind.I64],
             owns_result: false,
             has_owned_twin: false,
             host: RtHost.FiberParkFd,
+            reach: Reach.World,
+            inert: true,
+        },
+        // Whether the caller's last descriptor park ended by an interrupt
+        // — its own claim, never a deadline's.
+        RtSig {
+            name: "avra_fiber_interrupted",
+            wasm: false,
+            ret: RtKind.I64,
+            params: [],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.FiberInterrupted,
             reach: Reach.World,
             inert: true,
         },
@@ -1614,7 +1660,7 @@ export once fn rt_sigs() -> List<RtSig> {
         RtSig {
             name: "avra_fiber_within_end",
             wasm: false,
-            ret: RtKind.Void,
+            ret: RtKind.I64,
             params: [RtKind.I64],
             owns_result: false,
             has_owned_twin: false,
@@ -1677,6 +1723,7 @@ export once fn rt_sigs() -> List<RtSig> {
         },
         RtSig {
             name: "avra_wait_park",
+            waits: true,
             ret: RtKind.I64,
             params: [],
             has_owned_twin: false,
@@ -2036,6 +2083,18 @@ export once fn rt_sigs() -> List<RtSig> {
             reach: Reach.World,
             inert: true,
         },
+        // THE CLOCK IS VIRTUAL, or the monotonic one again: virtual, it
+        // moves only when every task waits, and never goes back.
+        RtSig {
+            name: "avra_clock_virtual",
+            ret: RtKind.Void,
+            params: [RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            inert: true,
+        },
         RtSig {
             name: "avra_host_env",
             ret: RtKind.Ptr,
@@ -2265,6 +2324,12 @@ export once fn rt_index() -> Map<string, RtSig> {
     mut index: Map<string, RtSig> = {}
     for s in rt_sigs() { index.set(s.name, s) }
     index
+}
+
+/// True when the row may switch the calling task out — a cancel point.
+export fn rt_waits(name: string) -> bool {
+    let sig: RtSig? = rt_index().get(name)
+    sig != null && sig!.waits
 }
 
 /// True when the subject STILL HOLDS what the callee answered, so

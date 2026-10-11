@@ -1,0 +1,33 @@
+// proves: a trait written `@delegates(E)` is implemented over the
+// collect enum `E` — each call reaches the member record's own impl.
+use @std.meta.{Named, delegates}
+
+fn node(_t: Named, _rank: int) {}
+
+@delegates(Shape)
+trait Size {
+    fn size() -> int
+    fn scaled(by: int) -> int
+}
+
+@node(0)
+type Dot = { at: int }
+
+impl Size for Dot {
+    fn size() -> int { 1 }
+    fn scaled(by: int) -> int { by }
+}
+
+@node(1)
+type Line = { from: int, to: int }
+
+impl Size for Line {
+    fn size() -> int { self.to - self.from }
+    fn scaled(by: int) -> int { (self.to - self.from) * by }
+}
+
+collect enum Shape = @node in self by it.mark.args[0] dense
+
+let d = Shape.Dot(4)
+let l = Shape.Line(2, 9)
+"${d.size()} ${l.size()} ${d.scaled(3)} ${l.scaled(3)}"

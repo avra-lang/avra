@@ -84,8 +84,11 @@ make -n test >/dev/null 2>&1 || { echo "stems: the tree's own stems clash"; fail
 # A target's PREREQUISITES, which is the question — `make -n` prints
 # only what it would DO, and an object already on disk produces no
 # line at all, so a recipe scan answers "absent" about everything a
-# warm tree already has.
-prereqs_of() { make -p -n "$1" 2>/dev/null | grep -m1 "^$1:" | sed "s/^$1://"; }
+# warm tree already has. ITS RULE LINE, never a variable of it: make
+# prints a target-specific variable as `target: VAR := value` — a
+# `$(shell)` its recipe expands leaves `.SHELLSTATUS` there — and that
+# line, read as the rule, names no prerequisite at all.
+prereqs_of() { make -p -n "$1" 2>/dev/null | grep -m1 "^$1:[^=]*$" | sed "s/^$1://"; }
 
 # EVERY OBJECT A MANIFEST NAMES IS A PACKAGE OBJECT.
 rows=$((rows + 1))

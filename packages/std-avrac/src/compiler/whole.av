@@ -1,6 +1,11 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    digest_of,
+    some_list,
+    CollectScope,
+    CollectKind,
+    StmtId,
     sorted_by,
     text_before,
     ModulePath,
@@ -20,11 +25,31 @@ use core.{
     key_spelled,
 }
 use @std.path.{under_dir, joined_path, normalized, dir_of}
-use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of, EmbedFault, embed_literal_law}
+use features.{
+    Decls,
+    Decl,
+    Import,
+    NameFacts,
+    nothing,
+    bound_decl_of,
+    EmbedFault,
+    embed_literal_law,
+    admits_package,
+    AnnotationFact,
+    LitArg,
+}
+use features.collects.{collect_field_text}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
-use compiler.lower.{LinkedPackage}
-use compiler.host.{library_stem}
+use compiler.lower.{
+    LinkedPackage,
+    ordered_collect_members,
+    gathering_mark,
+    field_plan,
+    FieldPlan,
+    collect_answer_type,
+}
+use compiler.host.{library_stem, Beneath, Read, InputName}
 use compiler.backend.{platform_defines}
 use @std.errors.{Loc}
 
@@ -33,10 +58,10 @@ impl Workspace {
     // ── The whole program ──
     /// Every file under the root analyzed, in FileId order — each step
     /// asked for every file before the next, so the phases time apart.
-    fn analyze_all() -> List<Analysis> {
+    fn analyze_all(built: string?) -> List<Analysis> {
         let t0 = self.clock()
         // a held file is not parsed — and asking its items would mint its module for nothing
-        for path in self.root_files() { let _ = self.file_id(path) }
+        for path in self.entry_files(built) { let _ = self.file_id(path) }
         self.admit_all()
         self.timed("parse", self.clock() - t0)
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
@@ -94,9 +119,10 @@ impl Workspace {
         for msg in self.decls.types.drain_stale() { self.defect(msg) }
     }
 
-    /// The program rooted at `ws.root`, entered at one of its files.
-    fn program(entry: string?) -> Program {
-        let files = self.analyze_all()
+    /// The program rooted at `ws.root`, entered at one of its files — its root
+    /// walk trimmed to what `built` reaches when a build of it asks (`entry_files`).
+    fn program(entry: string?, built: string? = null) -> Program {
+        let files = self.analyze_all(built)
         self.report_layout_defects()
         let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
         let seat: Entry? = if at == null { null } else { Entry { at: at! } }
@@ -160,27 +186,103 @@ impl Workspace {
             let scope = p.store.collect_scope(s)
             if scope != null { self.decls.admit_scope(scope!, f) }
         }
-        self.admit_embeds(p)
     }
 
-    /// `embed("literal")` names a file at compile time — the same
-    /// declared reach a `use` line names. Minted here, before anything
-    /// reads the File relation this revision, so a const's own
-    /// Settled-family query never mints a late row mid-read. EVERY
-    /// literal of the file, however deep it is written: a const reads
-    /// one through a fn's body or under a property as readily as at its
-    /// own top. A FILE THE LAW REFUSES IS NO INPUT and is not minted —
-    /// typing speaks of it at the literal, and a minted row would be
-    /// read as a source first. A computed path cannot be found this
-    /// way and typing refuses it.
-    fn admit_embeds(p: Parsed) {
-        for e in p.store.expr_ids() {
-            let rel? = embed_literal_at(p.store, e) else { continue }
-            match self.embed_placed_beside(p.source.file, rel) {
-                .Ok(path) -> { let _ = self.minted_file(path) },
-                .Err(_) -> { let _ = 0 },
-            }
+    /// A read file's `gathers` lines, one for each `collect` of it that gathers its
+    /// package whole: the package, the file, what it gathers, what it reads of each
+    /// member and the set it gathered — the reach a record keeps for its held walk,
+    /// and what a held file is held to.
+    fn gathers_lines(path: string) -> List<string> {
+        let f = self.file_id(path)
+        let key = self.packages()[self.holder_of_path(path)].key
+        [gathers_line(key, path, g, self.gathered_set(g, f)) for g in self.gatherings(path)]
+    }
+
+    /// A read file's package-wide collects, each as what it gathers.
+    fn gatherings(path: string) -> List<Gathering> {
+        let f = self.file_id(path)
+        let p = self.parsed(f)
+        flatten([some_list(self.package_gathering(f, p.store, s)) for s in p.stmts])
+    }
+
+    /// What a statement gathers, in what order, and what it reads of each member,
+    /// when it is a `collect` that gathers its package whole.
+    fn package_gathering(f: FileId, store: SyntaxArena, s: StmtId) -> Gathering? {
+        let scope? = store.collect_scope(s) else { return null }
+        if !admits_package(scope) { return null }
+        let parts? = store.collect_parts(s) else {
+            let e? = store.collect_enum_parts(s) else { return null }
+            return Gathering { kind: e.kind, order: e.order, plans: [] }
         }
+        let rt = collect_answer_type(self.decls, f, s)
+        let entry = self.decls.types.element(rt) ?? rt
+        Gathering {
+            kind: parts.kind,
+            order: parts.order,
+            plans: [field_plan(self.decls, entry, pf.field.of, pf.path, parts.kind) for pf in parts.proj.fields],
+        }
+    }
+
+    /// WHAT A COLLECT GATHERED, as one digest: each member folded whole, in the
+    /// order the collect itself gathers them, so two sets differ exactly when what
+    /// the collect would bake moved.
+    fn gathered_set(g: Gathering, owner: FileId) -> string {
+        let members = ordered_collect_members(
+            self.decls,
+            g.kind,
+            CollectScope.Package,
+            g.order,
+            owner,
+        )
+        digest_of(fields_wire([self.member_print(g, m) for m in members]))
+    }
+
+    /// One member as its collect sees it: where it is declared, its name, the mark
+    /// that gathered it, its shape, and what each projected field reads of it.
+    fn member_print(g: Gathering, m: Decl) -> string {
+        digest_of(
+            fields_wire(
+                [
+                    self.decls.module_of(m.id),
+                    m.name,
+                    fields_wire(mark_prints(gathering_mark(self.decls, g.kind, m))),
+                    self.signed_shape(m),
+                    fields_wire([self.plan_print(plan, m) for plan in g.plans]),
+                ],
+            ),
+        )
+    }
+
+    /// What one field's plan reads of a member, as the key folds it: a read off
+    /// the member's written source folds that source's text.
+    fn plan_print(plan: FieldPlan, m: Decl) -> string {
+        match plan {
+            .Crossed -> fields_wire(["crossed", self.member_text(m)]),
+            .Value -> fields_wire(["value", self.decls.symbol(m.id)]),
+            .RootKind -> fields_wire(["root_kind", self.member_text(m)]),
+            .NodeKinds -> fields_wire(["node_kinds", self.member_text(m)]),
+            .Mark -> "mark",
+            .Component(word) -> fields_wire(
+                ["component", word, self.decls.instance_unit(m.id).name, self.member_text(m)],
+            ),
+            .Text(path) -> fields_wire(["text", collect_field_text(self.decls, m, path)]),
+        }
+    }
+
+    /// The text a member is declared in, as one digest.
+    fn member_text(m: Decl) -> string { self.text_digest(self.decls.file(m.file).path) }
+
+    /// EVERY HELD COLLECTOR WHOSE SET MOVED, to be read: what it gathers now, from
+    /// held members' records and moved members' fresh declarations, against what
+    /// its record says it gathered.
+    fn gathered_moved() -> List<ReadFile> {
+        [ReadFile { path: g.collector, why: Reads.Gathered(g.package) } for g in self.hold.gathered.get() if self.gathered_away(g)]
+    }
+
+    /// Whether a held collector's set moved since its record was written.
+    fn gathered_away(g: HeldGather) -> bool {
+        let f = self.file_id(g.collector)
+        self.is_held(f) && self.gathered_set(g.gathering, f) != g.digest
     }
 
     /// WHAT A PROGRAM'S HOST FNS OWE IT. A host fn defines a symbol for
@@ -262,8 +364,9 @@ impl Workspace {
 
     fn embed_placed_beside(source: string, rel: string) -> Result<string, EmbedFault> {
         let place = self.embed_place(source, rel)?
-        match (self.host.beneath)(place.root, place.rel) {
-            .Text(_) -> joined_path(place.root, place.rel),
+        let path = joined_path(place.root, place.rel)
+        match self.embedded(path) {
+            .Text(_) -> path,
             .Missing -> .Err(EmbedFault.Missing),
             .Linked -> .Err(EmbedFault.Linked),
             .NotText(at) -> .Err(EmbedFault.NotText(at)),
@@ -278,13 +381,34 @@ impl Workspace {
     fn embed_read(path: string) -> Result<string, string> {
         let root? = self.root_over(path) else { fail embed_literal_law }
         let place? = beneath_root(root, path) else { fail embed_literal_law }
-        match (self.host.beneath)(place.root, place.rel) {
+        match self.embedded(path) {
             .Text(text) -> text,
             .Missing -> .Err("`embed` finds no `${place.rel}`"),
             .Linked -> .Err("`embed` follows no link — one stands on the way to `${place.rel}`"),
             .NotText(at) -> .Err("`embed` answers text, and `${place.rel}` is not UTF-8 — byte ${at}"),
             .Refused(why) -> .Err("`embed` could not read its file — ${why}"),
         }
+    }
+
+    /// What stands at an embedded file, through its cell: AN EMBEDDED FILE
+    /// IS AN INPUT, NEVER A FILE ROW — a query that reads it depends on its
+    /// cell, and no row is minted while a query reads the File relation.
+    fn embedded(path: string) -> Beneath {
+        match self.input(InputName { kind: .Embedded, key: path }) {
+            .Embedded(_, seen) -> seen,
+            .Text(_, _) or .Octets(_, _) or .Range(_, _, _, _) or .Listing(_, _) or .Exists(_, _) or .Env(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> {
+                avra_trap("defect: an `embedded` input answered another kind of read")
+                Beneath.Missing
+            },
+        }
+    }
+
+    /// The door's read of an embedded file: beneath the package root over
+    /// it, as the key alone names it, through no link.
+    fn embedded_asked(path: string) -> Read {
+        let root? = self.root_over(path) else { return unrooted(path) }
+        let place? = beneath_root(root, path) else { return unrooted(path) }
+        self.host.embedded(path, place.root, place.rel)
     }
 
     /// Whether a file is Avra source, by its shape alone (`is_source` — a lone
@@ -391,20 +515,20 @@ impl Workspace {
         let m = self.manifest(pkg.ordinal)
         self
             .package_objects(pkg, "")
-            .concat(["-L${d}" for d in filled_words(m.search)])
-            .concat(["-l${l}" for l in filled_words(m.libs)])
-            .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+            .concat(["-L${d}" for d in self.filled_words(m.search)])
+            .concat(["-l${l}" for l in self.filled_words(m.libs)])
+            .concat(if pkg.ordinal == 0 { self.filled_words(m.raw) } else { [] })
     }
 
     /// The objects a package's manifest links into every program that
     /// reaches it.
     fn package_objects(pkg: Package, target: string) -> List<string> {
         let named = if target != "" { self.manifest(pkg.ordinal).wasm_objects } else { self.manifest(pkg.ordinal).objects }
-        [joined_path(pkg.root, o) for o in filled_words(named)]
+        [joined_path(pkg.root, o) for o in self.filled_words(named)]
     }
 
     fn package_wasm_objects(pkg: Package) -> List<string> {
-        [joined_path(pkg.root, o) for o in filled_words(self.manifest(pkg.ordinal).wasm_objects)]
+        [joined_path(pkg.root, o) for o in self.filled_words(self.manifest(pkg.ordinal).wasm_objects)]
     }
 
     /// Every file a link reads besides the program's own objects: the
@@ -455,7 +579,7 @@ impl Workspace {
         let pkg = self.packages()[0]
         let bin: string? = self.manifest(0).bin
         let path = joined_path(pkg.root, bin ?? "src/main.av")
-        if bin == null && !self.host.exists(path) { return null }
+        if bin == null && !self.there(path) { return null }
         path
     }
 }
@@ -551,26 +675,24 @@ fn placed_beneath(root: string, path: string) -> Result<EmbedPlace, EmbedFault> 
     place
 }
 
+/// A gathering mark's arguments as the key folds them; none for no mark.
+fn mark_prints(mark: AnnotationFact?) -> List<string> {
+    let m? = mark else { return [] }
+    [lit_print(a) for a in m.args]
+}
+
+/// A mark's argument as the key folds it: its kind beside its text.
+fn lit_print(a: LitArg) -> string { fields_wire([lit_kind_word(a.kind), a.text]) }
+
+/// An embedded file no package root stands over: the law's refusal.
+fn unrooted(path: string) -> Read { Read.Embedded(path, Beneath.Refused(embed_literal_law)) }
+
 /// `path` as it stands beneath `root`, or null when it does not.
 fn beneath_root(root: string, path: string) -> EmbedPlace? {
     let held = normalized(root)
     let at = normalized(path)
     if !at.starts_with("${held}/") { return null }
     EmbedPlace { root: held, rel: at.substring(held.length + 1, at.length) }
-}
-
-/// A call to a name spelled `embed`, with one string-literal argument
-/// — the path it names, or null for any other call, arity, or a
-/// computed argument (typing refuses that one, where the callee is
-/// resolved).
-fn embed_literal_at(store: SyntaxArena, e: ExprId) -> string? {
-    match store.expr(e) {
-        .Call(callee, _, args) -> {
-            if callee.of != "embed" || args.length != 1 { return null }
-            store.expr(args[0]).text_of()
-        },
-        _ -> null,
-    }
 }
 
 fn segments_of(dotted_text: string) -> List<string> {
@@ -647,26 +769,44 @@ fn same_body(c: Case, body: ExprId) -> bool {
     c.body.index == body.index
 }
 
-/// A row's words with their `${NAME}` holes filled, dropping any
-/// that fill to nothing. A hole naming nothing asks for NO WORD:
-/// an empty one would be an argument the linker still counts, and a
-/// bare `-L` eats the word after it.
-fn filled_words(words: List<string>) -> List<string> {
-    [w for w in [expanded(x) for x in words] if !w.is_empty()]
+impl Workspace {
+    /// A row's words with their `${NAME}` holes filled, dropping any
+    /// that fill to nothing. A hole naming nothing asks for NO WORD:
+    /// an empty one would be an argument the linker still counts, and a
+    /// bare `-L` eats the word after it.
+    fn filled_words(words: List<string>) -> List<string> {
+        [w for w in [self.env_filled(x) for x in words] if !w.is_empty()]
+    }
+
+    /// A link input with its `${NAME}` holes filled from the
+    /// environment, each variable an input: a machine's own paths belong
+    /// to the machine, not to a checked-in manifest. A value is data — the
+    /// holes after it are filled, never the value itself.
+    fn env_filled(flag: string) -> string {
+        let opens = flag.index_of("\${")
+        if opens < 0 { return flag }
+        let closes = closing_brace(flag, opens)
+        if closes < opens { return flag }
+        let head = flag.substring(0, opens)
+        let name = flag.substring(opens + 2, closes)
+        let tail = flag.substring(closes + 1, flag.length)
+        "${head}${self.env(name) ?? ""}${self.env_filled(tail)}"
+    }
 }
 
-/// A link input with its `${NAME}` holes filled from the
-/// environment: a machine's own paths belong to the machine, not to
-/// a checked-in manifest.
-fn expanded(flag: string) -> string {
-    let opens = flag.index_of("\${")
-    if opens < 0 { return flag }
-    let closes = closing_brace(flag, opens)
-    if closes < opens { return flag }
-    let head = flag.substring(0, opens)
-    let name = flag.substring(opens + 2, closes)
-    let tail = flag.substring(closes + 1, flag.length)
-    expanded("${head}${avra_host_env(name)}${tail}")
+/// The variables a word's `${NAME}` holes name, in order.
+fn holes(word: string) -> List<string> {
+    let opens = word.index_of("\${")
+    if opens < 0 { return [] }
+    let closes = closing_brace(word, opens)
+    if closes < opens { return [] }
+    [word.substring(opens + 2, closes)].concat(holes(word.substring(closes + 1, word.length)))
+}
+
+/// Whether a word is one hole and nothing else.
+fn whole_hole(word: string) -> bool {
+    let names = holes(word)
+    names.length == 1 && word == "\${" + names[0] + "}"
 }
 
 /// Where the hole closes, or -1.

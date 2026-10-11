@@ -28,6 +28,7 @@ use core.{
     StaticBox,
     DeclId,
 }
+use compiler.families.{Family}
 use features.{
     Unsettled,
     Settlement,
@@ -427,7 +428,7 @@ fn fields_of(s: Stmt) -> List<Param>? {
     match s {
         .StructDecl(_, _, fields) -> fields,
         .FnDecl(_, _, params, _, _) -> params,
-        .ExprStmt(_) or .Discard(_) or .IfStmt(_, _, _) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _) or .Jump(_, _) or .Error -> null,
+        .ExprStmt(_) or .Discard(_) or .IfStmt(_, _, _) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
     }
 }
 
@@ -494,14 +495,21 @@ fn many_in_expression() -> string {
 /// a law worded after its implementation goes stale the moment the
 /// implementation moves. The mechanism belongs in the HELP, beside
 /// the claims that ARE standing, so a typo reads as a typo.
-fn unclaimed_mark(m: Mark, claimed: List<string>, at: Loc?) -> Diag {
+/// `gatherer` is the enum a gathered member's mark is held to — named,
+/// since another enum gathering the same member may read it.
+fn unclaimed_mark(m: Mark, claimed: List<string>, gatherer: string?, at: Loc?) -> Diag {
     refusal(
         "annotation.unread_mark",
         at,
         "every mark is read by something that claims it",
-        "`@${m.name}` — nothing on this declaration reads it",
+        unread_label(m, gatherer),
         claims_help(claimed),
     )
+}
+
+fn unread_label(m: Mark, gatherer: string?) -> string {
+    let g? = gatherer else { return "`@${m.name}` — nothing on this declaration reads it" }
+    "`@${m.name}` — nothing on `${g}`, which gathers this, reads it"
 }
 
 fn claims_help(claimed: List<string>) -> string {
@@ -687,48 +695,77 @@ fn maybe_declares_block(ws: Workspace, files: List<string>) -> bool {
 
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn file_lexes_block(ws: Workspace, path: string) -> bool {
-    let known = ws.records.grammar_scanned.get().get(path)
-    if known != null { return known! }
-    let text = ws.host.read(path)
-    // THE DB ANSWERS BEFORE THE LEXER: the verdict is the text's own, so a
-    // row under its digest holds for every process that reads these bytes —
-    // but the VERDICT also depends on which keywords THIS compiler's
-    // assembled grammar opens a block with, so the compiler's own print
-    // joins the key too.
-    let store = ws.opened_store()
-    let key = digest_of("scan\n${ws.compiler_id()}\n${text}")
-    let kept = ws.db.scan(store, key)
-    let found = if kept != null { kept! == "1" } else { text_opens_block(text, ws.lang.keywords) }
-    if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
-    ws.records.grammar_scanned.put(path, found)
-    found
+    scan_flag(
+        ws
+            .relation(Family.BlockScan)
+            .demand(
+                ws.text_key(path),
+                () -> {
+                    let text = ws.listed_text(path)
+                    // THE DB ANSWERS BEFORE THE LEXER: the verdict is the text's own, so a
+                    // row under its digest holds for every process that reads these bytes —
+                    // but the VERDICT also depends on which keywords THIS compiler's
+                    // assembled grammar opens a block with, so the compiler's own print
+                    // joins the key too. So what the store answers is a function of the
+                    // input this query already read: its read records nothing more.
+                    let store = ws.opened_store()
+                    let key = digest_of("scan\n${ws.compiler_id()}\n${text}")
+                    let kept = ws.db.scan(store, key)
+                    let found = if kept != null { kept! == "1" } else { text_opens_block(text, ws.lang.keywords) }
+                    if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
+                    DbRow.Flag(found)
+                },
+                flag_print,
+            ),
+    )
 }
 
 /// Whether a file declares a component — `component NAME`, then its
-/// block or its head — read off its tokens, once a path.
+/// block or its head — read off its tokens. A SCAN IS A QUERY OVER ITS
+/// TEXT: a reader depends on the answer, so an edit that leaves the
+/// answer standing leaves the reader standing.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn file_declares_component(ws: Workspace, path: string) -> bool {
-    let known = ws.records.component_scanned.get().get(path)
-    if known != null { return known! }
-    let text = ws.host.read(path)
-    let found = text.contains("component") && declares_component(lex_source(text).tokens)
-    ws.records.component_scanned.put(path, found)
-    found
+    scan_flag(
+        ws
+            .relation(Family.ComponentScan)
+            .demand(
+                ws.text_key(path),
+                () -> DbRow.Flag(declares_a_component(ws.listed_text(path))),
+                flag_print,
+            ),
+    )
+}
+
+fn declares_a_component(text: string) -> bool {
+    text.contains("component") && declares_component(lex_source(text).tokens)
 }
 
 /// The names a file's `component NAME` declarations wear — read off its
-/// tokens, once a path.
+/// tokens.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn component_names(ws: Workspace, path: string) -> List<string> {
-    let known = ws.records.component_names.get().get(path)
-    if known != null { return known! }
-    let tokens = lex_source(ws.host.read(path)).tokens
-    let found = [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
+    scan_words(
+        ws
+            .relation(Family.ComponentNames)
+            .demand(
+                ws.text_key(path),
+                () -> DbRow.Words(components_named(ws.listed_text(path))),
+                words_print,
+            ),
+    )
+}
+
+fn components_named(text: string) -> List<string> {
+    let tokens = lex_source(text).tokens
+    [tokens[j + 1].text for j in 0..tokens.length - 2 if tokens[j].lit_matches("component") &&
         tokens[j + 1].kind == TokenKind.Name &&
         (tokens[j + 2].lit_matches("{") || tokens[j + 2].lit_matches("("))]
-    ws.records.component_names.put(path, found)
-    found
 }
+
+fn flag_print(r: DbRow) -> int { if scan_flag(r) { 1 } else { 0 } }
+
+fn words_print(r: DbRow) -> int { fp_str(joined(scan_words(r), "\n")) }
 
 /// A component word known by its name alone: its instance parses as
 /// one and stands as a hole.
@@ -828,6 +865,9 @@ fn bool_fp(b: bool) -> int {
     if b { 1 } else { 0 }
 }
 
+/// The packed flags column folds as its own int.
+fn flags_fp(bits: int) -> int { bits }
+
 fn opt_type_fp(t: TypeId?) -> int {
     if t == null { fp(126, []) } else { fp(127, [t!.fingerprint()]) }
 }
@@ -899,21 +939,13 @@ export fn type_facts_fp(t: TypeFacts) -> int {
             t.lambda_marks.folded(opt_seat_marks_fp),
             t.captures.folded(opt_type_list_fp),
             t.wants.folded(opt_type_fp),
-            t.hungry.folded(bool_fp),
+            t.flags.folded(flags_fp),
             t.starved.folded(opt_type_fp),
             t.scopes.folded(opt_param_scope_fp),
             t.pattern_types.folded(type_list_fp),
             t.binding_types.folded(opt_type_fp),
-            t.boxed_locals.folded(bool_fp),
-            t.warned.folded(bool_fp),
-            t.alias_copies.folded(bool_fp),
-            t.thaws.folded(bool_fp),
-            t.plain_thaws.folded(bool_fp),
-            t.gathered.folded(bool_fp),
+            t.stmt_flags.folded(flags_fp),
             t.collections.folded(opt_expr_list_fp),
-            t.offers.folded(bool_fp),
-            t.spreads.folded(bool_fp),
-            t.null_tails.folded(bool_fp),
             t.chosen.folded(opt_decl_fp),
             t.dispatches.folded(opt_dispatch_fp),
             t.stages.folded(opt_pipe_stage_fp),

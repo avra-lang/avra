@@ -8,9 +8,10 @@
 //!
 //! A kept answer OUTLIVES THE PROCESS where the Db's owner keeps it
 //! (`durable_db`): a call no answer here stands for asks the owner for
-//! its record, by the query's durable name and the arguments' hash, and a
-//! run that wrote no rows hands its answer over. An answer whose kind
-//! does not read back stays in the process.
+//! its record, by the query's durable name, its code's hash (`code_hash`:
+//! an edit to anything the body reaches reads no old record) and the
+//! arguments' hash, and a run that wrote no rows hands its answer over.
+//! An answer whose kind does not read back stays in the process.
 //!
 //!     @query
 //!     fn open_for(db: Db, owner: string) -> int { … }
@@ -27,8 +28,9 @@ use @std.meta.{
     wrapped,
     literal,
     refuse_as_at,
+    code_hash,
 }
-use db.{Db, Answers, answers, KeptRecord}
+use db.{Db, Answers, answers, KeptRecord, code_keyed}
 use stable.{
     stable_hasher,
     text_hash,
@@ -107,14 +109,17 @@ fn wrapper(f: Fn) -> Decls {
     let body = quote { () -> ${wrapped(f)}(${..args}) }
     let again = quote { () -> ${f.name}(${..args}) }
     if decodable(f.answers) {
-        let record = quote { KeptRecord { query: ${literal(durable_name(f))}, args: ${args_hash(f)}, write: ${write_each(f.answers)}, read: ${read_each(f.answers)} } }
+        let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: ${args_hash(f)}, write: ${write_each(f.answers)}, read: ${read_each(f.answers)} } }
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})
-                let arg = held.arg(${args_spelled(f)})
+                let arg = ${arg_code(f)}
                 match held.memo.start(arg) {
                     .Reuse(value) -> value,
-                    .Compute -> held.ran_lasting(${db}, arg, ${body}, ${again}, ${answer_hash(f)}, ${record}),
+                    .Compute -> {
+                        let spelled = ${args_spelled(f)}
+                        held.ran_lasting(${db}, arg, spelled, ${body}, ${again}, ${answer_hash(f)}, ${record})
+                    },
                 }
             }
         }
@@ -122,7 +127,7 @@ fn wrapper(f: Fn) -> Decls {
     quote {
         fn ${f.name}(..${seats}) -> ${f.answer} {
             let held = ${kept_name(f)}().under(${db})
-            let arg = held.arg(${args_spelled(f)})
+            let arg = ${arg_code(f)}
             match held.memo.start(arg) {
                 .Reuse(value) -> value,
                 .Compute -> held.ran(${db}, arg, ${body}, ${again}, ${answer_hash(f)}),
@@ -137,6 +142,15 @@ fn wrapper(f: Fn) -> Decls {
 export fn args_spelled(f: Fn) -> Code {
     let writes = [quote { (w: Writer) -> ${written(quote { w }, name(p.name), p.kind)} } for p in f.params.slice(1, f.params.length)]
     quote { spelled_with([${..writes}]) }
+}
+
+/// The dense arg a call is asked under: an int seat's own number, else its spelled arguments.
+fn arg_code(f: Fn) -> Code {
+    if f.params.length == 2 && f.params[1].kind is .Int {
+        quote { held.int_arg(${name(f.params[1].name)}) }
+    } else {
+        quote { held.arg(${args_spelled(f)}) }
+    }
 }
 
 /// The answer's own stable hash, one value folded alone.

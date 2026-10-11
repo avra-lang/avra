@@ -278,7 +278,14 @@ compiler_objs() {
         s=$(basename "$f" .c)
         echo "build/$s.o build/$s.sha build/$s.d"
     done
-    for s in llvm_wrapper ffi std_io std_io_watch std_process std_time std_net; do
+    echo build/avra_tick.o build/avra_tick.sha build/avra_tick.d
+    for s in llvm_wrapper ffi std_io std_io_watch std_process std_time std_net std_hash; do
+        echo "build/$s.o build/$s.sha build/$s.d"
+    done
+    echo build/std_hash.a
+    for f in packages/std-hash/vendor/b3_*.c; do
+        [ -f "$f" ] || continue
+        s=$(basename "$f" .c)
         echo "build/$s.o build/$s.sha build/$s.d"
     done
 }

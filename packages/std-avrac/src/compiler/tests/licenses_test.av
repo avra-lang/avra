@@ -4,7 +4,7 @@
 //! (CLAUDE.md's exemption law) — never a citation for a different
 //! rule, an empty or missing reason, or a line further up than the
 //! one right above.
-use compiler.{analyze_source, site_licensed}
+use compiler.{analyze_source, site_licensed, cites_nothing}
 
 fn licensed_line(text: string, line: int, id: string) -> bool {
     let a = analyze_source(text)
@@ -57,6 +57,27 @@ spec "compiler/licenses — a rule's own site license" {
                 "type P = { xs: List<int> }\nfn f(p: P) -> bool {\n    // LICENSED structs.index_compared: names a different rule\n    p.xs.contains(1) && p.xs.contains(1)\n}\nf(P { xs: [1] })\n",
             )
                 .any(it.rule == "compiler.repeated_projection")
+        }
+    }
+}
+
+spec "compiler/licenses — what a citation may name" {
+    given "a citation of a rule the compiler carries" {
+        then "it names something" {
+            !cites_nothing("test.a", ["test.a"])
+        }
+    }
+    given "a citation of the input keeper's own family" {
+        then "it names something, though no rule is called so" {
+            !cites_nothing("input.live_process", ["test.a"])
+        }
+    }
+    given "a citation of nothing either reads" {
+        then "it is stale" {
+            cites_nothing("test.b", ["test.a"])
+        }
+        then "a name that only begins like the family is stale too" {
+            cites_nothing("inputs.x", ["test.a"])
         }
     }
 }

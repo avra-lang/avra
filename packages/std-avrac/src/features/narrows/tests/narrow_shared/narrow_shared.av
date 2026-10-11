@@ -1,0 +1,30 @@
+// A writing method on a narrowed binder never writes the box the `dyn`
+// shares: the box answers what it held before the narrow.
+
+trait Counter {
+    fn get() -> int
+}
+
+type C = { n: int, m: int }
+
+impl Counter for C {
+    fn get() -> int { self.n }
+}
+
+impl C {
+    mut fn bump() { self.n = self.n + 1 }
+}
+
+fn poke(x: dyn Counter) -> int {
+    match x {
+        c: C -> {
+            c.bump()
+            1
+        },
+        _ -> 0,
+    }
+}
+
+let a: dyn Counter = C { n: 1, m: 0 }
+let poked = poke(a)
+"${poked} ${a.get()}"

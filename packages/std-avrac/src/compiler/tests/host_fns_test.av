@@ -2,9 +2,9 @@
 //! spells — a host calls it by that name, a non-host target exports it from
 //! wherever it is declared, and a bodiless `extern fn` of the name is
 //! answered by it. An `export` is a module's visibility and exports nothing.
+use @std.avrac.testing.{test_workspace}
 use @std.io.{make_dirs, read_text}
 use @std.time.{now_ns}
-use @std.avrac.compiler.{avra, new_workspace}
 use @std.avrac.testing.{refused_in, refused_n}
 use compiler.{Workspace, Program}
 use compiler.lower.{Lowered}
@@ -17,7 +17,7 @@ const HOSTED_MAIN: string = "/w/src/main.av"
 /// entry never names, every module exports a fn nothing calls, and `seam`
 /// names a symbol bodiless that `main` answers when it is asked to.
 fn hosted_ws(main: string) -> Workspace {
-    new_workspace(
+    test_workspace(
         memory_host(
             {
                 "/w/src/main.av": main,
@@ -28,14 +28,13 @@ fn hosted_ws(main: string) -> Workspace {
             [HOSTED_MAIN, "/w/src/near.av", "/w/src/far.av", "/w/src/seam.av"],
         ),
         "/w",
-        avra(),
     )
 }
 
 /// A program `app` over two packages: `@x/near`, which names an extern
 /// bodiless and imports `@x/far`; and `@x/far`, which declares `far_src`.
 fn packaged(main: string, far_src: string) -> Program {
-    new_workspace(
+    test_workspace(
         memory_host(
             {
                 "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/near\" = { path = \"vendor/near\" }\n\"@x/far\" = { path = \"vendor/far\" }\n",
@@ -55,7 +54,6 @@ fn packaged(main: string, far_src: string) -> Program {
             ],
         ),
         "/w",
-        avra(),
     )
         .program("/w/src/main.av")
 }

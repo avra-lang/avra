@@ -6,8 +6,10 @@
 //! answers `UnknownKind` for any word at all; these run through
 //! `provided()` instead, the one door that gives a scratch program a
 //! real component to name.
+use @std.avrac.testing.{test_workspace}
 use @std.avrac.testing.{
     refused_in,
+    refused_n,
     shown,
     provided,
     answered,
@@ -15,7 +17,7 @@ use @std.avrac.testing.{
     vendored_meta_paths,
     Module,
 }
-use @std.avrac.compiler.{Program, new_workspace, avra}
+use @std.avrac.compiler.{Program}
 use @std.avrac.compiler.host.{memory_host}
 
 fn ui() -> string {
@@ -56,6 +58,33 @@ fn mark_decl() -> string {
     "use @std.meta.{Named}\ntrait Mark {\n    fn label() -> string\n}\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\nimpl Mark for string {\n    fn label() -> string { self }\n}\nfn mark(what: Named, label: dyn Mark) -> void {}\n"
 }
 
+/// A gathered enum of two records: one empty, one of two fields.
+fn shapes() -> string {
+    "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int, to: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
+}
+
+/// A mark fn: its answer is `Marker`, so a reader gives it meaning.
+fn flag_decl() -> string { "use @std.meta.{Marker}\nfn flag(what: Named) -> Marker { Marker {} }\n" }
+
+/// `shapes()` with `Dot` wearing `extra` beside its gathering mark.
+fn member_marked(extra: string) -> string {
+    "@numbered(0)\n" +
+        extra +
+        "\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n"
+}
+
+/// A derive reading each variant's marks, claiming `flag`.
+fn claimer() -> string {
+    "use @std.meta.{Type, Directive, literal}\nexport trait Claimer {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { static fn said() -> string { \${literal([v.name + \"/\" + [m.name for m in v.marks].join(\"+\") for v in t.variants].join(\" \"))} } } } }]\n    }\n    static fn marks(t: Type) -> List<string> { [\"flag\"] }\n}\n"
+}
+
+/// A DERIVING trait a `collect enum` fills its members' impl from:
+/// `Size.derive` writes the member's own `impl Size`, `size` its field
+/// count — so a derived member is told from a written one.
+fn sizer() -> string {
+    "use @std.meta.{Type, Directive}\nexport trait Size {\n    fn size() -> int\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl Size for \${t} { fn size() -> int { \${t.fields.length} } } } }]\n    }\n}\n"
+}
+
 fn ui2() -> string {
     "export component widget {\n    run: fn(int) -> int?\n}\nexport component gadget {\n    run: fn(int) -> int?\n}\n"
 }
@@ -91,7 +120,7 @@ fn cross_package(import_orphan: bool) -> string? {
         "/w/vendor/d/src/d.av",
         "/w/vendor/d/src/orphan/orphan.av",
     ]
-    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
     match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
@@ -120,8 +149,30 @@ fn package_scope_in_dependency() -> string? {
         "/w/vendor/d/src/d.av",
         "/w/vendor/d/src/orphan/orphan.av",
     ]
-    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
     match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
+}
+
+/// A PACKAGE STANDING UNDER A DIRECTORY NAMED `tests`: its own files
+/// are its code, so `in package` gathers a member from a module
+/// nothing imports and a `use` of a sibling module resolves.
+fn package_under_tests_dir() -> string? {
+    let files = vendored_meta(
+        {
+            "/w/tests/app/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../../vendor/meta\" }\n",
+            "/w/tests/app/src/main.av": "use parts.{tag, here}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @tag in package as Entry { name: it.name } by it.name\n\"\${[x.name for x in xs].join(\",\")} \${here()}\"",
+            "/w/tests/app/src/parts/parts.av": "use @std.meta.{Named}\nexport fn tag(_what: Named, _label: string) {}\n@tag(\"a\")\nfn one() {}\nexport fn here() -> int { 7 }\n",
+            "/w/tests/app/src/far/far.av": "use parts.{tag}\n@tag(\"b\")\nfn two() {}\n",
+        },
+    )
+    let paths = [
+        "/w/tests/app/avra.toml",
+        "/w/tests/app/src/main.av",
+        "/w/tests/app/src/parts/parts.av",
+        "/w/tests/app/src/far/far.av",
+    ]
+    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w/tests/app")
+    match ws.program("/w/tests/app/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
 /// `cross_package`'s `.Annotated` twin, widened for the EXPORT law
@@ -153,7 +204,7 @@ fn annotated_cross_package(import_extra: bool) -> string? {
         "/w/vendor/extra/avra.toml",
         "/w/vendor/extra/src/extra.av",
     ]
-    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
     match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
@@ -184,7 +235,7 @@ fn orm_cross_package(import_extra: bool) -> string? {
         "/w/vendor/extra/avra.toml",
         "/w/vendor/extra/src/extra.av",
     ]
-    let ws = new_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w", avra())
+    let ws = test_workspace(memory_host(files, paths.concat(vendored_meta_paths())), "/w")
     match ws.program("/w/src/main.av").run() { .Ok(v) -> v, .Err(_) -> null }
 }
 
@@ -342,6 +393,9 @@ spec "collect's own laws" {
         }
         then "a dependency's `in package` collect gathers a module nothing imports" {
             package_scope_in_dependency() == "1"
+        }
+        then "a package under a directory named `tests` gathers its own modules and resolves them" {
+            package_under_tests_dir() == "one,two 7"
         }
     }
     given "the `@name` kind (docs/2026_09_22_COLLECTIONS.md §2)" {
@@ -518,7 +572,7 @@ spec "collect's own laws" {
         // `checked_scope`/`order_required` a value collect does.
         then "an unknown declaration kind refuses" {
             refused_in(
-                built("collect enum X = spell in closure by it.name\n1"),
+                built("collect enum X = spell in package by it.name\n1"),
                 "is not a declaration kind",
             )
         }
@@ -530,7 +584,7 @@ spec "collect's own laws" {
         }
         then "no `by` refuses — order is declared, same as a value collect" {
             refused_in(
-                built("collect enum X = widget in closure\n1"),
+                built("collect enum X = widget in package\n1"),
                 "a collection declares its order",
             )
         }
@@ -545,6 +599,104 @@ spec "collect's own laws" {
                     ui(),
                 ),
             ) == "build init 0 1"
+        }
+        then "a gathered variant carries its member record's fields, in field order" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        shapes() +
+                        "match Shape.Line(1, 4) { .Dot -> 0, .Line(a, b) -> b - a }",
+                    ui(),
+                ),
+            ) == "3"
+        }
+        then "a match missing a gathered variant names it" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        shapes() +
+                        "fn f(s: Shape) -> int { match s { .Dot -> 0 } }\n1",
+                    ui(),
+                ),
+                "must handle `.Line`",
+            )
+        }
+        then "a member record naming an unknown type refuses once, at the member" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { at: Nowhere }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n" +
+                        "match Shape.Dot(1) { .Dot(_) -> 0 }",
+                    ui(),
+                ),
+                "`Nowhere` names no type",
+            )
+        }
+        then "a member naming its own enum carries that field when the member is signed first" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Neg = { inner: Shape? }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n" +
+                        "match Shape.Neg(Shape.Neg(null)) { .Dot -> 0, .Neg(inner) -> if inner == null { 1 } else { 2 } }",
+                    ui(),
+                ),
+            ) == "2"
+        }
+        then "an enum gathering `in closure` refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\ncollect enum Shape = @numbered in closure by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "gathers `in closure`",
+            )
+        }
+        then "an enum with no `by` is refused once, for its order" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { to: int }\n" +
+                        "collect enum Shape = @numbered in self\n1",
+                    ui(),
+                ),
+                "a collection declares its order",
+            )
+        }
+        then "two members sharing an order key refuse" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(0)\ntype Line = { to: int }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0]\n1",
+                    ui(),
+                ),
+                "two members share a key",
+            )
+        }
+        then "a member record taking type parameters refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Wrap<T> = { held: T }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Wrap` takes type parameters",
+            )
+        }
+        then "a member record spreading another's fields refuses" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "type Base = { id: int }\n@numbered(0)\ntype Line = { ..Base, to: int }\n" +
+                        "collect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Line` spreads another record's",
+            )
         }
         then "a record field of the collect enum's own type, and a fn matching it exhaustively, both resolve — written BEFORE the collect enum's own declaration, pinning `sig_rank`'s order" {
             answered(
@@ -604,6 +756,279 @@ spec "collect's own laws" {
                     ],
                 ),
             ) == "build other"
+        }
+    }
+    given "a gathered member's marks are its variant's" {
+        then "a member's mark no reader claims is refused" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + member_marked("@flag") + "1", ui()),
+                "nothing on `Shape`, which gathers this, reads it",
+            )
+        }
+        then "a member's field mark no reader claims is refused" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { @key at: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "nothing on `Shape`, which gathers this, reads it",
+            )
+        }
+        then "a misspelled member mark is unresolved, never a mark" {
+            refused_in(
+                provided(numbered_decl() + flag_decl() + member_marked("@flga") + "1", ui()),
+                "is not defined",
+            )
+        }
+        then "the gathering annotation is no mark" {
+            answered(provided(numbered_decl() + shapes() + "1", ui())) == "1"
+        }
+        then "a user's own `Marker` makes no mark — the answer must be @std/meta's" {
+            let p = provided(
+                numbered_decl() +
+                    "type Marker = {}\nfn flag(what: Named) -> Marker { Marker {} }\n" +
+                    member_marked("@flag") +
+                    "1",
+                ui(),
+            )
+            refused_in(p, "an annotation answers an effect") &&
+                !refused_in(p, "which gathers this, reads it")
+        }
+        then "a member's void annotation stays the record's" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "fn noted(what: Named) -> void {\n    let _n = 1\n}\n" +
+                        member_marked("@noted") +
+                        "1",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a member's validating annotation stays the record's" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "use @std.meta.{Diagnostic}\nfn vetted(what: Named) -> List<Diagnostic> { [] }\n" +
+                        member_marked("@vetted") +
+                        "1",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a member gathered twice is held to each enum's readers: claimed by one, refused by the other" {
+            refused_in(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n" +
+                        numbered_decl() +
+                        flag_decl() +
+                        "@numbered(0)\n@flag\ntype Dot = {}\n@derive(Claimer)\ncollect enum Read = @numbered in self by it.mark.args[0] dense\ncollect enum Unread = @numbered in self by it.mark.args[0] dense\n1",
+                    claimer(),
+                ),
+                "nothing on `Unread`, which gathers this, reads it",
+            )
+        }
+        then "a member two enums leave unread is refused once by each, each naming its enum" {
+            let p = provided(
+                numbered_decl() +
+                    flag_decl() +
+                    "@numbered(0)\n@flag\ntype Dot = {}\ncollect enum A = @numbered in self by it.mark.args[0] dense\ncollect enum B = @numbered in self by it.mark.args[0] dense\n1",
+                ui(),
+            )
+            refused_n(p, "nothing on `A`, which gathers this", 2) &&
+                p.report().contains("nothing on `B`, which gathers this")
+        }
+        then "a mark fn is never run" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive, Marker}\n" +
+                        numbered_decl() +
+                        "fn flag(what: Named) -> Marker {\n    let xs: List<int> = []\n    let _boom = xs[3]\n    Marker {}\n}\n@numbered(0)\n@flag\ntype Dot = {}\n@derive(Claimer)\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nShape.said()",
+                    claimer(),
+                ),
+            ) == "Dot/flag"
+        }
+        then "a claimed member mark reaches the enum's derive" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n" +
+                        numbered_decl() +
+                        flag_decl() +
+                        "@numbered(0)\n@flag\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int }\n@derive(Claimer)\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nShape.said()",
+                    claimer(),
+                ),
+            ) == "Dot/flag Line/"
+        }
+    }
+    given "a gathered payload is held to the slot law" {
+        then "a void field is refused once, by its record, and its payload reads as nothing to bind" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: void }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nlet y: int = match Shape.Dot(1) { .Dot(x) -> x }\ny",
+                    ui(),
+                ),
+                "a struct field cannot hold nothing",
+            )
+        }
+        then "a task field is refused once, by its record" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { t: Task<int> }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "a task cannot outlive the block that spawned it",
+            )
+        }
+        then "a misspelled field type is refused once, by the name law" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: Nope }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "Nope",
+            )
+        }
+        then "a member gathered by two enums is refused once" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: void }\ncollect enum A = @numbered in self by it.mark.args[0] dense\ncollect enum B = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "a struct field cannot hold nothing",
+            )
+        }
+        then "a nullable field crosses as a payload unchanged" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: int? }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(null) { .Dot(x) -> x ?? 7 }",
+                    ui(),
+                ),
+            ) == "7"
+        }
+    }
+    given "a field default rides its owner's statement and wears none of its annotations" {
+        then "a record with a defaulted field gathers as one variant" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = { v: int = 0 }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(1) { .Dot(x) -> x }",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a state field with a default gathers as one variant" {
+            answered(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {\n    state n: int = 0\n}\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nmatch Shape.Dot(1) { .Dot(x) -> x }",
+                    ui(),
+                ),
+            ) == "1"
+        }
+        then "a derive over a record with a defaulted field runs once" {
+            answered(
+                provided(
+                    "use @x.c.{Claimer}\nuse @std.meta.{derive}\n@derive(Claimer)\ntype Dot = { v: int = 0 }\n\"[\${Dot.said()}]\"",
+                    claimer(),
+                ),
+            ) == "[]"
+        }
+        then "a validator over a record with a defaulted field speaks once" {
+            refused_in(
+                provided(
+                    "use @std.meta.{Named, Diagnostic}\nfn vetted(what: Named) -> List<Diagnostic> { [Diagnostic { message: \"vetted says no\", help: null, at: null }] }\n@vetted\ntype Dot = { v: int = 0, w: int = 1 }\n1",
+                    ui(),
+                ),
+                "vetted says no",
+            )
+        }
+    }
+    given "`collect enum E: T` — every member implements the trait" {
+        then "a member with no impl is refused once, where it is declared" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "trait Size {\n    fn size() -> int\n}\n@numbered(0)\ntype Dot = {}\nimpl Size for Dot {\n    fn size() -> int { 1 }\n}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Line` is gathered into `Shape` and has no `impl Size for Line`",
+            )
+        }
+        then "a deriving trait fills a member with no impl, and the enum reaches it" {
+            answered(
+                provided(
+                    "use @x.c.{Size}\n" +
+                        numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n\"\${Shape.Dot.size()} \${Shape.Line(5).size()}\"",
+                    sizer(),
+                ),
+            ) == "0 1"
+        }
+        then "a member's own impl wins over the derive" {
+            answered(
+                provided(
+                    "use @x.c.{Size}\n" +
+                        numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\nimpl Size for Dot {\n    fn size() -> int { 9 }\n}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n\"\${Shape.Dot.size()} \${Shape.Line(5).size()}\"",
+                    sizer(),
+                ),
+            ) == "9 1"
+        }
+        then "a `@delegates` trait's member with no impl is refused once, and the method still resolves" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "use @std.meta.{delegates}\n@delegates(Shape)\ntrait Size {\n    fn size() -> int\n}\n@numbered(0)\ntype Dot = {}\nimpl Size for Dot {\n    fn size() -> int { 1 }\n}\n@numbered(1)\ntype Line = { from: int }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\nShape.Dot.size()",
+                    ui(),
+                ),
+                "`Line` is gathered into `Shape` and has no `impl Size for Line`",
+            )
+        }
+        then "a declared name that is no trait is refused once" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "type Nope = {}\n@numbered(0)\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Nope` names no trait here",
+            )
+        }
+        then "an undefined name is resolve's alone" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "@numbered(0)\ntype Dot = {}\ncollect enum Shape: Nope = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                ),
+                "`Nope` is not defined",
+            )
+        }
+        then "a same-named record's impl in another module does not stand for the member's" {
+            refused_in(
+                provided(
+                    numbered_decl() +
+                        "use shapes.{Size}\n@numbered(0)\ntype Line = { from: int }\ncollect enum Shape: Size = @numbered in self by it.mark.args[0] dense\n1",
+                    ui(),
+                    [
+                        Module {
+                            name: "shapes",
+                            text: "export trait Size {\n    fn size() -> int\n}\n",
+                        },
+                        Module {
+                            name: "other",
+                            text: "use shapes.{Size}\ntype Line = { from: int }\nimpl Size for Line {\n    fn size() -> int { 1 }\n}\n",
+                        },
+                    ],
+                ),
+                "`Line` is gathered into `Shape` and has no `impl Size for Line`",
+            )
         }
     }
     given "the order's currency law" {
@@ -759,25 +1184,25 @@ spec "collect's own laws" {
         }
         then "a nameless `collect enum` names the name" {
             refused_in(
-                built("collect enum = widget in closure by it.name\n1"),
+                built("collect enum = widget in package by it.name\n1"),
                 "expected the collected enum's name",
             )
         }
         then "a `collect enum` missing `=` names it" {
             refused_in(
-                built("collect enum K widget in closure by it.name\n1"),
+                built("collect enum K widget in package by it.name\n1"),
                 "expected `=` after the collected enum's name",
             )
         }
         then "a `collect enum` missing `in` names the scope" {
             refused_in(
-                built("collect enum K = widget closure by it.name\n1"),
+                built("collect enum K = widget package by it.name\n1"),
                 "expected `in` and a scope",
             )
         }
         then "a word after a `collect enum`'s order names the line's end" {
             refused_in(
-                built("collect enum K = widget in closure by it.name extra\n1"),
+                built("collect enum K = widget in package by it.name extra\n1"),
                 "expected the line to end after the collect",
             )
         }

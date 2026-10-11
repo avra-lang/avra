@@ -70,4 +70,14 @@ typedef struct {
     int64_t icap;
 } AvraMap;
 
+// A TASK BODY'S SITE is a row of the program's site table: the body's
+// entry and where it was written, `file:line` as C text. The backend
+// files one row for each task body in the section named here; the
+// scheduler names a task by the row whose entry is its body's, and code
+// no row names — C's own — by its address. Nothing reads code's bytes.
+typedef struct { const void* code; const char* site; } AvraSiteRow;
+#define AVRA_SITES_MACHO_SEGMENT "__DATA"
+#define AVRA_SITES_MACHO_SECTION "__avra_sites"
+#define AVRA_SITES_ELF_SECTION "avra_sites"
+
 #endif

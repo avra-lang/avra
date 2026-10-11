@@ -1,0 +1,34 @@
+//! Narrows — a TYPE TEST over a `dyn`. `c: Code` in pattern position
+//! accepts the value whose type is `Code` and binds it as one: the
+//! box's tag is compared with the type's, and the value it wraps is
+//! read out. A `dyn` is open — any package may implement its trait —
+//! so a match over one keeps its catch-all (enums' coverage law).
+//!
+//! THE MODULES:
+//!   mod.av       this manifest, and the branch it claims
+//!   builders.av  parse lowering: `name: T` -> `Pat.Typed`
+//!   semantics.av the PatSemantics impl — dispatch one-liners
+//!   check.av     the laws a type test keeps
+//!   lower.av     the tag test and the read, emitted
+use features.{LanguageFeature, BuilderRow}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn narrows() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "typed_pat" | build_typed_pat
+    }
+    let codes = table<DiagCode> {
+        kind          | summary
+        "type.narrow" | "a type pattern narrows a `dyn` to a type that implements its trait"
+    }
+    LanguageFeature narrows {
+        gram: grammar {
+            pattern = n:NAME ":" t:type_atom -> typed_pat(n, t)
+        }
+        builders: rows
+        diags: codes
+    }
+    narrows
+}

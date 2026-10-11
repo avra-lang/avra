@@ -26,6 +26,7 @@ export fn enums() -> LanguageFeature {
         "match_arm"   | build_arm
         "hole_arm"    | build_hole_arm
         "variant_pat" | build_variant_pat
+        "member_pat"  | build_member_pat
         "wild_pat"    | build_wild_pat
         "bind_pat"    | build_bind_pat
         "num_pat"     | build_num_pat
@@ -41,6 +42,7 @@ export fn enums() -> LanguageFeature {
         "type.is_bind"         | "a payload `is` binds only in an `if` condition"
         "type.enum_payload"    | "an enum payload holds a value"
         "type.pattern"         | "a pattern fits the shape it tests: a variant of the enum, with exactly its payloads, or a literal of the type"
+        "type.member_pattern"  | "`.V as r` takes a gathered variant whole, as its member's record"
         "type.or_binds"        | "every alternative of an `or` arm binds the same names at the same types"
         "type.binds_twice"     | "a pattern binds each name once"
         "type.const_pattern"   | "a bare name in a pattern compares to a const of that name — and says so where it ends a match"
@@ -65,7 +67,7 @@ export fn enums() -> LanguageFeature {
             primary = "match" subj:expression "{" ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, a) @head(subj)
             arm = p:pattern ( "or" p:pattern )* ( "if" g:expression )? "->" v:expression -> match_arm(p, g, v)
             hole_arm = h:HOLE -> hole_arm(h)
-            pattern = "." vn:NAME ( "(" sub:pattern ( "," sub:pattern )* ","? ")" )? -> variant_pat(vn, sub) | "_" -> wild_pat() | "true" -> true_pat() | "false" -> false_pat() | v:NUMBER -> num_pat(v) | n:NAME -> bind_pat(n)
+            pattern = "." vn:NAME "as" r:NAME -> member_pat(vn, r) | "." vn:NAME ( "(" sub:pattern ( "," sub:pattern )* ","? ")" )? -> variant_pat(vn, sub) | "_" -> wild_pat() | "true" -> true_pat() | "false" -> false_pat() | v:NUMBER -> num_pat(v) | n:NAME -> bind_pat(n)
         }
         builders: rows
         diags: codes

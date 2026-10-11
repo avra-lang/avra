@@ -10,6 +10,8 @@ cd "$(dirname "$0")/.."
 unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
 
 R=build/cache-attacks; fails=0; steps=0; holds=0
+# CACHE_ATTACKS names the sections to run, comma-separated (`kr,kv`); unset runs all.
+section() { [ -z "${CACHE_ATTACKS:-}" ] || case ",$CACHE_ATTACKS," in *",$1,"*) ;; *) false ;; esac; }
 rm -rf "$R" .avra-cache && mkdir -p $R/lib/src/inner $R/a/src $R/b/src $R/c/src
 cat > $R/lib/avra.toml <<'TOML'
 [package]
@@ -126,6 +128,159 @@ import sys
 p,old,new=sys.argv[1:4]; t=open(p).read(); assert old in t,(p,old); open(p,'w').write(t.replace(old,new,1))
 PY
 }
+
+HR() { # HR <label> <build|check> <pkg> <exit> [<path-substr> <held|read>]...
+    steps=$((steps+1))
+    label=$1; verb=$2; pkg=$3; want_st=$4; shift 4
+    out=$(./avra $verb --time $R/$pkg 2>&1); st=$?
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    if [ $st -ne "$want_st" ]; then fails=$((fails+1)); echo "FAIL  $label: exit $st, wanted $want_st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    read_list=$(printf '%s\n' "$out" | sed -n '/^read:/,$p' | grep '^  ')
+    while [ $# -ge 2 ]; do
+        case "$read_list" in *"$1"*) got=read ;; *) got=held ;; esac
+        if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $label: $1 wanted $2, got $got: $(printf '%s' "$read_list" | tr '\n' ' ')"; fi
+        shift 2
+    done
+}
+
+if section kr; then
+# A CONST THAT STANDS ON ANOTHER CONST FOLLOWS IT. `kr`'s K reads J in another module,
+# and J settles by running a body in a third. A build that finds K's verdict kept does
+# not run it again, and K's file's record lists the files its run read all the same,
+# exactly as the cold check listed them. From there the body is edited: J moves, and
+# K's file is read in the first attempt, none thrown away, in a check and in the binary.
+mkdir -p $R/kr/src/f $R/kr/src/x $R/kr/src/y
+printf '[package]\nname = "rt-kr"\nversion = "0.1.0"\n' > $R/kr/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/kr/src/y/calc.av
+printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/kr/src/x/mid.av
+printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\nfn scaled(const n: int, factor: int) -> int { n * factor }\nexport fn seated() -> int { scaled(J, 10) }\n' > $R/kr/src/f/held.av
+printf 'use f.{shown, seated}\nprintln("${shown()} ${seated()}")\n' > $R/kr/src/main.av
+record_runs() { # record_runs <path suffix>: the files a record says that file's compile-time runs read, by name
+    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | python3 -c '
+import sys
+for line in sys.stdin:
+    f = line.rstrip("\n").split("\t")
+    if len(f) > 3 and f[1].endswith(sys.argv[1]):
+        print("".join(bytes.fromhex(r.split("~")[0]).decode().split("/")[-1] + " " for r in f[3].split("|") if r), end="")
+' "$1"
+}
+kr_runs() { record_runs cache-attacks/kr/src/f/held.av; } # the files the record says held.av's compile-time runs read, by name
+HR "cold kr" check kr 0
+kr_cold=$(kr_runs)
+steps=$((steps+1)); case "$kr_cold" in *mid.av*) ;; *) fails=$((fails+1)); echo "FAIL  kr: a cold check records no run of held.av reading mid.av ('$(kr_runs)'), so the fixture has no run to lose" ;; esac
+S "kr: built with K's verdict kept" kr
+steps=$((steps+1)); [ "$(kr_runs)" = "$kr_cold" ] || { fails=$((fails+1)); echo "FAIL  kr: standing on K's kept verdict, held.av's record lists '$(kr_runs)' where the cold check listed '$kr_cold'"; }
+printf '// moved\n' >> $R/kr/src/main.av
+S "kr: an edit elsewhere, held.av held" kr
+ed $R/kr/src/y/calc.av "n * 2" "n * 3"
+steps=$((steps+1)); kr_out=$(./avra check --time $R/kr 2>&1)
+case "$kr_out" in *"discarded 0, refused 0"*"f/held.av"*|*"f/held.av"*"discarded 0, refused 0"*) [ -n "${VERBOSE:-}" ] && echo "ok    kr: the body J ran moved -> held.av read in the first attempt" ;; *) fails=$((fails+1)); echo "FAIL  kr: the body J ran moved, and held.av was not read in the first attempt: $(printf '%s' "$kr_out" | grep -E '^time:|discarded:|held.av' | cut -c1-260 | tr '\n' ' ')" ;; esac
+S "kr: and the binary follows" kr
+steps=$((steps+1)); kr_out=$($R/kr/src/main 2>&1)
+[ "$kr_out" = "18 90" ] || { fails=$((fails+1)); echo "FAIL  kr: K or the seat it feeds kept the value of the body J ran before: printed '$kr_out', wanted '18 90'"; }
+fi
+if section kv; then
+# A KEPT VERDICT CARRIES THE READS OF THE RUN THAT MADE IT. `kv`'s L stands on K, K on
+# J, and J settles by running a body in a fourth file; E beside them reads nothing.
+# A build that finds every verdict kept runs none of them — and each file's record
+# must list what its runs read exactly as the cold check listed it, three consts deep
+# and for the one that read nothing. Then the body moves: every file on the chain is
+# read in the FIRST attempt, none thrown away, and the values follow.
+mkdir -p $R/kv/src/f $R/kv/src/g $R/kv/src/x $R/kv/src/y $R/kv/src/e
+printf '[package]\nname = "rt-kv"\nversion = "0.1.0"\n' > $R/kv/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/kv/src/y/calc.av
+printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/kv/src/x/mid.av
+printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n' > $R/kv/src/f/held.av
+printf 'use f.{K}\nexport const L: int = K + 1\nexport fn topped() -> int { L }\n' > $R/kv/src/g/top.av
+printf 'export const E: int = 5\nexport fn alone() -> int { E }\n' > $R/kv/src/e/alone.av
+printf 'use f.{shown}\nuse g.{topped}\nuse e.{alone}\nprintln("${shown()} ${topped()} ${alone()}")\n' > $R/kv/src/main.av
+kv_runs() { record_runs "cache-attacks/kv/src/$1"; } # kv_runs <file>: the files the record says its compile-time runs read, by name
+HR "cold kv" check kv 0
+kv_held=$(kv_runs f/held.av); kv_top=$(kv_runs g/top.av); kv_alone=$(kv_runs e/alone.av)
+steps=$((steps+1)); case "$kv_held|$kv_top|$kv_alone" in *mid.av*"|"*held.av*"|") ;; *) fails=$((fails+1)); echo "FAIL  kv: a cold check records held.av's runs as '$kv_held', top.av's as '$kv_top', alone.av's as '$kv_alone' — the chain has no run to carry, or the empty one is not empty" ;; esac
+S "kv: built with every verdict kept" kv
+steps=$((steps+1)); [ "$(kv_runs f/held.av)|$(kv_runs g/top.av)|$(kv_runs e/alone.av)" = "$kv_held|$kv_top|$kv_alone" ] || { fails=$((fails+1)); echo "FAIL  kv: standing on kept verdicts, the records list '$(kv_runs f/held.av)' / '$(kv_runs g/top.av)' / '$(kv_runs e/alone.av)' where the cold check listed '$kv_held' / '$kv_top' / '$kv_alone'"; }
+printf '// moved\n' >> $R/kv/src/main.av
+S "kv: an edit elsewhere, the chain held" kv
+ed $R/kv/src/y/calc.av "n * 2" "n * 3"
+steps=$((steps+1)); kv_out=$(./avra check --time $R/kv 2>&1)
+case "$kv_out" in *"discarded 0, refused 0"*) ;; *) fails=$((fails+1)); echo "FAIL  kv: the body moved and an attempt was thrown away before the chain was read: $(printf '%s' "$kv_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$kv_out" in *"f/held.av"*"g/top.av"*|*"g/top.av"*"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    kv: the body moved -> held.av and top.av read at once" ;; *) fails=$((fails+1)); echo "FAIL  kv: the body moved and the chain was not read: $(printf '%s' "$kv_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "kv: and the binary follows" kv
+steps=$((steps+1)); kv_out=$($R/kv/src/main 2>&1)
+[ "$kv_out" = "18 19 5" ] || { fails=$((fails+1)); echo "FAIL  kv: a const on the chain kept the value of the body J ran before: printed '$kv_out', wanted '18 19 5'"; }
+
+fi
+
+if section tw; then
+# TWO EDITS, ONE READ FILE. A run reads a DECLARATION of a file, never the file: editing a
+# body ELSEWHERE in that file leaves its readers held, while editing the declaration the run
+# read reads them in the FIRST attempt, none thrown away.
+mkdir -p $R/tw/src/f $R/tw/src/x $R/tw/src/y
+printf '[package]\nname = "rt-tw"\nversion = "0.1.0"\n' > $R/tw/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\nexport fn unused(n: int) -> int { n + 1 }\n' > $R/tw/src/y/calc.av
+printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/tw/src/x/mid.av
+printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n' > $R/tw/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/tw/src/main.av
+HR "cold tw" check tw 0
+S "tw: built with K's verdict kept" tw
+ed $R/tw/src/y/calc.av "n + 1" "n + 7"
+steps=$((steps+1)); tw_out=$(./avra check --time $R/tw 2>&1)
+case "$tw_out" in *"discarded 0, refused 0"*|*"cache hit"*) ;; *) fails=$((fails+1)); echo "FAIL  tw: an unreached body moved and an attempt was thrown away: $(printf '%s' "$tw_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$tw_out" in *"f/held.av"*) fails=$((fails+1)); echo "FAIL  tw: an unreached body moved and its reader was read all the same: $(printf '%s' "$tw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    tw: an unreached body moved -> the reader held" ;; esac
+ed $R/tw/src/y/calc.av "n * 2" "n * 3"
+steps=$((steps+1)); tw_out=$(./avra check --time $R/tw 2>&1)
+case "$tw_out" in *"discarded 0, refused 0"*) ;; *) fails=$((fails+1)); echo "FAIL  tw: the read declaration moved and an attempt was thrown away: $(printf '%s' "$tw_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$tw_out" in *"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    tw: the read declaration moved -> the reader read in the first attempt" ;; *) fails=$((fails+1)); echo "FAIL  tw: the read declaration moved and the reader was not read: $(printf '%s' "$tw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "tw: and the binary follows" tw
+steps=$((steps+1)); tw_out=$($R/tw/src/main 2>&1)
+[ "$tw_out" = "18" ] || { fails=$((fails+1)); echo "FAIL  tw: the published value did not follow the declaration the run read: printed '$tw_out', wanted '18'"; }
+
+fi
+
+if section vd; then
+# THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
+# named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
+# or a name a seen module declares. A declaration it never reaches leaves it standing.
+# Each const is traced by its module, from a store of its own: each case is its own repo,
+# and the store sits beside it, at the nearest `.git` above the package's parent.
+vd_fixture() {
+  rm -rf $R/vdc; mkdir -p $R/vdc/vd/src/f $R/vdc/vd/src/x $R/vdc/vd/src/y; git -C $R/vdc init -q
+  printf '[package]\nname = "rt-vd"\nversion = "0.1.0"\n' > $R/vdc/vd/avra.toml
+  printf 'export type Deep = { q: int }\nexport type Cfg = { a: int, d: Deep }\nexport fn dflt() -> Deep { Deep { q: 1 } }\nexport type Other = { z: int }\nexport fn twice(n: int) -> int { n * 2 }\nexport fn g() -> int { Cfg { a: 3, d: dflt() }.a }\nexport enum E { V(int) }\nexport fn unwrap(e: E) -> int { match e { .V(n) -> n, _ -> 0 } }\nexport type S = { s: int }\nimpl S { fn m() -> int { self.s } }\n' > $R/vdc/vd/src/y/calc.av
+  printf 'use y.{twice, Cfg, dflt}\nexport const J: int = Entry { key: "a", value: twice(Cfg { a: 3, d: dflt() }.a) }.value\n' > $R/vdc/vd/src/x/mid.av
+  printf 'use y.{twice, g}\nexport const F: int = twice(g())\n' > $R/vdc/vd/src/x/fg.av
+  printf 'use y.{E, unwrap}\nexport const G: int = unwrap(E.V(3))\n' > $R/vdc/vd/src/x/gg.av
+  printf 'use y.{S}\nexport const H: int = S { s: 3 }.m()\n' > $R/vdc/vd/src/x/hh.av
+  printf 'use x.{J, F, G, H}\nexport const K: int = J * 2 + F + G + H\nexport fn shown() -> int { K }\n' > $R/vdc/vd/src/f/held.av
+  printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/vdc/vd/src/main.av
+}
+vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, edit, then that const's verdict
+  vd_fixture
+  ./avra check $R/vdc/vd > /dev/null 2>&1; ./avra check $R/vdc/vd > /dev/null 2>&1
+  eval "$4"
+  steps=$((steps+1))
+  AVRA_QTRACE=1 ./avra check $R/vdc/vd > $R/vd.out 2>&1; st=$?
+  got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { v = $4 } END { print v }' $R/vd.out)
+  if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"
+  elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the $3 verdict was '$got', wanted '$2'"
+  else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
+}
+vd_case "a: a field of a type the const reads is added" ran mid 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
+vd_case "b: a fn the const reaches changes its signature" ran mid 'ed $R/vdc/vd/src/y/calc.av "export fn twice(n: int) -> int { n * 2 }" "export fn twice(n: int, m: int = 1) -> int { n * 2 * m }"'
+vd_case "c: a new declaration takes a name the const resolves" ran mid 'printf "export type Entry = { key: string, value: int }\n" > $R/vdc/vd/src/x/local.av'
+vd_case "d: a type the const never reaches changes a field" stood mid 'ed $R/vdc/vd/src/y/calc.av "export type Other = { z: int }" "export type Other = { z: int, w: int }"'
+vd_case "e: a type reached only through a field of a type it reads gains a field" ran mid 'ed $R/vdc/vd/src/y/calc.av "export type Deep = { q: int }" "export type Deep = { q: int, r: int = 0 }"'
+vd_case "f: a fn the const calls reads a type's field, which changes type" ran fg 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
+vd_case "g: a variant of an enum the const builds gains a variant" ran gg 'ed $R/vdc/vd/src/y/calc.av "export enum E { V(int) }" "export enum E { V(int), W }"'
+vd_case "h: a method the const calls on a type gains a field the receiver shows" ran hh 'ed $R/vdc/vd/src/y/calc.av "export type S = { s: int }" "export type S = { s: int, t: int = 0 }"'
+fi
+
+# CACHE_ATTACKS set: the sections named above are the whole run.
+if [ -n "${CACHE_ATTACKS:-}" ]; then
+    echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
+    [ "$fails" -eq 0 ]; exit $?
+fi
 S "cold a" a; S "b after a (shared leaf, other bodies + other instantiation)" b
 S "no-op a" a; S "no-op b" b
 S "c seals a record the store's objects hold flat" c
@@ -731,10 +886,9 @@ ed $R/vh3/src/leaf/mod.av 'raise_thing(n)?' 'let m = n + 0
     raise_thing(m)?'
 S "vh3: a body-only edit in leaf/mod.av — helper/mod.av stays held" vh3
 
-# RULE FINDINGS ARE A CHECK'S WANT: a build keeps none and prints none; a check
-# after that build reads no rule row, so it runs the rules over the file (a miss,
-# never a wrong answer) and speaks what a cold check speaks; a check held on a
-# check's rows speaks the same again.
+# RULE FINDINGS ARE KEPT BY EVERY WANT AND SPOKEN BY A CHECK: a build keeps the
+# rows and prints none; a check after that build holds them and speaks what a
+# cold check speaks; a check held on a check's rows speaks the same again.
 mkdir -p $R/rw/src
 printf '[package]\nname = "rt-rw"\nversion = "0.1.0"\n' > $R/rw/avra.toml
 printf 'mut n = 1\nprintln("${n}")\n' > $R/rw/src/main.av
@@ -832,19 +986,7 @@ steps=$((steps+1)); case "$rs_warm" in *const.trap*) ;; *) fails=$((fails+1)); e
 # THE DURABLE WITNESS IS THE HOLD'S KEY: a file's text and the interface digest of
 # every module it sees. HR runs one command over a package and judges it: its exit,
 # and for each named file whether the run read it or held it.
-HR() { # HR <label> <build|check> <pkg> <exit> [<path-substr> <held|read>]...
-    steps=$((steps+1))
-    label=$1; verb=$2; pkg=$3; want_st=$4; shift 4
-    out=$(./avra $verb --time $R/$pkg 2>&1); st=$?
-    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    if [ $st -ne "$want_st" ]; then fails=$((fails+1)); echo "FAIL  $label: exit $st, wanted $want_st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
-    read_list=$(printf '%s\n' "$out" | sed -n '/^read:/,$p' | grep '^  ')
-    while [ $# -ge 2 ]; do
-        case "$read_list" in *"$1"*) got=read ;; *) got=held ;; esac
-        if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $label: $1 wanted $2, got $got: $(printf '%s' "$read_list" | tr '\n' ' ')"; fi
-        shift 2
-    done
-}
+
 
 # A HELD FILE IS NEVER PARSED: every parse a warm check makes names a file it read.
 # A body edit to `m1` reads `m1` and the entry; `m2`, `m3` and the prelude are held,
@@ -966,7 +1108,7 @@ HR "ee: what inferred fails moves its inferred E — user's stale row is refused
 S "ee: and the binary reads the inferred E" ee
 ee_got=$($R/ee/src/main 2>&1); steps=$((steps+1))
 [ "$ee_got" = "ee ok 1 err neg err inferred" ] || { fails=$((fails+1)); echo "FAIL  ee printed '$ee_got', wanted 'ee ok 1 err neg err inferred'"; }
-HR "ee: a check reads user, whose rule findings no build kept" check ee 0 user/mod.av read
+HR "ee: a check holds user, whose rule findings the build kept" check ee 0 user/mod.av held
 printf '// checked\n' >> $R/ee/src/main.av
 HR "ee: and the next check holds it" check ee 0 user/mod.av held
 ed $R/ee/src/errs/mod.av "Result<int, Said> {
@@ -1119,11 +1261,12 @@ case "$vh_nd" in
     *) fails=$((fails+1)); echo "FAIL  verify-held over nd: $(printf '%s' "$vh_nd" | tail -5 | tr '\n' ' ')" ;;
 esac
 
-# `avra cache` IS ITS OWN PROCESS, reading what an earlier check kept — and an
-# INSPECTION KEEPS NOTHING. A check, then ONE edit, then every mode in a process of
-# its own: each names the edited input, `changed` twice says the same move, `held`
-# after them still reads the file, and the store's bytes are what the check left.
-# A check after them keeps as it always did, and only then has nothing moved.
+# `avra explain` IS ITS OWN PROCESS, reading what an earlier check kept — and an
+# INSPECTION KEEPS NOTHING. A check, then ONE edit, then every form in a process of
+# its own: each names the edited input, `--why` twice says the same move, and
+# after them still reads the file, `avra cache`'s older words print what their
+# form prints, and the store's bytes are what the check left. A check after them
+# keeps as it always did, and only then has nothing moved.
 mkdir -p $R/cw/src/lib
 printf '[package]\nname = "rt-cw"\nversion = "0.1.0"\n' > $R/cw/avra.toml
 printf 'use lib.{one}\none()\n' > $R/cw/src/main.av
@@ -1133,29 +1276,43 @@ tree=$(pwd)
 printf 'export fn one(p: int = 0) -> int { 1 }\n' > $R/cw/src/lib/a.av
 # the store's bytes, each file's checksum by path — a process's own `.users` mark aside
 store_print() { (cd .avra-cache && find . -path '*/.users' -prune -o -type f -print | LC_ALL=C sort | xargs cksum); }
-inspected() { (cd $R/cw && "$tree/avra" cache "$@" 2>&1); }
-cache_says() { # cache_says <a line the answer holds> <the answer> <mode words...>
+inspected() { (cd $R/cw && "$tree/avra" explain "$@" 2>&1); }
+older() { (cd $R/cw && "$tree/avra" cache "$@" 2>&1); }
+explain_says() { # explain_says <a line the answer holds> <the answer> <the form's words...>
     steps=$((steps+1)); want=$1; said=$2; shift 2
-    printf '%s\n' "$said" | grep -qF "$want" ||
-        { fails=$((fails+1)); echo "FAIL  avra cache $* never said '$want': $(printf '%s\n' "$said" | head -4 | tr '\n' ' ')"; }
+    printf '%s\n' "$said" | grep -qF -- "$want" ||
+        { fails=$((fails+1)); echo "FAIL  avra explain $* never said '$want': $(printf '%s\n' "$said" | head -4 | tr '\n' ' ')"; }
 }
 kept_before=$(store_print)
-first=$(inspected changed); second=$(inspected changed)
-cache_says "changed:   src/lib/a.av: its text " "$first" changed
-cache_says "changed:   src/lib/a.av: its text " "$second" "changed, a second time"
+first=$(inspected --why); second=$(inspected --why)
+explain_says "  src/lib/a.av: its text " "$first" --why
+explain_says "1 input moved since the kept state" "$first" --why
+explain_says "src/lib/a.av — read" "$second" "--why, a second time"
 steps=$((steps+1)); [ "$first" = "$second" ] ||
-    { fails=$((fails+1)); echo "FAIL  a second avra cache changed answered otherwise: $(printf '%s\n' "$second" | head -2 | tr '\n' ' ')"; }
-cache_says "held: src/lib/a.av — read" "$(inspected held)" held
-cache_says "cache:   src/lib/a.av" "$(inspected)" summary
-cache_says "why:   down to src/lib/a.av, whose text moved:" "$(inspected why src/main.av)" why src/main.av
-cache_says "dependents:     src/main.av" "$(inspected dependents src/lib/a.av)" dependents src/lib/a.av
-cache_says "held: src/lib/a.av — read" "$(inspected held src/lib/a.av)" held src/lib/a.av
+    { fails=$((fails+1)); echo "FAIL  a second avra explain --why answered otherwise: $(printf '%s\n' "$second" | head -2 | tr '\n' ' ')"; }
+explain_says "src/lib/a.av — read" "$(inspected src/lib/a.av --why)" src/lib/a.av --why
+why_main=$(inspected src/main.av --why)
+explain_says "  moved    src/lib/a.av, read by way of:" "$why_main" src/main.av --why
+readers=$(inspected src/lib/a.av)
+explain_says "    src/main.av" "$readers" src/lib/a.av
+stats=$(inspected --stats)
+explain_says "total " "$stats" --stats
+steps=$((steps+1)); [ "$stats" = "$(inspected --stats)" ] ||
+    { fails=$((fails+1)); echo "FAIL  a second avra explain --stats answered otherwise"; }
+for words in "" changed held; do
+    steps=$((steps+1)); [ "$(older $words)" = "$first" ] ||
+        { fails=$((fails+1)); echo "FAIL  avra cache $words is not avra explain --why"; }
+done
+steps=$((steps+1)); [ "$(older why src/main.av)" = "$why_main" ] ||
+    { fails=$((fails+1)); echo "FAIL  avra cache why is not avra explain --why of the file"; }
+steps=$((steps+1)); [ "$(older dependents src/lib/a.av)" = "$readers" ] ||
+    { fails=$((fails+1)); echo "FAIL  avra cache dependents is not avra explain of the file"; }
 steps=$((steps+1)); [ "$kept_before" = "$(store_print)" ] ||
-    { fails=$((fails+1)); echo "FAIL  avra cache moved the store:"; printf '%s\n' "$kept_before" > $R/cw.before; store_print | diff $R/cw.before - | head -8; }
+    { fails=$((fails+1)); echo "FAIL  avra explain moved the store:"; printf '%s\n' "$kept_before" > $R/cw.before; store_print | diff $R/cw.before - | head -8; }
 ./avra check $R/cw >/dev/null 2>&1
 steps=$((steps+1)); [ "$kept_before" != "$(store_print)" ] ||
     { fails=$((fails+1)); echo "FAIL  a check after the edit kept nothing"; }
-cache_says "changed: no input's text moved since the kept state" "$(inspected changed)" "changed, after a check"
+explain_says "no input moved since the kept state" "$(inspected --why)" "--why, after a check"
 # WHAT COMPOSES A COMPONENT IS NEVER SERVED STALE. `note` holds a body, composed by
 # the trait its file names (`kit`'s `Says`, wearing `@composes`); `card` is made of
 # `note`, a sibling it names by no `use`. An entry edit holds both. Then the mark is
@@ -1364,7 +1521,7 @@ S "abx: the binary from another entry" abx
 # ONE DECLARATION, ONE SPELLING. A builtin's wire names the language, never the file
 # a process happened to meet first — so a body edit under impls over builtins leaves
 # the module's interface where it was, its importer held, and the same package
-# inspected with no entry (`avra cache held`) sees no interface moved. And
+# inspected with no entry (`avra explain --why`) sees no interface moved. And
 # an impl over a builtin that an importer dispatches through, in a file the importer
 # never names, is still the importer's: removed, the warm check refuses as a cold one.
 mkdir -p $R/bwl/src $R/bw/src
@@ -1379,7 +1536,7 @@ ed $R/bwl/src/shows.av '"list"' '"lst"'
 HR "bw: a body edit under impls over builtins holds the importer" check bw 0 user.av held
 ed $R/bwl/src/shows.av '"lst"' '"l"'
 HR "bw: and again" check bw 0 user.av held
-steps=$((steps+1)); bw_moved=$( (cd $R/bw && "$tree/avra" cache held 2>&1) | grep -c 'moved module')
+steps=$((steps+1)); bw_moved=$( (cd $R/bw && "$tree/avra" explain --why 2>&1) | grep -c 'moved module')
 [ "$bw_moved" -eq 0 ] || { fails=$((fails+1)); echo "FAIL  bw: inspected with no entry, $bw_moved interfaces read as moved since the entry's own check"; }
 mkdir -p $R/bil/src $R/bi/src
 printf '[package]\nname = "@rt/bil"\nversion = "0.1.0"\n\n[lib]\nname = "rt-bil"\npath = "src/lib.av"\n' > $R/bil/avra.toml
@@ -1396,64 +1553,244 @@ HR "bi: an edit elsewhere checks clean" check bi 0
 printf 'export fn pad() -> int { 0 }\n' > $R/bil/src/list_tell.av
 steps=$((steps+1)); bi_out=$(./avra check $R/bi 2>&1); bi_st=$?
 case "$bi_st:$bi_out" in 1:*"tell"*) [ -n "${VERBOSE:-}" ] && echo "ok    bi: the impl gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  bi: the impl over List is gone and the warm check did not refuse the call (exit $bi_st): $(printf '%s' "$bi_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
-# A CONST THAT STANDS ON ANOTHER CONST FOLLOWS IT. `kr`'s K reads J in another module,
-# and J settles by running a body in a third. A build that finds K's verdict kept does
-# not run it again, and K's file's record lists the files its run read all the same,
-# exactly as the cold check listed them. From there the body is edited: J moves, and
-# K's file is read in the first attempt, none thrown away, in a check and in the binary.
-mkdir -p $R/kr/src/f $R/kr/src/x $R/kr/src/y
-printf '[package]\nname = "rt-kr"\nversion = "0.1.0"\n' > $R/kr/avra.toml
-printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/kr/src/y/calc.av
-printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/kr/src/x/mid.av
-printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\nfn scaled(const n: int, factor: int) -> int { n * factor }\nexport fn seated() -> int { scaled(J, 10) }\n' > $R/kr/src/f/held.av
-printf 'use f.{shown, seated}\nprintln("${shown()} ${seated()}")\n' > $R/kr/src/main.av
-kr_runs() { # the files the record says held.av's compile-time runs read, by name
-    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | awk -F'\t' '$2 ~ /cache-attacks\/kr\/src\/f\/held.av$/ { m = split($4, b, "|"); for (i = 1; i <= m; i++) { k = split(b[i], c, "/"); if (c[k] != "") printf "%s ", c[k] } }'
+
+# A FILE IS HELD ONLY WHILE EVERY INPUT ITS COMPILE-TIME RUNS READ STANDS. `ke`'s TEXT is
+# an `embed` of a text file beside the file that declares it. The embedded text is
+# edited and nothing else: the declaring file's own text never moves, so a hold that
+# stands on its text alone keeps the const's old value — in the binary, with the key
+# missing and a derivation running. The file must be read again, in a check and in a
+# build, twice over, and with another file edited first so the declaring file is held;
+# a const derived from the embedded text moves with it.
+mkdir -p $R/ke/src/f
+printf '[package]\nname = "rt-ke"\nversion = "0.1.0"\n' > $R/ke/avra.toml
+printf 'one' > $R/ke/src/f/data.txt
+printf 'use @std.meta.{embed}\nexport const TEXT: string = embed("data.txt")\nexport const N: int = TEXT.length\nexport fn shown() -> string { "${TEXT} n=${N}" }\n' > $R/ke/src/f/held.av
+printf 'use f.{shown}\nprintln("text=${shown()}")\n' > $R/ke/src/main.av
+ke_says() { # ke_says <label> <wanted>: the built binary prints the embedded text as it stands
+    steps=$((steps+1)); ke_out=$($R/ke/src/main 2>&1)
+    [ "$ke_out" = "text=$2" ] || { fails=$((fails+1)); echo "FAIL  ke: $1: the binary printed '$ke_out', wanted 'text=$2'"; }
 }
-HR "cold kr" check kr 0
-kr_cold=$(kr_runs)
-steps=$((steps+1)); case "$kr_cold" in *mid.av*) ;; *) fails=$((fails+1)); echo "FAIL  kr: a cold check records no run of held.av reading mid.av ('$(kr_runs)'), so the fixture has no run to lose" ;; esac
-S "kr: built with K's verdict kept" kr
-steps=$((steps+1)); [ "$(kr_runs)" = "$kr_cold" ] || { fails=$((fails+1)); echo "FAIL  kr: standing on K's kept verdict, held.av's record lists '$(kr_runs)' where the cold check listed '$kr_cold'"; }
-printf '// moved\n' >> $R/kr/src/main.av
-S "kr: an edit elsewhere, held.av held" kr
-ed $R/kr/src/y/calc.av "n * 2" "n * 3"
-steps=$((steps+1)); kr_out=$(./avra check --time $R/kr 2>&1)
-case "$kr_out" in *"discarded 0, refused 0"*"f/held.av"*|*"f/held.av"*"discarded 0, refused 0"*) [ -n "${VERBOSE:-}" ] && echo "ok    kr: the body J ran moved -> held.av read in the first attempt" ;; *) fails=$((fails+1)); echo "FAIL  kr: the body J ran moved, and held.av was not read in the first attempt: $(printf '%s' "$kr_out" | grep -E '^time:|discarded:|held.av' | cut -c1-260 | tr '\n' ' ')" ;; esac
-S "kr: and the binary follows" kr
-steps=$((steps+1)); kr_out=$($R/kr/src/main 2>&1)
-[ "$kr_out" = "18 90" ] || { fails=$((fails+1)); echo "FAIL  kr: K or the seat it feeds kept the value of the body J ran before: printed '$kr_out', wanted '18 90'"; }
-# A KEPT VERDICT CARRIES THE READS OF THE RUN THAT MADE IT. `kv`'s L stands on K, K on
-# J, and J settles by running a body in a fourth file; E beside them reads nothing.
-# A build that finds every verdict kept runs none of them — and each file's record
-# must list what its runs read exactly as the cold check listed it, three consts deep
-# and for the one that read nothing. Then the body moves: every file on the chain is
-# read in the FIRST attempt, none thrown away, and the values follow.
-mkdir -p $R/kv/src/f $R/kv/src/g $R/kv/src/x $R/kv/src/y $R/kv/src/e
-printf '[package]\nname = "rt-kv"\nversion = "0.1.0"\n' > $R/kv/avra.toml
-printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/kv/src/y/calc.av
-printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/kv/src/x/mid.av
-printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n' > $R/kv/src/f/held.av
-printf 'use f.{K}\nexport const L: int = K + 1\nexport fn topped() -> int { L }\n' > $R/kv/src/g/top.av
-printf 'export const E: int = 5\nexport fn alone() -> int { E }\n' > $R/kv/src/e/alone.av
-printf 'use f.{shown}\nuse g.{topped}\nuse e.{alone}\nprintln("${shown()} ${topped()} ${alone()}")\n' > $R/kv/src/main.av
-kv_runs() { # kv_runs <file>: the files the record says its compile-time runs read, by name
-    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | awk -F'\t' -v f="cache-attacks/kv/src/$1" 'index($2, f) && substr($2, length($2) - length(f) + 1) == f { m = split($4, b, "|"); for (i = 1; i <= m; i++) { k = split(b[i], c, "/"); if (c[k] != "") printf "%s ", c[k] } }'
+S "cold ke" ke; ke_says "cold" "one n=3"
+printf '// moved\n' >> $R/ke/src/main.av
+S "ke: an edit elsewhere, held.av held" ke; ke_says "an edit elsewhere" "one n=3"
+printf 'two' > $R/ke/src/f/data.txt
+HR "ke: the embedded text moved -> its file is read, not held" check ke 0 "f/held.av" read
+S "ke: and the binary follows the embedded text" ke; ke_says "the embedded text moved under a held file" "two n=3"
+printf 'three' > $R/ke/src/f/data.txt
+S "ke: moved again, nothing else touched" ke; ke_says "the embedded text moved again" "three n=5"
+S "ke: no-op after it" ke; ke_says "a no-op build" "three n=5"
+printf 'fourth' > $R/ke/src/f/data.txt
+HR "ke: moved a third time -> a check reads its file with no build between" check ke 0 "f/held.av" read
+S "ke: and the const derived from it follows" ke; ke_says "a derived const after a check" "fourth n=6"
+# A TEXT A RUN READ THAT THE HOST WILL NO LONGER GIVE IS A DIFFERENT ANSWER, NEVER THE END OF
+# THE RUN. The file's record names the embedded text, so the next key reads it again:
+# turned to octets that are no text, to a directory, or gone, a check and a build each
+# refuse in the embed law's own words, exit 1 — no host's refusal, no trap, and no build
+# that succeeds on the text that stood before.
+ke_refuses() { # ke_refuses <label> <the law's words>
+    for ke_verb in check build; do
+        steps=$((steps+1)); ke_out=$(./avra $ke_verb $R/ke 2>&1 | unwatched)
+        case "$ke_out" in *"error[type.embed_file]"*"$2"*) [ -n "${VERBOSE:-}" ] && echo "ok    ke: $1 -> $ke_verb refuses" ;; *) fails=$((fails+1)); echo "FAIL  ke: $1: $ke_verb did not refuse in the embed law's words ('$2'): $(printf '%s' "$ke_out" | grep -vE '^watch:|^time:' | head -2 | tr '\n' ' ' | cut -c1-220)" ;; esac
+    done
 }
-HR "cold kv" check kv 0
-kv_held=$(kv_runs f/held.av); kv_top=$(kv_runs g/top.av); kv_alone=$(kv_runs e/alone.av)
-steps=$((steps+1)); case "$kv_held|$kv_top|$kv_alone" in *mid.av*"|"*held.av*"|") ;; *) fails=$((fails+1)); echo "FAIL  kv: a cold check records held.av's runs as '$kv_held', top.av's as '$kv_top', alone.av's as '$kv_alone' — the chain has no run to carry, or the empty one is not empty" ;; esac
-S "kv: built with every verdict kept" kv
-steps=$((steps+1)); [ "$(kv_runs f/held.av)|$(kv_runs g/top.av)|$(kv_runs e/alone.av)" = "$kv_held|$kv_top|$kv_alone" ] || { fails=$((fails+1)); echo "FAIL  kv: standing on kept verdicts, the records list '$(kv_runs f/held.av)' / '$(kv_runs g/top.av)' / '$(kv_runs e/alone.av)' where the cold check listed '$kv_held' / '$kv_top' / '$kv_alone'"; }
-printf '// moved\n' >> $R/kv/src/main.av
-S "kv: an edit elsewhere, the chain held" kv
-ed $R/kv/src/y/calc.av "n * 2" "n * 3"
-steps=$((steps+1)); kv_out=$(./avra check --time $R/kv 2>&1)
-case "$kv_out" in *"discarded 0, refused 0"*) ;; *) fails=$((fails+1)); echo "FAIL  kv: the body moved and an attempt was thrown away before the chain was read: $(printf '%s' "$kv_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
-case "$kv_out" in *"f/held.av"*"g/top.av"*|*"g/top.av"*"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    kv: the body moved -> held.av and top.av read at once" ;; *) fails=$((fails+1)); echo "FAIL  kv: the body moved and the chain was not read: $(printf '%s' "$kv_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
-S "kv: and the binary follows" kv
-steps=$((steps+1)); kv_out=$($R/kv/src/main 2>&1)
-[ "$kv_out" = "18 19 5" ] || { fails=$((fails+1)); echo "FAIL  kv: a const on the chain kept the value of the body J ran before: printed '$kv_out', wanted '18 19 5'"; }
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.was; printf '\377\376' > $R/ke/src/f/data.txt
+ke_refuses "the embedded text turned into octets that are no text" "is not UTF-8"
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.octets; mkdir $R/ke/src/f/data.txt
+ke_refuses "the embedded text turned into a directory" "could not read its file"
+mv $R/ke/src/f/data.txt $R/ke/src/f/data.dir
+ke_refuses "the embedded text is gone" "finds no"
+printf 'back' > $R/ke/src/f/data.txt
+S "ke: the text stands again" ke; ke_says "the embedded text back" "back n=4"
+
+# AN EMBED REACHED THROUGH A HELD FILE IS NO FILE MINTED MID-QUERY. `kw`'s const runs fns
+# that `util.av` declares, and the `embed` literals stand in their bodies. Only main.av
+# is edited, so `util.av` is held and its literals are never scanned: the embedded texts
+# are first met inside the const's own settlement. A warm build and a warm test must run,
+# and the binary print the embedded texts, never trap on a row written after it was read.
+# THEN THE KEY ALONE: an embedded text edited while every source is held moves the
+# program's key through the records' runs — one named `a|b.txt` too, whose name holds
+# the character a record once spent between runs.
+mkdir -p $R/kw/src/tests
+printf '[package]\nname = "rt-kw"\nversion = "0.1.0"\n' > $R/kw/avra.toml
+printf 'b' > $R/kw/src/b.txt
+printf 'p' > "$R/kw/src/a|b.txt"
+printf 'use @std.meta.{embed}\nexport fn g() -> string { embed("b.txt") }\nexport fn h() -> string { embed("a|b.txt") }\n' > $R/kw/src/util.av
+printf 'use util.{g, h}\nconst B: string = g()\nconst P: string = h()\nprintln("b=${B} p=${P}")\n' > $R/kw/src/main.av
+printf 'use util.{g}\nconst T: string = g()\nspec "kw" { then "reads the embed" { T == "b" } }\n' > $R/kw/src/tests/kw_test.av
+kw_tested() { # kw_tested <label>: the package's tests run and pass
+    steps=$((steps+1)); out=$(./avra test $R/kw 2>&1); st=$?
+    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kw: $1: test exit $st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -2 | tr '\n' ' ' | cut -c1-220)"; }
+}
+kw_says() { # kw_says <label> <wanted>: the built binary prints the embedded texts as they stand
+    steps=$((steps+1)); kw_out=$($R/kw/src/main 2>&1)
+    [ "$kw_out" = "$2" ] || { fails=$((fails+1)); echo "FAIL  kw: $1: the binary printed '$kw_out', wanted '$2'"; }
+}
+S "cold kw" kw; kw_says "cold" "b=b p=p"; kw_tested "cold"
+printf '// moved\n' >> $R/kw/src/main.av
+S "kw: main.av edited, util.av held" kw; kw_says "main.av edited" "b=b p=p"
+printf '// moved\n' >> $R/kw/src/tests/kw_test.av
+kw_tested "the test file edited, util.av held"
+S "kw: no-op, every source held" kw; kw_says "a no-op build" "b=b p=p"
+printf 'b2' > $R/kw/src/b.txt
+S "kw: b.txt edited, every source held" kw; kw_says "b.txt edited under held sources" "b=b2 p=p"
+printf 'p2' > "$R/kw/src/a|b.txt"
+S "kw: a|b.txt edited, every source held" kw; kw_says "a|b.txt edited under held sources" "b=b2 p=p2"
+
+# A COLLECT GATHERS WHAT ITS SCOPE HOLDS NOW, HELD OR NOT. `kg` depends on `@rt/gk`, whose
+# c/lib.av collects every `@kind` in its package, in a module of its own; its members stand in files nothing imports, so
+# only the collect reaches them, and the mark they wear is declared in a file of its own, so a
+# member's compile-time run never reads the collecting file. A member is added, removed, a member file added and deleted —
+# each edit touching no file the collect stands in, so lib.av is held — and A's ordinal follows
+# every time. The root package's own `in package` collect follows the same edits, and `@rt/kc`'s
+# `in closure` list stands with no package collect beside it. After every step a held reading
+# answers what a fresh one does (`--verify-held`), and the evaluator agrees with the binary.
+mkdir -p $R/gk/src/m $R/gk/src/c $R/kc/src/z $R/kg/src/m
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $R/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $R/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $R/gk/src/c/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+printf '[package]\nname = "@rt/kc"\nversion = "0.1.0"\n' > $R/kc/avra.toml
+printf 'use @std.meta.{Named}\nexport fn mark(_t: Named) {}\n' > $R/kc/src/mk.av
+printf 'use mk.{mark}\ntype Entry = { name: string }\ncollect near: List<Entry> = @mark in closure as Entry { name: it.name } by it.name\nexport fn c_at() -> int { near.length }\n' > $R/kc/src/kc.av
+printf 'use mk.{mark}\n@mark\nexport type Z = {}\n' > $R/kc/src/z/z.av
+printf '[package]\nname = "rt-kg"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n"@rt/kc" = { path = "../kc" }\n' > $R/kg/avra.toml
+printf 'use @std.meta.{Named}\nexport fn rank(_t: Named, _r: int) {}\n' > $R/kg/src/rm.av
+printf 'use rm.{rank}\nexport collect enum Rk = @rank in package by it.mark.args[0]\nexport fn r_at() -> int { Rk.P.ordinal }\n' > $R/kg/src/rk.av
+printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
+printf 'use @rt.gk.c.{a_at}\nuse @rt.kc.kc.{c_at}\nuse rk.{r_at}\nprintln("a=${a_at()} r=${r_at()} c=${c_at()}")\n' > $R/kg/src/main.av
+kg_step() { # kg_step <label> <wanted a=… r=…>: built, the binary agrees with the evaluator and prints it, a held reading agrees with a fresh one
+    S "kg: $1" kg
+    steps=$((steps+1)); kg_out=$($R/kg/src/main 2>&1)
+    case "$kg_out" in "$2 c="*) ;; *) fails=$((fails+1)); echo "FAIL  kg: $1: the binary printed '$kg_out', wanted '$2 c=…'" ;; esac
+    steps=$((steps+1)); kg_v=$(./avra check --verify-held $R/kg 2>&1); kg_st=$?
+    [ $kg_st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kg: $1: --verify-held exit $kg_st: $(printf '%s' "$kg_v" | grep -aE 'held=|verify-held:|^avra:' | head -3 | tr '\n' ' ' | cut -c1-260)"; }
+}
+kg_step "cold" "a=0 r=0"
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\n' > $R/gk/src/m/m.av
+kg_step "a member added in the dependency, lib.av held" "a=1 r=0"
+printf 'use k.{kind}\n// B removed\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+kg_step "the member removed" "a=0 r=0"
+# a member file in a module of its own: no key of lib.av reaches it, so what it gathers is
+# the first reason lib.av is read
+mkdir -p $R/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $R/gk/src/n/n.av
+kg_step "a member file added in a module of its own" "a=1 r=0"
+rm -rf $R/gk/src/n
+printf 'use k.{kind}\n// n removed\n@kind(5)\nexport type A = {}\n' > $R/gk/src/m/m.av
+kg_step "the member file deleted, another edited beside it" "a=0 r=0"
+printf 'use rm.{rank}\n@rank(5)\nexport type P = {}\n@rank(1)\nexport type Q = {}\n' > $R/kg/src/m/m.av
+kg_step "a member added to the root's own collect, rk.av held" "a=0 r=1"
+printf 'use rm.{rank}\n// Q removed\n@rank(5)\nexport type P = {}\n' > $R/kg/src/m/m.av
+kg_step "the root's member removed" "a=0 r=0"
+printf 'use mk.{mark}\n@mark\nexport type Z = {}\n@mark\nexport type Y = {}\n' > $R/kc/src/z/z.av
+kg_step "an exported member added where only a closure list could gather it" "a=0 r=0"
+
+# A READ STATES ITS CAUSE, NEVER ITS CONSEQUENCE. A collector in its package's ROOT module,
+# whose key covers every module under it: a member module added moves that key, so the walk
+# sees only a key with nothing kept under it — the read must still name what moved it, the set
+# its collect gathers. In a store of its own.
+gc=$(mktemp -d); mkdir -p $gc/gk/src/m $gc/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gc/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gc/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gc/gk/src/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n' > $gc/gk/src/m/m.av
+printf '[package]\nname = "rt-gc"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gc/app/avra.toml
+printf 'use @rt.gk.lib.{a_at}\nprintln("a=${a_at()}")\n' > $gc/app/src/main.av
+steps=$((steps+1)); ./avra build $gc/app > /dev/null 2>&1
+mkdir -p $gc/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gc/gk/src/n/n.av
+steps=$((steps+1)); gc_out=$(./avra build --time $gc/app 2>&1); gc_got=$($gc/app/src/main 2>&1)
+[ "$gc_got" = "a=1" ] || { fails=$((fails+1)); echo "FAIL  gc: a member module added: the binary printed '$gc_got', wanted 'a=1'"; }
+case "$gc_out" in *"gk/src/lib.av — what its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  gc: a member module added: lib.av's read names its key, not the set that moved it: $(printf '%s' "$gc_out" | sed -n '/^read:/,$p' | grep 'lib.av' | cut -c1-200)" ;; esac
+rm -rf $gc
+
+# AND A COLLECTOR IS HELD TO THE SET IT GATHERED, never to its package's bytes. In a store of
+# its own, so no other attack's history decides which reason a read is given first: a member's
+# BODY edit leaves the set and holds the collector; two members swapping their marks' arguments
+# move it; a member module added under a collector in a module of its own reaches no key of it,
+# so what it gathers is the first reason it is read.
+gw=$(mktemp -d); mkdir -p $gw/gk/src/m $gw/gk/src/c $gw/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gw/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn kind(_t: Named, _rank: int) {}\n' > $gw/gk/src/k.av
+printf 'use k.{kind}\nexport collect enum Kind = @kind in package by it.mark.args[0]\nexport fn a_at() -> int { Kind.A.ordinal }\n' > $gw/gk/src/c/lib.av
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 1 }\n' > $gw/gk/src/m/m.av
+printf '[package]\nname = "rt-gw"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gw/app/avra.toml
+printf 'use @rt.gk.c.{a_at}\nprintln("a=${a_at()}")\n' > $gw/app/src/main.av
+gw_step() { # gw_step <label> <wanted a=…> <collector read: yes|no>
+    steps=$((steps+1)); gw_out=$(./avra build --time $gw/app 2>&1)
+    gw_got=$($gw/app/src/main 2>&1)
+    [ "$gw_got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  gw: $1: the binary printed '$gw_got', wanted '$2'"; }
+    case "$gw_out" in *"gk/src/c/lib.av — what its collect gathers"*) gw_read=yes ;; *) gw_read=no ;; esac
+    [ "$gw_read" = "$3" ] || { fails=$((fails+1)); echo "FAIL  gw: $1: lib.av read for what it gathers: $gw_read, wanted $3: $(printf '%s' "$gw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)"; }
+}
+gw_step "cold" "a=1" no
+printf 'use k.{kind}\n@kind(5)\nexport type A = {}\n@kind(1)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
+gw_step "a member's file edited, its marks and shapes unmoved" "a=1" no
+printf 'use k.{kind}\n@kind(1)\nexport type A = {}\n@kind(5)\nexport type B = {}\nexport fn help() -> int { 2 }\n' > $gw/gk/src/m/m.av
+steps=$((steps+1)); ./avra build $gw/app > /dev/null 2>&1; gw_got=$($gw/app/src/main 2>&1)
+[ "$gw_got" = "a=0" ] || { fails=$((fails+1)); echo "FAIL  gw: two members swap their marks' arguments: the binary printed '$gw_got', wanted 'a=0'"; }
+mkdir -p $gw/gk/src/n; printf 'use k.{kind}\n@kind(0)\nexport type C = {}\n' > $gw/gk/src/n/n.av
+gw_step "a member module added under the collector" "a=1" yes
+rm -rf $gw
+
+# A LIST COLLECT'S TIE IS ORDERED BY QUALIFIED NAME, never by the order files were read in: two
+# members whose `by` keys tie, in p/ and q/, and p/ moved to z/ — the move moves the order
+# (z.X now after q.Y), and a warm build answers as a fresh one.
+gt=$(mktemp -d); mkdir -p $gt/gk/src/c $gt/gk/src/p $gt/gk/src/q $gt/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gt/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gt/gk/src/k.av
+printf 'use k.{seq}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name } by it.mark.args[0]\nexport fn x_at() -> int { [e.name for e in xs].index_of("X") }\n' > $gt/gk/src/c/lib.av
+printf 'use k.{seq}\n@seq(0)\nexport type X = {}\n' > $gt/gk/src/p/p.av
+printf 'use k.{seq}\n@seq(0)\nexport type Y = {}\n' > $gt/gk/src/q/q.av
+printf '[package]\nname = "rt-gt"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gt/app/avra.toml
+printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $gt/app/src/main.av
+steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_cold=$($gt/app/src/main 2>&1)
+mkdir -p $gt/gk/src/z; mv $gt/gk/src/p/p.av $gt/gk/src/z/z.av; rmdir $gt/gk/src/p
+steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_warm=$($gt/app/src/main 2>&1)
+rm -rf $gt/app/.avra-cache
+steps=$((steps+1)); ./avra build $gt/app > /dev/null 2>&1; gt_fresh=$($gt/app/src/main 2>&1)
+[ "$gt_cold" = "x=0" ] && [ "$gt_warm" = "x=1" ] && [ "$gt_fresh" = "x=1" ] || { fails=$((fails+1)); echo "FAIL  gt: a list collect's tie: cold '$gt_cold' (wanted x=0), warm '$gt_warm' and fresh '$gt_fresh' after the move (both wanted x=1)"; }
+rm -rf $gt
+
+# AND ORDER IS PART OF THE SET: a list's members whose `by` keys tie are gathered in their own
+# order, so two member files whose order flips change what the collector gathered, with no
+# member's print moved — and the collector is read for it.
+go=$(mktemp -d); mkdir -p $go/gk/src/c $go/gk/src/p $go/gk/src/q $go/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $go/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $go/gk/src/k.av
+printf 'use k.{seq}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name } by it.mark.args[0]\nexport fn x_at() -> int { [e.name for e in xs].index_of("X") }\n' > $go/gk/src/c/lib.av
+printf 'use k.{seq}\n@seq(0)\nexport type X = {}\n' > $go/gk/src/p/p.av
+printf 'use k.{seq}\n@seq(0)\nexport type Y = {}\n' > $go/gk/src/q/q.av
+printf '[package]\nname = "rt-go"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $go/app/avra.toml
+printf 'use @rt.gk.c.{x_at}\nprintln("x=${x_at()}")\n' > $go/app/src/main.av
+steps=$((steps+1)); ./avra build $go/app > /dev/null 2>&1
+mkdir -p $go/gk/src/z; mv $go/gk/src/p/p.av $go/gk/src/z/z.av; rmdir $go/gk/src/p
+steps=$((steps+1)); go_out=$(./avra build --time $go/app 2>&1)
+case "$go_out" in *"gk/src/c/lib.av — what its collect gathers"*) ;; *) fails=$((fails+1)); echo "FAIL  go: member files whose order flipped: lib.av was not read for what it gathers: $(printf '%s' "$go_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-240)" ;; esac
+printf '// again\n' >> $go/app/src/main.av
+steps=$((steps+1)); go_again=$(./avra build --time $go/app 2>&1)
+case "$go_again" in *"gk/src/c/lib.av — what its collect gathers"*) fails=$((fails+1)); echo "FAIL  go: the next build read lib.av for what it gathers again — a held collector must stand on the set it was read for" ;; esac
+rm -rf $go
+
+# AND A COLLECTOR IS HELD TO WHAT IT BAKES OF EACH MEMBER, not only to the members' names and
+# shapes: a list projecting a member's module, its doc and the member itself as a fn value. A
+# member moved to another module and a member's `///` edited each move what the held
+# collector's object holds, so each must be read again — in a store of its own.
+gm=$(mktemp -d); mkdir -p $gm/gk/src/c $gm/gk/src/p $gm/app/src
+printf '[package]\nname = "@rt/gk"\nversion = "0.1.0"\n' > $gm/gk/avra.toml
+printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $gm/gk/src/k.av
+printf 'use k.{seq}\ntype Entry = { name: string, module: string, doc: string, call: fn() -> int }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name, module: it.module, doc: it.doc, call: it } by it.mark.args[0]\nexport fn shown() -> string { "${xs[0].module} ${xs[0].doc} ${xs[0].call()}" }\n' > $gm/gk/src/c/lib.av
+printf 'use k.{seq}\n/// one\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/src/p/p.av
+printf '[package]\nname = "rt-gm"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/gk" = { path = "../gk" }\n' > $gm/app/avra.toml
+printf 'use @rt.gk.c.{shown}\nprintln(shown())\n' > $gm/app/src/main.av
+gm_step() { # gm_step <label> <wanted>
+    steps=$((steps+1)); gm_out=$(./avra build $gm/app 2>&1); gm_got=$($gm/app/src/main 2>&1)
+    [ "$gm_got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  gm: $1: the binary printed '$gm_got', wanted '$2': $(printf '%s' "$gm_out" | grep -aE '^error|^avra:' | head -2 | tr '\n' ' ' | cut -c1-200)"; }
+}
+gm_step "cold" "p one 1"
+mkdir -p $gm/gk/src/z; mv $gm/gk/src/p/p.av $gm/gk/src/z/z.av; rmdir $gm/gk/src/p
+gm_step "the member moved to another module" "z one 1"
+printf 'use k.{seq}\n/// uno\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $gm/gk/src/z/z.av
+gm_step "the member's doc edited" "z uno 1"
+rm -rf $gm
 
 # A BUILD'S BYTES ARE ITS SOURCE'S ALONE. A check leaves records and no objects, so
 # the build after it reads every file again — met through those records, in another

@@ -24,7 +24,10 @@ fn referenced_workspace() -> Workspace {
 
 /// Whether `frame`'s cell lists a dep on `Methods` of `target`.
 fn reads_methods(ws: Workspace, frame: Key, target: DeclId) -> bool {
-    ws.db.deps_of(frame).any((k: Key) -> k.family == methods_ordinal() && k.arg == target.index)
+    ws
+        .db
+        .edges_by_reader(frame)
+        .any((k: Key) -> k.family == methods_ordinal() && k.arg == target.index)
 }
 
 spec "compiler/methods — a method table is read at its own cell" {
@@ -50,7 +53,7 @@ spec "compiler/methods — a method table is read at its own cell" {
         let box = decl_in_file(ws, "/w/src/b.av", "Box")
         ws
             .db
-            .deps_of(Key { family: methods_ordinal(), arg: box.index })
+            .edges_by_reader(Key { family: methods_ordinal(), arg: box.index })
             .any((k: Key) -> k.family == sig_ordinal())
     }
 }

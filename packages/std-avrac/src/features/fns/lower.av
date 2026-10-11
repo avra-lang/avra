@@ -1,25 +1,32 @@
 //! The call's lowering rule: argument registers, then one Call —
 //! the memory pass owns the retains the ABI demands.
-use core.{ExprId, Reg, Ins, StmtId, DeclId, SeatMark, TypeId, Arrow, mut_mark, state_mark, no_marks}
+use core.{
+    ExprId,
+    Reg,
+    Ins,
+    StmtId,
+    DeclId,
+    SeatMark,
+    TypeId,
+    Arrow,
+    mut_mark,
+    state_mark,
+    no_marks,
+    rt_waits,
+}
 use features.{LowerCx, bound_decl_of}
 
-fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
-    match cx.view.store.expr(e) {
-        .Named(_, value) -> cx.reg_of(value),
-        .Call(callee, _, args) -> {
-            let host: string? = cx.extern_callee(e)
-            if host != null { return extern_call_reg(cx, e, host!, host_regs(cx, e, args)) }
-            let regs = embedded_regs(cx, e, args) ?? call_arg_regs(cx, e, args)
-            let made: Reg? = named_reg(cx, e, regs)
-            if made != null { return made! }
-            let through: Reg? = cx.indirect_callee(e)
-            if through != null { return valued_call_reg(cx, e, through!, regs) }
-            // THE MINT LAW: the defaults' registers first, the answer last
-            let seated = seated_left(cx, e, args, regs)
-            cx.call_decl_at(e, cx.callee_of(e, callee.of), seated)
-        },
-        rest -> cx.foreign_node(e),
-    }
+/// `code_hash(f)` over a declared fn: the hash of `f`'s code, which the
+/// program answers once every body is lowered. Null for every other
+/// call — and for an argument that names no declared fn, which reaches
+/// `code_hash`'s own body and traps there.
+fn code_hash_reg(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> Reg? {
+    let d? = bound_decl_of(cx.names, e) else { return null }
+    if !cx.view.decls.is_meta_fn(d, "code_hash") || args.length != 1 { return null }
+    let target? = bound_decl_of(cx.names, args[0]) else { return null }
+    // the value wants the target's body, as any fn value does
+    let _ = cx.reg_of(args[0])
+    cx.code_hash_read(e, cx.symbol_at(target, args[0]))
 }
 
 /// `embed("…")`'s one seat: the path of the file the literal names from
@@ -141,9 +148,11 @@ export fn lower_return(mut cx: LowerCx, s: StmtId) -> Reg? {
 fn extern_call_reg(mut cx: LowerCx, e: ExprId, symbol: string, regs: List<Reg>) -> Reg {
     if cx.shape_at(e) is .Void {
         cx.emit(Ins.CallRtVoid(symbol, regs))
+        cx.unwound_after(rt_waits(symbol))
         return cx.zero(e)
     }
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, symbol, regs))
+    cx.unwound_after(rt_waits(symbol))
     dst
 }

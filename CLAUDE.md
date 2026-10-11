@@ -459,8 +459,9 @@ registry is the idiom engine's spec, written by dogfooding.
   second-generation product traps, run the first generation over the
   same source before reading the trap as the tree's.
 - THE `avra` SHIM MOVES TO THE TREE'S ROOT, so "." inside a command is
-  the TREE and `PWD` follows the move: `explain @name` and `explain
-  process` rooted at "." analysed nothing from the day they landed,
+  the TREE and `PWD` follows the move: `docs <name>` and `process`
+  (then spelled `explain @name` and `explain process`) rooted at "."
+  analysed nothing from the day they landed,
   and read as "no fn declared in this package" for a fn declared
   right there. The caller's directory is `AVRA_CWD`, exported by the
   shim before it moves; a command that reads the package it stands in
@@ -891,7 +892,7 @@ registry is the idiom engine's spec, written by dogfooding.
   and nothing a program can be compiled without; a name that fails
   that test belongs to a package above.
   It is a PACKAGE the toolchain carries, not a scope the resolver
-  injects (P7: a reader can open it, `explain` can point at it, and
+  injects (P7: a reader can open it, `docs` can point at it, and
   the layering `prelude <- text <- io <- process <- …` has a node at
   its bottom). It binds WEAKLY (`bind_weakly`, features/
   namespace.av): a file's own declaration, an explicit import, a
@@ -1186,16 +1187,8 @@ registry is the idiom engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
-- A NODE VARIANT IS APPENDED, NEVER INSERTED. A `rule`'s pattern is
-  baked into the compiler as constants by the compiler that BUILDS it,
-  and its `shallow` fold names each node kind by its POSITION in
-  `Expr`/`Stmt`/`Pat` (`@derive(Matchable)`). Insert a variant mid-enum
-  and every later one moves: the product's baked shapes carry the old
-  positions while it computes the new ones, `match_node` trusts two
-  equal shallows to share an arity, and the product traps checking its
-  own tree ("index 0 is out of bounds (length 0)" in `match_kids`,
-  under `rule_candidates`) — the generation law with a derive as the
-  carrier. `Collect` hit it and moved to the end.
+- A FAMILY IS APPENDED, NEVER INSERTED. A `@family(rank)` is persisted, so inserting a
+  family moves every later one. A node kind is keyed by its NAME (`@…_node`), order is free.
 - Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
   and a block word's `{` hand their body over whole, so the lexer emits
   the `}` that ends it too, and the rule consumes it (`"grammar" "{"
@@ -2066,22 +2059,36 @@ Runtime facts, ours to ratify:
   queue: squash merges, linear history, no direct pushes. A local main
   only follows `origin/main` (the reference-transaction hook refuses any
   other update; a deliberate repair sets `AVRA_MAIN_OVERRIDE="<reason>"`).
-- A PR TESTS ITSELF FIRST, AND THE QUEUE STILL TESTS THE TRAIN. A PR's
-  own `test` check runs the SAME keepers, fmt, idioms and affected
-  suites as the train, on the PR's own tree (`.github/workflows/
-  checks.yml`). A PR has no cached compiler, so it BOOTSTRAPS from the
-  committed seed — a derived cache never does (the generation law); a PR
-  that ADDS SYNTAX cannot be bootstrapped by its base's seed, so it
-  proves itself with the branch-local compiler and lands by the
-  refresh-after rule. So a green PR check is the pre-enqueue proof, and
-  a slip dies before the queue. The queue then builds main plus every PR
-  ahead of it plus this one and tests that COMBINATION in ONE job on
-  GitHub's runners (Ubuntu 26.04, LLVM 22, the image in `.github/ci/`) —
+- A PR RUNS THE MINIMUM, AND THE TRAIN RUNS THE GATE. A PR's own `test`
+  check is fmt on its changed `.av`, and idioms and suites over the
+  packages it TOUCHES, on the PR's own tree (`.github/workflows/
+  checks.yml`); a PR that touches no `.av`, no package and no compiler
+  source builds nothing. Before it builds anything it runs the keepers
+  that need NO COMPILER (`make keepers-static`, half a minute), so a
+  refusal one of them speaks stops on the PR. It does NOT run the other
+  keepers, the cache attacks, the seed check or its dependents' suites:
+  each runs on the train, and a failure there drops the PR one train
+  later. THE COMPILER IS CACHED BY
+  ITS OWN SOURCE (`tools/compiler_paths.sh`): a tree whose compiler is
+  main's takes main's binary; otherwise the newest cached binary builds
+  the tree twice (the generation law), and one too old to read it — new
+  syntax, a new refusal about its own source — fails that build and the
+  tree BOOTSTRAPS from the committed seed. The queue then builds main
+  plus every PR ahead of it plus this one and tests that COMBINATION on
+  GitHub's runners (Ubuntu 26.04, LLVM 22, the image in `.github/ci/`):
+  the keepers, the attacks, the seed check and every AFFECTED package —
   the only place a CROSS-PR interaction (two individually-green PRs
-  colliding on a latent bug) can be seen. Ten trains test at once; when
-  one passes, it and every PR ahead of it land together (HEADGREEN). A
-  failing train drops its PR with the log on the PR. Main's own push run
-  caches the compiler every train starts from.
+  colliding on a latent bug) can be seen, and the only place the seed is
+  proved to build the tree. Ten trains test at once; when one passes, it
+  and every PR ahead of it land together (HEADGREEN). A failing train
+  drops its PR with the log on the PR. Main's own push run caches the
+  compiler every run starts from.
+- A LANE ITERATES WITH `make try`, NEVER `make avra`: it builds the
+  compiler with the STANDING `build/avra` into `build/avra-try` and never
+  replaces the builder, so its store stays warm (a leaf edit, ~4 s held
+  464/466) and `./avra-try <cmd>` probes the change. `make avra` is for
+  a change the compiler must READ to build itself — codegen, the front
+  end, a refusal about its own source — and before landing.
 - A PRE-COMMIT HOOK refuses staged `.av` that is not canonical; the fix
   it prints is `build/avra fmt --write <files>`. Never `--no-verify`.
 - HEAVY RUNS GO ON SPRITES, ONE SPRITE A LANE: `sh tools/work run <cmd>`
@@ -2098,8 +2105,10 @@ Runtime facts, ours to ratify:
   SPRITE, NOT TO THE CONNECTION: a supervisor there keeps its output and
   status and holds the Sprite awake while it lives, `run` only follows
   it, and a dropped connection is followed again from the byte it stood
-  at — so an interrupt stops a run, a drop never does, a run is as long
-  as its `--for` says, and the Sprite ends it at its bound whoever is
+  at — so Ctrl-C or `work stop` ends a run; a drop, a hangup or the
+  client being killed never does (it says so, and the next `run` answers
+  76 until `work attach` has followed it out); a run is as long as its
+  `--for` says, and the Sprite ends it at its bound whoever is
   watching (`work attach` follows again, `work stop` ends it, `work
   done` ends it with the lane). `sh tools/work sprites` shows all of
   them in seconds.
@@ -2163,7 +2172,8 @@ Runtime facts, ours to ratify:
 - GITHUB'S RUNNERS ARE THE ONLY GATE. `tools/gate_changed.sh` is the
   train's checks in one definition — the static keepers, `fmt --check`
   on the changed `.av`, `check --baseline` on every affected package —
-  and checks.yml runs it on the PR and on the train. `tools/work land`
+  and checks.yml runs it on the train, and on a PR without the keepers
+  and over the packages it touches. `tools/work land`
   checks formatting alone, with the compiler the worktree already
   holds, and asks no other machine; a lane that wants the whole gate
   before pushing runs that script through `work run`.

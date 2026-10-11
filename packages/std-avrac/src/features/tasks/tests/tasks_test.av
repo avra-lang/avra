@@ -1,9 +1,13 @@
 // The vertical: `spawn` runs beside the spawner, `.await` answers what
 // the body did, `.done` asks without parking, and a task is joined where
 // the last thing holding it ends.
-use @std.avrac.testing.{shown, refused_at_run}
+use @std.avrac.testing.{shown, refused_at_run, ir_of, refusals}
+use compiler.backend.{render_ir}
 
 extern fn avra_sched_timers() -> int
+extern fn avra_sched_pick_links() -> int
+extern fn avra_now_ns() -> int
+extern fn avra_clock_virtual(on: int)
 
 spec "features/tasks" {
     given "spawn and await" {
@@ -12,6 +16,26 @@ spec "features/tasks" {
         }
         then "`.done` asks without parking — the spawner runs on first" {
             shown("let t = spawn 1\nlet d = t.done\nlet v = t.await\n\"\${d} \${t.done} \${v}\"") == "false true 1"
+        }
+        then "`t.cancel()` lowers to the row and answers nothing" {
+            render_ir(ir_of("let t = spawn 1\nt.cancel()")).contains("call avra_task_cancel")
+        }
+        then "a caught await TYPES clean — the arm hears the answer and the cancel" {
+            refusals("fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv") == 0
+        }
+        then "a `within` lowers as a one-turn loop whose end is its landing" {
+            let text = render_ir(
+                ir_of(
+                    "type Lim = { ms: int }\n" +
+                        "fn spin() -> int {\n    mut i = 0\n    while i < 3 { i = i + 1 }\n    i\n}\n" +
+                        "let x = within Lim { ms: 5 } { spin() }\nx",
+                ),
+            )
+            text.contains("call avra_fiber_within(") &&
+                text.contains("call avra_fiber_within_end(") &&
+                text.contains("flag unwinding") &&
+                text.contains("loop {") &&
+                landing_arm_jumps(text)
         }
         then "a list of tasks awaits in order" {
             shown(
@@ -88,5 +112,50 @@ spec "features/tasks" {
                 avra_sched_timers() == 0 &&
                 shown("let t = spawn 3\nt.await") == "3"
         }
+        then "a seed a run took and never settled ends with the run" {
+            shown(
+                    "extern fn avra_sched_seed(schedule: int)\navra_sched_seed(3)\nlet a = spawn 1\nlet b = spawn 2\n\"\${a.await + b.await}\"",
+                ) == "3" &&
+                picks_while(
+                    () -> shown("let a = spawn 1\nlet b = spawn 2\n\"\${a.await + b.await}\""),
+                ) == 0
+        }
+        then "a clock a run turned virtual, and the hour it jumped, end with the run" {
+            // on the wall's clock, so a clock the run left frozen shows
+            avra_clock_virtual(0)
+            let before = avra_now_ns()
+            shown(
+                    "extern fn avra_clock_virtual(on: int)\nextern fn avra_fiber_sleep(ms: int)\navra_clock_virtual(1)\navra_fiber_sleep(3600000)\n\"slept\"",
+                ) == "slept" &&
+                avra_now_ns() - before < 60000000000 &&
+                flows()
+        }
     }
+}
+
+/// Whether the first flag-read region in `text` jumps to its landing —
+/// the arm `unwinds()` fills when the inside of a `within` meets an
+/// unwind.
+fn landing_arm_jumps(text: string) -> bool {
+    let parts = text.split("flag unwinding")
+    if parts.length < 2 { return false }
+    let close = parts[1].index_of("} else")
+    close >= 0 && parts[1].substring(0, close).contains("break 0")
+}
+
+/// Whether the clock moves: it reads a later instant within a million
+/// reads.
+fn flows() -> bool {
+    let t0 = avra_now_ns()
+    mut i = 0
+    while i < 1000000 && avra_now_ns() == t0 { i = i + 1 }
+    i < 1000000
+}
+
+/// How many links of the queue the seeded pick walked while `run` ran:
+/// none, for an unseeded process.
+fn picks_while(run: fn() -> string) -> int {
+    let before = avra_sched_pick_links()
+    let _ = run()
+    avra_sched_pick_links() - before
 }

@@ -280,11 +280,8 @@ void avra_llvm_set_weak_odr(LLVMValueRef fn) {
     LLVMSetLinkage(fn, LLVMWeakODRLinkage);
 }
 
-// A body the compiler proved runs at most once (R12, cold_bodies):
-// `cold` tells the optimizer it is rarely reached, `minsize` tells it
-// to favor fewer bytes over fewer cycles inside it — together, the
-// straight-line table-building this marks stops paying for the hot
-// leaves' inlined bodies it will only ever execute once.
+// `cold` tells the optimizer a fn is rarely reached, `minsize` to favor
+// fewer bytes over fewer cycles inside it.
 static LLVMAttributeRef enum_attr(LLVMContextRef ctx, const char* name) {
     unsigned kind = LLVMGetEnumAttributeKindForName(name, strlen(name));
     return LLVMCreateEnumAttribute(ctx, kind, 0);
@@ -294,6 +291,70 @@ void avra_llvm_set_cold(LLVMValueRef fn) {
     LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "cold"));
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
+}
+
+// A global the linker keeps though no code names it: `llvm.used`, grown
+// by one.
+static void kept_whole(LLVMModuleRef m, LLVMValueRef g) {
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(LLVMGetModuleContext(m), 0);
+    LLVMValueRef old = LLVMGetNamedGlobal(m, "llvm.used");
+    unsigned n = old ? (unsigned)LLVMGetNumOperands(LLVMGetInitializer(old)) : 0;
+    LLVMValueRef* items = malloc((n + 1) * sizeof *items);
+    for (unsigned i = 0; i < n; i++) items[i] = LLVMGetOperand(LLVMGetInitializer(old), i);
+    items[n] = g;
+    if (old) LLVMDeleteGlobal(old);
+    LLVMValueRef all = LLVMConstArray2(ptr, items, n + 1);
+    free(items);
+    LLVMValueRef used = LLVMAddGlobal(m, LLVMTypeOf(all), "llvm.used");
+    LLVMSetInitializer(used, all);
+    LLVMSetLinkage(used, LLVMAppendingLinkage);
+    LLVMSetSection(used, "llvm.metadata");
+}
+
+// The name every site row is added under.
+#define SITE_ROW "avra.site"
+
+// A TASK BODY'S SITE, filed as a row of the site table (avra_box.h).
+// No instruction reads it, so a program pays its bytes and nothing else.
+// The row is named SITE_ROW and carries no section: a module's IR is the
+// same on every target, and the section is spelled where an object is
+// written (`sites_placed`).
+void avra_llvm_set_site(LLVMValueRef fn, const char* site) {
+    LLVMModuleRef m = LLVMGetGlobalParent(fn);
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef text = LLVMConstStringInContext2(ctx, site, strlen(site), 0);
+    LLVMValueRef held = LLVMAddGlobal(m, LLVMTypeOf(text), "");
+    LLVMSetInitializer(held, text);
+    LLVMSetGlobalConstant(held, 1);
+    LLVMSetLinkage(held, LLVMPrivateLinkage);
+    LLVMSetUnnamedAddress(held, LLVMGlobalUnnamedAddr);
+    LLVMValueRef fields[2] = { fn, held };
+    LLVMValueRef cells = LLVMConstStructInContext(ctx, fields, 2, 0);
+    // Named, as every `llvm.used` member must be; the module uniques it.
+    LLVMValueRef row = LLVMAddGlobal(m, LLVMTypeOf(cells), SITE_ROW);
+    LLVMSetInitializer(row, cells);
+    LLVMSetLinkage(row, LLVMPrivateLinkage);
+    LLVMSetAlignment(row, 8);
+    kept_whole(m, row);
+}
+
+static int target_is_macho(const char* triple) {
+    return triple != NULL && (strstr(triple, "apple") || strstr(triple, "darwin"));
+}
+
+// A site row's section is spelled for the object format its module is
+// emitted as, known only once the target is final: Mach-O names a
+// segment beside the section. A row is a global the module uniqued from
+// SITE_ROW (`avra.site`, `avra.site.1`, …) — no program symbol is spelled
+// so, every one of those starting `av_`.
+static void sites_placed(LLVMModuleRef m, const char* triple) {
+    const char* section = target_is_macho(triple) ? AVRA_SITES_MACHO_SEGMENT "," AVRA_SITES_MACHO_SECTION : AVRA_SITES_ELF_SECTION;
+    size_t n = strlen(SITE_ROW);
+    for (LLVMValueRef g = LLVMGetFirstGlobal(m); g; g = LLVMGetNextGlobal(g)) {
+        size_t len = 0;
+        const char* name = LLVMGetValueName2(g, &len);
+        if (len >= n && strncmp(name, SITE_ROW, n) == 0 && (len == n || name[n] == '.')) LLVMSetSection(g, section);
+    }
 }
 
 // Whether this build counts the boxes runtime rows mint, by type:
@@ -539,6 +600,20 @@ LLVMValueRef avra_llvm_build_load(LLVMBuilderRef b, LLVMTypeRef ty, LLVMValueRef
     LLVMValueRef load = LLVMBuildLoad2(b, ty, ptr_val, name);
     // Force align 8 for i64 loads to avoid optimizer miscompiles.
     LLVMSetAlignment(load, 8);
+    return load;
+}
+
+// A RUNTIME FLAG IS SHARED across the scheduler's threads, so its load
+// is atomic: a plain load may be hoisted out of the loop whose back-edge
+// reads it, and the written byte would then never be seen again. The
+// ordering matches the runtime's own `__atomic_load_n(..., RELAXED)`.
+LLVMValueRef avra_llvm_build_load_atomic(LLVMBuilderRef b, LLVMTypeRef ty, LLVMValueRef ptr_val, const char* name) {
+    if (!ty) {
+        fprintf(stderr, "[CRASH] avra_llvm_build_load_atomic: ty is NULL (name=%s)\n", name);
+        abort();
+    }
+    LLVMValueRef load = LLVMBuildLoad2(b, ty, ptr_val, name);
+    LLVMSetOrdering(load, LLVMAtomicOrderingMonotonic);
     return load;
 }
 
@@ -809,6 +884,17 @@ LLVMValueRef avra_llvm_once_slot(LLVMModuleRef m, const char* name) {
     g = LLVMAddGlobal(m, ptr_ty, name);
     LLVMSetInitializer(g, LLVMConstPointerNull(ptr_ty));
     LLVMSetLinkage(g, LLVMPrivateLinkage);
+    return g;
+}
+
+// A BYTE THE RUNTIME KEEPS, named: declared here, defined by the
+// runtime, so a read is a load of the runtime's own global. Idempotent
+// by name.
+LLVMValueRef avra_llvm_runtime_byte(LLVMModuleRef m, const char* name) {
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (g) { return g; }
+    g = LLVMAddGlobal(m, LLVMInt8TypeInContext(LLVMGetModuleContext(m)), name);
+    LLVMSetLinkage(g, LLVMExternalLinkage);
     return g;
 }
 
@@ -1189,6 +1275,7 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
                            : level == 2 ? LLVMCodeGenLevelDefault : LLVMCodeGenLevelAggressive;
     LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", cg, LLVMRelocPIC, LLVMCodeModelDefault);
     LLVMSetTarget(m, triple);
+    sites_placed(m, triple);
     LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
     LLVMSetModuleDataLayout(m, layout);
     int failed = 0;

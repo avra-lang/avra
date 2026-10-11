@@ -8,16 +8,6 @@ use core.{ExprId, Reg, Ins, TypeId, Type, BinOp, Arm, PatId}
 use features.{LowerCx, EnumSig, pat_semantics_of}
 use features.enums.{all_irrefutable, binders}
 
-fn enums_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(e) {
-        .Match(subject, arms) -> matched_reg(cx, e, subject, arms),
-        .Is(subject, variant) -> asked_reg(cx, e, subject, variant.of),
-        .VariantLit(name, args) -> literal_reg(cx, e, name.of, args),
-        rest -> cx.foreign_node(e),
-    }
-}
-
 /// `v.ordinal` — the tag IS the declaration order.
 // LICENSED fns.dead_parameter: a property row's lowering names the node; the tag needs only the subject
 export fn lower_ordinal(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg {
@@ -92,7 +82,8 @@ fn whole_test(cx: LowerCx, a: Arm) -> string? {
     if a.guard != null || a.pats.length != 1 { return null }
     match cx.view.store.pat(a.pats[0]) {
         .Variant(name, args) if all_irrefutable(cx.view.store, cx.names, args) -> name.of,
-        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) -> null,
+        .Member(name, _) -> name.of,
+        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) -> null,
     }
 }
 
@@ -268,12 +259,17 @@ export fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
         // a name that compares to a const binds nothing
         .Bind(_) -> if cx.names.compared(cx.view.store, p) == null { [v] } else { [] },
         .Variant(name, args) -> payload_binds(cx, name.of, args, v, vty),
+        .Member(name, _) -> member_binds(cx, p, name.of, v, vty),
         .Format(_, _) -> {
             cx.defect("a format pattern reached the enum lowering's binds")
             []
         },
         .Quote(_) -> {
             cx.defect("a quote pattern reached the enum lowering's binds")
+            []
+        },
+        .Typed(_, _) -> {
+            cx.defect("a type pattern reached the enum lowering's binds")
             []
         },
         .Wild or .Rest or .Lit(_) -> [],
@@ -286,7 +282,7 @@ export fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
 /// a SHORTER variant read past its end.
 fn looks_inside(cx: LowerCx, p: PatId) -> bool {
     match cx.view.store.pat(p) {
-        .Bind(_) or .Variant(_, _) or .Format(_, _) or .Quote(_) -> true,
+        .Bind(_) or .Variant(_, _) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) -> true,
         .Wild or .Rest or .Lit(_) -> false,
     }
 }
@@ -302,6 +298,21 @@ fn payload_binds(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: 
         }
     }
     out
+}
+
+/// `.V as r` binds the member's record, packed from the variant's
+/// payloads in order.
+fn member_binds(mut cx: LowerCx, p: PatId, name: string, v: Reg, vty: TypeId) -> List<Reg> {
+    let declared? = cx.variants_of(vty) else { return [] }
+    let read? = cx.view.store.name_read(p) else {
+        cx.defect("a member pattern without its read reached the binds")
+        return []
+    }
+    let carried = declared.payloads_of(name)
+    [
+        cx
+            .packed_struct(cx.type_at(read), [cx.payload_at(v, k, carried) for k in 0..carried.length]),
+    ]
 }
 
 /// Whether the arm accepts the subject: any alternative does —
@@ -342,12 +353,17 @@ export fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
         .Bind(_) -> named_pat_reg(cx, p, v, vty),
         .Lit(lit) -> literal_pat_reg(cx, lit, v, vty),
         .Variant(name, args) -> variant_reg(cx, name.of, args, v, vty),
+        .Member(name, _) -> variant_reg(cx, name.of, [], v, vty),
         .Format(_, _) -> {
             cx.defect("a format pattern reached the enum lowering's test")
             cx.const_bool(false)
         },
         .Quote(_) -> {
             cx.defect("a quote pattern reached the enum lowering's test")
+            cx.const_bool(false)
+        },
+        .Typed(_, _) -> {
+            cx.defect("a type pattern reached the enum lowering's test")
             cx.const_bool(false)
         },
     }

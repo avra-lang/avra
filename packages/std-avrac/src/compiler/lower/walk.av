@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, Deferral, DirectCall, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -20,8 +20,7 @@ impl LowerCx {
             self.facts.wants_alias_copy(e) -> self.unique_box(e)
             self.facts.wants_thaw(e) -> self.thawed_box(e)
             self.facts.wants_plain_thaw(e) -> self.plain_thawed(e)
-            _ -> self.spelled_static(e) ?? semantics_of(self.dispatch, self.view.store.expr(e))
-                .lower(self, e)
+            _ -> self.spelled_static(e) ?? self.view.store.expr(e).lower(self, e)
         }
         let r = self.widened(e, self.narrowed(e, born))
         self.body.set_reg(e, r)
@@ -31,7 +30,7 @@ impl LowerCx {
     /// A writing method's receiver with no cell behind it: its value,
     /// thawed once here, before the call.
     mut fn plain_thawed(e: ExprId) -> Reg {
-        let born = semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e)
+        let born = self.view.store.expr(e).lower(self, e)
         self.box_thawed(self.shape_at(e), born)
     }
 
@@ -61,7 +60,7 @@ impl LowerCx {
         if sh is .List || sh is .Map { return r }
         if sh is .Dyn { return self.boxed_into(into, r) }
         if sh is .Union { return self.union_boxed(into, r) }
-        if self.view.decls.avrac_type(into, "Fix") { return self.fixed(into, r) }
+        if self.view.decls.rule_fix(into) { return self.fixed(into, r) }
         self.adopted(into, self.shape_at(e) is .Null, r)
     }
 
@@ -390,6 +389,28 @@ impl LowerCx {
             .push(Deferred { work: Deferral.Direct(call), depth: self.depth, on_error: on_error })
     }
 
+    /// A `within` scope's end to make when the frame closes: the scope
+    /// ends and its answer lands in `cell`.
+    mut fn at_exit_landing(scope: Reg, cell: Reg) {
+        self
+            .deferred
+            .push(Deferred { work: Deferral.Landing(scope, cell), depth: self.depth, on_error: false })
+    }
+
+    /// A `within`'s landing opens: its scope end joins the frame where
+    /// the scope stands, and the landing stack holds the one-turn loop
+    /// an unwind jumps to.
+    mut fn open_landing(scope: Reg, cell: Reg) {
+        self.at_exit_landing(scope, cell)
+        self.within_loops.push(WithinMark { loop: self.loops.length - 1, frame: self.depth })
+    }
+
+    /// The innermost `within`'s landing closes: no longer an unwind's
+    /// target.
+    mut fn close_landing() {
+        let _ = self.within_loops.pop()
+    }
+
     /// An early exit that ANSWERS `answer`: every open frame's
     /// entries run, innermost first — an `errdefer` behind the
     /// answer's tag. Nothing closes — other paths continue.
@@ -432,11 +453,22 @@ impl LowerCx {
     /// One deferred box called — the code address at slot 0, the
     /// box itself as the env seat, the answer dropped.
     mut fn run_deferred(d: Deferred) {
+        let was = self.deferring
+        self.deferring = true
         match d.work {
             .Call(box) -> self.run_deferred_call(box),
             .Settle(owner, cell) -> self.settle_owner(owner, cell),
             .Direct(call) -> self.run_direct(call),
+            .Landing(scope, cell) -> self.landed_scope(scope, cell),
         }
+        self.deferring = was
+    }
+
+    /// The `within` scope's end: the scope ends, and whether the cancel
+    /// it met was its own lands in the cell its epilogue reads.
+    mut fn landed_scope(scope: Reg, cell: Reg) {
+        let landed = self.fiber_within_end(Type.Int, scope)
+        self.stored(cell, landed)
     }
 
     /// An owner's tasks joined: the task, or each in its list — read out

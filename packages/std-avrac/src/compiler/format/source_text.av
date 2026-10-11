@@ -634,11 +634,19 @@ impl SourceText {
                         ),
                 ),
             ],
-            .CollectEnum(name, kind, scope, order) -> [
+            .CollectEnum(name, kind, scope, order, traits) -> [
                 source_line(
                     depth,
                     self
-                        .collect_enum_decl(exported, name.of, kind, scope, order, self.store.is_collect_dense(s)),
+                        .collect_enum_decl(
+                            exported,
+                            name.of,
+                            traits,
+                            kind,
+                            scope,
+                            order,
+                            self.store.is_collect_dense(s),
+                        ),
                 ),
             ],
             .Jump(label, again) -> [source_line(depth, jump_line(again, self.written_label(label)))],
@@ -1248,13 +1256,15 @@ impl SourceText {
     fn collect_enum_decl(
         exported: string,
         name: string,
+        traits: List<ExprId>,
         kind: CollectKind,
         scope: CollectScope,
         order: List<Plain>,
         dense: bool,
     ) -> string {
         let by = self.collect_order_text(order, dense)
-        "${exported}collect enum ${source_name(name)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)}${by}"
+        let over = if traits.is_empty() { "" } else { ": ${joined([self.store.ident_name(t) ?? "" for t in traits], ", ")}" }
+        "${exported}collect enum ${source_name(name)}${over} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)}${by}"
     }
 
     /// One case's `then` line, standing alone (its group is empty).
@@ -1416,6 +1426,7 @@ impl SourceText {
                 parent,
             ),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
+            .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
             .Collect(body) -> grouped(self.instance("collect", [body], null, depth), loosest_tier, parent),
             .Call(callee, pins, args) -> {
                 let head = "${source_name(callee.of)}${self.pins(pins)}"
@@ -1876,6 +1887,21 @@ impl SourceText {
         chain
     }
 
+    /// `within limit { … }` — a head keeping its brace, the limit
+    /// spelled back as the span the writer wrote rather than the `ms`
+    /// field the builder read off it.
+    mut fn within_group(limit: ExprId, body: ExprId, id: ExprId, depth: int, col: int) -> string {
+        let one = self.span_flat(self.store.expr_span(id))
+        let shown = self.span_written(limit)
+        "within ${self.expression(shown, loosest_tier, depth, resolved_col(col, depth) + 7)} ${self.block(body, one, depth)}"
+    }
+
+    /// The expression a limit was written as: the builder read its `ms`
+    /// field, so the printer spells back what stands under that read.
+    fn span_written(limit: ExprId) -> ExprId {
+        match self.store.expr(limit) { .Prop(subject, _) -> subject, rest -> limit }
+    }
+
     mut fn chained_if(no: ExprId, depth: int) -> string? {
         if self.pending_before(start_of(self.store.expr_span(no))) { return null }
         match self.store.expr(no) {
@@ -2270,6 +2296,8 @@ impl SourceText {
             .Lit(value) -> self.pattern_lit(value, depth),
             .Format(head, parts) -> format_source(head, parts),
             .Quote(body) -> self.expression(body, loosest_tier, depth),
+            .Typed(name, ty) -> "${source_name(name.of)}: ${self.type_ref_wrapped(ty, depth)}",
+            .Member(name, bind) -> ".${source_name(name.of)} as ${source_name(bind.of)}",
         }
     }
 

@@ -10,19 +10,33 @@
 //!
 //! A NAME IS WRITTEN, NEVER RESOLVED: `package:relative/path` as the
 //! source spells it, a variable's name, a tool's word. A file reached
-//! under two names is two inputs over one digest. A tool's `Stamp` names
-//! the path the tool was found at and the size and modified time of what
-//! stands there after links are followed — a link re-aimed at a
-//! different binary moves the stamp, a link renamed does not.
+//! under two names is two inputs with two digests — the name is in the
+//! frame, so a digest is no address of the bytes. A tool's `Stamp` names
+//! the path the tool was found at and the host's mark of what stands
+//! there after links are followed — its size, times and inode as one
+//! number — so a link re-aimed at a different binary moves the stamp and
+//! a link renamed does not. A mark the host cannot give (a file written
+//! too recently to tell) is absent, and digests apart from every mark.
 //!
 //! THE DIGEST IS OF A FRAME: a head that says the kind, the name and
 //! what was found — every part behind its own length, so no two shapes
 //! spell the same octets — then the body, last and whole.
-use core.{new_digest, digest_bytes, digest_key}
+use core.{new_digest, digest_bytes, digest_text, digest_key, mix_final}
 use @std.relation.stable.{Writer, writer}
 
 /// What a read asks of the world.
-export enum InputKind { Text, Octets, Range, Listing, Exists, Env, Tool, Compiler }
+export enum InputKind { Text, Octets, Range, Listing, Exists, Env, Tool, Compiler, Embedded }
+
+impl InputKind {
+    /// Whether a read of this kind names the running process itself, so
+    /// it is read once and never again while the process runs.
+    fn stands_for_process() -> bool {
+        match self {
+            .Compiler -> true,
+            .Text or .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Embedded -> false,
+        }
+    }
+}
 
 /// An input's name: its kind and the key it was asked by.
 export type InputName = { kind: InputKind, key: string }
@@ -31,11 +45,15 @@ export type InputName = { kind: InputKind, key: string }
 export type Listed = { name: string, dir: bool }
 
 /// A tool's identity without reading it: where it was found, and the
-/// size and modified time of the file there.
-export type Stamp = { path: string, size: int, mtime: int }
+/// host's mark of the file there — none when the host cannot tell.
+export type Stamp = { path: string, mark: int? }
 
-/// A digest of an input's frame — compared, stored and never unpacked.
-export type InputDigest = string
+/// A digest of an input's frame: the key it is stored and compared by,
+/// and one word of it — what a memo cell is cut by.
+export type InputDigest = { key: string, word: int }
+
+/// What a frame ends in: the octets read, as the read holds them.
+enum Body { None, Text(text: string), Octets(octets: Bytes) }
 
 /// A named, digested read.
 export type Input = { name: InputName, digest: InputDigest }
@@ -55,10 +73,14 @@ export enum Read {
     Env(key: string, value: string?)
     /// A tool by its word; null when none is found.
     Tool(key: string, stamp: Stamp?)
-    /// The running compiler; null when the host cannot name it.
-    Compiler(stamp: Stamp?)
+    /// The running compiler, by its bytes' digest; null when the host
+    /// cannot name it or read it.
+    Compiler(print: string?)
     /// A read the host would not perform, in its words.
     Refused(name: InputName, why: string)
+    /// A file an `embed` names, read beneath the package root over it,
+    /// through no link.
+    Embedded(key: string, seen: Beneath)
 }
 
 impl Read {
@@ -73,7 +95,26 @@ impl Read {
             .Tool(key, _) -> InputName { kind: .Tool, key: key },
             .Compiler(_) -> InputName { kind: .Compiler, key: "" },
             .Refused(name, _) -> name,
+            .Embedded(key, _) -> InputName { kind: .Embedded, key: key },
         }
+    }
+
+    /// The text a read saw — none for an absent file and for every read
+    /// that is not a file's text.
+    fn as_text() -> string? {
+        match self { .Text(_, text) -> text, _ -> null }
+    }
+
+    /// The octets a read saw — none for an absent file and for every
+    /// read that is not a file's octets.
+    fn as_octets() -> Bytes? {
+        match self { .Octets(_, octets) -> octets, _ -> null }
+    }
+
+    /// The stamp a read saw — none for a missing tool and for every
+    /// read that is not a tool.
+    fn as_stamp() -> Stamp? {
+        match self { .Tool(_, stamp) -> stamp, _ -> null }
     }
 
     /// The read as a named, digested input.
@@ -94,28 +135,37 @@ impl Read {
             .Listing(_, entries) -> listed(head, entries),
             .Exists(_, there) -> head.count(state(there)),
             .Env(_, value) -> head.count(state(value != null)),
-            .Tool(_, stamp) or .Compiler(stamp) -> stamped(head, stamp),
+            .Tool(_, stamp) -> stamped(head, stamp),
+            .Compiler(print) -> printed(head, print),
             .Refused(_, why) -> {
                 head.count(REFUSED)
                 head.text(why)
             },
+            .Embedded(_, seen) -> beneath_found(head, seen),
         }
         head.bytes()
     }
 
-    /// The octets read, whole — empty where the head says it all.
-    fn body() -> Bytes {
+    /// The octets read, whole — none where the head says it all.
+    fn body() -> Body {
         match self {
-            .Text(_, text) or .Env(_, text) -> (text ?? "").bytes(),
-            .Octets(_, octets) or .Range(_, _, _, octets) -> octets ?? "".bytes(),
-            .Listing(_, _) or .Exists(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> "".bytes(),
+            .Text(_, text) or .Env(_, text) -> if text == null { Body.None } else { Body.Text(text!) },
+            .Embedded(_, seen) -> match seen { .Text(text) -> Body.Text(text), _ -> Body.None },
+            .Octets(_, octets) or .Range(_, _, _, octets) -> if octets == null { Body.None } else { Body.Octets(octets!) },
+            .Listing(_, _) or .Exists(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> Body.None,
         }
     }
 }
 
 /// The digest of a frame — the ONE place an input's digest is computed.
-fn digested(head: Bytes, body: Bytes) -> InputDigest {
-    InputDigest(digest_key(digest_bytes(digest_bytes(new_digest(), head), body)))
+fn digested(head: Bytes, body: Body) -> InputDigest {
+    let framed = digest_bytes(new_digest(), head)
+    let whole = match body {
+        .None -> framed,
+        .Text(text) -> digest_text(framed, text),
+        .Octets(octets) -> digest_bytes(framed, octets),
+    }
+    InputDigest { key: digest_key(whole), word: mix_final(whole.a) }
 }
 
 const ABSENT: int = 0
@@ -137,6 +187,29 @@ fn kind_tag(k: InputKind) -> int {
         .Env -> 6,
         .Tool -> 7,
         .Compiler -> 8,
+        .Embedded -> 9,
+    }
+}
+
+/// What a read beneath a root saw: a state, then why it was refused.
+fn beneath_found(head: Writer, seen: Beneath) {
+    match seen {
+        .Text(_) -> head.count(PRESENT),
+        .Missing -> head.count(ABSENT),
+        .Linked -> {
+            head.count(REFUSED)
+            head.count(1)
+        },
+        .NotText(at) -> {
+            head.count(REFUSED)
+            head.count(2)
+            head.int(at)
+        },
+        .Refused(why) -> {
+            head.count(REFUSED)
+            head.count(3)
+            head.text(why)
+        },
     }
 }
 
@@ -151,11 +224,19 @@ fn listed(head: Writer, entries: List<Listed>?) {
     }
 }
 
-/// A stamp's three parts, each its own value.
+/// A digest of octets behind its state.
+fn printed(head: Writer, print: string?) {
+    head.count(state(print != null))
+    let p? = print else { return }
+    head.text(p)
+}
+
+/// A stamp's path, then its mark behind its own state.
 fn stamped(head: Writer, stamp: Stamp?) {
     head.count(state(stamp != null))
     let s? = stamp else { return }
     head.text(s.path)
-    head.int(s.size)
-    head.int(s.mtime)
+    head.count(state(s.mark != null))
+    let m? = s.mark else { return }
+    head.int(m)
 }

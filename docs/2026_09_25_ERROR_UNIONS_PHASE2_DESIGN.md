@@ -128,7 +128,7 @@ helpers (§4) as a real extraction, not share the pass.
 ## 3. The new family
 
 ```
-enum Family { …, Failures }          // ordinal 19, appended (never inserted — CLAUDE.md's node-append law applies to this enum the same as any other registry)
+enum Family { …, Failures }          // ordinal 19, appended (never inserted — CLAUDE.md's family law applies to this enum the same as any other registry)
 ```
 
 One whole-program key, exactly like `Family.Receivers`'s

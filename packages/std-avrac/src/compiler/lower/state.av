@@ -39,7 +39,6 @@ use features.{
     Unsettled,
     Settled,
     SettleRoot,
-    const_symbol,
     settled_symbol,
     seat_symbol,
     semantics_of,
@@ -160,6 +159,7 @@ impl LowerCx {
     fn wanted(d: DeclId, sub: Sub? = null, seats: List<SeatValue> = []) -> string {
         let sym = self.view.decls.symbol(d)
         let name = if sub == null { sym } else { self.view.decls.mangle(sym, sub!) }
+        self.jobs.callees.set(name, d)
         if self.unseen(name) {
             self
                 .jobs
@@ -216,8 +216,6 @@ impl LowerCx {
     }
 
     fn declared_seat(d: DeclId, index: int, ty: TypeId) -> SeatValue? {
-        let held = self.view.decls.held_value(d)
-        if held != null { return seat_value(index, ty, held!) }
         let x = self.view.decls.decl(d)
         self.settled_seat(x.file, SettleRoot.Const(x.stmt), [], index, ty)
     }
@@ -534,13 +532,13 @@ impl LowerCx {
     }
 
     /// A DECLARED const read: settled in the declaration's OWN file, on
-    /// no seats — a declaration has none.
+    /// no seats — a declaration has none — and named by the declaration.
+    /// Held or read, it is ASKED of the settlement, which answers a held
+    /// const off its record and notes the read for any run that made it.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
         if self.view.decls.is_instance(d) && !self.settles(ty) { return self.instance_value_reg(e, d) }
         let x = self.view.decls.decl(d)
-        let held = self.view.decls.held_value(d)
-        if held != null { return self.materialized(held!.answer, held!.heap, ty, self.view.decls.symbol(d)) }
-        self.const_reg(e, x.file, x.stmt, ty, [])
+        self.settled_value_reg(x.file, x.stmt, ty, [], self.view.decls.symbol(d))
     }
 
     /// Whether a value of type `ty` is DATA the compiler can lay out
@@ -578,16 +576,16 @@ impl LowerCx {
         let store: SyntaxArena = self.view.decls.store_of(f)
         let written: Expr = store.expr(store.const_value(s)!)
         if is_literal(written) { return self.settled_reg(e, written) }
-        self.settled_value_reg(f, s, ty, seats)
+        self.settled_value_reg(f, s, ty, seats, self.view.decls.const_symbol(f, s))
     }
 
     /// What the evaluator settled for the const at `s` in file `f`,
     /// materialized here — a scalar its constant, an aggregate the
     /// address of its static data; a refusal spoken at the const's
-    /// own value.
-    fn settled_value_reg(f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
+    /// own value. Its static data is `named`, its seats' fingerprints after.
+    fn settled_value_reg(f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>, named: string) -> Reg? {
         match self.jobs.settle(f, SettleRoot.Const(s), seats) {
-            .Ok(x) -> self.materialized(x.answer, x.heap, ty, settled_symbol(const_symbol(f, s), seats)),
+            .Ok(x) -> self.materialized(x.answer, x.heap, ty, settled_symbol(named, seats)),
             .Err(why) -> {
                 self.unsettled(self.view.decls.store_of(f), self.view.decls.file(f).path, s, why)
                 self.zero_of(ty)
@@ -642,7 +640,8 @@ impl LowerCx {
             let ty = self.seat_ty(j)
             let r: Reg = match self.seat_at(j) {
                 // a gap: nothing settled this seat, and no const may read it
-                sv? -> self.materialized(sv.value, sv.heap, ty, seat_symbol(ty, sv.fp))
+                sv? -> self
+                    .materialized(sv.value, sv.heap, ty, seat_symbol(self.view.decls.type_symbol(ty), sv.fp))
                 null -> {
                     let dst = self.out.mint_ty(ty)
                     self.out.give(Ins.ConstInt(dst, 0))
@@ -812,7 +811,10 @@ impl LowerCx {
         let sym = if kind is .Task { "${base}\$task" } else { base }
         let name = if self.sub == null { sym } else { self.view.decls.mangle(sym, self.sub!) }
         if self.unseen(name) {
-            self.jobs.lifts.push(Lift { lam: e, name: name, sub: self.sub, kind: kind })
+            self
+                .jobs
+                .lifts
+                .push(Lift { lam: e, name: name, sub: self.sub, kind: kind, unbroken: self.unbroken })
         }
         name
     }
@@ -916,6 +918,15 @@ impl LowerCx {
     fn static_read(dst: Reg, name: string, boxes: List<StaticBox>) {
         if self.unseen(name) { self.jobs.statics.push(Static { name: name, boxes: boxes, file: self.view.file }) }
         self.out.give(Ins.StaticAddr(dst, name))
+    }
+
+    /// A CODE HASH READ: `target`'s code hash, answered by a body the
+    /// program adds once every body is lowered — asked on first sight,
+    /// like a static.
+    mut fn code_hash_read(e: ExprId, target: string) -> Reg {
+        let answering = code_hash_symbol(target)
+        if self.unseen(answering) { self.jobs.hashes.push(target) }
+        self.call_decl_at(e, answering, [])
     }
 
     /// The zero of a type — what a refused const reads as, so the
