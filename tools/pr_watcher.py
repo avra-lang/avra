@@ -30,7 +30,19 @@ script could have noticed. This watcher closes it, deterministically:
   (f) a CONFLICT — name it once with the rebase the owner owes
       (`git rebase --onto origin/main main <branch>`), sharing its words
       with `tools/queue_keeper.sh` so the two never drift;
-  (g) BLOCKED — name the check it waits on, once.
+  (g) BLOCKED — name the check it waits on, once;
+  (h) a green, CLEAN PR whose head is BEHIND main — arm its auto-merge and
+      `gh pr update-branch` it, so `test` re-runs against the current base
+      and it can enter the queue. A stale head sits CLEAN with `auto=true`
+      and never enters, because the queue judges it against the current
+      base; only a genuinely-behind head is touched, a DIRTY head is left
+      for a real rebase, and the refresh is keyed `(pr, head, main)` so it
+      never repeats;
+  (i) a RUNNING train with a job already failed — cancel it. The failed
+      job decides the aggregate `test`, so the run cannot pass and its
+      still-running jobs are wasted runner capacity; a train with no failed
+      job may still pass and is never touched. The cancellation is named
+      once, with the job that decided it.
 
 EVERY open PR gets an action or a loud name: a state the watcher cannot
 move is still a state it says out loud, never one it skips. Every comment
@@ -74,6 +86,13 @@ QUEUE_MAX = 6
 FULL = {"pull_request", "merge_group", "push", "workflow_dispatch", "schedule"}
 RERUN = "rerun"
 TOLD = "told"
+REFRESHED = "refreshed"
+CANCELLED = "cancelled"
+# A JOB THAT ALREADY DECIDED ITS RUN: any of these makes the aggregate
+# `test` a failure, so the run cannot pass and its still-running jobs are
+# wasted runner capacity. `cancelled` is excluded — a cancellation is not
+# a verdict.
+DEAD_JOB = {"failure", "timed_out", "startup_failure", "action_required"}
 # A PR whose title says DO NOT MERGE is a deliberate draft: named, never
 # readied. The phrase is a claim the owner wrote, not a state we infer.
 DO_NOT_MERGE = re.compile(r"DO\s+NOT\s+MERGE", re.IGNORECASE)
@@ -102,19 +121,39 @@ def _waiting_on(p):
     return f"the required `test` check ({c.lower() or 'pending'})"
 
 
-def plan(prs, queue, trains, state, limit=QUEUE_MAX):
+def plan(prs, queue, trains, state, limit=QUEUE_MAX, main_sha=None, doomed=None):
     """The actions a pass owes. See the module docstring for the rules.
 
     `prs`: number, isDraft, state, mergeable, mergeStateStatus, title,
-           headRefName, autoMerge, headRefOid, inQueue,
+           headRefName, autoMerge, headRefOid, baseRefOid, inQueue,
            test = None | {conclusion, runId, attempt, job, line}
     `queue`: pr, nodeId, stuck
     `trains`: pr, databaseId, job, line
-    `state`: {"rerun": {key}, "told": {key}}
+    `doomed`: pr, databaseId, job — a RUNNING train whose job already failed
+    `state`: {"rerun": {key}, "told": {key}, "refreshed": {key},
+              "cancelled": {key}}
     `limit`: the queue-depth cap for new enqueues (rule b).
+    `main_sha`: main's current tip, or None when it could not be read. A
+                head whose `baseRefOid` differs is STALE and is refreshed
+                before it can be armed or enqueued.
     """
     acts = []
     rerun, told = state["rerun"], state["told"]
+    refreshed = state.setdefault(REFRESHED, {})
+    cancelled = state.setdefault(CANCELLED, {})
+
+    # (i) a RUNNING train that already failed a job can never pass: the job's
+    # verdict decides the aggregate `test`, so the jobs still running are
+    # wasted runner capacity. Cancel it, once, keyed by run id — and never
+    # touch a train with no failed job, which may still pass.
+    for d in doomed or []:
+        key = f"cancel:{d['databaseId']}"
+        if key in cancelled:
+            continue
+        acts.append({"do": "cancel", "run": d["databaseId"], "pr": d["pr"],
+                     "mark": ("cancelled", key),
+                     "text": f"cancelled pr-{d['pr']}'s train — "
+                             f"{d['job']} already failed"})
 
     # (d) a failed train names its failing job on the PR it carried.
     for t in trains:
@@ -205,6 +244,31 @@ def plan(prs, queue, trains, state, limit=QUEUE_MAX):
         # (b) green, mergeable, unconflicted, not queued — arm auto-merge (or
         # enqueue when it is already armed) while the cap has room.
         if green and landable and open_:
+            # (h) STALE: the base this head's checks ran against
+            # (`baseRefOid`) is not main's tip now (`main_sha`) — a fact
+            # about the head, not the queue. Arming auto-merge changes
+            # nothing on a stale head: the queue judges it against the
+            # current base, so a head with no run against it never enters and
+            # the PR sits CLEAN with `auto=true` while nothing lands. The
+            # rule does NOT loop — `gh pr update-branch` folds main into the
+            # head, so the next pass reads a current `baseRefOid`, and the
+            # mark is keyed `(pr, head, main)` so a read that still shows the
+            # old base is never re-issued. `landable` already refuses a DIRTY
+            # or non-CLEAN head; a draft was named above and left alone.
+            stale = bool(p.get("baseRefOid") and main_sha
+                         and p["baseRefOid"] != main_sha)
+            key = f"refresh:{n}:{head}:{main_sha}"
+            if stale:
+                if key in refreshed:
+                    acts.append({"do": "note", "pr": n,
+                                 "text": f"#{n} is stale — refresh already issued"})
+                else:
+                    if not p["autoMerge"] and room > 0:
+                        acts.append({"do": "enqueue-auto", "pr": n, "why": "refresh"})
+                        room -= 1
+                    acts.append({"do": "refresh", "pr": n,
+                                 "mark": ("refreshed", key)})
+                continue
             if room > 0:
                 acts.append({"do": "enqueue-auto" if not p["autoMerge"] else "enqueue",
                              "pr": n, "node": p.get("nodeId"), "why": "new"})
@@ -293,11 +357,31 @@ def failing_job(repo, run_id):
     return {"job": j["name"], "line": first_cause(log)}
 
 
+def dead_job(jobs):
+    """The first job of a run that has already decided it, or None."""
+    return next((j for j in jobs if j.get("conclusion") in DEAD_JOB), None)
+
+
+def run_dead_job(repo, run_id):
+    """A RUNNING run's first already-failed job, or None — one call per
+    non-completed run, and the merge queue builds only a handful."""
+    return dead_job(_gh_json(["api", f"repos/{repo}/actions/runs/{run_id}/jobs"]
+                             ).get("jobs", []))
+
+
 def open_prs(repo):
     return _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
                      "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
                                "title,headRefName,autoMergeRequest,"
-                               "headRefOid,statusCheckRollup"])
+                               "headRefOid,baseRefOid,statusCheckRollup"])
+
+
+def main_sha(repo):
+    """main's tip now — the base every head's checks are judged against, so
+    `baseRefOid == main_sha` is exactly what FRESH means. An unreadable tip
+    answers "" and no head is called stale."""
+    return _gh(["api", f"repos/{repo}/git/ref/heads/main",
+                "--jq", ".object.sha"], check=False).strip()
 
 
 def merge_queue(repo):
@@ -399,6 +483,7 @@ DETAIL_CAP = 6
 
 def collect(repo, state):
     told = state[TOLD]
+    tip = main_sha(repo)
     q = merge_queue(repo)
     inq = {e["pr"] for e in q}
     runs = _merge_group_runs(repo)
@@ -448,7 +533,21 @@ def collect(repo, state):
         if fj:
             trains.append({"databaseId": r["databaseId"], "pr": pr,
                            "job": fj["job"], "line": fj["line"]})
-    return {"prs": prs, "queue": q, "trains": trains}
+    # (i) a RUNNING train whose job already failed cannot pass: read its jobs
+    # and name it doomed. A completed run is rule (d)'s, and a run with no
+    # failed job may still pass and is left alone.
+    doomed = []
+    for r in runs:
+        if r.get("status") == "completed":
+            continue
+        dead = run_dead_job(repo, r["databaseId"])
+        if not dead:
+            continue
+        m = re.search(r"/pr-(\d+)-", r.get("headBranch") or "")
+        doomed.append({"databaseId": r["databaseId"],
+                       "pr": int(m.group(1)) if m else 0, "job": dead.get("name")})
+    return {"prs": prs, "queue": q, "trains": trains, "main_sha": tip,
+            "doomed": doomed}
 
 
 # ---- doing the actions (gh) --------------------------------------------
@@ -488,6 +587,11 @@ def do_action(a, repo, run):
              f'query=mutation{{dequeuePullRequest(input:{{id:"{a["node"]}"}}){{clientMutationId}}}}'])
     elif a["do"] == "ready":
         run(["pr", "ready", str(a["pr"]), "-R", repo])
+    elif a["do"] == "refresh":
+        run(["pr", "update-branch", str(a["pr"]), "-R", repo])
+    elif a["do"] == "cancel":
+        run(["api", "-X", "POST",
+             f"repos/{repo}/actions/runs/{a['run']}/cancel"])
     elif a["do"] in ("hold", "note"):
         pass  # a decision, not a mutation: the log says what the cap held or
               # what state the PR was already named in.
@@ -530,6 +634,8 @@ def load_state(path):
         s = {}
     s.setdefault(RERUN, {})
     s.setdefault(TOLD, {})
+    s.setdefault(REFRESHED, {})
+    s.setdefault(CANCELLED, {})
     return s
 
 
@@ -552,7 +658,7 @@ def _pr(n, concl, **kw):
 
 
 def _empty_state():
-    return {RERUN: {}, TOLD: {}}
+    return {RERUN: {}, TOLD: {}, REFRESHED: {}, CANCELLED: {}}
 
 
 SELFTEST = [
@@ -639,6 +745,49 @@ SELFTEST = [
      dict(prs=[_pr(3, "SUCCESS", isDraft=True, mergeable="CONFLICTING")],
           queue=[], trains=[], state=_empty_state()),
      [("comment", 3), ("comment", 3)]),
+    # (h) STALE: a green, CLEAN head whose checks ran against an older main is
+    # armed (spending a queue slot) and refreshed, never enqueued as-is.
+    ("stale-clean-armed-and-refreshed",
+     dict(prs=[_pr(20, "SUCCESS", baseRefOid="old", autoMerge=False)],
+          queue=[], trains=[], state=_empty_state(), main_sha="new"),
+     [("enqueue-auto", 20), ("refresh", 20)]),
+    # an already-armed stale head is refreshed only: arming is a no-op.
+    ("stale-auto-refreshed-only",
+     dict(prs=[_pr(21, "SUCCESS", baseRefOid="old", autoMerge=True)],
+          queue=[], trains=[], state=_empty_state(), main_sha="new"),
+     [("refresh", 21)]),
+    # an up-to-date head is enqueued, never refreshed.
+    ("fresh-clean-enqueues-not-refreshed",
+     dict(prs=[_pr(22, "SUCCESS", baseRefOid="new", autoMerge=True)],
+          queue=[], trains=[], state=_empty_state(), main_sha="new"),
+     [("enqueue", 22)]),
+    # a DIRTY head needs a real rebase, not an update: named as a conflict.
+    ("stale-dirty-named-not-refreshed",
+     dict(prs=[_pr(23, "SUCCESS", baseRefOid="old", mergeable="CONFLICTING")],
+          queue=[], trains=[], state=_empty_state(), main_sha="new"),
+     [("comment", 23)]),
+    # a stale DRAFT is named as a draft (and taken ready), since a head
+    # cannot refresh while it is unlandable; never refreshed as-is.
+    ("stale-draft-named-not-refreshed",
+     dict(prs=[_pr(24, "SUCCESS", baseRefOid="old", isDraft=True)],
+          queue=[], trains=[], state=_empty_state(), main_sha="new"),
+     [("comment", 24), ("ready", 24)]),
+    # the refresh is CLEAN-only: a stale head blocked on something else is
+    # named as blocked, never refreshed.
+    ("stale-nonclean-not-refreshed",
+     dict(prs=[_pr(25, "SUCCESS", baseRefOid="old", autoMerge=False,
+                   mergeStateStatus="BLOCKED")],
+          queue=[], trains=[], state=_empty_state(), main_sha="new"),
+     [("comment", 25)]),
+    # (i) a RUNNING train with a job already failed is cancelled.
+    ("doomed-train-cancelled",
+     dict(prs=[], queue=[], trains=[], state=_empty_state(),
+          doomed=[{"databaseId": 900, "pr": 553, "job": "keepers-a"}]),
+     [("cancel", 553)]),
+    # ... and a running train with no failed job is left alone.
+    ("live-train-not-cancelled",
+     dict(prs=[], queue=[], trains=[], state=_empty_state(), doomed=[]),
+     []),
     # (g) a BLOCKED PR names the check it waits on, once.
     ("blocked-names-its-check",
      dict(prs=[_pr(4, None, mergeStateStatus="BLOCKED")],
@@ -663,7 +812,8 @@ SELFTEST = [
 
 def selftest():
     for name, world, want in SELFTEST:
-        acts = plan(world["prs"], world["queue"], world["trains"], world["state"])
+        acts = plan(world["prs"], world["queue"], world["trains"], world["state"],
+                    main_sha=world.get("main_sha"), doomed=world.get("doomed"))
         got = [(a["do"], a.get("pr", a.get("run"))) for a in acts]
         if got != want:
             sys.exit(f"pr-watcher: self-test failed on `{name}`: got {got}, want {want}")
@@ -678,6 +828,38 @@ def selftest():
             or any(a["do"] == "comment" for a in second)
             or any(a["do"] == "rerun" for a in second)):
         sys.exit("pr-watcher: self-test — a failure was not told exactly once")
+
+    # (h) THE REFRESH DOES NOT LOOP: keyed (pr, head, main), a stale reading
+    # seen twice refreshes ONCE, and a moved main makes the same head stale
+    # against a new base again. The second pass only NAMES it as stale — no
+    # mutation repeats.
+    st = _empty_state()
+    stale = _pr(30, "SUCCESS", baseRefOid="old", autoMerge=True)
+    first = plan([stale], [], [], st, main_sha="new")
+    commit_marks(first, [], st)
+    second = plan([stale], [], [], st, main_sha="new")
+    if ([a["do"] for a in first] != ["refresh"]
+            or any(a["do"] in ("refresh", "enqueue", "enqueue-auto") for a in second)):
+        sys.exit(f"pr-watcher: self-test — a stale head refreshed {first}, then {second}")
+    third = plan([stale], [], [], st, main_sha="newer")
+    if [a["do"] for a in third] != ["refresh"]:
+        sys.exit("pr-watcher: self-test — a new main did not re-arm the refresh")
+
+    # (i) THE DOOMED PREDICATE, BOTH DIRECTIONS: a job that already decided
+    # the run dooms it; a run with none still in flight may pass.
+    if dead_job([{"name": "gate", "conclusion": "failure"}]) is None:
+        sys.exit("pr-watcher: self-test — a failed job did not doom its train")
+    if dead_job([{"name": "gate", "conclusion": None},
+                 {"name": "keepers-a", "conclusion": "success"}]) is not None:
+        sys.exit("pr-watcher: self-test — a train with no failed job was doomed")
+    # and a doomed run is cancelled once, keyed by run id.
+    st = _empty_state()
+    doomed = [{"databaseId": 900, "pr": 553, "job": "keepers-a"}]
+    first = plan([], [], [], st, doomed=doomed)
+    commit_marks(first, [], st)
+    second = plan([], [], [], st, doomed=doomed)
+    if [a["do"] for a in first] != ["cancel"] or second != []:
+        sys.exit(f"pr-watcher: self-test — a doomed train cancelled {first}, then {second}")
 
     # (5) DEDUP BY (PR, HEAD, REASON): a conflict, a draft and a blocked PR
     # are each commented ONCE for one head, and a second pass over an
@@ -867,7 +1049,8 @@ def run_pass(world, state, state_path, repo, execute_fn=execute, limit=QUEUE_MAX
     """One live pass. State is committed and SAVED in a `finally`:
     whatever an action or the pass itself does, the marks of what
     SUCCEEDED stand and the next pass retries only what failed."""
-    acts = plan(world["prs"], world["queue"], world["trains"], state, limit)
+    acts = plan(world["prs"], world["queue"], world["trains"], state, limit,
+                main_sha=world.get("main_sha"), doomed=world.get("doomed"))
     for a in acts:
         print(label, a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
     failed = []
@@ -892,12 +1075,17 @@ def main(argv):
     world = collect(repo, state)
     limit = queue_max()
     if "--dry-run" in argv:
-        acts = plan(world["prs"], world["queue"], world["trains"], state, limit)
+        acts = plan(world["prs"], world["queue"], world["trains"], state, limit,
+                    main_sha=world.get("main_sha"), doomed=world.get("doomed"))
         # New enqueues (rule b) are what the cap governs; kicks (rule c) are
-        # re-enqueues of entries already counted against the depth.
+        # re-enqueues of entries already counted against the depth; a refresh
+        # (rule h) re-runs a stale head's checks without enqueuing it, and a
+        # cancel (rule i) frees a train that cannot pass.
         new = sum(1 for a in acts if a.get("why") == "new")
         kicks = sum(1 for a in acts if a.get("why") == "kick")
         held = sum(1 for a in acts if a["do"] == "hold")
+        refreshes = sum(1 for a in acts if a["do"] == "refresh")
+        cancels = sum(1 for a in acts if a["do"] == "cancel")
         for a in acts:
             tag = f" [{a['why']}]" if a.get("why") else ""
             print("pr-watcher:", a["do"] + tag, a.get("pr", a.get("run", "")), a.get("text", ""))
@@ -913,7 +1101,8 @@ def main(argv):
                   f"draft={'Y' if p.get('isDraft') else 'n'} "
                   f"mergeable={(p.get('mergeable') or '?'):<11} -> {what}")
         print(f"pr-watcher: dry run — queue at {len(world['queue'])}/{limit}: "
-              f"{new} new enqueue(s), {held} held, {kicks} stuck-entry kick(s) — "
+              f"{new} new enqueue(s), {refreshes} refresh(es), {held} held, "
+              f"{kicks} stuck-entry kick(s), {cancels} doomed-cancel(s) — "
               f"not taken, state untouched")
         return 0
     acts = run_pass(world, state, state_path, repo, limit=limit)
