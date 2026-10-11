@@ -17,9 +17,11 @@ The stream is the one `tools/speed_ratchet.py --wall` reads:
     wall gate <ms>
     wall total <ms>
 
-`total` is the run's start to now, so it is the whole check including the
-queue and the aggregate job's own bookkeeping. A job the event skipped has
-no clock and is left out; the ratchet judges what was measured.
+`total` is the SUM of the jobs' own clocks — the check's work, which no
+queue between jobs can inflate; a run's makespan also carries the runner's
+queue, and a crowded runner is not a regression the tree caused. A job the
+event skipped has no clock and is left out; the ratchet judges what was
+measured.
 """
 import datetime
 import json
@@ -65,26 +67,27 @@ def measure(base, run_id, now=None):
     with _api(base, f"/actions/runs/{run_id}/jobs?per_page=100") as r:
         jobs = json.load(r)["jobs"]
     lines = ["host %s" % HOST]
-    ends = []
-    running = False
+    rows, total = [], 0
     for job in jobs:
         start = _stamp(job.get("started_at"))
         end = _stamp(job.get("completed_at"))
-        if end is None:
-            running = True
-        else:
-            ends.append(end)
+        if start is None:
+            continue
         # A skipped job carries a clock that did not run (end <= start); it
         # was not measured and the ratchet judges only what was.
-        if start is None or start >= (end or now):
+        if end is not None and start >= end:
             continue
-        lines.append("wall %s %d" % (job["name"], _ms(start, end or now)))
-    begun = _stamp(run.get("run_started_at")) or _stamp(run.get("created_at"))
-    if begun is not None:
-        # The whole check ends when its last job does; while one is still
-        # running (the aggregate reading this) the end is now.
-        last = now if running else max(ends)
-        lines.append("wall total %d" % _ms(begun, last))
+        ms = _ms(start, end or now)
+        rows.append((job["name"], ms))
+        total += ms
+    for name, ms in rows:
+        lines.append("wall %s %d" % (name, ms))
+    if rows:
+        # The check's total WORK: the sum of its jobs' own clocks, which no
+        # queue between jobs can inflate. A run's makespan (first start to
+        # last end) also carries the runner's queue, and a crowded runner is
+        # not a regression the tree caused.
+        lines.append("wall total %d" % total)
     return "\n".join(lines) + "\n"
 
 
@@ -136,7 +139,7 @@ def _self_test():
         parts = line.split()
         if parts[0] == "wall" and len(parts) == 3:
             rows[parts[1]] = int(parts[2])
-    want = {"prepare": 60000, "gate": 90000, "total": 180000}
+    want = {"prepare": 60000, "gate": 90000, "total": 150000}
     if rows != want:
         print(f"ci_wall: SELF-TEST FAILED — read {rows}, want {want}", file=sys.stderr)
         return 1
