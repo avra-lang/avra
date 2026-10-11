@@ -244,7 +244,7 @@ struct Fiber {
 // answer it owns; the list and the fiber are C pointers in unowned
 // cells.
 enum { GATE_HEAD, GATE_TAIL, GATE_OPEN, GATE_CELLS };
-enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_CELLS };
+enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_CELLS };
 enum { END_LIVE, END_ANSWERED, END_CANCELLED };
 
 static int64_t* task_cells(void* task) { return ((AvraArray*)task)->data; }
@@ -1779,6 +1779,7 @@ static void* task_made(Fiber* f, void* body) {
     avra_array_push_owned(task, NULL);
     avra_array_push(task, 0);
     avra_array_push(task, END_LIVE);
+    avra_array_push(task, 0);
     return task;
 }
 
@@ -1796,8 +1797,11 @@ static void fiber_start(void) {
     cells[TASK_ANSWER] = (int64_t)(uintptr_t)answer;
     cells[TASK_FIBER] = 0;
     // A BODY THAT COMES BACK UNWINDING LEFT AT A CANCEL POINT: it ended
-    // cancelled, and a join refuses what it answered.
+    // cancelled, and a join refuses what it answered. WHO ASKED is the
+    // standing request — a task's cancel, else the scope whose limit
+    // passed; a body that answered names itself.
     cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;
+    cells[TASK_BY] = avra_unwinding ? (self->cancel_by ? self->cancel_by - 1 : self->scope_by) : id_of(self);
     gate_opened(task, id_of(self));
     // A TASK THAT ENDS WAITS ON NOTHING: what it registered and never
     // parked on leaves with it, before its record is anyone else's.
@@ -1948,6 +1952,13 @@ int64_t avra_task_ended(void* task) {
     return task_cells(task)[TASK_END];
 }
 
+// Who asked the cancel that ended the task, or the task's own id for an
+// answer. A scope's request reads as its id; a task cancel as that
+// task's.
+int64_t avra_task_ended_by(void* task) {
+    return task_cells(task)[TASK_BY];
+}
+
 // ── Tasks nothing runs ──────────────────────────────────────────
 //
 // A FIBERLESS task is a gate with an answer: whoever holds it answers
@@ -1960,6 +1971,7 @@ void* avra_task_pending(void) { return task_made(NULL, NULL); }
 static void task_ended(void* task, int64_t how, int64_t by) {
     int64_t* cells = task_cells(task);
     cells[TASK_END] = how;
+    cells[TASK_BY] = by;
     int64_t at = cells[TASK_AT];
     if (at) {
         cells[TASK_AT] = 0;
