@@ -891,7 +891,7 @@ no-threads:
 KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost speed-ratchet codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
-            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads
+            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads ci-invariants pr-watcher
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
 	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
@@ -909,12 +909,25 @@ tool-witnesses:
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
 
+# THE CI STRUCTURE RATCHET: the release path, the compiler-free keepers a
+# PR must reach and the watcher's fixtures are held before a green PR can
+# break them. It reads the workflow and this Makefile alone, so no compiler.
+ci-invariants:
+	@python3 tools/ci_invariants.py --self-test
+	@python3 tools/ci_invariants.py
+
+# THE WATCHER'S DECISION IS A KEEPER: its fixtures run wherever the gate
+# runs, so a change to what the watcher may do refuses before it can land,
+# not one schedule pass later.
+pr-watcher:
+	@python3 tools/pr_watcher.py --self-test
+
 # THE KEEPERS THAT NEED NO COMPILER, which a pull request's own check runs
 # before it builds anything: each reads the tree alone and all of them
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites
+KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites ci-invariants pr-watcher
 .PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
