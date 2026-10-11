@@ -921,7 +921,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost speed-ratchet warm-edit codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
 KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads \
-            ci-invariants pr-watcher pipeline-doc
+            ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-b:
 	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
@@ -946,6 +946,13 @@ tool-witnesses:
 ci-invariants:
 	@python3 tools/ci_invariants.py --self-test
 	@python3 tools/ci_invariants.py
+
+# THE AGGREGATE VERDICT'S FIXTURES: the `test` job's arithmetic is a script
+# (tools/ci_verdict.py), and these prove it counts what it claims — a skipped
+# leg green, a failure named with its count, a job the gate owed but the run
+# never reported refused — before it judges a run.
+ci-verdict:
+	@python3 tools/ci_verdict.py --self-test
 
 # THE WATCHER'S DECISION IS A KEEPER: its fixtures run wherever the gate
 # runs, so a change to what the watcher may do refuses before it can land,
@@ -978,8 +985,8 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites ci-invariants pr-watcher pipeline-doc
-.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants pr-watcher
+KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites ci-invariants ci-verdict pr-watcher pipeline-doc
+.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@fail=0; for k in $(KEEPERS_STATIC); do \
