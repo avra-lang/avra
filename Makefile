@@ -407,12 +407,24 @@ recover: $(COMPILER_OBJS)
 # Bootstrap hands out GEN-2. A change to lowering or memory reaches a
 # compiler's own body only when a compiler already carrying it compiles
 # that body, so the seed's gen-1 rebuilds once more.
+#
+# UNLESS THE SEED IS THIS TREE. `make seed` records the source hash it
+# emitted from, and when that hash is the tree's own the seed already IS
+# the compiler this source emits — linking it (`recover`) is the whole
+# build, and a self-compile only rebuilds the same compiler byte for
+# byte. A hash that differs means the seed's codegen MAY lag the source,
+# and the two builds stand.
 bootstrap: recover
-	@echo "bootstrap: gen-1, the source compiled by the seed"
-	@$(MAKE) -s avra
-	@echo "bootstrap: gen-2, the source compiled by gen-1"
-	@$(MAKE) -s avra
-	@echo "bootstrap: build/avra is gen-2"
+	@h=$$(sh tools/sources_hash.sh); s=$$(cat bootstrap/seed.sources 2>/dev/null || echo none); \
+	if [ "$$(sh tools/seed_is_tree.sh "$$h" "$$s")" = seed ]; then \
+	    echo "bootstrap: the seed IS this tree — no self-compile"; \
+	else \
+	    echo "bootstrap: gen-1, the source compiled by the seed"; \
+	    $(MAKE) -s avra || exit 1; \
+	    echo "bootstrap: gen-2, the source compiled by gen-1"; \
+	    $(MAKE) -s avra || exit 1; \
+	    echo "bootstrap: build/avra is gen-2"; \
+	fi
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
 # that refused its own source reported only "make: *** Error 2" and the next
@@ -925,7 +937,7 @@ keepers keepers-alone keepers-a keepers-b:
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
-TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
+TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
                  witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_queue_keeper.sh witness_compiler_release.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
