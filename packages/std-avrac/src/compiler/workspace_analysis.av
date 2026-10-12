@@ -376,7 +376,7 @@ impl Workspace {
 
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
-    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id) }
+    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id, true) }
 
     /// A COMPILE-TIME RUN'S OWN unit, remembered in ITS OWN family —
     /// never `Lowered`'s. The two share `id`'s space (interned by
@@ -386,20 +386,18 @@ impl Workspace {
     /// a comptime run's units — every seat borrowed, see
     /// `comptime_active` — from ever standing in for the real
     /// program's.
-    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id) }
+    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id, false) }
 
     /// The shared memo shape `lowered` and `lift_lowered` differ only
     /// by family: start recursive, reuse a settled answer, or lower
     /// the ask and settle it.
-    fn lowered_in(fam: Family, id: int) -> Unit {
+    fn lowered_in(fam: Family, id: int, rows: bool) -> Unit {
         match self.relation(fam).start_recursive(id) {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
         self.hold.lowering.push(id)
-        let w = self.asks.get()[id]
-        let out = self.lower_requested(w)
-        self.owned(w, out)
+        let out = self.lowered_unit(self.asks.get()[id], rows)
         let open = self.hold.lowering.get()
         self.hold.lowering.set(open.slice(0, open.length - 1))
         lowered_of(
@@ -407,6 +405,18 @@ impl Workspace {
                 .relation(fam)
                 .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> unit_fp(lowered_of(r))),
         )
+    }
+
+    /// One unit: served from its kept row when `rows` allows, else lowered and,
+    /// when it spoke nothing, kept.
+    fn lowered_unit(w: Wanted, rows: bool) -> Unit {
+        let served = if rows { self.unit_served(w) } else { null }
+        if traced() { qtrace("Q\tunit\t${if served == null { "lowered" } else { "served" }}\t${w.name}\n") }
+        if served != null { return served! }
+        let out = self.lower_requested(w)
+        self.owned(w, out)
+        if rows { self.unit_kept(w, out) }
+        out
     }
 
     /// Every body a unit lowered belongs to the unit's declaration: a lifted
