@@ -40,35 +40,79 @@ use @std.meta.{
     Field,
     Mark as MetaMark,
     Directive,
+    Declared,
+    Diagnostic,
     Code,
     Arms,
     name,
+    refuse_as_at,
 }
+
+/// The shape words a variant may wear. Exactly one decides how the
+/// walk reaches its children; a variant wearing none is refused, so a
+/// new node kind cannot arrive with its shape undeclared.
+const shape_words: List<string> = [
+    "declares",
+    "expands",
+    "apart",
+    "sequence",
+    "branches",
+    "clauses",
+]
 
 /// The compiler's derive for the complete child walk.
 export trait Children {
-    static fn derive(t: MetaType) -> List<Directive> {
-        [
-            Directive {
-                twin: "",
-                name: t.name,
-                at: t.at,
-                source: quote {
+    static fn derive(t: MetaType) -> Declared {
+        let problems = flatten([shape_problems(t, v) for v in t.variants])
+        if !problems.is_empty() { return Declared { made: [refused_children(t)], problems: problems } }
+        Declared {
+            made: [
+                Directive {
+                    twin: "",
+                    name: t.name,
+                    at: t.at,
+                    source: quote {
             impl SyntaxArena {
                 fn ${walk_of(t.name)}(id: ${holder_of(t.name)}) -> List<ExprId> {
                     match self.${reader_of(t.name)}(id) { ${[child_arm(v) for v in t.variants]} }
                 }
             }
         },
-            },
-        ]
+                },
+            ],
+            problems: [],
+        }
     }
 
     /// The words this derive reads off a variant — and no others. A
     /// derive that claims a mark it never reads makes the claim law
     /// say nothing: the word stops being refused without anything
     /// having started to read it.
-    static fn marks(t: MetaType) -> List<string> { ["declares", "expands"] }
+    static fn marks(t: MetaType) -> List<string> { shape_words }
+}
+
+/// What a refused enum is given: the walk answers nothing anyone
+/// wrote, so no caller is blamed for a method the build never made.
+fn refused_children(t: MetaType) -> Directive {
+    Directive {
+        twin: "",
+        name: t.name,
+        at: t.at,
+        source: quote {
+            impl SyntaxArena {
+                fn ${walk_of(t.name)}(_id: ${holder_of(t.name)}) -> List<ExprId> { [] }
+            }
+        },
+    }
+}
+
+/// What is wrong with a variant's shape, when anything is.
+fn shape_problems(t: MetaType, v: MetaVariant) -> List<Diagnostic> {
+    if !shape_words.any(marked(v, it) != null) { return [unshaped(t, v)] }
+    if marked(v, "clauses") != null && !v.fields.any(it.ty == "List<CompClause>") {
+        return [clauses_without_clause(t, v)]
+    }
+    []
 }
 
 /// One variant's arm: its payloads bound, the expression-bearing ones
@@ -134,6 +178,26 @@ fn reach(f: Field) -> Code? {
         "BodyView" -> quote { self.body_view_children(${b}) },
         _ -> null,
     }
+}
+
+// ── voices ──
+
+fn unshaped(t: MetaType, v: MetaVariant) -> Diagnostic {
+    refuse_as_at(
+        "children-shape",
+        v.at,
+        "a node's children follow the mark its variant wears — `${t.name}.${v.name}` wears none",
+        "mark it `@apart`, `@sequence`, `@branches`, `@clauses(…)`, `@declares` or `@expands`",
+    )
+}
+
+fn clauses_without_clause(t: MetaType, v: MetaVariant) -> Diagnostic {
+    refuse_as_at(
+        "children-clauses",
+        v.at,
+        "`@clauses` names a variant's clause walk — `${t.name}.${v.name}` holds no `List<CompClause>`",
+        "drop `@clauses`, or give the variant a `List<CompClause>` field",
+    )
 }
 
 /// The parts as ONE expression — a hole in expression position takes

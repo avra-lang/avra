@@ -13,17 +13,16 @@ seqf="$tmp/gh.seq"
 gitlog="$tmp/git.log"
 ghlog="$tmp/gh.log"
 : > "$gitlog"
+: > "$ghlog"
 
-# A `gh` that answers the next state in the sequence, then stays OPEN.
-# A queue entry is whatever $GH_ENTRY says ("<position> <seconds> <enqueuer>",
-# or nothing: not queued); no train ever runs; every mutation is RECORDED.
+# A `gh` that answers the next PR state in the sequence, then stays OPEN.
+# There is no queue: no mutation is ever needed, and the witness refuses one
+# if it appears.
 cat > "$tmp/bin/gh" <<'SH'
 #!/bin/sh
 case "$*" in
-    *dequeuePullRequest*) echo DEQUEUE >> "$GH_LOG"; exit 0 ;;
-    *enqueuePullRequest*) echo ENQUEUE >> "$GH_LOG"; exit 0 ;;
-    *mergeQueueEntry*) [ -z "${GH_ENTRY:-}" ] || echo "$GH_ENTRY"; exit 0 ;;
-    *"--json number,id"*) [ -z "${GH_ENTRY:-}" ] || echo "7 PR_node"; exit 0 ;;
+    *enqueuePullRequest* | *dequeuePullRequest* | *mergeQueueEntry*)
+        echo "QUEUE $*" >> "$GH_LOG"; exit 0 ;;
     *"--json state"*) ;;
     *) exit 0 ;;
 esac
@@ -46,7 +45,7 @@ SH
 chmod +x "$tmp/bin/git"
 
 run_wait() {
-    PATH="$tmp/bin:$PATH" GH_SEQ="$seqf" GIT_LOG="$gitlog" GH_LOG="$ghlog" GH_ENTRY="${entry:-}" \
+    PATH="$tmp/bin:$PATH" GH_SEQ="$seqf" GIT_LOG="$gitlog" GH_LOG="$ghlog" \
         AVRA_WAIT_POLL=0 AVRA_WAIT_SECONDS="$1" sh "$work" wait feature
 }
 
@@ -67,21 +66,11 @@ run_wait 60 >/dev/null 2>&1 && say "(b) a closed PR answered success"
 run_wait 0 >/dev/null 2>&1 && say "(c) an unlanded PR answered success"
 [ -s "$gitlog" ] && say "(c) wait called git"
 
-# (d) an entry a BOT queued starts no train: it is taken out and queued
-# again as this user, at once, however young it is.
+# (d) NO QUEUE MUTATION IS EVER NEEDED: an unlanded PR drawing an armed wait
+# reaches for nothing the queue used to own.
 : > "$seqf"; : > "$ghlog"
-entry="1 4 github-actions[bot]" run_wait 0 >/dev/null 2>&1 || :
-[ "$(tr '\n' ' ' < "$ghlog")" = "DEQUEUE ENQUEUE " ] || say "(d) a bot-queued entry was not requeued: $(tr '\n' ' ' < "$ghlog")"
+run_wait 0 >/dev/null 2>&1 || :
+[ ! -s "$ghlog" ] || say "(d) wait touched a queue mutation: $(tr '\n' ' ' < "$ghlog")"
 
-# (e) a user's young entry with no train yet is left alone …
-: > "$seqf"; : > "$ghlog"
-entry="1 4 somebody" run_wait 0 >/dev/null 2>&1 || :
-[ ! -s "$ghlog" ] || say "(e) a user's 4-second-old entry was requeued"
-
-# (f) … and requeued once it has waited past the stuck bound.
-: > "$seqf"; : > "$ghlog"
-entry="1 400 somebody" run_wait 0 >/dev/null 2>&1 || :
-[ "$(tr '\n' ' ' < "$ghlog")" = "DEQUEUE ENQUEUE " ] || say "(f) a user's stuck entry was not requeued"
-
-[ "$fail" -eq 0 ] && echo "witness_work_wait: 6 proved — the PR is the oracle, main is never polled; a bot's entry and a stuck one are requeued"
+[ "$fail" -eq 0 ] && echo "witness_work_wait: 4 proved — the PR is the oracle, main is never polled, and no queue mutation is reached"
 exit "$fail"

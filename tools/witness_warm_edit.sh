@@ -1,0 +1,48 @@
+#!/bin/sh
+# THE WARM-EDIT KEEPER'S SKIP LAW, proved: a run that cannot judge FAILS
+# with a named reason, and only a hand-set WARM_EDIT_SKIP — the workflow's
+# `warm_skip` input — may stand it down, loudly. No compiler is needed: the
+# cold-store refusal stands before one is asked for, so the proof runs
+# anywhere, and the ratchet is handed a skip stream the way the bench
+# writes one.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+unset SPEED_ALLOW_COLD WARM_EDIT_SKIP
+mkdir -p "$tmp/tools"
+cp "$root/tools/warm_edit_bench.sh" "$tmp/tools/warm_edit_bench.sh"
+
+# 1. no warm store, no opt-out: FAIL, with the reason named.
+if SPEED_LOCAL=1 sh "$tmp/tools/warm_edit_bench.sh" >"$tmp/fail.stdout" 2>"$tmp/fail.err"; then
+    echo "witness_warm_edit: the bench PASSED with no warm store — a skip is not a pass" >&2
+    exit 1
+fi
+grep -q "no warm store" "$tmp/fail.err" \
+    || { echo "witness_warm_edit: the refusal does not name the warm store" >&2; cat "$tmp/fail.err" >&2; exit 1; }
+grep -q "FAILURE" "$tmp/fail.err" \
+    || { echo "witness_warm_edit: the refusal does not say FAILURE" >&2; cat "$tmp/fail.err" >&2; exit 1; }
+
+# 2. the hand-set opt-out: SKIP, loudly, status 0.
+WARM_EDIT_SKIP=1 SPEED_LOCAL=1 sh "$tmp/tools/warm_edit_bench.sh" \
+    >"$tmp/skip.stdout" 2>"$tmp/skip.err" \
+    || { echo "witness_warm_edit: WARM_EDIT_SKIP did not stand the gate down" >&2; cat "$tmp/skip.err" >&2; exit 1; }
+grep -q "SKIPPED BY REQUEST" "$tmp/skip.err" \
+    || { echo "witness_warm_edit: the skip did not say so loudly" >&2; cat "$tmp/skip.err" >&2; exit 1; }
+
+# 3. the ratchet refuses a skip stream it was handed, and the opt-out stands it.
+printf 'host ci-warm\nskip warm-edit\n' > "$tmp/skip.metrics"
+if python3 "$root/tools/speed_ratchet.py" --warm --raw "$tmp/skip.metrics" >"$tmp/ratchet.out" 2>&1; then
+    echo "witness_warm_edit: the ratchet PASSED a skipped measurement" >&2
+    cat "$tmp/ratchet.out" >&2
+    exit 1
+fi
+grep -q "REFUSED" "$tmp/ratchet.out" \
+    || { echo "witness_warm_edit: the ratchet did not name the skip" >&2; cat "$tmp/ratchet.out" >&2; exit 1; }
+WARM_EDIT_SKIP=1 python3 "$root/tools/speed_ratchet.py" --warm --raw "$tmp/skip.metrics" \
+    >"$tmp/ratchet-skip.out" 2>&1 \
+    || { echo "witness_warm_edit: WARM_EDIT_SKIP did not stand the ratchet down" >&2; cat "$tmp/ratchet-skip.out" >&2; exit 1; }
+
+# 4. the rules themselves, on fixtures.
+python3 "$root/tools/speed_ratchet.py" --self-test >/dev/null
+echo "witness_warm_edit: clean — a skip FAILS, and only WARM_EDIT_SKIP stands it down"
