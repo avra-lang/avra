@@ -296,6 +296,7 @@ export fn lower(a: Analysis) -> Lowered {
             (_f: FileId) -> false,
             (_f: FileId) -> false,
             no_kept,
+            true,
         )
 }
 
@@ -439,6 +440,7 @@ impl Decls {
         is_held: fn(FileId) -> bool,
         is_program: fn(FileId) -> bool,
         kept_instance: fn(Instance) -> KeptInstance,
+        answers_held: bool,
     ) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
@@ -491,13 +493,16 @@ impl Decls {
         let laid_out = distinct_statics(statics.concat(d.statics))
         let asked = hashes.concat(d.hashes)
         let unmanaged = fns
+        // A PROGRAM THAT LINKS NOTHING NEEDS NO HASH A HELD FILE ASKS: those answer to its
+        // own object. Only the hashes this program's own code asks are computed.
+        let kept_hashes = if answers_held || !asked.is_empty() { held_codes.concat(d.kept) } else { [] }
         let answered = code_hashes(
             self,
             fns.concat([entry_body]),
             laid_out,
             d.held,
             [h.target for h in asked],
-            held_codes.concat(d.kept),
+            kept_hashes,
             [r.name for r in rt_sigs()].concat([r.name for r in self.extern_rows()]),
         )
         fns = fns.concat(answered.bodies)
