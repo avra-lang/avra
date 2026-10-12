@@ -29,6 +29,7 @@ use core.{
     traced,
 }
 use @std.path.{joined_path, normalized}
+use @std.time.{now_ns}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
 use features.{Decl, Decls, DocFact, NameFacts, Wanted, FnSig, repr_word, spelled_type, kind_word}
@@ -202,6 +203,7 @@ export fn parse_into(lang: Language, store: SyntaxArena, src: SourceFile, words:
 }
 
 fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
+    let t_start = now_ns()
     if lang.syntax == null {
         return Parsed {
             store: store,
@@ -217,20 +219,27 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         [c.word for c in words.components if c.own],
         lang.keywords,
     )
-    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
-        lang.builders,
-        store,
-        name,
-        args,
-        loc_span(loc),
-        src.text,
-        words,
-    )
+    let t_lexed = now_ns()
+    let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> {
+        let tb = now_ns()
+        let built_node = build_named(
+            lang.builders,
+            store,
+            name,
+            args,
+            loc_span(loc),
+            src.text,
+            words,
+        )
+        if traced() { qtrace("B\t${now_ns() - tb}\n") }
+        built_node
+    }
     let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written. Set before
     // attach_docs: an orphaned doc group extends this list, and
     // needs it already standing to merge into.
+    let t_grammar = now_ns()
     store.keep_remarks(lexed.remarks)
     attach_docs(store, lexed.docs)
     if !lexed.file_doc.is_empty() { store.document_file(lexed.file_doc) }
@@ -239,9 +248,11 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
     let engine = [lex_diagnostic(e.message, span_loc(e.span)) for e in lexed.errors]
         .concat(o.diagnostics)
         .concat(blocked)
+    let stmts = [store.declared_instance(s) for s in program_stmts(store, o)].concat(store.hoisted_decls())
+    if traced() { qtrace("S\t${src.file}\t${src.text.length}\t${lexed.tokens.length}\t${t_lexed - t_start}\t${t_grammar - t_lexed}\t${now_ns() - t_grammar}\n") }
     Parsed {
         store: store,
-        stmts: [store.declared_instance(s) for s in program_stmts(store, o)].concat(store.hoisted_decls()),
+        stmts: stmts,
         source: src,
         voices: Voices { list: project_all(engine, src.file, lang.rows.codes) },
     }

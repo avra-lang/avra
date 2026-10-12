@@ -19,6 +19,8 @@
 use @std.text.{Text, builder}
 use core.{Span, span_of, Remark, Trivia}
 use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
+use core.{qtrace, traced}
+use @std.time.{now_ns}
 
 /// What a token is; Lit-vs-kind matching keys off this. The IStr
 /// kinds are an interpolated string's pieces: `"a ${x} b ${y} c"`
@@ -766,8 +768,11 @@ fn lex_words(
         line_has_token: false,
         i: 0,
     }
+    let t0 = now_ns()
     lx.run()
+    let t1 = now_ns()
     mut tokens = collapse_breaks(lx.raw, boundary)
+    if traced() { qtrace("L\tscan\t${t1 - t0}\tcollapse\t${now_ns() - t1}\n") }
     // Every rule or statement ends in a Break, even without a trailing
     // newline.
     let tail: Token? = tokens.last()
