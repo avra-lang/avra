@@ -13,6 +13,8 @@
 use @std.text.{parse_int}
 use core.{
     CollectKind,
+    qtrace,
+    traced,
     Plain,
     wire_fields,
     some_list,
@@ -50,7 +52,11 @@ impl Workspace {
     /// same identity folded into the key itself, so the row stays correctly addressed even
     /// where a store is ever shared across generations.
     fn record_key(m: ModulePath) -> string {
-        node_key(Stored.Sig, [self.compiler_id(), self.root, m.text()])
+        let known: string? = self.records.record_keys.get().get(m.text())
+        if known != null { return known! }
+        let made = node_key(Stored.Sig, [self.compiler_id(), self.root, m.text()])
+        self.records.record_keys.put(m.text(), made)
+        made
     }
 
     /// Where this compiler keeps record bodies, by module and interface.
@@ -277,6 +283,7 @@ fn record_known(ws: Workspace, m: ModulePath, text: string) {
     let key = ws.record_key(m)
     let lines = text.split("\n")
     ws.records.record_texts.put(key, text)
+    ws.records.record_prints.put(m.text(), digest_of(text))
     ws.records.record_lines.put(key, lines)
     let fields = [read_fields(line) for line in lines]
     ws.records.record_fields.put(key, fields)
@@ -1332,9 +1339,46 @@ impl Workspace {
     fn view_parts(store: Store, m: ModulePath) -> List<SeenPart> {
         let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
         if known != null { return known! }
-        let r = self.reach(store, m)
-        let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in sorted_texts([m.text()].concat(r.mods))]
+        let reached = self.reached_kept(store, m) ?? self.reached_walked(store, m)
+        let made = [if g.module == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, g.module, g.files) } for g in reached.deps]
         self.keys.view_parts.put(m.text(), made)
+        made
+    }
+
+    /// A module's reach as a previous build kept it, when every record it walked is
+    /// the one it walked: the walk is a function of those records alone.
+    fn reached_kept(store: Store, m: ModulePath) -> KeptReach? {
+        let wire? = store.get(Stored.Unit, self.reach_key(m)) else { return null }
+        let kept? = reached_of(wire) else { return null }
+        if kept.inputs.any((i) -> self.record_print(store, i.module) != i.print) { return null }
+        if traced() { qtrace("Q\treach\t${m.text()}\tkept\n") }
+        kept
+    }
+
+    /// A module's reach, walked over the records and kept for the next build.
+    fn reached_walked(store: Store, m: ModulePath) -> KeptReach {
+        let r = self.reach(store, m)
+        let made = KeptReach {
+            inputs: [KeptInput { module: n, print: self.record_print(store, n) } for n in r.sees.keys()],
+            deps: [KeptDep { module: dep, files: r.files_of(dep) } for dep in sorted_texts([m.text()].concat(r.mods))],
+        }
+        if traced() { qtrace("Q\treach\t${m.text()}\twalked\n") }
+        let wire = reached_wire(made)
+        if store.get(Stored.Unit, self.reach_key(m)) != wire { let _ = store.keep(Stored.Unit, self.reach_key(m), wire, []) }
+        made
+    }
+
+    /// Where a module's reach is kept: under this compiler and tree, since the walk is the compiler's.
+    fn reach_key(m: ModulePath) -> string {
+        node_key(Stored.Unit, ["reach", self.compiler_id(), self.root, m.text()])
+    }
+
+    /// A record's content digest, memoized for the build and renewed by every write of it.
+    fn record_print(store: Store, name: string) -> string {
+        let known: string? = self.records.record_prints.get().get(name)
+        if known != null { return known! }
+        let made = digest_of(record_cached(self, store, module_path(name.split("."))))
+        self.records.record_prints.put(name, made)
         made
     }
 
@@ -1452,6 +1496,37 @@ impl Workspace {
             bytes_key: bytes_key_cached(self, store, m),
             files: self.module_files(m).length,
         }
+    }
+}
+
+/// A record a reach walked, and its content digest then.
+type KeptInput = { module: string, print: string }
+
+/// The files a module's reach took from one module (a module's own: none).
+type KeptDep = { module: string, files: List<string> }
+
+/// A module's reach, as kept: the records it walked and the modules it reached into.
+type KeptReach = { inputs: List<KeptInput>, deps: List<KeptDep> }
+
+/// A reach as a row: a line per walked record and per reached module, fields apart
+/// by tabs. A path holding a tab or a break has no spelling here, so the row is empty.
+fn reached_wire(r: KeptReach) -> string {
+    let plain = !r.deps.any((g) -> g.files.any((f) -> f.contains("\t") || f.contains("\n")))
+    if !plain { return "" }
+    joined(
+        [("in\t${i.module}\t${i.print}") for i in r.inputs].concat([("dep\t${g.module}\t${joined(g.files, "\t")}") for g in r.deps]),
+        "\n",
+    )
+}
+
+/// `reached_wire`, read back; null for a row that is not one.
+fn reached_of(wire: string) -> KeptReach? {
+    if wire == "" { return null }
+    let rows = [line.split("\t") for line in wire.split("\n")]
+    if rows.any((p) -> p.length < 2 || (p[0] != "in" && p[0] != "dep") || (p[0] == "in" && p.length != 3)) { return null }
+    KeptReach {
+        inputs: [KeptInput { module: p[1], print: p[2] } for p in rows if p[0] == "in"],
+        deps: [KeptDep { module: p[1], files: [f for f in p.slice(2, p.length) if !f.is_empty()] } for p in rows if p[0] == "dep"],
     }
 }
 

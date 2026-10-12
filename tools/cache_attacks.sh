@@ -318,6 +318,40 @@ steps=$((steps+1)); rp_out=$($R/rp/src/main 2>&1)
 
 fi
 
+if section rk; then
+# A MODULE'S REACH IS KEPT, AND JUDGED BY THE RECORDS IT WALKED. `top` sees `lib` only through
+# `mid`'s signature (Box). Warm edits beside them walk nothing of theirs; Box moving to another
+# file of `lib` re-walks `top`, whose key then covers the file Box lives in now — so a field
+# renamed there is seen by `top` (a stale reach would hold `top` on a file it no longer reads).
+mkdir -p $R/rk/src/lib $R/rk/src/mid $R/rk/src/top $R/rk/src/o
+printf '[package]\nname = "rt-rk"\nversion = "0.1.0"\n' > $R/rk/avra.toml
+printf 'export type Box = { n: int }\nexport fn make() -> Box { Box { n: 4 } }\n' > $R/rk/src/lib/a.av
+printf 'use lib.{make, Box}\nexport fn m() -> Box { make() }\n' > $R/rk/src/mid/m.av
+printf 'use mid.{m}\nexport fn t() -> int { m().n + 1 }\n' > $R/rk/src/top/t.av
+printf 'export fn other() -> string { "o0" }\n' > $R/rk/src/o/o.av
+printf 'use top.{t}\nuse o.{other}\nprintln("${t()} ${other()}")\n' > $R/rk/src/main.av
+rk_n=0
+rk_edit() { rk_n=$((rk_n+1)); printf 'export fn other() -> string { "o%s" }\n' "$rk_n" > $R/rk/src/o/o.av; }
+rk_reach() { AVRA_QTRACE=1 ./avra check $R/rk 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "reach" { print $3 " " $4 }'; }
+HR "cold rk" check rk 0
+rk_edit; rk_reach > /dev/null
+rk_edit; rk_edit_out=$(rk_reach)
+steps=$((steps+1)); case "$rk_edit_out" in *"lib kept"*) ;; *) fails=$((fails+1)); echo "FAIL  rk: a warm edit beside lib kept no reach row for it: '$(printf '%s' "$rk_edit_out" | tr '\n' ' ')'" ;; esac
+steps=$((steps+1)); case "$rk_edit_out" in *"lib walked"*|*"mid walked"*|*"top walked"*) fails=$((fails+1)); echo "FAIL  rk: an edit to o walked a reach whose records stand: '$(printf '%s' "$rk_edit_out" | tr '\n' ' ')'" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    rk: standing records walk nothing" ;; esac
+printf 'export fn make() -> Box { Box { n: 4 } }\n' > $R/rk/src/lib/a.av
+printf 'export type Box = { n: int }\n' > $R/rk/src/lib/c.av
+HR "rk: Box moved to another file of lib" check rk 0
+rk_edit; HR "rk: the settle" check rk 0
+printf 'export type Box = { k: int }\n' > $R/rk/src/lib/c.av
+printf 'export fn make() -> Box { Box { k: 4 } }\n' > $R/rk/src/lib/a.av
+HR "rk: a field renamed in the file Box moved to is seen by top" check rk 1
+printf 'use mid.{m}\nexport fn t() -> int { m().k + 1 }\n' > $R/rk/src/top/t.av
+HR "rk: top follows" check rk 0
+steps=$((steps+1)); rk_out=$(./avra run $R/rk 2>/dev/null | unwatched)
+[ "$rk_out" = "5 o3" ] || { fails=$((fails+1)); echo "FAIL  rk: the program printed '$rk_out', wanted '5 o3'"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
