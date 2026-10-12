@@ -197,6 +197,22 @@ check "$?" "1" "red close: a batch that did not merge exits 1"
 check "$(grep -c '^pr close' "$fx/gh.log")" "0" "red close: no member is closed"
 check "$(grep -c "#2's file src/a.txt is named by cache-attacks" "$scratch/err")" "1" "red close: names the member whose file the failing log names"
 
+# ── 10. --plan names every refusal and conflict, and moves nothing ───────
+reset_clone
+before_refs=$(git -C "$scratch/origin.git" for-each-ref --format='%(refname)' | sort | tr '\n' ' ')
+batch --plan --n 9 2 4 5 7
+check "$?" "1" "plan: a plan that is not buildable exits 1"
+check "$(grep -c 'plan: #4 (h4) would CONFLICT; conflicting files: a.txt' "$scratch/out" "$scratch/err" | awk -F: '{s+=$2} END {print s}')" "1" "plan: names the conflict and its file"
+check "$(grep -c 'plan: would refuse: #5 refused: its test check is FAILURE' "$scratch/out" | tr -d ' ')" "1" "plan: names the test refusal and goes on"
+check "$(grep -c 'plan: would refuse: #7: cache-attacks is SKIPPED' "$scratch/out" | tr -d ' ')" "1" "plan: names the skipped attacks and goes on"
+check "$(git -C "$scratch/origin.git" for-each-ref --format='%(refname)' | sort | tr '\n' ' ')" "$before_refs" "plan: no ref on origin moved"
+check "$(cat "$fx/gh.log" 2>/dev/null | grep -cE '^(pr create|pr merge|pr close|api )')" "0" "plan: no write call to gh"
+reset_clone
+batch --plan --n 9 2 3
+check "$?" "0" "plan: a buildable plan exits 0"
+check "$(grep -c 'plan: buildable — nothing was pushed, opened, merged or retitled' "$scratch/out")" "1" "plan: says it is buildable and that nothing was touched"
+check "$(git -C "$scratch/origin.git" for-each-ref --format='%(refname)' refs/heads/batch-9 | wc -l | tr -d ' ')" "0" "plan: no batch-9 branch is created on origin"
+
 echo
 echo "batch tests: $((total - failed))/$total passed"
 [ "$failed" = 0 ]

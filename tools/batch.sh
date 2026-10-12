@@ -64,6 +64,47 @@ m = re.search(r"<!-- batch-members: ([0-9 ]+) -->", pr.get("body") or "")
 print(" ".join(m.group(1).split()) if m else "")'
 }
 
+# A refusal stops a real batch. A plan names every refusal and goes on.
+refuse() {
+    if [ -n "$plan" ]; then
+        echo "plan: would refuse: $*"
+        refused=1
+    else
+        die "$*"
+    fi
+}
+
+# The batch the members would make, merged in memory: each step is a
+# merge-tree over commits made with commit-tree, so no ref and no remote moves.
+plan_merges() {
+    pn=$1; shift
+    base=$(git rev-parse origin/main)
+    conflicted=
+    for pr in "$@"; do
+        head=$(member_facts "$pr" | cut -f5)
+        git fetch -q origin "+refs/heads/$head:refs/remotes/origin/$head" || die "fetch of $head failed"
+        if out=$(git merge-tree --write-tree --name-only "$base" "origin/$head" 2>/dev/null); then
+            tree=$(printf '%s\n' "$out" | head -n 1)
+            base=$(git commit-tree "$tree" -p "$base" -m "plan: batch-$pn with #$pr")
+            echo "plan: #$pr ($head) merges cleanly"
+        else
+            files=$(printf '%s\n' "$out" | tail -n +2 | grep -v '^$' | tr '\n' ' ')
+            echo "plan: #$pr ($head) would CONFLICT; conflicting files: ${files:-(none named)}"
+            conflicted=1
+        fi
+    done
+    echo "plan: batch-$pn would be: PR title \"batch #$pn:$titles\", members in order:$titles"
+    echo "plan: the batch PR body would be:"
+    printf '%s\n' "$body" | sed 's/^/plan: body | /'
+    for pr in "$@"; do
+        title=$(member_facts "$pr" | cut -f4)
+        echo "plan: would retitle #$pr: DO NOT MERGE (lands via batch #$pn) — $(strip_dnm "$title")"
+    done
+    echo "plan: it would arm auto-merge (squash) on the batch PR"
+    [ -z "$conflicted" ] && [ -z "$refused" ] || { echo "plan: NOT BUILDABLE as given"; exit 1; }
+    echo "plan: buildable — nothing was pushed, opened, merged or retitled"
+}
+
 batch_close() {
     [ "$#" -eq 1 ] || die "usage: batch close <N>"
     n=$1
@@ -108,8 +149,10 @@ print(" ".join(x["path"] for x in json.load(sys.stdin)["files"]))'); do
 batch_build() {
     n=
     attacks=
+    plan=
     while [ "$#" -gt 0 ]; do
         case "$1" in
+            --plan) plan=1; shift ;;
             --n) n=$2; shift 2 ;;
             --attacks-ran) attacks="$attacks$2
 "; shift 2 ;;
@@ -119,7 +162,7 @@ batch_build() {
         esac
     done
     [ "$#" -ge 1 ] || die "usage: batch [--n N] [--attacks-ran N=EVIDENCE]… <pr>…"
-    [ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or drop your changes first"
+    [ -n "$plan" ] || [ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or drop your changes first"
     git fetch -q origin main || die "fetch of main failed"
     if [ -z "$n" ]; then
         last=$(git ls-remote --heads origin 'batch-*' | sed -n 's#.*refs/heads/batch-\([0-9][0-9]*\)$#\1#p' | sort -n | tail -n 1)
@@ -131,6 +174,7 @@ batch_build() {
     titles=
     rows=
     needs=
+    refused=
     for pr in "$@"; do
         row=$(member_facts "$pr") || die "no PR #$pr"
         num=$(printf '%s' "$row" | cut -f1)
@@ -140,35 +184,26 @@ batch_build() {
         test=$(printf '%s' "$row" | cut -f6)
         attacks_state=$(printf '%s' "$row" | cut -f7)
         before=$(printf '%s' "$row" | cut -f8)
-        [ "$state" = OPEN ] || die "#$num is $state, not open"
-        [ "$test" = SUCCESS ] || die "#$num refused: its test check is $test, not SUCCESS"
+        [ "$state" = OPEN ] || refuse "#$num is $state, not open"
+        [ "$test" = SUCCESS ] || refuse "#$num refused: its test check is $test, not SUCCESS"
         case "$attacks_state" in
             SUCCESS) ;;
-            FAILURE | ERROR | TIMED_OUT) die "#$num refused: its cache-attacks job is $attacks_state" ;;
+            FAILURE | ERROR | TIMED_OUT) refuse "#$num refused: its cache-attacks job is $attacks_state" ;;
             *)
                 ev=$(evidence_for "$num")
-                [ -n "$ev" ] || die "#$num: cache-attacks is $attacks_state, so it did not run — pass --attacks-ran $num=\"<the Sprite result>\""
-                needs="$needs
-#$num: $ev" ;;
+                if [ -z "$ev" ]; then
+                    refuse "#$num: cache-attacks is $attacks_state, so it did not run — pass --attacks-ran $num=\"<the Sprite result>\""
+                else
+                    needs="$needs
+#$num: $ev"
+                fi ;;
         esac
         members="$members $num"
         titles="$titles #$num"
         rows="$rows
-- #$num $title"
+- #$num $(strip_dnm "$title")"
         [ -n "$before" ] && rows="$rows
   $before"
-    done
-
-    git checkout -q -B "batch-$n" origin/main || die "could not create batch-$n"
-    for pr in $members; do
-        head=$(member_facts "$pr" | cut -f5)
-        git fetch -q origin "+refs/heads/$head:refs/remotes/origin/$head" || die "fetch of $head failed"
-        if ! git merge -q --no-edit "origin/$head" >/dev/null 2>&1; then
-            files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
-            git merge --abort >/dev/null 2>&1
-            die "#$pr ($head) conflicts with batch-$n; conflicting files: ${files:-(none named)}. Nothing was pushed and nothing was resolved."
-        fi
-        echo "batch: merged #$pr ($head)"
     done
 
     body="Integration of the members below (\`sh tools/work batch\`).
@@ -181,6 +216,22 @@ Members, in merge order:$rows"
 
 Cache-attacks did not run for these members; the evidence given:$needs"
     fi
+    if [ -n "$plan" ]; then
+        plan_merges "$n" $members
+        return
+    fi
+    git checkout -q -B "batch-$n" origin/main || die "could not create batch-$n"
+    for pr in $members; do
+        head=$(member_facts "$pr" | cut -f5)
+        git fetch -q origin "+refs/heads/$head:refs/remotes/origin/$head" || die "fetch of $head failed"
+        if ! git merge -q --no-edit "origin/$head" >/dev/null 2>&1; then
+            files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            git merge --abort >/dev/null 2>&1
+            die "#$pr ($head) conflicts with batch-$n; conflicting files: ${files:-(none named)}. Nothing was pushed and nothing was resolved."
+        fi
+        echo "batch: merged #$pr ($head)"
+    done
+
     git push -q -u origin "batch-$n" || die "push of batch-$n failed"
     url=$($gh_ pr create --base main --head "batch-$n" --title "batch #$n:$titles" --body "$body") ||
         die "could not open the batch PR"
