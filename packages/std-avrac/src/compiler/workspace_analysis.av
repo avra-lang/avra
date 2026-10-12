@@ -638,13 +638,25 @@ impl Workspace {
     /// `const<index>`, so a prefix match resolves index 12 to index 1 and
     /// holds the reader on the wrong declaration.
     fn decl_for_body(f: FileId, name: string) -> DeclId? {
+        if name.ends_with("\$w") { return self.decl_for_body(f, name.split("\$w")[0]) }
         let by_symbol = [d for d in self.decls.decls_of_file(f) if self.decls.symbol(d) == name]
             .first()
         if by_symbol != null { return by_symbol }
         let consts = [d for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Const]
         let exact = [d for d in consts if name == self.const_base(f, d)].first()
         if exact != null { return exact }
-        [d for d in consts if name.starts_with("${self.const_base(f, d)}@")].first()
+        let based = [d for d in consts if name.starts_with("${self.const_base(f, d)}@")].first()
+        based ?? self.decl_of_lifted(f, name)
+    }
+
+    /// The declaration a lifted lambda's body belongs to: the one whose range holds the
+    /// lambda's expression, named by its index in the body's symbol (`<file>$l<index>`).
+    fn decl_of_lifted(f: FileId, name: string) -> DeclId? {
+        let parts = name.split("\$l")
+        let at? = wire_number(parts.last() ?? "") else { return null }
+        if parts.length < 2 { return null }
+        [d for d in self.decls.decls_of_file(f) if self.decls.decl(d).lo <= at && at < self.decls.decl(d).hi]
+            .first()
     }
 
     /// A const declaration's plain settle base: its statement's `const_symbol`.
