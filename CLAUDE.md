@@ -1425,22 +1425,20 @@ registry is the idiom engine's spec, written by dogfooding.
   the raw brackets, style.free_state_verb the free verbs, style.raw_rt_call the raw runtime-call
   string, style.raw_mint_emit the raw mint-then-emit split, and the vocabulary grows
   with the next shared shape.
-- A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
-  REGISTERING, so it must name nothing that file declares. Running
-  `@derive(X)` over a declaration in file A types the file that
-  declares `X` — the WHOLE file, not just the trait — and A's own
-  impls are half-registered at that moment. The failure is SILENT and
-  accuses an innocent: `@derive(Rebuild)` on `Expr` in core/nodes.av,
-  with the trait beside the walk in core/rebuild.av, made every
-  `impl NodeStore` method in nodes.av VANISH — 51 diagnostics of the
-  form "`NodeStore` has no method `hole_stmt`", all pointing at
-  rebuild.av, none at the annotation. `methods()` already refuses to
-  MEMOIZE a table it cannot complete (workspace.av); what it cannot
-  do is stop the half-table from being READ. The remedy is the shape
-  `core/protocol.av` had by accident and `core/rebuild_derive.av` now
-  has on purpose: A DERIVE STANDS ALONE IN ITS FILE, with `@std/meta`
-  and nothing else. The generated code may still call the annotated
-  file's neighbours — that resolves later, at ordinary typing.
+- A DERIVE RUN TYPES THE DERIVE FN AND WHAT IT REACHES, NEVER ITS FILE.
+  A compile-time run lowers its unit against `analyzed_decl` (only
+  `typed(d)`), so a derive's file may hold fns that call methods of the
+  type it annotates, and a trait may name that file's types in its
+  signatures (`Identity` names `SyntaxArena`; `@derive(Identity)` stands
+  on `Arm` in nodes.av). The old law — a derive standing ALONE with
+  `@std/meta` — existed because the whole file was typed while the
+  annotated file's impls were half-registered (`@derive(Rebuild)` on
+  `Expr` made every `impl NodeStore` method in nodes.av vanish, 51
+  diagnostics all pointing at rebuild.av). What a derive CALLS at run
+  time is still its closure: a method of the annotated type reached from
+  the derive fn itself reads the half-registered table. Witness:
+  features/annotations/tests/derive_closure. A `collect enum E: T`
+  member is derived in its own file's expansion (`derived_for`).
 - A TYPE IN A PASS IS SPELLED, NEVER REBUILT: `cx.type(List<string?>)`,
   `cx.type(Map<string, want>)` — a type literal, the type in its own
   spelling folded ONCE by its receiver's `interned` (core/types.av's

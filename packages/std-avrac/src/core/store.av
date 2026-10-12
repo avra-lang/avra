@@ -257,7 +257,7 @@ export fn statement_after(starts: List<StmtStart>, at: int) -> StmtId? {
 impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
-        self.expr_fingerprints.push(self.fingerprint_expr(e))
+        self.expr_fingerprints.push(e.identity(self))
         self.trailing.push(false)
         self.piped.push(false)
         self.type_lits.push(false)
@@ -915,19 +915,23 @@ impl SyntaxArena {
     /// sequence and the same fingerprint. Two different programs,
     /// one identity, and the memo kernel cannot tell them apart.
     fn arm_fps(arms: List<Arm>) -> List<int> {
-        [fp(
+        [self.arm_fp(a) for a in arms]
+    }
+
+    fn arm_fp(a: Arm) -> int {
+        fp(
             29,
             [
                 fp_list([self.pat_fingerprint(p) for p in a.pats]),
                 fp_list([self.expr_fingerprint(g) for g in some_list(a.guard)]),
                 self.expr_fingerprint(a.value),
             ],
-        ) for a in arms]
+        )
     }
 
     /// The one statement-allocation seam.
     fn alloc_stmt(s: Stmt, span: Span? = null) -> StmtId {
-        self.stmt_fingerprints.push(self.fingerprint_stmt(s))
+        self.stmt_fingerprints.push(s.identity(self))
         self.marks.push(no_stmt_marks())
         self.grammars.push(null)
         self.component_insts.push(null)
@@ -1503,7 +1507,11 @@ fn unheard_fp(why: Unheard) -> int {
 impl SyntaxArena {
     /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
-        [fp(125, [fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)]) for c in cases]
+        [self.case_fp(c) for c in cases]
+    }
+
+    fn case_fp(c: Case) -> int {
+        fp(125, [fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)])
     }
 
     /// A param list's fingerprint parts — ONE VALUE PER SEAT. A seat
@@ -1512,7 +1520,11 @@ impl SyntaxArena {
     /// are different records, and a defaults list beside the fields
     /// says which defaults exist without saying whose they are.
     fn param_fps(params: List<Param>) -> List<int> {
-        [fp(
+        [self.param_fp(p) for p in params]
+    }
+
+    fn param_fp(p: Param) -> int {
+        fp(
             123,
             [
                 fp_str(p.name.of),
@@ -1523,7 +1535,7 @@ impl SyntaxArena {
                 if p.state { 1 } else { 0 },
                 self.says_fp(p.says),
             ],
-        ) for p in params]
+        )
     }
 
     /// What an event says, as ONE value — and an event that says
@@ -1537,14 +1549,18 @@ impl SyntaxArena {
     /// Spliced flat, a variant's payload run and the next variant's
     /// name share a boundary that moves.
     fn variant_fps(variants: List<Variant>) -> List<int> {
-        [fp(
+        [self.variant_fp(v) for v in variants]
+    }
+
+    fn variant_fp(v: Variant) -> int {
+        fp(
             124,
             [
                 fp_str(v.name.of),
                 fp_list(self.param_fps(v.payloads)),
                 fp_list(self.mark_fps(v.marks)),
             ],
-        ) for v in variants]
+        )
     }
 
     /// A comprehension clause list's fingerprint parts — ONE VALUE
