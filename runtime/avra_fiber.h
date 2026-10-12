@@ -46,7 +46,7 @@ void avra_tasks_push(void* owner, void* task);
 // cancel of the caller cuts the park: the unwind bit is set and NULL
 // comes back. A task that ended cancelled has no answer, and its
 // cancel is the caller's: cancelled by the same asker, the bit set,
-// NULL back. Under a shield, where nothing reads the bit, it traps.
+// NULL back. Under a shield, where a deferred call runs whole, it traps.
 void* avra_task_join(void* task);
 
 // A caught join: waits for the task to end WITHOUT passing its cancel

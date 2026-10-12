@@ -8,8 +8,9 @@ use @std.process.{Exit, Outcome}
 use @std.time.{now_ns}
 
 /// A package minted fresh: a spec file, a module file, two program tests
-/// (one whose `.expected` disagrees with what it prints) and one `.refuses`
-/// test. Answers the package's root.
+/// (one whose `.expected` disagrees with what it prints), one `.refuses`
+/// test, and two `.verdict` tests — one over a run a join cancels, one
+/// over a run that traps instead. Answers the package's root.
 fn scoped_package() -> string {
     let root = "${scratch_dir()}/test_scope_${now_ns()}"
     let tests = "${root}/src/tests"
@@ -32,7 +33,18 @@ fn scoped_package() -> string {
     let _ = write_text("${tests}/wrong/wrong.expected", "wrong\n")
     let _ = write_text("${tests}/trap/trap.av", "let missing: int? = null\nmissing!\n")
     let _ = write_text("${tests}/trap/trap.refuses", "unwrapped an absent value\n")
+    let _ = make_dirs("${tests}/cut")
+    let _ = make_dirs("${tests}/uncut")
+    let _ = write_text("${tests}/cut/cut.av", cut_program())
+    let _ = write_text("${tests}/cut/cut.verdict", "avra: main was cancelled — awaiting a task cancelled by main\n")
+    let _ = write_text("${tests}/uncut/uncut.av", "let missing: int? = null\nmissing!\n")
+    let _ = write_text("${tests}/uncut/uncut.verdict", "unwrapped an absent value\n")
     root
+}
+
+/// A program whose own run awaits a task it cancelled.
+fn cut_program() -> string {
+    "extern fn avra_task_pending() -> ptr\nextern fn avra_task_cancel(t: ptr)\nextern fn avra_task_join(t: ptr) -> ptr\nlet p = avra_task_pending()\navra_task_cancel(p)\nlet _a = avra_task_join(p)\n"
 }
 
 fn exit_is_one(e: Exit) -> bool {
@@ -72,6 +84,14 @@ spec "avra test — one path proves what stands at or under it" {
     given "a `.refuses` program test" {
         then "its trap in its voice passes, counting one refusal" {
             passed_saying("src/tests/trap/trap.av", "1 refusal proved")
+        }
+    }
+    given "a `.verdict` program test" {
+        then "a run cancelled in its words, exit 1, passes in both engines" {
+            passed_saying("src/tests/cut/cut.av", "1 refusal proved")
+        }
+        then "a run that traps instead fails, naming the end it owed" {
+            failed_saying("src/tests/uncut/uncut.av", "wanted a verdict (code 1)")
         }
     }
     given "a spec file" {

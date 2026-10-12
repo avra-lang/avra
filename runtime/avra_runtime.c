@@ -3442,18 +3442,18 @@ const char* avra_main_cancelled_words(int64_t by) {
     if (by & AVRA_SCOPE_IDS) avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by a `within` limit");
     else if (by == 0) avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by main");
     else avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by task %lld", (long long)by);
-    return str_owned(words, strlen(words));
+    return str_static(words);
 }
 
 __attribute__((noinline, cold))
 static int32_t main_cancelled(void) {
     fflush(stdout);
-    fprintf(stderr, "avra: %s\n", avra_main_cancelled_words(avra_main_asker));
+    fprintf(stderr, "avra: %s\n", avra_main_cancelled_words(avra_main_asker - 1));
     return 1;
 }
 
 int32_t avra_main_ended(int32_t code) {
-    return __builtin_expect(avra_unwinding, 0) ? main_cancelled() : code;
+    return __builtin_expect(avra_main_asker != 0, 0) ? main_cancelled() : code;
 }
 
 __attribute__((noinline, cold, noreturn))

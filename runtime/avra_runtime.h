@@ -39,13 +39,13 @@ extern uint8_t avra_unwinding;
 #define AVRA_SCOPE_IDS ((int64_t)1 << 62)
 
 // WHEN THE PROGRAM'S OWN RUN IS CANCELLED — it awaited a task that ended
-// cancelled — the scheduler keeps who asked here, and the run's end
-// says so. The words, owned, for the asker `by`: a task's id (0 is the
-// run itself) or a scope's.
+// cancelled — the scheduler keeps the request here, 1 + who asked and 0
+// for none, and the run's end says so. The words, immortal, for the
+// asker `by`: a task's id (0 is the run itself) or a scope's.
 extern int64_t avra_main_asker;
 const char* avra_main_cancelled_words(int64_t by);
 // The program's own run ended and answered `code`: the code — or,
-// ended unwinding, one line on stderr and 1. A verdict; 2 is a trap's.
+// cancelled, one line on stderr and 1. A verdict; 2 is a trap's.
 int32_t avra_main_ended(int32_t code);
 
 // The schedule the case in flight runs under, or -1; a trap says it.

@@ -1975,8 +1975,9 @@ static void join_refused(void) { avra_trap("a join takes a task that answers, an
 // handed back. A TASK THAT ENDED CANCELLED HAS NO ANSWER, AND ITS
 // CANCEL IS ITS AWAITER'S: the caller is cancelled by the same asker
 // and unwinds from here. A caller already unwinding carries its own
-// request, and takes on no other. UNDER A SHIELD NOTHING READS THE
-// BIT — a deferred call runs whole — so there the join refuses.
+// request, and takes on no other. UNDER A SHIELD A DEFERRED CALL RUNS
+// WHOLE: nothing may cut it, and there is no answer for it to go on
+// with, so there the join refuses.
 void* avra_task_join(void* task) {
     int64_t* cells = task_awaited(task, 0);
     if (!cells[GATE_OPEN]) return NULL;
@@ -2148,10 +2149,10 @@ void avra_task_cancel(void* task) { task_cancelled(task, id_of(g_current)); }
 // A CANCEL PASSED ON BY A JOIN IS ITS AWAITER'S OWN REQUEST from here:
 // what the awaiter owns is cancelled as it leaves, and its end names
 // the asker. A request that stands already is not displaced. The
-// program's own run keeps who asked where its end reads it.
+// program's own run keeps the request where its end reads it.
 static void cancel_passed(Fiber* f, int64_t by) {
     if (f->cancel_by == 0) fiber_cancelled(f, by);
-    if (f == &g_main) avra_main_asker = asker_of(f);
+    if (f == &g_main) avra_main_asker = f->cancel_by;
 }
 
 // ── The rows that predate the wait set ──────────────────────────

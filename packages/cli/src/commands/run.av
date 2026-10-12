@@ -1,6 +1,7 @@
 //! `avra run` — evaluate a program and print its value.
 use @std.cli.{CliResult, Runnable, command}
 use @std.avrac.compiler.{Program}
+use @std.avrac.compiler.backend.{Ended}
 
 type RunCmd = {}
 
@@ -13,17 +14,25 @@ impl Runnable for RunCmd {
     }
 }
 
-/// A trap speaks as a native binary's does: `avra: <words>` on stderr,
-/// exit 2 — so the two engines end the same program the same way.
 fn ran(p: Program) -> Result<int, string> {
     warn(p)
-    match p.run_live()? {
+    ended_as(p.run_live()?)
+}
+
+/// AN EVALUATED RUN ENDS AS A NATIVE BINARY DOES, so the two engines
+/// end one program one way: `avra: <words>` on stderr and a trap's 2 —
+/// or, the program's own run cancelled, a verdict's 1.
+export fn ended_as(e: Ended) -> int {
+    match e {
         .Clean -> 0,
-        .Trapped(words) -> {
-            eprintln("avra: ${words}")
-            2
-        },
+        .Trapped(words) -> said(words, 2),
+        .Cancelled(words) -> said(words, 1),
     }
+}
+
+fn said(words: string, code: int) -> int {
+    eprintln("avra: ${words}")
+    code
 }
 
 export command run {

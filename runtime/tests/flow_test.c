@@ -684,7 +684,8 @@ static void scope_unwinding_join_of_cancelled(void) {
     avra_clock_run_ends();
 }
 
-// UNDER A SHIELD NOTHING READS THE BIT, so the join refuses.
+// UNDER A SHIELD A DEFERRED CALL RUNS WHOLE: nothing may cut it, and
+// the join has no answer for it to go on with, so the join refuses.
 static void shielded_join_of_cancelled(void) {
     void* t = avra_task_pending();
     avra_task_cancel(t);
@@ -698,23 +699,31 @@ static void main_awaits_a_cancelled(void) {
     g_pending = avra_task_pending();
     ended(spawn1(cancels_the_pending, 0));
     void* r = avra_task_join(g_pending);
-    int passed = r == NULL && avra_unwinding == 1 && g_asker != 0 && avra_main_asker == g_asker;
+    int passed = r == NULL && avra_unwinding == 1 && g_asker != 0 && avra_main_asker == g_asker + 1;
     _exit(passed ? avra_main_ended(0) : 3);
 }
 
-static int words_are(int64_t by, const char* want) {
-    const char* words = avra_main_cancelled_words(by);
-    int same = strcmp(words, want) == 0;
-    avra_rc_release((void*)(uintptr_t)words);
-    return same;
+static void main_awaits_what_it_cancelled(void) {
+    void* t = avra_task_pending();
+    avra_task_cancel(t);
+    avra_task_join(t);
+    _exit(avra_main_ended(0));
 }
 
-static void a_cancelled_run_says_who(void) {
+static int words_are(int64_t by, const char* want) {
+    return strcmp(avra_main_cancelled_words(by), want) == 0;
+}
+
+// The words are immortal boxes: a child reads them, so the process that
+// counts what its fibers left behind holds none.
+static void a_run_end_in_words(void) {
     CHECK(avra_main_ended(7) == 7, "a run that ended uncancelled answers its own code");
+    avra_unwinding = 1;
+    CHECK(avra_main_ended(7) == 7, "and so does one unwinding under no passed cancel: its end claims no await");
+    avra_unwinding = 0;
     CHECK(words_are(7, "main was cancelled — awaiting a task cancelled by task 7"), "the words name the asking task");
     CHECK(words_are(0, "main was cancelled — awaiting a task cancelled by main"), "or the run itself");
     CHECK(words_are(AVRA_SCOPE_IDS | 3, "main was cancelled — awaiting a task cancelled by a `within` limit"), "or a scope's limit");
-    said_within("a cancelled run", main_awaits_a_cancelled, "avra: main was cancelled — awaiting a task cancelled by task ", 60, 1);
 }
 
 static void caught_join_of_answered(void) {
@@ -951,7 +960,7 @@ static void joins_cancelled(void) {
     void* t = avra_task_pending();
     avra_task_cancel(t);
     CHECK(avra_task_join(t) == NULL && avra_unwinding == 1, "a join of a cancelled task nothing ran hands back nothing and sets the bit");
-    CHECK(avra_main_asker == 0, "and the run's own record names who asked: itself");
+    CHECK(avra_main_asker == 1, "and the run's own record names who asked: itself");
 }
 
 // A CALLER ALREADY UNWINDING IS REFUSED NOTHING: its join of a
@@ -2787,7 +2796,9 @@ int main(int argc, char** argv) {
     on_virtual_clock("a passed cancel keeps a standing request", passed_cancel_keeps_a_standing_request);
     on_virtual_clock("a join of a cancelled task under a scope's unwind", scope_unwinding_join_of_cancelled);
     trapped("a shielded join of a cancelled task", shielded_join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
-    a_cancelled_run_says_who();
+    in_child("a run's end, in words", a_run_end_in_words);
+    said_within("a cancelled run", main_awaits_a_cancelled, "avra: main was cancelled — awaiting a task cancelled by task ", 60, 1);
+    said_within("a run cancelled by its own ask", main_awaits_what_it_cancelled, "avra: main was cancelled — awaiting a task cancelled by main", 60, 1);
     on_virtual_clock("a caught join of a cancelled task", caught_join_of_cancelled);
     on_virtual_clock("a join of a cancelled task under a standing cancel", standing_join_of_cancelled);
     on_virtual_clock("a caught join names its asker", caught_join_names_its_asker);
