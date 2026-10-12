@@ -403,7 +403,7 @@ impl Workspace {
 
     /// One unit lowered and remembered: a body edit re-lowers its own
     /// unit; the specializations it wants are other units.
-    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id) }
+    fn lowered(id: int) -> Unit { self.lowered_in(Family.Lowered, id, true) }
 
     /// A COMPILE-TIME RUN'S OWN unit, remembered in ITS OWN family —
     /// never `Lowered`'s. The two share `id`'s space (interned by
@@ -413,18 +413,18 @@ impl Workspace {
     /// a comptime run's units — every seat borrowed, see
     /// `comptime_active` — from ever standing in for the real
     /// program's.
-    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id) }
+    fn lift_lowered(id: int) -> Unit { self.lowered_in(Family.LiftLowered, id, false) }
 
     /// The shared memo shape `lowered` and `lift_lowered` differ only
     /// by family: start recursive, reuse a settled answer, or lower
     /// the ask and settle it.
-    fn lowered_in(fam: Family, id: int) -> Unit {
+    fn lowered_in(fam: Family, id: int, rows: bool) -> Unit {
         match self.relation(fam).start_recursive(id) {
             .Reuse(value) -> { return lowered_of(value) },
             .Compute -> nothing(),
         }
         self.hold.lowering.push(id)
-        let out = self.lower_requested(self.asks.get()[id])
+        let out = self.lowered_unit(self.asks.get()[id], rows)
         let open = self.hold.lowering.get()
         self.hold.lowering.set(open.slice(0, open.length - 1))
         lowered_of(
@@ -432,6 +432,17 @@ impl Workspace {
                 .relation(fam)
                 .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> unit_fp(lowered_of(r))),
         )
+    }
+
+    /// One unit: served from its kept row when `rows` allows, else lowered and,
+    /// when it spoke nothing, kept.
+    fn lowered_unit(w: Wanted, rows: bool) -> Unit {
+        let served = if rows { self.unit_served(w) } else { null }
+        if traced() { qtrace("Q\tunit\t${if served == null { "lowered" } else { "served" }}\t${w.name}\n") }
+        if served != null { return served! }
+        let out = self.lower_requested(w)
+        if rows { self.unit_kept(w, out) }
+        out
     }
 
     /// Whether a compile-time run — a lift, an argument crossing, a
@@ -670,13 +681,25 @@ impl Workspace {
     /// `const<index>`, so a prefix match resolves index 12 to index 1 and
     /// holds the reader on the wrong declaration.
     fn decl_for_body(f: FileId, name: string) -> DeclId? {
+        if name.ends_with("\$w") { return self.decl_for_body(f, name.split("\$w")[0]) }
         let by_symbol = [d for d in self.decls.decls_of_file(f) if self.decls.symbol(d) == name]
             .first()
         if by_symbol != null { return by_symbol }
         let consts = [d for d in self.decls.decls_of_file(f) if self.decls.decl(d).kind is .Const]
         let exact = [d for d in consts if name == self.const_base(f, d)].first()
         if exact != null { return exact }
-        [d for d in consts if name.starts_with("${self.const_base(f, d)}@")].first()
+        let based = [d for d in consts if name.starts_with("${self.const_base(f, d)}@")].first()
+        based ?? self.decl_of_lifted(f, name)
+    }
+
+    /// The declaration a lifted lambda's body belongs to: the one whose range holds the
+    /// lambda's expression, named by its index in the body's symbol (`<file>$l<index>`).
+    fn decl_of_lifted(f: FileId, name: string) -> DeclId? {
+        let parts = name.split("\$l")
+        let at? = wire_number(parts.last() ?? "") else { return null }
+        if parts.length < 2 { return null }
+        [d for d in self.decls.decls_of_file(f) if self.decls.decl(d).lo <= at && at < self.decls.decl(d).hi]
+            .first()
     }
 
     /// A const declaration's plain settle base: its statement's `const_symbol`.

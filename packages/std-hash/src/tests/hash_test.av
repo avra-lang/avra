@@ -1,7 +1,7 @@
 // BLAKE3 against its published vectors (vendor/blake3/test_vectors.json:
 // input octet i is i mod 251; the first 32 octets of each extended
 // digest), whole and in pieces, and a hasher's state as a value.
-use @std.hash.{DIGEST_LEN, Hasher, blake3, hasher}
+use @std.hash.{DIGEST_LEN, Hasher, blake3, blake3_hex, hasher}
 
 type Vector = { length: int, hex: string }
 
@@ -87,6 +87,14 @@ spec "std/hash" {
         then "abc" { hex(blake3("abc".bytes())) == "6437b3ac38465133ffb63b75273a8db548c558465d79db03fd359c6cd5bd9d85" }
         then "a digest is 32 octets" { blake3("x".bytes()).length == DIGEST_LEN }
         then "an interior NUL is an octet like any other" { hex(blake3("a".bytes().concat([0].bytes()!).concat("b".bytes()))) != hex(blake3("ab".bytes())) }
+    }
+    given "a digest as hex" {
+        then "every published vector reads as its hex, one call or a hasher" {
+            [v.length for v in vectors() if blake3_hex(input(v.length)) != v.hex ||
+                hasher().update(input(v.length)).digest_hex() != v.hex]
+                .length == 0
+        }
+        then "hex is the digest's octets spelled" { blake3_hex("abc".bytes()) == hex(blake3("abc".bytes())) }
     }
     given "a hasher is a value" {
         then "a hasher never fed digests the empty input" { hasher().digest() == blake3("".bytes()) }
