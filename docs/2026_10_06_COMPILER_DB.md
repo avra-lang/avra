@@ -634,6 +634,41 @@ analyze and lower); at 67–75 ns a read that bounds to
 0.11 s of the edit. The read-cost budget is not a fix for today's slowness. It bounds DB
 12: as 32 families become queries, a recorded read must stay cheap.
 
+**DB 00d — the discarded attempt, MEASURED.** On the warm tree (`80581424`, the
+`linux-x86-64-amd-epyc` Sprite, `.avra-cache` warm), one body edit of
+`packages/cli/src/commands/shared.av` prints, under `check packages/cli --time`:
+
+```
+time: ast 9266ms, sublang 1199ms, ..., held 492/498, attempt 0, discarded 1, refused 0,
+      load 14243ms, admit 16ms, analyze 393ms, lower 8083ms, keep 1410ms
+  discarded: 11908ms — ast 8745ms, sublang 1047ms, load 11908ms — next reads 389 more (...)
+```
+
+The turn is `unruled` (derive.av): 389 reads are added, 385 `Unkept` from `lead_reads`
+(#468's const-verdict pre-reads) and 4 `Unruled` — `cli/src/commands/{explain,repr,run,writes}.av`,
+held files whose kept rule findings no longer stand. It is the 4 that turn the attempt;
+the 385 were already read.
+
+WHY, in one sentence: a body edit to `shared.av` moves a compile-time read token
+(`key_parts.runs`), so the four siblings that read it hold a key that no longer has its
+`rules` row — and that move is only knowable AFTER `settle_holds`/`unruled` resolve the
+pending reads, which parse ~144 files (`load`, ast ~8.7 s). The next attempt then
+repeats exactly that resolution, so the attempt is paid in full. The trace is
+`AVRA_QTRACE=1`'s `Q attempt 0 ... reading 0` then `Q attempt 1 ... reading 389`.
+
+Eliminated, each measured:
+- MOVE `read_held_asks`/`read_held_codes` before `program` (DB 00d's documented
+  AsksUnread cause for std-avrac): cli `warm edit` 35.4–35.9 s -> 36.8–39.0 s, `discarded`
+  still 1. The cli turn is `unruled`, not an unread asks row.
+- PRE-READ every held file whose compile-time read text moved (extend `lead_reads`):
+  cli `warm edit` 53.1 s, `held 465/498` — a regression, because forcing the readers to be
+  read lowers their bodies; the discard's cost is `load`, not the four files.
+
+CONCLUSION: no minimal "validation before derivation" exists for this turn — the
+validation (`unruled`) REQUIRES the pending-read resolution that is the discarded work.
+The fix is DB 07's per-declaration keys: a rule-finding row keyed so a sibling body edit
+cannot move it. Until then every one-edit cli check pays the discarded attempt.
+
 ### 7.3 Targets, and when each becomes reachable
 
 | scenario (`packages/cli`, cold process, no daemon) | gate | today |
