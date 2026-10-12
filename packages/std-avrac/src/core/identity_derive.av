@@ -28,80 +28,27 @@
 //! sequence.
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
-use @std.meta.{Type as MetaType, Field, Declared, Diagnostic, Directive, Code, refuse_as_at}
+use @std.meta.{Type as MetaType, Declared, Directive, Code}
 
 /// The compiler's derive for a node's content identity.
 export trait Identity {
     fn identity(arena: SyntaxArena) -> int
 
-    static fn derive(t: MetaType) -> Declared {
-        let problems = [unrowed(t, f) for f in t.fields if part(f) == null]
-        if !problems.is_empty() { return Declared { made: [], problems: problems } }
-        Declared {
-            made: [
-                Directive {
-                    twin: "",
-                    name: t.name,
-                    at: t.at,
-                    source: quote {
-                        impl Identity for ${t} {
-                            fn identity(arena: SyntaxArena) -> int { ${folded(t)} }
-                        }
-                    },
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl Identity for ${t} {
+                        fn identity(arena: SyntaxArena) -> int { ${record_fold(t, identity_of)} }
+                    }
                 },
-            ],
-            problems: [],
-        }
+            },
+        ]
     }
 }
 
-/// The fold: the type's name, then its payloads.
-fn folded(t: MetaType) -> Code {
-    parted(t.name, [part(f)! for f in t.fields])
-}
-
-/// HOW A PAYLOAD'S TYPE FOLDS — the whole registry, one row per shape
-/// the node model spells. A type absent here is a payload the model
-/// does not carry: absence, which the derive refuses rather than fold
-/// to a silent zero.
-fn part(f: Field) -> Code? {
-    let b = quote { self.${f.name} }
-    match f.ty {
-        "ExprId" -> quote { arena.expr_fingerprint(${b}) },
-        "ExprId?" -> quote { arena.opt_fp(${b}) },
-        "List<ExprId>" -> quote { fp_list(arena.expr_fps(${b})) },
-        "List<StmtId>" -> quote { fp_list(arena.stmt_fps(${b})) },
-        "List<Arm>" -> quote { fp_list(arena.arm_fps(${b})) },
-        "List<CompClause>" -> quote { fp_list(arena.comp_clause_fps(${b})) },
-        "List<Param>" -> quote { fp_list(arena.param_fps(${b})) },
-        "List<Variant>" -> quote { fp_list(arena.variant_fps(${b})) },
-        "List<Case>" -> quote { fp_list(arena.case_fps(${b})) },
-        "string" -> quote { fp_str(${b}) },
-        "List<string>" -> quote { fp_list(str_fps(${b})) },
-        "int" -> b,
-        "bool" -> quote { flagged(${b}) },
-        "BinOp" -> quote { fp_binop(${b}) },
-        "Scoped" or "Plain" or "Nominal" -> quote { fp_str(${b}.of) },
-        "Scoped?" or "Plain?" or "Nominal?" -> quote { fp_str(${b}?.of ?? "") },
-        "List<Plain>" -> quote { fp_list(plain_fps(${b})) },
-        "List<Scoped>" -> quote { fp_list(scoped_fps(${b})) },
-        "TypeRef" or "TypeRef?" -> quote { type_fp(${b}) },
-        "List<TypeRef>" -> quote { fp_list([type_fp(each) for each in ${b}]) },
-        "BodyView" -> quote { arena.view_fp(${b}) },
-        "CollectKind" -> quote { collectkind_fp(${b}) },
-        "CollectScope" -> quote { collectscope_fp(${b}) },
-        "Projection" -> quote { projection_fp(${b}) },
-        _ -> null,
-    }
-}
-
-// ── voices ──
-
-fn unrowed(t: MetaType, f: Field) -> Diagnostic {
-    refuse_as_at(
-        "identity-payload",
-        f.at,
-        "a node's identity folds the payload types the node model spells — `${t.name}.${f.name}` is `${f.ty}`, which has no row",
-        "give the type a row in `Identity`'s registry (core/identity_derive.av), or change the field's type",
-    )
-}
+/// A named payload folds by its own `identity`.
+fn identity_of(e: Code) -> Code { quote { ${e}.identity(arena) } }
