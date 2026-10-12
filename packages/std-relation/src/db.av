@@ -464,8 +464,10 @@ impl Db {
     /// A relation first reached here: the answers read back while it was unreached are told.
     fn reached(name: string) {
         let cell? = self.watched.get().get(name) else { return }
-        self.engine().set_input(Key { family: self.reach.get(), arg: cell }, 1)
+        self.engine().set_input(self.reach_key(cell), 1)
     }
+
+    fn reach_key(cell: int) -> Key { Key { family: self.reach.get(), arg: cell } }
 
     /// An answer read back stands on a relation not yet reached here: it is told when
     /// the relation is.
@@ -476,7 +478,7 @@ impl Db {
         let cell = known ?? self.watched.get().length
         if known == null {
             self.watched.put(name, cell)
-            kernel.set_input(Key { family: self.reach.get(), arg: cell }, 0)
+            kernel.set_input(self.reach_key(cell), 0)
         }
         kernel.record_at(self.reach.get(), cell)
     }
@@ -501,12 +503,12 @@ impl Db {
     }
 
     fn leaves_at(k: Key) -> List<Leaf>? {
-        let rel? = self.relations.get().find((r) -> r.family_now() == k.family) else { return self.answer_leaves(k) }
+        let rel? = self.relations.get().find(it.family_now() == k.family) else { return self.answer_leaves(k) }
         [Leaf.Rows(rel.name, rel.hash_now())]
     }
 
     fn answer_leaves(k: Key) -> List<Leaf>? {
-        let owner? = self.answer_refs.get().find((a) -> a.family_now() == k.family) else { return null }
+        let owner? = self.answer_refs.get().find(it.family_now() == k.family) else { return null }
         let noted = self.leaves.get().get("${edge_of(k)}")
         if noted != null { return noted!.known() }
         let spelled? = owner.spelled_at(k.arg) else { return null }
@@ -536,7 +538,7 @@ impl Db {
 
     /// A relation's rows' hash here; an unreached relation holds none.
     fn rows_digest(name: string) -> int {
-        let rel = self.relations.get().find((r) -> r.name == name)
+        let rel = self.relations.get().find(it.name == name)
         rel?.hash_now() ?? 0
     }
 
@@ -549,7 +551,7 @@ impl Db {
 
     /// The one query or input asked here wearing `name`; none when two do.
     fn answer_named(name: string) -> AnswerRef? {
-        let all = self.answer_refs.get().filter((a) -> a.name == name)
+        let all = self.answer_refs.get().filter(it.name == name)
         if all.length == 1 { all.first() } else { null }
     }
 
@@ -565,7 +567,7 @@ impl Db {
     }
 
     fn read_rows_leaf(kernel: Kernel, name: string) {
-        let rel = self.relations.get().find((r) -> r.name == name)
+        let rel = self.relations.get().find(it.name == name)
         if rel != null { kernel.record_at(rel!.family_now(), 0) } else { self.watch_reach(name) }
     }
 
@@ -1078,7 +1080,7 @@ impl AnswersUnder<V> {
     }
 
     /// The driver's own value for an input's call.
-    fn set(db: Db, arg: int, value: V, digest: fn(V) -> int) {
+    fn set(_db: Db, arg: int, value: V, digest: fn(V) -> int) {
         self.memo.set(arg, value, digest(value))
     }
 }
