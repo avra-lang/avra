@@ -458,7 +458,9 @@ static void* cut_then_joins(void* self) {
     avra_fiber_sleep(10000);
     g_task = spawn1(sleeper, 10000);
     avra_rc_retain(g_task);
+    int64_t t0 = avra_now_ns();
     void* r = avra_task_join(g_task);
+    g_spent_ms = ms_since(t0);
     g_byte_b = r == NULL;
     avra_rc_release(r);
     g_byte_a = avra_unwinding;
@@ -475,6 +477,7 @@ static void standing_join(void) {
     avra_fiber_sleep(2);
     avra_task_cancel(t);
     CHECK(ended(t) == 2 && g_byte_a == 1 && g_byte_b == 1, "a standing cancel cuts the join at once, the bit set, no answer handed back");
+    CHECK(g_spent_ms < 1000, "at once: it waited for nothing of the task's ten seconds");
     avra_rc_release(g_task);
     avra_clock_run_ends();
 }
