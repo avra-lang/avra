@@ -30,6 +30,8 @@ use features.{
 }
 use diagnostics.{SourceFile, DiagFacts, Severity}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb, new_db as new_relation_db}
 use compiler.{avra, new_workspace, Workspace}
 use compiler.host.{memory_host}
 use compiler.lower.{CodeFacts, FactNode, code_facts_wire, code_facts_from_wire}
@@ -764,12 +766,18 @@ fn same_diag_facts(a: DiagFacts, b: DiagFacts) -> bool {
 
 /// The fixture workspace's declaration names — the receipt that the
 /// id-writing codecs name a real `DeclId` rather than an empty list.
-export fn codec_fixture_decl_names() -> List<string> { codec_workspace().codec_decl_labels() }
+export fn codec_fixture_decl_names() -> List<string> { fixture_decl_names(new_relation_db()) }
+
+@query
+fn fixture_decl_names(_db: RelDb) -> List<string> { codec_workspace().codec_decl_labels() }
 
 /// The refusal law, exercised: a span no single declaration holds whole
 /// — one byte past its declaration's end — is refused, so a position
 /// that pointed outside its declaration never decodes to a moved one.
-export fn codec_loc_past_end_refused() -> bool {
+export fn codec_loc_past_end_refused() -> bool { loc_past_end_refused(new_relation_db()) }
+
+@query
+fn loc_past_end_refused(_db: RelDb) -> bool {
     let ws = codec_workspace()
     let a = ws.codec_decl_exemplars().find((d) -> ws.decls.decl(d).name == "a")!
     let sp = ws.decls.decl_span(a)!
@@ -777,8 +785,26 @@ export fn codec_loc_past_end_refused() -> bool {
     ws.loc_of_wire(ws.loc_wire(past)) == null
 }
 
+/// Every registered pair, each run in a query that makes its own fixture
+/// workspace — a Db made before its query opened is another query's input.
 export fn codec_pairs() -> List<CodecCheck> {
-    let ws = codec_workspace()
+    let names = pair_names(new_relation_db())
+    [own_db_check(i, names[i]) for i in 0..names.length]
+}
+
+@query
+fn pair_names(_db: RelDb) -> List<string> { [c.pair for c in codec_checks(codec_workspace())] }
+
+fn own_db_check(i: int, pair: string) -> CodecCheck {
+    CodecCheck { pair: pair, run: () -> ran_in_own_db(new_relation_db(), i) }
+}
+
+@query
+fn ran_in_own_db(_db: RelDb, i: int) -> List<string> {
+    codec_checks(codec_workspace())[i].run()
+}
+
+fn codec_checks(ws: Workspace) -> List<CodecCheck> {
     [
         derived(
             "lower.code_facts_wire/code_facts_from_wire",
