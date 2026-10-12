@@ -1009,6 +1009,12 @@ error[collect_enum.trait]: every member of a `collect enum E: T` implements `T` 
 help: name a trait this file can see
 ```
 
+## collect_enum.self
+
+a trait method taking `Self` answers `bool` to be delegated over members
+
+No witness yet.
+
 ## type.binding
 
 an annotated binding holds what it declares
