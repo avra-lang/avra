@@ -13,7 +13,7 @@ export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 BIN="$(pwd)/build/avra"
 R="$(pwd)/build/docs-cache-attack"; fails=0; steps=0
-rm -rf "$R" && mkdir -p "$R/p/src/util" "$R/dep/src" && git init -q "$R"
+rm -rf "$R" && mkdir -p "$R/p/src/util" "$R/dep/src/sub" && git init -q "$R"
 cat > "$R/p/avra.toml" <<'TOML'
 [package]
 name = "docs-attack"
@@ -31,7 +31,8 @@ version = "0.1.0"
 name = "da-dep"
 path = "src/lib.av"
 TOML
-printf '%s\n' "/// dep doc" "export fn shared() -> int { 5 }" > "$R/dep/src/lib.av"
+printf '%s\n' "use sub.{x}" "/// dep doc" "export fn shared() -> int { x() + 5 }" > "$R/dep/src/lib.av"
+printf '%s\n' "export fn x() -> int { 1 }" > "$R/dep/src/sub/a.av"
 write_a() { printf '%s\n' "/// $1" "export fn target() -> int { 1 }" > "$R/p/src/a.av"; }
 printf '%s\n' "export fn other() -> int { 2 }" > "$R/p/src/util/b.av"
 printf '%s\n' "use a.{target}" "use @da.dep.{shared}" "println(\"\${target() + shared()}\")" > "$R/p/src/main.av"
@@ -71,10 +72,9 @@ expect "the first text restored" miss
 expect "and warm" hit
 expect "a DEPENDENCY's declaration, cold" miss shared
 expect "and warm" hit shared
-mkdir -p "$R/dep/src/sub"
-printf '%s\n' "/// the other shared" "export fn shared() -> int { 6 }" > "$R/dep/src/sub/more.av"
-expect "a same-name declaration in a NEW file of the dependency" miss shared
-rm -rf "$R/dep/src/sub"
+printf '%s\n' "/// the other shared" "export fn shared() -> int { 6 }" > "$R/dep/src/sub/b.av"
+expect "a same-name declaration in a NEW file of the dependency's module" miss shared
+rm "$R/dep/src/sub/b.av"
 expect "the dependency's new file removed" miss shared
 rm "$R/p/src/a.av"; printf '%s\n' "use util.{other}" "println(\"\${other()}\")" > "$R/p/src/main.av"
 expect "the declaration's file removed" miss
