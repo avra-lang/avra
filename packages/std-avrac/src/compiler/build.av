@@ -492,9 +492,14 @@ impl Workspace {
     /// must still move the key.
     fn embeds(inputs: List<string>) -> List<string> {
         let store = self.opened_store()
+        mut places: Map<string, Map<string, Placed>> = {}
+        for path in inputs {
+            let module = self.module_of(path)
+            if !places.has(module) { places.set(module, record_places(self, store, self.module_path_of(path))) }
+        }
         sorted_texts(
             distinct(
-                [r.path for path in inputs for r in kept_runs(record_places(self, store, self.module_path_of(path)).get(path)) if !inputs.contains(r.path)],
+                [r.path for path in inputs for r in kept_runs(places.get(self.module_of(path))!.get(path)) if !inputs.contains(r.path)],
             ),
         )
     }
