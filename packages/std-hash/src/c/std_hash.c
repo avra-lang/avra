@@ -58,6 +58,24 @@ const void* avra_b3_digest(const uint8_t* state, int64_t sn) {
     return held.out;
 }
 
+/* A digest as 64 lowercase hex characters, in this thread's own buffer. */
+static const void* hexed(const uint8_t* digest) {
+    static _Thread_local char text[2 * BLAKE3_OUT_LEN];
+    static const char digits[] = "0123456789abcdef";
+    for (int i = 0; i < BLAKE3_OUT_LEN; i++) {
+        text[2 * i] = digits[digest[i] >> 4];
+        text[2 * i + 1] = digits[digest[i] & 15];
+    }
+    return text;
+}
+
+/* The digest of everything the state has seen, as hex, or null when
+   `state` is none. */
+const void* avra_b3_digest_hex(const uint8_t* state, int64_t sn) {
+    const void* d = avra_b3_digest(state, sn);
+    return d ? hexed(d) : NULL;
+}
+
 /* The 32-octet digest of `n` octets, in one call. */
 const void* avra_b3_oneshot(const uint8_t* in, int64_t n) {
     if (n < 0) return NULL;
@@ -66,4 +84,10 @@ const void* avra_b3_oneshot(const uint8_t* in, int64_t n) {
     blake3_hasher_update(&h, in, (size_t)n);
     blake3_hasher_finalize(&h, held.out, BLAKE3_OUT_LEN);
     return held.out;
+}
+
+/* The digest of `n` octets, in one call, as hex. */
+const void* avra_b3_oneshot_hex(const uint8_t* in, int64_t n) {
+    const void* d = avra_b3_oneshot(in, n);
+    return d ? hexed(d) : NULL;
 }

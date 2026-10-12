@@ -1,0 +1,429 @@
+//! THE SEALED BODY — a segment's worth of records folded into one file, and
+//! its index. §6.1's `body-<rev>.pack`: a header, the body's NAMES and
+//! interned READ SETS (compiler/store/names.av), the CONTENT index (value
+//! digest -> offset and length in `body-<rev>.val`), then per family its
+//! META columns — action key, value digest, set id, revisions. The payload
+//! is one commit-marked frame, so a half-written body is torn and never
+//! read. The values are NOT in the frame: a read seeks one value and checks
+//! it against its own digest, so an open reads the index alone.
+//!
+//! `body-<rev>.idx` is §6.1's S4 lookup: a 256-entry fan-out over the action
+//! keys' first byte, the keys sorted, and a parallel offset per key.
+use @std.io.{read_bytes, write_bytes, append_bytes, list_dir, open_beneath, remove}
+use @std.path.{joined_path}
+use @std.relation.stable.{writer, reader, Writer}
+use @std.relation.engine.{list_cell, map_cell}
+use @std.text.{parse_int}
+use core.{sorted_by, text_before}
+use core.debug.{qtrace, traced}
+
+const BODY_MAGIC: string = "AVRABODY"
+const IDX_MAGIC: string = "AVRABIDX"
+const BODY_VERSION: int = 2
+
+/// §6.1's families, in one fixed order so a body's bytes are deterministic.
+const FAMILIES: List<string> = ["sig", "fp", "unit", "warn", "rows"]
+
+/// The path a sealed body stands at.
+export fn body_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.pack") }
+
+/// The path its index stands at.
+export fn idx_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.idx") }
+
+/// The file name its value bytes stand at, beside the `.pack`.
+export fn val_name(rev: int) -> string { "body-${rev}.val" }
+
+/// The path its value bytes stand at.
+export fn val_path(dir: string, rev: int) -> string { joined_path(dir, val_name(rev)) }
+
+/// One value's place in the `.val` its body names: its offset and length.
+export type ValueSlot = { at: int, len: int }
+
+/// A referenced value and its place in the `.val` the new body will name.
+type Placed = { digest: string, at: int, len: int }
+
+/// A value file is rewritten whole once more than this many bytes of it, past twice
+/// what the store references, are garbage — so values are appended, never recopied.
+const VAL_SLACK: int = 1048576
+
+fn is_body(name: string) -> bool { name.starts_with("body-") && name.ends_with(".pack") }
+
+fn rev_of(name: string) -> int {
+    if !is_body(name) { return 0 - 1 }
+    parse_int(name.substring(5, name.length - 5)) ?? 0 - 1
+}
+
+/// The newest sealed body's path, or nothing when the store has none.
+export fn latest_body(dir: string) -> string? {
+    let best = newest_rev(dir)
+    if best < 1 { return null }
+    body_path(dir, best)
+}
+
+/// Every body file's name, whatever its revision.
+export fn all_body_names(dir: string) -> List<string> {
+    // LICENSED input.store_io: the store's own bodies, listed to seal the next
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [n for n in names if is_body(n)]
+}
+
+/// A body file's revision, `body-<rev>.pack`.
+export fn body_rev_of(name: string) -> int { rev_of(name) }
+
+/// The highest sealed revision, 0 when the store has none.
+fn newest_rev(dir: string) -> int {
+    mut best = 0
+    for name in all_body_names(dir) {
+        if rev_of(name) > best { best = rev_of(name) }
+    }
+    best
+}
+
+/// Every body, newest revision first. Each body holds everything its writer
+/// had merged, so the newest whole one is the store.
+fn bodies_newest_first(dir: string) -> List<string> {
+    let names = all_body_names(dir)
+    mut out: List<string> = []
+    mut rev = newest_rev(dir)
+    while rev >= 1 {
+        if [n for n in names if rev_of(n) == rev].length > 0 {
+            out = out.concat([body_path(dir, rev)])
+        }
+        rev = rev - 1
+    }
+    out
+}
+
+/// A payload behind its commit marker, so a torn body is one `read_frame` away.
+fn framed(payload: Bytes) -> Bytes {
+    let w = writer()
+    w.octets(payload)
+    w.text(check_of(payload))
+    w.bytes()
+}
+
+// ── Sealing ──
+
+/// Fold this pack's index into one `body-<rev>.pack` + `.idx`. The values it
+/// references are APPENDED to the value file the last body named, never recopied;
+/// the file is rewritten whole only when garbage outgrows what is referenced. False
+/// when there is nothing to seal or the seal cannot be written; the caller then
+/// leaves the segments as the store.
+export fn seal(pack: Pack) -> bool {
+    if newest_rev(pack.dir) > pack.seen_rev.get() { return false }
+    let keys = sorted_by([k for k in pack.records.get().keys() if !withdrawn(pack, k)], text_before)
+    if keys.is_empty() { return false }
+    let rev = newest_rev(pack.dir) + 1
+    let digests = referenced_digests(pack, keys)
+    let size = val_size(pack.dir, pack.val_rev.get())
+    let standing = standing_slots(pack, digests)
+    let fresh = [d for d in digests if !pack.slots.get().has(d) && value_of(pack, d) != null]
+    let live = sum_of([p.len for p in standing]) +
+        sum_of([(value_of(pack, d) ?? "").bytes().length for d in fresh])
+    let rewrite = pack.val_rev.get() < 1 || size > 2 * live + VAL_SLACK
+    let val_rev = if rewrite { rev } else { pack.val_rev.get() }
+    let laid = if rewrite { digests } else { fresh }
+    let path = val_path(pack.dir, val_rev)
+    if rewrite { let _ = remove(path) }
+    let placed? = lay(pack, path, laid, if rewrite { 0 } else { size }) else { return false }
+    let slots = if rewrite { placed } else { standing.concat(placed) }
+    let payload = body_payload(pack, keys, rev, val_rev, slots)
+    let idx = idx_payload(action_keys(pack, keys), rev)
+    if !wrote(idx_path(pack.dir, rev), idx) { return false }
+    if !wrote(body_path(pack.dir, rev), framed(payload)) { return false }
+    pack.rev.set(rev)
+    pack.seen_rev.set(rev)
+    pack.val_rev.set(val_rev)
+    pack.slots.set({})
+    for p in slots { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
+    pack.content.set({})
+    true
+}
+
+/// The places the open value file already holds for these digests.
+fn standing_slots(pack: Pack, digests: List<string>) -> List<Placed> {
+    mut out: List<Placed> = []
+    for d in digests {
+        let s? = pack.slots.get().get(d) else { continue }
+        out.push(Placed { digest: d, at: s.at, len: s.len })
+    }
+    out
+}
+
+/// The distinct digests the live rows name, in digest order.
+fn referenced_digests(pack: Pack, keys: List<string>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    for k in keys {
+        let h? = record_of(pack, k) else { continue }
+        seen.set(h.digest, true)
+    }
+    sorted_by(seen.keys(), text_before)
+}
+
+/// A value's octets are written this many at a time, so a rewrite never holds the
+/// whole value file twice.
+const LAY_BATCH: int = 8388608
+
+/// The values laid end to end in `path` from offset `from`, each with its place;
+/// nothing when a write fails.
+fn lay(pack: Pack, path: string, laid: List<string>, from: int) -> List<Placed>? {
+    mut placed: List<Placed> = []
+    mut batch: List<Bytes> = []
+    mut held = 0
+    mut at = from
+    for d in laid {
+        let value? = value_of(pack, d) else { continue }
+        let bytes = value.bytes()
+        placed.push(Placed { digest: d, at: at, len: bytes.length })
+        batch.push(bytes)
+        held = held + bytes.length
+        at = at + bytes.length
+        if held >= LAY_BATCH {
+            if !appended_to(path, batch.bytes()) { return null }
+            batch = []
+            held = 0
+        }
+    }
+    if !appended_to(path, batch.bytes()) { return null }
+    placed
+}
+
+fn sum_of(xs: List<int>) -> int { xs.fold(0, (a, b) -> a + b) }
+
+/// A value file's size in octets, 0 when it does not stand.
+fn val_size(dir: string, rev: int) -> int {
+    // LICENSED input.store_io: the store's own value file, measured to append past it
+    match open_beneath(dir, val_name(rev)) {
+        .Ok(o) -> {
+            let n = o.size
+            o.close()
+            n
+        },
+        .Err(_) -> 0,
+    }
+}
+
+fn appended_to(at: string, bytes: Bytes) -> bool {
+    if bytes.length == 0 { return true }
+    match append_bytes(at, bytes) { .Ok(_) -> true, .Err(_) -> false }
+}
+
+/// The sealed keys of rows, sorted: each row's action key, the index's currency.
+fn action_keys(pack: Pack, keys: List<string>) -> List<string> {
+    mut out: List<string> = []
+    for k in keys {
+        let h? = record_of(pack, k) else { continue }
+        out.push(action_key(h.family, h.key))
+    }
+    sorted_by(out, text_before)
+}
+
+fn wrote(at: string, bytes: Bytes) -> bool {
+    match write_bytes(at, bytes) { .Ok(_) -> true, .Err(_) -> false }
+}
+
+/// The body's bytes: header · names · sets · content · per-family meta.
+fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: List<Placed>) -> Bytes {
+    let n = names()
+    let s = sets()
+    for k in keys {
+        let h? = record_of(pack, k) else { continue }
+        for r in reads_of(pack, h) { let _ = n.intern(r) }
+    }
+    for k in keys {
+        let h? = record_of(pack, k) else { continue }
+        let _ = s.intern(named_ids(n, reads_of(pack, h)))
+    }
+    let w = writer()
+    w.text(BODY_MAGIC)
+    w.int(BODY_VERSION)
+    w.int(rev)
+    w.int(val_rev)
+    w.text(pack.print)
+    w.octets(n.encode())
+    w.octets(s.encode())
+    w.count(placed.length)
+    for p in placed {
+        w.text(p.digest)
+        w.int(p.at)
+        w.int(p.len)
+    }
+    w.count(FAMILIES.length)
+    for fam in FAMILIES {
+        w.text(fam)
+        let mine = [k for k in keys if record_of(pack, k)?.family == fam]
+        w.count(mine.length)
+        for k in mine {
+            let h? = record_of(pack, k) else { continue }
+            w.text(h.key)
+            w.text(h.digest)
+            w.int(s.intern(named_ids(n, reads_of(pack, h))))
+            w.int(rev)
+            w.int(rev)
+        }
+    }
+    w.bytes()
+}
+
+fn record_of(pack: Pack, at: string) -> Held? { pack.records.get().get(at) }
+
+/// The keys a row read: its own list, or its set in the open body's tables —
+/// decoded on the first ask, since an open reads values and never read sets.
+/// A set the tables cannot name reads as none: a read set is a record of
+/// edges, and a row stands without them.
+fn reads_of(pack: Pack, h: Held) -> List<string> {
+    if h.set < 0 { return h.read }
+    let t? = tables_of(pack) else { return [] }
+    if h.set >= t.sets.length() { return [] }
+    let ids = t.sets.members(h.set)
+    if ids.any(it < 0 || it >= t.names.length()) { return [] }
+    [t.names.text_of(id) for id in ids]
+}
+
+fn tables_of(pack: Pack) -> Tables? {
+    let known = pack.tables.get().first()
+    if known != null { return known }
+    let n? = names_from(pack.table_names.get()) else { return null }
+    let s? = sets_from(pack.table_sets.get()) else { return null }
+    let made = Tables { names: n, sets: s }
+    pack.tables.set([made])
+    made
+}
+
+fn named_ids(n: Names, read: List<string>) -> List<int> {
+    [n.id_of(r) ?? 0 for r in read]
+}
+
+/// The index: a 256 fan-out (cumulative), the action keys sorted, one offset
+/// each.
+fn idx_payload(keys: List<string>, rev: int) -> Bytes {
+    let counts: Cell<List<int>> = list_cell()
+    for _k in 0..256 { counts.push(0) }
+    for k in keys {
+        let b = first_byte(k)
+        counts.set_at(b, counts.get()[b] + 1)
+    }
+    let w = writer()
+    w.text(IDX_MAGIC)
+    w.int(BODY_VERSION)
+    w.int(rev)
+    w.int(keys.length)
+    mut acc = 0
+    for b in 0..256 {
+        acc = acc + counts.get()[b]
+        w.int(acc)
+    }
+    for k in keys { w.text(k) }
+    for i, k in keys.enumerate() { w.int(i) }
+    w.bytes()
+}
+
+/// The byte an action key's first two hex characters spell.
+fn first_byte(k: string) -> int {
+    if k.length < 2 { return 0 }
+    hex_val(k.substring(0, 1)) * 16 + hex_val(k.substring(1, 2))
+}
+
+fn hex_val(c: string) -> int { "0123456789abcdef".index_of(c) }
+
+// ── Reading ──
+
+/// Read the newest whole body into the pack, before the segments so a later
+/// segment wins. Only that body is read: each body holds everything its
+/// writer had merged. A torn or foreign body is skipped, and says so once.
+export fn body_scan(pack: Pack) {
+    for at in bodies_newest_first(pack.dir) {
+        // LICENSED input.store_io: the store's own body, read to merge it
+        let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+        if traced() { qtrace("Q\tstore\tbody\t${at}\t${raw.length}\n") }
+        let r = reader(raw)
+        let payload = read_frame(r)
+        if payload == null {
+            torn_at(pack, 0)
+            continue
+        }
+        if body_read(pack, payload!) { return }
+    }
+}
+
+fn body_read(pack: Pack, payload: Bytes) -> bool {
+    let r = reader(payload)
+    let magic? = ok(r.text()) else { return false }
+    if magic != BODY_MAGIC { return false }
+    let version? = ok(r.int()) else { return false }
+    if version != BODY_VERSION { return false }
+    let rev? = ok(r.int()) else { return false }
+    let val_rev? = ok(r.int()) else { return false }
+    let print? = ok(r.text()) else { return false }
+    if print != pack.print {
+        pack.foreign.set(true)
+        if traced() { qtrace("Q\tstore\tforeign\n") }
+        return false
+    }
+    let names_bytes? = ok(r.octets()) else { return false }
+    let sets_bytes? = ok(r.octets()) else { return false }
+    let slots? = ok(r.count()) else { return false }
+    mut placed: Map<string, ValueSlot> = {}
+    for _s in 0..slots {
+        let digest? = ok(r.text()) else { return false }
+        let at? = ok(r.int()) else { return false }
+        let len? = ok(r.int()) else { return false }
+        placed.set(digest, ValueSlot { at: at, len: len })
+    }
+    let families? = ok(r.count()) else { return false }
+    mut rows: List<Held> = []
+    for _f in 0..families {
+        let fam? = ok(r.text()) else { return false }
+        let count? = ok(r.count()) else { return false }
+        for _m in 0..count {
+            let key? = ok(r.text()) else { return false }
+            let digest? = ok(r.text()) else { return false }
+            let sid? = ok(r.int()) else { return false }
+            let _changed? = ok(r.int()) else { return false }
+            let _verified? = ok(r.int()) else { return false }
+            rows.push(Held { family: fam, key: key, digest: digest, read: [], set: sid, stamp: 0 })
+        }
+    }
+    if !r.done() { return false }
+    for d, slot in placed { pack.slots.put(d, slot) }
+    pack.table_names.set(names_bytes)
+    pack.table_sets.set(sets_bytes)
+    pack.tables.set([])
+    for h in rows { pack.records.put(record_key(h.family, h.key), h) }
+    pack.rev.set(rev)
+    pack.val_rev.set(val_rev)
+    true
+}
+
+/// A sealed body's header past its frame: the value revision it names and the
+/// compiler print it was made under — none when the body cannot be read.
+type BodyHead = { val_rev: int, print: string }
+
+fn head_of(dir: string, name: string) -> BodyHead? {
+    // LICENSED input.store_io: the store's own body, read for its header
+    let raw = match read_bytes(joined_path(dir, name)) { .Ok(b) -> b, .Err(_) -> { return null } }
+    let payload? = read_frame(reader(raw)) else { return null }
+    let r = reader(payload)
+    let _magic? = ok(r.text()) else { return null }
+    let _version? = ok(r.int()) else { return null }
+    let _rev? = ok(r.int()) else { return null }
+    let val_rev? = ok(r.int()) else { return null }
+    let print? = ok(r.text()) else { return null }
+    BodyHead { val_rev: val_rev, print: print }
+}
+
+fn body_print_of(dir: string, name: string) -> string? { head_of(dir, name)?.print }
+
+/// Value files no standing body names are removed; a value file is shared by the
+/// bodies appended to it and goes with the last of them.
+export fn drop_unreferenced_values(dir: string) {
+    // LICENSED input.store_io: the store's own files, listed to drop what no body names
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    let named = [head_of(dir, n)?.val_rev for n in names if is_body(n)]
+    let wanted = [v! for v in named if v != null]
+    for n in names {
+        if !(n.starts_with("body-") && n.ends_with(".val")) { continue }
+        let rev = parse_int(n.substring(5, n.length - 4)) ?? 0 - 1
+        if !wanted.contains(rev) { let _ = remove(joined_path(dir, n)) }
+    }
+}

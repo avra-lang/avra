@@ -330,13 +330,14 @@ impl Workspace {
         let key0 = self.program_key(under.named, under.beside)
         let kept: string? = self.db.warn(store, key0)
         let found: string? = self.db.findings(store, key0)
-        // A missing findings row is UNKNOWN, never EMPTY: no hit.
-        if kept != null && found != null {
+        let licensed: string? = self.db.licenses(store, key0)
+        // A missing row is UNKNOWN, never EMPTY: no hit.
+        if kept != null && found != null && licensed != null {
             return Checked {
                 warnings: kept!,
                 reused: true,
                 timed: "",
-                licenses: self.db.licenses(store, key0) ?? "",
+                licenses: licensed!,
                 findings: findings_read(found!),
             }
         }
@@ -454,7 +455,10 @@ impl Workspace {
         let why = match held { .Ok(_) -> "", .Err(w) -> w }
         match self.keys.keeping.get() {
             .Disk -> {
-                let at = joined_path(build_cache_root(self), "hold-refused.log")
+                let at = joined_path(
+                    joined_path(build_cache_root(self), "store"),
+                    "hold-refused.log",
+                )
                 let _ = self.host.write(at, why)
                 hold_refusal(why, at)
             },
@@ -783,6 +787,7 @@ impl Workspace {
         let asked = self.asked_print(store, self.known_as(at), roots)
         let unlowered = [w for w in roots if self.is_held(w.file)]
         if unlowered.is_empty() { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
+        store.settle()
         Derived {
             entry: at.entry,
             want: at.want,
@@ -906,7 +911,7 @@ impl Workspace {
             let m = self.module_path_of(reader)
             let fresh = self.key_parts(store, m, reader)
             self.keys.object_parts.put("${m.text()}\t${reader}", fresh)
-            self.keys.object_keys.put("${m.text()}\t${reader}", key_of_parts(fresh))
+            self.keys.object_keys.put("${m.text()}\t${reader}", object_key_of_parts(self, fresh))
         }
         self.hold.pending_reads.set([])
         readers
