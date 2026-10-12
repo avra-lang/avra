@@ -161,11 +161,23 @@ fn files_line(walk: CacheWalk) -> string {
 /// What judging the hold took: the attempts made, and those that did not stand.
 fn attempts_line(walk: CacheWalk) -> string { "${counted(walk.attempts, "attempt")} judged the hold, ${walk.discarded} discarded" }
 
-/// The headline counts moved INPUTS: the files holding at least one moved part.
-/// A file's several moved parts are one input, listed part by part below.
+/// The headline counts moved INPUTS: the files whose own text or compile-time
+/// reads moved. A file's several moved parts are one input, listed part by part
+/// below; a module's interface that moved because of such a file is not one more.
 fn moved_line(walk: CacheWalk) -> string {
-    let n = [h for h in walk.holds if !h.moved.is_empty()].length
-    if n == 0 { "no input moved since the kept state" } else { "${counted(n, "input")} moved since the kept state" }
+    let own = [h for h in walk.holds if h.moved.any(own_part)].length
+    let reached = [h for h in walk.holds if !h.moved.is_empty()].length
+    if own > 0 { return "${counted(own, "input")} moved since the kept state" }
+    if reached == 0 { return "no input moved since the kept state" }
+    "no input of its own moved; ${counted(reached, "file")} reached by a move"
+}
+
+/// A part that is a file's own input: its text, or what its compile-time runs read.
+fn own_part(m: PartMoved) -> bool {
+    match m.part {
+        .Text or .Runs -> true,
+        .Came(_) or .Went(_) or .Interface(_) or .Gathered -> false,
+    }
 }
 
 /// A moved text part's own line: its digest then and now.
