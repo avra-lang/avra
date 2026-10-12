@@ -115,6 +115,9 @@ COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrappe
                 build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o \
                 build/std_hash.a $(HASH_OBJS)
 
+# A seed names the hash rows itself, so its link takes them once: the objects, not also their archive.
+SEED_LINK_OBJS = $(filter-out build/std_hash.a,$(COMPILER_OBJS))
+
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
 # program tests can link its own C.
@@ -399,7 +402,7 @@ seed: $(COMPILER_OBJS)
 # again. `make recover` is that way back.
 recover: $(COMPILER_OBJS)
 	@mkdir -p build
-	@clang -w -O1 -rdynamic bootstrap/seed.ll $(COMPILER_OBJS) \
+	@clang -w -O1 -rdynamic bootstrap/seed.ll $(SEED_LINK_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
@@ -655,7 +658,7 @@ seed-check: $(COMPILER_OBJS)
 	@sh tools/seed_guard.sh
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
-	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(COMPILER_OBJS) \
+	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(SEED_LINK_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@sh tools/capped.sh build/seed-check/out 200000 build/avra-seed-check build packages/cli \
