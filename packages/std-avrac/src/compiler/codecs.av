@@ -27,6 +27,12 @@ use features.{
     kind_word,
     Unsettled,
     Settlement,
+    DeclSig,
+    FnSig,
+    StructSig,
+    EnumSig,
+    NamedSig,
+    Lacked,
 }
 use diagnostics.{SourceFile, DiagFacts, Severity}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
@@ -261,6 +267,34 @@ impl Workspace {
     fn codec_decl_labels() -> List<string> { [self.decls.decl(d).name for d in self.codec_decl_exemplars()] }
 
     fn codec_same_decl(a: DeclId, b: DeclId) -> bool { self.decls.decl_wire(a) == self.decls.decl_wire(b) }
+
+    /// One `DeclSig` of every variant. The `defaults` seat carries a
+    /// builtin declaration's real `DeclId` — builtins are admitted with
+    /// the language, so no fixture file is needed.
+    fn codec_sig_exemplars() -> List<DeclSig> {
+        let t = self.decls.types.type(int)
+        let s = self.decls.types.type(string)
+        let b = self.decls.types.type(bool)
+        let d = self.decls.builtin_decls()[0]
+        [
+            DeclSig.Fn(FnSig { params: [t, s], ret: b }),
+            DeclSig
+                .Record(
+                    StructSig {
+                        names: ["a", "b"],
+                        types: [t, s],
+                        defaults: [null, d],
+                        lacking: [Lacked { field: "c", why: "not written" }],
+                        states: [false, true],
+                    },
+                ),
+            DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[], [t, b]] }),
+            DeclSig.Named(NamedSig { of: t }),
+            DeclSig.Alias(t),
+        ]
+    }
+
+    fn codec_same_decl_sig(a: DeclSig, b: DeclSig) -> bool { self.decl_sig_wire(a) == self.decl_sig_wire(b) }
 
     fn codec_raised_exemplars() -> List<Raised> {
         let d = self.codec_decl_exemplars()[0]
@@ -1075,6 +1109,14 @@ export fn codec_pairs() -> List<CodecCheck> {
             presence_wire,
             presence_of_wire,
             same_opt_bool,
+        ),
+        derived(
+            "family.decl_sig_wire/decl_sig_of_wire",
+            ws.codec_sig_exemplars(),
+            ["fn", "record", "enum", "named", "alias"],
+            (s) -> ws.decl_sig_wire(s),
+            (w) -> ws.decl_sig_of_wire(w),
+            (x, y) -> ws.codec_same_decl_sig(x, y),
         ),
         dbrow_check(),
     ]
