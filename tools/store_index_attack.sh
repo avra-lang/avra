@@ -2,7 +2,8 @@
 # AN OPEN READS THE INDEX ONLY. Two packages, the same program shape, one with
 # far more records. A warm no-op check opens the newest body; its read covers that
 # body's index (the .pack), never its value tier (.val), and the number of values
-# a warm check reads does not grow with the record count: 400 and 1600 records read the same.
+# a warm check reads does not grow with the record count: 400 and 1600 records read at most
+# the three rows of its answer.
 set -u
 cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
@@ -48,6 +49,7 @@ rm -f $R/*.cold
 [ "$bodies_small" = 1 ] && [ "$bodies_large" = 1 ] || { fails=$((fails + 1)); echo "store-index: FAILED — a warm open read $bodies_small / $bodies_large bodies, not one each"; }
 [ "$read_large" = "$pack_large" ] || { fails=$((fails + 1)); echo "store-index: FAILED — the large open read $read_large bytes, not its index of $pack_large"; }
 [ "$read_large" -lt "$val_large" ] || { fails=$((fails + 1)); echo "store-index: FAILED — the large open read as much as the value tier ($read_large >= $val_large)"; }
-# the value reads of a warm check do not grow with the record count
-[ "$values_large" = "$values_medium" ] || { fails=$((fails + 1)); echo "store-index: FAILED — a warm check read $values_large values on 1600 records against $values_medium on 400"; }
+# the value reads of a warm check do not grow with the record count: they are the rows of its
+# own answer (warnings, findings, licenses), and a row still in a segment is read from memory
+[ "$values_large" -le 3 ] && [ "$values_medium" -le 3 ] || { fails=$((fails + 1)); echo "store-index: FAILED — a warm check read $values_large values on 1600 records and $values_medium on 400, more than the three rows of its answer"; }
 [ "$fails" = 0 ] && echo "store-index: the open read the index only, and value reads did not grow with records" || exit 1
