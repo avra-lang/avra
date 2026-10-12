@@ -1435,26 +1435,19 @@ impl Workspace {
     /// seen whole.
     fn seen_by_name(store: Store, m: ModulePath, path: string) -> List<SeenPart> {
         let whole = self.view_parts(store, m)
-        let index = self.keys.view_index.get().get(m.text())
-        let at = record_places(self, store, m).get(path)
-        if index == null || index!.whole || at == null || at!.file.length < 7 || at!.file[5] == "" { return whole }
+        let index? = self.keys.view_index.get().get(m.text()) else { return whole }
+        let columns = record_places(self, store, m).get(path)?.file ?? []
+        if index.whole || columns.length < 7 || columns[5] == "" { return whole }
         let buckets: Cell<Map<string, List<string>>> = Cell.new({})
-        for name in at!.file[5].split(",") {
-            for hit in index!.named.get(name) ?? [] {
+        for name in columns[5].split(",") {
+            for hit in index.named.get(name) ?? [] {
                 let key = "${hit.dep}"
                 buckets.put(key, (buckets.get().get(key) ?? []).concat([hit.form]))
             }
         }
-        [SeenPart {
-            module: s.module,
-            bytes_key: digest_of(
-                joined(
-                    [index!.globals[i]].concat(sorted_texts(buckets.get().get("${i}") ?? [])),
-                    "\n",
-                ),
-            ),
-            files: s.files,
-        } for i, s in whole]
+        [s with { bytes_key: digest_of(
+            joined([index.globals[i]].concat(sorted_texts(buckets.get().get("${i}") ?? [])), "\n"),
+        ) } for i, s in whole]
     }
 
     /// A file's plain free fns, each with its form — remembered for the build, since every
@@ -1480,13 +1473,16 @@ impl Workspace {
             let fields = record_fields(self, store, at)
             mut digests: List<string> = []
             for f in files {
-                let p = places.get(f)
-                if p == null || p!.file.length < 7 || p!.file[6] == "" || !self.there(f) {
+                let p? = places.get(f) else {
                     whole = true
                     continue
                 }
-                digests.push(p!.file[6])
-                for entry in self.file_fns(f, fields, p!) {
+                if p.file.length < 7 || p.file[6] == "" || !self.there(f) {
+                    whole = true
+                    continue
+                }
+                digests.push(p.file[6])
+                for entry in self.file_fns(f, fields, p) {
                     named
                         .put(
                             entry.name,
