@@ -25,7 +25,9 @@ B() { # B <label> <wanted output>: build through the store and run it
     got=$($R/app/src/main 2>&1)
     [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  $1: printed '$got', wanted '$2'"; }
 }
-objects() { ls -d .avra-cache/*/obj 2>/dev/null | head -1; }
+# ONE STORE FOR EVERY COMPILER (S2): the objects stand at `.avra-cache/obj`,
+# where the per-compiler layout kept them under a print directory.
+objects() { ls -d .avra-cache/obj .avra-cache/*/obj 2>/dev/null | head -1; }
 kept "1, 2" "7, 8"
 B "cold" "1 7" || { echo "static-names-attack: the cold build failed"; exit 1; }
 kept "1, 2" "9, 8"

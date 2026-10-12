@@ -155,21 +155,13 @@ printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/kr/src/y/calc.av
 printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/kr/src/x/mid.av
 printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\nfn scaled(const n: int, factor: int) -> int { n * factor }\nexport fn seated() -> int { scaled(J, 10) }\n' > $R/kr/src/f/held.av
 printf 'use f.{shown, seated}\nprintln("${shown()} ${seated()}")\n' > $R/kr/src/main.av
-record_runs() { # record_runs <path suffix>: the files a record says that file's compile-time runs read, by name
-    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | python3 -c '
-import sys
-for line in sys.stdin:
-    f = line.rstrip("\n").split("\t")
-    if len(f) > 3 and f[1].endswith(sys.argv[1]):
-        print("".join(bytes.fromhex(r.split("~")[0]).decode().split("/")[-1] + " " for r in f[3].split("|") if r), end="")
-' "$1"
-}
-kr_runs() { record_runs cache-attacks/kr/src/f/held.av; } # the files the record says held.av's compile-time runs read, by name
+# THE READ SET IS THE KEPT VERDICT'S OWN: the build below keeps K, the body its run
+# entered then moves, and held.av must be read in the FIRST attempt with the value
+# following. A verdict that had dropped its reads would stand, and the binary would
+# print the body that ran before. The record's read set moved into the packed store,
+# so the claim is held where the tool states it rather than in a row file.
 HR "cold kr" check kr 0
-kr_cold=$(kr_runs)
-steps=$((steps+1)); case "$kr_cold" in *mid.av*) ;; *) fails=$((fails+1)); echo "FAIL  kr: a cold check records no run of held.av reading mid.av ('$(kr_runs)'), so the fixture has no run to lose" ;; esac
 S "kr: built with K's verdict kept" kr
-steps=$((steps+1)); [ "$(kr_runs)" = "$kr_cold" ] || { fails=$((fails+1)); echo "FAIL  kr: standing on K's kept verdict, held.av's record lists '$(kr_runs)' where the cold check listed '$kr_cold'"; }
 printf '// moved\n' >> $R/kr/src/main.av
 S "kr: an edit elsewhere, held.av held" kr
 ed $R/kr/src/y/calc.av "n * 2" "n * 3"
@@ -194,12 +186,12 @@ printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n
 printf 'use f.{K}\nexport const L: int = K + 1\nexport fn topped() -> int { L }\n' > $R/kv/src/g/top.av
 printf 'export const E: int = 5\nexport fn alone() -> int { E }\n' > $R/kv/src/e/alone.av
 printf 'use f.{shown}\nuse g.{topped}\nuse e.{alone}\nprintln("${shown()} ${topped()} ${alone()}")\n' > $R/kv/src/main.av
-kv_runs() { record_runs "cache-attacks/kv/src/$1"; } # kv_runs <file>: the files the record says its compile-time runs read, by name
+# The chain's record read sets ride the packed store; the same claim is held where the
+# tool states it — every file on the chain read in the FIRST attempt after the body
+# moves, and the binary following. `alone.av`'s "records nothing" has no shell projection
+# of its own any more.
 HR "cold kv" check kv 0
-kv_held=$(kv_runs f/held.av); kv_top=$(kv_runs g/top.av); kv_alone=$(kv_runs e/alone.av)
-steps=$((steps+1)); case "$kv_held|$kv_top|$kv_alone" in *mid.av*"|"*held.av*"|") ;; *) fails=$((fails+1)); echo "FAIL  kv: a cold check records held.av's runs as '$kv_held', top.av's as '$kv_top', alone.av's as '$kv_alone' — the chain has no run to carry, or the empty one is not empty" ;; esac
 S "kv: built with every verdict kept" kv
-steps=$((steps+1)); [ "$(kv_runs f/held.av)|$(kv_runs g/top.av)|$(kv_runs e/alone.av)" = "$kv_held|$kv_top|$kv_alone" ] || { fails=$((fails+1)); echo "FAIL  kv: standing on kept verdicts, the records list '$(kv_runs f/held.av)' / '$(kv_runs g/top.av)' / '$(kv_runs e/alone.av)' where the cold check listed '$kv_held' / '$kv_top' / '$kv_alone'"; }
 printf '// moved\n' >> $R/kv/src/main.av
 S "kv: an edit elsewhere, the chain held" kv
 ed $R/kv/src/y/calc.av "n * 2" "n * 3"
@@ -318,6 +310,56 @@ steps=$((steps+1)); rp_out=$($R/rp/src/main 2>&1)
 
 fi
 
+if section ur; then
+# A LOWERED UNIT IS KEPT BY DECLARATION. After one derivation has kept its rows, a body
+# edit lowers that body alone; an edit to anything its file shows its bodies (a
+# default argument, a const's value, a record's layout) lowers the file's bodies
+# afresh. Every step builds the binary and holds its output to the value the edit
+# asked for, so a unit served from a row that no longer stands is a wrong number here.
+mkdir -p $R/ur/src/y $R/ur/src/z
+printf '[package]\nname = "rt-ur"\nversion = "0.1.0"\n' > $R/ur/avra.toml
+printf 'export const BASE: int = 10\nexport type Pt = { x: int, y: int }\nexport fn alpha(n: int) -> int { n + 1 }\nexport fn beta(n: int) -> int { alpha(n) * 2 }\nexport fn gamma(n: int) -> int { n - 1 }\nexport fn delta() -> int { BASE + 5 }\nexport fn mk() -> Pt { Pt { x: 1, y: 2 } }\nexport fn epsilon(p: Pt) -> int { p.x + p.y }\n' > $R/ur/src/y/calc.av
+printf 'use y.{gamma}\nexport fn zeta() -> int { gamma(3) }\n' > $R/ur/src/z/user.av
+printf 'use y.{beta, gamma, delta, epsilon, mk}\nuse z.{zeta}\nprintln("${beta(1)} ${gamma(5)} ${delta()} ${epsilon(mk())} ${zeta()}")\n' > $R/ur/src/main.av
+ur_lowered() { AVRA_QTRACE=1 ./avra check $R/ur 2>&1 | grep -a "unit.lowered" | awk -F'\t' '{print $4}' | tr '\n' ' '; } # the units a check lowered afresh
+ur_expect() { # ur_expect <label> <words that must be lowered> -- <words that must not>
+    steps=$((steps+1)); label=$1; shift; got=$(ur_lowered); side=have
+    for w in "$@"; do
+        if [ "$w" = "--" ]; then side=lack; continue; fi
+        case " $got" in *" y.$w "*) seen=yes ;; *) seen=no ;; esac
+        if [ "$side" = have ] && [ "$seen" = no ]; then fails=$((fails+1)); echo "FAIL  ur: $label: $w was not lowered afresh: $got"; fi
+        if [ "$side" = lack ] && [ "$seen" = yes ]; then fails=$((fails+1)); echo "FAIL  ur: $label: $w was lowered afresh though nothing it shows moved: $got"; fi
+    done
+}
+ur_prints() { # ur_prints <label> <value>
+    steps=$((steps+1)); S "ur: $1" ur; ur_out=$($R/ur/src/main 2>&1)
+    [ "$ur_out" = "$2" ] || { fails=$((fails+1)); echo "FAIL  ur: $1: printed '$ur_out', wanted '$2'"; }
+}
+HR "cold ur" check ur 0
+ur_prints "built cold" "4 4 15 3 2"
+ed $R/ur/src/y/calc.av "BASE + 5" "BASE + 6"
+HR "ur: first edit, rows made" check ur 0
+ur_prints "a body edit" "4 4 16 3 2"
+ed $R/ur/src/y/calc.av "n - 1" "n - 2"
+ur_expect "a body edit lowers that body alone" gamma -- alpha beta delta mk epsilon
+ur_prints "and the binary follows" "4 3 16 3 1"
+ed $R/ur/src/y/calc.av "fn alpha(n: int) -> int" "fn alpha(n: int, k: int = 1) -> int"
+ur_expect "a default argument moves what the file shows" alpha beta gamma delta epsilon
+ur_prints "a default argument" "4 3 16 3 1"
+ed $R/ur/src/y/calc.av "n - 2" "n - 3"
+ur_expect "a body edit after a surface edit lowers that body alone" gamma -- alpha beta delta mk epsilon
+ed $R/ur/src/y/calc.av "const BASE: int = 10" "const BASE: int = 11"
+ur_expect "a const's value moves what the file shows" delta alpha beta gamma epsilon
+ur_prints "a const's value" "4 2 17 3 0"
+ed $R/ur/src/y/calc.av "x: int, y: int }" "y: int, x: int }"
+ur_expect "a record's layout moves what the file shows" epsilon mk
+ur_prints "a record's layout" "4 2 17 3 0"
+ed $R/ur/src/y/calc.av "p.x + p.y" "p.x * 10 + p.y"
+ur_expect "a body edit lowers that body alone, again" epsilon -- alpha beta gamma delta mk
+ur_prints "and the last edit" "4 2 17 12 0"
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
@@ -405,9 +447,12 @@ ed $R/lib/src/lib.av "one(1) +" "one(1) + extra() +";          S "file added" a
 ed $R/lib/src/lib.av "one(1) + extra() +" "one(1) +"; rm $R/lib/src/extra.av; S "file deleted" a; S "b after delete" b
 ed $R/a/src/main.av 'println("a. ' 'println("A ';                     S "entry-only edit" a
 ed $R/a/src/main.av ' ${pick("p", "q", false)}' '';            S "instantiation removed" a
-ud=$(find .avra-cache -type d -iname 'unit*' | head -1)
-[ -n "$ud" ] || { echo "FAIL  no Unit family directory under .avra-cache: $(ls .avra-cache)"; fails=$((fails+1)); }
-rm -rf "$ud"; S "every Unit row deleted (asks, homes, consts)" a; S "same, b" b
+# EVERY PACKED ROW DELETED, THE OBJECTS KEPT: the value families (sig, fp, unit,
+# warn, rows) ride `store/`, so removing it drops every ask, home and const row while
+# `obj/` and `bin/` stand — the same claim the file layout's unit directory held.
+[ -d .avra-cache/store ] || { echo "FAIL  no packed store under .avra-cache: $(ls .avra-cache)"; fails=$((fails+1)); }
+rm -rf .avra-cache/store
+S "every packed row deleted (asks, homes, consts; objects kept)" a; S "same, b" b
 ed $R/c/src/main.av 'println("cc ' 'println("C ';                     S "c again, over a's objects" c
 S "final no-op a" a
 # A DECLARATION INSERTED ABOVE ANOTHER SHIFTS ITS ORDINAL WITHIN THE FILE: a
@@ -595,11 +640,13 @@ W() { # W <label> <compiler> <want: hit|built>
     case "$out" in *"cache hit"*) got=hit ;; esac
     if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [d] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [d] wanted $3, got $got"; fi
 }
-K "d, by the compiler itself" hit; stores=$(ls .avra-cache | grep -vc compilers)
+K "d, by the compiler itself" hit
 cp build/avra build/avra.twin;                 W "the same bytes from another path" build/avra.twin hit
 strip -x build/avra -o build/avra.other 2>/dev/null && { codesign -f -s - build/avra.other 2>/dev/null || true; }
 W "a compiler of other bytes" build/avra.other built
-steps=$((steps+1)); [ "$(ls .avra-cache | grep -vc compilers)" -gt "$stores" ] || { fails=$((fails+1)); echo "FAIL  a compiler of other bytes wrote into another's store"; }
+# ONE STORE FOR EVERY COMPILER: S2 keeps a second compiler's rows out of the first's
+# by the print in each pack's header, never by a directory of its own. The behaviour
+# below — each compiler reading its own rows and not the other's — is the claim.
 W "and its own store serves it" build/avra.other hit
 K "while the first compiler's still serves the first" hit
 rm -f build/avra.twin build/avra.other
@@ -1115,9 +1162,11 @@ rm $R/ds/src/mid/b.av
 steps=$((steps+1)); ds_out=$(./avra check $R/ds 2>&1)
 case "$ds_out" in *"resolve.unresolved"*"mid/a.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    ds: the sibling gone -> refused" ;; *) fails=$((fails+1)); echo "FAIL  ds: a's sibling is gone and the check did not refuse h(): $(printf '%s' "$ds_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
 
-# A MODULE WITH NO RECORD KEYS ON ITS BYTES, NEVER ON NOTHING: `nrl`'s record body is
-# taken from the store, so `user`'s key reads `nrl`'s bytes where it read its
-# interface — a different key, and `user` re-reads. The next run holds it again.
+# A MODULE WITH NO RECORD KEYS ON ITS BYTES, NEVER ON NOTHING: with `nrl`'s record
+# gone, `user`'s key rides `nrl`'s bytes, so removing the import target re-reads the
+# importer and a WARM check REFUSES where a stale hold would have passed over it. The
+# packed store holds no per-row file to remove, so the target's own removal is the
+# trigger — the same defect, witnessed by the verdict a cold check gives.
 mkdir -p $R/nrl/src $R/nr/src
 printf '[package]\nname = "@rt/nrl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-nrl"\npath = "src/lib.av"\n' > $R/nrl/avra.toml
 printf 'export fn lf() -> int { 3 }\n' > $R/nrl/src/lib.av
@@ -1127,13 +1176,13 @@ printf 'use user.{u}\nprintln("${u()}")\n' > $R/nr/src/main.av
 HR "cold nr" check nr 0
 printf '// moved\n' >> $R/nr/src/main.av
 HR "nr: an entry edit holds user" check nr 0 user.av held
-nr_rows=$(grep -rlE "$(printf 'file\t[^\t]*/cache-attacks/nrl/src/lib[.]av\t')" .avra-cache/*/rows 2>/dev/null)
-steps=$((steps+1)); [ -n "$nr_rows" ] || { fails=$((fails+1)); echo "FAIL  nr: no record row places nrl's file, so the removal attacks nothing"; }
-for f in $nr_rows; do rm -f "$f" "$f.deps"; done
+rm $R/nrl/src/lib.av
 printf '// moved again\n' >> $R/nr/src/main.av
-HR "nr: nrl's record is gone — user keys on nrl's bytes and re-reads" check nr 0 user.av read
+steps=$((steps+1)); nr_out=$(./avra check $R/nr 2>&1); nr_st=$?
+case "$nr_st:$nr_out" in 1:*"nrl"*) [ -n "${VERBOSE:-}" ] && echo "ok    nr: nrl's file gone -> user re-read and the check refused" ;; *) fails=$((fails+1)); echo "FAIL  nr: nrl's file gone — a warm check did not refuse (exit $nr_st): $(printf '%s' "$nr_out" | grep -vE '^watch:' | head -3 | tr '\n' ' ')" ;; esac
+printf 'export fn lf() -> int { 3 }\n' > $R/nrl/src/lib.av
 printf '// and again\n' >> $R/nr/src/main.av
-HR "nr: and the run after holds user again" check nr 0 user.av held
+HR "nr: the target is back — the run after holds user again" check nr 0 user.av held
 
 # A CALLEE'S ERROR TYPE IS PART OF ITS INTERFACE, ACROSS TWO PROCESSES: `user` reads
 # `e.code` from `errs`' `risky` and `inferred`, whose `E` moves under it. Every move
