@@ -37,6 +37,7 @@ use core.{
     debug,
 }
 use @std.path.{joined_path, normalized}
+use @std.relation.engine.{map_cell}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
 use compiler.lower.{Body, Lowered, hosted_within}
 extern fn avra_host_env(name: string) -> string
@@ -646,8 +647,17 @@ fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> string? {
 
 /// Whether one body calls a row a compile-time call may not run.
 export fn reaches_world(b: Body, permits_embed: bool) -> bool {
-    world_in(rt_index(), b, permits_embed) != null
+    let at = "${permits_embed}\t${b.name}\t${b.ins.length}"
+    let known: bool? = reaching_bodies().get().get(at)
+    if known != null { return known! }
+    let reaches = world_in(rt_index(), b, permits_embed) != null
+    reaching_bodies().put(at, reaches)
+    reaches
 }
+
+/// What each body, by embed admission, name and length, was found to reach: a body is lowered
+/// once, and every settlement that includes it asks again.
+once fn reaching_bodies() -> Cell<Map<string, bool>> { map_cell() }
 
 /// A row a compile-time call may not run: one the registry marks
 /// World, an embed without an input-carrying result — or one unknown,
