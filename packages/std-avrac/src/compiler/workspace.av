@@ -16,6 +16,8 @@
 //! package of one rooted at its directory.
 use core.{
     CollectKind,
+    qtrace,
+    traced,
     Plain,
     SyntaxArena,
     StmtId,
@@ -1341,6 +1343,7 @@ impl Workspace {
             BlockWords { components: self.unread_words(f) },
         )
         self.timed("ast", self.clock() - t0)
+        if traced() { qtrace("P\tast1\t${self.decls.file(f).path}\t${self.clock() - t0}\t${self.source(f).text.length}\n") }
         p
     }
 
@@ -1363,10 +1366,12 @@ impl Workspace {
         let t0 = self.clock()
         let words = self.block_words(f, first)
         self.timed("sublang", self.clock() - t0)
+        if traced() { qtrace("P\tsublang\t${self.decls.file(f).path}\t${self.clock() - t0}\n") }
         if words.is_empty() { return self.with_import_remedies(first, words) }
         let t1 = self.clock()
         let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
         self.timed("ast", self.clock() - t1)
+        if traced() { qtrace("P\tast2\t${self.decls.file(f).path}\t${self.clock() - t1}\t${self.source(f).text.length}\n") }
         for r in p.store.foreign.get() {
             let origin = self.file_id(r.path)
             if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
