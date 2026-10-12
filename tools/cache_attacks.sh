@@ -530,6 +530,35 @@ rm -rf .avra-cache; bk_run; bk_keys > $R/bk.k1; rm -rf .avra-cache; bk_run; bk_k
 steps=$((steps+1)); [ -s $R/bk.k1 ] && cmp -s $R/bk.k1 $R/bk.k2 || { fails=$((fails+1)); echo "FAIL  bk: two cold builds of one tree keyed their buckets differently ($(wc -l < $R/bk.k1 | tr -d ' ') vs $(wc -l < $R/bk.k2 | tr -d ' ') buckets, first difference: $(diff $R/bk.k1 $R/bk.k2 | head -2 | tr '\n' ' '))"; }
 fi
 
+if section ch; then
+# A CHECK COMPUTES NO HASH IT DOES NOT NEED, AND LEAVES NO WRONG ONE BEHIND. The program
+# asks the hash of `mid` and of `other`; a check between the builds links nothing and
+# answers none, and the next build still says a hash moves when the code it reaches
+# moves, and only then. Every step is built, run and held to the evaluator.
+mkdir -p $R/ch/src/y
+printf '[package]\nname = "rt-ch"\nversion = "0.1.0"\n' > $R/ch/avra.toml
+printf 'export fn leaf() -> int { 1 }\nexport fn mid() -> int { leaf() + 1 }\nexport fn other() -> int { 5 }\n' > $R/ch/src/y/calc.av
+printf 'use @std.meta.{code_hash}\nuse y.{mid, other}\nprintln("${code_hash(mid) ?? "absent"} ${code_hash(other) ?? "absent"}")\n' > $R/ch/src/main.av
+ch_pair() { S "ch: $1" ch; ch_out=$($R/ch/src/main 2>&1); ch_mid=${ch_out% *}; ch_other=${ch_out#* }; }
+ch_expect() { # ch_expect <label> <mid moved|same> <other moved|same>
+    steps=$((steps+1)); prev_mid=$ch_mid; prev_other=$ch_other; HR "ch: a check between builds" check ch 0; ch_pair "$1"
+    case "$ch_mid" in absent|"") fails=$((fails+1)); echo "FAIL  ch: $1: mid has no hash ('$ch_out')" ;; esac
+    if [ "$prev_mid" = "$ch_mid" ]; then got=same; else got=moved; fi
+    [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  ch: $1: mid's hash was wanted $2, was $got"; }
+    if [ "$prev_other" = "$ch_other" ]; then got=same; else got=moved; fi
+    [ "$got" = "$3" ] || { fails=$((fails+1)); echo "FAIL  ch: $1: other's hash was wanted $3, was $got"; }
+}
+HR "cold ch" check ch 0
+ch_pair "built cold"
+printf '// moved\n' >> $R/ch/src/main.av
+ch_expect "an edit elsewhere" same same
+ed $R/ch/src/y/calc.av "{ 5 }" "{ 6 }"
+ch_expect "a body mid never reaches" same moved
+ed $R/ch/src/y/calc.av "fn leaf() -> int { 1 }" "fn leaf() -> int { 2 }"
+ch_expect "a body mid reaches" moved same
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
