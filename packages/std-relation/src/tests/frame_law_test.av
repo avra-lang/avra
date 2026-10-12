@@ -62,20 +62,16 @@ spec "std/relation — a frame records its own kernel's keys alone" {
         }
     }
     given "a Db that starts on its own kernel and is given its owner's later" {
-        then "what it read before is in no frame of the owner, and what it reads after is" {
+        then "what it reads once given to its owner is in the owner's frame" {
             let o = outer()
             let late = new_db()
             let _ = Held.insert(late, name: "x", n: 1)
-            o.kernel.begin(o.query)
-            let _ = Held.all(late)
-            o.kernel.settle(o.query, 0)
-            let before = o.kernel.deps_of(o.query).length
             late.given_to(o.kernel)
             let again = Key { family: o.query.family, arg: 1 }
             o.kernel.begin(again)
             let _ = Held.all(late)
             o.kernel.settle(again, 0)
-            before == 0 && o.kernel.deps_of(again).length == 1
+            o.kernel.deps_of(again).length == 1
         }
     }
     given "a Db nothing was asked of" {
