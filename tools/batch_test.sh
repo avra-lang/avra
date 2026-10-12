@@ -213,6 +213,19 @@ check "$?" "0" "plan: a buildable plan exits 0"
 check "$(grep -c 'plan: buildable — nothing was pushed, opened, merged or retitled' "$scratch/out")" "1" "plan: says it is buildable and that nothing was touched"
 check "$(git -C "$scratch/origin.git" for-each-ref --format='%(refname)' refs/heads/batch-9 | wc -l | tr -d ' ')" "0" "plan: no batch-9 branch is created on origin"
 
+# ── 11. --attacks-na: a reason stands in for a skipped cache-attacks ───────
+reset_clone
+batch --n 11 --attacks-na "7=tools only: no compiler source" 7
+check "$?" "0" "attacks-na: a skipped member with a reason for it is accepted"
+check "$(grep -c 'not applicable — tools only: no compiler source' "$fx/gh.log")" "1" "attacks-na: the reason is on the batch PR body"
+reset_clone
+batch --n 12 --attacks-na "6=tools only" 6
+check "$?" "1" "attacks-na: a FAILURE stays refused even with a reason"
+check "$(grep -c '#6 refused: its cache-attacks job is FAILURE' "$scratch/err")" "1" "attacks-na: the failing job is still named"
+reset_clone
+batch --n 13 --attacks-ran "7=ran" --attacks-na "7=also n/a" 7
+check "$(grep -c 'ran — ran' "$fx/gh.log")" "1" "attacks-na: a run result wins over a reason for the same member"
+
 echo
 echo "batch tests: $((total - failed))/$total passed"
 [ "$failed" = 0 ]

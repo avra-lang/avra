@@ -49,9 +49,9 @@ strip_dnm() {
     printf '%s' "$1" | sed -e 's/^DO NOT MERGE[:—-]* *//'
 }
 
-# The evidence given for member $1 by --attacks-ran (one per line in $attacks).
-evidence_for() {
-    printf '%s\n' "$attacks" | sed -n "s/^$1=//p" | head -n 1
+# The evidence given for member $1 by a list of N=TEXT lines ($2).
+evidence_from() {
+    printf '%s\n' "$2" | sed -n "s/^$1=//p" | head -n 1
 }
 
 # The members named by a batch PR's body.
@@ -149,12 +149,15 @@ print(" ".join(x["path"] for x in json.load(sys.stdin)["files"]))'); do
 batch_build() {
     n=
     attacks=
+    na=
     plan=
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --plan) plan=1; shift ;;
             --n) n=$2; shift 2 ;;
             --attacks-ran) attacks="$attacks$2
+"; shift 2 ;;
+            --attacks-na) na="$na$2
 "; shift 2 ;;
             --) shift; break ;;
             -*) die "unknown flag $1" ;;
@@ -190,12 +193,16 @@ batch_build() {
             SUCCESS) ;;
             FAILURE | ERROR | TIMED_OUT) refuse "#$num refused: its cache-attacks job is $attacks_state" ;;
             *)
-                ev=$(evidence_for "$num")
-                if [ -z "$ev" ]; then
-                    refuse "#$num: cache-attacks is $attacks_state, so it did not run — pass --attacks-ran $num=\"<the Sprite result>\""
-                else
+                ev=$(evidence_from "$num" "$attacks")
+                reason=$(evidence_from "$num" "$na")
+                if [ -n "$ev" ]; then
                     needs="$needs
-#$num: $ev"
+#$num: ran — $ev"
+                elif [ -n "$reason" ]; then
+                    needs="$needs
+#$num: not applicable — $reason"
+                else
+                    refuse "#$num: cache-attacks is $attacks_state, so it did not run — pass --attacks-ran $num=\"<the Sprite result>\", or --attacks-na $num=\"<why it does not apply>\""
                 fi ;;
         esac
         members="$members $num"
@@ -214,7 +221,7 @@ Members, in merge order:$rows"
     if [ -n "$needs" ]; then
         body="$body
 
-Cache-attacks did not run for these members; the evidence given:$needs"
+Cache-attacks did not run for these members; the evidence given for each:$needs"
     fi
     if [ -n "$plan" ]; then
         plan_merges "$n" $members
