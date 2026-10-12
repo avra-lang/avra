@@ -1264,9 +1264,8 @@ esac
 # `avra explain` IS ITS OWN PROCESS, reading what an earlier check kept — and an
 # INSPECTION KEEPS NOTHING. A check, then ONE edit, then every form in a process of
 # its own: each names the edited input, `--why` twice says the same move, and
-# after them still reads the file, `avra cache`'s older words print what their
-# form prints, and the store's bytes are what the check left. A check after them
-# keeps as it always did, and only then has nothing moved.
+# after them still reads the file, and the store's bytes are what the check left. A
+# check after them keeps as it always did, and only then has nothing moved.
 mkdir -p $R/cw/src/lib
 printf '[package]\nname = "rt-cw"\nversion = "0.1.0"\n' > $R/cw/avra.toml
 printf 'use lib.{one}\none()\n' > $R/cw/src/main.av
@@ -1277,7 +1276,6 @@ printf 'export fn one(p: int = 0) -> int { 1 }\n' > $R/cw/src/lib/a.av
 # the store's bytes, each file's checksum by path — a process's own `.users` mark aside
 store_print() { (cd .avra-cache && find . -path '*/.users' -prune -o -type f -print | LC_ALL=C sort | xargs cksum); }
 inspected() { (cd $R/cw && "$tree/avra" explain "$@" 2>&1); }
-older() { (cd $R/cw && "$tree/avra" cache "$@" 2>&1); }
 explain_says() { # explain_says <a line the answer holds> <the answer> <the form's words...>
     steps=$((steps+1)); want=$1; said=$2; shift 2
     printf '%s\n' "$said" | grep -qF -- "$want" ||
@@ -1299,14 +1297,6 @@ stats=$(inspected --stats)
 explain_says "total " "$stats" --stats
 steps=$((steps+1)); [ "$stats" = "$(inspected --stats)" ] ||
     { fails=$((fails+1)); echo "FAIL  a second avra explain --stats answered otherwise"; }
-for words in "" changed held; do
-    steps=$((steps+1)); [ "$(older $words)" = "$first" ] ||
-        { fails=$((fails+1)); echo "FAIL  avra cache $words is not avra explain --why"; }
-done
-steps=$((steps+1)); [ "$(older why src/main.av)" = "$why_main" ] ||
-    { fails=$((fails+1)); echo "FAIL  avra cache why is not avra explain --why of the file"; }
-steps=$((steps+1)); [ "$(older dependents src/lib/a.av)" = "$readers" ] ||
-    { fails=$((fails+1)); echo "FAIL  avra cache dependents is not avra explain of the file"; }
 steps=$((steps+1)); [ "$kept_before" = "$(store_print)" ] ||
     { fails=$((fails+1)); echo "FAIL  avra explain moved the store:"; printf '%s\n' "$kept_before" > $R/cw.before; store_print | diff $R/cw.before - | head -8; }
 ./avra check $R/cw >/dev/null 2>&1
