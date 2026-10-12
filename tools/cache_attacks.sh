@@ -230,6 +230,61 @@ steps=$((steps+1)); tw_out=$($R/tw/src/main 2>&1)
 
 fi
 
+if section lm; then
+# A RUN'S READ OF A LIFTED LAMBDA OR A FN TAKEN AS A VALUE RIDES ITS DECLARATION. `lm`'s J
+# runs a fn that maps a lambda and one that maps a named fn (a wrapper), both in calc.av.
+# Editing a fn of calc.av that J never reaches leaves mid.av held and no attempt thrown
+# away; editing the fn the lambda sits in reads mid.av in the first attempt.
+mkdir -p $R/lm/src/f $R/lm/src/x $R/lm/src/y
+printf '[package]\nname = "rt-lm"\nversion = "0.1.0"\n' > $R/lm/avra.toml
+printf 'export fn dbl(n: int) -> int { n * 2 }\nexport fn via_lambda(n: int) -> int { [n].map((x) -> x + 1).first() ?? 0 }\nexport fn via_fn(n: int) -> int { [n].map(dbl).first() ?? 0 }\nexport fn unused(n: int) -> int { n + 1 }\n' > $R/lm/src/y/calc.av
+printf 'use y.{via_lambda, via_fn}\nexport const J: int = via_lambda(3) + via_fn(4)\n' > $R/lm/src/x/mid.av
+printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n' > $R/lm/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/lm/src/main.av
+HR "cold lm" check lm 0
+S "lm: built with J's verdict kept" lm
+ed $R/lm/src/y/calc.av "n + 1 }
+" "n + 7 }
+"
+steps=$((steps+1)); lm_out=$(./avra check --time $R/lm 2>&1)
+case "$lm_out" in *"discarded 0, refused 0"*|*"cache hit"*) ;; *) fails=$((fails+1)); echo "FAIL  lm: an unreached fn moved and an attempt was thrown away: $(printf '%s' "$lm_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$lm_out" in *"x/mid.av"*|*"f/held.av"*) fails=$((fails+1)); echo "FAIL  lm: an unreached fn moved and a reader of a lambda or a wrapper in its file was read all the same: $(printf '%s' "$lm_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    lm: an unreached fn moved -> the readers held" ;; esac
+ed $R/lm/src/y/calc.av "x + 1" "x + 2"
+steps=$((steps+1)); lm_out=$(./avra check --time $R/lm 2>&1)
+case "$lm_out" in *"x/mid.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    lm: the lambda's fn moved -> the reader read" ;; *) fails=$((fails+1)); echo "FAIL  lm: the fn holding the lambda moved and its reader was not read: $(printf '%s' "$lm_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "lm: and the binary follows" lm
+steps=$((steps+1)); lm_out=$($R/lm/src/main 2>&1)
+[ "$lm_out" = "26" ] || { fails=$((fails+1)); echo "FAIL  lm: the published value did not follow the lambda: printed '$lm_out', wanted '26'"; }
+
+fi
+
+if section pk; then
+# A READER WHOSE KEY MOVED IS READ BEFORE THE ATTEMPT STARTS, though one of its reads is
+# still pending. `pk`'s mid.av runs a fn of calc.av (a declaration read, pending while
+# calc.av's text has moved) and embeds a file (a read of the file's whole text). Both move at
+# once: the declaration stands and the embedded text does not, so nothing kept stands in for
+# mid.av under its new key. Held for a pending read, it would be found without rule findings
+# only after the attempt ran, and the attempt thrown away.
+mkdir -p $R/pk/src/f $R/pk/src/x $R/pk/src/y
+printf '[package]\nname = "rt-pk"\nversion = "0.1.0"\n' > $R/pk/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\nexport fn unused(n: int) -> int { n + 1 }\n' > $R/pk/src/y/calc.av
+printf 'one' > $R/pk/src/x/data.txt
+printf 'use @std.meta.{embed}\nuse y.{twice}\nexport const J: int = twice(3)\nexport const TEXT: string = embed("data.txt")\n' > $R/pk/src/x/mid.av
+printf 'use x.{J, TEXT}\nexport fn shown() -> string { "${TEXT} ${J}" }\n' > $R/pk/src/f/held.av
+printf 'use f.{shown}\nprintln(shown())\n' > $R/pk/src/main.av
+HR "cold pk" check pk 0
+S "pk: built with J's verdict kept" pk
+ed $R/pk/src/y/calc.av "n + 1" "n + 7"
+printf 'two' > $R/pk/src/x/data.txt
+steps=$((steps+1)); pk_out=$(./avra check --time $R/pk 2>&1)
+case "$pk_out" in *"none were kept"*) fails=$((fails+1)); echo "FAIL  pk: a reader's key moved under a pending read and it was held until its rule findings were found missing: $(printf '%s' "$pk_out" | grep -E 'discarded:' | cut -c1-260 | tr '\n' ' ')" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    pk: the key moved -> the reader read, never held for its findings" ;; esac
+case "$pk_out" in *"x/mid.av"*) ;; *) fails=$((fails+1)); echo "FAIL  pk: the embedded text moved and the reader was not read: $(printf '%s' "$pk_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "pk: and the binary follows" pk
+steps=$((steps+1)); pk_out=$($R/pk/src/main 2>&1)
+[ "$pk_out" = "two 6" ] || { fails=$((fails+1)); echo "FAIL  pk: the published value did not follow the embedded text: printed '$pk_out', wanted 'two 6'"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,

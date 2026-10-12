@@ -552,7 +552,7 @@ impl Workspace {
                 // whose reads all stand is forced read as if they had moved.
                 let held = held_paths(self)
                 for path in held { let _ = self.held_okey(store, path) }
-                self.resolve_pending_reads(store)
+                let _ = self.resolve_pending_reads(store)
                 [ReadFile { path: path, why: Reads.Unruled } for path in held if !ruled(store, self.held_okey(store, path))]
             },
             .Binary -> [],
@@ -629,7 +629,7 @@ impl Workspace {
             for m in held_modules(self, store, built_entry(at)) { load_interface(self, store, m, at.entry, at.want) }
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
-            self.settle_holds(store)
+            self.settle_holds(store, at.want)
         }
         self.host.reads_ahead(self.reads_ahead())
         self.hold.holds_settled.set(true)
@@ -876,9 +876,9 @@ impl Workspace {
     /// declaration holds when that declaration's syntax still stands — the read
     /// file is parsed here, after the walk, never inside a key. A reader whose
     /// read moved, or whose declaration can no longer be named, is read instead.
-    fn resolve_pending_reads(store: Store) {
+    fn resolve_pending_reads(store: Store) -> List<string> {
         let pending = self.hold.pending_reads.get()
-        if pending.is_empty() { return }
+        if pending.is_empty() { return [] }
         for p in pending {
             let key = pending_key(p.reader, p.read)
             let _ = self.resolved(self.file_id(p.read.path))
@@ -898,13 +898,27 @@ impl Workspace {
                 }
             }
         }
-        for reader in distinct([p.reader for p in pending]) {
+        let readers = distinct([p.reader for p in pending])
+        for reader in readers {
             let m = self.module_path_of(reader)
             let fresh = self.key_parts(store, m, reader)
             self.keys.object_parts.put("${m.text()}\t${reader}", fresh)
             self.keys.object_keys.put("${m.text()}\t${reader}", object_key_of_parts(self, fresh))
         }
         self.hold.pending_reads.set([])
+        readers
+    }
+
+    /// A RESOLVED READER IS HELD ONLY WHERE ITS FINAL KEY STANDS: a pending read keeps the
+    /// hold open until the read file is parsed, and a read of another kind in the same key
+    /// (a whole file's text) may have moved the key past everything kept.
+    fn read_unkept(store: Store, readers: List<string>, want: Want) {
+        for reader in readers {
+            if self.hold.forced.get().get(reader) == null &&
+                !self.stands_in(store, self.held_okey(store, reader), want) {
+                self.force_read(reader, Reads.Unkept)
+            }
+        }
     }
 
     /// A file this attempt now reads, its reason standing beside the holds it turns.
@@ -922,8 +936,8 @@ impl Workspace {
     /// seed already carries its own `RunBy` (record.av's `load_interface`), so
     /// the noting below is the same one the worklist does for what IT finds,
     /// never a second law.
-    fn settle_holds(store: Store) {
-        self.resolve_pending_reads(store)
+    fn settle_holds(store: Store, want: Want) {
+        self.read_unkept(store, self.resolve_pending_reads(store), want)
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut reads: List<string> = distinct(self.hold.read_with.get())
         for rf in self.hold.read_seeds.get() {
@@ -1056,7 +1070,7 @@ impl Workspace {
         // kept and what is asked wear one spelling.
         if fresh != null {
             let _ = self.held_okey(store, path)
-            self.resolve_pending_reads(store)
+            let _ = self.resolve_pending_reads(store)
         }
         let okey = self.held_okey(store, path)
         let told? = fresh else {
