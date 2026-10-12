@@ -669,6 +669,39 @@ validation (`unruled`) REQUIRES the pending-read resolution that is the discarde
 The fix is DB 07's per-declaration keys: a rule-finding row keyed so a sibling body edit
 cannot move it. Until then every one-edit cli check pays the discarded attempt.
 
+**DB 00d, re-measured with a run-token trace** (`db07d-keys`, main `695c3fb2`, the same
+`linux-x86-64-amd-epyc` Sprite, warm store; instrument
+`tools/db_measure/why_trace.sh`, plus two temporary `qtrace` lines in `read_token` and
+`unruled`, not landed). One body edit of `packages/cli/src/commands/shared.av`:
+
+- `Q parse` 359 over 146 files; `held 492/498`, `attempt 0`, `discarded 1`, `load 6616ms`.
+- `unruled` returns exactly `cli/src/commands/{explain,repr,run,writes}.av`, and each is
+  `rules false findings false` — BOTH rule rows are absent at the key `unruled` asks.
+- `Q fd` (a declaration read whose target was held, so `read_token` fell back to
+  `run_said`'s whole-file digest) is EMPTY across the run.
+- every `Q pend` line resolves `now == was` with `outline=false`: the read declarations'
+  syntax did NOT move, so `syntax`'s declaration-grain early cutoff held.
+- a NO-EDIT warm check is clean: `Q parse 0`, `Q unruled 0`.
+
+So the discarded attempt is NOT a moved run token, which corrects this section's
+sentence above.
+
+**THE KEEP KEY AND THE JUDGE KEY ARE TWO SPELLINGS.** Printing `held_okey` and its parts
+in `file_said` (KEEP time) and in `unruled` (JUDGE time) for the four readers shows: the
+`seen` part is IDENTICAL, and the `runs` part differs ONLY by the pending marker — at
+KEEP time the moved-text reads are still `?<print>`, at JUDGE time they are resolved to
+`<print>` (e.g. explain.av KEEP `…,?386636497,?842891822,…`, JUDGE `…,386636497,842891822,…`).
+The rule rows were kept under the `?` key; the next build asks under the resolved key and
+finds nothing. `unruled` resolves before asking; `file_said` does not before keeping.
+
+AN ATTEMPTED FIX — call `resolve_pending_reads` in `file_said` before the key is used
+(this branch, `packages/std-avrac/src/compiler/derive.av`) — did NOT move the count
+(`Q parse` 359, `discarded 2`, `load 6606 ms`, `warm edit 20027 ms` against
+`359 / 20027 ms`), so the keep-side `?` spelling is not by itself the whole cause, and the
+fix is not landed. The next probe is to print the kept `rules_key` and the judged `okey`
+side by side and confirm whether the kept rows are reachable at all after the resolve,
+before spending DB 07 (a)/(d) on per-declaration keys.
+
 ### 7.3 Targets, and when each becomes reachable
 
 | scenario (`packages/cli`, cold process, no daemon) | gate | today |

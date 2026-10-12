@@ -1045,6 +1045,14 @@ impl Workspace {
     /// when it did not. Its rule findings are kept under every want; only a
     /// diagnostics want speaks them.
     fn file_said(store: Store, path: string, fresh: Spoken?, want: Want) -> Said? {
+        // A READ FILE'S KEY MAY OPEN A PENDING READ: `held_okey` gathers one, and a
+        // key kept while a token is `?<print>` is a DIFFERENT key from the one the
+        // next build judges — `unruled` resolves first. Resolve here too, so what is
+        // kept and what is asked wear one spelling.
+        if fresh != null {
+            let _ = self.held_okey(store, path)
+            self.resolve_pending_reads(store)
+        }
         let okey = self.held_okey(store, path)
         let told? = fresh else {
             let kept? = store.get(Stored.Warn, said_key(okey)) else { return null }
