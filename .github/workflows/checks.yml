@@ -60,9 +60,9 @@ jobs:
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
-    # Backstop above the compiler (25) and objects (15) step bounds; a hang in
+    # Backstop above the compiler (50) and objects (15) step bounds; a hang in
     # either heavy step dies there with its own name, not here.
-    timeout-minutes: 45
+    timeout-minutes: 65
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       changed: ${{ steps.plan.outputs.changed }}
@@ -241,12 +241,16 @@ jobs:
       # Two source generations: a cold `make avra` measured ~517 s each, so a
       # bootstrap fits with margin; each generation and the bootstrap are
       # bounded, so a hang dies here with its own name and an honest status.
+      # RECORDED TRIGGER: the generation bound is 1500 s and the step 50 min so a slow
+      # builder never falls back to a 22-min bootstrap; lowered back to 900 s / 35 min
+      # once main's published compiler carries the shape-key fix (cold check 158 -> 80 s)
+      # — measure prepare on three compiler-touching PRs, then --accept.
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true'
         name: compiler
-        timeout-minutes: 35
+        timeout-minutes: 50
         run: |
           s=$(date +%s)
-          gen() { timeout -k 10 900 make -s avra || { echo "::error::a compiler generation exceeded its 900 s bound"; return 1; }; }
+          gen() { timeout -k 10 1500 make -s avra || { echo "::error::a compiler generation exceeded its 1500 s bound"; return 1; }; }
           if [ -x build/avra ] && gen && gen; then :; else
             timeout -k 10 1500 make -s bootstrap || { echo "::error::bootstrap exceeded its 1500 s bound"; exit 1; }
           fi
