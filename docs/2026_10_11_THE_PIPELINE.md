@@ -83,6 +83,12 @@ it is a draft, strips a leading `DO NOT MERGE` from its title (through the
 REST API, since `gh pr edit` lacks the scope), and arms auto-merge. A title
 that is only the hold phrase is refused: name the change first.
 
+**Landing waits its turn.** `sh tools/work land` refuses while another
+non-draft PR's `test` check is still running: landing moves `main`, so that PR
+restarts. `sh tools/work land --batch` lands beside it on purpose.
+`make pipeline-status` prints LANDING NOW WOULD: one line per open PR naming
+the mid-CI PRs its landing would restart.
+
 **Nothing rots unseen.** `make pipeline-status` prints a section
 WAITING ON A HUMAN/LEAD: each green draft with its age, each red non-draft
 PR past two hours with its failing jobs, each PR BEHIND `main` past an hour
