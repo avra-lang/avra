@@ -42,6 +42,8 @@ use core.{
     Param,
     SeatMark,
     Static,
+    Slot,
+    StaticBox,
     CollectParts,
     CollectKind,
     CollectScope,
@@ -51,6 +53,7 @@ use core.{
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{
     LowerCx,
+    BodyFrame,
     FnSig,
     Sub,
     SeatValue,
@@ -1002,6 +1005,21 @@ fn runs_at_top(store: SyntaxArena, s: StmtId) -> bool {
 
 type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 
+/// The static `Frame` a body's unwind pushes: its `{label, loc}` laid
+/// out as the binary's data, one per body. The label is the name a
+/// reader knows the body by, the loc the place it was written.
+fn body_frame(a: Analysis, sym: string, label: string, file: FileId, lo: int, hi: int) -> BodyFrame {
+    let site = StaticBox.Slots([Slot.Text(a.view.decls.file_named(file)), Slot.Int(lo), Slot.Int(hi)])
+    BodyFrame { sym: "frame\$${sym}", boxes: [site, StaticBox.Slots([Slot.Text(label), Slot.Box(0)])] }
+}
+
+/// The name a body's frame wears: a method's under its type, a free
+/// fn's or a default's own.
+fn decl_label(a: Analysis, x: Decl) -> string {
+    if x.owner.is_empty() { return x.name }
+    "${x.owner}.${x.name}"
+}
+
 /// One body — a fn's, a method's, a default's: params pre-minted as
 /// registers 0..N-1, the body inside one scope, the answer after
 /// the scope settles.
@@ -1039,6 +1057,7 @@ fn lower_fn(
     // carries.
     let body_marks: List<SeatMark> = [m with { consumed: a.view.decls.consumed_seat(x.id, j) } for j, m in seat_marks]
     mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle, cross), checks)
+    lo.frame = body_frame(a, fname, decl_label(a, x), a.view.file, x.lo, x.hi)
     // an `@unbroken` fn's own `while`s carry no back-edge check — the
     // cancel pass already decided it: a fn that SPINS has one, and its
     // bit is false for an `@unbroken` fn
@@ -1091,6 +1110,7 @@ fn lower_lambda(
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
     mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle, cross), checks)
+    lo.frame = body_frame(a, lj.name, lj.name, a.view.file, 0, 0)
     // a lambda's `while`s wear its maker's law: an `@unbroken` fn's lifted
     // body carries no back-edge check either
     lo.unbroken = lj.unbroken

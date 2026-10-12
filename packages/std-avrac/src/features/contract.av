@@ -37,7 +37,7 @@ use core.{
     found_at,
     Binding,
 }
-use core.{SeatMark, SideTable, Fingerprint, nothing_bound}
+use core.{SeatMark, SideTable, Fingerprint, StaticBox, nothing_bound}
 use core.{fp, fp_list, fp_str}
 // LICENSED modules.unused_import: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use diagnostics.{Diag, refusal}
@@ -357,6 +357,10 @@ export type LowerCx = {
     seat_marks: List<SeatMark>,
     fn_ret: TypeId?,
     jobs: Jobs,
+    // THE BODY'S OWN FRAME: the static `Frame` an unwind out of this
+    // body pushes, one per body. Absent for a body the compiler
+    // synthesized (a wrapper) — it names no source frame.
+    frame: BodyFrame? = null,
     // THE FRAMES: every `defer` registered in an open frame — a
     // statement list's — with that frame's depth; a frame's close
     // runs and drops its own, an early exit runs them all
@@ -393,6 +397,12 @@ export type LowerCx = {
 /// A lambda literal lowered where it is CALLED rather than lifted:
 /// its params resolve to `regs`, the seats the inline site hands it.
 export type InlineSeat = { lam: ExprId, regs: List<Reg> }
+
+/// The static `Frame` a fn body's unwind pushes: its symbol and the
+/// boxes that lay its `{label, loc}` out as the binary's data. The
+/// register pushes the ROOT box's address — the currency IS its
+/// payload, so the landing maps a frame back by reading it.
+export type BodyFrame = { sym: string, boxes: List<StaticBox> }
 
 /// One open loop: the statement that wrote it — none for a loop the
 /// compiler spells (a walk, a comprehension) — and the depth of the
