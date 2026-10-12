@@ -282,6 +282,10 @@ There is no queue; the watcher keeps every open PR able to merge itself:
   longer open. A superseded run is already cancelled by `checks.yml`'s
   own concurrency.
 - **(g)** a **blocked** PR — name the check it waits on, once.
+- **(h)** an **unvalidated `main`** — a merge the bot pushed fires no
+  workflow (`GITHUB_TOKEN` pushes trigger none), so `main` can stand with no
+  `checks` run; once its head is older than three minutes with none, dispatch
+  `checks` on `main`, once per SHA.
 
 Every open PR gets an action or a loud name. Every comment is deduped by
 `(pr, head, reason)` and carries its own marker, so a lost state file
