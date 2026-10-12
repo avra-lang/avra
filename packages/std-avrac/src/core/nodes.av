@@ -525,7 +525,8 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 /// A non-empty `alternatives` makes this ref a UNION — `A or B` — and
 /// every other field is unused: the 2+ members are ordinary written
 /// types in their own right, each resolved the usual way.
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
+@derive(Fingerprint)
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, @local span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
@@ -602,7 +603,8 @@ export const pronoun_param: Param = Param {
 // `node_value` matches `@std.meta.Node`'s variant names. The
 // mitigation the doctrine names is paid in full: the unknown SPEAKS
 // (workspace's claim law) rather than falling through.
-export type Mark = { name: string, args: List<string>, span: Span? = null, call: ExprId? = null }
+@derive(Identity)
+export type Mark = { name: string, args: List<string>, @local span: Span? = null, call: ExprId? = null }
 
 /// A handler an instance hears an event with: the event it names,
 /// whether the `on` sugar wrote it (a setting that names an event hears
@@ -630,7 +632,8 @@ export enum Unheard {
 /// `says` makes the seat an EVENT a component declares (`on input(text:
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null }
+@derive(Identity)
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null }
 
 /// A seat's identity in the store's span table — a fn's param, a
 /// lambda's, a struct's field, an enum variant's payload. Minted
@@ -732,11 +735,13 @@ export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 /// One declared variant: its name, what it carries in order — a
 /// single positional payload, or named fields — and the marks
 /// written before it.
-export type Variant = { name: Plain, payloads: List<Param>, span: Span? = null, marks: List<Mark> = [] }
+@derive(Identity)
+export type Variant = { name: Plain, payloads: List<Param>, @local span: Span? = null, marks: List<Mark> = [] }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
-export type Case = { group: string, name: string, body: ExprId, span: Span? = null }
+@derive(Identity)
+export type Case = { group: string, name: string, body: ExprId, @local span: Span? = null }
 
 /// One step of a PLACE — where a mutation lands.
 export enum PlaceStep {
@@ -851,34 +856,9 @@ fn hole_fps(p: FormatPart) -> List<int> {
 /// dropped it would hand them one hash.
 fn greed_fp(greedy: bool) -> int { if greedy { 1 } else { 0 } }
 
-/// A SEAT'S CONTRACT IS PART OF WHAT THE SEAT IS: `fn(mut Cx)` is a
-/// different type from `fn(Cx)`, and `const x` a different seat from
-/// `x`, so the marks ride the identity as the interner's key already
-/// says they ride the type.
-fn mark_fp(m: SeatMark) -> int {
-    fp(126, [flagged(m.mutable), flagged(m.settled), flagged(m.unshared)])
-}
-
-/// A written type's identity: absence is its own value, and the `?`,
-/// the `dyn`, the arrow and the seats' marks are all part of what the
-/// type IS — a fingerprint that forgets one of them certifies a
-/// changed program as unchanged.
-fn type_fp(t: TypeRef?) -> int {
-    if t == null { return 0 }
-    let written = t!
-    fp(
-        if written.optional { 101 } else { 100 },
-        [
-            fp_str(written.name),
-            flagged(written.dynamic),
-            flagged(written.arrow),
-            flagged(written.spliced),
-            fp_list([mark_fp(m) for m in written.marks]),
-            fp_list([type_fp(a) for a in written.args]),
-            fp_list([type_fp(a) for a in written.alternatives]),
-        ],
-    )
-}
+/// A written type's identity, absence included: the `?`, the `dyn`, the
+/// arrow and the seats' marks are all part of what the type IS.
+fn type_fp(t: TypeRef?) -> int { t?.fingerprint() ?? 0 }
 
 /// A collect's kind: the ordinal, `fp_binop`'s shape — a plain int
 /// costs no tag; only the payload-carrying variant folds one.

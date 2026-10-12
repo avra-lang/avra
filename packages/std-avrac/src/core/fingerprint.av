@@ -31,6 +31,7 @@
 use @std.meta.{
     Type as MetaType,
     Variant as MetaVariant,
+    Field,
     Kind,
     Code,
     Arms,
@@ -42,6 +43,9 @@ use @std.meta.{
 }
 
 export trait Fingerprint {
+    /// `@local` fields are not part of what a value IS.
+    static fn marks(t: MetaType) -> List<string> { [local_word] }
+
     static fn derive(t: MetaType) -> List<MetaDirective> {
         [
             MetaDirective {
@@ -70,8 +74,14 @@ fn folding(t: MetaType, leaf: fn(Code) -> Code) -> Code {
 
 /// `fp(tag, [name, f1, f2, …])` over `self.<field>`.
 fn record_fold(t: MetaType, leaf: fn(Code) -> Code) -> Code {
-    parted(t.name, [folded(f.kind, quote { self.${f.name} }, leaf) for f in t.fields])
+    parted(t.name, [folded(f.kind, quote { self.${f.name} }, leaf) for f in t.fields if !local(f)])
 }
+
+/// The mark on a field that is not part of what its node IS: a span, a
+/// process-local id. A field with no mark folds.
+export const local_word: string = "local"
+
+fn local(f: Field) -> bool { f.marks.any(it.name == local_word) }
 
 /// One arm per variant: its INDEX pins the arity, so two variants of
 /// one type cannot fold alike however their payloads line up.
