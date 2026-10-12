@@ -104,12 +104,12 @@ fn framed(payload: Bytes) -> Bytes {
 /// there is nothing to seal or the seal cannot be written; the caller then
 /// leaves the segments as the store.
 export fn seal(pack: Pack) -> bool {
-    let keys = sorted_by(pack.records.get().keys(), text_before)
+    let keys = sorted_by([k for k in pack.records.get().keys() if !withdrawn(pack, k)], text_before)
     if keys.is_empty() { return false }
     let rev = newest_rev(pack.dir) + 1
     let placed = placed_values(all_content(pack).get())
     let payload = body_payload(pack, keys, rev, placed)
-    let idx = idx_payload(keys, rev)
+    let idx = idx_payload(action_keys(pack, keys), rev)
     let values = [p.data for p in placed].bytes()
     if !wrote(val_path(pack.dir, rev), values) { return false }
     if !wrote(idx_path(pack.dir, rev), idx) { return false }
@@ -117,6 +117,16 @@ export fn seal(pack: Pack) -> bool {
     pack.rev.set(rev)
     for p in placed { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
     true
+}
+
+/// The sealed keys of rows, sorted: each row's action key, the index's currency.
+fn action_keys(pack: Pack, keys: List<string>) -> List<string> {
+    mut out: List<string> = []
+    for k in keys {
+        let h? = record_of(pack, k) else { continue }
+        out.push(action_key(h.family, h.key))
+    }
+    sorted_by(out, text_before)
 }
 
 /// Every value the store holds, in memory or in a sealed body.
@@ -155,11 +165,11 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, placed: List<Placed>) 
     let s = sets()
     for k in keys {
         let h? = record_of(pack, k) else { continue }
-        for r in h.read { let _ = n.intern(r) }
+        for r in reads_of(pack, h) { let _ = n.intern(r) }
     }
     for k in keys {
         let h? = record_of(pack, k) else { continue }
-        let _ = s.intern(named_ids(n, h.read))
+        let _ = s.intern(named_ids(n, reads_of(pack, h)))
     }
     let w = writer()
     w.text(BODY_MAGIC)
@@ -183,7 +193,7 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, placed: List<Placed>) 
             let h? = record_of(pack, k) else { continue }
             w.text(h.key)
             w.text(h.digest)
-            w.int(s.intern(named_ids(n, h.read)))
+            w.int(s.intern(named_ids(n, reads_of(pack, h))))
             w.int(rev)
             w.int(rev)
         }
@@ -192,6 +202,29 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, placed: List<Placed>) 
 }
 
 fn record_of(pack: Pack, at: string) -> Held? { pack.records.get().get(at) }
+
+/// The keys a row read: its own list, or its set in the open body's tables —
+/// decoded on the first ask, since an open reads values and never read sets.
+/// A set the tables cannot name reads as none: a read set is a record of
+/// edges, and a row stands without them.
+fn reads_of(pack: Pack, h: Held) -> List<string> {
+    if h.set < 0 { return h.read }
+    let t? = tables_of(pack) else { return [] }
+    if h.set >= t.sets.length() { return [] }
+    let ids = t.sets.members(h.set)
+    if ids.any(it < 0 || it >= t.names.length()) { return [] }
+    [t.names.text_of(id) for id in ids]
+}
+
+fn tables_of(pack: Pack) -> Tables? {
+    let known = pack.tables.get().first()
+    if known != null { return known }
+    let n? = names_from(pack.table_names.get()) else { return null }
+    let s? = sets_from(pack.table_sets.get()) else { return null }
+    let made = Tables { names: n, sets: s }
+    pack.tables.set([made])
+    made
+}
 
 fn named_ids(n: Names, read: List<string>) -> List<int> {
     [n.id_of(r) ?? 0 for r in read]
@@ -263,17 +296,17 @@ fn body_read(pack: Pack, payload: Bytes) -> bool {
         return false
     }
     let names_bytes? = ok(r.octets()) else { return false }
-    let n? = names_from(names_bytes) else { return false }
     let sets_bytes? = ok(r.octets()) else { return false }
-    let s? = sets_from(sets_bytes) else { return false }
     let slots? = ok(r.count()) else { return false }
+    mut placed: Map<string, ValueSlot> = {}
     for _s in 0..slots {
         let digest? = ok(r.text()) else { return false }
         let at? = ok(r.int()) else { return false }
         let len? = ok(r.int()) else { return false }
-        pack.slots.put(digest, ValueSlot { at: at, len: len })
+        placed.set(digest, ValueSlot { at: at, len: len })
     }
     let families? = ok(r.count()) else { return false }
+    mut rows: List<Held> = []
     for _f in 0..families {
         let fam? = ok(r.text()) else { return false }
         let count? = ok(r.count()) else { return false }
@@ -283,10 +316,15 @@ fn body_read(pack: Pack, payload: Bytes) -> bool {
             let sid? = ok(r.int()) else { return false }
             let _changed? = ok(r.int()) else { return false }
             let _verified? = ok(r.int()) else { return false }
-            held(pack, fam, key, digest, [n.text_of(id) for id in s.members(sid)])
+            rows.push(Held { family: fam, key: key, digest: digest, read: [], set: sid })
         }
     }
     if !r.done() { return false }
+    for d, slot in placed { pack.slots.put(d, slot) }
+    pack.table_names.set(names_bytes)
+    pack.table_sets.set(sets_bytes)
+    pack.tables.set([])
+    for h in rows { pack.records.put(record_key(h.family, h.key), h) }
     pack.rev.set(rev)
     true
 }
