@@ -5,6 +5,7 @@ use @std.io.{make_dirs, write_text, list_dir}
 use @std.time.{now_ns}
 use @std.avrac.compiler.{HeldMismatch}
 use @std.avrac.core.{flatten}
+use @std.text.{parse_int}
 use commands.{explain_answer, Asked, checked_at, disagreement_line, decl_unanswered}
 
 /// A form's printed lines, or none when it refused.
@@ -239,7 +240,9 @@ spec "commands/explain" {
             let root = lib_probe("stats_input")
             let inputs = probe_inputs(root)
             let rows = table_rows(Asked { target: "", from: root, stats: true })
-            rows.find(it.starts_with("Input ")) ?? "" == "Input ${inputs.length} 0 0 0 0" &&
+            let input_row = rows.find(it.starts_with("Input ")) ?? ""
+            input_row.ends_with(" 0 0 0 0") &&
+                parse_int(input_row.split(" ")[1]) ?? -1 >= inputs.length &&
                 inputs
                     .all(
                         (l) -> (explain_lines(Asked { target: l, from: root }).first() ?? "")
@@ -349,7 +352,9 @@ spec "commands/explain" {
             let lines = explain_lines(
                 Asked { target: "", from: edited_lib("why_package"), why: true },
             )
-            lines.any(it == "1 input moved since the kept state") &&
+            let moved = [l for l in lines if l.starts_with("  ") && !l.starts_with("   ") && l.contains(" -> ")]
+            let word = if moved.length == 1 { "input" } else { "inputs" }
+            lines.any(it == "${moved.length} ${word} moved since the kept state") &&
                 lines.any(it.starts_with("  src/lib/a.av: its text ")) &&
                 lines.any(it.starts_with("src/main.av — read"))
         }

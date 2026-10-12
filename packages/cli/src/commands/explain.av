@@ -117,7 +117,7 @@ fn answers_named(g: Workspace, subject: Subject) -> Result<List<Key>, List<strin
 fn package_answer(a: Asked, ws: Workspace) -> Lines {
     if a.stats {
         count_reads()
-        return stats_answer(a, ws.walk_graph())
+        return stats_answer(a, ws.stats_graph())
     }
     let walk = walk_of(ws)?
     let changed = ws.walk_graph().ws.reached_by(walk.moved)
@@ -125,6 +125,7 @@ fn package_answer(a: Asked, ws: Workspace) -> Lines {
     let read = [h for h in walk.holds if !h.held]
     [files_line(walk), attempts_line(walk), moved_line(walk)]
         .concat([line for h in walk.holds for line in text_moved(walk, h)])
+        .concat([line for h in walk.holds for line in part_moved(walk, h)])
         .concat([line for h in read for line in hold_lines(walk, h)])
         .concat(reached_lines(walk, changed))
 }
@@ -160,26 +161,34 @@ fn files_line(walk: CacheWalk) -> string {
 /// What judging the hold took: the attempts made, and those that did not stand.
 fn attempts_line(walk: CacheWalk) -> string { "${counted(walk.attempts, "attempt")} judged the hold, ${walk.discarded} discarded" }
 
+/// Every moved part of every file: the list the headline counts and the
+/// listing below prints, one line per part.
+fn moved_parts(walk: CacheWalk) -> List<PartMoved> { [m for h in walk.holds for m in h.moved] }
+
 fn moved_line(walk: CacheWalk) -> string {
-    if walk.moved.is_empty() { "no input moved since the kept state" } else { "${counted(walk.moved.length, "input")} moved since the kept state" }
+    let n = moved_parts(walk).length
+    if n == 0 { "no input moved since the kept state" } else { "${counted(n, "input")} moved since the kept state" }
 }
 
-/// A moved input's own line: its text's digest then and now.
+/// A moved text part's own line: its digest then and now.
 fn text_moved(walk: CacheWalk, h: FileHold) -> List<string> {
     ["  ${at_root(walk, h.path)}: ${m.part.says()} ${m.was} -> ${m.now}" for m in h.moved if m.part is .Text]
 }
 
-/// One file's hold: held or read with why, then the rows it lacks and the
-/// parts of its key that moved.
-fn hold_lines(walk: CacheWalk, h: FileHold) -> List<string> {
-    ["${at_root(walk, h.path)} — ${hold_word(h)}"]
-        .concat(["  missing ${m}" for m in h.missing])
-        .concat([line for m in h.moved for line in moved_lines(m)])
+/// A moved part that is not text: its line under its file, then the contract
+/// lines it lost and gained.
+fn part_moved(walk: CacheWalk, h: FileHold) -> List<string> {
+    [line for m in h.moved if !(m.part is .Text) for line in moved_lines(at_root(walk, h.path), m)]
 }
 
-/// One moved part, then the contract lines it lost and gained, a field apart by two spaces.
-fn moved_lines(m: PartMoved) -> List<string> {
-    ["  moved ${m.part.says()}: ${m.was} -> ${m.now}"]
+/// One file's hold: held or read with why, then the rows it lacks.
+fn hold_lines(walk: CacheWalk, h: FileHold) -> List<string> {
+    ["${at_root(walk, h.path)} — ${hold_word(h)}"].concat(["  missing ${m}" for m in h.missing])
+}
+
+/// One moved part under its file, then the contract lines it lost and gained, a field apart by two spaces.
+fn moved_lines(file: string, m: PartMoved) -> List<string> {
+    ["  ${file}: moved ${m.part.says()}: ${m.was} -> ${m.now}"]
         .concat(["    ${l.replace("\t", "  ")}" for l in m.lines])
 }
 
@@ -269,6 +278,7 @@ fn why_subject(a: Asked, subject: Subject, ws: Workspace, walk: CacheWalk) -> Li
     }
     if a.json { return [to_text(page_json(held_json(walk, held, fresh), answers))] }
     hold_lines(walk, held)
+        .concat(part_moved(walk, held))
         .concat(compared_lines(fresh))
         .concat([line for s in answers for line in answer_lines(s)])
         .concat(cancel_lines(g, subject))

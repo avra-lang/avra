@@ -1,0 +1,54 @@
+//! `avra explain --why` — its headline and its read set, over a package a
+//! check has just read and then one edit.
+use @std.io.{make_dirs, write_text}
+use @std.time.{now_ns}
+use @std.text.{parse_int}
+use commands.{explain_answer, Asked, checked_at}
+
+/// A package whose `main` reads one fn from a module `lib` of one file, checked.
+fn why_probe(name: string) -> string {
+    let root = "/tmp/avra-why-test/${name}-${now_ns()}"
+    let _ = make_dirs("${root}/src/lib")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${root}/src/main.av", "use lib.{one}\none()\n")
+    let _ = write_text("${root}/src/lib/a.av", "export fn one() -> int { 1 }\n")
+    let _ = checked_at(root)
+    root
+}
+
+/// The `--why` page for a package, as printed lines.
+fn why_lines(root: string) -> List<string> {
+    match explain_answer(Asked { target: "", from: root, why: true }) {
+        .Ok(lines) -> lines,
+        .Err(_) -> [],
+    }
+}
+
+/// A moved part's line: two spaces, a path, then ` -> ` between its then and now.
+fn moved_part_line(line: string) -> bool {
+    line.starts_with("  ") && !line.starts_with("   ") && line.contains(" -> ")
+}
+
+/// The count a headline names: `N input(s) moved since the kept state`.
+fn headline_count(lines: List<string>) -> int {
+    let head = lines.find(it.ends_with("moved since the kept state")) ?? ""
+    if head.starts_with("no input") { return 0 }
+    parse_int(head.split(" ")[0]) ?? -1
+}
+
+spec "commands/explain --why — the headline and the read set" {
+    given "a package whose one module file has changed since the check" {
+        then "the headline counts exactly the moved parts the page lists" {
+            let root = why_probe("why_headline")
+            let _ = write_text("${root}/src/lib/a.av", "export fn one(n: int = 0) -> int { 1 }\n")
+            let lines = why_lines(root)
+            let listed = [l for l in lines if moved_part_line(l)].length
+            headline_count(lines) == listed && listed >= 1
+        }
+        then "the read set names no file as a home of instantiations owed, as a check's derivation does not" {
+            let root = why_probe("why_home")
+            let _ = write_text("${root}/src/lib/a.av", "export fn one(n: int = 0) -> int { 1 }\n")
+            why_lines(root).all(!it.contains("a home of instantiations owed"))
+        }
+    }
+}
