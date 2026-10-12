@@ -105,8 +105,8 @@ export type Parsed = {
     voices: Voices,
 }
 
-/// `explain_doc`'s answer: the rendered text, and the files it read to
-/// say so — a durable cache of it needs both (compiler/db.av).
+/// `explain_doc`'s answer: the rendered text, and every source file of the
+/// program it was drawn from — what a saved copy of it reads.
 export type DocAnswer = { text: string, files: List<string> }
 
 /// One exported declaration's own facts, as `avra docs dump` rows
@@ -388,6 +388,9 @@ impl Program {
         if doc == null { signature } else { "${signature}\n\n${doc!.join("\n")}" }
     }
 
+    /// Every source file of the program, by path.
+    fn source_paths() -> List<string> { [a.view.source.file for a in self.files] }
+
     /// A declaration's `///` doc — or, absent one, its FILE's `//!`
     /// header, asked for explicitly (`doc_of`'s door carries no such
     /// fallback of its own) — and its own `@name(args)` annotations.
@@ -397,9 +400,10 @@ impl Program {
     /// own — is named as a collision rather than silently answered
     /// from whichever one the compiler happened to reach first.
     ///
-    /// The FILES an answer read ride along too — never the answer's own
-    /// business, but exactly what a durable cache of this answer needs
-    /// to know is still true (compiler/db.av's `DocFacts`).
+    /// The program's source files ride along: what a saved copy of this
+    /// answer reads. FLATTENED until `Decl` rows have owners and names
+    /// (DB 07a): every file stands in for the declarations it holds, which
+    /// can only invalidate too often. Delete this rule then.
     fn explain_doc(name: string) -> DocAnswer? {
         let decls = self.ws.decls
         let db = decls.rows_db.get()
@@ -411,7 +415,7 @@ impl Program {
         let anns = ["@${a.name}(${[x.text for x in a.args].join(", ")})" for a in fact?.annotations ?? []]
         let lines = doc.concat(anns)
         let text = if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
-        DocAnswer { text: text, files: [decls.file(decl.file).path] }
+        DocAnswer { text: text, files: self.source_paths() }
     }
 
     /// `name` names more than one declaration — never guessed at. Every
@@ -422,7 +426,7 @@ impl Program {
         let qualified = [decls.module_of(d.id) + "." + name for d in matches].join(", ")
         DocAnswer {
             text: "`${name}` names more than one declaration in this package — qualify it: ${qualified}",
-            files: [decls.file(d.file).path for d in matches],
+            files: self.source_paths(),
         }
     }
 

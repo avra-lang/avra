@@ -10,7 +10,7 @@
 use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
 use @std.relation.engine.{map_cell}
-use compiler.store.{Keeping, Read, Store, Stored, node_key, store_at, store_with}
+use compiler.store.{Keeping, Reading, Store, Stored, node_key, store_at, store_with}
 
 /// One directory per run, so no earlier run's rows answer for this one.
 once fn store_base() -> string { "/tmp/avra-store-test/${stamp()}" }
@@ -72,7 +72,7 @@ spec "store" {
                     Stored.Unit,
                     k,
                     "answer",
-                    [Read { name: "a.av", digest: "d1" }, Read { name: "b.av", digest: "d2" }],
+                    [Reading { name: "a.av", digest: "d1" }, Reading { name: "b.av", digest: "d2" }],
                 )
             s.get_valid(Stored.Unit, k, (n: string) -> if n == "a.av" { "d1" } else { "d2" }) == "answer"
         }
@@ -84,7 +84,7 @@ spec "store" {
                     Stored.Unit,
                     k,
                     "answer",
-                    [Read { name: "a.av", digest: "d1" }, Read { name: "b.av", digest: "d2" }],
+                    [Reading { name: "a.av", digest: "d1" }, Reading { name: "b.av", digest: "d2" }],
                 )
             s.get(Stored.Unit, k) == "answer" &&
                 s.get_valid(Stored.Unit, k, (n: string) -> if n == "a.av" { "d1" } else { "d3" }) == null
@@ -92,22 +92,22 @@ spec "store" {
         then "a read that cannot be read now is a miss" {
             let s = at("gone")
             let k = node_key(Stored.Unit, ["gone"])
-            let _ = s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a.av", digest: "d1" }])
+            let _ = s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d1" }])
             s.get_valid(Stored.Unit, k, (n: string) -> null) == null
         }
         then "a name holding a space reads back whole" {
             let s = at("spaced")
             let k = node_key(Stored.Unit, ["spaced"])
             let _ = s
-                .keep_reading(Stored.Unit, k, "answer", [Read { name: "a b.av", digest: "d1" }])
+                .keep_reading(Stored.Unit, k, "answer", [Reading { name: "a b.av", digest: "d1" }])
             s.get_valid(Stored.Unit, k, (n: string) -> if n == "a b.av" { "d1" } else { null }) == "answer"
         }
         then "a read that cannot be spelled whole refuses the keep" {
             let s = at("unspelled")
             let k = node_key(Stored.Unit, ["unspelled"])
-            !s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a.av", digest: "d 1" }]) &&
-                !s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a\nb", digest: "d1" }]) &&
-                !s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a.av", digest: "" }]) &&
+            !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d 1" }]) &&
+                !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a\nb", digest: "d1" }]) &&
+                !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "" }]) &&
                 s.get(Stored.Unit, k) == null
         }
         then "a row kept with edges that are no pairs is a miss" {
@@ -129,7 +129,7 @@ spec "store" {
         then "an aside store judges its reads alike" {
             let s = store_with("${store_base()}/aside", "", Keeping.Aside(map_cell()))
             let k = node_key(Stored.Unit, ["aside"])
-            let _ = s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a.av", digest: "d1" }])
+            let _ = s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d1" }])
             s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "answer" &&
                 s.get_valid(Stored.Unit, k, (n: string) -> "d2") == null
         }

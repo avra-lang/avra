@@ -3,18 +3,8 @@
 //! thing's own doc — a diagnostic's meaning, or a declared symbol's
 //! `///` doc and its `@name(args)` annotations.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{
-    avra,
-    DocRow,
-    Db,
-    fresh_db,
-    db_qualified,
-    DocFacts,
-    FileWitness,
-    current_listing_digest,
-    current_file_digest,
-}
-use @std.avrac.compiler.store.{Store}
+use @std.avrac.compiler.{avra, DocRow, current_listing_digest, current_file_digest}
+use @std.avrac.compiler.store.{Reading, Store, Stored, node_key}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.compiler.dev.{shown_code}
 use @std.json.{Json, field, to_text}
@@ -65,24 +55,26 @@ fn shown_witness(kind: string) {
 /// known diagnostic kind. The package is the directory the command
 /// stands in.
 ///
-/// THE FAST PATH: a row this package's own db already holds, once its
-/// witnesses still hold, answers with no program built at all — the
-/// whole point of a durable `Db` (compiler/db.av). A miss falls back
-/// to today's derivation and remembers what it found for the process
-/// after this one.
+/// THE FAST PATH: the answer saved by an earlier process answers with no
+/// program built at all, while every read it was saved with still has its
+/// digest. A miss derives and saves what it found.
 fn explained_decl(name: string, json: bool) -> int {
     let root = here()
     let ws = root_workspace(root)
     let store = ws.opened_store()
-    let compiler = ws.compiler_id()
-    mut d = fresh_db()
-    // A durable row answers without a parse.
-    let cached? = d.decl(store, db_qualified(root, compiler, name)) else { return derived_decl(d, store, root, compiler, name, json) }
-    print_decl(name, cached.answer, json)
+    let key = node_key(Stored.Rows, ["docs", root, ws.compiler_id(), name])
+    let cached? = store.get_valid(Stored.Rows, key, (read: string) -> read_now(root, read)) else { return derived_decl(store, root, key, name, json) }
+    print_decl(name, cached, json)
     0
 }
 
-fn derived_decl(mut d: Db, store: Store, root: string, compiler: string, name: string, json: bool) -> int {
+/// A saved answer's read, as it stands now: the package's listing for its root,
+/// else a file's own bytes. A file that cannot be read has no digest.
+fn read_now(root: string, read: string) -> string? {
+    if read == root { current_listing_digest(root) } else { current_file_digest(read) }
+}
+
+fn derived_decl(store: Store, root: string, key: string, name: string, json: bool) -> int {
     let p? = clean_program() else { return 1 }
     let found? = p.explain_doc(name) else {
         eprintln(
@@ -90,16 +82,13 @@ fn derived_decl(mut d: Db, store: Store, root: string, compiler: string, name: s
         )
         return 1
     }
-    d
-        .insert_decl(
-            store,
-            db_qualified(root, compiler, name),
-            DocFacts {
-                root: root,
-                answer: found.text,
-                listing_digest: current_listing_digest(root),
-                files: [FileWitness { path: f, digest: current_file_digest(f) } for f in found.files],
-            },
+    let reads = [Reading { name: f, digest: current_file_digest(f) ?? "-" } for f in found.files]
+    let _ = store
+        .keep_reading(
+            Stored.Rows,
+            key,
+            found.text,
+            [Reading { name: root, digest: current_listing_digest(root) }].concat(reads),
         )
     print_decl(name, found.text, json)
     0
