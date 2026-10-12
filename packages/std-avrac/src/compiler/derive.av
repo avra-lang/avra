@@ -623,6 +623,7 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = self.opened_store()
         self.attach_store(store)
+        self.hold.serving.set(match at.want { .Diagnostics -> true, .Binary -> false })
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
@@ -632,6 +633,7 @@ impl Workspace {
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
             self.settle_holds(store, at.want)
         }
+        self.hold.warm.set(!held_paths(self).is_empty())
         self.host.reads_ahead(self.reads_ahead())
         self.hold.holds_settled.set(true)
         store
@@ -715,6 +717,7 @@ impl Workspace {
             self.keep_asks(store, lo, a)
             self.keep_codes(store, lo, a)
         }
+        self.keep_unit_rows(store)
         self.keep_instances(store, lo)
         let said? = self.all_said(store, p, at.want) else { fail at.unheld("what a held file said could not be read") }
         said
@@ -751,11 +754,15 @@ impl Workspace {
     /// What one read file's code is, kept under the file's key.
     fn keep_codes(store: Store, lo: Lowered, a: Analysis) {
         let f = a.view.file
-        let facts = code_facts(
+        let fresh = code_facts(
             self.decls,
             [b for b in lo.unmanaged if in_file(b.file, f)],
             [s for s in lo.statics if in_file(s.file, f)],
             [h.target for h in lo.hash_asks if in_file(h.by, f)],
+        )
+        let facts = merged_facts(
+            fresh,
+            [s.facts for s in self.hold.served.get() if same_file(s.file, f)],
         )
         let _ = store
             .keep_once(

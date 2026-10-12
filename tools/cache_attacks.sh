@@ -310,6 +310,56 @@ steps=$((steps+1)); rp_out=$($R/rp/src/main 2>&1)
 
 fi
 
+if section ur; then
+# A LOWERED UNIT IS KEPT BY DECLARATION. After one derivation has kept its rows, a body
+# edit lowers that body alone; an edit to anything its file shows its bodies (a
+# default argument, a const's value, a record's layout) lowers the file's bodies
+# afresh. Every step builds the binary and holds its output to the value the edit
+# asked for, so a unit served from a row that no longer stands is a wrong number here.
+mkdir -p $R/ur/src/y $R/ur/src/z
+printf '[package]\nname = "rt-ur"\nversion = "0.1.0"\n' > $R/ur/avra.toml
+printf 'export const BASE: int = 10\nexport type Pt = { x: int, y: int }\nexport fn alpha(n: int) -> int { n + 1 }\nexport fn beta(n: int) -> int { alpha(n) * 2 }\nexport fn gamma(n: int) -> int { n - 1 }\nexport fn delta() -> int { BASE + 5 }\nexport fn mk() -> Pt { Pt { x: 1, y: 2 } }\nexport fn epsilon(p: Pt) -> int { p.x + p.y }\n' > $R/ur/src/y/calc.av
+printf 'use y.{gamma}\nexport fn zeta() -> int { gamma(3) }\n' > $R/ur/src/z/user.av
+printf 'use y.{beta, gamma, delta, epsilon, mk}\nuse z.{zeta}\nprintln("${beta(1)} ${gamma(5)} ${delta()} ${epsilon(mk())} ${zeta()}")\n' > $R/ur/src/main.av
+ur_lowered() { AVRA_QTRACE=1 ./avra check $R/ur 2>&1 | grep -a "unit.lowered" | awk -F'\t' '{print $4}' | tr '\n' ' '; } # the units a check lowered afresh
+ur_expect() { # ur_expect <label> <words that must be lowered> -- <words that must not>
+    steps=$((steps+1)); label=$1; shift; got=$(ur_lowered); side=have
+    for w in "$@"; do
+        if [ "$w" = "--" ]; then side=lack; continue; fi
+        case " $got" in *" y.$w "*) seen=yes ;; *) seen=no ;; esac
+        if [ "$side" = have ] && [ "$seen" = no ]; then fails=$((fails+1)); echo "FAIL  ur: $label: $w was not lowered afresh: $got"; fi
+        if [ "$side" = lack ] && [ "$seen" = yes ]; then fails=$((fails+1)); echo "FAIL  ur: $label: $w was lowered afresh though nothing it shows moved: $got"; fi
+    done
+}
+ur_prints() { # ur_prints <label> <value>
+    steps=$((steps+1)); S "ur: $1" ur; ur_out=$($R/ur/src/main 2>&1)
+    [ "$ur_out" = "$2" ] || { fails=$((fails+1)); echo "FAIL  ur: $1: printed '$ur_out', wanted '$2'"; }
+}
+HR "cold ur" check ur 0
+ur_prints "built cold" "4 4 15 3 2"
+ed $R/ur/src/y/calc.av "BASE + 5" "BASE + 6"
+HR "ur: first edit, rows made" check ur 0
+ur_prints "a body edit" "4 4 16 3 2"
+ed $R/ur/src/y/calc.av "n - 1" "n - 2"
+ur_expect "a body edit lowers that body alone" gamma -- alpha beta delta mk epsilon
+ur_prints "and the binary follows" "4 3 16 3 1"
+ed $R/ur/src/y/calc.av "fn alpha(n: int) -> int" "fn alpha(n: int, k: int = 1) -> int"
+ur_expect "a default argument moves what the file shows" alpha beta gamma delta epsilon
+ur_prints "a default argument" "4 3 16 3 1"
+ed $R/ur/src/y/calc.av "n - 2" "n - 3"
+ur_expect "a body edit after a surface edit lowers that body alone" gamma -- alpha beta delta mk epsilon
+ed $R/ur/src/y/calc.av "const BASE: int = 10" "const BASE: int = 11"
+ur_expect "a const's value moves what the file shows" delta alpha beta gamma epsilon
+ur_prints "a const's value" "4 2 17 3 0"
+ed $R/ur/src/y/calc.av "x: int, y: int }" "y: int, x: int }"
+ur_expect "a record's layout moves what the file shows" epsilon mk
+ur_prints "a record's layout" "4 2 17 3 0"
+ed $R/ur/src/y/calc.av "p.x + p.y" "p.x * 10 + p.y"
+ur_expect "a body edit lowers that body alone, again" epsilon -- alpha beta gamma delta mk
+ur_prints "and the last edit" "4 2 17 12 0"
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
