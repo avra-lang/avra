@@ -58,8 +58,14 @@ export trait Fingerprint {
 /// variant's payload. A type that is neither has nothing to fold and
 /// answers its name alone, which is still an identity.
 fn body_of(t: MetaType) -> MetaDecls {
-    if !t.variants.is_empty() { return quote { fn fingerprint() -> int { match self { ${arms_of(t)} } } } }
-    quote { fn fingerprint() -> int { ${record_fold(t, own_fingerprint)} } }
+    quote { fn fingerprint() -> int { ${folding(t, own_fingerprint)} } }
+}
+
+/// What a method folding `self` answers: the variant chosen, or the
+/// record's fields, each named payload folded by `leaf`.
+fn folding(t: MetaType, leaf: fn(Code) -> Code) -> Code {
+    if !t.variants.is_empty() { return quote { match self { ${arms_of(t, leaf)} } } }
+    record_fold(t, leaf)
 }
 
 /// `fp(tag, [name, f1, f2, …])` over `self.<field>`.
@@ -69,13 +75,13 @@ fn record_fold(t: MetaType, leaf: fn(Code) -> Code) -> Code {
 
 /// One arm per variant: its INDEX pins the arity, so two variants of
 /// one type cannot fold alike however their payloads line up.
-fn arms_of(t: MetaType) -> List<Arms> {
-    [variant_arm(t.name, v, j) for j, v in t.variants]
+fn arms_of(t: MetaType, leaf: fn(Code) -> Code) -> List<Arms> {
+    [variant_arm(t.name, v, j, leaf) for j, v in t.variants]
 }
 
-fn variant_arm(owner: string, v: MetaVariant, at: int) -> Arms {
+fn variant_arm(owner: string, v: MetaVariant, at: int, leaf: fn(Code) -> Code) -> Arms {
     if v.fields.is_empty() { return quote { .${v} -> ${parted_at(owner, at, [])} } }
-    quote { .${v}(${binders(v)}) -> ${parted_at(owner, at, payload_folds(v))} }
+    quote { .${v}(${binders(v)}) -> ${parted_at(owner, at, payload_folds(v, leaf))} }
 }
 
 /// A payload's own FIELD NAMES are the binders — the names the
@@ -85,8 +91,8 @@ fn binders(v: MetaVariant) -> List<string> {
     [f.name for f in v.fields]
 }
 
-fn payload_folds(v: MetaVariant) -> List<Code> {
-    [folded(f.kind, name(f.name), own_fingerprint) for f in v.fields]
+fn payload_folds(v: MetaVariant, leaf: fn(Code) -> Code) -> List<Code> {
+    [folded(f.kind, name(f.name), leaf) for f in v.fields]
 }
 
 /// The type's NAME folded first, then its parts. THE NAME IS FOLDED
