@@ -286,6 +286,9 @@ There is no queue; the watcher keeps every open PR able to merge itself:
   workflow (`GITHUB_TOKEN` pushes trigger none), so `main` can stand with no
   `checks` run; once its head is older than three minutes with none, dispatch
   `checks` on `main`, once per SHA.
+- **(i)** a **held run** — a bot-pushed head fires a `checks` run that waits
+  in `action_required`; approve it, once per run id, when its PR is same-repo
+  and the run is on the PR's current head. A fork's run is never approved.
 
 Every open PR gets an action or a loud name. Every comment is deduped by
 `(pr, head, reason)` and carries its own marker, so a lost state file
