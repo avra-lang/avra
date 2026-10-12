@@ -326,8 +326,9 @@ fn admit(pack: Pack) {
     }
 }
 
-/// A writer seals once its segments hold SEAL_FRAMES frames; a process that
-/// only reads never reaches the lock.
+/// Seals only from a write, once segments hold SEAL_FRAMES frames. A process
+/// that appended nothing never reaches here, so it takes no lock and writes
+/// no store file.
 fn settled(pack: Pack) {
     if pack.frames.get() >= SEAL_FRAMES { admit(pack) }
 }
@@ -342,10 +343,10 @@ fn hold_ms() {
     let _ = avra_spawn_status("sleep", ["${ms / 1000}.${ms % 1000}"])
 }
 
-/// Read every sealed body and every segment once and build the index; emit
-/// the one open line a warm command's trace counts. COMPACTION IS A WRITER'S
-/// ACT: `read_only` builds the index and never takes the lock or seals, so an
-/// inspection leaves the store exactly as it found it.
+/// Read the newest body's index and the live segments once; emit the one open
+/// line a warm command's trace counts. An open never reads a value: `get`
+/// reads one slot at a time. Compaction is a writer's act, so `read_only`
+/// never takes the lock or seals.
 fn opened_at(pack: Pack, read_only: bool) {
     if !pack.opened.get() {
         pack.opened.set(true)
@@ -437,10 +438,11 @@ fn stored(pack: Pack, digest: string) -> bool {
     pack.content.get().has(digest) || pack.slots.get().has(digest)
 }
 
-/// A sealed value, read from its slot in the newest body's `.val` and checked
-/// against its digest: a missing or damaged value answers absent.
+/// A sealed value: `get` seeks its slot in the newest body's `.val` and checks
+/// the bytes against the digest, so a missing or damaged value answers absent.
 fn spilled(pack: Pack, digest: string) -> string? {
     let slot? = pack.slots.get().get(digest) else { return null }
+    if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
     let o = match open_beneath(pack.dir, val_name(pack.rev.get())) {
         .Ok(o) -> o,
         .Err(_) -> { return null },

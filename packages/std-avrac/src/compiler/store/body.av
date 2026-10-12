@@ -231,12 +231,14 @@ fn hex_val(c: string) -> int { "0123456789abcdef".index_of(c) }
 
 // ── Reading ──
 
-/// Read the newest whole body into the pack — before the segments, so a later
-/// segment wins. A torn or foreign body is skipped, and says so once.
+/// Read the newest whole body into the pack, before the segments so a later
+/// segment wins. Only that body is read: each body holds everything its
+/// writer had merged. A torn or foreign body is skipped, and says so once.
 export fn body_scan(pack: Pack) {
     for at in bodies_newest_first(pack.dir) {
         // LICENSED input.store_io: the store's own body, read to merge it
         let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+        if traced() { qtrace("Q\tstore\tbody\t${at}\t${raw.length}\n") }
         let r = reader(raw)
         let payload = read_frame(r)
         if payload == null {
