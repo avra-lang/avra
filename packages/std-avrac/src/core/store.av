@@ -1467,12 +1467,6 @@ impl SyntaxArena {
         match self.expr(call) { .Call(_, _, args) -> args.slice(1, args.length), _ -> [] }
     }
 
-    /// A mark list's fingerprint parts: its word, its arguments' words
-    /// and the call they make — `@m([1])` and `@m([2])` share words.
-    fn mark_fps(marks: List<Mark>) -> List<int> {
-        [fp(131, [fp_str(m.name), fp_list(str_fps(m.args)), self.opt_fp(m.call)]) for m in marks]
-    }
-
     fn opt_fp(value: ExprId?) -> int {
         if value == null { return 0 }
         fp(128, [self.expr_fingerprint(value!)])
@@ -1507,11 +1501,7 @@ fn unheard_fp(why: Unheard) -> int {
 impl SyntaxArena {
     /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
-        [self.case_fp(c) for c in cases]
-    }
-
-    fn case_fp(c: Case) -> int {
-        fp(125, [fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)])
+        [c.identity(self) for c in cases]
     }
 
     /// A param list's fingerprint parts — ONE VALUE PER SEAT. A seat
@@ -1520,47 +1510,14 @@ impl SyntaxArena {
     /// are different records, and a defaults list beside the fields
     /// says which defaults exist without saying whose they are.
     fn param_fps(params: List<Param>) -> List<int> {
-        [self.param_fp(p) for p in params]
-    }
-
-    fn param_fp(p: Param) -> int {
-        fp(
-            123,
-            [
-                fp_str(p.name.of),
-                type_fp(p.ty),
-                mark_fp(p.promises),
-                self.opt_fp(p.default),
-                fp_list(self.mark_fps(p.marks)),
-                if p.state { 1 } else { 0 },
-                self.says_fp(p.says),
-            ],
-        )
-    }
-
-    /// What an event says, as ONE value — and an event that says
-    /// nothing is not a seat that is no event.
-    fn says_fp(says: List<Param>?) -> int {
-        let said? = says else { return 0 }
-        fp(188, [fp_list(self.param_fps(said))])
+        [p.identity(self) for p in params]
     }
 
     /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.
     /// Spliced flat, a variant's payload run and the next variant's
     /// name share a boundary that moves.
     fn variant_fps(variants: List<Variant>) -> List<int> {
-        [self.variant_fp(v) for v in variants]
-    }
-
-    fn variant_fp(v: Variant) -> int {
-        fp(
-            124,
-            [
-                fp_str(v.name.of),
-                fp_list(self.param_fps(v.payloads)),
-                fp_list(self.mark_fps(v.marks)),
-            ],
-        )
+        [v.identity(self) for v in variants]
     }
 
     /// A comprehension clause list's fingerprint parts — ONE VALUE
