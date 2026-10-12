@@ -217,6 +217,13 @@ it and wakes it).
 
     sh tools/work run <cmd>
     sh tools/work run --for <minutes> <cmd>
+    AVRA_PROBE_BUILD=one sh tools/work run <cmd>
+
+Each run prints the source hash it ran (`sprite-run: compiler … source <hash>,
+binary <sha>`), so a lane can compare it with `sh tools/work compiler-hash`.
+`AVRA_PROBE_BUILD=one` builds ONE generation from the standing compiler, never
+cached, and says `one generation, not a fixed point`. It needs a standing
+compiler (`sh tools/work run make bootstrap` first).
 
 `run` rsyncs the worktree to the lane's Sprite and proves the Sprite
 holds **exactly** this tree (every path's hash must match, or it refuses

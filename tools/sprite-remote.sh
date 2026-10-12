@@ -402,6 +402,9 @@ start() {
 supervise() {
     id=$1 build_s=$2 cmd_s=$3 remote=$4 chash=$5
     shift 5
+    # A probe asks for one generation of the tree, never cached (`one:<hash>`).
+    probe=
+    case $chash in one:*) probe=one; chash=${chash#one:} ;; esac
     rd=$runs/$id
     echo $$ > "$rd/pid"
     sh "$rd/remote.sh" keeper "$id" $$ "$build_s" "$cmd_s" </dev/null >/dev/null 2>&1 &
@@ -430,6 +433,17 @@ supervise() {
         t0=$(date +%s)
         if [ "$chash" = - ]; then
             compiler=unasked
+        elif [ "$probe" = one ]; then
+            # One generation from the standing compiler, not a fixed point: nothing
+            # is stored, and the stamp that names a cached compiler is removed.
+            rm -f build/.avra-compiler-hash
+            [ -x build/avra ] || { echo "sprite-run: AVRA_PROBE_BUILD=one needs a standing compiler — \`sh tools/work run make bootstrap\` first" >&2; exit 70; }
+            s0=$(date +%s)
+            if make -s avra >> "$rd/probe.log" 2>&1; then
+                compiler="one generation, not a fixed point (probe, $(($(date +%s) - s0))s)"
+            else
+                echo "sprite-run: the probe generation FAILED — see $rd/probe.log" >&2; exit 70
+            fi
         elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
             compiler=warm
         elif [ -x "$compilers/$chash/avra" ]; then
@@ -448,7 +462,7 @@ supervise() {
             [ "$store_result" = built ] || exit 70
             compiler=built
         fi
-        echo "sprite-run: compiler $compiler in $(($(date +%s) - t0))s; $(avail_mb) MB of memory available to the command" >&2
+        echo "sprite-run: compiler $compiler in $(($(date +%s) - t0))s; source $chash, binary $(sha256sum build/avra | cut -c1-12); $(avail_mb) MB of memory available to the command" >&2
         cut -d. -f1 /proc/uptime > "$rd/cmd_at"
         # Out of memory, the kernel ends the command and what it started first.
         echo 800 > /proc/self/oom_score_adj 2>/dev/null || :
