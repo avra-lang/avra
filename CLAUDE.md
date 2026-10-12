@@ -1440,6 +1440,13 @@ registry is the idiom engine's spec, written by dogfooding.
   has on purpose: A DERIVE STANDS ALONE IN ITS FILE, with `@std/meta`
   and nothing else. The generated code may still call the annotated
   file's neighbours — that resolves later, at ordinary typing.
+  THE LAW HOLDS FOR A WRITTEN `@derive(X)` ON A DECLARATION IN ITS OWN
+  FILE, AND NOT FOR A `collect enum E: T`'S MEMBERS: those are derived
+  in the MEMBER's own expansion (`derived_for`), which the enum's file
+  only waits for, so `T` and its `derive` may name the enum's arena
+  (`Identity` names `SyntaxArena`, core/identity_derive.av). A member
+  whose file is also the derive's is still not derived. The proof is
+  Identity itself and features/collects/tests/delegated_package*.
 - A TYPE IN A PASS IS SPELLED, NEVER REBUILT: `cx.type(List<string?>)`,
   `cx.type(Map<string, want>)` — a type literal, the type in its own
   spelling folded ONCE by its receiver's `interned` (core/types.av's
