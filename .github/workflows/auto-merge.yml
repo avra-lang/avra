@@ -5,7 +5,8 @@
 # day. There is no merge queue: `main` requires the `test` check AND that
 # a branch be up to date with it, so an armed PR merges itself once both
 # hold, one at a time. This workflow arms auto-merge on every open,
-# non-draft change.
+# non-draft change, unless its title says DO NOT MERGE — a held title is a
+# hold, and the watcher disarms one that is armed anyway.
 #
 # It is a second, independent path from the watcher (`pr-watcher.yml`):
 # this one fires the instant a PR is opened or its head moves, the
@@ -34,7 +35,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: a held title is a hold
+        id: hold
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if printf '%s\n' "$TITLE" | grep -qiE 'DO[[:space:]]+NOT[[:space:]]+MERGE'; then
+            echo "auto-merge: the title says DO NOT MERGE — not arming it"
+            echo "held=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "held=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: enable auto-merge
+        if: steps.hold.outputs.held == 'false'
         env:
           # A PAT or app token is preferred: a merge by the repository's
           # GITHUB_TOKEN does not start the `push` workflows that publish

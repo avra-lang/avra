@@ -17,8 +17,12 @@ watcher closes the gap between "green" and "landed", deterministically:
       next pass refreshes only if `main` moved again;
   (d) a CONFLICT — name the rebase its owner owes, once;
   (e) a DRAFT — name it `#N is a DRAFT — unlandable` so it is never
-      invisible, and take a green, otherwise-landable, wanted one ready
-      (`DO NOT MERGE` in the title is the deliberate exception);
+      invisible. The watcher NEVER readies a draft: a draft is a hold, and
+      a lane or the lead lands it with `sh tools/work land`;
+  (j) A HELD TITLE — a non-draft PR whose title says DO NOT MERGE is never
+      armed, and one already armed is disarmed. Either signal alone holds it;
+  (k) A GREEN DRAFT held more than two hours is named — once, and once more
+      each UTC day after — so a draft that is ready to land is never silent;
   (f) a DOOMED RUN — cancel a `pull_request` run whose PR is no longer
       open. A superseded run is already cancelled by `checks.yml`'s own
       concurrency; this covers the PR that closed while its run lived;
@@ -77,6 +81,8 @@ TOLD = "told"
 DO_NOT_MERGE = re.compile(r"DO\s+NOT\s+MERGE", re.IGNORECASE)
 # THE CONFLICT WORDS ARE ONE DEFINITION, spoken here and quoted by the
 # docs; the self-test refuses the two drifting apart.
+# A green draft is named once it has been green this long, and again each day.
+HELD_GREEN_S = 2 * 3600
 # A bot merge's head gets a grace before the watcher asks for its run: a
 # push run that is merely slow to appear is not a missing run.
 MAIN_GRACE = 180
@@ -85,6 +91,13 @@ CONFLICT_PHRASE = ("this conflicts with main. Rebase onto origin/main, then "
 
 
 # ---- the decision (pure; this is what the fixtures prove) --------------
+def _when(stamp):
+    """An ISO-8601 UTC stamp as an aware datetime, or None when unread."""
+    if not stamp or stamp.startswith("0001-"):
+        return None
+    return datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
 def _waiting_on(p):
     """What a non-conflicting, non-draft, non-failing PR is waiting on.
 
@@ -105,7 +118,7 @@ def _waiting_on(p):
     return f"the required `test` check ({c.lower() or 'pending'})"
 
 
-def plan(prs, runs, state, trunk=None, held=None):
+def plan(prs, runs, state, trunk=None, held=None, now=None):
     """The actions a pass owes. See the module docstring for the rules.
 
     `prs`: number, isDraft, state, mergeable, mergeStateStatus, title,
@@ -120,6 +133,7 @@ def plan(prs, runs, state, trunk=None, held=None):
     """
     acts = []
     rerun, told = state["rerun"], state["told"]
+    now = now or datetime.datetime.now(datetime.timezone.utc)
 
     # (f) a run whose PR is no longer open is DOOMED: it can prove nothing
     # and only the runner pool pays for it. `checks.yml` cancels a
@@ -200,10 +214,27 @@ def plan(prs, runs, state, trunk=None, held=None):
                 acts.append({"do": "comment", "pr": n, "key": key, "mark": ("told", key),
                              "text": f"#{n} is a DRAFT — unlandable. "
                                      f"`gh pr ready {n}` when it should land."})
-            if (green and landable and open_ and not conflicted
-                    and not DO_NOT_MERGE.search(p.get("title") or "")):
-                acts.append({"do": "ready", "pr": n,
-                             "text": f"#{n} is a green DRAFT — marking it ready"})
+            since = _when(t.get("greenSince")) if (t and green) else None
+            if since and open_ and (now - since).total_seconds() > HELD_GREEN_S:
+                day = now.date().isoformat()
+                key = f"held-green:{n}:{day}"
+                hours = int((now - since).total_seconds() // 3600)
+                if key not in told:
+                    acts.append({"do": "comment", "pr": n, "key": key, "mark": ("told", key),
+                                 "text": f"#{n} green and held for {hours}h — "
+                                         f"`sh tools/work land` lands it, or close it"})
+
+        # (j) A HELD TITLE is a hold: a non-draft PR whose title says DO NOT
+        # MERGE is never armed, and one that is armed is disarmed. Either
+        # signal alone holds it; the workflow refuses to arm it too.
+        if DO_NOT_MERGE.search(p.get("title") or "") and not draft:
+            acts.append({"do": "note", "pr": n,
+                         "text": f"#{n} is HELD — its title says DO NOT MERGE"})
+            key = f"disarm:{n}:{head}"
+            if p["autoMerge"] and key not in told:
+                acts.append({"do": "disarm", "pr": n, "key": key, "mark": ("told", key),
+                             "text": f"#{n} is held — disarming auto-merge"})
+            continue
 
         # A failed, conflicting or draft PR is fully named above and cannot
         # merge yet.
@@ -330,7 +361,7 @@ def open_prs(repo):
     return _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
                      "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
                                "title,headRefName,autoMergeRequest,"
-                               "headRefOid,statusCheckRollup,isCrossRepository"])
+                               "headRefOid,statusCheckRollup,isCrossRepository,createdAt"])
 
 
 def _runs(repo):
@@ -364,7 +395,8 @@ def test_of(repo, pr):
         if m:
             run_id = int(m.group(1))
         info = {"conclusion": (concl or "").upper(), "runId": run_id, "attempt": 1,
-                "job": "test", "line": "(the failed job was not read)"}
+                "job": "test", "line": "(the failed job was not read)",
+                "greenSince": c.get("completedAt") if (concl or "").upper() == "SUCCESS" else None}
         if info["conclusion"] == "FAILURE" and run_id:
             attempt = _gh(["api", f"repos/{repo}/actions/runs/{run_id}",
                            "--jq", ".run_attempt"], check=False).strip()
@@ -440,8 +472,8 @@ def do_action(a, repo, run):
         run(["pr", "update-branch", str(a["pr"]), "-R", repo])
     elif a["do"] == "cancel":
         run(["run", "cancel", str(a["run"]), "-R", repo])
-    elif a["do"] == "ready":
-        run(["pr", "ready", str(a["pr"]), "-R", repo])
+    elif a["do"] == "disarm":
+        run(["pr", "merge", str(a["pr"]), "-R", repo, "--disable-auto"])
     elif a["do"] == "approve":
         run(["api", "-X", "POST", f"repos/{repo}/actions/runs/{a['run']}/approve"])
     elif a["do"] == "dispatch":
@@ -571,10 +603,10 @@ SELFTEST = [
      dict(prs=[_pr(3, "SUCCESS", mergeable="CONFLICTING", headRefName="lane/x")],
           runs=[], state=_empty_state()),
      [("comment", 3)]),
-    # (e) a green, otherwise-landable DRAFT is NAMED and taken ready.
-    ("draft-green-readied",
+    # (e) a green DRAFT is NAMED and never readied: a draft is a hold.
+    ("draft-green-named-never-readied",
      dict(prs=[_pr(3, "SUCCESS", isDraft=True)], runs=[], state=_empty_state()),
-     [("comment", 3), ("ready", 3)]),
+     [("comment", 3)]),
     # a green DRAFT that is NOT otherwise landable is named, never readied.
     ("draft-blocked-named",
      dict(prs=[_pr(3, "SUCCESS", isDraft=True, mergeStateStatus="BLOCKED")],
@@ -698,6 +730,53 @@ def selftest():
             run=lambda args: sent.append(args) or "")
     if sent != [["api", "-X", "POST", "repos/avra-lang/avra/actions/runs/7/approve"]]:
         sys.exit(f"pr-watcher: self-test — the approval was sent as {sent}")
+
+    # (k) a green DRAFT held more than two hours is named — once, then once
+    # more on each UTC day — and a draft is never readied on the way.
+    now = datetime.datetime(2026, 10, 12, 12, 0, tzinfo=datetime.timezone.utc)
+
+    def green_draft(n, hours_green, title=""):
+        since = now - datetime.timedelta(hours=hours_green)
+        p = _pr(n, "SUCCESS", isDraft=True, title=title)
+        p["test"]["greenSince"] = since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        return p
+
+    def held_named(acts):
+        return [a for a in acts if a["do"] == "comment" and "held for" in a.get("text", "")]
+
+    if held_named(plan([green_draft(31, 1)], [], _empty_state(), now=now)):
+        sys.exit("pr-watcher: self-test — a draft green for an hour was named as held")
+    st = _empty_state()
+    first = plan([green_draft(31, 3)], [], st, now=now)
+    if len(held_named(first)) != 1:
+        sys.exit(f"pr-watcher: self-test — a draft green 3h was not named once: {first}")
+    commit_marks(first, [], st)
+    if held_named(plan([green_draft(31, 3)], [], st, now=now)):
+        sys.exit("pr-watcher: self-test — a held draft was named twice the same day")
+    tomorrow = now + datetime.timedelta(days=1)
+    if len(held_named(plan([green_draft(31, 27)], [], st, now=tomorrow))) != 1:
+        sys.exit("pr-watcher: self-test — a held draft was not named again the next day")
+    if any(a["do"] == "ready" for a in plan([green_draft(31, 3)], [], _empty_state(), now=now)):
+        sys.exit("pr-watcher: self-test — a green draft was readied")
+
+    # (j) a held title is a hold: a non-draft PR is never armed, and an armed
+    # one is disarmed once per head, with the exact argv.
+    held_pr = _pr(5, "SUCCESS", title="DO NOT MERGE — timing proof")
+    if any(a["do"] == "arm" for a in plan([held_pr], [], _empty_state(), now=now)):
+        sys.exit("pr-watcher: self-test — a held PR was armed")
+    armed = _pr(5, "SUCCESS", autoMerge=True, title="DO NOT MERGE: wait")
+    st = _empty_state()
+    owed = plan([armed], [], st, now=now)
+    if [a["do"] for a in owed if a["do"] == "disarm"] != ["disarm"]:
+        sys.exit(f"pr-watcher: self-test — an armed held PR was not disarmed: {owed}")
+    commit_marks(owed, [], st)
+    if any(a["do"] == "disarm" for a in plan([armed], [], st, now=now)):
+        sys.exit("pr-watcher: self-test — a held PR was disarmed twice for one head")
+    sent = []
+    execute([a for a in owed if a["do"] == "disarm"], "avra-lang/avra",
+            run=lambda args: sent.append(args) or "")
+    if sent != [["pr", "merge", "5", "-R", "avra-lang/avra", "--disable-auto"]]:
+        sys.exit(f"pr-watcher: self-test — the disarm was sent as {sent}")
 
     # NEVER SILENT: every state a PR can be in draws an action or a name.
     for p in (_pr(21, "SUCCESS"),

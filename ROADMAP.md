@@ -18,7 +18,7 @@ Completed lanes are archived in ROADMAP-ARCHIVE.md. Design standards and doctrin
 
 Four streams, cut so that no two lanes edit the same files, and one
 rule that makes them safe on one machine: EVERY heavy step goes
-through `sh tools/watch.sh 4000 <cmd>`, which holds a machine-wide
+through `sh tools/watch.sh 6000 <cmd>`, which holds a machine-wide
 lock (`/tmp/avra-build.lock`) and a memory cap. A second session's
 gate QUEUES; it never runs beside another. The machine has panicked
 twice under concurrent load; the lock is the mechanism, the rule is
@@ -31,7 +31,7 @@ HOW TO TAKE A LANE
   2. Work the lane's checklist top to bottom — the order IS the
      dependency order. Tick items here as they land.
   3. Every gate, suite or whole-package check: `sh tools/watch.sh
-     4000 make gate` (or `./avra test …`). Never a bare `make gate`,
+     6000 make gate` (or `./avra test …`). Never a bare `make gate`,
      never a background one.
   4. Every slice: red-team, then review-round, ledgers fed (this
      file, CLAUDE.md, DOGFOODING.md), commit message handed over.
@@ -41,7 +41,7 @@ HOW TO TAKE A LANE
      by main's current compiler — the compiler's own uses of the
      feature land in the NEXT commit, once the seed carries it (lane
      D slipped twice; the cheap pre-flight from the lane is `sh
-     tools/watch.sh 4000 ../avra/build/avra check "$PWD/packages/cli"`
+     tools/watch.sh 6000 ../avra/build/avra check "$PWD/packages/cli"`
      — the SHIM cds to its own root, so `../avra/avra` would check
      main's tree — and the integrator should run it before merging;
      lane A's tool).

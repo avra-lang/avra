@@ -126,7 +126,7 @@ impl Workspace {
     /// it never stands beside the graph's.
     fn cache_walk() -> Result<CacheWalk, string> {
         self.inspecting()
-        let d = self.derived(null, Want.Diagnostics)?
+        let d = self.derived(self.entry_of(), Want.Diagnostics)?
         let holds = d.program.ws.holds_of(d)
         let walk = CacheWalk {
             root: self.root,
@@ -147,6 +147,17 @@ impl Workspace {
         self.inspecting()
         let g = self.anew()
         Graphed { ws: g, phases: grouped_phases(g.program(null).phases) }
+    }
+
+    /// THE GRAPH OF `--stats`: the derivation's own workspace, which is the one
+    /// `check` lowers through, so the lowering families have their cells.
+    fn stats_graph() -> Graphed {
+        self.inspecting()
+        let g = self.anew()
+        match g.derived(self.entry_of(), Want.Diagnostics) {
+            .Ok(d) -> Graphed { ws: d.program.ws, phases: grouped_phases(d.program.phases.concat(d.spans)) },
+            .Err(_) -> self.walk_graph(),
+        }
     }
 
     /// The file at `path` as this workspace numbers it — never minting one.
