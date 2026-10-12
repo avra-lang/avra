@@ -702,6 +702,38 @@ fix is not landed. The next probe is to print the kept `rules_key` and the judge
 side by side and confirm whether the kept rows are reachable at all after the resolve,
 before spending DB 07 (a)/(d) on per-declaration keys.
 
+**DB 00d, root cause pinned by run-token trace (branch `db07e-keyfix`, main `326084f4`,
+Sprite `avra-07d`, `linux-x86-64-amd-epyc`, warm store).** The `?` pending marker is NOT
+the cause: within one build the KEEP key and the JUDGE key AGREE (both after
+`resolve_pending_reads`), but the key MOVES ACROSS builds, so the previous build's
+rules row is unreachable. The moving part is in `KeyParts.runs`:
+
+- Every one of `cli/src/commands/{explain,repr,run,writes}.av` carries a whole-file
+  compile-time read (`RunRead.ref == ""`) of `shared.av`, so `read_token` returns
+  `run_said(shared.av)` = `digest_of_file` = `"<len>.<4-word digest>"`. Two fresh edits
+  gave `27356.9131696703473750093.…` then `27356.5502561238657868101.…` — same length,
+  different digest. `rules_key(okey)` is the FULL object key, so it moves every edit.
+- The 178 parses of attempt 0 (144 distinct, 0 keeps) are ENTIRELY inside
+  `settle_holds` → `resolve_pending_reads`; `hold_start→hold_loaded` is 0 parses and
+  `unruled_keys→unruled_resolved` is 0 parses. Attempt 1 repeats it (181 parses, 498
+  keeps), so the discarded attempt is paid twice. MEASURED baseline (`parse_trace.sh`):
+  `Q parse` **359 / 146 distinct**; `ast 4945ms, load 7143ms, analyze 1142ms,
+  lower 4707ms, keep 1057ms`; `warm unchanged 269ms`, `warm edit 20650ms`.
+
+AN ATTEMPTED FIX — key the `rules`/`findings` rows by `held_rkey` =
+`key_of_parts(parts with { runs: [] })` (drop the runs; `derive.av`, `record.av`,
+`workspace_analysis.av`) — **REGRESSED and REFUSED**, and is reverted, not landed:
+`Q parse` **824 / 498 distinct**, `held 0/498`, `refused 1`, `warm edit 110515ms`,
+`warm unchanged 277ms`. Dropping `runs` from the rules key detached it from the object
+hold while `asks`/`codes`/`said` stayed keyed by the moving object key; the hold then
+collapsed to zero (exact mechanism not pinned — the refusal text was not captured).
+
+NEXT HYPOTHESIS: make the TOKEN stable rather than moving the rules row. Record the read
+DECLARATION's ref/print for the compile-time reads of a sibling, so `read_token` can keep
+`read.print` and no pending read opens — this should cut the `settle_holds` cascade. If the
+cascade stops: `Q parse` 359 → **~1**. If only the turn stops: 359 → **~178**. Either is
+the smallest piece to move the count.
+
 ### 7.3 Targets, and when each becomes reachable
 
 | scenario (`packages/cli`, cold process, no daemon) | gate | today |
