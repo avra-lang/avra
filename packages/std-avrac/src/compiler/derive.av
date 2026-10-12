@@ -8,7 +8,6 @@
 //! hold is answered again from the sources alone.
 use core.{
     distinct,
-    in_file,
     flatten,
     joined,
     sorted_texts,
@@ -19,6 +18,7 @@ use core.{
     qtrace,
     traced,
     touch,
+    Static,
     FileId,
     DeclId,
 }
@@ -26,7 +26,7 @@ use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
 use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered, code_facts, code_facts_wire}
+use compiler.lower.{Lowered, Body, HashAsk, code_facts, code_facts_wire}
 use compiler.host.{no_source}
 use compiler.findings.{Finding, findings_read, findings_text, file_findings}
 
@@ -713,9 +713,12 @@ impl Workspace {
         let _ = self.keep_const_units(store, moved)
         let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
         if !adrift.is_empty() { fail at.adrift(adrift) }
+        let bodies = filed(lo.unmanaged, (b) -> b.file)
+        let statics = filed(lo.statics, (s) -> s.file)
+        let asks = filed(lo.hash_asks, (h) -> h.by)
         for a in p.files {
             self.keep_asks(store, lo, a)
-            self.keep_codes(store, lo, a)
+            self.keep_codes(store, a, bodies, statics, asks)
         }
         self.keep_unit_rows(store)
         self.keep_instances(store, lo)
@@ -752,13 +755,20 @@ impl Workspace {
     }
 
     /// What one read file's code is, kept under the file's key.
-    fn keep_codes(store: Store, lo: Lowered, a: Analysis) {
+    fn keep_codes(
+        store: Store,
+        a: Analysis,
+        bodies: Map<string, List<Body>>,
+        statics: Map<string, List<Static>>,
+        asks: Map<string, List<HashAsk>>,
+    ) {
         let f = a.view.file
+        let at = "${f.index}"
         let fresh = code_facts(
             self.decls,
-            [b for b in lo.unmanaged if in_file(b.file, f)],
-            [s for s in lo.statics if in_file(s.file, f)],
-            [h.target for h in lo.hash_asks if in_file(h.by, f)],
+            bodies.get(at) ?? [],
+            statics.get(at) ?? [],
+            [h.target for h in asks.get(at) ?? []],
         )
         let facts = merged_facts(
             fresh,
@@ -1159,4 +1169,15 @@ fn records_adrift(paths: List<string>) -> string {
 /// Whether a kept row is judged from its file alone, with no analysis run.
 fn judged_by_files(r: List<string>) -> bool {
     match r[0] { "f" or "m" or "b" or "e" -> true, rest -> false }
+}
+
+/// A list filed by the file each item belongs to, keyed by the file's index; items of no
+/// file are dropped.
+fn filed<T>(xs: List<T>, at: fn(T) -> FileId?) -> Map<string, List<T>> {
+    mut out: Map<string, List<T>> = {}
+    for x in xs {
+        let f = at(x)
+        if f != null { out.set("${f!.index}", (out.get("${f!.index}") ?? []).concat([x])) }
+    }
+    out
 }

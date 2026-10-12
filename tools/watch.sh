@@ -23,7 +23,7 @@
 #
 # AVRA_WATCH_TRACE=1 prints each poll's per-process footprint, so a
 # peak's composition can be read. A gate is ~0.3 GB honestly
-# measured; the cap is 4000 by default, a wreck-catcher.
+# measured; the cap is 6000 by default, a wreck-catcher.
 # PROFILING runs under the lock too: AVRA_SAMPLE=<seconds> samples
 # the step (after AVRA_SAMPLE_AFTER seconds, default 0) into
 # AVRA_SAMPLE_FILE (default build/avra-sample.txt, PER-WORKTREE — a
@@ -116,7 +116,7 @@ self_test() {
     lock1="$tmp/lock1"
     mkdir -p "$lock1"
     echo $$ > "$lock1/pid"
-    AVRA_BUILD_LOCK="$lock1" AVRA_BUILD_SLOTS=1 sh "$watch" 4000 sleep 30 \
+    AVRA_BUILD_LOCK="$lock1" AVRA_BUILD_SLOTS=1 sh "$watch" 6000 sleep 30 \
         > "$tmp/waiter.out" 2>&1 &
     waiter=$!
     i=0
@@ -140,7 +140,7 @@ self_test() {
     fi
 
     lock2="$tmp/lock2"
-    AVRA_BUILD_LOCK="$lock2" AVRA_BUILD_SLOTS=1 sh "$watch" 4000 sleep 30 \
+    AVRA_BUILD_LOCK="$lock2" AVRA_BUILD_SLOTS=1 sh "$watch" 6000 sleep 30 \
         > "$tmp/holder.out" 2>&1 &
     holder=$!
     i=0

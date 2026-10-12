@@ -360,6 +360,32 @@ ur_prints "and the last edit" "4 2 17 12 0"
 
 fi
 
+if section rb; then
+# A READER INHERITS THE RUNS BEHIND WHAT IT READ, NOT BEHIND THE FILE. lib.av's const C runs
+# zbase from data.av. fnread.av runs only a FN of lib.av, constread.av runs the CONST C.
+# data.av is rewritten to the same answer: fnread.av stays held, since nothing it ran reads
+# data.av. Then the answer moves: constread.av is read and the values follow.
+mkdir -p $R/rb/src/z $R/rb/src/x $R/rb/src/r
+printf '[package]\nname = "rt-rb"\nversion = "0.1.0"\n' > $R/rb/avra.toml
+printf 'export fn zbase() -> int { 5 }\n' > $R/rb/src/z/data.av
+printf 'use z.{zbase}\nexport fn plain(n: int) -> int { n * 2 }\nexport const C: int = zbase()\n' > $R/rb/src/x/lib.av
+printf 'use x.{plain}\nexport const J: int = plain(3)\nexport fn shown() -> int { J }\n' > $R/rb/src/r/fnread.av
+printf 'use x.{C}\nexport const K: int = C + 1\nexport fn topped() -> int { K }\n' > $R/rb/src/r/constread.av
+printf 'use r.{shown, topped}\nprintln("${shown()} ${topped()}")\n' > $R/rb/src/main.av
+HR "cold rb" check rb 0
+S "rb: built with every verdict kept" rb
+ed $R/rb/src/z/data.av "{ 5 }" "{ 2 + 3 }"
+steps=$((steps+1)); rb_out=$(./avra check --time $R/rb 2>&1)
+case "$rb_out" in *"r/fnread.av"*) fails=$((fails+1)); echo "FAIL  rb: a file only a const of a fn's file runs was rewritten to the same answer and a reader of the fn was read: $(printf '%s' "$rb_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    rb: a fn's reader held while a const's run file moved" ;; esac
+ed $R/rb/src/z/data.av "2 + 3" "2 + 5"
+steps=$((steps+1)); rb_out=$(./avra check --time $R/rb 2>&1)
+case "$rb_out" in *"r/constread.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    rb: the file a const's run read moved -> its reader read" ;; *) fails=$((fails+1)); echo "FAIL  rb: the file a const's run read moved and its reader was not read: $(printf '%s' "$rb_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "rb: and the binary follows" rb
+steps=$((steps+1)); rb_out=$($R/rb/src/main 2>&1)
+[ "$rb_out" = "6 8" ] || { fails=$((fails+1)); echo "FAIL  rb: the published values did not follow: printed '$rb_out', wanted '6 8'"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
