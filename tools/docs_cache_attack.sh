@@ -13,26 +13,39 @@ export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 BIN="$(pwd)/build/avra"
 R="$(pwd)/build/docs-cache-attack"; fails=0; steps=0
-rm -rf "$R" && mkdir -p "$R/p/src/util" && git init -q "$R"
+rm -rf "$R" && mkdir -p "$R/p/src/util" "$R/dep/src" && git init -q "$R"
 cat > "$R/p/avra.toml" <<'TOML'
 [package]
 name = "docs-attack"
 version = "0.1.0"
+
+[dependencies]
+"@da/dep" = { path = "../dep" }
 TOML
+cat > "$R/dep/avra.toml" <<'TOML'
+[package]
+name = "@da/dep"
+version = "0.1.0"
+
+[lib]
+name = "da-dep"
+path = "src/lib.av"
+TOML
+printf '%s\n' "/// dep doc" "export fn shared() -> int { 5 }" > "$R/dep/src/lib.av"
 write_a() { printf '%s\n' "/// $1" "export fn target() -> int { 1 }" > "$R/p/src/a.av"; }
 printf '%s\n' "export fn other() -> int { 2 }" > "$R/p/src/util/b.av"
-printf '%s\n' "use a.{target}" "println(\"\${target()}\")" > "$R/p/src/main.av"
+printf '%s\n' "use a.{target}" "use @da.dep.{shared}" "println(\"\${target() + shared()}\")" > "$R/p/src/main.av"
 write_a "doc one"
 
 say() { steps=$((steps + 1)); echo "docs-cache-attack: $1"; }
 fail() { fails=$((fails + 1)); echo "docs-cache-attack: FAILED — $1"; }
-ask() { (cd "$1" && AVRA_QTRACE=1 AVRA_CWD="$1" "$BIN" docs target 2>"$R/trace" | tr '\n' ' '); }
+ask() { (cd "$1" && AVRA_QTRACE=1 AVRA_CWD="$1" "$BIN" docs "${2:-target}" 2>"$R/trace" | tr '\n' ' '); }
 parsed() { grep -c 'Q	parse' "$R/trace"; }
 # the oracle: a copy in a repo of its own, so no store answers
-oracle() { rm -rf "$R/o" && mkdir -p "$R/o" && git init -q "$R/o" && cp -R "$R/p" "$R/o/p"; ask "$R/o/p"; }
+oracle() { rm -rf "$R/o" && mkdir -p "$R/o" && git init -q "$R/o" && cp -R "$R/p" "$R/o/p" && cp -R "$R/dep" "$R/o/dep"; ask "$R/o/p" "${1:-target}"; }
 # expect NAME WANT-HIT: the answer equals the oracle's, and the program was parsed or not
 expect() {
-    got=$(ask "$R/p"); n=$(parsed); want=$(oracle)
+    got=$(ask "$R/p" "${3:-target}"); n=$(parsed); want=$(oracle "${3:-target}")
     [ "$got" = "$want" ] || { fail "$1: answered '$got', the oracle '$want'"; return; }
     if [ "$2" = hit ] && [ "$n" != 0 ]; then fail "$1: parsed $n files where a hit parses none"; return; fi
     if [ "$2" = miss ] && [ "$n" = 0 ]; then fail "$1: a stale answer was served — nothing was parsed"; return; fi
@@ -56,6 +69,13 @@ expect "the new file removed" miss
 write_a "doc one"
 expect "the first text restored" miss
 expect "and warm" hit
+expect "a DEPENDENCY's declaration, cold" miss shared
+expect "and warm" hit shared
+mkdir -p "$R/dep/src/sub"
+printf '%s\n' "/// the other shared" "export fn shared() -> int { 6 }" > "$R/dep/src/sub/more.av"
+expect "a same-name declaration in a NEW file of the dependency" miss shared
+rm -rf "$R/dep/src/sub"
+expect "the dependency's new file removed" miss shared
 rm "$R/p/src/a.av"; printf '%s\n' "use util.{other}" "println(\"\${other()}\")" > "$R/p/src/main.av"
 expect "the declaration's file removed" miss
 
