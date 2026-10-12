@@ -223,6 +223,10 @@ extern const char avra_rt_held_avra_task_slot __asm__(AVRA_RT_LABEL(avra_task_sl
 extern const char avra_rt_held_avra_task_slot_set __asm__(AVRA_RT_LABEL(avra_task_slot_set));
 extern const char avra_rt_held_avra_task_id __asm__(AVRA_RT_LABEL(avra_task_id));
 extern const char avra_rt_held_avra_task_ended_by __asm__(AVRA_RT_LABEL(avra_task_ended_by));
+extern const char avra_rt_held_avra_unwind_push __asm__(AVRA_RT_LABEL(avra_unwind_push));
+extern const char avra_rt_held_avra_unwind_count __asm__(AVRA_RT_LABEL(avra_unwind_count));
+extern const char avra_rt_held_avra_unwind_at __asm__(AVRA_RT_LABEL(avra_unwind_at));
+extern const char avra_rt_held_avra_unwind_dropped __asm__(AVRA_RT_LABEL(avra_unwind_dropped));
 extern const char avra_rt_held_avra_sched_seed __asm__(AVRA_RT_LABEL(avra_sched_seed));
 extern const char avra_rt_held_avra_sched_settle __asm__(AVRA_RT_LABEL(avra_sched_settle));
 extern const char avra_rt_held_avra_cores_online __asm__(AVRA_RT_LABEL(avra_cores_online));
@@ -417,6 +421,10 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_task_slot_set,
     &avra_rt_held_avra_task_id,
     &avra_rt_held_avra_task_ended_by,
+    &avra_rt_held_avra_unwind_push,
+    &avra_rt_held_avra_unwind_count,
+    &avra_rt_held_avra_unwind_at,
+    &avra_rt_held_avra_unwind_dropped,
     &avra_rt_held_avra_sched_seed,
     &avra_rt_held_avra_sched_settle,
     &avra_rt_held_avra_cores_online,
@@ -773,6 +781,14 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_id()), int64_t)
     "avra_task_id: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_ended_by(AVRA_RT_PTR)), int64_t),
     "avra_task_ended_by: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_unwind_push(AVRA_RT_PTR)), void),
+    "avra_unwind_push: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_unwind_count()), int64_t),
+    "avra_unwind_count: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_unwind_at(AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_unwind_at: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_unwind_dropped()), int64_t),
+    "avra_unwind_dropped: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_seed(AVRA_RT_I64)), void),
     "avra_sched_seed: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_sched_settle()), int64_t),

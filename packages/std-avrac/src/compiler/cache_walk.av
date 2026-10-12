@@ -31,6 +31,9 @@ export type Digested = { label: string, digest: int? }
 /// check reads again when this answer moves.
 export type Explained = { answer: Digested, reads: List<Digested>, deep: int, read_by: List<Digested>, deep_by: int, files: List<string> }
 
+/// A moved input and the answers it reaches, cited in label order.
+export type Changed = { input: string, answers: List<Digested> }
+
 /// One family's answers, counted: its cells, the reads they recorded, and how
 /// long one cell's list of reads runs — the median, the ninety-ninth in a
 /// hundred, the longest.
@@ -393,6 +396,17 @@ impl Workspace {
 
     /// Every query that reads `root` at any depth, nearest first, each once.
     fn readers_from(root: Key) -> List<Reached> { reached(root, (k: Key) -> self.db.edges_by_read(k)) }
+
+    /// The answers a moved input reaches. Each is re-verified when the input moved;
+    /// an answer whose value stands is still reached, and changes nothing.
+    fn reached_by(paths: List<string>) -> List<Changed> {
+        [Changed { input: p, answers: self.input_reach(p) } for p in paths]
+    }
+
+    fn input_reach(path: string) -> List<Digested> {
+        let cell? = self.text_cell(path) else { return [] }
+        self.cited_all([r.key for r in self.readers_from(key(Family.Input, cell))])
+    }
 
     /// The shortest path from `root` down to each of `inputs` it reads.
     fn trails(root: Key, inputs: List<string>) -> List<Trail> {
