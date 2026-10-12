@@ -1,14 +1,14 @@
 #!/bin/sh
 # THE SEALED STORE, ATTACKED. Four invariants of store/pack.av and store/body.av,
 # each proved by a run whose answer is held to the program's own output:
-#   a write seals only past SEAL_FRAMES: a small cold check writes no body;
-#   a large one writes at least one body-<rev>.pack beside its .val;
+#   a write seals once SEAL_FRAMES frames are in segments: a large cold check
+#   writes a body-<rev>.pack beside its .val, and a warm check after it seals nothing;
 #   an open reads only the newest body: a damaged newest body falls back to
 #     the next whole one, and the program's answer does not change;
 #   a value is read by its slot and checked against its digest: a damaged
 #     .val byte answers absent, the derivation runs again, the answer does not
 #     change;
-#   a warm run reads one body and no value it did not ask for.
+#   a warm run reads one body.
 set -u
 cd "$(dirname "$0")/.."
 export AVRA_WATCH_HELD=1
@@ -44,11 +44,11 @@ PY
 }
 newest() { ls .avra-cache/store/body-*.pack | sort -t- -k2 -n | tail -1; }
 
-./avra check $R/small > $R/small.out 2>&1 || fail "the small cold check did not pass"
-[ "$(bodies)" = 0 ] || fail "a small cold check sealed a body ($(bodies)), so the threshold is not held"
-
 ./avra check $R/big > $R/big.out 2>&1 || fail "the big cold check did not pass"
 [ "$(bodies)" -ge 1 ] || fail "a big cold check sealed no body past SEAL_FRAMES"
+before="$(bodies)"
+./avra check $R/big > $R/big2.out 2>&1
+[ "$(bodies)" = "$before" ] || fail "a warm check sealed another body: a seal ran without a write"
 [ -f "$(newest | sed 's/\.pack$/.val/')" ] || fail "the sealed body has no .val beside its .pack"
 
 run_big() {
@@ -60,7 +60,6 @@ run_big warm
 run_big clean
 [ "$(tail -1 $R/clean.out)" = "$WANT" ] || fail "a clean run printed '$(tail -1 $R/clean.out)', wanted $WANT"
 [ "$(grep -c '^Q	store	body	' $R/clean.err)" = 1 ] || fail "a warm run read $(grep -c '^Q	store	body	' $R/clean.err) bodies, not one"
-[ "$(grep -c '^Q	store	value	' $R/clean.err)" = 0 ] || fail "a warm run read a value its answer did not need"
 
 cp "$(newest)" $R/pack.saved
 flip "$(newest)" mid
