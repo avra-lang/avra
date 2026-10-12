@@ -232,6 +232,9 @@ export type Kernel = {
     misses: Cell<int>,
     /// Each family's GRAIN — whether its queries read rows whole.
     whole_families: Cell<List<bool>>,
+    /// Each family's name for the trace, where its owner gave one; a family
+    /// without one is named by its number.
+    family_names: Cell<List<string>>,
     audit: Audit,
     graph: Graph,
     /// Recorded reads, counted here for every kernel — the process tally shares this cell.
@@ -265,6 +268,7 @@ export fn new_kernel() -> Kernel {
         hits: Cell.new(0),
         misses: Cell.new(0),
         whole_families: list_cell(),
+        family_names: list_cell(),
         audit: Audit {
             on: Cell.new(false),
             width: Cell.new(1),
@@ -417,6 +421,18 @@ impl Kernel {
     }
 
     fn family() -> int { self.registered(Verifier.By) }
+
+    /// Names a family for the trace. Its owner calls this once, right after it registers.
+    fn named(family: int, name: string) {
+        while self.family_names.get().length <= family { self.family_names.push("") }
+        self.family_names.set_at(family, name)
+    }
+
+    /// A family's trace name: the name its owner gave, else its number.
+    fn family_name(family: int) -> string {
+        let known = if family < self.family_names.get().length { self.family_names.get()[family] } else { "" }
+        if known == "" { "${family}" } else { known }
+    }
 
     /// A family of INPUTS: a cell changed when it was last set to a new
     /// value, and nothing is asked to verify it.

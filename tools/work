@@ -850,6 +850,20 @@ land() {
             --body "$(git log --reverse --format='- %s' origin/main..HEAD)"
     fi
     n=$($gh_ pr list --head "$branch" --state open --json number --jq '.[0].number')
+    # Landing is one verb: a draft is marked ready and a leading DO NOT MERGE
+    # is stripped from the title, so the PR itself says it may land.
+    if [ "$($gh_ pr view "$n" --json isDraft --jq .isDraft)" = true ]; then
+        $gh_ pr ready "$n"
+    fi
+    title=$($gh_ pr view "$n" --json title --jq .title)
+    clean=$(printf '%s\n' "$title" | sed -E 's/^[[:space:]]*[Dd][Oo][[:space:]]+[Nn][Oo][Tt][[:space:]]+[Mm][Ee][Rr][Gg][Ee][[:space:]]*(:|—|-)?[[:space:]]*//')
+    if [ -z "$clean" ]; then
+        die "#$n's title is only the hold phrase — name the change in the title, then land again"
+    fi
+    if [ "$clean" != "$title" ]; then
+        $gh_ api -X PATCH "repos/$($gh_ repo view --json nameWithOwner --jq .nameWithOwner)/pulls/$n" -f title="$clean" >/dev/null
+        echo "work: #$n title is \"$clean\" — the hold phrase is stripped"
+    fi
     # GitHub may not have computed mergeability yet; arming is idempotent and
     # the watcher sweeps, so a miss warns rather than fails a landing.
     if $gh_ pr merge "$n" --auto --squash 2>/dev/null; then
@@ -916,7 +930,7 @@ usage() {
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
         run) echo "usage: sh tools/work run [--for <minutes>] <cmd…>   — run it on this lane's Sprite, followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
-        land) echo "usage: sh tools/work land   — push, PR, arm auto-merge; no Sprite involved" ;;
+        land) echo "usage: sh tools/work land   — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;
         sprites) echo "usage: sh tools/work sprites [--fix [<sprite>…]]   — every Sprite at a glance; --fix repairs" ;;
         done) echo "usage: sh tools/work done   — remove this lane, end its run, free its Sprite" ;;
