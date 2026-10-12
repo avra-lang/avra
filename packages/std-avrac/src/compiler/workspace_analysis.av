@@ -397,7 +397,9 @@ impl Workspace {
             .Compute -> nothing(),
         }
         self.hold.lowering.push(id)
-        let out = self.lower_requested(self.asks.get()[id])
+        let w = self.asks.get()[id]
+        let out = self.lower_requested(w)
+        self.owned(w, out)
         let open = self.hold.lowering.get()
         self.hold.lowering.set(open.slice(0, open.length - 1))
         lowered_of(
@@ -405,6 +407,13 @@ impl Workspace {
                 .relation(fam)
                 .finish_lazy(id, DbRow.Lowered(out), (r: DbRow) -> unit_fp(lowered_of(r))),
         )
+    }
+
+    /// Every body a unit lowered belongs to the unit's declaration: a lifted
+    /// lambda, a wrapper or an instantiation wears a name no declaration spells.
+    fn owned(w: Wanted, out: Unit) {
+        let d? = w.decl else { return }
+        for b in out.bodies { self.hold.owners.put(b.name, d) }
     }
 
     /// Whether a compile-time run — a lift, an argument crossing, a
@@ -631,13 +640,16 @@ impl Workspace {
         }
     }
 
-    /// The declaration a lowered body belongs to, by its symbol in that file.
+    /// The declaration a lowered body belongs to: the one whose unit lowered it,
+    /// else the one spelling its symbol in that file.
     /// A ROOT BODY IS A `const`'S INITIALIZER, named by its settle symbol
     /// `settled_symbol(const_symbol(f, s), seats)` — `base` or `base@<fps>`.
     /// The base matches EXACTLY, never as a prefix: `const_symbol` ends in
     /// `const<index>`, so a prefix match resolves index 12 to index 1 and
     /// holds the reader on the wrong declaration.
     fn decl_for_body(f: FileId, name: string) -> DeclId? {
+        let owner = self.hold.owners.get().get(name)
+        if owner != null && self.decls.decl(owner!).file == f { return owner }
         let by_symbol = [d for d in self.decls.decls_of_file(f) if self.decls.symbol(d) == name]
             .first()
         if by_symbol != null { return by_symbol }

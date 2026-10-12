@@ -238,6 +238,32 @@ steps=$((steps+1)); tw_out=$($R/tw/src/main 2>&1)
 
 fi
 
+if section lw; then
+# A LAMBDA'S BODY BELONGS TO THE DECLARATION IT IS WRITTEN IN. A run that executes a
+# lambda reads its enclosing declaration, never the file: editing a body ELSEWHERE in
+# that file leaves the run's reader held, while editing the lambda itself reads the
+# reader in the FIRST attempt, none thrown away, and the value follows.
+mkdir -p $R/lw/src/f $R/lw/src/y
+printf '[package]\nname = "rt-lw"\nversion = "0.1.0"\n' > $R/lw/avra.toml
+printf 'export fn doubled(n: int) -> int { [1, 2].map((x) -> x * 2).first()! + n }\nexport fn unused(n: int) -> int { n + 1 }\n' > $R/lw/src/y/calc.av
+printf 'use y.{doubled}\nexport const K: int = doubled(3)\nexport fn shown() -> int { K }\n' > $R/lw/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/lw/src/main.av
+HR "cold lw" check lw 0
+S "lw: built with K's verdict kept" lw
+ed $R/lw/src/y/calc.av "n + 1" "n + 7"
+steps=$((steps+1)); lw_out=$(./avra check --time $R/lw 2>&1)
+case "$lw_out" in *"discarded 0, refused 0"*|*"cache hit"*) ;; *) fails=$((fails+1)); echo "FAIL  lw: an unreached body moved and an attempt was thrown away: $(printf '%s' "$lw_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$lw_out" in *"f/held.av"*) fails=$((fails+1)); echo "FAIL  lw: an unreached body moved and the reader of a lambda was read all the same: $(printf '%s' "$lw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    lw: an unreached body moved -> the reader held" ;; esac
+ed $R/lw/src/y/calc.av "x * 2" "x * 3"
+steps=$((steps+1)); lw_out=$(./avra check --time $R/lw 2>&1)
+case "$lw_out" in *"discarded 0, refused 0"*) ;; *) fails=$((fails+1)); echo "FAIL  lw: the lambda moved and an attempt was thrown away: $(printf '%s' "$lw_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$lw_out" in *"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    lw: the lambda moved -> the reader read in the first attempt" ;; *) fails=$((fails+1)); echo "FAIL  lw: the lambda moved and the reader was not read: $(printf '%s' "$lw_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "lw: and the binary follows" lw
+steps=$((steps+1)); lw_out=$($R/lw/src/main 2>&1)
+[ "$lw_out" = "6" ] || { fails=$((fails+1)); echo "FAIL  lw: the published value did not follow the lambda the run executed: printed '$lw_out', wanted '6'"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
