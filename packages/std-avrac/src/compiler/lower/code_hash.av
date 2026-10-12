@@ -459,73 +459,91 @@ fn callptr_node(shapes: Map<string, string>, b: Body, i: Ins) -> string {
 /// The types a body names: its seats, its answer, its registers.
 fn typed_by(b: Body) -> List<TypeId> { b.params.concat([b.ret]).concat(b.reg_types) }
 
-/// A TYPE BY ITS SHAPE: what its values are made of, never its name — a
-/// record's field types in order, an enum's payloads in variant order, a
-/// named type its shape; a declared type met again inside itself is its
-/// depth in that walk.
-export fn type_shape(decls: Decls, t: TypeId) -> string { shape_in(decls, t, []) }
-
-/// A TYPE'S SHAPE AS A KEY, cached build-wide: `type_shape` starts its
-/// walk at the type with an empty path, so the text is a function of the
-/// type alone — and the text of a type that holds other records is as long
-/// as its whole unfolding, so every consumer (a body's digest, a node's
-/// name, a kept line) holds its digest instead. One answer serves every
-/// caller. The nested walk stays pure.
+/// A TYPE BY ITS SHAPE, as a KEY: what its values are made of, never its
+/// name — a record's field types in order, an enum's payloads in variant
+/// order, a named type its shape; a declared type met again inside itself is
+/// its distance up the walk. The key is built from the KEYS of the parts,
+/// each a short digest, so a type that reaches a big record twice holds its
+/// key twice and no text of the unfolding exists. Filed build-wide.
 export fn type_shape_key(decls: Decls, t: TypeId) -> string {
-    let kept? = decls.shape_texts.at(t.index) else { return fresh_shape(decls, t) }
+    let kept? = decls.shape_keys.at(t.index) else { return shape_keyed(decls, t, []).key }
     kept
 }
 
-/// The shape's key, freshly walked and filed for the next asker.
-fn fresh_shape(decls: Decls, t: TypeId) -> string {
-    let key = digest_of(type_shape(decls, t))
-    decls.shape_texts.keep(t.index, key)
-    key
-}
+/// A shape's key, and how far up the walk it reaches: the shallowest open
+/// depth a back-reference inside it names, `no_reach` when none does.
+type Keyed = { key: string, reach: int }
 
-fn shape_in(decls: Decls, t: TypeId, open: List<int>) -> string {
+const no_reach: int = 1000000000
+
+/// One node of the walk. A node nothing inside it points above is CLOSED:
+/// its key is the same wherever it is met (a back-reference is a distance,
+/// not a position), so it is filed by its type and every later asker reads it.
+fn shape_keyed(decls: Decls, t: TypeId, open: List<int>) -> Keyed {
     let seen = decls.types.seen_through(t)
     let depth = open.index_of(seen.index)
-    if depth >= 0 { return "rec ${depth}" }
-    let inner = open.concat([seen.index])
+    if depth >= 0 { return Keyed { key: "rec ${open.length - depth}", reach: depth } }
+    let kept? = decls.shape_keys.at(seen.index) else {
+        let node = shape_node(decls, seen, open.concat([seen.index]))
+        if node.reach >= open.length { decls.shape_keys.keep(seen.index, node.key) }
+        return node
+    }
+    Keyed { key: kept, reach: no_reach }
+}
+
+/// A leaf shape: a word, reaching nowhere.
+fn word_shape(word: string) -> Keyed { Keyed { key: word, reach: no_reach } }
+
+/// A shape made of parts: a tag, then the parts' keys, digested.
+fn joined_shape(tag: string, parts: List<Keyed>) -> Keyed {
+    Keyed {
+        key: digest_of("${tag}(${[p.key for p in parts].join(",")})"),
+        reach: parts.fold(no_reach, (low, p) -> if p.reach < low { p.reach } else { low }),
+    }
+}
+
+fn shape_node(decls: Decls, seen: TypeId, inner: List<int>) -> Keyed {
     match decls.types.shape_of(seen) {
-        .Int -> "int",
-        .Float -> "float",
-        .Bool -> "bool",
-        .Str -> "string",
-        .Bytes -> "Bytes",
-        .Ptr -> "ptr",
+        .Int -> word_shape("int"),
+        .Float -> word_shape("float"),
+        .Bool -> word_shape("bool"),
+        .Str -> word_shape("string"),
+        .Bytes -> word_shape("Bytes"),
+        .Ptr -> word_shape("ptr"),
         .Struct(_, _) or .App(_, _, _) or .Enum(_, _) -> declared_shape(decls, seen, inner),
-        .Dyn(_, _) -> "dyn",
-        .List(e) -> "List<${shape_in(decls, e, inner)}>",
-        .Cell(c) -> "Cell<${shape_in(decls, c, inner)}>",
-        .Task(a) -> "Task<${shape_in(decls, a, inner)}>",
-        .Tasks -> "Tasks",
-        .Map(k, v) -> "Map<${shape_in(decls, k, inner)}, ${shape_in(decls, v, inner)}>",
-        .Res(ok, err) -> "Result<${shape_in(decls, ok, inner)}, ${shape_in(decls, err, inner)}>",
-        .Fn(params, marks, ret) -> "fn(${[shape_in(decls, p, inner) for p in params].join(", ")} | ${[mark_word(m) for m in marks].join(",")}) -> ${shape_in(decls, ret, inner)}",
-        .Void -> "void",
-        .Opt(o) -> "${shape_in(decls, o, inner)}?",
-        .Null -> "null",
-        .EmptyList -> "[]",
-        .EmptyMap -> "{}",
-        .TypeName(_, _) -> decls.types.name_of(seen),
-        .Var(_, ordinal, _) -> "var ${ordinal}",
-        .Union(members) -> [shape_in(decls, m, inner) for m in members].join(" or "),
-        .Error -> "error",
-        .Range -> "Range",
+        .Dyn(_, _) -> word_shape("dyn"),
+        .List(e) -> joined_shape("List", [shape_keyed(decls, e, inner)]),
+        .Cell(c) -> joined_shape("Cell", [shape_keyed(decls, c, inner)]),
+        .Task(a) -> joined_shape("Task", [shape_keyed(decls, a, inner)]),
+        .Tasks -> word_shape("Tasks"),
+        .Map(k, v) -> joined_shape("Map", [shape_keyed(decls, k, inner), shape_keyed(decls, v, inner)]),
+        .Res(ok, err) -> joined_shape("Result", [shape_keyed(decls, ok, inner), shape_keyed(decls, err, inner)]),
+        .Fn(params, marks, ret) -> joined_shape(
+            "fn ${[mark_word(m) for m in marks].join(",")}",
+            [shape_keyed(decls, p, inner) for p in params].concat([shape_keyed(decls, ret, inner)]),
+        ),
+        .Void -> word_shape("void"),
+        .Opt(o) -> joined_shape("Opt", [shape_keyed(decls, o, inner)]),
+        .Null -> word_shape("null"),
+        .EmptyList -> word_shape("[]"),
+        .EmptyMap -> word_shape("{}"),
+        .TypeName(_, _) -> word_shape(decls.types.name_of(seen)),
+        .Var(_, ordinal, _) -> word_shape("var ${ordinal}"),
+        .Union(members) -> joined_shape("Union", [shape_keyed(decls, m, inner) for m in members]),
+        .Error -> word_shape("error"),
+        .Range -> word_shape("Range"),
     }
 }
 
 /// A declared box by its parts: a record's field types, or an enum's
 /// payloads, each list behind its count.
-fn declared_shape(decls: Decls, t: TypeId, open: List<int>) -> string {
+fn declared_shape(decls: Decls, t: TypeId, inner: List<int>) -> Keyed {
     let fields? = decls.fields_of_type(t) else {
-        let variants? = decls.variants_of_type(t) else { return decls.types.name_of(t) }
-        let arms = ["(${[shape_in(decls, p, open) for p in payload].join(", ")})" for payload in variants.payloads]
-        return "enum ${arms.length} ${arms.join(" ")}"
+        let variants? = decls.variants_of_type(t) else { return word_shape(decls.types.name_of(t)) }
+        let arms = [joined_shape("payload", [shape_keyed(decls, p, inner) for p in payload]) for payload in variants.payloads]
+        return joined_shape("enum ${arms.length}", arms)
     }
-    "record ${fields.types.length} (${[shape_in(decls, f, open) for f in fields.types].join(", ")})"
+    joined_shape("record ${fields.types.length}", [shape_keyed(decls, f, inner) for f in fields.types])
 }
 
 /// A static as a node: its boxes, each code slot replaced by its place.

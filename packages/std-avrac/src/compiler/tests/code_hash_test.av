@@ -126,6 +126,18 @@ spec "compiler — a fn's code hash" {
                 "type P = { b: int }\nfn answer() -> int { P { b: 1 }.b }",
             )
         }
+        then "a record reached twice, renamed, moves nothing" {
+            same(
+                "type A = { x: int }\ntype P = { a: A, b: A }\nfn answer() -> int { P { a: A { x: 1 }, b: A { x: 2 } }.b.x }",
+                "type B = { x: int }\ntype P = { a: B, b: B }\nfn answer() -> int { P { a: B { x: 1 }, b: B { x: 2 } }.b.x }",
+            )
+        }
+        then "a recursive type renamed moves nothing" {
+            same(
+                "type L = { v: int, next: L? }\nfn answer() -> int { L { v: 1, next: null }.v }",
+                "type M = { v: int, next: M? }\nfn answer() -> int { M { v: 1, next: null }.v }",
+            )
+        }
         then "a comment moves nothing" {
             same(
                 "fn answer() -> int { 1 }",
@@ -136,6 +148,20 @@ spec "compiler — a fn's code hash" {
             same(
                 "fn answer() -> int { 1 }\nfn elsewhere() -> int { 1 }",
                 "fn answer() -> int { 1 }\nfn elsewhere() -> int { 2 }",
+            )
+        }
+    }
+    given "an edit deep inside a shared type" {
+        then "a field's type moved under a record reached twice moves it" {
+            moved(
+                "type A = { x: int }\ntype P = { a: A, b: A }\nfn answer() -> int { P { a: A { x: 1 }, b: A { x: 2 } }.b.x }",
+                "type A = { x: string }\ntype P = { a: A, b: A }\nfn answer() -> int { P { a: A { x: \"1\" }, b: A { x: \"2\" } }.b.x.length }",
+            )
+        }
+        then "a recursive type's field type moved moves it" {
+            moved(
+                "type L = { v: int, next: L? }\nfn answer() -> int { L { v: 1, next: null }.v }",
+                "type L = { v: string, next: L? }\nfn answer() -> int { L { v: \"1\", next: null }.v.length }",
             )
         }
     }
