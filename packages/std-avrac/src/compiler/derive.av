@@ -99,7 +99,7 @@ impl Attempt {
 
 /// What one attempt answered, whether its workspace held any file, and what it
 /// spent: its phases and its whole time.
-type Tried = { answer: Result<Derived, Turn>, held: bool, spans: List<Phase>, ns: int }
+type Tried = { answer: Result<Derived, Turn>, started: Attempt, held: bool, spans: List<Phase>, ns: int }
 
 /// How many read files a turn names before it counts the rest.
 const TURN_NAMED: int = 3
@@ -571,14 +571,15 @@ impl Workspace {
         mut clock = fresh.marking()
         let began = clock.last
         let lead = [rf for rf in fresh.lead_reads(at) if !at.parse.any(it.path == rf.path)]
-        let answer = fresh.tried(at with { parse: at.parse.concat(lead) }, clock)
+        let started = at with { parse: at.parse.concat(lead) }
+        let answer = fresh.tried(started, clock)
         let held = !held_paths(fresh).is_empty()
-        if answer is .Ok { return Tried { answer: answer, held: held, spans: [], ns: 0 } }
+        if answer is .Ok { return Tried { answer: answer, started: started, held: held, spans: [], ns: 0 } }
         // the phase it left in closes under its own name
         clock.next(PHASES)
         let spans = fresh.phases.get().concat(clock.spans)
         fresh.discarded()
-        Tried { answer: answer, held: held, spans: spans, ns: clock.last - began }
+        Tried { answer: answer, started: started, held: held, spans: spans, ns: clock.last - began }
     }
 
     /// What `at` answered: the derivation that stood, or the attempt it names,
@@ -587,7 +588,7 @@ impl Workspace {
         match t.answer {
             .Ok(d) -> d,
             .Err(.Again(next)) -> {
-                let left = Left { spans: t.spans, ns: t.ns, turn: at.gave_way(self.root, next) }
+                let left = Left { spans: t.spans, ns: t.ns, turn: t.started.gave_way(self.root, next) }
                 self.again(next with { turned: at.turned + 1, left: next.left.concat([left]) })
             },
             .Err(.Refused(why)) -> { fail why },
@@ -662,6 +663,11 @@ impl Workspace {
         let said = store.get(Stored.Unit, "${kept_key_for(path, name)}#lines") ?? ""
         let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
         if !rows.any((r: List<string>) -> judged_by_files(r) && !self.kept_row_stands(r)) { return [] }
+        // a viewed file whose text moved stands or falls by its outline, which only a parse names
+        let moved = [r[1] for r in rows if r[0] == "f" && self.text_digest(r[1]) != r[2]]
+        if !moved.is_empty() && !rows.any((r: List<string>) -> judged_by_files(r) && r[0] != "f" && !self.kept_row_stands(r)) {
+            return moved
+        }
         let reads = rows.find(it[0] == "r") ?? []
         reads.slice(1, reads.length)
     }

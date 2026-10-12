@@ -238,6 +238,54 @@ steps=$((steps+1)); tw_out=$($R/tw/src/main 2>&1)
 
 fi
 
+if section vl; then
+# A KEPT VERDICT STANDS ON WHAT ITS RUNS READ AND THE OUTLINES IT CAN NAME — never on a viewed
+# file's whole text. `vl`'s K runs read_me in calc.av; other.av is a viewed file in the same
+# module that K's runs never read. An edit to a body nothing reads leaves K standing with no
+# attempt thrown away and calc.av unread; a body K's run reads moves K; a declaration added to
+# or removed from a viewed file moves its outline and refuses K; a read fn's signature moving
+# refuses K.
+mkdir -p $R/vl/src/v
+printf '[package]\nname = "rt-vl"\nversion = "0.1.0"\n' > $R/vl/avra.toml
+printf 'export fn read_me(n: int) -> int { n + 1 }\nexport const K: int = read_me(3)\n' > $R/vl/src/v/calc.av
+printf 'export fn spare(n: int) -> int { n * 2 }\nexport fn shown() -> int { spare(1) + K }\n' > $R/vl/src/v/other.av
+printf 'use v.{K, shown}\nprintln("${K} ${shown()}")\n' > $R/vl/src/main.av
+HR "cold vl" check vl 0
+S "vl: built with K's verdict kept" vl
+ed $R/vl/src/v/other.av "n * 2" "n * 5"
+steps=$((steps+1)); vl_out=$(./avra check --time $R/vl 2>&1)
+case "$vl_out" in *"discarded 0, refused 0"*) ;; *) fails=$((fails+1)); echo "FAIL  vl: a body no run reads moved and an attempt was thrown away: $(printf '%s' "$vl_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$vl_out" in *calc.av*) fails=$((fails+1)); echo "FAIL  vl: a body no run reads moved and calc.av was read all the same: $(printf '%s' "$vl_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    vl: an unread body moved -> K stood, calc.av unread" ;; esac
+case "$(printf '%s' "$vl_out" | sed -n '/^read:/,$p' | grep '^  ' | sed 's/ —.*//' | tr -d ' ' | tr '\n' ',')" in src/v/other.av,src/main.av,) ;; *) fails=$((fails+1)); echo "FAIL  vl: a body no run reads moved parsed more than the viewed file it sits in: $(printf '%s' "$vl_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "vl: and K still stands after the unread body moved" vl
+steps=$((steps+1)); vl_got=$($R/vl/src/main 2>&1); [ "$vl_got" = "4 9" ] || { fails=$((fails+1)); echo "FAIL  vl: after an unread body moved, printed '$vl_got', wanted '4 9'"; }
+ed $R/vl/src/v/calc.av "n + 1" "n + 10"
+steps=$((steps+1)); vl_out=$(./avra check --time $R/vl 2>&1)
+case "$vl_out" in *calc.av*) [ -n "${VERBOSE:-}" ] && echo "ok    vl: a body K's run reads moved -> calc.av read" ;; *) fails=$((fails+1)); echo "FAIL  vl: a body K's run reads moved and calc.av was not read: $(printf '%s' "$vl_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "vl: and K follows the body its run read" vl
+steps=$((steps+1)); vl_got=$($R/vl/src/main 2>&1); [ "$vl_got" = "13 18" ] || { fails=$((fails+1)); echo "FAIL  vl: K kept the value of the body its run read before: printed '$vl_got', wanted '13 18'"; }
+printf 'export fn extra() -> int { 1 }\n' >> $R/vl/src/v/other.av
+steps=$((steps+1)); vl_out=$(./avra check --time $R/vl 2>&1)
+case "$vl_out" in *calc.av*) [ -n "${VERBOSE:-}" ] && echo "ok    vl: a declaration added to a viewed file -> K refused" ;; *) fails=$((fails+1)); echo "FAIL  vl: a declaration added to a viewed file did not refuse K: $(printf '%s' "$vl_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "vl: an added declaration built" vl
+ed $R/vl/src/v/other.av "export fn extra()" "export fn renamed()"
+steps=$((steps+1)); vl_out=$(./avra check --time $R/vl 2>&1)
+case "$vl_out" in *calc.av*) [ -n "${VERBOSE:-}" ] && echo "ok    vl: a declaration renamed in a viewed file -> K refused" ;; *) fails=$((fails+1)); echo "FAIL  vl: a declaration renamed in a viewed file did not refuse K: $(printf '%s' "$vl_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "vl: a renamed declaration built" vl
+ed $R/vl/src/v/other.av "export fn renamed() -> int { 1 }" ""
+steps=$((steps+1)); vl_out=$(./avra check --time $R/vl 2>&1)
+case "$vl_out" in *"src/v/other.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    vl: a declaration removed from a viewed file -> its file read" ;; *) fails=$((fails+1)); echo "FAIL  vl: a declaration removed from a viewed file was not read: $(printf '%s' "$vl_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "vl: a removed declaration built" vl
+steps=$((steps+1)); vl_got=$($R/vl/src/main 2>&1); [ "$vl_got" = "13 18" ] || { fails=$((fails+1)); echo "FAIL  vl: a removed declaration left a value that is not the file's: printed '$vl_got', wanted '13 18'"; }
+ed $R/vl/src/v/calc.av "fn read_me(n: int)" "fn read_me(m: int)"
+ed $R/vl/src/v/calc.av "n + 10" "m + 10"
+steps=$((steps+1)); vl_out=$(./avra check --time $R/vl 2>&1)
+case "$vl_out" in *calc.av*) [ -n "${VERBOSE:-}" ] && echo "ok    vl: a read fn's signature moved -> K refused" ;; *) fails=$((fails+1)); echo "FAIL  vl: a read fn's signature moved and K was not refused: $(printf '%s' "$vl_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "vl: the signature change built" vl
+steps=$((steps+1)); vl_got=$($R/vl/src/main 2>&1); [ "$vl_got" = "13 18" ] || { fails=$((fails+1)); echo "FAIL  vl: the signature change moved K's value: printed '$vl_got', wanted '13 18'"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
