@@ -245,7 +245,7 @@ if section lw; then
 # reader in the FIRST attempt, none thrown away, and the value follows.
 mkdir -p $R/lw/src/f $R/lw/src/y
 printf '[package]\nname = "rt-lw"\nversion = "0.1.0"\n' > $R/lw/avra.toml
-printf 'export fn doubled(n: int) -> int { [1, 2].map((x) -> x * 2).first()! + n }\nexport fn unused(n: int) -> int { n + 1 }\n' > $R/lw/src/y/calc.av
+printf 'export fn doubled(n: int) -> int {\nlet f = (x: int) -> x * 2\nf(1) + n\n}\nexport fn unused(n: int) -> int { n + 1 }\n' > $R/lw/src/y/calc.av
 printf 'use y.{doubled}\nexport const K: int = doubled(3)\nexport fn shown() -> int { K }\n' > $R/lw/src/f/held.av
 printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/lw/src/main.av
 HR "cold lw" check lw 0
