@@ -532,8 +532,7 @@ static void cancel_passes_down_a_scopes_join(void) {
     avra_clock_run_ends();
 }
 
-// A JOIN OF A CANCELLED TASK PASSES ITS CANCEL ON: no answer is made
-// up for it, and the bit is set for the code after the call.
+// A cancelled task has no answer, and a join that reads one refuses it.
 static void* cancelled_sleeper(void* self) { (void)self; avra_fiber_sleep(10000); return answer(5); }
 static void join_of_cancelled(void) {
     avra_clock_run_begins();
@@ -542,11 +541,7 @@ static void join_of_cancelled(void) {
     avra_fiber_sleep(2);
     avra_task_cancel(t);
     avra_task_settle(t);
-    void* r = avra_task_join(t);
-    CHECK(r == NULL, "a join of a cancelled task hands back no answer");
-    CHECK(avra_unwinding == 1, "and passes the cancel on with the bit set");
-    avra_rc_release(t);
-    avra_clock_run_ends();
+    avra_task_join(t);
 }
 
 // A CAUGHT JOIN READS HOW ITS TASK ENDED WITHOUT PASSING THE CANCEL:
@@ -831,9 +826,32 @@ static void fiberless_tasks(void) {
 static void joins_cancelled(void) {
     void* t = avra_task_pending();
     avra_task_cancel(t);
-    void* r = avra_task_join(t);
-    CHECK(r == NULL && avra_unwinding == 1, "a fiberless task's cancel passes to its joiner too");
-    avra_rc_release(t);
+    avra_task_join(t);
+}
+
+// A CALLER ALREADY UNWINDING IS REFUSED NOTHING: its join of a
+// cancelled task hands back no answer, and the cancel it carries stands.
+static void* cut_then_joins_a_cancelled(void* self) {
+    (void)self;
+    avra_fiber_sleep(10000);
+    void* r = avra_task_join(g_pending);
+    g_byte_b = r == NULL;
+    g_byte_a = avra_unwinding;
+    return answer(0);
+}
+
+static void standing_join_of_cancelled(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    g_pending = avra_task_pending();
+    avra_task_cancel(g_pending);
+    void* t = spawn1(cut_then_joins_a_cancelled, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_a == 1 && g_byte_b == 1, "an unwinding caller's join of a cancelled task hands back nothing and traps nothing");
+    avra_rc_release(g_pending);
+    avra_clock_run_ends();
 }
 
 static void joins_of_tasks_nothing_runs(void) {
@@ -852,7 +870,7 @@ static void joins_of_tasks_nothing_runs(void) {
     CHECK(avra_task_done(t), "a settle of a cancelled task returns");
     avra_rc_release(t);
     CHECK(avra_mem_live() == live, "and leaves nothing");
-    joins_cancelled();
+    trapped("a join of a cancelled task", joins_cancelled, "a join takes a task that answers, and this one was cancelled");
 }
 
 // ── the trace names a virtual task by its machine's id ──────────
@@ -1566,6 +1584,11 @@ static int g_clock_stuck = 0;
 static void on_virtual_clock(const char* what, void (*body)(void)) {
     if (g_clock_stuck) { CHECK(0, what); return; }
     g_clock_stuck = in_child_within(what, body, 5);
+}
+
+static void trapped_on_virtual_clock(const char* what, void (*body)(void), const char* words) {
+    if (g_clock_stuck) { CHECK(0, what); return; }
+    g_clock_stuck = trapped_within(what, body, words, 5);
 }
 
 static void winner_leaves_at_claim(void) {
@@ -2640,8 +2663,9 @@ int main(int argc, char** argv) {
     a_fiberless_answer_names_itself();
     in_child_within("a standing cancel parks no descriptor", a_standing_cancel_parks_no_descriptor, 5);
     on_virtual_clock("a cancel passes down a scope's join to what it owns", cancel_passes_down_a_scopes_join);
-    on_virtual_clock("a join of a cancelled task", join_of_cancelled);
+    trapped_on_virtual_clock("a join of a cancelled task", join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
     on_virtual_clock("a caught join of a cancelled task", caught_join_of_cancelled);
+    on_virtual_clock("a join of a cancelled task under a standing cancel", standing_join_of_cancelled);
     on_virtual_clock("a caught join names its asker", caught_join_names_its_asker);
     caught_join_of_answered();
     on_virtual_clock("a time due on a claimed set is dropped, on the virtual clock", due_on_a_claimed_set);

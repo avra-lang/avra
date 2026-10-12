@@ -1964,15 +1964,21 @@ static int64_t* task_awaited(void* task, int deaf) {
     return task_cells(task);
 }
 
-// A JOIN IS A CANCEL POINT, and it never traps: a cancel the caller's
-// own asker left cuts the park and the bit the after-call test reads is
-// set; a task that ended cancelled PASSES its cancel to the joiner the
-// same way, and hands back no answer. Only a task that answered hands
-// one back.
+__attribute__((noinline, cold, noreturn))
+static void join_refused(void) { avra_trap("a join takes a task that answers, and this one was cancelled"); }
+
+// A JOIN IS A CANCEL POINT: a cancel the caller's own asker left cuts
+// the park, the bit the after-call test reads is set, and no answer is
+// handed back. A JOIN TAKES A TASK THAT ANSWERS: one that ended
+// cancelled has no answer, and none is made up for it — a caller
+// already unwinding reads none, so it is refused nothing.
 void* avra_task_join(void* task) {
     int64_t* cells = task_awaited(task, 0);
     if (!cells[GATE_OPEN]) return NULL;
-    if (cells[TASK_END] == END_CANCELLED) { avra_unwinding = 1; return NULL; }
+    if (cells[TASK_END] == END_CANCELLED) {
+        if (avra_unwinding) return NULL;
+        join_refused();
+    }
     void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];
     avra_rc_retain(answer);
     return answer;
