@@ -414,8 +414,6 @@ fn undefined_rule<T, N>(cx: MatchContext<T, N>, name: string, cursor: int) -> Ma
     broke<T, N>(cx, cursor, [], [defect(name, "undefined rule `${name}`")], null)
 }
 
-/// Whether a branch's first terminals can take `t` — the one question
-/// that lets the engine skip a branch whole.
 /// Whether one closed terminal accepts `t`, exactly as `match_prim`
 /// judges it.
 fn takes_term<T>(lex: Lexeme<T>, kinds: List<int>, st: StartTerm, t: T) -> bool {
@@ -435,7 +433,14 @@ fn skip_point(st: BranchStart, cursor: int) -> FarthestFailure {
 
 /// Whether a branch cannot consume `tok`: it is not nullable and none of
 /// its first terminals accepts.
-fn cannot_take<T>(lex: Lexeme<T>, kinds: List<int>, masks: List<int>, cursor: int, st: BranchStart?, tok: T) -> bool {
+fn cannot_take<T>(
+    lex: Lexeme<T>,
+    kinds: List<int>,
+    masks: List<int>,
+    cursor: int,
+    st: BranchStart?,
+    tok: T,
+) -> bool {
     let s? = st else { return false }
     !s.nullable && !starts_at_masked(lex, kinds, masks[cursor], s.terminals, tok)
 }
@@ -451,13 +456,7 @@ fn token_mask<T>(lex: Lexeme<T>, kinds: List<int>, t: T) -> int {
 }
 
 /// `starts_at`, read off the token's bits where a class has a slot in range.
-fn starts_at_masked<T>(
-    lex: Lexeme<T>,
-    kinds: List<int>,
-    mask: int,
-    terms: List<StartTerm>,
-    t: T,
-) -> bool {
+fn starts_at_masked<T>(lex: Lexeme<T>, kinds: List<int>, mask: int, terms: List<StartTerm>, t: T) -> bool {
     for st in terms {
         if takes_masked(lex, kinds, mask, st, t) { return true }
     }
@@ -467,9 +466,7 @@ fn starts_at_masked<T>(
 /// `takes_term`, the same answer, read from the bits when the class has a slot in range.
 fn takes_masked<T>(lex: Lexeme<T>, kinds: List<int>, mask: int, st: StartTerm, t: T) -> bool {
     match st.prim {
-        .Named(term) if st.slot >= 0 && st.slot < kinds.length && st.slot < 62 -> {
-            ((mask >> st.slot) & 1) == 1 || is_end(term) && ((mask >> 62) & 1) == 1
-        },
+        .Named(term) if st.slot >= 0 && st.slot < kinds.length && st.slot < 62 -> { (mask >> st.slot) & 1 == 1 || is_end(term) && (mask >> 62) & 1 == 1 },
         .Named(_) or .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> takes_term(lex, kinds, st, t),
     }
 }
