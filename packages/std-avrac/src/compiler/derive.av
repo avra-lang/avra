@@ -18,6 +18,7 @@ use core.{
     same_file,
     qtrace,
     traced,
+    touch,
     FileId,
     DeclId,
 }
@@ -876,7 +877,7 @@ impl Workspace {
         if pending.is_empty() { return [] }
         for p in pending {
             let key = pending_key(p.reader, p.read)
-            let _ = self.resolved(self.file_id(p.read.path))
+            self.declared(self.file_id(p.read.path))
             let d = self.decl_from_ref(p.read.ref)
             if d == null {
                 self.hold.pending_resolved.put(key, self.run_said(p.read.path))
@@ -914,6 +915,14 @@ impl Workspace {
                 self.force_read(reader, Reads.Unkept)
             }
         }
+    }
+
+    /// The declarations a read file names, standing: its own admission, plus its
+    /// resolution only where declarations are generated at resolve. Resolving a
+    /// file asks the items of every file it sees, which parses each held file the
+    /// holds have not yet settled.
+    fn declared(f: FileId) {
+        if self.has_declares(f) || self.has_marks(f) { let _ = self.resolved(f) } else { touch(self.items(f)) }
     }
 
     /// A file this attempt now reads, its reason standing beside the holds it turns.
