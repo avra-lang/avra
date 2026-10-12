@@ -1,8 +1,8 @@
-//! THE NODE BUILDERS THE MODEL ANSWERS: one per flat expression
-//! variant, its maker read off `Expr` by `@derive(Makes)`
+//! THE NODE BUILDERS THE MODEL ANSWERS: one per flat variant of `Expr`,
+//! `Pat` and `Stmt`, each maker read off its enum by `@derive(Makes)`
 //! (core/makers_derive.av). A variant with a payload no `Slots`
 //! accessor reads has no maker, and keeps its own builder.
-use core.{expr_makers}
+use core.{expr_makers, pat_makers, stmt_makers}
 use features.{BuilderRow}
 
 /// Each flat variant's builder: its maker, then the node it makes.
@@ -11,4 +11,16 @@ export fn node_builders() -> List<BuilderRow> {
         name: "Expr.${m.name}",
         build: (b) -> match (m.make)(b) { .Ok(e) -> b.make_expr(e), .Err(msg) -> .Err(msg) },
     } for m in expr_makers()]
+        .concat(
+            [BuilderRow {
+                name: "Pat.${m.name}",
+                build: (b) -> match (m.make)(b) { .Ok(p) -> b.make_pat(p), .Err(msg) -> .Err(msg) },
+            } for m in pat_makers()],
+        )
+        .concat(
+            [BuilderRow {
+                name: "Stmt.${m.name}",
+                build: (b) -> match (m.make)(b) { .Ok(s) -> b.make_stmt(s), .Err(msg) -> .Err(msg) },
+            } for m in stmt_makers()],
+        )
 }
