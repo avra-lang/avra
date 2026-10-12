@@ -3435,6 +3435,27 @@ _Static_assert(AVRA_SLOT_ASKER < AVRA_TASK_SLOTS && AVRA_SLOT_FLOW < AVRA_TASK_S
 // it into the task it leaves and loads the next task's.
 uint8_t avra_unwinding = 0;
 
+int64_t avra_main_asker = 0;
+
+const char* avra_main_cancelled_words(int64_t by) {
+    char words[96];
+    if (by & AVRA_SCOPE_IDS) avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by a `within` limit");
+    else if (by == 0) avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by main");
+    else avra_fmt(words, sizeof words, "main was cancelled — awaiting a task cancelled by task %lld", (long long)by);
+    return str_owned(words, strlen(words));
+}
+
+__attribute__((noinline, cold))
+static int32_t main_cancelled(void) {
+    fflush(stdout);
+    fprintf(stderr, "avra: %s\n", avra_main_cancelled_words(avra_main_asker));
+    return 1;
+}
+
+int32_t avra_main_ended(int32_t code) {
+    return __builtin_expect(avra_unwinding, 0) ? main_cancelled() : code;
+}
+
 __attribute__((noinline, cold, noreturn))
 static void slot_refused(void) { avra_trap("a task has four slots, and this is none of them"); }
 
