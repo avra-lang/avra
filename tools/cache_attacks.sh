@@ -1343,9 +1343,10 @@ S "drm: the callee's body moves — decl()'s file edge must still force a fresh 
 got_drm2=$($R/drm/src/main 2>&1)
 [ "$got_drm2" = "drm 22" ] || { fails=$((fails+1)); echo "FAIL  warm drm printed '$got_drm2', wanted 'drm 22' — decl()'s pinned-handle read lost the file-grain edge"; }
 
-# A DECLARATION ADDED, INSERTED OR REMOVED MOVES ITS MODULE'S INTERFACE, AND THE
-# HOLD TAKES IT: `b` names `a` and a collect in `coll`, so an interface move in
-# `a` re-reads `b` while `coll` stays held — and `b` types `entries.length`
+# A TYPE ADDED, INSERTED OR REMOVED MOVES ITS MODULE'S INTERFACE, AND THE
+# HOLD TAKES IT (a fn nobody names moves nothing: tools/fn_add_attack.sh): `b` names
+# `a` and a collect in `coll`, so an interface move in `a` re-reads `b` while `coll`
+# stays held — and `b` types `entries.length`
 # against the held collect's recorded type. ND judges one warm check (held,
 # never refused, `coll` held and `b` read) and holds its words to a cold one.
 mkdir -p $R/nd/src/a $R/nd/src/b $R/nd/src/coll
@@ -1374,14 +1375,14 @@ ND() { # ND <label>
     steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  $1: a warm check speaks otherwise than a cold one: $(printf '%s' "$held_says" | head -3 | tr '\n' ' ')"; }
 }
 rm -rf .avra-cache; ./avra check $R/nd >/dev/null 2>&1
-printf 'export fn fnew() -> int { 3 }\n' >> $R/nd/src/a/mod.av
-ND "nd: a declaration appended to a"
-ed $R/nd/src/a/mod.av 'export fn fz()' 'fn fmid() -> int { 4 }
+printf 'export type Fnew = { n: int }\n' >> $R/nd/src/a/mod.av
+ND "nd: a type appended to a"
+ed $R/nd/src/a/mod.av 'export fn fz()' 'type Fmid = { n: int }
 export fn fz()'
-ND "nd: a declaration inserted between two in a"
-ed $R/nd/src/a/mod.av 'export fn fnew() -> int { 3 }
+ND "nd: a type inserted between two in a"
+ed $R/nd/src/a/mod.av 'export type Fnew = { n: int }
 ' ''
-ND "nd: a declaration nobody uses removed from a"
+ND "nd: a type nobody uses removed from a"
 vh_nd=$(./avra check $R/nd --verify-held 2>&1 | unwatched)
 steps=$((steps+1))
 case "$vh_nd" in

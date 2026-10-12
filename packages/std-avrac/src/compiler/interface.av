@@ -38,7 +38,7 @@ use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
 
 /// One file's lines in its module's record, and the digest of what a caller can see of them.
-type FileLines = { path: string, lines: List<string>, iface: string }
+type FileLines = { path: string, lines: List<string>, iface: string, idents: string, global: string }
 
 impl Workspace {
 
@@ -507,7 +507,7 @@ impl Workspace {
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
-        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.ran_by(store, f.path))}\t${f.iface}" for f in parts]
+        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.ran_by(store, f.path))}\t${f.iface}\t${f.idents}\t${f.global}" for f in parts]
         let iface = ifaces_digest([f.iface for f in parts])
         joined(
             ["iface\t${iface}"]
@@ -525,7 +525,13 @@ impl Workspace {
     fn file_lines(store: Store, m: ModulePath, path: string, kept: Map<string, List<string>>) -> FileLines {
         if self.read_here(path) {
             let lines = self.lines_of(path)
-            return FileLines { path: path, lines: lines, iface: iface_digest(lines) }
+            return FileLines {
+                path: path,
+                lines: lines,
+                iface: iface_digest(lines),
+                idents: self.mentioned(path),
+                global: global_digest(lines),
+            }
         }
         let lines = [line for line in kept.get(path) ?? [] if !line.starts_with("ref\t")]
         let at: Placed? = record_places(self, store, m).get(path)
@@ -533,7 +539,16 @@ impl Workspace {
             path: path,
             lines: lines,
             iface: if at != null && at!.file.length > 4 { at!.file[4] } else { iface_digest(lines) },
+            idents: if at != null && at!.file.length > 6 { at!.file[5] } else { "" },
+            global: if at != null && at!.file.length > 6 { at!.file[6] } else { "" },
         }
+    }
+
+    /// THE NAMES A FILE MENTIONS: every token of its text, and every declaration its resolved
+    /// references name — code a derive or a template wrote into it spells names its text does not.
+    fn mentioned(path: string) -> string {
+        let refs = [self.decls.decl(r.decl).name for r in self.file_refs(self.file_id(path))]
+        joined(sorted_texts(distinct(idents_of(self.listed_text(path)).concat(refs))), ",")
     }
 
     /// A file's `ref` lines: a held file's as its record kept them, a read one's fresh.
