@@ -3,7 +3,8 @@
 //! thing's own doc — a diagnostic's meaning, or a declared symbol's
 //! `///` doc and its `@name(args)` annotations.
 use @std.cli.{CliResult, Runnable, command, arg, flag}
-use @std.avrac.compiler.{avra, DocRow, current_listing_digest, current_file_digest}
+use @std.avrac.compiler.{avra, DocRow, current_read_digest, package_root_of}
+use @std.avrac.core.{distinct}
 use @std.avrac.compiler.store.{Reading, Store, Stored, node_key}
 use @std.avrac.diagnostics.{DiagCode}
 use @std.avrac.compiler.dev.{shown_code}
@@ -63,15 +64,9 @@ fn explained_decl(name: string, json: bool) -> int {
     let ws = root_workspace(root)
     let store = ws.opened_store()
     let key = node_key(Stored.Rows, ["docs", root, ws.compiler_id(), name])
-    let cached? = store.get_valid(Stored.Rows, key, (read: string) -> read_now(root, read)) else { return derived_decl(store, root, key, name, json) }
+    let cached? = store.get_valid(Stored.Rows, key, current_read_digest) else { return derived_decl(store, root, key, name, json) }
     print_decl(name, cached, json)
     0
-}
-
-/// A saved answer's read, as it stands now: the package's listing for its root,
-/// else a file's own bytes. A file that cannot be read has no digest.
-fn read_now(root: string, read: string) -> string? {
-    if read == root { current_listing_digest(root) } else { current_file_digest(read) }
 }
 
 fn derived_decl(store: Store, root: string, key: string, name: string, json: bool) -> int {
@@ -82,14 +77,9 @@ fn derived_decl(store: Store, root: string, key: string, name: string, json: boo
         )
         return 1
     }
-    let reads = [Reading { name: f, digest: current_file_digest(f) ?? "-" } for f in found.files]
-    let _ = store
-        .keep_reading(
-            Stored.Rows,
-            key,
-            found.text,
-            [Reading { name: root, digest: current_listing_digest(root) }].concat(reads),
-        )
+    let packages = distinct([root].concat([package_root_of(f) ?? root for f in found.files]))
+    let reads = [Reading { name: r, digest: current_read_digest(r) ?? "-" } for r in packages.concat(found.files)]
+    let _ = store.keep_reading(Stored.Rows, key, found.text, reads)
     print_decl(name, found.text, json)
     0
 }
