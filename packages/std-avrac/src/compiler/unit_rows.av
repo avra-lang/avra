@@ -39,14 +39,15 @@ impl Workspace {
         let at? = self.row_place(s, w) else { return }
         let facts = code_facts(self.decls, out.bodies, out.statics, out.hashes)
         self.row_lives(at.path, UnitRow { key: at.key, wants: self.wanted_list_wire(out.wants), facts: code_facts_wire(facts) })
-        self.hold.rows_fresh.put(at.path, at.surface)
+        self.hold.rows_fresh.put(at.path, true)
     }
 
-    /// Every file that lowered a unit afresh keeps its live rows, whole, under its
-    /// surface: the rows served and the rows made, so a row of a declaration that
-    /// moved or went is dropped.
+    /// Every file that lowered a unit afresh keeps its live rows, whole, under the
+    /// surface the NEXT derivation will read — its interface records are kept by now
+    /// — so a row of a declaration that moved or went is dropped.
     fn keep_unit_rows(s: Store) {
-        for path, surface in self.hold.rows_fresh.get() {
+        for path, _fresh in self.hold.rows_fresh.get() {
+            let surface? = self.surface_of(s, self.file_id(path)) else { continue }
             let live = self.hold.rows_live.get().get(path) ?? []
             let _ = s.keep(Stored.Unit, rows_key(path, surface), "R1" + fields_wire(flatten([[r.key, r.wants, r.facts] for r in live])), [])
         }
