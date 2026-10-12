@@ -563,14 +563,19 @@ impl Workspace {
     }
 
     /// EVERY FILE WHOSE TEXT A FILE'S COMPILE-TIME RUNS READ — its own runs', and the
-    /// runs of every const those read. In name order.
+    /// runs behind every declaration those read (`followed`). In name order.
     fn ran_by(store: Store, path: string) -> List<RunRead> {
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut seen: List<RunRead> = [self.plain_read(path)]
+        mut known: Map<string, bool> = {}
+        known.set(read_id(seen[0]), true)
         mut at = 0
         while at < seen.length {
-            for q in self.ran_directly(store, seen[at].path) {
-                if !seen.any(it.path == q.path && it.ref == q.ref) { seen.push(q) }
+            for q in self.followed(store, seen[at]) {
+                if !known.has(read_id(q)) {
+                    known.set(read_id(q), true)
+                    seen.push(q)
+                }
             }
             at = at + 1
         }
@@ -578,6 +583,22 @@ impl Workspace {
             seen.slice(1, seen.length),
             (a: RunRead, b: RunRead) -> text_before(a.path, b.path),
         )
+    }
+
+    /// WHAT READING ONE THING INHERITS. A fn read inherits nothing: what its body runs
+    /// is read by the run that called it. A const read inherits its kept verdict's
+    /// reads, which already hold the reads of every const it stood on. Anything else —
+    /// a whole file, a declaration that generates others, a const with no verdict
+    /// kept — inherits all its file's runs.
+    fn followed(store: Store, r: RunRead) -> List<RunRead> {
+        let words = r.ref.split("~")
+        if r.ref.is_empty() || words.length < 4 { return self.ran_directly(store, r.path) }
+        match words[1] {
+            "fn" -> [],
+            "const" -> kept_reads(store, kept_key_for(r.path, text_of_field(words[3]))) ?? self
+                .ran_directly(store, r.path),
+            _ -> self.ran_directly(store, r.path),
+        }
     }
 
     /// What one file's runs read: as this build met them, or, for a held file, as
@@ -924,3 +945,6 @@ export fn makers_in(fields: List<List<string>>, path: string) -> Map<string, str
 fn bit_word(b: bool) -> string {
     if b { "1" } else { "0" }
 }
+
+/// One read's identity: the file and the declaration read in it.
+fn read_id(r: RunRead) -> string { "${r.path}\t${r.ref}" }
