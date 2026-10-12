@@ -14,6 +14,37 @@ uses the result to build the compiler from source. Needs clang and
 LLVM 21 (`LLVM_PREFIX`), the same as any build here. `./avra` runs it
 by itself when `build/avra` is missing.
 
+### Why two builds, and the one case that takes none
+
+A change to lowering or memory reaches the compiler's own body only
+when a compiler already carrying it compiles that body. So a seed whose
+source LAGS the tree pays TWO self-compiles: the source compiled by the
+seed (gen-1), then that result compiling the source again (gen-2).
+Gen-1's own body was laid out by the seed's older codegen; gen-2's by
+the source's own. Measured on a Sprite (cold, no cache): `recover` 57 s,
+gen-1 880 s, gen-2 856 s — and gen-1 and gen-2 differ in 11,644,429
+bytes. Gen-2 is a different compiler, and it is the one this source
+emits; there is no safe way to skip it while the seed's codegen may lag.
+
+When the seed IS the tree — `bootstrap/seed.sources` equals
+`tools/sources_hash.sh` — there is nothing to advance: the seed was
+emitted from exactly this source, so linking it (the `recover` half) is
+the whole compiler, and a self-compile only rebuilds it. Measured on a
+Sprite: a fixed-point rebuild is BYTE-IDENTICAL to the compiler it
+rebuilt (whole-file SHA-256 and `.text` SHA-256 both match), and
+`make bootstrap` on a matching seed prints "the seed IS this tree" and
+finishes in the `recover` step alone (57–110 s, no self-compile).
+`tools/seed_is_tree.sh` makes the decision; `make seed` refreshes the
+recorded hash.
+
+The same law, in the reuse direction: a compiler whose source is the
+tree's needs NO build at all — the CI exact-key cache
+(`tools/compiler_paths.sh --key`, which leaves tests out) and `work`'s
+`.avra-compiler-hash` warm check both do this. Only the seed records a
+coarse hash (it includes tests), so the `make bootstrap` fast path fires
+less often than the source-key reuse does. A stale seed still pays both
+builds — that is the generation law, not slack.
+
 ## Refreshing it
 
     make seed
