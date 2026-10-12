@@ -113,7 +113,10 @@ RUNTIME_LIB = build/libavra_runtime.a
 
 COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
                 build/ffi.o build/std_io.o build/std_io_watch.o build/std_process.o build/std_time.o build/std_net.o \
-                build/std_hash.a
+                build/std_hash.a $(HASH_OBJS)
+
+# A seed names the hash rows itself, so its link takes them once: the objects, not also their archive.
+SEED_LINK_OBJS = $(filter-out build/std_hash.a,$(COMPILER_OBJS))
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
@@ -349,7 +352,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families layers inputs inputs-accept read-cost \
+.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -399,7 +402,7 @@ seed: $(COMPILER_OBJS)
 # again. `make recover` is that way back.
 recover: $(COMPILER_OBJS)
 	@mkdir -p build
-	@clang -w -O1 -rdynamic bootstrap/seed.ll $(COMPILER_OBJS) \
+	@clang -w -O1 -rdynamic bootstrap/seed.ll $(SEED_LINK_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
@@ -407,12 +410,24 @@ recover: $(COMPILER_OBJS)
 # Bootstrap hands out GEN-2. A change to lowering or memory reaches a
 # compiler's own body only when a compiler already carrying it compiles
 # that body, so the seed's gen-1 rebuilds once more.
+#
+# UNLESS THE SEED IS THIS TREE. `make seed` records the source hash it
+# emitted from, and when that hash is the tree's own the seed already IS
+# the compiler this source emits — linking it (`recover`) is the whole
+# build, and a self-compile only rebuilds the same compiler byte for
+# byte. A hash that differs means the seed's codegen MAY lag the source,
+# and the two builds stand.
 bootstrap: recover
-	@echo "bootstrap: gen-1, the source compiled by the seed"
-	@$(MAKE) -s avra
-	@echo "bootstrap: gen-2, the source compiled by gen-1"
-	@$(MAKE) -s avra
-	@echo "bootstrap: build/avra is gen-2"
+	@h=$$(sh tools/sources_hash.sh); s=$$(cat bootstrap/seed.sources 2>/dev/null || echo none); \
+	if [ "$$(sh tools/seed_is_tree.sh "$$h" "$$s")" = seed ]; then \
+	    echo "bootstrap: the seed IS this tree — no self-compile"; \
+	else \
+	    echo "bootstrap: gen-1, the source compiled by the seed"; \
+	    $(MAKE) -s avra || exit 1; \
+	    echo "bootstrap: gen-2, the source compiled by gen-1"; \
+	    $(MAKE) -s avra || exit 1; \
+	    echo "bootstrap: build/avra is gen-2"; \
+	fi
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
 # that refused its own source reported only "make: *** Error 2" and the next
@@ -581,6 +596,9 @@ cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
 	@sh tools/held_runs_attack.sh
+	@sh tools/store_quiet_attack.sh
+	@sh tools/store_seal_attack.sh
+	@sh tools/store_index_attack.sh
 	@sh tools/cancel_cache_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
@@ -640,7 +658,7 @@ seed-check: $(COMPILER_OBJS)
 	@sh tools/seed_guard.sh
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
-	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(COMPILER_OBJS) \
+	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(SEED_LINK_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@sh tools/capped.sh build/seed-check/out 200000 build/avra-seed-check build packages/cli \
@@ -715,12 +733,11 @@ http-cites:
 dogfooding-rules:
 	@./build/avra rules --check-markdown DOGFOODING.md
 
-# THE FAMILY ORDINALS ARE APPEND-ONLY. A family ordinal is a durable
-# address — rows, kept caches and witnesses key by it — so the enum's
-# declared order is a contract. tools/families.order is that contract;
-# an inserted, moved or removed variant breaks its prefix and is
-# refused before it compiles (the node-variant law, one space over).
-families:
+# THE HAND-WRITTEN FAMILIES MAY ONLY FALL. Every `@family` marker is a
+# family not yet a `@query`; the count may only fall and the ceiling in
+# tools/families.ceiling is lowered as one converts. A family is keyed
+# by its NAME, so declaration order is free and no ordinal is durable.
+families-left:
 	@python3 tools/families.py
 
 # THE LAYERING IS ONE-WAY: no `use` names a layer above its own, and
@@ -926,7 +943,7 @@ no-threads:
 # drives the same clocked tests, so it stands here beside them.
 KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A = read-cost speed-ratchet warm-edit codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
-KEEPERS_B = fingerprints vocab families layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+KEEPERS_B = fingerprints vocab families-left layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
@@ -940,7 +957,7 @@ keepers keepers-alone keepers-a keepers-b:
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
-TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test \
+TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
                  witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test
@@ -992,7 +1009,7 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = fingerprints vocab families layers inputs cited http-cites externs suites ci-invariants ci-verdict pr-watcher pipeline-doc
+KEEPERS_STATIC = fingerprints vocab families-left layers inputs cited http-cites externs suites ci-invariants ci-verdict pr-watcher pipeline-doc
 .PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
@@ -1163,7 +1180,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
-gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families layers codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs

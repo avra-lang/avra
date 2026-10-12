@@ -63,7 +63,7 @@ From a fresh checkout:
 
 Work there, commit, then:
 
-    sh tools/work land            # rebase, fmt-check, push, open PR, arm auto-merge
+    sh tools/work land            # rebase, fmt-check, push, open PR, ready, strip a DO NOT MERGE title, arm auto-merge
 
 `land` does, in order: refuses to run on `main`; refuses a dirty tree;
 `git fetch origin main`; `git rebase origin/main` (onto `main` only);
@@ -73,6 +73,22 @@ is not open; and **arms auto-merge** (`gh pr merge <n> --auto --squash`).
 It prints the PR URL and says what it armed.
 
 ### What auto-merge does
+
+**A hold is a hold.** A draft, or a title that says `DO NOT MERGE`, is not
+armed. `.github/workflows/auto-merge.yml` checks the title and skips the
+arming step, and the watcher (rule (j)) disarms one that was armed anyway.
+
+**Landing is one verb.** `sh tools/work land` pushes, marks the PR ready if
+it is a draft, strips a leading `DO NOT MERGE` from its title (through the
+REST API, since `gh pr edit` lacks the scope), and arms auto-merge. A title
+that is only the hold phrase is refused: name the change first.
+
+**Nothing rots unseen.** `make pipeline-status` prints a section
+WAITING ON A HUMAN/LEAD: each green draft with its age, each red non-draft
+PR past two hours with its failing jobs, each PR BEHIND `main` past an hour
+(with how long `main` has moved), and each PR with no push for a day. A cap
+line says how many PRs are open and how old the oldest is. It exits 1 when
+any green draft is older than six hours, so a heartbeat can alarm on it.
 
 There is no queue. An armed PR merges **itself** the moment both
 requirements hold: its required `test` check is green, and its branch is
@@ -275,13 +291,27 @@ There is no queue; the watcher keeps every open PR able to merge itself:
   refreshes again only if `main` moved again.
 - **(d)** a PR that **conflicts** with `main` — name the rebase its owner
   owes, once.
-- **(e)** a **draft** — name it so it is never invisible; take a green,
-  otherwise-landable, wanted one ready (a `DO NOT MERGE` title is the
-  deliberate exception).
+- **(e)** a **draft** — name it so it is never invisible. The watcher
+  **never readies a draft**: a draft is a hold, and only a landing takes
+  it.
+- **(j)** a **held title** — a non-draft PR whose title says `DO NOT MERGE`
+  is never armed, and one already armed is **disarmed**
+  (`gh pr merge --disable-auto`) once per head. Either signal alone holds
+  it; the auto-merge workflow refuses to arm such a title too.
+- **(k)** a **green draft held past two hours** — named once with its age,
+  and once more each UTC day after, so a draft that could land is never
+  silent.
 - **(f)** a **doomed run** — cancel a `pull_request` run whose PR is no
   longer open. A superseded run is already cancelled by `checks.yml`'s
   own concurrency.
 - **(g)** a **blocked** PR — name the check it waits on, once.
+- **(h)** an **unvalidated `main`** — a merge the bot pushed fires no
+  workflow (`GITHUB_TOKEN` pushes trigger none), so `main` can stand with no
+  `checks` run; once its head is older than three minutes with none, dispatch
+  `checks` on `main`, once per SHA.
+- **(i)** a **held run** — a bot-pushed head fires a `checks` run that waits
+  in `action_required`; approve it, once per run id, when its PR is same-repo
+  and the run is on the PR's current head. A fork's run is never approved.
 
 Every open PR gets an action or a loud name. Every comment is deduped by
 `(pr, head, reason)` and carries its own marker, so a lost state file
@@ -338,7 +368,7 @@ by nobody.
 |---|---|
 | `make fingerprints` | every node kind's fingerprint tag is unique inside its fold space |
 | `make vocab` | every `Ins` consumer stays exhaustive, so an instruction cannot ship half-implemented |
-| `make families` | the node family ordinals are append-only (a durable address) |
+| `make families-left` | the hand-written families may only fall, and a family is keyed by its name |
 | `make layers` | layering is one-way: `core -> grammar -> features -> compiler`, and `@std/relation` never names the compiler |
 | `make inputs` | every read of the world is an input through one door; a new site is refused and the baseline only falls |
 | `make clock-holds` | every blocking C call holds the world (a virtual clock flows across, or it says why it waits on no time) |
@@ -569,7 +599,7 @@ auto-merge (§0). None of these is a command to run.
 | `sh tools/work run <cmd>` | run `<cmd>` on this lane's Sprite, followed to its status |
 | `sh tools/work run --for <minutes> <cmd>` | the same, with a raised bound |
 | `sh tools/work test` | what this branch touches, on this lane's Sprite |
-| `sh tools/work land` | rebase, fmt-check, push, open PR, arm auto-merge |
+| `sh tools/work land` | rebase, fmt-check, push, open PR, mark ready, strip a `DO NOT MERGE` title, arm auto-merge |
 | `sh tools/work status` | PRs and their merge state; each lane and its Sprite |
 | `sh tools/work sprites [--fix]` | every Sprite at a glance; `--fix` repairs |
 | `sh tools/work bind [<sprite>]` | give this worktree a Sprite, or move it |
@@ -620,7 +650,7 @@ auto-merge (§0). None of these is a command to run.
 | command | what it does |
 |---|---|
 | `AVRA_MEM_STATS=1 ./avra check <pkg>` | live bytes by category and site |
-| `AVRA_SAMPLE=<secs> sh tools/watch.sh 4000 ./avra …` | sample under the lock |
+| `AVRA_SAMPLE=<secs> sh tools/watch.sh 6000 ./avra …` | sample under the lock |
 | `sh tools/watch.sh <cap_mb> <cmd…>` | run one heavy step under the lock and cap |
 | `sh tools/capped.sh <file> <bytes> <cmd…>` | cap a log, keep the command's status |
 | `sh tools/compiler_paths.sh --key` | the compiler's source digest (the cache key) |

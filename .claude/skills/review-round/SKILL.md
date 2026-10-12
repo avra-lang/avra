@@ -159,7 +159,7 @@ any round is called done. Goldens that change must change because
 the TRUTH changed, and the diff is inspected, not accepted. If a
 fix touches a package's build, remember the front door is `./avra`
 (`build/avra`, else the seed) and a whole-package check runs under
-`sh tools/watch.sh 4000`.
+`sh tools/watch.sh 6000`.
 
 ## Report (the shape that lands)
 

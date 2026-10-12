@@ -1187,8 +1187,9 @@ registry is the idiom engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
-- A FAMILY IS APPENDED, NEVER INSERTED. A `@family(rank)` is persisted, so inserting a
-  family moves every later one. A node kind is keyed by its NAME (`@…_node`), order is free.
+- A FAMILY, LIKE A NODE KIND, IS KEYED BY ITS NAME. `@family` markers mint `Family`
+  `by it.name`, so a family may be declared in any order; nothing saved keys by an ordinal
+  and no family fingerprint folds one.
 - Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
   and a block word's `{` hand their body over whole, so the lexer emits
   the `}` that ends it too, and the rule consumes it (`"grammar" "{"
@@ -2190,7 +2191,7 @@ doctrine it expands.
   its merge state and whether auto-merge is armed.
 - MEASURE, THEN CHANGE. `make census CMD="check <pkg>"` gives EXACT
   retain/release/list-write counts and, with the per-caller tables,
-  who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 4000 ./avra
+  who causes them; `AVRA_SAMPLE=<secs> sh tools/watch.sh 6000 ./avra
   …` samples. Trust the census over the sample — and read
   `sample`'s output with its tree characters (`+ ! : |`) in mind,
   since parsing it as plain indentation reports the wrong fn.
@@ -2246,7 +2247,7 @@ doctrine it expands.
   .avra-cache` before every run whose ANSWER is being compared, not
   only before the first.
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
-  watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
+  watchdog: `sh tools/watch.sh 6000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this
   tree — three concurrent `make test` runs once, and a background
   gate with other compiler runs beside it (a WindowServer watchdog
@@ -2276,7 +2277,7 @@ doctrine it expands.
   (an argument that is a directory), and a step does not start
   under a 20% memory floor — so NOTHING runs `build/avra` directly,
   and a PROFILE runs under the lock too: `AVRA_SAMPLE=12 sh
-  tools/watch.sh 4000 ./avra test packages/std-avrac` (the file at
+  tools/watch.sh 6000 ./avra test packages/std-avrac` (the file at
   AVRA_SAMPLE_FILE), and a MEMORY question is answered by the
   runtime's accounting, `AVRA_MEM_STATS=1 ./avra check <pkg>`: live
   bytes by category, by list capacity, and by the allocation site
