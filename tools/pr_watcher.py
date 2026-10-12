@@ -22,7 +22,12 @@ watcher closes the gap between "green" and "landed", deterministically:
   (f) a DOOMED RUN — cancel a `pull_request` run whose PR is no longer
       open. A superseded run is already cancelled by `checks.yml`'s own
       concurrency; this covers the PR that closed while its run lived;
-  (g) BLOCKED — name the check it waits on, once.
+  (g) BLOCKED — name the check it waits on, once;
+  (h) UNVALIDATED MAIN — a merge the GitHub Actions bot pushed fires no
+      workflow (GITHUB_TOKEN pushes trigger none), so main's head can
+      stand with no `checks` run at all. Once that head is older than
+      MAIN_GRACE seconds with no `checks` run on it, dispatch `checks` on
+      main — once per SHA, deduped by state.
 
 EVERY open PR gets an action or a loud name: a state the watcher cannot
 move is still a state it says out loud, never one it skips. Every comment
@@ -51,6 +56,7 @@ enqueue path is kept below, corrected, for a repo that re-enables a
 queue: a malformed mutation that failed silently is the bug this watcher
 was born from.
 """
+import datetime
 import json
 import os
 import re
@@ -67,6 +73,9 @@ TOLD = "told"
 DO_NOT_MERGE = re.compile(r"DO\s+NOT\s+MERGE", re.IGNORECASE)
 # THE CONFLICT WORDS ARE ONE DEFINITION, spoken here and quoted by the
 # docs; the self-test refuses the two drifting apart.
+# A bot merge's head gets a grace before the watcher asks for its run: a
+# push run that is merely slow to appear is not a missing run.
+MAIN_GRACE = 180
 CONFLICT_PHRASE = ("this conflicts with main. Rebase onto origin/main, then "
                    "`sh tools/work land`")
 
@@ -92,7 +101,7 @@ def _waiting_on(p):
     return f"the required `test` check ({c.lower() or 'pending'})"
 
 
-def plan(prs, runs, state):
+def plan(prs, runs, state, trunk=None):
     """The actions a pass owes. See the module docstring for the rules.
 
     `prs`: number, isDraft, state, mergeable, mergeStateStatus, title,
@@ -101,6 +110,8 @@ def plan(prs, runs, state):
     `runs`: databaseId, status, event, headBranch — the live `checks`
             runs, already filtered to the ones no PR is waiting on
     `state`: {"rerun": {key}, "told": {key}}
+    `trunk`: None, or {sha, age, checked} — main's head SHA, its age in
+            seconds, and whether any `checks` run stands on that SHA
     """
     acts = []
     rerun, told = state["rerun"], state["told"]
@@ -230,6 +241,13 @@ def plan(prs, runs, state):
         else:
             acts.append({"do": "note", "pr": n,
                          "text": f"#{n} {p.get('mergeStateStatus') or 'unknown'} — no action owed"})
+
+    # (h) main with no `checks` run on its head: dispatch it, once per SHA.
+    if trunk and not trunk["checked"] and trunk["age"] > MAIN_GRACE:
+        key = f"dispatch:{trunk['sha']}"
+        if key not in told:
+            acts.append({"do": "dispatch", "key": key, "mark": ("told", key),
+                         "text": f"main {trunk['sha'][:7]} has no `checks` run — dispatching one"})
     return acts
 
 
@@ -297,7 +315,21 @@ def open_prs(repo):
 
 def _runs(repo):
     return _gh_json(["run", "list", "-R", repo, "-L", "100",
-                     "--json", "databaseId,status,conclusion,headBranch,event"])
+                     "--json", "databaseId,status,conclusion,headBranch,event,"
+                               "headSha,workflowName"])
+
+
+def main_state(repo, runs):
+    """main's head SHA, its age in seconds, and whether a `checks` run
+    stands on it (any event: a push run is the usual one)."""
+    head = _gh_json(["api", f"repos/{repo}/commits/main"])
+    sha = head["sha"]
+    when = head["commit"]["committer"]["date"]
+    born = datetime.datetime.fromisoformat(when.replace("Z", "+00:00"))
+    age = (datetime.datetime.now(datetime.timezone.utc) - born).total_seconds()
+    checked = any(r.get("headSha") == sha and r.get("workflowName") == "checks"
+                  for r in runs)
+    return {"sha": sha, "age": age, "checked": checked}
 
 
 def test_of(repo, pr):
@@ -351,10 +383,11 @@ def collect(repo, state):
         fj = failing_job(repo, t["runId"])
         if fj:
             t["job"], t["line"] = fj["job"], fj["line"]
-    runs = [r for r in _runs(repo)
+    every = _runs(repo)
+    runs = [r for r in every
             if (r.get("event") or "") == PR
             and (r.get("status") or "") in ("in_progress", "queued")]
-    return {"prs": prs, "runs": runs}
+    return {"prs": prs, "runs": runs, "main": main_state(repo, every)}
 
 
 # ---- doing the actions (gh) --------------------------------------------
@@ -385,6 +418,8 @@ def do_action(a, repo, run):
         run(["run", "cancel", str(a["run"]), "-R", repo])
     elif a["do"] == "ready":
         run(["pr", "ready", str(a["pr"]), "-R", repo])
+    elif a["do"] == "dispatch":
+        run(["workflow", "run", "checks.yml", "-R", repo, "--ref", "main"])
     elif a["do"] == "enqueue":
         # THE QUEUE IS OFF; this spelling is kept, corrected, for a repo that
         # re-enables one. `gh api graphql` reads the operation from the
@@ -587,6 +622,28 @@ def selftest():
         if any(a["do"] == "comment" for a in pass2):
             sys.exit(f"pr-watcher: self-test — the {reason} comment repeated on an unchanged head")
 
+    # (h) an unvalidated main is dispatched once per SHA, never twice, and
+    # a main that has a checks run, or is inside the grace, is left alone.
+    def trunk(age, checked, sha="m1"):
+        return {"sha": sha, "age": age, "checked": checked}
+    if plan([], [], _empty_state(), trunk(600, True)):
+        sys.exit("pr-watcher: self-test — main with a checks run was dispatched")
+    if plan([], [], _empty_state(), trunk(60, False)):
+        sys.exit("pr-watcher: self-test — main inside the grace was dispatched")
+    st = _empty_state()
+    first = plan([], [], st, trunk(600, False))
+    if [a["do"] for a in first] != ["dispatch"]:
+        sys.exit(f"pr-watcher: self-test — an unvalidated main was not dispatched: {first}")
+    commit_marks(first, [], st)
+    if plan([], [], st, trunk(600, False)):
+        sys.exit("pr-watcher: self-test — main was dispatched twice for one SHA")
+    if [a["do"] for a in plan([], [], st, trunk(600, False, sha="m2"))] != ["dispatch"]:
+        sys.exit("pr-watcher: self-test — a new main SHA was not dispatched")
+    sent = []
+    execute(first, "avra-lang/avra", run=lambda args: sent.append(args) or "")
+    if sent != [["workflow", "run", "checks.yml", "-R", "avra-lang/avra", "--ref", "main"]]:
+        sys.exit(f"pr-watcher: self-test — the dispatch was sent as {sent}")
+
     # NEVER SILENT: every state a PR can be in draws an action or a name.
     for p in (_pr(21, "SUCCESS"),
               _pr(22, "SUCCESS", isDraft=True),
@@ -688,7 +745,7 @@ def run_pass(world, state, state_path, repo, execute_fn=execute, label="pr-watch
     """One live pass. State is committed and SAVED in a `finally`:
     whatever an action or the pass itself does, the marks of what
     SUCCEEDED stand and the next pass retries only what failed."""
-    acts = plan(world["prs"], world["runs"], state)
+    acts = plan(world["prs"], world["runs"], state, world.get("main"))
     for a in acts:
         print(label, a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
     failed = []
@@ -712,7 +769,7 @@ def main(argv):
     state = load_state(state_path)
     world = collect(repo, state)
     if "--dry-run" in argv:
-        acts = plan(world["prs"], world["runs"], state)
+        acts = plan(world["prs"], world["runs"], state, world.get("main"))
         armed = sum(1 for a in acts if a["do"] == "arm")
         refreshed = sum(1 for a in acts if a["do"] == "refresh")
         cancelled = sum(1 for a in acts if a["do"] == "cancel")
