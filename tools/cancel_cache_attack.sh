@@ -3,15 +3,18 @@
 # a cancel point is part of the callee's interface (its record's two bits,
 # parks and spins), so an edit that changes either moves the key of every file
 # that calls it, though no signature moved; an edit that moves neither leaves
-# the caller held. Each step edits the callee, asks the caller's hold, then
-# checks so the next step starts from a kept state.
+# the caller held. The caller is `mid`, a module the entry calls: the entry is
+# always read (its parse speaks the law over every other file), so the reader
+# under test is never the entry. Each step edits the callee, asks the reader's
+# hold, then checks so the next step starts from a kept state.
 set -u
 cd "$(dirname "$0")/.."
 
 R=build/cancel-cache-attack; fails=0; steps=0
 rm -rf "$R" .avra-cache && mkdir -p $R/src/lib
 printf '[package]\nname = "rt-cc"\nversion = "0.1.0"\n' > $R/avra.toml
-printf 'use lib.{work}\nfn handle() -> int { work() }\nhandle()\n' > $R/src/main.av
+printf 'use lib.{work}\nuse mid.{mid}\nfn handle() -> int { work() }\nhandle() + mid()\n' > $R/src/main.av
+printf 'use lib.{work}\nexport fn mid() -> int { work() }\n' > $R/src/mid.av
 printf 'export fn work() -> int { 1 }\n' > $R/src/lib/a.av
 ./avra check $R >/dev/null 2>&1
 tree=$(pwd)
@@ -30,7 +33,8 @@ callee() { printf '%s\n' "$1" > $R/src/lib/a.av; }
 kept() { ./avra check $R >/dev/null 2>&1; }
 
 callee 'export fn work() -> int { 2 }'
-says "a body edit that moves no bit" "src/main.av — held" "$(inspected src/main.av --why)"
+says "a body edit that moves no bit" "src/mid.av — held" "$(inspected src/mid.av --why)"
+says "the entry is read, whatever moves" "src/main.av — read: the entry" "$(inspected src/main.av --why)"
 kept
 
 callee 'export fn work() -> int {
@@ -38,7 +42,7 @@ callee 'export fn work() -> int {
     while i < 2 { i = i + 1 }
     i
 }'
-says "the callee starts to spin, moving the spins bit alone" "src/main.av — read" "$(inspected src/main.av --why)"
+says "the callee starts to spin, moving the spins bit alone" "src/mid.av — read" "$(inspected src/mid.av --why)"
 kept
 said=$(inspected @handle)
 says "the caller now spins" "  spins — calls \`work\`" "$said"
@@ -50,7 +54,7 @@ export fn work() -> int {
     avra_fiber_sleep(0)
     2
 }'
-says "the callee stops spinning and starts to park" "src/main.av — read" "$(inspected src/main.av --why)"
+says "the callee stops spinning and starts to park" "src/mid.av — read" "$(inspected src/mid.av --why)"
 kept
 said=$(inspected @handle)
 says "the caller now parks" "\`handle\` may reach a cancel point" "$said"
@@ -62,7 +66,7 @@ export fn work() -> int {
     avra_fiber_sleep(0)
     3
 }'
-says "a parking body edit that moves no bit" "src/main.av — held" "$(inspected src/main.av --why)"
+says "a parking body edit that moves no bit" "src/mid.av — held" "$(inspected src/mid.av --why)"
 
 files=$(sort -u $R/.inspected 2>/dev/null | grep -c .)
 echo "cancel cache attack: $steps step(s), $fails failed, $files file(s) inspected"
