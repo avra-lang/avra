@@ -116,6 +116,8 @@ impl Workspace {
         let p = self.parsed(f)
         let vis = self.visible(f)
         mut made: List<DeclId> = []
+        let gatherers = self.decls.collect_enums()
+        for d in self.decls.decls_of_file(f) { made = made.concat(self.derived_for(gatherers, d)) }
         for d in self.decls.decls_of_file(f) {
             for w in self.declared_work(f, d, p, vis) {
                 made = made.concat(self.materialized(f, w, p, vis))
@@ -365,9 +367,10 @@ impl Workspace {
         mut made: List<DeclId> = []
         for t in parts.traits {
             if !self.names_trait(p, vis, t) { continue }
-            // the derive FIRST: `delegate`'s crossing must see the member's impl
-            let tr = self.named_arg(p, vis, t)!
-            made = made.concat(self.derived_members(f, parts.kind, parts.scope, tr, t))
+            // each member's file is expanded FIRST: `delegate`'s crossing must see the member's impl
+            for m in self.decls.gathered_into(parts.kind, parts.scope, f) {
+                if !same_file(m.file, f) { let _ = self.expanded(m.file) }
+            }
             made = made
                 .concat(
                     self
@@ -377,18 +380,38 @@ impl Workspace {
         made
     }
 
-    /// Every gathered member with no `impl T` of its own, DERIVED: the
-    /// trait's associated `derive` over the member's record, exactly as
-    /// a written `@derive(T)` on it would run. A member that writes its
-    /// own impl is left to it.
-    fn derived_members(f: FileId, kind: CollectKind, scope: CollectScope, tr: DeclId, t: ExprId) -> List<
-        DeclId,
-    > {
-        let derive? = self.decls.trait_derive(tr) else { return [] }
-        let tr_name = self.decls.decl(tr).name
-        flatten(
-            [self.derived_member(m, derive, t) for m in self.decls.gathered_into(kind, scope, f) if !self.implemented_by(m).contains(tr_name)],
-        )
+    /// A gathered member's derived impls: for each `collect enum E: T`
+    /// gathering it with no `impl T` of its own, the trait's associated
+    /// `derive` over the member's record, exactly as a written `@derive(T)`
+    /// on it would run. They are made in the MEMBER's own expansion, so
+    /// the arena they mint into is complete before that file's tables are
+    /// sized.
+    fn derived_for(gatherers: List<Decl>, d: DeclId) -> List<DeclId> {
+        let m = self.decls.decl(d)
+        flatten([self.derived_by(e, m) for e in gatherers])
+    }
+
+    /// One enum's derivations of one member.
+    fn derived_by(e: Decl, m: Decl) -> List<DeclId> {
+        let pe = self.parsed(e.file)
+        let parts? = pe.store.collect_enum_parts(self.written_stmt(e.file, e.id)) else { return [] }
+        if parts.traits.is_empty() || self.decls.meta_disagreement() != null { return [] }
+        if !self.decls.gathered_into(parts.kind, parts.scope, e.file).any(same_decl(it.id, m.id)) { return [] }
+        let vis = self.visible(e.file)
+        mut made: List<DeclId> = []
+        for t in parts.traits {
+            let derive? = self.deriving(pe, vis, t, m) else { continue }
+            made = made.concat(self.derived_member(m, derive, t))
+        }
+        made
+    }
+
+    /// The `derive` that fills `m`'s missing `impl` of the trait `t`
+    /// names, when the trait declares one.
+    fn deriving(pe: Parsed, vis: Namespace, t: ExprId, m: Decl) -> DeclId? {
+        let tr? = self.named_arg(pe, vis, t) else { return null }
+        if !self.decls.is_trait(tr) || self.implemented_by(m).contains(self.decls.decl(tr).name) { return null }
+        self.decls.trait_derive(tr)
     }
 
     /// One member's derived impl, materialized in the member's OWN file
