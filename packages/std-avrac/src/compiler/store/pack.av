@@ -245,7 +245,8 @@ fn trim(path: string, len: int) {
     if len >= 0 { let _ = truncate_to(path, len) }
 }
 
-/// Every record in one segment, after its PLAIN header, folded into the pack.
+/// Every record in one segment, after its PLAIN header, folded into the pack —
+/// answers whether the segment is this compiler's, the only kind a seal may retire.
 /// A torn frame ends this segment; a foreign header drops it whole. The
 /// header is not framed: a store's own print must be readable, and forgeable,
 /// before any frame is trusted.
@@ -256,39 +257,40 @@ fn scan_segment(
     alive: bool,
     claims: Cell<Map<string, Claim>>,
     writer: string,
-) {
-    if raw.length == 0 { return }
+) -> bool {
+    if raw.length == 0 { return false }
     let r = reader(raw)
     let magic? = ok(r.text()) else {
         torn_at(pack, 0)
         if !alive { trim(path, 0) }
-        return
+        return false
     }
     let version? = ok(r.int()) else {
         torn_at(pack, 0)
         if !alive { trim(path, 0) }
-        return
+        return false
     }
     let print? = ok(r.text()) else {
         torn_at(pack, 0)
         if !alive { trim(path, 0) }
-        return
+        return false
     }
     if magic != MAGIC || version != FORMAT_VERSION || print != pack.print {
         pack.foreign.set(true)
         if traced() { qtrace("Q\tstore\tforeign\n") }
-        return
+        return false
     }
     while !r.done() {
         let before = r.at.get()
         let body? = read_frame(r) else {
             torn_at(pack, before)
             if !alive { trim(path, before) }
-            return
+            return true
         }
         applied(pack, body, claims, writer)
         pack.frames.set(pack.frames.get() + 1)
     }
+    true
 }
 
 export fn torn_at(pack: Pack, at: int) {
@@ -385,6 +387,7 @@ fn segments(dir: string) -> List<string> {
 fn admit(pack: Pack) {
     if pack.lock_fd.get() < 0 && !locked(pack) { return }
     if seal(pack) {
+        if traced() { qtrace("Q\tstore\tsealed\t${pack.rev.get()}\t${pack.records.get().length}\n") }
         retire(pack)
         keep_bodies(pack)
         emptied(pack)
@@ -455,8 +458,9 @@ fn opened_at(pack: Pack, read_only: bool) {
             let at = joined_path(pack.dir, name)
             // LICENSED input.store_io: a segment's own bytes, read to merge it
             let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-            scan_segment(pack, at, raw, writer_alive(name), claims, name)
-            pack.folded.set(pack.folded.get().concat([name]))
+            if scan_segment(pack, at, raw, writer_alive(name), claims, name) {
+                pack.folded.set(pack.folded.get().concat([name]))
+            }
         }
     }
     if !read_only && !pack.admitted.get() {
