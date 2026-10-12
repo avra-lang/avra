@@ -1,8 +1,12 @@
 //! `@derive(Identity)` — A NODE'S CONTENT IDENTITY, read off the node
-//! model: a tag, the type's name, the variant's INDEX, then one folded
-//! value per payload. Spans never participate, so reformatting never
-//! changes an identity, and two nodes with the same content wear the
-//! same number however far apart they sit in the arena.
+//! model: a tag, the type's name, then one folded value per payload.
+//! Spans never participate, so reformatting never changes an identity,
+//! and two nodes with the same content wear the same number however
+//! far apart they sit in the arena.
+//!
+//! EACH NODE RECORD DERIVES ITS OWN `identity`: a `collect enum E:
+//! Identity` implements the trait over its members and reaches the
+//! member's impl, so no arm per variant is written here.
 //!
 //! IT IS NOT `Fingerprint`, AND THE DIFFERENCE IS NOT COSMETIC.
 //! `Fingerprint` folds a VALUE's own fields. A node's payloads are
@@ -10,16 +14,13 @@
 //! POSITION, and two structurally identical subtrees would wear
 //! different identities, which is the one thing a fingerprint must
 //! never do. A node's identity is only meaningful THROUGH its arena,
-//! so this generates `impl SyntaxArena` and an id payload reaches its
-//! answer through the store's memoized column.
+//! so `identity` takes the arena and an id payload reaches its answer
+//! through the store's memoized column.
 //!
 //! THE FOLD ITSELF IS `Fingerprint`'S, CALLED AND NEVER COPIED.
-//! `parted_at` writes the tag, folds the type's name at derive time
-//! and pins the variant's index — one fold, one literal tag, in the
-//! one file `make fingerprints` can read it in. What THIS derive owns
-//! is the row per payload TYPE; a second copy of
-//! the fold would be two tags for one space, which is the collision
-//! the keeper exists to refuse.
+//! `parted` writes the tag and folds the type's name at derive time —
+//! one fold, one literal tag, in the one file `make fingerprints` can
+//! read it in. What THIS derive owns is the row per payload TYPE.
 //!
 //! A PARTS LIST IS FIXED ARITY. Every variable-length payload folds
 //! through `fp_list` to ONE value before it stands in a parts list, so
@@ -27,10 +28,12 @@
 //! sequence.
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, Arms, name}
+use @std.meta.{Type as MetaType, Declared, Directive, Code}
 
 /// The compiler's derive for a node's content identity.
 export trait Identity {
+    fn identity(arena: SyntaxArena) -> int
+
     static fn derive(t: MetaType) -> List<Directive> {
         [
             Directive {
@@ -38,73 +41,14 @@ export trait Identity {
                 name: t.name,
                 at: t.at,
                 source: quote {
-            impl SyntaxArena {
-                fn ${fold_of(t.name)}(node: ${t}) -> int {
-                    match node { ${[ident_arm(t, v, j) for j, v in t.variants]} }
-                }
-            }
-        },
+                    impl Identity for ${t} {
+                        fn identity(arena: SyntaxArena) -> int { ${folding(t, identity_of)} }
+                    }
+                },
             },
         ]
     }
-
-    /// The words this derive reads off a variant — none: a node's
-    /// payloads say everything it folds.
-    static fn marks(t: MetaType) -> List<string> { [] }
 }
 
-/// One variant's arm. Its INDEX pins the arity, so two variants of one
-/// type cannot fold alike however their payloads line up.
-fn ident_arm(t: MetaType, v: MetaVariant, at: int) -> Arms {
-    if v.fields.is_empty() { return quote { .${v} -> ${folded_parts(t, v, at)} } }
-    quote { .${v}(${binders(v)}) -> ${folded_parts(t, v, at)} }
-}
-
-/// The fold: the type's name, the variant's place, then its payloads.
-/// A `BodyView`'s EXPANSION folds to nothing (`view_fp`), so a node
-/// wears one identity either side of its own expansion.
-fn folded_parts(t: MetaType, v: MetaVariant, at: int) -> Code {
-    parted_at(t.name, at, [part(f) for f in v.fields])
-}
-
-/// HOW A PAYLOAD'S TYPE FOLDS — the whole registry, one row per shape
-/// the node model spells. A type absent here is a payload the model
-/// does not carry, and its arm is a defect the build refuses at the
-/// generated code rather than a silent zero.
-fn part(f: Field) -> Code {
-    let b = name(f.name)
-    match f.ty {
-        "ExprId" -> quote { self.expr_fingerprint(${b}) },
-        "ExprId?" -> quote { self.opt_fp(${b}) },
-        "List<ExprId>" -> quote { fp_list(self.expr_fps(${b})) },
-        "List<StmtId>" -> quote { fp_list(self.stmt_fps(${b})) },
-        "List<Arm>" -> quote { fp_list(self.arm_fps(${b})) },
-        "List<CompClause>" -> quote { fp_list(self.comp_clause_fps(${b})) },
-        "List<Param>" -> quote { fp_list(self.param_fps(${b})) },
-        "List<Variant>" -> quote { fp_list(self.variant_fps(${b})) },
-        "List<Case>" -> quote { fp_list(self.case_fps(${b})) },
-        "string" -> quote { fp_str(${b}) },
-        "List<string>" -> quote { fp_list(str_fps(${b})) },
-        "int" -> b,
-        "bool" -> quote { flagged(${b}) },
-        "BinOp" -> quote { fp_binop(${b}) },
-        "Scoped" or "Plain" or "Nominal" -> quote { fp_str(${b}.of) },
-        "Scoped?" or "Plain?" or "Nominal?" -> quote { fp_str(${b}?.of ?? "") },
-        "List<Plain>" -> quote { fp_list(plain_fps(${b})) },
-        "List<Scoped>" -> quote { fp_list(scoped_fps(${b})) },
-        "TypeRef" or "TypeRef?" -> quote { type_fp(${b}) },
-        "List<TypeRef>" -> quote { fp_list([type_fp(each) for each in ${b}]) },
-        "BodyView" -> quote { self.view_fp(${b}) },
-        "CollectKind" -> quote { collectkind_fp(${b}) },
-        "CollectScope" -> quote { collectscope_fp(${b}) },
-        "Projection" -> quote { projection_fp(${b}) },
-        _ -> quote { a_payload_type_the_identity_derive_has_no_row_for() },
-    }
-}
-
-/// The fold's name for a node arena — the node model's two, named
-/// once, as the child walk names them.
-fn fold_of(owner: string) -> string {
-    if owner == "Expr" { return "fingerprint_expr" }
-    "fingerprint_stmt"
-}
+/// A named payload folds by its own `identity`.
+fn identity_of(e: Code) -> Code { quote { ${e}.identity(arena) } }
