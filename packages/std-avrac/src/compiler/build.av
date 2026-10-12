@@ -529,13 +529,27 @@ impl Workspace {
     /// kept binary that linked them is still the one these bytes would
     /// produce.
     fn program_key(named: string, beside: List<string>) -> string {
+        let at = self.noop_at(named, beside)
+        let said? = self.noop_said(at, named) else {
+            let objects = self.reached_objects(named)
+            let digests = [digest_of_binary(o) ?? "-" for o in objects]
+            let key = self.folded_key(named, beside, objects, digests)
+            self.noop_keep(at, named, key, objects, digests)
+            return key
+        }
+        said
+    }
+
+    /// `program_key`'s fold, over the inputs as the door holds them and the
+    /// objects as read.
+    fn folded_key(named: string, beside: List<string>, objects: List<string>, digests: List<string>) -> string {
         let named_inputs = self.source_inputs(named).concat(beside)
         let inputs = joined(
             [self.input_line(f) for f in named_inputs]
                 .concat([self.embed_line(f) for f in self.embeds(named_inputs)]),
             "\n",
         )
-        let objects = joined([self.object_line(o) for o in self.reached_objects(named)], "\n")
+        let sealed = joined(["${relative_path(self.root, o)}\t${digests[i]}" for i, o in objects], "\n")
         digest_key(
             digest_text(
                 digest_text(
@@ -545,7 +559,7 @@ impl Workspace {
                     ),
                     inputs,
                 ),
-                objects,
+                sealed,
             ),
         )
     }
@@ -571,11 +585,6 @@ impl Workspace {
         let m = read_manifest(new_source_file(path, self.listed_text(path)))
         [joined_path(root, o) for o in self.filled_words(m.objects)]
     }
-
-    /// An object's path paired with its CURRENT bytes' digest, read fresh —
-    /// `digest_of_binary`, never `text_digest`: an object is bytes, not text,
-    /// and nothing here keeps a memo across the one key this answers.
-    fn object_line(path: string) -> string { "${relative_path(self.root, path)}\t${digest_of_binary(path) ?? "-"}" }
 
     /// A file's text as one digest, through its Text input: kept per read
     /// of that input, so a turn that reads the file again digests the text

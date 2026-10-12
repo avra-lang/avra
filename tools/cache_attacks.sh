@@ -426,7 +426,63 @@ fi
 
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
-    echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
+    # THE NO-OP ROW: a check of unchanged inputs answers from one record, and any input
+# that moved — a file added, deleted, renamed, edited, a dependency's, a variable, the
+# compiler itself — is read as moved. Each step wants the row's verdict (hit: answered
+# from the row; miss: folded afresh) AND the check's own answer, so a row that
+# answered stale would be a green where a refusal stands.
+nr=$R/nr
+mkdir -p $nr/src $R/nrlib/src
+cat > $R/nrlib/avra.toml <<'TOML'
+[package]
+name = "@rt/nrlib"
+version = "0.1.0"
+
+[lib]
+name = "nrlib"
+path = "src/lib.av"
+TOML
+printf 'export fn dep() -> int { 4 }\n' > $R/nrlib/src/lib.av
+cat > $nr/avra.toml <<'TOML'
+[package]
+name = "nr"
+version = "0.1.0"
+
+[dependencies]
+"@rt/nrlib" = { path = "../nrlib" }
+TOML
+printf 'export fn helper() -> int { 1 }\n' > $nr/src/helper.av
+printf 'export fn spare() -> int { 2 }\n' > $nr/src/spare.av
+printf 'use helper.{helper}\nuse @rt.nrlib.{dep}\nprintln("${helper() + dep()}")\n' > $nr/src/main.av
+N() { # N <label> <want: hit|miss> <check: green|red> [compiler]
+    steps=$((steps+1)); out=$(AVRA_CWD=$PWD AVRA_QTRACE=1 ${4:-./avra} check $nr 2>&1); st=$?
+    got=miss; printf '%s\n' "$out" | grep -q "^Q.noop.hit" && got=hit
+    ans=green; [ "$st" -ne 0 ] && ans=red
+    if [ "$got" = "$2" ] && [ "$ans" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [nr] -> $got/$ans"; else fails=$((fails+1)); echo "FAIL  $1 [nr] wanted $2/$3, got $got/$ans"; fi
+}
+N "cold" miss green; N "no-op" hit green
+touch $nr/src/helper.av;                                   N "touch with no change" hit green
+printf 'export fn broken( {\n' > $nr/src/added.av;       N "a file added to a covered directory" miss red
+rm $nr/src/added.av;                                       N "and removed again" miss green; N "no-op after" hit green
+cp $nr/src/spare.av $R/nr.spare; rm $nr/src/spare.av;      N "a file deleted" miss green
+cp $R/nr.spare $nr/src/spare.av;                           N "and restored" miss green
+ed $nr/src/helper.av "{ 1 }" "{ 1 + }";                    N "a file edited" miss red
+ed $nr/src/helper.av "{ 1 + }" "{ 1 }";                    N "and back" miss green
+mv $nr/src/helper.av $nr/src/helped.av;                    N "a file renamed" miss red
+mv $nr/src/helped.av $nr/src/helper.av;                    N "and back" miss green; N "no-op again" hit green
+ed $R/nrlib/src/lib.av "{ 4 }" "{ 4 + }";                  N "a dependency's file edited" miss red
+ed $R/nrlib/src/lib.av "{ 4 + }" "{ 4 }";                  N "and back" miss green
+printf 'export fn broken( {\n' > $R/nrlib/src/added.av;   N "a file added to a dependency's directory" miss red
+rm $R/nrlib/src/added.av;                                  N "and removed" miss green; N "no-op last" hit green
+cp build/avra build/avra.nr; strip -x build/avra.nr -o build/avra.nr2 2>/dev/null && { codesign -f -s - build/avra.nr2 2>/dev/null || true; }
+[ -x build/avra.nr2 ] && N "the same source under a compiler of other bytes" miss green build/avra.nr2
+rm -f build/avra.nr build/avra.nr2
+cp $nr/avra.toml $R/nr.toml; printf '\n[link]\nflags = ["-L${NR_FLIP}"]\n' >> $nr/avra.toml
+NR_FLIP=/a N "a variable a manifest names, set" miss green; NR_FLIP=/a N "and unchanged" hit green
+NR_FLIP=/b N "and flipped" miss green
+cp $R/nr.toml $nr/avra.toml
+
+echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
     [ "$fails" -eq 0 ]; exit $?
 fi
 S "cold a" a; S "b after a (shared leaf, other bodies + other instantiation)" b

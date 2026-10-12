@@ -1,0 +1,84 @@
+//! THE NO-OP ROW: a program's key, remembered with every leaf it was
+//! folded from. A key is a pure function of the compiler, the closure, what
+//! the door's cells read and the objects' bytes, so a row that re-reads
+//! each leaf and finds it as it was answers the key without folding
+//! anything. The leaves ARE the door's names (`input_names`): a read the
+//! key gains through the door is listed with no edit here. Any leaf that
+//! differs, or a row never written, is the full fold, which writes the row.
+use core.{joined, qtrace, traced}
+use @std.path.{joined_path}
+use compiler.host.{InputName, InputKind}
+use compiler.store.{Stored, node_key}
+
+impl Workspace {
+    /// Where a program's row stands: under the compiler that made it, and
+    /// the root, entry and extra inputs it was asked for.
+    fn noop_at(named: string, beside: List<string>) -> string {
+        node_key(Stored.Unit, ["noop", self.root, named, joined(beside, "\t"), self.compiler_id()])
+    }
+
+    /// The key a row answers, when the toolchain root, the closure and every
+    /// leaf still read as the row recorded them.
+    fn noop_said(at: string, named: string) -> string? {
+        if self.keys.noop_stale.get().has(at) { return null }
+        let rows = (self.opened_store().get(Stored.Unit, at) ?? "").split("\n")
+        let head? = rows.first() else {
+            self.noop_heard("none")
+            return null
+        }
+        if !head.starts_with("K\t") {
+            self.noop_heard("none")
+            return null
+        }
+        let closure = [r for r in rows if r.starts_with("P\t")]
+        let held = joined(closure, "\n") == joined(["P\t${c}" for c in self.closure(named)], "\n")
+        if !held || rows.drop(1).any((r) -> !self.noop_holds(r)) {
+            self.keys.noop_stale.put(at, true)
+            self.noop_heard("stale")
+            return null
+        }
+        self.noop_heard("hit")
+        joined(head.split("\t").drop(1), "\t")
+    }
+
+    /// What the row said, for the trace.
+    fn noop_heard(verdict: string) {
+        if traced() { qtrace("Q\tnoop\t${verdict}\n") }
+    }
+
+    /// Whether one leaf of a row reads as recorded: asked of the host itself,
+    /// never of a cell.
+    fn noop_holds(line: string) -> bool {
+        let f = line.split("\t")
+        match f[0] {
+            "I" -> self.noop_input(f) == f[2],
+            "O" -> (digest_of_binary(joined(f.drop(2), "\t")) ?? "-") == f[1],
+            "R" -> joined(f.drop(1), "\t") == (self.host.std_root ?? ""),
+            "P" -> true,
+            _ -> false,
+        }
+    }
+
+    /// An input line's name asked of the world now: its digest.
+    fn noop_input(f: List<string>) -> string? {
+        let kind? = kind_read(f[1]) else { return null }
+        self.asked(InputName { kind: kind, key: joined(f.drop(3), "\t") }).input().digest.key
+    }
+
+    /// The row for a key just folded: the toolchain root, the closure, every
+    /// leaf the door holds (its cell's digest, so a file that moved since
+    /// it was read cannot be recorded as it now is) and the objects as
+    /// folded.
+    fn noop_keep(at: string, named: string, key: string, objects: List<string>, digests: List<string>) {
+        let leaves = [n for n in self.input_names.get() if keys_the_program(n.kind)]
+        let row = joined(
+            ["K\t${key}", "R\t${self.host.std_root ?? ""}"]
+                .concat(["P\t${c}" for c in self.closure(named)])
+                .concat(["I\t${kind_word(n.kind)}\t${self.input(n).input().digest.key}\t${n.key}" for n in leaves])
+                .concat(["O\t${d}\t${objects[i]}" for i, d in digests]),
+            "\n",
+        )
+        let store = self.opened_store()
+        if store.get(Stored.Unit, at) != row { let _ = store.keep(Stored.Unit, at, row, []) }
+    }
+}
