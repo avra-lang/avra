@@ -2,7 +2,7 @@
 // marker; a later open reads what committed; a segment whose plain header
 // names another compiler's print is foreign and read not at all.
 use @std.time.{now_ns}
-use @std.io.{list_dir, remove, write_bytes}
+use @std.io.{list_dir, remove, read_bytes, write_bytes}
 use @std.path.{joined_path}
 use compiler.store.{pack_at, pack_put, pack_has, pack_get, seal, val_path}
 
@@ -24,9 +24,12 @@ fn damaged_root(name: string) -> string {
     for file in pack_files(root) {
         if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
     }
-    let _ = write_bytes(val_path("${root}/store", writer.rev.get()), "X".bytes())
+    let _ = write_bytes(val_path("${root}/store", writer.val_rev.get()), "X".bytes())
     root
 }
+
+/// The store's segment files.
+fn segments_of(root: string) -> List<string> { [f for f in pack_files(root) if f.starts_with("seg-")] }
 
 spec "store/pack — segments, commit markers, the two tiers" {
     given "a row written to one writer's segment" {
@@ -73,6 +76,48 @@ spec "store/pack — segments, commit markers, the two tiers" {
             fresh.rev.get() > 0 &&
                 pack_has(fresh, "unit", "k") &&
                 pack_get(fresh, "unit", "k") == "v"
+        }
+    }
+    given "two writers' segments for one key" {
+        then "the later write stands, whichever file merges last" {
+            let root = pack_root("order")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "old", [])
+            for f in segments_of(root) {
+                let at = joined_path("${root}/store", f)
+                let _ = write_bytes(
+                    joined_path("${root}/store", "seg-99999999-moved.log"),
+                    read_bytes(at) catch "".bytes(),
+                )
+                let _ = remove(at)
+            }
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "new", [])
+            pack_get(pack_at(root, "print-one"), "unit", "k") == "new"
+        }
+    }
+    given "one process holding two compiler prints" {
+        then "each print reads its own rows and no other's" {
+            let root = pack_root("prints")
+            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "one", [])
+            let _ = pack_put(pack_at(root, "print-two"), "unit", "k", "two", [])
+            pack_get(pack_at(root, "print-one"), "unit", "k") == "one" &&
+                pack_get(pack_at(root, "print-two"), "unit", "k") == "two"
+        }
+    }
+    given "a seal over a view older than the newest body" {
+        then "is refused, and the rows of the body it missed still read" {
+            let root = pack_root("older")
+            let stale = pack_at(root, "print-one")
+            let _ = pack_has(stale, "unit", "absent")
+            let sealer = pack_at(root, "print-one")
+            let _ = pack_put(sealer, "unit", "first", "1", [])
+            let _ = seal(sealer)
+            for f in segments_of(root) { let _ = remove(joined_path("${root}/store", f)) }
+            let _ = pack_put(stale, "unit", "second", "2", [])
+            let refused = !seal(stale)
+            let fresh = pack_at(root, "print-one")
+            refused &&
+                pack_get(fresh, "unit", "first") == "1" &&
+                pack_get(fresh, "unit", "second") == "2"
         }
     }
 }

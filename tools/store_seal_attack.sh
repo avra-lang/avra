@@ -43,13 +43,14 @@ open(path, 'wb').write(bytes(data))
 PY
 }
 newest() { ls .avra-cache/store/body-*.pack | sort -t- -k2 -n | tail -1; }
+newest_val() { ls .avra-cache/store/body-*.val | sort -t- -k2 -n | tail -1; }
 
 ./avra check $R/big > $R/big.out 2>&1 || fail "the big cold check did not pass"
 [ "$(bodies)" -ge 1 ] || fail "a big cold check sealed no body past SEAL_FRAMES"
 before="$(bodies)"
 ./avra check $R/big > $R/big2.out 2>&1
 [ "$(bodies)" = "$before" ] || fail "a warm check sealed another body: a seal ran without a write"
-[ -f "$(newest | sed 's/\.pack$/.val/')" ] || fail "the sealed body has no .val beside its .pack"
+[ -f "$(newest_val)" ] || fail "the sealed body has no .val beside its .pack"
 
 run_big() {
     AVRA_QTRACE=1 ./avra build $R/big > $R/$1.bin 2> $R/$1.err
@@ -82,7 +83,7 @@ AVRA_STORE_SEAL_FRAMES=1 ./avra build $R/big > /dev/null 2>&1
 seal_all
 rm -f .avra-cache/store/seg-*.log
 cp -R .avra-cache/store $R/store.sealed
-val="$(newest | sed 's/\.pack$/.val/')"
+val="$(newest_val)"
 flip "$val" all
 run_big torn_val
 [ "$(tail -1 $R/torn_val.out)" = "$WANT" ] || fail "a damaged value changed the answer to '$(tail -1 $R/torn_val.out)'"

@@ -9,7 +9,7 @@
 //!
 //! `body-<rev>.idx` is §6.1's S4 lookup: a 256-entry fan-out over the action
 //! keys' first byte, the keys sorted, and a parallel offset per key.
-use @std.io.{read_bytes, write_bytes, list_dir}
+use @std.io.{read_bytes, write_bytes, append_bytes, list_dir, open_beneath, remove}
 use @std.path.{joined_path}
 use @std.relation.stable.{writer, reader, Writer}
 use @std.relation.engine.{list_cell, map_cell}
@@ -19,7 +19,7 @@ use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
 const IDX_MAGIC: string = "AVRABIDX"
-const BODY_VERSION: int = 1
+const BODY_VERSION: int = 2
 
 /// §6.1's families, in one fixed order so a body's bytes are deterministic.
 const FAMILIES: List<string> = ["sig", "fp", "unit", "warn", "rows"]
@@ -36,11 +36,15 @@ export fn val_name(rev: int) -> string { "body-${rev}.val" }
 /// The path its value bytes stand at.
 export fn val_path(dir: string, rev: int) -> string { joined_path(dir, val_name(rev)) }
 
-/// One value's place in its body's `.val`: its digest, offset and length.
+/// One value's place in the `.val` its body names: its offset and length.
 export type ValueSlot = { at: int, len: int }
 
-/// A value laid end to end in a body's `.val`, with its place.
-type Placed = { digest: string, at: int, len: int, data: Bytes }
+/// A referenced value and its place in the `.val` the new body will name.
+type Placed = { digest: string, at: int, len: int }
+
+/// A value file is rewritten whole once more than this many bytes of it, past twice
+/// what the store references, are garbage — so values are appended, never recopied.
+const VAL_SLACK: int = 1048576
 
 fn is_body(name: string) -> bool { name.starts_with("body-") && name.ends_with(".pack") }
 
@@ -100,23 +104,107 @@ fn framed(payload: Bytes) -> Bytes {
 
 // ── Sealing ──
 
-/// Fold this pack's index into one `body-<rev>.pack` + `.idx`. False when
-/// there is nothing to seal or the seal cannot be written; the caller then
+/// Fold this pack's index into one `body-<rev>.pack` + `.idx`. The values it
+/// references are APPENDED to the value file the last body named, never recopied;
+/// the file is rewritten whole only when garbage outgrows what is referenced. False
+/// when there is nothing to seal or the seal cannot be written; the caller then
 /// leaves the segments as the store.
 export fn seal(pack: Pack) -> bool {
+    if newest_rev(pack.dir) > pack.seen_rev.get() { return false }
     let keys = sorted_by([k for k in pack.records.get().keys() if !withdrawn(pack, k)], text_before)
     if keys.is_empty() { return false }
     let rev = newest_rev(pack.dir) + 1
-    let placed = placed_values(all_content(pack).get())
-    let payload = body_payload(pack, keys, rev, placed)
+    let digests = referenced_digests(pack, keys)
+    let size = val_size(pack.dir, pack.val_rev.get())
+    let standing = standing_slots(pack, digests)
+    let fresh = [d for d in digests if !pack.slots.get().has(d) && value_of(pack, d) != null]
+    let live = sum_of([p.len for p in standing]) +
+        sum_of([(value_of(pack, d) ?? "").bytes().length for d in fresh])
+    let rewrite = pack.val_rev.get() < 1 || size > 2 * live + VAL_SLACK
+    let val_rev = if rewrite { rev } else { pack.val_rev.get() }
+    let laid = if rewrite { digests } else { fresh }
+    let path = val_path(pack.dir, val_rev)
+    if rewrite { let _ = remove(path) }
+    let placed? = lay(pack, path, laid, if rewrite { 0 } else { size }) else { return false }
+    let slots = if rewrite { placed } else { standing.concat(placed) }
+    let payload = body_payload(pack, keys, rev, val_rev, slots)
     let idx = idx_payload(action_keys(pack, keys), rev)
-    let values = [p.data for p in placed].bytes()
-    if !wrote(val_path(pack.dir, rev), values) { return false }
     if !wrote(idx_path(pack.dir, rev), idx) { return false }
     if !wrote(body_path(pack.dir, rev), framed(payload)) { return false }
     pack.rev.set(rev)
-    for p in placed { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
+    pack.seen_rev.set(rev)
+    pack.val_rev.set(val_rev)
+    pack.slots.set({})
+    for p in slots { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
+    pack.content.set({})
     true
+}
+
+/// The places the open value file already holds for these digests.
+fn standing_slots(pack: Pack, digests: List<string>) -> List<Placed> {
+    mut out: List<Placed> = []
+    for d in digests {
+        let s? = pack.slots.get().get(d) else { continue }
+        out.push(Placed { digest: d, at: s.at, len: s.len })
+    }
+    out
+}
+
+/// The distinct digests the live rows name, in digest order.
+fn referenced_digests(pack: Pack, keys: List<string>) -> List<string> {
+    mut seen: Map<string, bool> = {}
+    for k in keys {
+        let h? = record_of(pack, k) else { continue }
+        seen.set(h.digest, true)
+    }
+    sorted_by(seen.keys(), text_before)
+}
+
+/// A value's octets are written this many at a time, so a rewrite never holds the
+/// whole value file twice.
+const LAY_BATCH: int = 8388608
+
+/// The values laid end to end in `path` from offset `from`, each with its place;
+/// nothing when a write fails.
+fn lay(pack: Pack, path: string, laid: List<string>, from: int) -> List<Placed>? {
+    mut placed: List<Placed> = []
+    mut batch: List<Bytes> = []
+    mut held = 0
+    mut at = from
+    for d in laid {
+        let value? = value_of(pack, d) else { continue }
+        let bytes = value.bytes()
+        placed.push(Placed { digest: d, at: at, len: bytes.length })
+        batch.push(bytes)
+        held = held + bytes.length
+        at = at + bytes.length
+        if held >= LAY_BATCH {
+            if !appended_to(path, batch.bytes()) { return null }
+            batch = []
+            held = 0
+        }
+    }
+    if !appended_to(path, batch.bytes()) { return null }
+    placed
+}
+
+fn sum_of(xs: List<int>) -> int { xs.fold(0, (a, b) -> a + b) }
+
+/// A value file's size in octets, 0 when it does not stand.
+fn val_size(dir: string, rev: int) -> int {
+    match open_beneath(dir, val_name(rev)) {
+        .Ok(o) -> {
+            let n = o.size
+            o.close()
+            n
+        },
+        .Err(_) -> 0,
+    }
+}
+
+fn appended_to(at: string, bytes: Bytes) -> bool {
+    if bytes.length == 0 { return true }
+    match append_bytes(at, bytes) { .Ok(_) -> true, .Err(_) -> false }
 }
 
 /// The sealed keys of rows, sorted: each row's action key, the index's currency.
@@ -129,38 +217,12 @@ fn action_keys(pack: Pack, keys: List<string>) -> List<string> {
     sorted_by(out, text_before)
 }
 
-/// Every value the store holds, in memory or in a sealed body.
-fn all_content(pack: Pack) -> Cell<Map<string, string>> {
-    let all: Cell<Map<string, string>> = map_cell()
-    for d, v in pack.content.get() { all.put(d, v) }
-    for d in pack.slots.get().keys() {
-        if !all.get().has(d) {
-            let v? = spilled(pack, d) else { continue }
-            all.put(d, v)
-        }
-    }
-    all
-}
-
-/// The values in digest order, each at the offset the one before it ends.
-fn placed_values(values: Map<string, string>) -> List<Placed> {
-    mut at = 0
-    mut out: List<Placed> = []
-    for d in sorted_by(values.keys(), text_before) {
-        let v? = values.get(d) else { continue }
-        let data = v.bytes()
-        out = out.concat([Placed { digest: d, at: at, len: data.length, data: data }])
-        at = at + data.length
-    }
-    out
-}
-
 fn wrote(at: string, bytes: Bytes) -> bool {
     match write_bytes(at, bytes) { .Ok(_) -> true, .Err(_) -> false }
 }
 
 /// The body's bytes: header · names · sets · content · per-family meta.
-fn body_payload(pack: Pack, keys: List<string>, rev: int, placed: List<Placed>) -> Bytes {
+fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: List<Placed>) -> Bytes {
     let n = names()
     let s = sets()
     for k in keys {
@@ -175,6 +237,7 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, placed: List<Placed>) 
     w.text(BODY_MAGIC)
     w.int(BODY_VERSION)
     w.int(rev)
+    w.int(val_rev)
     w.text(pack.print)
     w.octets(n.encode())
     w.octets(s.encode())
@@ -289,6 +352,7 @@ fn body_read(pack: Pack, payload: Bytes) -> bool {
     let version? = ok(r.int()) else { return false }
     if version != BODY_VERSION { return false }
     let rev? = ok(r.int()) else { return false }
+    let val_rev? = ok(r.int()) else { return false }
     let print? = ok(r.text()) else { return false }
     if print != pack.print {
         pack.foreign.set(true)
@@ -316,7 +380,7 @@ fn body_read(pack: Pack, payload: Bytes) -> bool {
             let sid? = ok(r.int()) else { return false }
             let _changed? = ok(r.int()) else { return false }
             let _verified? = ok(r.int()) else { return false }
-            rows.push(Held { family: fam, key: key, digest: digest, read: [], set: sid })
+            rows.push(Held { family: fam, key: key, digest: digest, read: [], set: sid, stamp: 0 })
         }
     }
     if !r.done() { return false }
@@ -326,5 +390,38 @@ fn body_read(pack: Pack, payload: Bytes) -> bool {
     pack.tables.set([])
     for h in rows { pack.records.put(record_key(h.family, h.key), h) }
     pack.rev.set(rev)
+    pack.val_rev.set(val_rev)
     true
+}
+
+/// A sealed body's header past its frame: the value revision it names and the
+/// compiler print it was made under — none when the body cannot be read.
+type BodyHead = { val_rev: int, print: string }
+
+fn head_of(dir: string, name: string) -> BodyHead? {
+    let raw = match read_bytes(joined_path(dir, name)) { .Ok(b) -> b, .Err(_) -> { return null } }
+    let payload? = read_frame(reader(raw)) else { return null }
+    let r = reader(payload)
+    let _magic? = ok(r.text()) else { return null }
+    let _version? = ok(r.int()) else { return null }
+    let _rev? = ok(r.int()) else { return null }
+    let val_rev? = ok(r.int()) else { return null }
+    let print? = ok(r.text()) else { return null }
+    BodyHead { val_rev: val_rev, print: print }
+}
+
+fn body_print_of(dir: string, name: string) -> string? { head_of(dir, name)?.print }
+
+/// Value files no standing body names are removed; a value file is shared by the
+/// bodies appended to it and goes with the last of them.
+export fn drop_unreferenced_values(dir: string) {
+    // LICENSED input.store_io: the store's own files, listed to drop what no body names
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    let named = [head_of(dir, n)?.val_rev for n in names if is_body(n)]
+    let wanted = [v! for v in named if v != null]
+    for n in names {
+        if !(n.starts_with("body-") && n.ends_with(".val")) { continue }
+        let rev = parse_int(n.substring(5, n.length - 4)) ?? 0 - 1
+        if !wanted.contains(rev) { let _ = remove(joined_path(dir, n)) }
+    }
 }

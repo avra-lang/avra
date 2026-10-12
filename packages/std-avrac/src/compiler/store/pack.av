@@ -28,8 +28,9 @@ use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
 use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
-use core.{digest_of_octets}
+use core.{digest_of_octets, sorted_by}
 use core.debug.{qtrace, traced}
+use @std.time.{now_ns}
 
 extern fn avra_pid_alive(pid: int) -> int
 extern fn avra_own_pid() -> int
@@ -37,10 +38,13 @@ extern fn avra_process_exit(code: int)
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 
 const MAGIC: string = "AVRAPACK"
-const FORMAT_VERSION: int = 1
+const FORMAT_VERSION: int = 2
 
 const CONTENT_TAG: int = 1
 const ACTION_TAG: int = 2
+
+/// Sealed bodies kept besides the newest: the time-travel window `explain` reads.
+const KEPT_BODIES: int = 2
 
 /// Frames in live segments before a writer seals them into a body.
 const SEAL_FRAMES: int = 32
@@ -64,12 +68,15 @@ const FAMILY_STAMP: string = ""
 /// ONE ROW: the family and key it answers, the digest of its value and the
 /// keys it read — listed here, or, for a row a sealed body carries, the id of
 /// its read set in that body's tables (`set` is -1 when `read` is the list).
+/// `stamp` is when its writer appended it (0 for a sealed row): of two segment
+/// frames for one key the later stands, whatever order the files merge in.
 export type Held = {
     family: string,
     key: string,
     digest: string,
     read: List<string>,
     set: int,
+    stamp: int,
 }
 
 /// A sealed body's names and read sets, decoded the first time a read set is asked.
@@ -111,6 +118,11 @@ export type Pack = {
     /// this process appended.
     frames: Cell<int>,
     rev: Cell<int>,
+    /// The revision of the value file the open body names: bodies share one.
+    val_rev: Cell<int>,
+    /// The newest body revision that stood when this pack opened: a seal over an
+    /// older view would drop the rows of whoever sealed since.
+    seen_rev: Cell<int>,
     lock_fd: Cell<int>,
 }
 
@@ -135,6 +147,8 @@ export fn pack_at(root: string, print: string) -> Pack {
         folded: list_cell(),
         frames: Cell.new(0),
         rev: Cell.new(0),
+        val_rev: Cell.new(0),
+        seen_rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
     }
 }
@@ -179,12 +193,13 @@ fn content_body(digest: string, value: string) -> Bytes {
     w.bytes()
 }
 
-fn action_body(family: string, key: string, digest: string, read: List<string>) -> Bytes {
+fn action_body(family: string, key: string, digest: string, read: List<string>, stamp: int) -> Bytes {
     let w = writer()
     w.int(ACTION_TAG)
     w.text(family)
     w.text(key)
     w.text(digest)
+    w.int(stamp)
     written_list(w, read, wrote_text)
     w.bytes()
 }
@@ -217,7 +232,9 @@ export fn read_frame(r: Reader) -> Bytes? {
 /// Whether the process that owns a segment still runs — a torn tail in a
 /// LIVE writer's file is a frame still arriving, never a tail to trim.
 fn writer_alive(name: string) -> bool {
-    let pid = parse_int(name.substring(4, name.length - 4)) ?? 0
+    let rest = name.substring(4, name.length - 4)
+    let dash = rest.index_of("-")
+    let pid = parse_int(if dash < 0 { rest } else { rest.substring(0, dash) }) ?? 0
     // LICENSED input.live_process: a segment's writer is asked whether it still runs
     avra_pid_alive(pid) == 1
 }
@@ -293,8 +310,9 @@ fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, Claim>>, writer: st
         let family? = ok(r.text()) else { return }
         let key? = ok(r.text()) else { return }
         let digest? = ok(r.text()) else { return }
+        let stamp? = ok(r.int()) else { return }
         let read? = ok(read_list(r, (q) -> q.text())) else { return }
-        claimed(pack, claims, writer, family, key, digest, read)
+        claimed(pack, claims, writer, family, key, digest, read, stamp)
     }
 }
 
@@ -308,6 +326,7 @@ fn claimed(
     key: string,
     digest: string,
     read: List<string>,
+    stamp: int,
 ) {
     let at = record_key(family, key)
     let prior = claims.get().get(at)
@@ -322,17 +341,31 @@ fn claimed(
         }
     }
     claims.put(at, Claim { digest: digest, writer: writer })
-    pack.records.put(at, Held { family: family, key: key, digest: digest, read: read, set: 0 - 1 })
+    let standing = pack.records.get().get(at)
+    if standing != null && standing!.stamp > stamp { return }
+    pack
+        .records
+        .put(
+            at,
+            Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp },
+        )
 }
 
 /// A record folded in without a claim: this process's own writes are the only
 /// claim on its own segment, so no cross-writer comparison applies.
-export fn held(pack: Pack, family: string, key: string, digest: string, read: List<string>) {
+export fn held(
+    pack: Pack,
+    family: string,
+    key: string,
+    digest: string,
+    read: List<string>,
+    stamp: int,
+) {
     pack
         .records
         .put(
             record_key(family, key),
-            Held { family: family, key: key, digest: digest, read: read, set: 0 - 1 },
+            Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp },
         )
 }
 
@@ -416,6 +449,7 @@ fn opened_at(pack: Pack, read_only: bool) {
         pack.opened.set(true)
         if traced() { qtrace("Q\tstore\topen\t${pack.dir}\n") }
         body_scan(pack)
+        pack.seen_rev.set(newest_rev(pack.dir))
         let claims: Cell<Map<string, Claim>> = map_cell()
         for name in segments(pack.dir) {
             let at = joined_path(pack.dir, name)
@@ -448,32 +482,20 @@ fn retire(pack: Pack) {
 fn keep_bodies(pack: Pack) {
     // LICENSED input.debug_flag: the time-travel window's size, never an input of what is built
     let raw = env("AVRA_STORE_REVISIONS")
-    let n = if raw == null { 10 } else { parse_int(raw!) ?? 10 }
+    let n = if raw == null { KEPT_BODIES } else { parse_int(raw!) ?? KEPT_BODIES }
     if n < 1 { return }
-    mut count = all_body_names(pack.dir).length
-    while count > n {
-        let oldest = oldest_body(pack.dir)
-        if oldest == "" { return }
-        let _ = remove(joined_path(pack.dir, oldest))
-        let stem = oldest.substring(0, oldest.length - 5)
-        let _ = remove(joined_path(pack.dir, "${stem}.idx"))
-        let _ = remove(joined_path(pack.dir, "${stem}.val"))
-        count = count - 1
+    let mine = sorted_by(
+        [name for name in all_body_names(pack.dir) if body_print_of(pack.dir, name) == pack.print],
+        rev_before,
+    )
+    for name in mine.slice(0, if mine.length > n { mine.length - n } else { 0 }) {
+        let _ = remove(joined_path(pack.dir, name))
+        let _ = remove(joined_path(pack.dir, "${name.substring(0, name.length - 5)}.idx"))
     }
+    drop_unreferenced_values(pack.dir)
 }
 
-fn oldest_body(dir: string) -> string {
-    mut oldest = ""
-    mut best = 1000000
-    for name in all_body_names(dir) {
-        let rev = body_rev_of(name)
-        if rev < best {
-            best = rev
-            oldest = name
-        }
-    }
-    oldest
-}
+fn rev_before(a: string, b: string) -> bool { body_rev_of(a) < body_rev_of(b) }
 
 // ── Reading and writing ──
 
@@ -489,6 +511,13 @@ export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = fa
     if withdrawn(pack, at) { return null }
     let held? = pack.records.get().get(at) else { return null }
     content_of(pack, held.digest)
+}
+
+/// A value by its digest without keeping it: held in memory, else read from the
+/// sealed body.
+fn value_of(pack: Pack, digest: string) -> string? {
+    let here? = pack.content.get().get(digest) else { return spilled(pack, digest) }
+    here
 }
 
 /// A value by its digest: held in memory, else read from the sealed body and
@@ -507,7 +536,7 @@ fn content_of(pack: Pack, digest: string) -> string? {
 fn spilled(pack: Pack, digest: string) -> string? {
     let slot? = pack.slots.get().get(digest) else { return null }
     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
-    let o = match open_beneath(pack.dir, val_name(pack.rev.get())) {
+    let o = match open_beneath(pack.dir, val_name(pack.val_rev.get())) {
         .Ok(o) -> o,
         .Err(_) -> { return null },
     }
@@ -528,9 +557,15 @@ export fn pack_forget(pack: Pack, family: string, key: string) {
     pack.withdrawn.put(record_key(family, key), true)
 }
 
-/// The segment this process owns.
+/// The segment this process owns for this compiler's print: one file a print, so a process
+/// that holds two prints never writes one header into the middle of the other's frames.
 // LICENSED input.live_process: this writer's own pid names its segment
-fn writer_segment(pack: Pack) -> string { joined_path(pack.dir, "seg-${avra_own_pid()}.log") }
+fn writer_segment(pack: Pack) -> string {
+    joined_path(
+        pack.dir,
+        "seg-${avra_own_pid()}-${digest_of_octets(pack.print.bytes()).substring(0, 8)}.log",
+    )
+}
 
 fn append(pack: Pack, body: Bytes) {
     let _ = make_dirs(pack.dir)
@@ -561,7 +596,8 @@ export fn pack_put(pack: Pack, family: string, key: string, value: string, read:
         append(pack, content_body(digest, value))
         pack.content.put(digest, value)
     }
-    append(pack, action_body(family, key, digest, read))
-    held(pack, family, key, digest, read)
+    let stamp = now_ns()
+    append(pack, action_body(family, key, digest, read, stamp))
+    held(pack, family, key, digest, read, stamp)
     settled(pack)
 }
