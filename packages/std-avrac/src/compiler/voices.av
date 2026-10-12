@@ -73,6 +73,8 @@ use @std.testing.{words}
 use @std.relation.{query}
 use @std.relation.db.{Db as RelDb}
 use compiler.store.{Store, Stored}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
 use compiler.lower.{Unit, code_facts_wire}
 
 // ── voices ──
@@ -728,15 +730,14 @@ fn file_lexes_block(ws: Workspace, path: string) -> bool {
 /// answer standing leaves the reader standing.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn file_declares_component(ws: Workspace, path: string) -> bool {
-    scan_flag(
-        ws
-            .relation(Family.ComponentScan)
-            .demand(
-                ws.text_key(path),
-                () -> DbRow.Flag(declares_a_component(ws.listed_text(path))),
-                flag_print,
-            ),
-    )
+    declares_component_text(ws.decls.rows_db.get(), ws.listed_text(path))
+}
+
+/// The scan of one file's text: a durable answer keyed by the text itself,
+/// so an unchanged file is a saved hit in every process.
+@query
+fn declares_component_text(_db: RelDb, text: string) -> bool {
+    declares_a_component(text)
 }
 
 fn declares_a_component(text: string) -> bool {
