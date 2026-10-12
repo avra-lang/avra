@@ -44,7 +44,8 @@ void avra_tasks_push(void* owner, void* task);
 
 // The task's answer, owned — parking the caller until it is done. A
 // cancel of the caller cuts the park: the unwind bit is set and NULL
-// comes back. A task that ended cancelled has no answer, and its
+// comes back — whatever the task did meanwhile, an unwinding caller is
+// handed nothing. A task that ended cancelled has no answer, and its
 // cancel is the caller's: cancelled by the same asker, the bit set,
 // NULL back. Under a shield, where a deferred call runs whole, it traps.
 void* avra_task_join(void* task);

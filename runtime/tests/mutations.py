@@ -73,7 +73,7 @@ MUTATIONS = [
     ("the evaluator's set does not raise the bit", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { (void)t; (void)v; }"),
     ("the shield's enter is its leave", "void avra_fiber_shield_enter(void) { shield_entered(g_current, &avra_unwinding); }", "void avra_fiber_shield_enter(void) { shield_left(g_current, &avra_unwinding); }"),
     ("a join answers a cancelled task", "        cancel_met();\n        return NULL;\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];", "        cancel_met();\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];"),
-    ("an unwinding caller's join of a cancelled task takes on its request", "        if (avra_unwinding) return NULL;\n        if (g_current->shield_depth) join_refused();", "        if (g_current->shield_depth) join_refused();"),
+    ("an unwinding caller's join is handed an answer, or another's request", "    if (avra_unwinding) return NULL;\n    if (cells[TASK_END] == END_CANCELLED) {", "    if (cells[TASK_END] == END_CANCELLED) {"),
     ("a shielded join of a cancelled task passes its cancel on", "        if (g_current->shield_depth) join_refused();\n", ""),
     ("a join of a cancelled task cancels nobody", "        cancel_passed(g_current, cells[TASK_BY]);\n        cancel_met();", "        cancel_met();"),
     ("a join of a cancelled task sets no bit", "        cancel_passed(g_current, cells[TASK_BY]);\n        cancel_met();", "        cancel_passed(g_current, cells[TASK_BY]);"),

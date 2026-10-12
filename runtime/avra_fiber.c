@@ -1974,15 +1974,15 @@ static void join_refused(void) { avra_trap("a join takes a task that answers, an
 // the park, the bit the after-call test reads is set, and no answer is
 // handed back. A TASK THAT ENDED CANCELLED HAS NO ANSWER, AND ITS
 // CANCEL IS ITS AWAITER'S: the caller is cancelled by the same asker
-// and unwinds from here. A caller already unwinding carries its own
-// request, and takes on no other. UNDER A SHIELD A DEFERRED CALL RUNS
-// WHOLE: nothing may cut it, and there is no answer for it to go on
-// with, so there the join refuses.
+// and unwinds from here. A CALLER UNWINDING WHEN THE WAIT RETURNS TAKES
+// NO ANSWER, however the task ended: nothing is retained for a caller
+// that leaves, and it takes on no request but its own. UNDER A SHIELD
+// A DEFERRED CALL RUNS WHOLE: nothing may cut it, and there is no
+// answer for it to go on with, so there the join refuses.
 void* avra_task_join(void* task) {
     int64_t* cells = task_awaited(task, 0);
-    if (!cells[GATE_OPEN]) return NULL;
+    if (avra_unwinding) return NULL;
     if (cells[TASK_END] == END_CANCELLED) {
-        if (avra_unwinding) return NULL;
         if (g_current->shield_depth) join_refused();
         cancel_passed(g_current, cells[TASK_BY]);
         cancel_met();

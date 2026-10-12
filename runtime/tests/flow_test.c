@@ -684,6 +684,34 @@ static void scope_unwinding_join_of_cancelled(void) {
     avra_clock_run_ends();
 }
 
+// A CALLER ITS OWN CANCEL CUT TAKES NO ANSWER, though the task answered
+// before the caller ran again: nothing is retained for it to drop.
+static void* joins_and_keeps_nothing(void* self) {
+    (void)self;
+    g_byte_a = avra_task_join(g_pending) == NULL;
+    g_byte_b = avra_unwinding;
+    return answer(0);
+}
+
+static void cut_join_of_an_answered_task(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    int64_t live = avra_mem_live();
+    g_pending = avra_task_pending();
+    void* joiner = spawn1(joins_and_keeps_nothing, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(joiner);
+    void* unit = answer(7);
+    avra_task_answer(g_pending, unit);
+    avra_rc_release(unit);
+    CHECK(ended(joiner) == 2 && g_byte_b == 1, "a join its caller's cancel cut ends the caller cancelled");
+    CHECK(g_byte_a == 1, "and hands it no answer, though the task answered meanwhile");
+    avra_rc_release(g_pending);
+    CHECK(avra_mem_live() == live, "so nothing it never read is left behind");
+    avra_clock_run_ends();
+}
+
 // UNDER A SHIELD A DEFERRED CALL RUNS WHOLE: nothing may cut it, and
 // the join has no answer for it to go on with, so the join refuses.
 static void shielded_join_of_cancelled(void) {
@@ -2795,6 +2823,7 @@ int main(int argc, char** argv) {
     in_child("a join of a cancelled task nothing ran", joins_cancelled);
     on_virtual_clock("a passed cancel keeps a standing request", passed_cancel_keeps_a_standing_request);
     on_virtual_clock("a join of a cancelled task under a scope's unwind", scope_unwinding_join_of_cancelled);
+    on_virtual_clock("a cut join of a task that answered meanwhile", cut_join_of_an_answered_task);
     trapped("a shielded join of a cancelled task", shielded_join_of_cancelled, "a join takes a task that answers, and this one was cancelled");
     in_child("a run's end, in words", a_run_end_in_words);
     said_within("a cancelled run", main_awaits_a_cancelled, "avra: main was cancelled — awaiting a task cancelled by task ", 60, 1);
