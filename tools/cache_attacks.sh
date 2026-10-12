@@ -442,6 +442,19 @@ sl_touch; sl_got=$(sl_held)
 steps=$((steps+1)); case "$sl_got" in *false*) [ -n "${VERBOSE:-}" ] && echo "ok    sl: the new site gone, the hold given up" ;; *) fails=$((fails+1)); echo "FAIL  sl: a record whose only sealer left a read file stayed boxed under the hold (attempts: '$sl_got')" ;; esac
 S "sl: the new sealing site removed" sl
 steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || { fails=$((fails+1)); echo "FAIL  sl: after the site left, the program printed '$($R/sl/src/main 2>&1)', wanted '13'"; }
+# the held sealer's FILE deleted: nothing held seals the record any more
+printf 'use rec.{Cnt}\nexport fn bump(mut c: Cnt) { c.n = c.n + 1 }\nimpl Cnt {\n    mut fn up() { self.n = self.n + 10 }\n}\n' > $R/sl/src/own/s.av
+printf 'use rec.{Cnt}\nuse own.{bump}\nexport fn total() -> int {\n    mut c = Cnt { n: 1 }\n    bump(c)\n    c.up()\n    c.n\n}\n' > $R/sl/src/use/u.av
+sl_touch
+S "sl: the sealer restored" sl
+sl_touch; sl_got=$(sl_held)
+steps=$((steps+1)); case "$sl_got" in *false*) fails=$((fails+1)); echo "FAIL  sl: the restored held seal gave up the hold (attempts: '$sl_got')" ;; esac
+rm $R/sl/src/own/s.av
+printf 'use rec.{Cnt}\nexport fn total() -> int {\n    let c = Cnt { n: 1 }\n    c.n + 12\n}\n' > $R/sl/src/use/u.av
+sl_touch; sl_got=$(sl_held)
+steps=$((steps+1)); case "$sl_got" in *false*) [ -n "${VERBOSE:-}" ] && echo "ok    sl: the sealing file deleted, the hold given up" ;; *) fails=$((fails+1)); echo "FAIL  sl: a record whose held sealer's file was deleted stayed boxed under the hold (attempts: '$sl_got')" ;; esac
+S "sl: the sealing file deleted" sl
+steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || { fails=$((fails+1)); echo "FAIL  sl: after the file left, the program printed '$($R/sl/src/main 2>&1)', wanted '13'"; }
 
 fi
 
