@@ -200,7 +200,8 @@ impl Workspace {
     /// package of one: every name it was given is a file of it,
     /// whatever the name.
     fn all_files(dir: string) -> List<string> {
-        self.all_files_under(dir, [])
+        mut walked: Map<string, List<string>> = {}
+        self.all_files_under(dir, [], walked)
     }
 
     /// `all_files`'s walk, refusing a directory already on its own way
@@ -212,20 +213,25 @@ impl Workspace {
     /// into. `seen` is the walk's own path down, never the whole tree —
     /// two ordinary sibling directories share no ancestor and never
     /// collide here.
-    fn all_files_under(dir: string, seen: List<string>) -> List<string> {
+    fn all_files_under(dir: string, seen: List<string>, mut walked: Map<string, List<string>>) -> List<
+        string,
+    > {
         let here = normalized(dir)
         if seen.contains(here) { return [] }
+        let known = walked.get(here)
+        if known != null { return known! }
         let below = seen.concat([here])
         mut out: List<string> = []
         for e in self.listing(dir) ?? [] {
             let full = joined_path(dir, e.name)
             if e.dir {
                 // a directory of programs holds only its own files
-                if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files_under(full, below)) }
+                if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files_under(full, below, walked)) }
             } else if self.listed_source(dir, e.name) {
                 out.push(full)
             }
         }
+        walked.set(here, out)
         out
     }
 
@@ -308,9 +314,10 @@ impl Workspace {
                 .concat(self.engine_sources(joined_path(tree, "runtime")))
         }
         let manifests = [joined_path(at[1], "avra.toml") for at in covered if at.length > 1 && self.there(joined_path(at[1], "avra.toml"))]
-        sorted_texts(
-            flatten([self.all_files(at[0]) for at in covered]).concat(manifests).concat(engine),
-        )
+        mut walked: Map<string, List<string>> = {}
+        mut sources: List<string> = []
+        for at in covered { sources = sources.concat(self.all_files_under(at[0], [], walked)) }
+        sorted_texts(sources.concat(manifests).concat(engine))
     }
 
     /// A module's WRITTEN exported declarations, in file and declaration
