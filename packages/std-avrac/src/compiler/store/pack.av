@@ -79,6 +79,11 @@ export type Held = {
     stamp: int,
 }
 
+/// A row whose read list is spelled out, as a segment frame or a write carries it.
+fn listed_row(family: string, key: string, digest: string, read: List<string>, stamp: int) -> Held {
+    Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp }
+}
+
 /// A sealed body's names and read sets, decoded the first time a read set is asked.
 export type Tables = { names: Names, sets: Sets }
 
@@ -345,12 +350,7 @@ fn claimed(
     claims.put(at, Claim { digest: digest, writer: writer })
     let standing = pack.records.get().get(at)
     if standing != null && standing!.stamp > stamp { return }
-    pack
-        .records
-        .put(
-            at,
-            Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp },
-        )
+    pack.records.put(at, listed_row(family, key, digest, read, stamp))
 }
 
 /// A record folded in without a claim: this process's own writes are the only
@@ -363,12 +363,7 @@ export fn held(
     read: List<string>,
     stamp: int,
 ) {
-    pack
-        .records
-        .put(
-            record_key(family, key),
-            Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp },
-        )
+    pack.records.put(record_key(family, key), listed_row(family, key, digest, read, stamp))
 }
 
 fn is_segment(name: string) -> bool {
@@ -540,6 +535,7 @@ fn content_of(pack: Pack, digest: string) -> string? {
 fn spilled(pack: Pack, digest: string) -> string? {
     let slot? = pack.slots.get().get(digest) else { return null }
     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
+    // LICENSED input.store_io: the store's own value file, seeked for one value
     let o = match open_beneath(pack.dir, val_name(pack.val_rev.get())) {
         .Ok(o) -> o,
         .Err(_) -> { return null },
@@ -565,10 +561,9 @@ export fn pack_forget(pack: Pack, family: string, key: string) {
 /// that holds two prints never writes one header into the middle of the other's frames.
 // LICENSED input.live_process: this writer's own pid names its segment
 fn writer_segment(pack: Pack) -> string {
-    joined_path(
-        pack.dir,
-        "seg-${avra_own_pid()}-${digest_of_octets(pack.print.bytes()).substring(0, 8)}.log",
-    )
+    // LICENSED input.live_process: this writer's own pid names its segment
+    let name = "seg-${avra_own_pid()}-${digest_of_octets(pack.print.bytes()).substring(0, 8)}.log"
+    joined_path(pack.dir, name)
 }
 
 fn append(pack: Pack, body: Bytes) {
@@ -600,6 +595,7 @@ export fn pack_put(pack: Pack, family: string, key: string, value: string, read:
         append(pack, content_body(digest, value))
         pack.content.put(digest, value)
     }
+    // LICENSED input.store_clock: orders two writers' frames for one key, never an input of what is built
     let stamp = now_ns()
     append(pack, action_body(family, key, digest, read, stamp))
     held(pack, family, key, digest, read, stamp)
