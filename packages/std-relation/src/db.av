@@ -396,13 +396,14 @@ impl Db {
     /// The name a reader's token stands for.
     fn reader(token: int) -> string { "a query (reader ${token})" }
 
-    /// A write the law refuses, told to whoever hears.
     /// A read of this Db while a query is open: refused when this Db was made before the
-    /// outermost open query, since then it is another query's input, not this query's scratch.
+    /// outermost open query and no query body runs under it as its seat, since then it is
+    /// another query's input, not this query's own or its scratch.
     fn check_read(relation: string) {
-        if foreign_since(self.born) { self.refuse(foreign_read(relation)) }
+        if self.asking.get() == 0 && foreign_since(self.born) { self.refuse(foreign_read(relation)) }
     }
 
+    /// A write the law refuses, told to whoever hears.
     fn refuse(words: string) {
         let heard = self.hears.get()
         heard(words)
