@@ -634,6 +634,74 @@ analyze and lower); at 67–75 ns a read that bounds to
 0.11 s of the edit. The read-cost budget is not a fix for today's slowness. It bounds DB
 12: as 32 families become queries, a recorded read must stay cheap.
 
+**DB 00d — the discarded attempt, MEASURED.** On the warm tree (`80581424`, the
+`linux-x86-64-amd-epyc` Sprite, `.avra-cache` warm), one body edit of
+`packages/cli/src/commands/shared.av` prints, under `check packages/cli --time`:
+
+```
+time: ast 9266ms, sublang 1199ms, ..., held 492/498, attempt 0, discarded 1, refused 0,
+      load 14243ms, admit 16ms, analyze 393ms, lower 8083ms, keep 1410ms
+  discarded: 11908ms — ast 8745ms, sublang 1047ms, load 11908ms — next reads 389 more (...)
+```
+
+The turn is `unruled` (derive.av): 389 reads are added, 385 `Unkept` from `lead_reads`
+(#468's const-verdict pre-reads) and 4 `Unruled` — `cli/src/commands/{explain,repr,run,writes}.av`,
+held files whose kept rule findings no longer stand. It is the 4 that turn the attempt;
+the 385 were already read.
+
+WHY, in one sentence: a body edit to `shared.av` moves a compile-time read token
+(`key_parts.runs`), so the four siblings that read it hold a key that no longer has its
+`rules` row — and that move is only knowable AFTER `settle_holds`/`unruled` resolve the
+pending reads, which parse ~144 files (`load`, ast ~8.7 s). The next attempt then
+repeats exactly that resolution, so the attempt is paid in full. The trace is
+`AVRA_QTRACE=1`'s `Q attempt 0 ... reading 0` then `Q attempt 1 ... reading 389`.
+
+Eliminated, each measured:
+- MOVE `read_held_asks`/`read_held_codes` before `program` (DB 00d's documented
+  AsksUnread cause for std-avrac): cli `warm edit` 35.4–35.9 s -> 36.8–39.0 s, `discarded`
+  still 1. The cli turn is `unruled`, not an unread asks row.
+- PRE-READ every held file whose compile-time read text moved (extend `lead_reads`):
+  cli `warm edit` 53.1 s, `held 465/498` — a regression, because forcing the readers to be
+  read lowers their bodies; the discard's cost is `load`, not the four files.
+
+CONCLUSION: no minimal "validation before derivation" exists for this turn — the
+validation (`unruled`) REQUIRES the pending-read resolution that is the discarded work.
+The fix is DB 07's per-declaration keys: a rule-finding row keyed so a sibling body edit
+cannot move it. Until then every one-edit cli check pays the discarded attempt.
+
+**DB 00d, re-measured with a run-token trace** (`db07d-keys`, main `695c3fb2`, the same
+`linux-x86-64-amd-epyc` Sprite, warm store; instrument
+`tools/db_measure/why_trace.sh`, plus two temporary `qtrace` lines in `read_token` and
+`unruled`, not landed). One body edit of `packages/cli/src/commands/shared.av`:
+
+- `Q parse` 359 over 146 files; `held 492/498`, `attempt 0`, `discarded 1`, `load 6616ms`.
+- `unruled` returns exactly `cli/src/commands/{explain,repr,run,writes}.av`, and each is
+  `rules false findings false` — BOTH rule rows are absent at the key `unruled` asks.
+- `Q fd` (a declaration read whose target was held, so `read_token` fell back to
+  `run_said`'s whole-file digest) is EMPTY across the run.
+- every `Q pend` line resolves `now == was` with `outline=false`: the read declarations'
+  syntax did NOT move, so `syntax`'s declaration-grain early cutoff held.
+- a NO-EDIT warm check is clean: `Q parse 0`, `Q unruled 0`.
+
+So the discarded attempt is NOT a moved run token, which corrects this section's
+sentence above.
+
+**THE KEEP KEY AND THE JUDGE KEY ARE TWO SPELLINGS.** Printing `held_okey` and its parts
+in `file_said` (KEEP time) and in `unruled` (JUDGE time) for the four readers shows: the
+`seen` part is IDENTICAL, and the `runs` part differs ONLY by the pending marker — at
+KEEP time the moved-text reads are still `?<print>`, at JUDGE time they are resolved to
+`<print>` (e.g. explain.av KEEP `…,?386636497,?842891822,…`, JUDGE `…,386636497,842891822,…`).
+The rule rows were kept under the `?` key; the next build asks under the resolved key and
+finds nothing. `unruled` resolves before asking; `file_said` does not before keeping.
+
+AN ATTEMPTED FIX — call `resolve_pending_reads` in `file_said` before the key is used
+(this branch, `packages/std-avrac/src/compiler/derive.av`) — did NOT move the count
+(`Q parse` 359, `discarded 2`, `load 6606 ms`, `warm edit 20027 ms` against
+`359 / 20027 ms`), so the keep-side `?` spelling is not by itself the whole cause, and the
+fix is not landed. The next probe is to print the kept `rules_key` and the judged `okey`
+side by side and confirm whether the kept rows are reachable at all after the resolve,
+before spending DB 07 (a)/(d) on per-declaration keys.
+
 ### 7.3 Targets, and when each becomes reachable
 
 | scenario (`packages/cli`, cold process, no daemon) | gate | today |

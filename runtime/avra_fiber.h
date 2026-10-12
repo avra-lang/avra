@@ -53,6 +53,15 @@ int64_t avra_task_ended(void* task);
 // or the task's own id for an answer.
 int64_t avra_task_ended_by(void* task);
 
+// The unwind frames the running task has passed: each fn's cold exit
+// pushes one, sixteen are kept, and past that the middle is dropped and
+// counted. The program's own run begins the list at its first push.
+void avra_unwind_push(void* frame);
+int64_t avra_unwind_count(void);
+void* avra_unwind_at(int64_t i);
+// How many frames a full list has dropped: the landing's `at` says so.
+int64_t avra_unwind_dropped(void);
+
 // Every other ready task runs once before the caller resumes.
 void avra_fiber_yield(void);
 

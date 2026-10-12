@@ -248,7 +248,10 @@ struct Fiber {
 // answer it owns; the list and the fiber are C pointers in unowned
 // cells.
 enum { GATE_HEAD, GATE_TAIL, GATE_OPEN, GATE_CELLS };
-enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_CELLS };
+enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_FRAMES };
+// The unwind frames a task has passed: sixteen on the record, the
+// middle dropped and counted once they fill.
+enum { UNWIND_CAP = 16, TASK_FRAMES_N = TASK_FRAMES + UNWIND_CAP, TASK_DROPPED, TASK_CELLS };
 enum { END_LIVE, END_ANSWERED, END_CANCELLED };
 
 static int64_t* task_cells(void* task) { return ((AvraArray*)task)->data; }
@@ -1693,8 +1696,16 @@ static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
     if (TRACING) traced_waiter(f, w);
 }
 
-// A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set.
-static void cancel_met(void) { avra_unwinding = 1; }
+static void unwind_cleared(void);
+
+// A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set,
+// and the frames it had passed belong to no unwind — the new one's list
+// begins empty.
+static void cancel_met(void) {
+    if (avra_unwinding) return;
+    avra_unwinding = 1;
+    unwind_cleared();
+}
 
 // Whether the claim a task resumed on was a cancel's: `-1:0`.
 static int claimed_by_cancel(const Fiber* f) { return f->arm == -1 && f->member == 0; }
@@ -1794,8 +1805,57 @@ static void* task_made(Fiber* f, void* body) {
     avra_array_push(task, 0);
     avra_array_push(task, END_LIVE);
     avra_array_push(task, 0);
+    for (int i = TASK_FRAMES; i < TASK_CELLS; i++) avra_array_push(task, 0);
     return task;
 }
+
+// The frame list on a task's record, and the same layout for main's own.
+typedef struct { int64_t frames[UNWIND_CAP]; int64_t n; int64_t dropped; } Unwind;
+static Unwind g_main_unwind;
+
+// THE RECORD'S RESERVED CELLS ARE THE LIST'S OWN WORDS, and the names
+// `task_made` seeds between them sit where the struct lays them: a
+// reordered or resized Unwind is caught here, not by a lost frame.
+_Static_assert(TASK_FRAMES_N == TASK_FRAMES + (int64_t)(offsetof(Unwind, n) / sizeof(int64_t)),
+    "TASK_FRAMES_N names the frame count's cell");
+_Static_assert(TASK_DROPPED == TASK_FRAMES + (int64_t)(offsetof(Unwind, dropped) / sizeof(int64_t)),
+    "TASK_DROPPED names the drop count's cell");
+_Static_assert((int64_t)sizeof(Unwind) == (TASK_CELLS - TASK_FRAMES) * (int64_t)sizeof(int64_t),
+    "the task record's reserved cells are the Unwind's words");
+
+static Unwind* running_unwind(void) {
+    if (g_current->task) return (Unwind*)(task_cells(g_current->task) + TASK_FRAMES);
+    return &g_main_unwind;
+}
+
+static void unwind_cleared(void) { memset(running_unwind(), 0, sizeof(Unwind)); }
+
+// One frame the unwind passed: appended, or — full — the middle dropped
+// and counted, the newest kept in the last slot.
+void avra_unwind_push(void* frame) {
+    Unwind* held = running_unwind();
+    if (held->n < UNWIND_CAP) {
+        held->frames[held->n++] = (int64_t)(uintptr_t)frame;
+        return;
+    }
+    memmove(
+        &held->frames[UNWIND_CAP / 2],
+        &held->frames[UNWIND_CAP / 2 + 1],
+        (UNWIND_CAP / 2 - 1) * sizeof(int64_t));
+    held->frames[UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;
+    held->dropped = held->dropped + 1;
+}
+
+int64_t avra_unwind_count(void) { return running_unwind()->n; }
+
+void* avra_unwind_at(int64_t i) {
+    Unwind* held = running_unwind();
+    if (i < 0 || i >= held->n) return NULL;
+    return (void*)(uintptr_t)held->frames[i];
+}
+
+// How many frames a full list has dropped; the landing says so.
+int64_t avra_unwind_dropped(void) { return running_unwind()->dropped; }
 
 // Where every new fiber begins: run the body, keep its answer, wake
 // whoever waits on it, and hand the thread on for good.
