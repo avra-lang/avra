@@ -1,0 +1,89 @@
+//! `@derive(Makes)` — a flat node's MAKERS, read off the declaration. A
+//! variant whose every payload has a `Slots` accessor gets one fn that
+//! builds it from its labels and one `Maker` row naming that fn. A
+//! variant with a payload no accessor reads is not made; it keeps its
+//! own builder.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
+//! TYPES the file that declares it.
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, literal, name}
+
+/// The compiler's derive for a node enum's makers.
+export trait Makes {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+            export fn ${"makers_${t.name}"}() -> List<Maker> {
+                ${as_list_expr([maker_row(t, v) for v in t.variants.filter(makeable(it))])}
+            }
+        },
+            },
+        ]
+            .concat([made(t, v) for v in t.variants.filter(makeable(it))])
+    }
+}
+
+/// A variant is made when every payload is one a `Slots` accessor reads.
+fn makeable(v: MetaVariant) -> bool {
+    v.fields.all(known(it))
+}
+
+/// The payload types a `Slots` accessor reads.
+fn known(f: Field) -> bool {
+    ["ExprId", "string", "bool"].contains(f.ty)
+}
+
+/// The name of a variant's maker fn.
+fn made_name(t: MetaType, v: MetaVariant) -> string {
+    "make_${t.name}_${v.name}"
+}
+
+/// One variant's row in the registry.
+fn maker_row(t: MetaType, v: MetaVariant) -> Code {
+    quote { Maker { name: ${literal(v.name)}, make: ${name(made_name(t, v))} } }
+}
+
+/// One variant's maker fn: the variant built from its payloads' labels.
+fn made(t: MetaType, v: MetaVariant) -> Directive {
+    Directive {
+        twin: "",
+        name: t.name,
+        at: t.at,
+        source: quote {
+            fn ${made_name(t, v)}(s: dyn Slots) -> Result<${t}, string> {
+                ${construction(v)}
+            }
+        },
+    }
+}
+
+/// The variant's constructor, its payloads read by label.
+fn construction(v: MetaVariant) -> Code {
+    let args = [slot(f) for f in v.fields]
+    if args.is_empty() { return quote { .Ok(.${v}) } }
+    quote { .Ok(.${v}(${..args})) }
+}
+
+/// One payload's read: the `Slots` accessor its type names, by its label.
+fn slot(f: Field) -> Code {
+    match f.ty {
+        "ExprId" -> quote { s.expr_of(${literal(f.name)})? },
+        "string" -> quote { s.text_of(${literal(f.name)})? },
+        _ -> quote { s.flag_of(${literal(f.name)})? },
+    }
+}
+
+/// The parts as ONE list expression — each part an element, folded.
+fn as_list_expr(parts: List<Code>) -> Code {
+    if parts.is_empty() { return quote { [] } }
+    mut all = quote { [${parts[0]}] }
+    for p in parts.slice(1, parts.length) {
+        let sofar = all
+        all = quote { ${sofar}.concat([${p}]) }
+    }
+    all
+}
