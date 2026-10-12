@@ -681,6 +681,16 @@ impl Workspace {
     /// `const<index>`, so a prefix match resolves index 12 to index 1 and
     /// holds the reader on the wrong declaration.
     fn decl_for_body(f: FileId, name: string) -> DeclId? {
+        let at = "${f.index}\t${self.decls.decls_of_file(f).length}\t${name}"
+        let known: int? = self.hold.body_decls.get().get(at)
+        if known != null { return if known! < 0 { null } else { DeclId { index: known! } } }
+        let found = self.decl_for_body_scanned(f, name)
+        self.hold.body_decls.put(at, found?.index ?? 0 - 1)
+        found
+    }
+
+    /// The scan behind `decl_for_body`, run once per file size and name.
+    fn decl_for_body_scanned(f: FileId, name: string) -> DeclId? {
         if name.ends_with("\$w") { return self.decl_for_body(f, name.split("\$w")[0]) }
         let by_symbol = [d for d in self.decls.decls_of_file(f) if self.decls.symbol(d) == name]
             .first()
