@@ -1788,7 +1788,7 @@ impl Workspace {
         }
     }
 
-    /// Whether the file has ANY Declares annotation, or a component
+    /// Whether the file has ANY Declares annotation, a `collect enum: T`, or a component
     /// with a body — derived as if it wore one — the parse-level
     /// prefilter that keeps the two-tier second look off the common
     /// path: a file with no generator never demands `expanded` (and
@@ -1798,8 +1798,15 @@ impl Workspace {
         declaring_stmts(p)
             .any(
                 (s: StmtId) -> !p.store.annotations_of(s).is_empty() ||
-                    p.store.component_body(s) != null,
+                    p.store.component_body(s) != null ||
+                    self.gathers_traits(p, s),
             )
+    }
+
+    /// Whether a statement is a `collect enum E: T` — its impls are
+    /// made by the expansion though nothing is annotated.
+    fn gathers_traits(p: Parsed, s: StmtId) -> bool {
+        !(p.store.collect_enum_parts(s)?.traits ?? []).is_empty()
     }
 
     /// Whether any declaration carries a MARK — the same prefilter for
