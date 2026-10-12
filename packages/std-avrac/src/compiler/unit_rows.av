@@ -38,7 +38,15 @@ impl Workspace {
         let s? = self.store.get() else { return }
         let at? = self.row_place(s, w) else { return }
         let facts = code_facts(self.decls, out.bodies, out.statics, out.hashes)
-        self.row_lives(at.path, UnitRow { key: at.key, wants: self.wanted_list_wire(out.wants), facts: code_facts_wire(facts) })
+        self
+            .row_lives(
+                at.path,
+                UnitRow {
+                    key: at.key,
+                    wants: self.wanted_list_wire(out.wants),
+                    facts: code_facts_wire(facts),
+                },
+            )
         self.hold.rows_fresh.put(at.path, true)
     }
 
@@ -49,7 +57,13 @@ impl Workspace {
         for path, _fresh in self.hold.rows_fresh.get() {
             let surface? = self.surface_of(s, self.file_id(path)) else { continue }
             let live = self.hold.rows_live.get().get(path) ?? []
-            let _ = s.keep(Stored.Unit, rows_key(path, surface), "R1" + fields_wire(flatten([[r.key, r.wants, r.facts] for r in live])), [])
+            let _ = s
+                .keep(
+                    Stored.Unit,
+                    rows_key(path, surface),
+                    "R1" + fields_wire(flatten([[r.key, r.wants, r.facts] for r in live])),
+                    [],
+                )
         }
     }
 
@@ -62,7 +76,11 @@ impl Workspace {
         let x = self.decls.decl(d)
         if !plain_unit(x.kind) || x.external || self.is_held(x.file) { return null }
         let surface? = self.unit_surface(s, x.file) else { return null }
-        RowPlace { path: self.decls.file(x.file).path, surface: surface, key: "${self.decl_ref(d)}\t${self.syntax(d)}" }
+        RowPlace {
+            path: self.decls.file(x.file).path,
+            surface: surface,
+            key: "${self.decl_ref(d)}\t${self.syntax(d)}",
+        }
     }
 
     /// A file's kept rows by key, read once for the derivation.
@@ -103,7 +121,14 @@ impl Workspace {
     /// unless it is a plain body, which a unit answers for.
     fn surface_fp(d: DeclId) -> int {
         let x = self.decls.decl(d)
-        fp(315, [fp_str(self.decl_ref(d)), fp_str(self.record_shape(x)), if plain_unit(x.kind) { 0 } else { self.syntax(d) }])
+        fp(
+            315,
+            [
+                fp_str(self.decl_ref(d)),
+                fp_str(self.record_shape(x)),
+                if plain_unit(x.kind) { 0 } else { self.syntax(d) },
+            ],
+        )
     }
 }
 
@@ -121,7 +146,11 @@ fn rows_of(raw: string) -> Map<string, UnitRow> {
     let fields? = r.fields() else { return out }
     if fields.length % 3 != 0 { return out }
     for i in 0..fields.length / 3 {
-        out.set(fields[3 * i], UnitRow { key: fields[3 * i], wants: fields[3 * i + 1], facts: fields[3 * i + 2] })
+        out
+            .set(
+                fields[3 * i],
+                UnitRow { key: fields[3 * i], wants: fields[3 * i + 1], facts: fields[3 * i + 2] },
+            )
     }
     out
 }
