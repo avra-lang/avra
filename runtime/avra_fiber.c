@@ -176,10 +176,12 @@ struct Waiter {
 typedef struct Over Over;
 struct Over { Waiter w; Over* next; };
 
-// A `within`'s scope on its task: its id, its limit in ns, and the scope
+// A `within`'s scope on its task: its id, its limit in ns, the scope
 // with the earliest limit of it and every scope outside it — the outer
-// one on a tie — so a window's owner is read, never searched for.
-typedef struct { int64_t id, at; uint32_t first; } Scope;
+// one on a tie — so a window's owner is read, never searched for, and
+// whether it is a SHIELD SCOPE: one opened while a `defer` ran shielded,
+// whose own limit alone cuts a wait under it.
+typedef struct { int64_t id, at; uint32_t first; uint8_t shield; } Scope;
 enum { SCOPES = 4 };
 
 enum { HELD = 4 };
@@ -213,6 +215,8 @@ struct Fiber {
     uint8_t timed_out;      // whether the last legacy park ended by time
     uint8_t interrupted;    // whether the last descriptor park ended by an interrupt
     uint8_t unwinding;      // the unwind bit while switched out (`avra_unwinding` while running)
+    uint8_t shield_depth;   // `defer`s running under a shield: calls are not cut between them
+    uint8_t shield_saved;   // the unwind bit the outermost shield bracket saved
     uint8_t wide;           // a case's own task: it runs on the wide stack
     int32_t arm, member;    // the claim
     uint32_t held_n;
@@ -244,7 +248,10 @@ struct Fiber {
 // answer it owns; the list and the fiber are C pointers in unowned
 // cells.
 enum { GATE_HEAD, GATE_TAIL, GATE_OPEN, GATE_CELLS };
-enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_CELLS };
+enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_FRAMES };
+// The unwind frames a task has passed: sixteen on the record, the
+// middle dropped and counted once they fill.
+enum { UNWIND_CAP = 16, TASK_FRAMES_N = TASK_FRAMES + UNWIND_CAP, TASK_DROPPED, TASK_CELLS };
 enum { END_LIVE, END_ANSWERED, END_CANCELLED };
 
 static int64_t* task_cells(void* task) { return ((AvraArray*)task)->data; }
@@ -983,7 +990,7 @@ static int64_t within_opened(Fiber* f, int64_t ms) {
         uint32_t outer = scope_at(f, i - 1)->first;
         if (scope_at(f, outer)->at <= at) first = outer;
     }
-    *scope_at(f, i) = (Scope){ id, at, first };
+    *scope_at(f, i) = (Scope){ id, at, first, f->shield_depth > 0 };
     f->scopes_n = i + 1;
     // A STANDING DEADLINE ARMS THE SOURCE: a task that never waits files
     // no timer, so the tick must fire for the cold side to see it.
@@ -1041,7 +1048,9 @@ static void traced_dropped(const Fiber* f, int64_t scope, int64_t standing) {
 // outside it may still ask — the next of them is filed at once.
 static void deadline_reached(Fiber* f) {
     int64_t id = scope_at(f, f->owner)->id;
-    if (f->cancel_by != 0) {
+    // a SHIELD SCOPE's limit stands under a task cancel: it is the time
+    // the cleanup wrote, and the only thing that may cut its wait
+    if (f->cancel_by != 0 && !scope_at(f, f->owner)->shield) {
         if (TRACING) traced_dropped(f, id, f->cancel_by);
         f->armed = 0;
         f->deadline = 0;
@@ -1083,7 +1092,7 @@ static void deadline_fired(Fiber* f) {
 static void scope_inherited(Fiber* child, const Fiber* from) {
     const Scope* s = from->scope_by != 0 ? scope_at(from, from->armed) : from->deadline != 0 ? scope_at(from, from->owner) : NULL;
     if (!s) return;
-    child->scope[0] = (Scope){ s->id, s->at, 0 };
+    child->scope[0] = (Scope){ .id = s->id, .at = s->at, .first = 0, .shield = 0 };
     child->scopes_n = child->armed = 1;
     child->owner = 0;
     child->deadline = s->at;
@@ -1687,16 +1696,32 @@ static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
     if (TRACING) traced_waiter(f, w);
 }
 
-// A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set.
-static void cancel_met(void) { avra_unwinding = 1; }
+static void unwind_cleared(void);
+
+// A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set,
+// and the frames it had passed belong to no unwind — the new one's list
+// begins empty.
+static void cancel_met(void) {
+    if (avra_unwinding) return;
+    avra_unwinding = 1;
+    unwind_cleared();
+}
 
 // Whether the claim a task resumed on was a cancel's: `-1:0`.
 static int claimed_by_cancel(const Fiber* f) { return f->arm == -1 && f->member == 0; }
 
+// A `within` opened while a `defer` ran shielded: its own limit alone
+// cuts a wait under it, never the task's cancel.
+static int shield_scope_stands(const Fiber* f) {
+    return f->scopes_n > 0 && scope_at(f, f->scopes_n - 1)->shield;
+}
+
 // A row that predates the wait set, about to park: under a standing
-// cancel it parks nothing and the cancel is met at once.
+// cancel it parks nothing and the cancel is met at once — unless a shield
+// scope stands, whose own limit is what the wait is for.
 static int cancel_stands(const Fiber* f) {
     if (__builtin_expect(f->cancel_by == 0, 1)) return 0;
+    if (shield_scope_stands(f)) return 0;
     cancel_met();
     return 1;
 }
@@ -1708,7 +1733,7 @@ static int cancel_stands(const Fiber* f) {
 static int park_begun(Fiber* f) {
     f->heeds = 1;
     if (f->claimed) return 0;
-    if (f->cancel_by != 0) { set_claimed(f, -1, 0, f->cancel_by - 1); return 0; }
+    if (f->cancel_by != 0 && !shield_scope_stands(f)) { set_claimed(f, -1, 0, f->cancel_by - 1); return 0; }
     if (deadline_passed(f)) { set_claimed(f, -1, 1, BY_DEADLINE); return 0; }
     f->parked = 1;
     f->state = FIBER_PARKED;
@@ -1779,8 +1804,58 @@ static void* task_made(Fiber* f, void* body) {
     avra_array_push_owned(task, NULL);
     avra_array_push(task, 0);
     avra_array_push(task, END_LIVE);
+    avra_array_push(task, 0);
+    for (int i = TASK_FRAMES; i < TASK_CELLS; i++) avra_array_push(task, 0);
     return task;
 }
+
+// The frame list on a task's record, and the same layout for main's own.
+typedef struct { int64_t frames[UNWIND_CAP]; int64_t n; int64_t dropped; } Unwind;
+static Unwind g_main_unwind;
+
+// THE RECORD'S RESERVED CELLS ARE THE LIST'S OWN WORDS, and the names
+// `task_made` seeds between them sit where the struct lays them: a
+// reordered or resized Unwind is caught here, not by a lost frame.
+_Static_assert(TASK_FRAMES_N == TASK_FRAMES + (int64_t)(offsetof(Unwind, n) / sizeof(int64_t)),
+    "TASK_FRAMES_N names the frame count's cell");
+_Static_assert(TASK_DROPPED == TASK_FRAMES + (int64_t)(offsetof(Unwind, dropped) / sizeof(int64_t)),
+    "TASK_DROPPED names the drop count's cell");
+_Static_assert((int64_t)sizeof(Unwind) == (TASK_CELLS - TASK_FRAMES) * (int64_t)sizeof(int64_t),
+    "the task record's reserved cells are the Unwind's words");
+
+static Unwind* running_unwind(void) {
+    if (g_current->task) return (Unwind*)(task_cells(g_current->task) + TASK_FRAMES);
+    return &g_main_unwind;
+}
+
+static void unwind_cleared(void) { memset(running_unwind(), 0, sizeof(Unwind)); }
+
+// One frame the unwind passed: appended, or — full — the middle dropped
+// and counted, the newest kept in the last slot.
+void avra_unwind_push(void* frame) {
+    Unwind* held = running_unwind();
+    if (held->n < UNWIND_CAP) {
+        held->frames[held->n++] = (int64_t)(uintptr_t)frame;
+        return;
+    }
+    memmove(
+        &held->frames[UNWIND_CAP / 2],
+        &held->frames[UNWIND_CAP / 2 + 1],
+        (UNWIND_CAP / 2 - 1) * sizeof(int64_t));
+    held->frames[UNWIND_CAP - 1] = (int64_t)(uintptr_t)frame;
+    held->dropped = held->dropped + 1;
+}
+
+int64_t avra_unwind_count(void) { return running_unwind()->n; }
+
+void* avra_unwind_at(int64_t i) {
+    Unwind* held = running_unwind();
+    if (i < 0 || i >= held->n) return NULL;
+    return (void*)(uintptr_t)held->frames[i];
+}
+
+// How many frames a full list has dropped; the landing says so.
+int64_t avra_unwind_dropped(void) { return running_unwind()->dropped; }
 
 // Where every new fiber begins: run the body, keep its answer, wake
 // whoever waits on it, and hand the thread on for good.
@@ -1796,8 +1871,11 @@ static void fiber_start(void) {
     cells[TASK_ANSWER] = (int64_t)(uintptr_t)answer;
     cells[TASK_FIBER] = 0;
     // A BODY THAT COMES BACK UNWINDING LEFT AT A CANCEL POINT: it ended
-    // cancelled, and a join refuses what it answered.
+    // cancelled, and a join refuses what it answered. WHO ASKED is the
+    // standing request — a task's cancel, else the scope whose limit
+    // passed; a body that answered names itself.
     cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;
+    cells[TASK_BY] = avra_unwinding ? (self->cancel_by ? self->cancel_by - 1 : self->scope_by) : id_of(self);
     gate_opened(task, id_of(self));
     // A TASK THAT ENDS WAITS ON NOTHING: what it registered and never
     // parked on leaves with it, before its record is anyone else's.
@@ -1948,6 +2026,13 @@ int64_t avra_task_ended(void* task) {
     return task_cells(task)[TASK_END];
 }
 
+// Who asked the cancel that ended the task, or the task's own id for an
+// answer. A scope's request reads as its id; a task cancel as that
+// task's.
+int64_t avra_task_ended_by(void* task) {
+    return task_cells(task)[TASK_BY];
+}
+
 // ── Tasks nothing runs ──────────────────────────────────────────
 //
 // A FIBERLESS task is a gate with an answer: whoever holds it answers
@@ -1960,6 +2045,7 @@ void* avra_task_pending(void) { return task_made(NULL, NULL); }
 static void task_ended(void* task, int64_t how, int64_t by) {
     int64_t* cells = task_cells(task);
     cells[TASK_END] = how;
+    cells[TASK_BY] = by;
     int64_t at = cells[TASK_AT];
     if (at) {
         cells[TASK_AT] = 0;
@@ -2015,7 +2101,7 @@ static void fiber_cancelled(Fiber* f, int64_t by) {
         f->scope_by = 0;
     }
     if (f->deaf && f->joining) { task_cancelled(f->joining, by); return; }
-    if (f->parked && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);
+    if (f->parked && !shield_scope_stands(f) && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);
 }
 
 static void task_cancelled(void* task, int64_t by) {
@@ -2030,9 +2116,10 @@ void avra_task_cancel(void* task) { task_cancelled(task, id_of(g_current)); }
 // ── The rows that predate the wait set ──────────────────────────
 
 // A YIELD WAITS FOR NOTHING, SO A CANCEL CUTS NOTHING: it is met here
-// and the task still lets the others run.
+// and the task still lets the others run — unless a `defer` is running
+// shielded, where a call that may reach is not cut either.
 void avra_fiber_yield(void) {
-    if (__builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
+    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
     if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;
     ready_push(g_current);
     run_next();
@@ -2084,7 +2171,8 @@ void avra_tick_cold(void) {
     // A DUE TIMER FIRES, AND THE RUNNING TASK'S OWN DEADLINE IS CHECKED:
     // a task that never waits files no deadline, so the cold side asks here.
     if (g_timers_len > 0) fire_due_timers(now_ns());
-    if (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();
+    // A CHECKED BACK-EDGE IN A SHIELDED TASK YIELDS AND RAISES NOTHING.
+    if (!f->shield_depth && (deadline_passed(f) || __builtin_expect(g_current->cancel_by != 0, 0))) cancel_met();
     if (g_ready_head != NULL) avra_fiber_yield();
 }
 
@@ -2172,6 +2260,32 @@ int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
 int64_t avra_scope_end(int64_t id) { return scope_ended(g_current, id); }
 
 int64_t avra_fiber_within_end(int64_t id) { return scope_ended(g_current, id); }
+
+// ── The shield ──────────────────────────────────────────────────
+//
+// A `defer` RUNS WHOLE UNDER A SHIELD: a frame's cold exit brackets its
+// deferred calls with these two rows, so a call that may reach is not cut
+// between them. The enter saves the task's unwind bit and clears it, so
+// only a WAIT that cuts re-sets it; the leave ORs the saved bit back, so
+// a bit a wait raised inside the shield stands too. A bracket inside a
+// bracket is a depth, so a deferred call's own cold exit nests without
+// the inner leave unshielding the outer.
+
+static void shield_entered(Fiber* f, uint8_t* bit) {
+    if (f->shield_depth++ == 0) {
+        f->shield_saved = *bit;
+        *bit = 0;
+    }
+}
+
+static void shield_left(Fiber* f, uint8_t* bit) {
+    if (f->shield_depth == 0) return;
+    if (--f->shield_depth == 0) *bit |= f->shield_saved;
+}
+
+void avra_fiber_shield_enter(void) { shield_entered(g_current, &avra_unwinding); }
+
+void avra_fiber_shield_leave(void) { shield_left(g_current, &avra_unwinding); }
 
 int64_t avra_task_request(void* task) {
     const Fiber* f = (const Fiber*)(uintptr_t)task_cells(task)[TASK_FIBER];
@@ -2329,6 +2443,14 @@ int64_t avra_vtask_unwinding(int64_t t) { return virtual_at(t)->unwinding; }
 int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_at(t), ms); }
 
 int64_t avra_vtask_within_end(int64_t t, int64_t id) { return scope_ended(virtual_at(t), id); }
+
+void avra_vtask_shield_enter(int64_t t) { Fiber* f = virtual_at(t); shield_entered(f, &f->unwinding); }
+
+void avra_vtask_shield_leave(int64_t t) { Fiber* f = virtual_at(t); shield_left(f, &f->unwinding); }
+
+// The task's unwind bit, as the evaluator sets it: a wait that cuts in a
+// virtual task raises it the way the switch raises a compiled task's.
+void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }
 
 int64_t avra_vtask_deadline(int64_t t) { return virtual_at(t)->deadline; }
 
