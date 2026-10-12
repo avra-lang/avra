@@ -1,17 +1,18 @@
 //! THE SEALED BODY — a segment's worth of records folded into one file, and
 //! its index. §6.1's `body-<rev>.pack`: a header, the body's NAMES and
-//! interned READ SETS (compiler/store/names.av), the CONTENT tier
-//! (value digest -> bytes), then per family its META columns — action key,
-//! value digest, set id, revisions — so verification reads no value. The
-//! whole payload is one commit-marked frame, so a half-written or flipped
-//! body is torn and never read.
+//! interned READ SETS (compiler/store/names.av), the CONTENT index (value
+//! digest -> offset and length in `body-<rev>.val`), then per family its
+//! META columns — action key, value digest, set id, revisions. The payload
+//! is one commit-marked frame, so a half-written body is torn and never
+//! read. The values are NOT in the frame: a read seeks one value and checks
+//! it against its own digest, so an open reads the index alone.
 //!
 //! `body-<rev>.idx` is §6.1's S4 lookup: a 256-entry fan-out over the action
 //! keys' first byte, the keys sorted, and a parallel offset per key.
 use @std.io.{read_bytes, write_bytes, list_dir}
 use @std.path.{joined_path}
 use @std.relation.stable.{writer, reader, Writer}
-use @std.relation.engine.{list_cell}
+use @std.relation.engine.{list_cell, map_cell}
 use @std.text.{parse_int}
 use core.{sorted_by, text_before}
 use core.debug.{qtrace, traced}
@@ -28,6 +29,18 @@ export fn body_path(dir: string, rev: int) -> string { joined_path(dir, "body-${
 
 /// The path its index stands at.
 export fn idx_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.idx") }
+
+/// The file name its value bytes stand at, beside the `.pack`.
+export fn val_name(rev: int) -> string { "body-${rev}.val" }
+
+/// The path its value bytes stand at.
+export fn val_path(dir: string, rev: int) -> string { joined_path(dir, val_name(rev)) }
+
+/// One value's place in its body's `.val`: its digest, offset and length.
+export type ValueSlot = { at: int, len: int }
+
+/// A value laid end to end in a body's `.val`, with its place.
+type Placed = { digest: string, at: int, len: int, data: Bytes }
 
 fn is_body(name: string) -> bool { name.starts_with("body-") && name.ends_with(".pack") }
 
@@ -62,20 +75,17 @@ fn newest_rev(dir: string) -> int {
     best
 }
 
-/// Every body, oldest revision first — a torn older body is still seen,
-/// and later revisions win as they merge.
-fn bodies_asc(dir: string) -> List<string> {
+/// Every body, newest revision first. Each body holds everything its writer
+/// had merged, so the newest whole one is the store.
+fn bodies_newest_first(dir: string) -> List<string> {
     let names = all_body_names(dir)
-    mut max = 0
-    for name in names {
-        if rev_of(name) > max { max = rev_of(name) }
-    }
     mut out: List<string> = []
-    mut rev = 1
-    while rev <= max {
-        let here = [n for n in names if rev_of(n) == rev]
-        out = out.concat([body_path(dir, rev) for _n in here])
-        rev = rev + 1
+    mut rev = newest_rev(dir)
+    while rev >= 1 {
+        if [n for n in names if rev_of(n) == rev].length > 0 {
+            out = out.concat([body_path(dir, rev)])
+        }
+        rev = rev - 1
     }
     out
 }
@@ -97,11 +107,42 @@ export fn seal(pack: Pack) -> bool {
     let keys = sorted_by(pack.records.get().keys(), text_before)
     if keys.is_empty() { return false }
     let rev = newest_rev(pack.dir) + 1
-    let payload = body_payload(pack, keys, rev)
+    let placed = placed_values(all_content(pack).get())
+    let payload = body_payload(pack, keys, rev, placed)
     let idx = idx_payload(keys, rev)
+    let values = [p.data for p in placed].bytes()
+    if !wrote(val_path(pack.dir, rev), values) { return false }
     if !wrote(idx_path(pack.dir, rev), idx) { return false }
     if !wrote(body_path(pack.dir, rev), framed(payload)) { return false }
+    pack.rev.set(rev)
+    for p in placed { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
     true
+}
+
+/// Every value the store holds, in memory or in a sealed body.
+fn all_content(pack: Pack) -> Cell<Map<string, string>> {
+    let all: Cell<Map<string, string>> = map_cell()
+    for d, v in pack.content.get() { all.put(d, v) }
+    for d in pack.slots.get().keys() {
+        if !all.get().has(d) {
+            let v? = spilled(pack, d) else { continue }
+            all.put(d, v)
+        }
+    }
+    all
+}
+
+/// The values in digest order, each at the offset the one before it ends.
+fn placed_values(values: Map<string, string>) -> List<Placed> {
+    mut at = 0
+    mut out: List<Placed> = []
+    for d in sorted_by(values.keys(), text_before) {
+        let v? = values.get(d) else { continue }
+        let data = v.bytes()
+        out = out.concat([Placed { digest: d, at: at, len: data.length, data: data }])
+        at = at + data.length
+    }
+    out
 }
 
 fn wrote(at: string, bytes: Bytes) -> bool {
@@ -109,7 +150,7 @@ fn wrote(at: string, bytes: Bytes) -> bool {
 }
 
 /// The body's bytes: header · names · sets · content · per-family meta.
-fn body_payload(pack: Pack, keys: List<string>, rev: int) -> Bytes {
+fn body_payload(pack: Pack, keys: List<string>, rev: int, placed: List<Placed>) -> Bytes {
     let n = names()
     let s = sets()
     for k in keys {
@@ -127,12 +168,11 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int) -> Bytes {
     w.text(pack.print)
     w.octets(n.encode())
     w.octets(s.encode())
-    let content = sorted_by(pack.content.get().keys(), text_before)
-    w.count(content.length)
-    for c in content {
-        let value? = pack.content.get().get(c) else { continue }
-        w.text(c)
-        w.text(value)
+    w.count(placed.length)
+    for p in placed {
+        w.text(p.digest)
+        w.int(p.at)
+        w.int(p.len)
     }
     w.count(FAMILIES.length)
     for fam in FAMILIES {
@@ -191,19 +231,19 @@ fn hex_val(c: string) -> int { "0123456789abcdef".index_of(c) }
 
 // ── Reading ──
 
-/// Read the newest body into the pack — before the segments, so a later
-/// segment wins. A torn or foreign body is ignored, and says so once.
+/// Read the newest whole body into the pack — before the segments, so a later
+/// segment wins. A torn or foreign body is skipped, and says so once.
 export fn body_scan(pack: Pack) {
-    for at in bodies_asc(pack.dir) {
+    for at in bodies_newest_first(pack.dir) {
         // LICENSED input.store_io: the store's own body, read to merge it
         let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
         let r = reader(raw)
         let payload = read_frame(r)
-        if payload != null {
-            let _ = body_read(pack, payload!)
-        } else {
+        if payload == null {
             torn_at(pack, 0)
+            continue
         }
+        if body_read(pack, payload!) { return }
     }
 }
 
@@ -224,11 +264,12 @@ fn body_read(pack: Pack, payload: Bytes) -> bool {
     let n? = names_from(names_bytes) else { return false }
     let sets_bytes? = ok(r.octets()) else { return false }
     let s? = sets_from(sets_bytes) else { return false }
-    let content? = ok(r.count()) else { return false }
-    for _k in 0..content {
+    let slots? = ok(r.count()) else { return false }
+    for _s in 0..slots {
         let digest? = ok(r.text()) else { return false }
-        let value? = ok(r.text()) else { return false }
-        pack.content.put(digest, value)
+        let at? = ok(r.int()) else { return false }
+        let len? = ok(r.int()) else { return false }
+        pack.slots.put(digest, ValueSlot { at: at, len: len })
     }
     let families? = ok(r.count()) else { return false }
     for _f in 0..families {

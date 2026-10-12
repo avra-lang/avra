@@ -14,9 +14,9 @@
 //! by compaction under the flock at open: the process that takes the lock
 //! seals what it read into one body and retires the dead segments it
 //! folded; a process that cannot take the lock says it skipped.
-use @std.io.{read_bytes, make_dirs, list_dir, remove, opened_for_append, truncate_to, env}
+use @std.io.{read_bytes, make_dirs, list_dir, remove, opened_for_append, truncate_to, env, open_beneath}
 use @std.path.{joined_path, dir_of}
-use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list}
+use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
 use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
 use core.{digest_of_octets}
@@ -32,6 +32,9 @@ const FORMAT_VERSION: int = 1
 
 const CONTENT_TAG: int = 1
 const ACTION_TAG: int = 2
+
+/// Frames in live segments before a writer seals them into a body.
+const SEAL_FRAMES: int = 32
 
 /// OWED (db-inputs-h's `family_code_hash`): the family's own code hash and
 /// its codec shape fingerprint. Until that table lands, the key folds the
@@ -59,7 +62,10 @@ export type Pack = {
     print: string,
     records: Cell<Map<string, Held>>,
     withdrawn: Cell<Map<string, bool>>,
+    /// Values this process holds in memory: its own writes and segments.
     content: Cell<Map<string, string>>,
+    /// Values the newest sealed body holds, read from its `.val` on demand.
+    slots: Cell<Map<string, ValueSlot>>,
     opened: Cell<bool>,
     /// Whether a WRITER has taken the compaction lock and sealed. An
     /// inspection opens the index and never sets this, so the same pack can
@@ -70,6 +76,9 @@ export type Pack = {
     skipped: Cell<bool>,
     headed: Cell<bool>,
     folded: Cell<List<string>>,
+    /// Frames in segments since the last seal: those read at open and those
+    /// this process appended.
+    frames: Cell<int>,
     rev: Cell<int>,
     lock_fd: Cell<int>,
 }
@@ -82,6 +91,7 @@ export fn pack_at(root: string, print: string) -> Pack {
         records: map_cell(),
         withdrawn: map_cell(),
         content: map_cell(),
+        slots: map_cell(),
         opened: Cell.new(false),
         admitted: Cell.new(false),
         torn: Cell.new(false),
@@ -89,6 +99,7 @@ export fn pack_at(root: string, print: string) -> Pack {
         skipped: Cell.new(false),
         headed: Cell.new(false),
         folded: list_cell(),
+        frames: Cell.new(0),
         rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
     }
@@ -221,6 +232,7 @@ fn scan_segment(
             return
         }
         applied(pack, body, claims, writer)
+        pack.frames.set(pack.frames.get() + 1)
     }
 }
 
@@ -243,7 +255,8 @@ fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, Claim>>, writer: st
         let family? = ok(r.text()) else { return }
         let key? = ok(r.text()) else { return }
         let digest? = ok(r.text()) else { return }
-        claimed(pack, claims, writer, family, key, digest)
+        let read? = ok(read_list(r, (q) -> q.text())) else { return }
+        claimed(pack, claims, writer, family, key, digest, read)
     }
 }
 
@@ -256,6 +269,7 @@ fn claimed(
     family: string,
     key: string,
     digest: string,
+    read: List<string>,
 ) {
     let at = action_key(family, key)
     let prior = claims.get().get(at)
@@ -270,7 +284,7 @@ fn claimed(
         }
     }
     claims.put(at, Claim { digest: digest, writer: writer })
-    pack.records.put(at, Held { family: family, key: key, digest: digest, read: [] })
+    pack.records.put(at, Held { family: family, key: key, digest: digest, read: read })
 }
 
 /// A record folded in without a claim: this process's own writes are the only
@@ -308,7 +322,14 @@ fn admit(pack: Pack) {
     if seal(pack) {
         retire(pack)
         keep_bodies(pack)
+        pack.frames.set(0)
     }
+}
+
+/// A writer seals once its segments hold SEAL_FRAMES frames; a process that
+/// only reads never reaches the lock.
+fn settled(pack: Pack) {
+    if pack.frames.get() >= SEAL_FRAMES { admit(pack) }
 }
 
 /// A test hook: hold the lock so a second process's admission fails.
@@ -345,7 +366,6 @@ fn opened_at(pack: Pack, read_only: bool) {
         let root = dir_of(pack.dir)
         let _ = make_dirs(joined_path(root, "obj"))
         let _ = make_dirs(joined_path(root, "bin"))
-        admit(pack)
     }
 }
 
@@ -370,7 +390,9 @@ fn keep_bodies(pack: Pack) {
         let oldest = oldest_body(pack.dir)
         if oldest == "" { return }
         let _ = remove(joined_path(pack.dir, oldest))
-        let _ = remove(joined_path(pack.dir, "${oldest.substring(0, oldest.length - 5)}.idx"))
+        let stem = oldest.substring(0, oldest.length - 5)
+        let _ = remove(joined_path(pack.dir, "${stem}.idx"))
+        let _ = remove(joined_path(pack.dir, "${stem}.val"))
         count = count - 1
     }
 }
@@ -401,7 +423,33 @@ export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = fa
     let at = action_key(family, key)
     if withdrawn(pack, at) { return null }
     let held? = pack.records.get().get(at) else { return null }
-    pack.content.get().get(held.digest)
+    content_of(pack, held.digest)
+}
+
+/// A value by its digest: held in memory, else read from the sealed body.
+fn content_of(pack: Pack, digest: string) -> string? {
+    let here? = pack.content.get().get(digest) else { return spilled(pack, digest) }
+    here
+}
+
+/// Whether the store holds this value, in memory or sealed.
+fn stored(pack: Pack, digest: string) -> bool {
+    pack.content.get().has(digest) || pack.slots.get().has(digest)
+}
+
+/// A sealed value, read from its slot in the newest body's `.val` and checked
+/// against its digest: a missing or damaged value answers absent.
+fn spilled(pack: Pack, digest: string) -> string? {
+    let slot? = pack.slots.get().get(digest) else { return null }
+    let o = match open_beneath(pack.dir, val_name(pack.rev.get())) {
+        .Ok(o) -> o,
+        .Err(_) -> { return null },
+    }
+    let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+    o.close()
+    let v? = raw.text() else { return null }
+    if content_digest(v) != digest { return null }
+    v
 }
 
 /// Whether the open has withdrawn this action key since the index was built.
@@ -429,6 +477,7 @@ fn append(pack: Pack, body: Bytes) {
     kill_at_commit()
     let _ = af.write(marker_of(body))
     let _ = af.closed()
+    pack.frames.set(pack.frames.get() + 1)
 }
 
 /// A test hook: a writer killed between a frame's octets and its marker.
@@ -442,10 +491,11 @@ export fn pack_put(pack: Pack, family: string, key: string, value: string, read:
     opened_at(pack, false)
     pack.withdrawn.put(action_key(family, key), false)
     let digest = content_digest(value)
-    if !pack.content.get().has(digest) {
+    if !stored(pack, digest) {
         append(pack, content_body(digest, value))
         pack.content.put(digest, value)
     }
     append(pack, action_body(family, key, digest, read))
     held(pack, family, key, digest, read)
+    settled(pack)
 }
