@@ -404,6 +404,34 @@ steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] && [ "$(hc_count plain)" = 0 ]
 ed $R/hc/src/gb/k.av "K: int = 7" "K: int = 8"
 ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
+
+fi
+
+if section gi; then
+# A SPECIALIZATION'S READ NAMES THE GENERIC IT WAS MADE FROM. A const's run that reaches
+# `first<int>` reads the declaration of `first`, never the file that holds it: editing a
+# body ELSEWHERE in that file leaves the run's reader held, while editing `first` reads
+# the reader in the FIRST attempt, none thrown away, and the value follows.
+mkdir -p $R/gi/src/f $R/gi/src/x $R/gi/src/y
+printf '[package]\nname = "rt-gi"\nversion = "0.1.0"\n' > $R/gi/avra.toml
+printf 'export fn first<T>(a: T, b: T) -> T { a }\nexport fn unused(n: int) -> int { n + 1 }\n' > $R/gi/src/y/calc.av
+printf 'use y.{first}\nexport const J: int = first(3, 4)\n' > $R/gi/src/x/mid.av
+printf 'use x.{J}\nexport const K: int = J * 2\nexport fn shown() -> int { K }\n' > $R/gi/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/gi/src/main.av
+HR "cold gi" check gi 0
+S "gi: built with K's verdict kept" gi
+ed $R/gi/src/y/calc.av "n + 1" "n + 7"
+steps=$((steps+1)); gi_out=$(./avra check --time $R/gi 2>&1)
+case "$gi_out" in *"discarded 0, refused 0"*|*"cache hit"*) ;; *) fails=$((fails+1)); echo "FAIL  gi: an unreached body moved and an attempt was thrown away: $(printf '%s' "$gi_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$gi_out" in *"f/held.av"*|*"x/mid.av"*) fails=$((fails+1)); echo "FAIL  gi: a body the specialization never reads moved and its reader was read all the same: $(printf '%s' "$gi_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    gi: an unreached body moved -> the readers held" ;; esac
+ed $R/gi/src/y/calc.av "{ a }" "{ b }"
+steps=$((steps+1)); gi_out=$(./avra check --time $R/gi 2>&1)
+case "$gi_out" in *"discarded 0, refused 0"*) ;; *) fails=$((fails+1)); echo "FAIL  gi: the generic moved and an attempt was thrown away: $(printf '%s' "$gi_out" | grep -E '^time:|discarded:' | cut -c1-260 | tr '\n' ' ')" ;; esac
+case "$gi_out" in *"x/mid.av"*|*"f/held.av"*) [ -n "${VERBOSE:-}" ] && echo "ok    gi: the generic moved -> the reader read in the first attempt" ;; *) fails=$((fails+1)); echo "FAIL  gi: the generic moved and no reader was read: $(printf '%s' "$gi_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "gi: and the binary follows" gi
+steps=$((steps+1)); gi_out=$($R/gi/src/main 2>&1)
+[ "$gi_out" = "8" ] || { fails=$((fails+1)); echo "FAIL  gi: the published value did not follow the generic: printed '$gi_out', wanted '8'"; }
+
 fi
 
 if section vd; then
