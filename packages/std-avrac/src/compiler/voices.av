@@ -70,6 +70,8 @@ use diagnostics.{defect_at}
 use diagnostics.{Diag, refusal, Severity, DiagFacts, diag_facts_of, Voices}
 use @std.errors.{Loc, Frame, Suggestion, Edit, Confidence}
 use @std.testing.{words}
+use @std.relation.{query}
+use @std.relation.db.{Db as RelDb}
 use compiler.store.{Store, Stored}
 use compiler.lower.{Unit, code_facts_wire}
 
@@ -745,15 +747,14 @@ fn declares_a_component(text: string) -> bool {
 /// tokens.
 // LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
 fn component_names(ws: Workspace, path: string) -> List<string> {
-    scan_words(
-        ws
-            .relation(Family.ComponentNames)
-            .demand(
-                ws.text_key(path),
-                () -> DbRow.Words(components_named(ws.listed_text(path))),
-                words_print,
-            ),
-    )
+    component_names_text(ws.decls.rows_db.get(), ws.listed_text(path))
+}
+
+/// The component names in one file's text: a durable answer keyed by the
+/// text itself, so an unchanged file is a saved hit in every process.
+@query
+fn component_names_text(_db: RelDb, text: string) -> List<string> {
+    components_named(text)
 }
 
 fn components_named(text: string) -> List<string> {
@@ -764,8 +765,6 @@ fn components_named(text: string) -> List<string> {
 }
 
 fn flag_print(r: DbRow) -> int { if scan_flag(r) { 1 } else { 0 } }
-
-fn words_print(r: DbRow) -> int { fp_str(joined(scan_words(r), "\n")) }
 
 /// A component word known by its name alone: its instance parses as
 /// one and stands as a hole.
