@@ -342,7 +342,7 @@ by nobody.
 |---|---|
 | `make fingerprints` | every node kind's fingerprint tag is unique inside its fold space |
 | `make vocab` | every `Ins` consumer stays exhaustive, so an instruction cannot ship half-implemented |
-| `make families` | the node family ordinals are append-only (a durable address) |
+| `make families-left` | the hand-written families may only fall, and a family is keyed by its name |
 | `make layers` | layering is one-way: `core -> grammar -> features -> compiler`, and `@std/relation` never names the compiler |
 | `make inputs` | every read of the world is an input through one door; a new site is refused and the baseline only falls |
 | `make clock-holds` | every blocking C call holds the world (a virtual clock flows across, or it says why it waits on no time) |
