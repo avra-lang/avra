@@ -368,6 +368,43 @@ ur_prints "and the last edit" "4 2 17 12 0"
 
 fi
 
+if section rb; then
+# A READER INHERITS THE RUNS BEHIND WHAT IT READ, NOT BEHIND THE FILE. `rb`'s fn.av reads
+# nothing, but lib.av's const C runs zbase from data.av. fnread.av runs only a FN of lib.av,
+# constread.av runs the CONST C. Editing data.av moves C: constread.av is read in the first
+# attempt, fnread.av stays held and its record never lists data.av.
+mkdir -p $R/rb/src/z $R/rb/src/x $R/rb/src/r
+printf '[package]\nname = "rt-rb"\nversion = "0.1.0"\n' > $R/rb/avra.toml
+printf 'export fn zbase() -> int { 5 }\n' > $R/rb/src/z/data.av
+printf 'use z.{zbase}\nexport fn plain(n: int) -> int { n * 2 }\nexport const C: int = zbase()\n' > $R/rb/src/x/lib.av
+printf 'use x.{plain}\nexport const J: int = plain(3)\nexport fn shown() -> int { J }\n' > $R/rb/src/r/fnread.av
+printf 'use x.{C}\nexport const K: int = C + 1\nexport fn topped() -> int { K }\n' > $R/rb/src/r/constread.av
+printf 'use r.{shown, topped}\nprintln("${shown()} ${topped()}")\n' > $R/rb/src/main.av
+rb_runs() { record_runs "cache-attacks/rb/src/$1"; }
+record_runs() { # record_runs <path suffix>: the files a record says that file's compile-time runs read, by name
+    grep -rah "$(printf '^file\t')" .avra-cache/*/rows 2>/dev/null | python3 -c '
+import sys
+for line in sys.stdin:
+    f = line.rstrip("\n").split("\t")
+    if len(f) > 3 and f[1].endswith(sys.argv[1]):
+        print("".join(bytes.fromhex(r.split("~")[0]).decode().split("/")[-1] + " " for r in f[3].split("|") if r), end="")
+' "$1"
+}
+HR "cold rb" check rb 0
+S "rb: built with every verdict kept" rb
+steps=$((steps+1)); rb_fn=$(rb_runs r/fnread.av); rb_const=$(rb_runs r/constread.av)
+case "$rb_fn" in *data.av*) fails=$((fails+1)); echo "FAIL  rb: a reader of a fn lists data.av, which only a const of the fn's file runs: '$rb_fn'" ;; esac
+case "$rb_fn" in *lib.av*) ;; *) fails=$((fails+1)); echo "FAIL  rb: a reader of a fn does not list the fn's file ('$rb_fn'), so the fixture has no run to follow" ;; esac
+case "$rb_const" in *data.av*) ;; *) fails=$((fails+1)); echo "FAIL  rb: a reader of a const does not list the file the const's run read ('$rb_const')" ;; esac
+ed $R/rb/src/z/data.av "{ 5 }" "{ 7 }"
+steps=$((steps+1)); rb_out=$(./avra check --time $R/rb 2>&1)
+case "$rb_out" in *"r/constread.av"*) ;; *) fails=$((fails+1)); echo "FAIL  rb: the file a const's run read moved and its reader was not read: $(printf '%s' "$rb_out" | sed -n '/^read:/,$p' | tr '\n' ' ' | cut -c1-260)" ;; esac
+S "rb: and the binary follows" rb
+steps=$((steps+1)); rb_out=$($R/rb/src/main 2>&1)
+[ "$rb_out" = "6 8" ] || { fails=$((fails+1)); echo "FAIL  rb: the published values did not follow: printed '$rb_out', wanted '6 8'"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
