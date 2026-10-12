@@ -51,6 +51,7 @@ use core.{
     same_reg,
     flatten,
     qtrace,
+    digest_of,
 }
 
 /// The symbol of the body that answers `target`'s code hash.
@@ -244,7 +245,7 @@ export fn code_facts(decls: Decls, bodies: List<Body>, statics: List<Static>, as
     mut shapes: Map<string, string> = {}
     for b in lowered {
         for t in typed_by(b) {
-            if shapes.get("${t.index}") == null { shapes.set("${t.index}", type_shape_cached(decls, t)) }
+            if shapes.get("${t.index}") == null { shapes.set("${t.index}", type_shape_key(decls, t)) }
         }
     }
     CodeFacts {
@@ -469,6 +470,18 @@ export fn type_shape(decls: Decls, t: TypeId) -> string { shape_in(decls, t, [])
 /// one answer serves every caller. The nested walk stays pure.
 export fn type_shape_cached(decls: Decls, t: TypeId) -> string {
     let kept? = decls.shape_texts.at(t.index) else { return fresh_shape(decls, t) }
+    kept
+}
+
+/// A TYPE'S SHAPE AS A KEY: the digest of its shape text, filed build-wide. A shape
+/// text spells every nested declaration out, so it grows with the type's depth;
+/// the code graph names and hashes shapes by this key and never carries the text.
+export fn type_shape_key(decls: Decls, t: TypeId) -> string {
+    let kept? = decls.shape_keys.at(t.index) else {
+        let key = digest_of(type_shape_cached(decls, t))
+        decls.shape_keys.keep(t.index, key)
+        return key
+    }
     kept
 }
 
