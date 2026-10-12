@@ -414,27 +414,27 @@ steps=$((steps+1)); gi_out=$($R/gi/src/main 2>&1)
 fi
 
 if section ch; then
-# A CHECK COMPUTES NO HASH IT DOES NOT NEED, AND LEAVES NO WRONG ONE BEHIND. The program
-# asks the hash of `mid` and of `other`; a check between the builds links nothing and
-# answers none, and the next build still says a hash moves when the code it reaches
-# moves, and only then. Every step is built, run and held to the evaluator.
-mkdir -p $R/ch/src/y
+# A HELD FILE'S CODE HASH ASKS ARE ANSWERED BY THE BUILD THAT HOLDS IT. `ask.z` asks the
+# code hash of `mid` and of `other`; a build that holds `ask.z` (an edit elsewhere) still
+# links the hash bodies its object references, and the hash moves exactly when the code it
+# reaches moves. Every step is built, run and held to the evaluator.
+mkdir -p $R/ch/src/y $R/ch/src/z
 printf '[package]\nname = "rt-ch"\nversion = "0.1.0"\n' > $R/ch/avra.toml
 printf 'export fn leaf() -> int { 1 }\nexport fn mid() -> int { leaf() + 1 }\nexport fn other() -> int { 5 }\n' > $R/ch/src/y/calc.av
-printf 'use @std.meta.{code_hash}\nuse y.{mid, other}\nprintln("${code_hash(mid) ?? "absent"} ${code_hash(other) ?? "absent"}")\n' > $R/ch/src/main.av
+printf 'use @std.meta.{code_hash}\nuse y.{mid, other}\nexport fn hashes() -> string { "${code_hash(mid) ?? "absent"} ${code_hash(other) ?? "absent"}" }\n' > $R/ch/src/z/ask.av
+printf 'use z.{hashes}\nprintln(hashes())\n' > $R/ch/src/main.av
 ch_pair() { S "ch: $1" ch; ch_out=$($R/ch/src/main 2>&1); ch_mid=${ch_out% *}; ch_other=${ch_out#* }; }
 ch_expect() { # ch_expect <label> <mid moved|same> <other moved|same>
-    steps=$((steps+1)); prev_mid=$ch_mid; prev_other=$ch_other; HR "ch: a check between builds" check ch 0; ch_pair "$1"
+    steps=$((steps+1)); prev_mid=$ch_mid; prev_other=$ch_other; ch_pair "$1"
     case "$ch_mid" in absent|"") fails=$((fails+1)); echo "FAIL  ch: $1: mid has no hash ('$ch_out')" ;; esac
     if [ "$prev_mid" = "$ch_mid" ]; then got=same; else got=moved; fi
     [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  ch: $1: mid's hash was wanted $2, was $got"; }
     if [ "$prev_other" = "$ch_other" ]; then got=same; else got=moved; fi
     [ "$got" = "$3" ] || { fails=$((fails+1)); echo "FAIL  ch: $1: other's hash was wanted $3, was $got"; }
 }
-HR "cold ch" check ch 0
 ch_pair "built cold"
 printf '// moved\n' >> $R/ch/src/main.av
-ch_expect "an edit elsewhere" same same
+ch_expect "an edit elsewhere, ask.z held" same same
 ed $R/ch/src/y/calc.av "{ 5 }" "{ 6 }"
 ch_expect "a body mid never reaches" same moved
 ed $R/ch/src/y/calc.av "fn leaf() -> int { 1 }" "fn leaf() -> int { 2 }"
