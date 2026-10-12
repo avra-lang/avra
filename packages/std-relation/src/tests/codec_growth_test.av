@@ -1,0 +1,76 @@
+// A RECURSIVE RECORD AND A PAYLOAD-CARRYING ENUM round-trip through the
+// generated codec: each is a named helper on the relation — its own write,
+// read and hash — so recursion terminates and a variant's payload columns
+// are its own fields.
+use @std.relation.{relation}
+
+/// A record that reaches itself: a tree of its own children.
+type Tree = { label: string, kids: List<Tree> }
+
+/// An enum whose variants carry payloads.
+enum Shape { Dot, Circle(r: int), Rect(w: int, h: int) }
+
+@relation
+type Grove = { id: int, name: string, tree: Tree }
+
+@relation
+type Drawing = { id: int, shape: Shape, note: string }
+
+fn branch(label: string, kids: List<Tree>) -> Tree { Tree { label: label, kids: kids } }
+
+fn sample_tree() -> Tree { branch("root", [branch("l", []), branch("r", [branch("rr", [])])]) }
+
+fn same_tree(a: Tree, b: Tree) -> bool {
+    a.label == b.label &&
+        a.kids.length == b.kids.length &&
+        [i for i in 0..a.kids.length].all(same_tree(a.kids[it], b.kids[it]))
+}
+
+fn payload_sum(s: Shape) -> int {
+    match s { .Dot -> 0, .Circle(r) -> r, .Rect(w, h) -> w * 10 + h }
+}
+
+fn tree_round_trips() -> bool {
+    let g = Grove { id: 0, name: "g", tree: sample_tree() }
+    match Grove.decoded(g.encoded()) {
+        .Ok(back) -> back.name == "g" && same_tree(back.tree, g.tree) && back.stable_hash() == g.stable_hash(),
+        .Err(_) -> false,
+    }
+}
+
+fn shape_round_trips(s: Shape) -> bool {
+    let d = Drawing { id: 0, shape: s, note: "n" }
+    match Drawing.decoded(d.encoded()) {
+        .Ok(back) -> back.note == "n" &&
+            payload_sum(back.shape) == payload_sum(s) &&
+            back.stable_hash() == d.stable_hash(),
+        .Err(_) -> false,
+    }
+}
+
+fn deeper_tree_round_trips() -> bool {
+    let g = Grove {
+        id: 1,
+        name: "x",
+        tree: branch("a", [branch("b", [branch("c", [branch("d", [])])])]),
+    }
+    match Grove.decoded(g.encoded()) { .Ok(back) -> same_tree(back.tree, g.tree), .Err(_) -> false }
+}
+
+spec "std/relation — the codec grows recursion and payloads" {
+    given "a record that reaches itself" {
+        then "its value survives encode and decode" {
+            tree_round_trips()
+        }
+        then "a deeper tree still round-trips" {
+            deeper_tree_round_trips()
+        }
+    }
+    given "an enum whose variants carry payloads" {
+        then "each variant's tag and payload survive encode and decode" {
+            shape_round_trips(Shape.Dot) &&
+                shape_round_trips(Shape.Circle(7)) &&
+                shape_round_trips(Shape.Rect(3, 4))
+        }
+    }
+}

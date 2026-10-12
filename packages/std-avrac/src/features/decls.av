@@ -278,7 +278,8 @@ export type DeclFacts = {
     /// hold skips.
     instance: bool = false,
     /// THE COMPONENT A DECLARED INSTANCE INSTANCES — the word `collect` gathers it
-    /// under, absent for every other declaration.
+    /// under; a `collect enum` files under `collect_enum_word`. Absent for every
+    /// other declaration.
     word: string? = null,
     /// THE DECLARATION'S OWN `///` LINES, absent where it wrote none — a fact every
     /// tool (`avra docs`, the formatter, `@std/meta`'s crossing) reads the same
@@ -366,7 +367,7 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         annotated: owns && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
-        word: if x.kind is .Const { store.instance_of(x.stmt) } else { null },
+        word: if x.kind is .Const { store.instance_of(x.stmt) } else if x.kind is .CollectEnum { collect_enum_word } else { null },
         doc: if owns { store.doc_comment(x.stmt) } else { null },
         annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
@@ -1369,6 +1370,9 @@ impl Decls {
     /// Every declaration `collect` gathers under `word` — a declared instance
     /// of that component — in id order.
     fn indexed(word: string) -> List<Decl> { self.filed(word_index, word) }
+
+    /// Every `collect enum` declared, in id order.
+    fn collect_enums() -> List<Decl> { self.indexed(collect_enum_word) }
 
     /// Every declaration wearing `@name`, in id order.
     fn indexed_by_mark(name: string) -> List<Decl> { self.filed(marks_index, name) }
@@ -2985,6 +2989,10 @@ fn started_at(i: int) -> int {
 /// The name a trait gives its implementor — the one type parameter
 /// every trait declares.
 export const self_word: string = "Self"
+
+/// The `word` bucket every `collect enum` files under — a spelling no
+/// identifier can take, so no component's instances share it.
+const collect_enum_word: string = "collect enum"
 
 /// A member's body, when it wrote one — a sig's is a HOLE no pass
 /// walks, and declares nothing to type.
