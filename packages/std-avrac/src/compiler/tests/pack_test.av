@@ -2,8 +2,9 @@
 // marker; a later open reads what committed; a segment whose plain header
 // names another compiler's print is foreign and read not at all.
 use @std.time.{now_ns}
-use @std.io.{list_dir}
-use compiler.store.{pack_at, pack_put, pack_has, pack_get}
+use @std.io.{list_dir, remove, write_bytes}
+use @std.path.{joined_path}
+use compiler.store.{pack_at, pack_put, pack_has, pack_get, seal, val_path}
 
 /// One store directory per case, so no case reads another's segments.
 fn pack_root(name: string) -> string { "/tmp/avra-pack-test/${name}-${now_ns()}" }
@@ -11,6 +12,20 @@ fn pack_root(name: string) -> string { "/tmp/avra-pack-test/${name}-${now_ns()}"
 /// The store's files, so a read-only open can be held to creating none.
 fn pack_files(root: string) -> List<string> {
     match list_dir("${root}/store") { .Ok(names) -> names, .Err(_) -> [] }
+}
+
+/// A row sealed into a body with its segment gone, then its values overwritten: the
+/// record stands in the body's index and no value can be read back.
+fn damaged_root(name: string) -> string {
+    let root = pack_root(name)
+    let writer = pack_at(root, "print-one")
+    let _ = pack_put(writer, "unit", "k", "v", [])
+    let _ = seal(writer)
+    for file in pack_files(root) {
+        if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+    }
+    let _ = write_bytes(val_path("${root}/store", writer.rev.get()), "X".bytes())
+    root
 }
 
 spec "store/pack — segments, commit markers, the two tiers" {
@@ -43,6 +58,21 @@ spec "store/pack — segments, commit markers, the two tiers" {
             let fresh = pack_at(root, "print-one")
             let got = pack_get(fresh, "unit", "k", true)
             got == "v" && pack_files(root).join(",") == before
+        }
+    }
+    given "a sealed body whose value file is damaged" {
+        then "the row is absent to has and to get alike" {
+            let fresh = pack_at(damaged_root("damaged-has"), "print-one")
+            let absent = !pack_has(fresh, "unit", "k") && pack_get(fresh, "unit", "k") == null
+            absent && fresh.rev.get() > 0
+        }
+        then "a write of the same value makes the row readable again" {
+            let root = damaged_root("damaged-heal")
+            let fresh = pack_at(root, "print-one")
+            let _ = pack_put(fresh, "unit", "k", "v", [])
+            fresh.rev.get() > 0 &&
+                pack_has(fresh, "unit", "k") &&
+                pack_get(fresh, "unit", "k") == "v"
         }
     }
 }

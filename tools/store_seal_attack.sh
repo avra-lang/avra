@@ -68,13 +68,31 @@ run_big torn_pack
 [ "$(grep -c '^Q	store	torn' $R/torn_pack.err)" -ge 1 ] || fail "a damaged newest body was not seen as torn"
 cp $R/pack.saved "$(newest)"
 
+# A process seals once, at its first write: a LATER process that writes anything folds every
+# earlier segment into one body, so the rows of the runs before it all stand in the newest body.
+sealed=0
+seal_all() { sealed=$((sealed + 1)); printf 'fn main() -> int { %s }\n' "$sealed" > $R/small/src/main.av; AVRA_STORE_SEAL_FRAMES=1 ./avra check $R/small > /dev/null 2>&1; }
+
+# A value is read by its slot and checked against its digest. Every row is SEALED here
+# (a seal after each write, the segment removed), so a damaged `.val` leaves rows whose
+# value cannot be read: they are absent, and the derivation runs again.
+rm -rf .avra-cache
+AVRA_STORE_SEAL_FRAMES=1 ./avra check $R/big > /dev/null 2>&1
+AVRA_STORE_SEAL_FRAMES=1 ./avra build $R/big > /dev/null 2>&1
+seal_all
+rm -f .avra-cache/store/seg-*.log
+cp -R .avra-cache/store $R/store.sealed
 val="$(newest | sed 's/\.pack$/.val/')"
-cp "$val" $R/val.saved
 flip "$val" all
 run_big torn_val
 [ "$(tail -1 $R/torn_val.out)" = "$WANT" ] || fail "a damaged value changed the answer to '$(tail -1 $R/torn_val.out)'"
 [ "$(grep -c '^Q	store	value	' $R/torn_val.err)" -ge 1 ] || fail "a damaged value was never read through its slot"
 [ "$(grep -c '^Q	attempt' $R/torn_val.err)" -ge 1 ] || fail "a damaged value answered present: nothing ran again"
-cp $R/val.saved "$val"
+
+# the same damage met by a CHECK, which keeps no binary
+rm -rf .avra-cache/store && cp -R $R/store.sealed .avra-cache/store
+flip "$val" all
+AVRA_QTRACE=1 ./avra check $R/big > $R/torn_check.out 2> $R/torn_check.err
+[ "$(grep -c '^Q	attempt' $R/torn_check.err)" -ge 1 ] || fail "a check over a damaged value answered a hit: nothing ran again"
 
 [ "$fails" = 0 ] && echo "store-seal: seal threshold, newest body, slot values and warm reads all held" || exit 1

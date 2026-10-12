@@ -21,8 +21,8 @@
 //! THE DIGEST IS OF A FRAME: a head that says the kind, the name and
 //! what was found — every part behind its own length, so no two shapes
 //! spell the same octets — then the body, last and whole.
-use core.{new_digest, digest_bytes, digest_text, mix_final, hex}
-use @std.hash.{hasher}
+use core.{new_digest, digest_bytes, digest_text, mix_final}
+use @std.hash.{hasher, blake3_hex}
 use @std.relation.stable.{Writer, writer}
 
 /// What a read asks of the world.
@@ -169,11 +169,11 @@ fn digested(head: Bytes, body: Body) -> InputDigest {
         .Octets(octets) -> digest_bytes(framed, octets),
     }
     let content = match body {
-        .None -> hasher().update(head).digest(),
-        .Text(text) -> hasher().update(head).update(text.bytes()).digest(),
-        .Octets(octets) -> hasher().update(head).update(octets).digest(),
+        .None -> blake3_hex(head),
+        .Text(text) -> hasher().update(head).update(text.bytes()).digest_hex(),
+        .Octets(octets) -> hasher().update(head).update(octets).digest_hex(),
     }
-    InputDigest { key: hex(content), word: mix_final(whole.a) }
+    InputDigest { key: content, word: mix_final(whole.a) }
 }
 
 const ABSENT: int = 0

@@ -325,10 +325,7 @@ fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> s
     // THE BUILD MODE JOINS: one store serves every compiler AND every target, so a
     // host object and a wasm object for one source must not share a key. `built_for`
     // clears this table, since a mode that moved leaves every key stale.
-    let made = node_key(
-        Stored.Obj,
-        [ws.compiler_id(), key_of_parts(ws.key_parts_cached(store, m, path))],
-    )
+    let made = object_key_of_parts(ws, ws.key_parts_cached(store, m, path))
     ws.keys.object_keys.put(key, made)
     made
 }
@@ -1248,8 +1245,13 @@ fn ifaces_digest(ifaces: List<string>) -> string { digest_of(joined(sorted_texts
 /// text, the texts its compile-time runs read, and the interfaces its bodies can see.
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
 export fn obj_key_of(ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
-    key_of_parts(ws.key_parts(store, m, path))
+    object_key_of_parts(ws, ws.key_parts(store, m, path))
 }
+
+/// THE OBJECT KEY OF A FILE'S PARTS under this workspace's compiler and build mode — the
+/// one fold, so a key computed on any route is the key the file was kept under.
+// LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace and parts in, the key out.
+export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string { node_key(Stored.Obj, [ws.compiler_id(), key_of_parts(k)]) }
 
 /// WHAT ONE FILE'S KEY IS MADE OF: its module and path, its text's digest, the
 /// digest of each text its compile-time runs read ("" for one that is gone), the
