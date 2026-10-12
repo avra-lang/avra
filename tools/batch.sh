@@ -151,9 +151,11 @@ batch_build() {
     attacks=
     na=
     plan=
+    draft=
     while [ "$#" -gt 0 ]; do
         case "$1" in
             --plan) plan=1; shift ;;
+            --draft) draft=1; shift ;;
             --n) n=$2; shift 2 ;;
             --attacks-ran) attacks="$attacks$2
 "; shift 2 ;;
@@ -240,13 +242,20 @@ Cache-attacks did not run for these members; the evidence given for each:$needs"
     done
 
     git push -q -u origin "batch-$n" || die "push of batch-$n failed"
-    url=$($gh_ pr create --base main --head "batch-$n" --title "batch #$n:$titles" --body "$body") ||
-        die "could not open the batch PR"
-    bpr=${url##*/}
-    if $gh_ pr merge "$bpr" --auto --squash >/dev/null 2>&1; then
-        echo "batch: #$bpr armed for auto-merge (squash)"
+    if [ -n "$draft" ]; then
+        url=$($gh_ pr create --draft --base main --head "batch-$n" --title "DO NOT MERGE: batch #$n:$titles" --body "$body") ||
+            die "could not open the batch PR"
+        bpr=${url##*/}
+        echo "batch: #$bpr is a draft; it is not armed — ready it with gh pr ready $bpr when it may land"
     else
-        echo "batch: could not arm auto-merge on #$bpr yet — the watcher will arm it" >&2
+        url=$($gh_ pr create --base main --head "batch-$n" --title "batch #$n:$titles" --body "$body") ||
+            die "could not open the batch PR"
+        bpr=${url##*/}
+        if $gh_ pr merge "$bpr" --auto --squash >/dev/null 2>&1; then
+            echo "batch: #$bpr armed for auto-merge (squash)"
+        else
+            echo "batch: could not arm auto-merge on #$bpr yet — the watcher will arm it" >&2
+        fi
     fi
     for pr in $members; do
         title=$(member_facts "$pr" | cut -f4)

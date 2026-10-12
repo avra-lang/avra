@@ -226,6 +226,13 @@ reset_clone
 batch --n 13 --attacks-ran "7=ran" --attacks-na "7=also n/a" 7
 check "$(grep -c 'ran — ran' "$fx/gh.log")" "1" "attacks-na: a run result wins over a reason for the same member"
 
+# ── 12. --draft: the batch PR is a draft, never armed ─────────────────────
+reset_clone
+batch --draft --n 14 2 3
+check "$?" "0" "draft: a draft batch builds and exits 0"
+check "$(grep -c '^pr create --draft --base main --head batch-14 --title DO NOT MERGE: batch #14: #2 #3' "$fx/gh.log")" "1" "draft: the PR is opened as a draft, titled DO NOT MERGE"
+check "$(grep -c '^pr merge' "$fx/gh.log")" "0" "draft: auto-merge is not armed"
+
 echo
 echo "batch tests: $((total - failed))/$total passed"
 [ "$failed" = 0 ]
