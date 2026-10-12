@@ -612,6 +612,8 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         ws.keys.view_parts.set(no_view)
         let no_index: Map<string, NarrowIndex> = {}
         ws.keys.view_index.set(no_index)
+        let no_fns: Map<string, List<FnForm>> = {}
+        ws.keys.file_fns.set(no_fns)
         let no_typed: Map<string, Map<string, List<string>>> = {}
         ws.keys.typed_files.set(no_typed)
         ws.keys.file_owners.set(no_bytes)
@@ -1266,6 +1268,9 @@ export type KeyParts = { module: string, path: string, text: string, runs: List<
 /// view, and its interface form.
 type NamedForm = { dep: int, form: string }
 
+/// A plain free fn of one file as its contract reads: its name and its form.
+type FnForm = { name: string, form: string }
+
 /// A module's view split by what a name reaches: the digest of the lines no name reaches, per
 /// module seen, and the plain free fns by name. `whole` when a file of the view carries no digest.
 export type NarrowIndex = { whole: bool, globals: List<string>, named: Map<string, List<NamedForm>> }
@@ -1452,6 +1457,16 @@ impl Workspace {
         } for i, s in whole]
     }
 
+    /// A file's plain free fns, each with its form — remembered for the build, since every
+    /// module that reaches the file asks for them; cleared with the view they feed.
+    fn file_fns(f: string, fields: List<List<string>>, p: Placed) -> List<FnForm> {
+        let known = self.keys.file_fns.get().get(f)
+        if known != null { return known! }
+        let made = [FnForm { name: fields[j][5], form: placed_form(joined(fields[j], "\t")) } for j in p.lo..p.hi if j < fields.length && plain_fn(fields[j])]
+        self.keys.file_fns.put(f, made)
+        made
+    }
+
     /// The narrowed view of a module: for each module it sees, in `view_parts` order, the digest
     /// of its files' lines no name reaches, and every plain free fn of those files by name.
     fn narrow_index(store: Store, m: ModulePath, deps: List<string>, r: Reach) -> NarrowIndex {
@@ -1471,23 +1486,13 @@ impl Workspace {
                     continue
                 }
                 digests.push(p!.file[6])
-                for j in p!.lo..p!.hi {
-                    if j < fields.length && plain_fn(fields[j]) {
-                        let name = fields[j][5]
-                        named
-                            .put(
-                                name,
-                                (named.get().get(name) ?? [])
-                                    .concat(
-                                        [
-                                            NamedForm {
-                                                dep: i,
-                                                form: interface_form(joined(fields[j], "\t")),
-                                            },
-                                        ],
-                                    ),
-                            )
-                    }
+                for entry in self.file_fns(f, fields, p!) {
+                    named
+                        .put(
+                            entry.name,
+                            (named.get().get(entry.name) ?? [])
+                                .concat([NamedForm { dep: i, form: entry.form }]),
+                        )
                 }
             }
             globals.push(ifaces_digest(digests))

@@ -13,7 +13,7 @@ export AVRA_MAX_COMPILES=0
 R=build/fn-add; fails=0; steps=0
 rm -rf "$R" .avra-cache
 P=$R/fa
-mkdir -p $P/src/m/tests $P/src/n
+mkdir -p $P/src/m/tests $P/src/n $P/src/w
 fail() { fails=$((fails + 1)); echo "FAIL  $1"; }
 printf '[package]\nname = "fa"\nversion = "0.1.0"\n' > $P/avra.toml
 printf 'export fn f() -> int { 1 }\nfn p() -> int { 2 }\nexport type T = { n: int }\n' > $P/src/m/a.av
@@ -22,11 +22,15 @@ printf 'export fn gc() -> int {\n    println("c")\n    10\n}\n' > $P/src/m/c.av
 printf 'use m.{f}\nexport fn gu() -> int { f() * 2 }\n' > $P/src/n/user.av
 printf 'use m.{gc, f}\nexport fn go() -> int { gc() + f() }\n' > $P/src/n/other.av
 printf 'export fn gt() -> int { 3 }\n' > $P/src/n/third.av
-printf 'use n.{gu, go}\nuse m.{gb}\nprintln("${gu()} ${go()} ${gb()}")\n' > $P/src/main.av
-for f in m/a m/b m/c n/user n/other n/third main; do cp $P/src/$f.av $P/$(echo $f | tr / _).orig; done
+printf 'export component widget {\n    run: fn(int) -> int\n}\n' > $P/src/w/widget.av
+printf 'export widget one { n -> n + 1 }\nexport widget two { n -> n + 2 }\n' > $P/src/w/members.av
+printf 'type Entry = { name: string, ran: fn(int) -> int }\nexport collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name\n' > $P/src/w/table.av
+printf 'use w.{entries}\nexport fn gcount() -> int { entries.length }\n' > $P/src/n/count.av
+printf 'use n.{gu, go, gcount}\nuse m.{gb}\nprintln("${gu()} ${go()} ${gb()} ${gcount()}")\n' > $P/src/main.av
+for f in m/a m/b m/c n/user n/other n/third n/count w/widget w/members w/table main; do cp $P/src/$f.av $P/$(echo $f | tr / _).orig; done
 
 chk() { steps=$((steps + 1)); OUT=$(./avra check --time $P 2>&1); ST=$?; }
-back() { for f in m/a m/b m/c n/user n/other n/third main; do cp $P/$(echo $f | tr / _).orig $P/src/$f.av; done; rm -f $P/src/m/tests/*.av; }
+back() { for f in m/a m/b m/c n/user n/other n/third n/count w/widget w/members w/table main; do cp $P/$(echo $f | tr / _).orig $P/src/$f.av; done; rm -f $P/src/m/tests/*.av; }
 add() { printf '\n%s\n' "$2" >> $P/src/$1.av; }
 read_list() { printf '%s\n' "$OUT" | sed -n '/^read:/,$p' | grep '^  ' | awk '{print $1}'; }
 
@@ -99,6 +103,15 @@ printf 'use m.{p}\nspec "p" { given "the private fn" { then "answers two" { p() 
 [ $ST = 0 ] || fail "a test could not read its module's private name: $(printf '%s' "$OUT" | head -3 | tr '\n' ' ')"
 sed -i.bak 's/^fn p()/fn q()/' $P/src/m/a.av; rm -f $P/src/m/a.av.bak; chk
 [ $ST != 0 ] || fail "a renamed private fn left the test that read it checking clean"
+back; chk
+
+# 10. a member added to a collect: the table's reader gets the new answer; an unrelated fn beside the members moves neither
+add w/members 'export widget three { n -> n + 3 }'; chk
+[ $ST = 0 ] || fail "a member added to a collect is refused: $(printf '%s' "$OUT" | head -3 | tr '\n' ' ')"
+case "$(ran)" in *" 3 "*) ;; *) fail "a member added to a collect left the count unchanged: $(ran)" ;; esac
+back; chk
+add w/members 'fn zz_beside_members() -> int { 1 }'; chk
+not_read "an unrelated fn beside a collect's members" n/count.av w/table.av; no_discard "an unrelated fn beside a collect's members"
 back; chk
 
 echo "fn-add-attack: $steps checks, $fails failed"
