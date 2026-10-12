@@ -293,6 +293,31 @@ steps=$((steps+1)); pk_out=$($R/pk/src/main 2>&1)
 
 fi
 
+if section rp; then
+# A PENDING READ IS JUDGED BY PARSING THE READ FILE ALONE. `rp`'s mid.av runs a fn of calc.av,
+# and calc.av sees base.av. Editing a fn of calc.av that mid.av never reaches leaves calc.av
+# to be read while mid.av waits on whether its declaration stands; judging that must not ask
+# calc.av's resolution, which asks the items of every file it sees — parsing base.av and
+# mid.av, held files the holds have not yet settled.
+mkdir -p $R/rp/src/f $R/rp/src/x $R/rp/src/y $R/rp/src/w
+printf '[package]\nname = "rt-rp"\nversion = "0.1.0"\n' > $R/rp/avra.toml
+printf 'use w.{base}\nexport fn twice(n: int) -> int { n * 2 }\nexport fn unused(n: int) -> int { n + base() }\n' > $R/rp/src/y/calc.av
+printf 'export fn base() -> int { 10 }\n' > $R/rp/src/w/base.av
+printf 'use y.{twice}\nexport const J: int = twice(3)\n' > $R/rp/src/x/mid.av
+printf 'use x.{J}\nexport fn shown() -> int { J }\n' > $R/rp/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/rp/src/main.av
+HR "cold rp" check rp 0
+S "rp: built with J's verdict kept" rp
+ed $R/rp/src/y/calc.av "n + base()" "n + base() + 1"
+steps=$((steps+1)); rp_parsed=$(AVRA_QTRACE=1 ./avra check $R/rp 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "parse" { print $3 }')
+case "$rp_parsed" in *"y/calc.av"*) ;; *) fails=$((fails+1)); echo "FAIL  rp: the edited file was not parsed, so the trace read nothing: '$rp_parsed'" ;; esac
+case "$rp_parsed" in *"w/base.av"*|*"x/mid.av"*|*"f/held.av"*) fails=$((fails+1)); echo "FAIL  rp: a held file was parsed to judge a pending read: $(printf '%s' "$rp_parsed" | tr '\n' ' ' | cut -c1-260)" ;; *) [ -n "${VERBOSE:-}" ] && echo "ok    rp: the read file alone was parsed" ;; esac
+S "rp: and the binary follows" rp
+steps=$((steps+1)); rp_out=$($R/rp/src/main 2>&1)
+[ "$rp_out" = "6" ] || { fails=$((fails+1)); echo "FAIL  rp: the published value drifted: printed '$rp_out', wanted '6'"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
