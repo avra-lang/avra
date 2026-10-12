@@ -71,8 +71,8 @@ use compiler.host.{Manifest, Read}
 use diagnostics.{SourceFile}
 use compiler.lower.{Unit}
 use features.{ModuleNames, Namespace, NameFacts, TypeFacts, Settlement}
-use @std.io.{list_dir, is_dir, read_text}
-use @std.path.{joined_path}
+use @std.io.{list_dir, is_dir, exists, read_text}
+use @std.path.{joined_path, dir_of}
 use @std.text.{parse_int}
 use @std.meta.{derive, identity}
 use @std.relation.engine.{
@@ -734,6 +734,22 @@ fn av_files_at(dir: string, name: string) -> List<string> {
         name.ends_with(".av") -> [full]
         _ -> []
     }
+}
+
+/// The directory holding the manifest that a source file belongs to: the nearest
+/// ancestor with an `avra.toml`, absent when none stands above it.
+export fn package_root_of(path: string) -> string? { manifest_above(dir_of(path)) }
+
+fn manifest_above(dir: string) -> string? {
+    if exists(joined_path(dir, "avra.toml")) { return dir }
+    let up = dir_of(dir)
+    if up == dir || up.is_empty() { null } else { manifest_above(up) }
+}
+
+/// What a saved answer's read stands at now: a directory by its listing, a file by
+/// its bytes. A path that cannot be read has no digest.
+export fn current_read_digest(path: string) -> string? {
+    if is_dir(path) { current_listing_digest(path) } else { current_file_digest(path) }
 }
 
 /// A file's own current content, digested — absent as "".
