@@ -244,7 +244,7 @@ export fn code_facts(decls: Decls, bodies: List<Body>, statics: List<Static>, as
     mut shapes: Map<string, string> = {}
     for b in lowered {
         for t in typed_by(b) {
-            if shapes.get("${t.index}") == null { shapes.set("${t.index}", type_shape_cached(decls, t)) }
+            if shapes.get("${t.index}") == null { shapes.set("${t.index}", type_shape_key(decls, t)) }
         }
     }
     CodeFacts {
@@ -464,19 +464,22 @@ fn typed_by(b: Body) -> List<TypeId> { b.params.concat([b.ret]).concat(b.reg_typ
 /// depth in that walk.
 export fn type_shape(decls: Decls, t: TypeId) -> string { shape_in(decls, t, []) }
 
-/// A TYPE'S SHAPE, cached build-wide: `type_shape` starts its walk at the
-/// type with an empty path, so the text is a function of the type alone and
-/// one answer serves every caller. The nested walk stays pure.
-export fn type_shape_cached(decls: Decls, t: TypeId) -> string {
+/// A TYPE'S SHAPE AS A KEY, cached build-wide: `type_shape` starts its
+/// walk at the type with an empty path, so the text is a function of the
+/// type alone — and the text of a type that holds other records is as long
+/// as its whole unfolding, so every consumer (a body's digest, a node's
+/// name, a kept line) holds its digest instead. One answer serves every
+/// caller. The nested walk stays pure.
+export fn type_shape_key(decls: Decls, t: TypeId) -> string {
     let kept? = decls.shape_texts.at(t.index) else { return fresh_shape(decls, t) }
     kept
 }
 
-/// The shape, freshly walked and filed for the next asker.
+/// The shape's key, freshly walked and filed for the next asker.
 fn fresh_shape(decls: Decls, t: TypeId) -> string {
-    let text = type_shape(decls, t)
-    decls.shape_texts.keep(t.index, text)
-    text
+    let key = digest_key(digest_text(new_digest(), type_shape(decls, t)))
+    decls.shape_texts.keep(t.index, key)
+    key
 }
 
 fn shape_in(decls: Decls, t: TypeId, open: List<int>) -> string {
