@@ -251,8 +251,9 @@ fn ruled(store: Store, okey: string) -> bool {
     store.has(Stored.Warn, rules_key(okey)) && store.has(Stored.Warn, findings_key(okey))
 }
 
-/// What a parsed file says now: its `Said`, and its rule findings.
-type Spoken = { said: Said, rules: Ruled }
+/// What a parsed file says now: its `Said`, and its rule findings — found only for a
+/// diagnostics want, the one that speaks them.
+type Spoken = { said: Said, rules: Ruled? }
 
 /// A file's rule findings: rendered for what it says, and as findings rows.
 type Ruled = { rendered: string, rows: List<Finding> }
@@ -1036,21 +1037,25 @@ impl Workspace {
     /// table knows and nothing read said nothing.
     fn all_said(store: Store, p: Program, want: Want) -> List<Said>? {
         mut fresh: Map<string, Spoken> = {}
-        for a in p.files { fresh.set(a.view.source.file, self.says(p, a)) }
+        for a in p.files { fresh.set(a.view.source.file, self.says(p, a, want)) }
         let said = [self.file_said(store, fi.path, fresh.get(fi.path), want) for fi in self.decls.all_files() if fresh.get(fi.path) != null || self.is_held(fi.id)]
         if said.any(it == null) { return null }
         [s! for s in said]
     }
 
-    /// What a parsed file says now: its warnings, and its rule findings —
-    /// kept under every want, printed only under a diagnostics want.
-    fn says(p: Program, a: Analysis) -> Spoken {
+    /// What a parsed file says now: its warnings, and under a diagnostics want its rule
+    /// findings. A binary want runs no rule and keeps no findings: a check that finds none
+    /// kept for a file reads it (`unruled`).
+    fn says(p: Program, a: Analysis, want: Want) -> Spoken {
         let said = Said {
             path: a.view.source.file,
             warnings: p.warned(a.diagnostics),
             cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)],
         }
-        Spoken { said: said, rules: ruled_now(p, a, rule_findings(analysed(a), a.view.stmts)) }
+        match want {
+            .Diagnostics -> Spoken { said: said, rules: ruled_now(p, a, rule_findings(analysed(a), a.view.stmts)) },
+            .Binary -> Spoken { said: said, rules: null },
+        }
     }
 
     /// A read file's key parts: its own under its path, the modules it sees
@@ -1087,8 +1092,8 @@ impl Workspace {
     }
 
     /// One file's `Said`: kept under its key when it parsed, read from there
-    /// when it did not. Its rule findings are kept under every want; only a
-    /// diagnostics want speaks them.
+    /// when it did not. Its rule findings are found, kept and spoken by a
+    /// diagnostics want alone.
     fn file_said(store: Store, path: string, fresh: Spoken?, want: Want) -> Said? {
         // A READ FILE'S KEY MAY OPEN A PENDING READ: `held_okey` gathers one, and a
         // key kept while a token is `?<print>` is a DIFFERENT key from the one the
@@ -1106,13 +1111,10 @@ impl Workspace {
         }
         let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
         self.keep_parts(store, path)
-        let rules = told.rules
+        let rules? = told.rules else { return told.said }
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
         let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
-        match want {
-            .Diagnostics -> told.said with { warnings: spoken([told.said.warnings, rules.rendered]), findings: rules.rows },
-            .Binary -> told.said,
-        }
+        told.said with { warnings: spoken([told.said.warnings, rules.rendered]), findings: rules.rows }
     }
 }
 

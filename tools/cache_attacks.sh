@@ -1039,9 +1039,10 @@ ed $R/vh3/src/leaf/mod.av 'raise_thing(n)?' 'let m = n + 0
     raise_thing(m)?'
 S "vh3: a body-only edit in leaf/mod.av — helper/mod.av stays held" vh3
 
-# RULE FINDINGS ARE KEPT BY EVERY WANT AND SPOKEN BY A CHECK: a build keeps the
-# rows and prints none; a check after that build holds them and speaks what a
-# cold check speaks; a check held on a check's rows speaks the same again.
+# RULE FINDINGS ARE FOUND, KEPT AND SPOKEN BY A CHECK ALONE: a build runs no rule and keeps
+# no rows, so a check after a build reads what it has no rows for and speaks what a cold
+# check speaks; a check held on a check's rows speaks the same again, and a build after
+# that check is a cache hit.
 mkdir -p $R/rw/src
 printf '[package]\nname = "rt-rw"\nversion = "0.1.0"\n' > $R/rw/avra.toml
 printf 'mut n = 1\nprintln("${n}")\n' > $R/rw/src/main.av
@@ -1053,6 +1054,8 @@ rw_after=$(./avra check $R/rw 2>&1 | unwatched)
 steps=$((steps+1)); [ "$rw_after" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check after a build speaks otherwise than a cold check"; }
 rw_held=$(./avra check $R/rw 2>&1 | unwatched)
 steps=$((steps+1)); [ "$rw_held" = "$rw_cold" ] || { fails=$((fails+1)); echo "FAIL  a check held on a check's rows speaks otherwise than a cold check"; }
+rw_hit=$(./avra build --time $R/rw 2>&1)
+steps=$((steps+1)); case "$rw_hit" in *"cache hit"*) ;; *) fails=$((fails+1)); echo "FAIL  a build after a check was not a cache hit: $(printf '%s' "$rw_hit" | grep '^time' | head -2 | tr '\n' ' ')" ;; esac
 
 # THE RATCHET JUDGES EVERY FILE, HELD OR READ: an edit to module `y` alone
 # holds module `x`, and `x/a.av`'s site — new against an empty baseline — must
@@ -1263,7 +1266,7 @@ HR "ee: what inferred fails moves its inferred E — user's stale row is refused
 S "ee: and the binary reads the inferred E" ee
 ee_got=$($R/ee/src/main 2>&1); steps=$((steps+1))
 [ "$ee_got" = "ee ok 1 err neg err inferred" ] || { fails=$((fails+1)); echo "FAIL  ee printed '$ee_got', wanted 'ee ok 1 err neg err inferred'"; }
-HR "ee: a check holds user, whose rule findings the build kept" check ee 0 user/mod.av held
+HR "ee: a check reads user, which no build kept rule findings for" check ee 0 user/mod.av read
 printf '// checked\n' >> $R/ee/src/main.av
 HR "ee: and the next check holds it" check ee 0 user/mod.av held
 ed $R/ee/src/errs/mod.av "Result<int, Said> {
