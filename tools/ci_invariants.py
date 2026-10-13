@@ -23,6 +23,9 @@ lists and refuses by name:
                    run unconditionally; every other leg the `test` aggregate
                    owes names `needs.prepare.outputs.full` in its `if:`, and
                    the aggregate refuses a light run by name.
+  run-mode         a PR's run mode is read from the API at run time (tools/pr_mode.py),
+                   never from the event payload; a light run whose compiler is not
+                   the published one skips the gate and says so.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -198,6 +201,29 @@ def check_release_order(jobs):
 LIGHT_JOBS = ("prepare", "keepers-static", "gate", "codecs", "test")
 
 
+def check_run_mode(workflow_text):
+    """The run mode is decided by tools/pr_mode.py on the PR's API answer, not by
+    the event payload, and a light gate on an unpublished compiler is skipped.
+    Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    refusals = []
+    plan = jobs.get("prepare", "")
+    if "tools/pr_mode.py" not in plan:
+        refusals.append("`prepare` does not read the PR's mode through tools/pr_mode.py")
+    if "github.event.pull_request.draft" in plan:
+        refusals.append("`prepare` decides the run mode from the event payload's draft flag")
+    if "compiler_source: ${{ steps.release.outputs.source }}" not in plan:
+        refusals.append("`prepare` does not expose the compiler's source")
+    gate = jobs.get("gate", "")
+    if "needs.prepare.outputs.compiler_source == 'latest'" not in gate:
+        refusals.append("`gate` runs on a light run whose compiler is not the published one")
+    if "light gate: compiler steps skipped" not in jobs.get("test", ""):
+        refusals.append("`test` does not say why a light gate's compiler steps were skipped")
+    if refusals:
+        return refusals, []
+    return [], ["run-mode: the PR's mode is read from the API; the light gate skips an unpublished compiler"]
+
+
 def check_light_draft(workflow_text):
     """Every heavy leg `test` owes is gated on the full flag, and `test`
     refuses a light run. Answers (refusals, words)."""
@@ -347,6 +373,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_keeper_coverage(make_text, workflow_text),
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
+                  lambda: check_run_mode(workflow_text),
                   lambda: check_warm_edit(make_text)):
         r, w = check()
         refusals += r
@@ -532,8 +559,18 @@ rt-header:
     assert built != real
     assert any("builds a compiler" in x for x in check_light_draft(built)[0]), check_light_draft(built)
 
+    real_wf = open(CHECKS, encoding="utf-8").read()
+    assert check_run_mode(real_wf)[0] == [], check_run_mode(real_wf)
+    payload = real_wf.replace("python3 tools/pr_mode.py)\" = light ] && full=0",
+                              "true)\" = true ] && full=0")
+    assert payload != real_wf
+    assert any("tools/pr_mode.py" in x for x in check_run_mode(payload)[0]), check_run_mode(payload)
+    ungated_gate = real_wf.replace(" && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')", "")
+    assert ungated_gate != real_wf
+    assert any("`gate`" in x for x in check_run_mode(ungated_gate)[0]), check_run_mode(ungated_gate)
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, warm-edit held on fixtures")
+          "light-draft, run-mode, warm-edit held on fixtures")
     return 0
 
 

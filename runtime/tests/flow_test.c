@@ -1088,6 +1088,14 @@ static int traced_scene(void) {
     if (avra_vtask_next() != joiner) return 1;
     avra_vtask_joins(joiner, -2);
     avra_vtask_end(joiner);
+    void* end = avra_gate_new();
+    int64_t gated = avra_vtask_new_at(10, 44);
+    avra_vtask_joins(gated, 41);
+    if (avra_vtask_join(gated, end) != 1) return 1;
+    avra_vgate_ended(end, 41);
+    if (avra_vtask_next() != gated) return 1;
+    avra_vtask_end(gated);
+    avra_rc_release(end);
     avra_vtask_free(claimant);
     avra_rc_release(gate);
     return 0;
@@ -1161,6 +1169,7 @@ static void trace_names_virtual_tasks(const char* self) {
     CHECK(strstr(buf, "join id=43 on=41\n") != NULL, "a virtual join names the task it waits for");
     CHECK(strstr(buf, "claim id=43 by=41 arm=0:0") != NULL, "and its waking names the task that ended");
     CHECK(strstr(buf, "join id=43 on=unrun") != NULL, "a join of a task nothing runs says so");
+    CHECK(strstr(buf, "claim id=44 by=41 arm=0:0") != NULL, "a join parked on a task's end gate is claimed under the task that ended");
 }
 
 // ── more waiters than a fiber holds inline ──────────────────────
