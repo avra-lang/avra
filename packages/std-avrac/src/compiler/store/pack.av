@@ -484,10 +484,7 @@ fn keep_bodies(pack: Pack) {
     let raw = env("AVRA_STORE_REVISIONS")
     let n = if raw == null { KEPT_BODIES } else { parse_int(raw!) ?? KEPT_BODIES }
     if n < 1 { return }
-    let mine = sorted_by(
-        all_body_names(pack.dir),
-        rev_before,
-    )
+    let mine = sorted_by(all_body_names(pack.dir), rev_before)
     for name in mine.slice(0, if mine.length > n { mine.length - n } else { 0 }) {
         let _ = remove(joined_path(pack.dir, name))
         let _ = remove(joined_path(pack.dir, "${name.substring(0, name.length - 5)}.idx"))
@@ -507,8 +504,13 @@ export fn pack_has(pack: Pack, family: string, key: string, read_only: bool = fa
 
 export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = false) -> string? {
     let found = pack_found(pack, family, key, read_only)
-    if traced() { qtrace("Q\tstore\t${if found == null { "miss" } else { "hit" }}\t${family.split("@").first() ?? family}\n") }
+    if traced() { qtrace(lookup_line(found != null, family)) }
     found
+}
+
+/// One lookup's trace line: whether it hit, and the family it asked, stamp left off.
+fn lookup_line(hit: bool, family: string) -> string {
+    "Q\tstore\t${if hit { "hit" } else { "miss" }}\t${family.split("@").first() ?? family}\n"
 }
 
 fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> string? {
