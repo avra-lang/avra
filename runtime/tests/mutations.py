@@ -194,6 +194,7 @@ MUTATIONS = [
     ("a virtual join of an ended task parks", "    if (task_cells(task)[GATE_OPEN]) return 0;\n    alone(f);", "    alone(f);"),
     ("a run begins with its host's schedule", "    g_seeded = 0;\n    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    avra_clock_run_begins();", "    __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);\n    avra_clock_run_begins();"),
     ("the scheduler never stores wanted", "    // PRECOMPTION WORK STANDS exactly while a task runs with others\n    // ready or a deadline filed; the source stands down otherwise.\n    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);\n    g_current = next;", "    // PRECOMPTION WORK STANDS exactly while a task runs with others\n    // ready or a deadline filed; the source stands down otherwise.\n    __atomic_store_n(&avra_tick_wanted, 0, __ATOMIC_RELAXED);\n    g_current = next;"),
+    ("a seeded evaluator task counts its turn before it hears a cancel", "        if (f->cancel_by != 0) { f->unwinding = 1; return 0; }\n        return tick_turn_comes(f);\n", "        return tick_turn_comes(f);\n"),
     ("a run's end keeps its seed", "    g_seeded = outer.seeded;\n", ""),
     ("a run's end restarts the outer schedule's stream", "    g_seed_state = outer.state;\n", "    g_seed_state = (uint64_t)outer.schedule;\n"),
     ("a run's choices are counted as its host's", "    g_choices = outer.choices;\n", ""),

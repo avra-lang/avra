@@ -2225,7 +2225,13 @@ void avra_tick_cold(void) {
 // tick set (no thread exists), so this counts every back-edge.
 int64_t avra_vtask_tick_cold(int64_t t) {
     Fiber* f = virtual_at(t);
-    if (g_seeded) return tick_turn_comes(f);
+    // A CANCEL IS HEARD BEFORE THE TURN IS COUNTED: a schedule decides who
+    // runs next, never whether a request is heard, and a task that
+    // unwinds draws nothing from it.
+    if (g_seeded) {
+        if (f->cancel_by != 0) { f->unwinding = 1; return 0; }
+        return tick_turn_comes(f);
+    }
     if (g_timers_len > 0) fire_due_timers(now_ns());
     if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
     return g_ready_head != NULL;
