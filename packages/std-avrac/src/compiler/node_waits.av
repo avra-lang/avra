@@ -20,13 +20,14 @@ export enum WaitProbe {
     Read
     Chain
     Record
+    Select
 }
 
 /// Whether a node of this kind may wait at all.
 export fn may_wait(p: WaitProbe) -> bool {
     match p {
         .None -> false,
-        .Call or .Method or .Value or .Spawn or .Read or .Chain or .Record -> true,
+        .Call or .Method or .Value or .Spawn or .Read or .Chain or .Record or .Select -> true,
     }
 }
 
@@ -53,11 +54,13 @@ export fn wait_probe(e: Expr) -> WaitProbe {
         .Spawn(_) -> WaitProbe.Spawn,
         .Prop(_, _) -> WaitProbe.Read,
         .Chain(_, _) -> WaitProbe.Chain,
+        // a `select` rests on its arms
+        .Select(_, _) -> WaitProbe.Select,
         // a record literal runs the defaults of the fields it leaves out
         .StructLit(_, _, _) -> WaitProbe.Record,
         // a component instance's expansion stands in its place, inside
         // the body's range, and is answered node by node
-        .Component(_, _, _, _, _) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Within(_, _) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Error or .Collect(_) or .BytesLit(_) or .Range(_, _) or .Env(_) -> WaitProbe.None,
+        .Component(_, _, _, _, _) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Within(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Error or .Collect(_) or .BytesLit(_) or .Range(_, _) or .Env(_) -> WaitProbe.None,
     }
 }
 
@@ -76,6 +79,7 @@ impl WaitReader {
             .Read -> self.read(node),
             .Chain -> self.chained(node),
             .Record -> self.record(e, node),
+            .Select -> [NodeWait.Reads("select")],
         }
     }
 

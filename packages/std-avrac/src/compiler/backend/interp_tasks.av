@@ -50,6 +50,11 @@ extern fn avra_task_done(task: ptr) -> int
 extern fn avra_task_cancel(task: ptr)
 extern fn avra_vtask_park(t: int) -> int
 extern fn avra_vtask_claim(t: int) -> int
+/// A scan begins for the task: 0, or the claim a park would answer.
+extern fn avra_vtask_enter(t: int) -> int
+/// The task rests on what it filed: 1 parked, 0 claimed already, -1
+/// with nothing filed.
+extern fn avra_vtask_rest(t: int) -> int
 extern fn avra_vtask_cancel(t: int, by: int)
 extern fn avra_vgate_open(gate: ptr)
 extern fn avra_vgate_ended(gate: ptr, by: int)
@@ -597,10 +602,36 @@ impl Machine {
     /// once when the set is claimed already, else when it resumes here.
     fn wait_park_val() -> Val {
         let vt = self.running_vt()
-        if self.woke() || avra_vtask_park(vt) == 0 {
-            self.tasks[self.running].arming = false
-            return Val.I(avra_vtask_claim(vt))
-        }
+        if self.woke() || avra_vtask_park(vt) == 0 { return self.claimed(vt) }
+        self.policy_parked()
+        Val.I(0)
+    }
+
+    /// The claim the running task's set answered: it arms no more.
+    fn claimed(vt: int) -> Val {
+        self.tasks[self.running].arming = false
+        Val.I(avra_vtask_claim(vt))
+    }
+
+    /// A scan begins: a standing cancel or a passed limit is heard
+    /// before any arm is looked at, and answered as the claim a park
+    /// would have made.
+    fn wait_enter_val() -> Val {
+        let vt = self.running_vt()
+        let claim = avra_vtask_enter(vt)
+        self.unwind_met(vt)
+        Val.I(claim)
+    }
+
+    /// The scan found nothing ready: the task rests on what it filed,
+    /// and the claim that wakes it is a hint — the scan decides again.
+    /// With nothing filed no arm can ever fire.
+    fn wait_rest_val() -> Val {
+        let vt = self.running_vt()
+        if self.woke() { return self.claimed(vt) }
+        let rested = avra_vtask_rest(vt)
+        if rested < 0 { return self.trapped_val("a `select` had no open arm") }
+        if rested == 0 { return self.claimed(vt) }
         self.policy_parked()
         Val.I(0)
     }

@@ -1,7 +1,7 @@
 // The front end, vertically: every arm form parses and prints back as
 // written, the laws a builder holds are spoken in its words, and a
 // `select` that types is refused by name where it is lowered.
-use @std.avrac.testing.{projected, refused_with, refused_at_run, refused_in, floored_beside, answered}
+use @std.avrac.testing.{projected, refused_with, refused_at_run, refusals, refused_in, floored_beside, answered, shown}
 use compiler.{Program}
 
 /// Whether `source` is its own canonical form — it parsed, and the
@@ -16,10 +16,9 @@ fn tasks() -> string {
     "fn one() -> int {\n    1\n}\nfn hush() {\n}\nlet job = spawn one()\nlet mute = spawn hush()\nlet jobs = [spawn one(), spawn one()]\n"
 }
 
-/// Whether a `select` over those tasks types clean — it is refused by
-/// name where it is lowered, and nowhere before.
+/// Whether a `select` over those tasks types clean.
 fn types(body: string) -> bool {
-    refused_at_run("${tasks()}${body}", "`select` is typed and not yet lowered")
+    refusals("${tasks()}${body}") == 0
 }
 
 /// Whether a `select` over those tasks is refused in typing's words.
@@ -205,9 +204,21 @@ spec "features/select_expr" {
                 .contains("`select` is typed and not yet lowered")
         }
     }
-    given "lowering" {
-        then "a `select` that types is refused by name, where it is lowered" {
-            types("select {\n    job -> 1\n}")
+    given "lowering — the scan chooses" {
+        then "a task arm binds the answer and its body answers" {
+            shown("fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r + 1\n}\n\"\${v}\"") == "42"
+        }
+        then "a bare head waits and binds nothing" {
+            shown("fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    job -> 7\n}\n\"\${v}\"") == "7"
+        }
+        then "`else` answers when nothing is ready" {
+            shown("fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    else -> 0 - 1\n}\n\"\${v}\"") == "-1"
+        }
+        then "a `select` answering nothing stands as a statement" {
+            shown("fn one() -> int {\n    41\n}\nlet seen = Cell.new(0)\nlet job = spawn one()\nselect {\n    r in job -> seen.set(r)\n}\nseen.get()") == "41"
+        }
+        then "a shape with no lowering yet is refused by name, once" {
+            refused_at_run("${tasks()}select {\n    r in jobs -> r\n}", "`select` is typed and not yet lowered")
         }
     }
 }

@@ -479,6 +479,15 @@ impl LowerCx {
         dst
     }
 
+    /// A task's answer, joined: free over a task that is done, a park
+    /// over one that runs. A task answering nothing answers a hollow.
+    mut fn task_answer(task: Reg, task_ty: TypeId) -> Reg {
+        let answer = self.view.types.task_answer(task_ty) ?? task_ty
+        let cell = self.task_join(self.view.types.shape_of(self.answer_cell(answer)), task)
+        if self.view.types.shape_of(answer) is .Void { return self.hollow_of(answer) }
+        self.slot_read(cell, 0, answer)
+    }
+
     /// The box one answer rides: a slot of its type — an int slot for
     /// an answer of nothing.
     fn answer_cell(ty: TypeId) -> TypeId {
