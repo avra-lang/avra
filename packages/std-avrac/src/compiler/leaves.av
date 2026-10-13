@@ -355,6 +355,32 @@ impl Workspace {
         "leaves ${fam.name}: ${named} of ${settled} answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}"
     }
 
+    /// One settled answer as a line: its family, its name and its digest; nothing for an
+    /// answer that is unnamed or unsettled.
+    fn digest_line(r: AnswerRef, arg: int) -> string? {
+        let name? = r.spelled(arg) else { return null }
+        let digest? = r.hash(arg) else { return null }
+        "leaves-digest\t${r.name}\t${name}\t${digest}"
+    }
+
+    /// Every named answer's digest, one line each, so two processes' digests can be compared.
+    fn leaves_digests() -> List<string> {
+        let top = [
+            self.decls.decl_count(),
+            self.decls.file_count(),
+            self.settle_asks.get().length,
+            self.asks.get().length,
+            self.input_names.get().length,
+            self.packages().length,
+            self.decls.name_bucket_count(),
+        ]
+            .fold(0, (a: int, b: int) -> if a > b { a } else { b })
+        let lines = flatten(
+            [[self.digest_line(r, a) for a in 0..top] for r in self.decls.rows_db.get().answer_refs.get()],
+        )
+        [l! for l in lines if l != null]
+    }
+
     /// Every family the meter covers.
     fn leaves_report() -> string {
         [
@@ -362,6 +388,7 @@ impl Workspace {
             self.leaves_meter(Family.Lowered, self.asks.get().length),
             self.leaves_meter(Family.Settled, self.settle_asks.get().length),
         ]
+            .concat(self.leaves_digests())
             .join("\n")
     }
 
