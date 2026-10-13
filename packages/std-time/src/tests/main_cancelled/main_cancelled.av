@@ -1,0 +1,19 @@
+// proves: a cancel passes up a chain of bare awaits to the program's own
+// run — its `defer` runs, then one line names the task that first asked,
+// and the process exits 1
+use @std.time.{ms, secs, sleep}
+
+let first = spawn {
+    sleep(secs(60))
+    1
+}
+let second = spawn { first.await + 1 }
+let third = spawn { second.await + 1 }
+let asker = spawn {
+    sleep(ms(1))
+    first.cancel()
+    0
+}
+defer eprintln("main's defer ran")
+let v = third.await
+println("unreached ${v} ${asker.done}")
