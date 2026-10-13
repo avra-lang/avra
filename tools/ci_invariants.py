@@ -214,6 +214,9 @@ def check_light_draft(workflow_text):
         cond = re.search(r"^    if:\s*(.+)$", jobs.get(leg, ""), re.M)
         if not cond or "needs.prepare.outputs.full" not in cond.group(1):
             refusals.append("`%s` is owed by `test` but is not gated on `needs.prepare.outputs.full`" % leg)
+    compiler = re.search(r"^      - if: (.+)\n        name: compiler$", jobs.get("prepare", ""), re.M)
+    if not compiler or "steps.plan.outputs.full == '1'" not in compiler.group(1):
+        refusals.append("`prepare` builds a compiler on a light run the published one could serve")
     if "needs.prepare.outputs.full == '0'" not in jobs.get("test", ""):
         refusals.append("`test` does not refuse a light draft's run")
     if refusals:
@@ -523,6 +526,11 @@ rt-header:
     assert any("cache-attacks" in x for x in check_light_draft(ungated)[0]), check_light_draft(ungated)
     silent = real.replace("if: needs.prepare.outputs.full == '0'", "if: false")
     assert any("does not refuse" in x for x in check_light_draft(silent)[0]), check_light_draft(silent)
+
+    # a light run that builds a compiler the published one could serve is refused
+    built = real.replace(" && (steps.plan.outputs.full == '1' || steps.release.outputs.source == 'none')", "")
+    assert built != real
+    assert any("builds a compiler" in x for x in check_light_draft(built)[0]), check_light_draft(built)
 
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
           "light-draft, warm-edit held on fixtures")
