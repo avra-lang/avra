@@ -474,6 +474,7 @@ export type Decls = {
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
     held_items: Cell<Map<string, List<DeclId>>>,
+    spliced: Cell<Map<string, List<DeclId>>>,
     /// Each file's declarations by kind, owner and name, keyed by file
     /// index, kept until the file holds more declarations than it was
     /// indexed with.
@@ -820,6 +821,7 @@ export fn new_decls() -> Decls {
         meta_ids: map_cell(),
         held: map_cell(),
         held_items: map_cell(),
+        spliced: map_cell(),
         wire_index: map_cell(),
         faces: Cell.new(no_faces),
         doc_facts: Cell.new(side_table("doc_facts", 0, 0, DocFact { doc: null, annotations: [] })),
@@ -1277,6 +1279,16 @@ impl Decls {
             if !self.expansion_voices.get()[f.index].get().any(same_voice(it, d)) { self.expansion_voices.get()[f.index].push(d) }
         }
     }
+
+    /// The declarations an earlier splice of this very code made, while
+    /// every one of them still stands: a re-entrant expansion asks again
+    /// and reads them instead of splicing a second copy into the store.
+    fn spliced_before(key: string) -> List<DeclId>? {
+        let made? = self.spliced.get().get(key) else { return null }
+        if made.all((d) -> self.row_at(d.index) != null) { made } else { null }
+    }
+
+    fn splice_kept(key: string, made: List<DeclId>) { self.spliced.put(key, made) }
 
     /// A file's expansion begins with nothing refused.
     fn hush_expansion(f: FileId) {
