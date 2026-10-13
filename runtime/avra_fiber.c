@@ -194,6 +194,9 @@ enum { HELD = 4 };
 // set its waiters belong to is its own — `claimed`, `arm`, `member`.
 // TO WAKE IS TO CLAIM: the first source to claim the set writes its arm
 // and readies the task; every later one finds it claimed and moves on.
+// A claim is another party's (CLAIMED) or the task's OWN: an arm it
+// found ready as it armed, which promised nothing to anyone.
+enum { CLAIMED = 1, CLAIMED_OWN = 2 };
 struct Fiber {
     void* sp;               // the saved stack top while switched out; NULL until first run
     uintptr_t floor;        // a saved stack top below this has left the stack; 0 for main
@@ -207,7 +210,7 @@ struct Fiber {
     void* joining;          // the task this fiber waits to join, else NULL
     int state;
     int virtual;            // the evaluator's: filed here, switched by the evaluator
-    uint8_t claimed;        // the set has been claimed
+    uint8_t claimed;        // the set has been claimed: CLAIMED, or CLAIMED_OWN
     uint8_t parked;         // switched out on an unclaimed set
     uint8_t legacy;         // parked by a sleep, a join or a descriptor park: cleared at its claim
     uint8_t deaf;           // a scope's end joining what it owns: no cancel cuts the join
@@ -218,6 +221,7 @@ struct Fiber {
     uint8_t shield_depth;   // `defer`s running under a shield: calls are not cut between them
     uint8_t shield_saved;   // the unwind bit the outermost shield bracket saved
     uint8_t wide;           // a case's own task: it runs on the wide stack
+    uint8_t own_turns;      // parks that answered its own claim since it last asked the world
     int32_t arm, member;    // the claim
     uint32_t held_n;
     int64_t cancel_by;      // 1 + the id of the task that asked, else 0
@@ -996,8 +1000,12 @@ static int64_t within_opened(Fiber* f, int64_t ms) {
     *scope_at(f, i) = (Scope){ id, at, first, f->shield_depth > 0 };
     f->scopes_n = i + 1;
     // A STANDING DEADLINE ARMS THE SOURCE: a task that never waits files
-    // no timer, so the tick must fire for the cold side to see it.
+    // no timer, so the tick must fire for the cold side to see it. The
+    // source is brought up here too: a lone main readies no task, so no
+    // other transition starts one. An evaluated task's turns are the
+    // evaluator's own count and need no thread.
     __atomic_store_n(&avra_tick_wanted, 1, __ATOMIC_RELAXED);
+    if (!f->virtual && !pinned()) avra_tick_armed();
     if (f->armed != i) return id;
     f->armed = i + 1;
     owner_found(f);
@@ -1436,7 +1444,7 @@ void avra_fiber_overflowed(const Fiber* f) {
 __attribute__((noinline, cold))
 static void switched_to_fresh(Fiber* self, Fiber* next) {
     fiber_bound(next);
-    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1454,8 +1462,9 @@ static inline void switch_to(Fiber* next) {
     if (next == self) return;
     if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
     // PRECOMPTION WORK STANDS exactly while a task runs with others
-    // ready or a deadline filed; the source stands down otherwise.
-    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
+    // ready, a deadline filed or a cancel asked of it; the source stands
+    // down otherwise.
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1691,7 +1700,11 @@ static void waits_until(Fiber* f, int64_t at_ns, int64_t arm, int64_t member) {
 
 static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
     if (f->claimed) return;
-    if (task_cells(gate)[GATE_OPEN]) { set_claimed(f, (int32_t)arm, (int32_t)member, id_of(f)); return; }
+    if (task_cells(gate)[GATE_OPEN]) {
+        set_claimed(f, (int32_t)arm, (int32_t)member, id_of(f));
+        if (f->claimed) f->claimed = CLAIMED_OWN;
+        return;
+    }
     Waiter* w = waiter_new(f, W_GATE, arm, member);
     w->on.gate = gate;
     avra_rc_retain(gate);
@@ -1741,15 +1754,43 @@ static int virtual_cancel_stands(Fiber* f) {
     return 1;
 }
 
+// A PARK THAT ANSWERS THE TASK'S OWN CLAIM SWITCHES TO NOBODY, AND IS
+// STILL A TURN FOR THE WORLD: every FAIR_TURNS of them, while a timer
+// or a descriptor waiter is filed, due timers fire and the poller is
+// asked — or a task whose every wait finds an arm ready would never
+// see its own limit pass, and nobody it could wake would wake. The
+// count is the task's, so one schedule gives one order whatever ran
+// before it.
+__attribute__((noinline, cold))
+static void world_asked(Fiber* f) {
+    f->own_turns = 0;
+    if (g_timers_len > 0) fire_due_timers(now_ns());
+    if (g_parked_fds > 0) poller_wait(0);
+}
+
+// A cut — a cancel, a passed limit — answers in place of the arm a
+// task claimed for itself.
+__attribute__((noinline, cold))
+static void cut_claims(Fiber* f, int32_t member, int64_t by) {
+    f->claimed = 0;
+    set_claimed(f, -1, member, by);
+}
+
 // The set is about to be waited on: whether the task must switch out.
-// A CLAIM COMES FIRST — a value handed while the set was arming is
-// taken before anything else is heard — then a cancel that stands, then
-// a deadline that has passed.
-static int park_begun(Fiber* f) {
+// ANOTHER PARTY'S CLAIM COMES FIRST — a value handed while the set was
+// arming is taken before anything else is heard — then a cancel that
+// stands, then a deadline that has passed, and THE TASK'S OWN CLAIM
+// LAST: a task whose every wait finds an arm ready hears both. Such a
+// task takes this path every turn, so it stays in line and calls
+// nothing while no cancel, no limit and no count comes due.
+__attribute__((always_inline))
+static inline int park_begun(Fiber* f) {
     f->heeds = 1;
+    if (f->claimed == CLAIMED) return 0;
+    if (f->claimed && (g_timers_len > 0 || g_parked_fds > 0) && ++f->own_turns >= FAIR_TURNS) world_asked(f);
+    if (f->cancel_by != 0 && !shield_scope_stands(f)) { cut_claims(f, 0, f->cancel_by - 1); return 0; }
+    if ((f->scope_by | f->deadline) != 0 && deadline_passed(f)) { cut_claims(f, 1, BY_DEADLINE); return 0; }
     if (f->claimed) return 0;
-    if (f->cancel_by != 0 && !shield_scope_stands(f)) { set_claimed(f, -1, 0, f->cancel_by - 1); return 0; }
-    if (deadline_passed(f)) { set_claimed(f, -1, 1, BY_DEADLINE); return 0; }
     f->parked = 1;
     f->state = FIBER_PARKED;
     return 1;
@@ -2233,7 +2274,13 @@ void avra_tick_cold(void) {
 // tick set (no thread exists), so this counts every back-edge.
 int64_t avra_vtask_tick_cold(int64_t t) {
     Fiber* f = virtual_at(t);
-    if (g_seeded) return tick_turn_comes(f);
+    // A CANCEL IS HEARD BEFORE THE TURN IS COUNTED: a schedule decides who
+    // runs next, never whether a request is heard, and a task that
+    // unwinds draws nothing from it.
+    if (g_seeded) {
+        if (f->cancel_by != 0) { f->unwinding = 1; return 0; }
+        return tick_turn_comes(f);
+    }
     if (g_timers_len > 0) fire_due_timers(now_ns());
     if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
     return g_ready_head != NULL;
@@ -2538,6 +2585,8 @@ int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
 void avra_vtask_cancel(int64_t t, int64_t by) { fiber_cancelled(virtual_at(t), by); }
 
 void avra_vgate_open(void* gate) { gate_opened(gate, BY_CLOSE); }
+
+void avra_vgate_ended(void* gate, int64_t by) { gate_opened(gate, by); }
 
 // A claim made by a virtual task: the claimant is that task, never
 // whoever the host happens to be running.

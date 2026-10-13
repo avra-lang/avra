@@ -20,8 +20,9 @@ use @std.process.{
     exit_text,
     parallel,
     race,
+    serving,
 }
-use @std.time.{ms, secs, now_ms}
+use @std.time.{ms, secs, now_ms, now_ns, sleep}
 use @std.text.{from_codepoint}
 
 fn posix_sh() -> Result<Tool, ProcessError> {
@@ -442,6 +443,26 @@ fn parallel_capped_pays_no_grace() -> Result<int, ProcessError> {
     ) { .Ok(_) -> .Err(ProcessError.Empty("expected TooMuch")), .Err(_) -> .Ok(now_ms() - began) }
 }
 
+fn napped() -> int {
+    sleep(secs(5))
+    0
+}
+
+fn served_asleep(c: Command) -> bool { serving(c, Ready.Started, secs(2), () -> napped()) is .Ok }
+
+/// A child served around a body whose task is cancelled mid-body:
+/// whether it was stopped before it could leave its mark.
+fn unwound_child_stopped() -> Result<bool, ProcessError> {
+    let s = tool("sh")?
+    let mark = "/tmp/avra-unwound-${now_ns()}"
+    let t = spawn served_asleep(cmd(s, ["-c", "sleep 1; : > ${mark}"]))
+    sleep(ms(100))
+    t.cancel()
+    sleep(ms(50))
+    let left = (cmd(s, ["-c", "sleep 1.3; test -e ${mark} && rm ${mark}"]).outcome()?).exit is .Clean
+    !left
+}
+
 spec "std/process adversarial" {
     given "a NUL makes a value two values, so the host is never handed one" {
         then "a tool path holding a NUL refuses — it does NOT run the truncated program" {
@@ -725,5 +746,8 @@ spec "std/process adversarial" {
         then "a bound break pays no grace — a capped stage returns fast" {
             (parallel_capped_pays_no_grace() catch 9999) < 500
         }
+    }
+    given "a task unwound inside `serving`'s body" {
+        then "the child is stopped with its tree" { unwound_child_stopped() catch false }
     }
 }

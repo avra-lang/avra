@@ -1,0 +1,93 @@
+// A KEPT PLACE FOLLOWS ITS DECLARATION. A place is kept relative to the declaration that
+// holds it, round-tripped through its wire, and read back against a parse where text was
+// inserted above it: it must land where the SAME bytes now stand — never where an
+// encoder of the shifted parse would put them.
+use compiler.{Anchoring, Whereabouts, anchoring_wire, anchoring_of_wire}
+use @std.errors.{Loc}
+
+fn path() -> string { "/w/src/b.av" }
+
+fn base() -> string {
+    "use a.{one}\n\nfn first() -> int {\n    1\n}\n\nfn second(n: int) -> int {\n    n + 2\n}\n\nimpl Box {\n    fn get() -> int {\n        self.v\n    }\n}\n"
+}
+
+fn shifted() -> string { "// a line\n// another\n${base()}" }
+
+/// `needle`'s first occurrence in `text`, as a place; `width` bytes, or 0 for a position.
+fn place_of(text: string, needle: string, from: int, width: int) -> Loc {
+    let lo = text.index_of(needle) + from
+    Loc { file: path(), lo: lo, hi: lo + width }
+}
+
+/// Where `kept` (made over `before`) stands in a parse of `after`, after a trip through its wire.
+fn follows(before: string, after: string, what: Loc) -> Loc? {
+    let a = a_process_over({path(): before}, [path()])
+    let kept = a.anchoring(what)
+    let wire = anchoring_wire(kept)
+    let read? = anchoring_of_wire(wire) else { return null }
+    let b = a_process_over({path(): after}, [path()])
+    match b.whereabouts(read) { .At(l) -> l, .Gone -> null }
+}
+
+/// The same bytes in `after`: `what` moved by the inserted prefix.
+fn moved(what: Loc, by: int) -> Loc { Loc { file: what.file, lo: what.lo + by, hi: what.hi + by } }
+
+fn lands(needle: string, from: int, width: int) -> bool {
+    let what = place_of(base(), needle, from, width)
+    let got = follows(base(), shifted(), what)
+    got != null && got!.lo == what.lo + 21 && got!.hi == what.hi + 21
+}
+
+fn kept_of(text: string, what: Loc) -> Anchoring { a_process_over({path(): text}, [path()]).anchoring(what) }
+
+spec "compiler/rel_loc — a kept place follows its declaration" {
+    given "text inserted above" {
+        then "a place at a declaration's first byte" { lands("fn second", 0, 2) }
+        then "a zero-width place at a declaration's first byte" { lands("fn second", 0, 0) }
+        then "a place inside a body" { lands("n + 2", 0, 5) }
+        then "a place running to the declaration's end" { lands("fn first() -> int {\n    1\n}", 0, 26) }
+        then "a place in a method nested in an impl" { lands("self.v", 0, 6) }
+        then "a place on a use line, which is a declaration of its own" { lands("use a", 0, 5) }
+    }
+    given "a place in another file's declaration" {
+        then "a copied template's place names its ORIGIN file, and follows that file's declaration" {
+            let origin = "/w/src/o.av"
+            let text = "fn made() -> int {\n    7\n}\n"
+            let moved = "// moved\n${text}"
+            let what = Loc { file: origin, lo: text.index_of("7"), hi: text.index_of("7") + 1 }
+            let files = {origin: text, "/w/src/b.av": "fn other() -> int {\n    1\n}\n"}
+            let a = a_process_over(files, [origin, "/w/src/b.av"])
+            let read? = anchoring_of_wire(anchoring_wire(a.anchoring(what))) else { return false }
+            let b = a_process_over(
+                {origin: moved, "/w/src/b.av": "fn other() -> int {\n    1\n}\n"},
+                [origin, "/w/src/b.av"],
+            )
+            match b.whereabouts(read) {
+                .At(l) -> l.file == origin && l.lo == what.lo + 9 && l.hi == what.hi + 9,
+                .Gone -> false,
+            }
+        }
+    }
+    given "a place no declaration holds whole" {
+        then "one that starts in a declaration and ends in the next is unplaceable" {
+            match kept_of(base(), place_of(base(), "1\n}", 0, 20)) {
+                .Unplaceable -> true,
+                rest -> false,
+            }
+        }
+        then "one with no file is unplaceable" {
+            match kept_of(base(), Loc { file: null, lo: 3, hi: 4 }) {
+                .Unplaceable -> true,
+                rest -> false,
+            }
+        }
+        then "a declaration gone reads back gone" {
+            let kept = kept_of(base(), place_of(base(), "n + 2", 0, 5))
+            let b = a_process_over({path(): "fn first() -> int {\n    1\n}\n"}, [path()])
+            match b.whereabouts(kept) { .Gone -> true, .At(l) -> false }
+        }
+    }
+    given "the wire" {
+        then "a text no encoder wrote reads as none" { anchoring_of_wire("A1w3:ab") == null }
+    }
+}

@@ -4,6 +4,7 @@
 use @std.sqlite.open.{Db}
 use @std.sqlite.error.{SqlError}
 use @std.sqlite.sql.{sql, Row, SqlValue}
+use @std.sqlite.c.{sqlite3_next_stmt}
 
 fn fadv_db() -> Result<Db, SqlError> {
     mut db = Db.memory()?
@@ -13,6 +14,17 @@ fn fadv_db() -> Result<Db, SqlError> {
 
 fn fadv_kind<T>(r: Result<T, SqlError>) -> string {
     match r { .Ok(_) -> "", .Err(e) -> e.cause.kind() }
+}
+
+/// A script whose insert fails at its step, then the statements
+/// the connection still holds: whether the script failed and left none.
+fn failed_script_leaves_none() -> Result<bool, SqlError> {
+    let db = Db.memory()?
+    let ran = db.exec("create table t (id integer primary key); insert into t values (1), (1)")
+    let held? = db.raw.get() else { return false }
+    let left = sqlite3_next_stmt(held, null) != null
+    db.close()
+    ran is .Err && !left
 }
 
 spec "std/sqlite face adversarial" {
@@ -96,6 +108,9 @@ spec "std/sqlite face adversarial" {
         // a trailing comment are two DIFFERENT map keys — no sharing,
         // and each pays its own prepare, but both still run correctly.
         then "texts differing by whitespace are cached separately and both still work" { fadv_cache_whitespace_variants() == "1|1" }
+    }
+    given "a script whose statement fails as it runs" {
+        then "the failed statement is finalized, and the connection holds none" { failed_script_leaves_none() catch false }
     }
 }
 
