@@ -2,7 +2,7 @@
 //! read by a name that outlives the process and the digest of the value read. A relation
 //! is named by its rows; a compiler family is named here, by the durable key of the
 //! declaration it answers for and its settled hash.
-use core.{DeclId, FileId, distinct, joined}
+use core.{DeclId, FileId, ModuleId, distinct, joined}
 use @std.relation.db.{AnswerRef}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
@@ -43,11 +43,11 @@ impl Workspace {
 
     /// The consts' types, spelled by the const's declaration and the seats it was asked
     /// under. A settlement of an expression has no declaration to name it.
-    fn named_consts() -> AnswerRef {
+    fn named_consts(name: string, fam: Family) -> AnswerRef {
         let ws = self
-        let ordinal = Family.ConstTyped.ordinal
+        let ordinal = fam.ordinal
         AnswerRef {
-            name: "ConstTyped",
+            name: name,
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
@@ -84,17 +84,48 @@ impl Workspace {
         }
     }
 
+    /// The answers of `fam`, keyed by module, spelled by the module's dotted name.
+    fn named_by_module(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_module(arg),
+            arg: (spelled: string) -> ws.module_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    /// The one answer of a whole-program family, spelled by the family's name.
+    fn named_once(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> if arg == 0 { name } else { null },
+            arg: (spelled: string) -> if spelled == name { 0 } else { null },
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
     /// The families whose answers are named, registered with the declaration table's Db.
     fn answers_named() {
         let rdb = self.decls.rows_db.get()
         rdb.answer_known(self.named_sigs())
-        rdb.answer_known(self.named_consts())
+        rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
+        rdb.answer_known(self.named_consts("Settled", Family.Settled))
         rdb.answer_known(self.named_by_decl("Marks", Family.Marks))
         rdb.answer_known(self.named_by_decl("Methods", Family.Methods))
         rdb.answer_known(self.named_by_file("Parsed", Family.Parsed))
         rdb.answer_known(self.named_by_file("Items", Family.Items))
         rdb.answer_known(self.named_by_file("Visible", Family.Visible))
         rdb.answer_known(self.named_by_file("Resolved", Family.Resolved))
+        rdb.answer_known(self.named_by_file("Analysis", Family.Analysis))
+        rdb.answer_known(self.named_by_decl("Names", Family.Names))
+        rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
+        rdb.answer_known(self.named_once("References", Family.References))
         rdb.answer_known(self.named_by_bucket())
     }
 
@@ -119,6 +150,16 @@ impl Workspace {
     fn file_arg(spelled: string) -> int? {
         let f? = self.decls.known_file_id(spelled) else { return null }
         f.index
+    }
+
+    fn spelled_module(arg: int) -> string? {
+        if arg < 0 || arg >= self.decls.module_rows.get().count() { return null }
+        self.decls.module_name(ModuleId { index: arg })
+    }
+
+    fn module_arg(spelled: string) -> int? {
+        let m? = self.decls.known_module_id(spelled) else { return null }
+        m.index
     }
 
     fn spelled_decl(arg: int) -> string? {
@@ -153,7 +194,13 @@ impl Workspace {
     }
 
     /// Every family the meter covers.
-    fn leaves_report() -> string { self.leaves_meter(Family.Typed, self.decls.decl_count()) }
+    fn leaves_report() -> string {
+        [
+            self.leaves_meter(Family.Typed, self.decls.decl_count()),
+            self.leaves_meter(Family.Lowered, self.asks.get().length),
+        ]
+            .join("\n")
+    }
 
     fn family_name(ordinal: int) -> string {
         [f.name for f in Family.all() if f.ordinal == ordinal].first() ?? "family ${ordinal}"
