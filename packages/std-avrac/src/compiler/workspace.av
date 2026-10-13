@@ -1793,10 +1793,11 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
+        let ids = self.decls.ids()
         visible_of(
             self
                 .relation(Family.Visible)
-                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r))),
+                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r), ids)),
         )
     }
 
@@ -1851,10 +1852,11 @@ impl Workspace {
         let out = resolved with { voices: Voices {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
+        let ids = self.decls.ids()
         resolved_of(
             self
                 .relation(Family.Resolved)
-                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r))),
+                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r), ids)),
         )
     }
 
@@ -2076,7 +2078,7 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
         let x = self.decls.decl(d)
-        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi)
+        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
         self.db.settle(k, h)
         h
     }
@@ -2197,10 +2199,11 @@ impl Workspace {
             self.db.abandon(key(Family.Typed, d.index))
             return out
         }
+        let ids = self.decls.ids()
         typed_of(
             self
                 .relation(Family.Typed)
-                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r))),
+                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r), ids)),
         )
     }
 
