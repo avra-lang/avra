@@ -234,8 +234,7 @@ export type Kernel = {
     verdicts: Cell<List<int>>,
     /// Cells written.
     settles: Cell<int>,
-    /// The clock the open frames are timed by, when the process asked for timing.
-    clock: Cell<fn() -> int>,
+    /// Whether the open frames are timed, when the process asked for timing.
     timing: Cell<bool>,
     /// Each open frame's start, and the time its closed children took.
     starts: Cell<List<int>>,
@@ -281,7 +280,6 @@ export fn new_kernel() -> Kernel {
         misses: Cell.new(0),
         verdicts: list_cell(),
         settles: Cell.new(0),
-        clock: Cell.new(timed_clock().get()),
         timing: Cell.new(timing_all().get()),
         starts: list_cell(),
         inners: list_cell(),
@@ -897,8 +895,7 @@ impl Kernel {
 
     /// A frame opened is timed from here.
     fn frame_opened() {
-        let now = self.clock.get()
-        self.starts.push(now())
+        self.starts.push(avra_now_ns())
         self.inners.push(0)
     }
 
@@ -906,8 +903,7 @@ impl Kernel {
     /// and all of it is its parent's child time.
     fn frame_closed(family: int) {
         if self.starts.get().is_empty() { return }
-        let now = self.clock.get()
-        let elapsed = now() - self.starts.get().last()!
+        let elapsed = avra_now_ns() - self.starts.get().last()!
         let inner = self.inners.get().last()!
         dropped(self.starts)
         dropped(self.inners)
@@ -975,10 +971,7 @@ export fn count_reads() { counting_all().set(true) }
 
 once fn timing_all() -> Cell<bool> { Cell.new(false) }
 
-once fn timed_clock() -> Cell<fn() -> int> { Cell.new(() -> 0) }
+/// Every kernel made from here on times its frames, per family, children excluded.
+export fn time_frames() { timing_all().set(true) }
 
-/// Every kernel made from here on times its frames by `now`, per family, children excluded.
-export fn time_frames(now: fn() -> int) {
-    timed_clock().set(now)
-    timing_all().set(true)
-}
+extern fn avra_now_ns() -> int
