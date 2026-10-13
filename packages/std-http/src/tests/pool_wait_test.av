@@ -83,6 +83,30 @@ fn pw_drop_wakes() -> Result<string, ClientError> {
     .Ok("${w.kind} ${w.ms < 1000} ${dials.get()}")
 }
 
+/// A dialer that fails after `after` ms.
+fn pw_failing(after: int) -> Result<Carrier, ClientError> {
+    sleep(ms(after))
+    .Err(.NoTls)
+}
+
+fn pw_failed_take(p: Pool, o: string) -> string { pw_kind(p.take(o, () -> pw_failing(100))) }
+
+/// A FAILED DIAL WAKES THE WAITER: the slot it held is free, and the
+/// waiter dials its own well before its wait ends.
+fn pw_failed_dial_wakes() -> Result<string, ClientError> {
+    let s = pw_server()?
+    spawn s.run(cores: 1)
+    defer s.stop()
+    let p = Pool { per_host: 1, wait: secs(5) }
+    defer { let _ = within secs(5) { p.close_all() } }
+    let o = origin_of("http", "127.0.0.1", s.listener.port)
+    let dials = Cell.new(0)
+    spawn pw_failed_take(p, o)
+    sleep(ms(20))
+    let w = pw_waited(p, o, s.listener.port, dials)
+    .Ok("${w.kind} ${w.ms < 1000} ${dials.get()}")
+}
+
 /// Nobody gives: the take waits out the pool's `wait` and is refused.
 fn pw_wait_bounds() -> Result<string, ClientError> {
     let s = pw_server()?
@@ -147,6 +171,7 @@ spec "std.http a pool's take waits for a slot" {
     given "every slot lent" {
         then "a give wakes the waiter, which is lent the connection given back" { pw_shown(pw_give_wakes()) == "lent true 1" }
         then "a drop wakes the waiter, which dials its own" { pw_shown(pw_drop_wakes()) == "lent true 2" }
+        then "a failed dial wakes the waiter, which dials its own" { pw_shown(pw_failed_dial_wakes()) == "lent true 1" }
         then "a give for another origin wakes it to look again and wait on" {
             pw_shown(pw_other_origin()) == "lent true 2 1"
         }

@@ -25,7 +25,7 @@
 //! mechanisms compiled in are the two config headers in src/c.
 use @std.errors.{Error, ErrorInfo, info}
 use @std.net.{Conn, NetError, connect, outran}
-use @std.time.{Duration, TimedOut}
+use @std.time.{Duration, TimedOut, secs}
 use @std.io.{env, is_file, read_bytes}
 
 extern fn avra_tls_config(server: int) -> int
@@ -398,13 +398,9 @@ export fn handshake_after(conn: Conn, config: Config, host: string, heard: Bytes
         },
     }
     let t = TlsConn { conn: conn, session: s, fd: conn.fd }
-    match t.begun(heard) {
-        .Ok(_) -> .Ok(t),
-        .Err(e) -> {
-            let _ = t.abandoned()
-            .Err(e)
-        },
-    }
+    errdefer { let _ = within secs(5) { t.abandoned() } }
+    t.begun(heard)?
+    .Ok(t)
 }
 
 /// How much ciphertext one wire read asks for: a whole record.

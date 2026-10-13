@@ -167,14 +167,8 @@ fn opened_within(c: Conn, config: Config, d: Duration) -> dyn Transport? {
 /// flight. A socket that fails here is closed here; a handshake that
 /// fails closes its own.
 fn tls_opened(c: Conn, config: Config) -> Result<dyn Transport?, TlsError> {
-    let first = match c.read(read_size()) {
-        .Ok(b) -> b,
-        .Err(e) -> {
-            let _ = c.close()
-            fail TlsError.Net(e)
-        },
-    }
-    let heard? = first else {
+    errdefer { let _ = c.close() }
+    let heard? = wired(c.read(read_size()))? else {
         let _ = c.close()
         return .Ok(null)
     }

@@ -6,16 +6,16 @@
 // promptly, and a client that does not trust the server refuses it.
 // Closure alerts both ways (RFC 9112 §9.8), and a target's scheme
 // judged against the secured connection (RFC 9110 §7.4).
-use @std.net.{Conn, Listener, NetError, listen, connect, timely}
-use @std.time.{Duration, ms, secs}
+use @std.net.{Conn, Listener, NetError, Read, listen, connect, timely}
+use @std.time.{Duration, ms, secs, sleep}
 use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, text, stream_of}
 use @std.http.ws.{Socket, Message, ws_limits, accepted}
 use @std.http.route.{get}
 use @std.http.server.{Server, server, served, timing}
 use @std.http.client.{Client, ClientError, request, netted, in_stage}
-use @std.https.{over_tls, secured, tls_carried, wss}
-use @std.tls.{TlsConn, TlsError, client_config, dial, handshake, wired}
+use @std.https.{over_tls, secured, tls_carried, tls_opened, wss}
+use @std.tls.{Config, TlsConn, TlsError, client_config, dial, handshake, wired}
 use @std.http.wire.{Secure}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
 
@@ -311,6 +311,25 @@ fn held(r: Result<bool, ClientError>) -> bool {
     match r { .Ok(b) -> b, .Err(_) -> false }
 }
 
+fn opens(c: Conn, config: Config) -> bool { tls_opened(c, config) is .Ok }
+
+/// A server's opening read cancelled while its client says nothing:
+/// whether the client then reads the end.
+fn opening_unwound() -> Result<bool, TlsError> {
+    let l = wired(listen("127.0.0.1", 0))?
+    let c = wired(connect("127.0.0.1", l.port, secs(2)))?
+    let peer = wired(l.accept())?
+    let config = serving_localhost()?
+    let t = spawn opens(peer, config)
+    sleep(ms(50))
+    t.cancel()
+    sleep(ms(50))
+    let ended = wired(c.try_read(16))? is .Eof
+    wired(c.close())?
+    wired(l.close())?
+    .Ok(ended)
+}
+
 spec "std.http over TLS" {
     given "a server secured with the test identity" {
         then "a client that never speaks is dropped at the handshake deadline, and the next is served" {
@@ -343,6 +362,9 @@ spec "std.http over TLS" {
         then "a streamed response goes out in chunks" { held(stream_rides_tls()) }
         then "a request body is read as it arrives" { held(body_rides_tls()) }
         then "a WebSocket opens, echoes and closes over wss" { held(websocket_rides_tls()) }
+    }
+    given "a connection's task unwound while it opens" {
+        then "the socket is closed, and the client reads the end" { opening_unwound() catch _ -> false }
     }
     given "an HTTPS client at a plain port" {
         then "it fails promptly, never waits out a reply" { held(https_at_a_plain_port()) }
