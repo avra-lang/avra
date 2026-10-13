@@ -3,11 +3,11 @@
 //! own syntax and the surface its file shows it. A kept unit stands in for its
 //! lowering exactly when it spoke nothing, so serving one can never hide a voice.
 use core.{DeclId, DeclKind, FileId, flatten, distinct, fp, fp_str, fp_list, joined}
-use features.{Wanted, SettleRoot}
+use features.{Wanted, Sub, SettleRoot}
 use @std.io.{env}
 use diagnostics.{no_voices}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Unit, CodeFacts, code_facts, code_facts_wire, code_facts_from_wire}
+use compiler.lower.{Unit, CodeFacts, code_facts, code_facts_wire, code_facts_from_wire, type_shape_key}
 
 /// A unit served from its kept row: the file it belongs to and the code it stood for.
 type Served = { file: FileId, facts: CodeFacts }
@@ -31,7 +31,7 @@ impl Workspace {
         let stub? = self.stub_of(self.decls.decl(w.decl!)) else { return null }
         self.hold.served.push(Served { file: w.file, facts: facts })
         self.row_lives(at.path, row)
-        Unit { bodies: [stub], wants: wants, voices: no_voices(), statics: [], kept: [facts] }
+        Unit { bodies: [stub with { name: w.name }], wants: wants, voices: no_voices(), statics: [], kept: [facts] }
     }
 
     /// THE KEEPER FOR EVERY KEY FIELD: under AVRA_ROW_VERIFY a served unit is also lowered
@@ -128,15 +128,22 @@ impl Workspace {
     /// interface of every module it sees. Absent for a unit no row stands for.
     fn row_place(s: Store, w: Wanted) -> RowPlace? {
         let d? = w.decl else { return null }
-        if w.sub != null || !w.seats.is_empty() || w.root != null || self.comptime_active() { return null }
+        if !w.seats.is_empty() || w.root != null || self.comptime_active() { return null }
         let x = self.decls.decl(d)
         if !plain_unit(x.kind) || x.external || self.is_held(x.file) { return null }
         let surface? = self.unit_surface(s, x.file) else { return null }
         RowPlace {
             path: self.decls.file(x.file).path,
             surface: surface,
-            key: "${self.decl_ref(d)}\t${self.syntax(d)}",
+            key: "${self.decl_ref(d)}\t${self.syntax(d)}\t${w.name}\t${self.specialization(w.sub)}",
         }
+    }
+
+    /// The type arguments and consts a specialization is lowered at, by shape — empty for
+    /// a unit that is no specialization.
+    fn specialization(sub: Sub?) -> string {
+        let s? = sub else { return "" }
+        joined([type_shape_key(self.decls, t) for t in s.args].concat(s.consts), "\n")
     }
 
     /// A file's kept rows by key, read once for the derivation.
