@@ -425,8 +425,8 @@ bk_keys() { awk -F'\t' '$1 == "Q" && $2 == "bucket" { print $3, $4 }' $R/bk.q | 
 bk_changed() { awk 'NR == FNR { a[$1] = $2; next } a[$1] != $2 { print $1 }' $R/bk.prev - | sort -n | tr '\n' ' '; }
 bk_placed() { awk -F'\t' -v pat="$1" '$1 == "Q" && $2 == "placed" && index($3, pat) { print $4 }' $R/bk.q | sort -un | tr '\n' ' '; }
 S "cold bk" bk
-printf '// moved\n' >> $R/bk/src/main.av
-bk_run; bk_keys > $R/bk.prev
+# the baseline keys come from a build that lowers the whole program (a held build lists no keys)
+rm -rf .avra-cache; bk_run; bk_keys > $R/bk.prev
 set -- $(bk_objects); bk_linked=${4:-0}
 steps=$((steps+1)); [ "${bk_linked:-0}" -gt 3 ] || { fails=$((fails+1)); echo "FAIL  bk: the program's bodies fell in $bk_linked bucket(s) only, so the fixture splits nothing"; }
 # MOVING ONE GENERIC compiles the buckets ITS instantiations fall in, exactly: the expected set is read from where
