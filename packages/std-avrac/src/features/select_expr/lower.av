@@ -1,8 +1,27 @@
-//! No lowering stands: typing refuses every `select`, so one reaching
-//! here is a defect.
+//! No lowering stands: a `select` that types is refused here by name,
+//! and an arm is reached only through its `select`, so one lowered
+//! alone is a defect.
 use core.{ExprId, Reg}
 use features.{LowerCx}
+use diagnostics.{Diag, refusal}
 
 fn select_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    cx.lower_defect(e, "a `select` survived typing")
+    cx.out.voices.speak(unlowered(cx, e))
+    cx.result(e)
+}
+
+fn arm_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.lower_defect(e, "a `select` arm was lowered apart from its `select`")
+}
+
+// ── The voices ──
+
+fn unlowered(cx: LowerCx, e: ExprId) -> Diag {
+    refusal(
+        "flow.select",
+        cx.view.loc_of(e),
+        "`select` is typed and not yet lowered",
+        "this `select`",
+        "wait on one task with `t.await`",
+    )
 }

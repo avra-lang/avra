@@ -1,8 +1,40 @@
-//! The select NodeSemantics: dispatch only. Its arms are walked by
-//! nothing: a `select` is refused where it is typed, so no pass reads
-//! inside one.
-use features.{NodeSemantics}
+//! The select NodeSemantics: dispatch only. A `select`'s arms are its
+//! kids. An arm's head is read OUTSIDE the names the arm binds, so it
+//! is a kid; its guard and its body are walked by the arm itself, under
+//! the scope it opens. The body answers for the arm, and each arm for
+//! the `select`, so the seat's want flows down both.
+use core.{Expr, ExprId}
+use features.{NodeSemantics, ResolveCx}
 
 export type SelectSemantics = {}
 
-impl NodeSemantics for SelectSemantics {}
+impl NodeSemantics for SelectSemantics {
+    fn kids(e: Expr) -> List<ExprId> {
+        // a feature cannot enumerate OTHER features' variants
+        match e {
+            .Select(_, arms) -> arms,
+            .WaitArm(_, _, head, _, _) -> [head],
+            .ElseArm(value) -> [value],
+            rest -> [],
+        }
+    }
+
+    fn heirs(e: Expr) -> List<ExprId> {
+        // a feature cannot enumerate OTHER features' variants
+        match e {
+            .Select(_, arms) -> arms,
+            .WaitArm(_, _, _, _, value) or .ElseArm(value) -> [value],
+            rest -> [],
+        }
+    }
+
+}
+
+/// An arm's guard and its body, each under the names the arm binds. The
+/// guard may read none of them — typing refuses one that does — and
+/// binding them here keeps that the only word spoken about it.
+fn resolve_arm(mut cx: ResolveCx, e: ExprId, names: List<string>, guard: ExprId?, value: ExprId) {
+    let binds = cx.bound_at(e, names)
+    if guard != null { cx.arm_scope(binds, guard!) }
+    cx.arm_scope(binds, value)
+}

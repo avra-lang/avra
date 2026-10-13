@@ -16,7 +16,7 @@ impl Meaning for Select {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()
     }
-    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { unlowered(cx, e) }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { select_type(cx, e, self.arms) }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg { select_reg(cx, e) }
 }
 
@@ -30,10 +30,17 @@ export type WaitArm = { index: Scoped, bind: Scoped, head: ExprId, guard: ExprId
 
 impl Meaning for WaitArm {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
-        nothing()
+        resolve_arm(cx, e, arm_binds(self.index.of, self.bind.of), self.guard, self.value)
     }
-    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.error_type }
-    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { select_reg(cx, e) }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId {
+        wait_arm_type(
+            cx,
+            ArmSeats { arm: e, index: self.index.of, bind: self.bind.of, head: self.head },
+            self.guard,
+            self.value,
+        )
+    }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { arm_reg(cx, e) }
 }
 
 /// `else -> value` — the arm that runs when nothing is ready.
@@ -45,6 +52,6 @@ impl Meaning for ElseArm {
     fn resolve(mut cx: ResolveCx, e: ExprId) {
         nothing()
     }
-    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.error_type }
-    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { select_reg(cx, e) }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.type_at(self.value) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { arm_reg(cx, e) }
 }
