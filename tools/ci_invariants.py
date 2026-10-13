@@ -32,6 +32,10 @@ lists and refuses by name:
   path-gate        `runtime-keep` runs on a PR only when prepare's path gate
                    (tools/ci_path_gate.py) says a path it reads changed; main's
                    push and a hand-run owe it always.
+  race-split       a `labeled` run never shares its concurrency group with the other
+                   pull_request runs, so the label and the open of one PR cannot
+                   cancel each other; the run mode is read at run time, so the
+                   runs that remain give one verdict.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -222,6 +226,22 @@ def check_path_gate(workflow_text):
     return [], ["path-gate: runtime-keep runs on the path gate's decision"]
 
 
+def check_race_split(workflow_text):
+    """The concurrency group separates `labeled` runs from the others, and the
+    run mode is read at run time. Answers (refusals, words)."""
+    m = re.search(r"^concurrency:\s*\n\s*group: (.+)$", workflow_text, re.M)
+    refusals = []
+    if not m:
+        refusals.append("the workflow names no concurrency group")
+    elif "github.event.action == 'labeled'" not in m.group(1):
+        refusals.append("the concurrency group does not split `labeled` runs: a label and an open cancel each other")
+    if "tools/pr_mode.py" not in workflow_text:
+        refusals.append("the run mode is not read at run time")
+    if refusals:
+        return refusals, []
+    return [], ["race-split: a labeled run has its own concurrency group"]
+
+
 def check_run_mode(workflow_text):
     """The run mode is decided by tools/pr_mode.py on the PR's API answer, not by
     the event payload, and a light gate on an unpublished compiler is skipped.
@@ -408,6 +428,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
                   lambda: check_run_mode(workflow_text),
+                  lambda: check_race_split(workflow_text),
                   lambda: check_compiler_route(
                       open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read(),
                       open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()),
@@ -615,7 +636,7 @@ rt-header:
     assert any("runtime-keep" in x for x in check_path_gate(ungated_rk)[0]), check_path_gate(ungated_rk)
 
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, path-gate, warm-edit held on fixtures")
+          "light-draft, run-mode, race-split, path-gate, warm-edit held on fixtures")
     return 0
 
 
