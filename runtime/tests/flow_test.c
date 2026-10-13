@@ -396,6 +396,34 @@ static void cancelled_before_it_runs(void) {
     avra_clock_run_ends();
 }
 
+// A JOIN UNDER A STANDING CANCEL OF AN UNFINISHED TASK READS NO CELL:
+// the cancel is met where it stops the park, so the bit the caller's
+// after-call test reads is set and nothing of the task is handed back.
+static void* joins_first(void* self) {
+    (void)self;
+    int64_t t0 = avra_now_ns();
+    g_byte_b = avra_unwinding;
+    g_byte_c = avra_task_join(g_task) == NULL;
+    g_byte_a = avra_unwinding;
+    g_spent_ms = ms_since(t0);
+    return answer(0);
+}
+
+static void standing_join_of_an_unfinished_task(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    g_task = spawn1(sleeper, 10000);
+    void* t = spawn1(joins_first, 0);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2 && g_byte_b == 0, "a task cancelled before it ran reaches its join with the bit clear, and ends cancelled");
+    CHECK(g_byte_c == 1 && g_byte_a == 1, "the join hands back nothing and sets the bit, though its task has not ended");
+    CHECK(g_spent_ms < 1000 && !avra_task_done(g_task), "at once: the task it named is still running");
+    avra_task_cancel(g_task);
+    ended(g_task);
+    avra_clock_run_ends();
+}
+
 // The child reads its own bit before and after its own cut sleep.
 static void* reads_its_bit(void* self) {
     (void)self;
@@ -2807,6 +2835,7 @@ int main(int argc, char** argv) {
     on_virtual_clock("a cancel cuts a sleep, on the virtual clock", cancel_cuts_sleep);
     on_virtual_clock("a join a cancel cuts", cut_join);
     on_virtual_clock("a join under a standing cancel", standing_join);
+    on_virtual_clock("a join under a standing cancel of an unfinished task", standing_join_of_an_unfinished_task);
     on_virtual_clock("a scope's end cancels what it owns, then joins it", a_scopes_end_cancels_what_it_owns);
     in_child_within("a cut yield still switches", a_cut_yield_still_switches, 5);
     in_child_within("a cancel cuts a descriptor park", cancel_cuts_fd_park, 5);
