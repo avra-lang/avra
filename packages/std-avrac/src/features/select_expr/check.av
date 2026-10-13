@@ -110,7 +110,8 @@ fn looped(cx: TypeCx) -> bool {
 /// Whether a head's value is made inside the loop being typed: written
 /// where it is waited on, or bound by a statement of the loop's body.
 fn made_in_loop(cx: TypeCx, head: ExprId) -> bool {
-    let b? = cx.names.binding(head) else { return true }
+    if cx.view.store.expr_is_call(head) { return true }
+    let b? = cx.names.binding(head) else { return false }
     match b {
         .Def(made) -> bodies_hold(cx, made),
         .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
@@ -137,7 +138,10 @@ fn is_else(cx: TypeCx, arm: ExprId) -> bool {
 
 fn arm_value(cx: TypeCx, arm: ExprId) -> ExprId? {
     // a feature cannot enumerate OTHER features' variants
-    match cx.view.store.expr(arm) { .WaitArm(_, _, _, _, value) or .ElseArm(value) -> value, rest -> null }
+    match cx.view.store.expr(arm) {
+        .WaitArm(_, _, _, _, value) or .ElseArm(value) -> value,
+        rest -> null,
+    }
 }
 
 fn arm_head(cx: TypeCx, arm: ExprId) -> ExprId? {
@@ -246,7 +250,14 @@ fn timer_binds(mut cx: TypeCx, s: ArmSeats) -> List<TypeId>? {
 
 /// A head no arm can wait on.
 fn no_wait(mut cx: TypeCx, head: ExprId) -> List<TypeId>? {
-    cx.emit(not_waitable(cx, head, if timers_of(cx.view) == null { timers_unloaded() } else { waitable() }))
+    cx
+        .emit(
+            not_waitable(
+                cx,
+                head,
+                if timers_of(cx.view) == null { timers_unloaded() } else { waitable() },
+            ),
+        )
     null
 }
 
@@ -256,7 +267,8 @@ fn guard_checks(mut cx: TypeCx, guard: ExprId, tys: List<TypeId>) {
     cx.bind_types(guard, tys)
     let _ = cx.walk_type(guard)
     cx.require_bool(guard, "a `select` arm's guard", "this decides whether the arm waits")
-    let read? = post_order(cx.dispatch, cx.view.store, guard).find((k) -> reads_binder(cx, guard, k)) else { return }
+    let read? = post_order(cx.dispatch, cx.view.store, guard)
+        .find((k) -> reads_binder(cx, guard, k)) else { return }
     cx.emit(guard_binder(cx, read))
 }
 

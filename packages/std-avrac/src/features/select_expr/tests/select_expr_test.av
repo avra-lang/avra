@@ -1,7 +1,14 @@
 // The front end, vertically: every arm form parses and prints back as
 // written, the laws a builder holds are spoken in its words, and a
 // `select` that types is refused by name where it is lowered.
-use @std.avrac.testing.{projected, refused_with, refused_at_run, refused_in, floored_beside, answered}
+use @std.avrac.testing.{
+    projected,
+    refused_with,
+    refused_at_run,
+    refused_in,
+    floored_beside,
+    answered,
+}
 use compiler.{Program}
 
 /// Whether `source` is its own canonical form — it parsed, and the
@@ -116,7 +123,10 @@ spec "features/select_expr" {
         }
         then "an index beside `_` is still bound" { types("let v: int = select {\n    i, _ in jobs -> i\n}\nv") }
         then "an index on one task is refused" {
-            refuses("select {\n    i, r in job -> r\n}", "`i` counts a list's members, and this arm waits on one task")
+            refuses(
+                "select {\n    i, r in job -> r\n}",
+                "`i` counts a list's members, and this arm waits on one task",
+            )
         }
         then "a name over a task that answers nothing is refused" {
             refuses("select {\n    r in mute -> 1\n}", "a task answering nothing binds nothing")
@@ -133,10 +143,16 @@ spec "features/select_expr" {
     }
     given "what an arm waits on" {
         then "a head that is no task, list of tasks or timer is refused" {
-            refuses("select {\n    1 -> 2\n}", "a `select` arm waits on a task, a list of tasks or a timer, and this is `int`")
+            refuses(
+                "select {\n    1 -> 2\n}",
+                "a `select` arm waits on a task, a list of tasks or a timer, and this is `int`",
+            )
         }
         then "an awaited head is refused as the value it already is" {
-            refuses("select {\n    job.await -> 2\n}", "a head ending `.await` has already waited: drop it")
+            refuses(
+                "select {\n    job.await -> 2\n}",
+                "a head ending `.await` has already waited: drop it",
+            )
         }
         then "a list arm inside a loop is refused" {
             refuses(
@@ -151,13 +167,20 @@ spec "features/select_expr" {
             )
         }
         then "a list arm inside a comprehension is refused — it runs once an element" {
-            refuses("let all = [select {\n    r in jobs -> r + x\n} for x in [1, 2]]", "a list arm is taken once")
+            refuses(
+                "let all = [select {\n    r in jobs -> r + x\n} for x in [1, 2]]",
+                "a list arm is taken once",
+            )
         }
         then "a list arm inside a lambda written in a loop types — the lambda's body is its own" {
-            types("mut n = 0\nwhile n < 1 {\n    let pick = () -> select {\n        r in jobs -> r\n    }\n    n = n + 1\n}\nn")
+            types(
+                "mut n = 0\nwhile n < 1 {\n    let pick = () -> {\n        let mine = [spawn one()]\n        select {\n            r in mine -> r\n        }\n    }\n    n = n + pick()\n}\nn",
+            )
         }
         then "a task arm inside a loop types" {
-            types("mut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in job -> r\n    }\n}\nn")
+            types(
+                "mut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in job -> r\n    }\n}\nn",
+            )
         }
     }
     given "a guard" {
@@ -179,7 +202,10 @@ spec "features/select_expr" {
             types("let v: int = select {\n    r in job -> r\n    else -> 0\n}\nv")
         }
         then "arms that disagree are refused" {
-            refuses("let v = select {\n    r in job -> r\n    else -> \"none\"\n}", "a `select`'s arms disagree")
+            refuses(
+                "let v = select {\n    r in job -> r\n    else -> \"none\"\n}",
+                "a `select`'s arms disagree",
+            )
         }
         then "a name the arm binds is not read by a later arm" {
             refuses("select {\n    r in job -> r\n    else -> r\n}", "`r` is not defined")
@@ -188,7 +214,9 @@ spec "features/select_expr" {
     given "the timers of `@std/time`" {
         then "a `Deadline` head is an arm, binding nothing" {
             answered(
-                timed("let limit = after(5)\nlet v = select {\n    limit -> 1\n}\nprintln(\"\${v}\")\n"),
+                timed(
+                    "let limit = after(5)\nlet v = select {\n    limit -> 1\n}\nprintln(\"\${v}\")\n",
+                ),
             )
                 .contains("`select` is typed and not yet lowered")
         }
@@ -206,7 +234,9 @@ spec "features/select_expr" {
         }
         then "an `Every` beside `else` types" {
             answered(
-                timed("let tick = every(5)\nlet v = select {\n    tick -> 1\n    else -> 2\n}\nprintln(\"\${v}\")\n"),
+                timed(
+                    "let tick = every(5)\nlet v = select {\n    tick -> 1\n    else -> 2\n}\nprintln(\"\${v}\")\n",
+                ),
             )
                 .contains("`select` is typed and not yet lowered")
         }
@@ -214,31 +244,41 @@ spec "features/select_expr" {
     given "a timer made inside a loop" {
         then "a `Deadline` made in the head beside an arm that fires again is refused" {
             refused_in(
-                timed("let calm = quiet(5)\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        after(5) -> 1\n        calm -> 2\n    }\n}\n"),
+                timed(
+                    "let calm = quiet(5)\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        after(5) -> 1\n        calm -> 2\n    }\n}\n",
+                ),
                 "a timer made inside a loop starts over each turn",
             )
         }
         then "a `Deadline` bound by the loop's own body is refused the same way" {
             refused_in(
-                timed("let calm = quiet(5)\nmut n = 0\nwhile n < 1 {\n    let limit = after(5)\n    n = n + select {\n        limit -> 1\n        calm -> 2\n    }\n}\n"),
+                timed(
+                    "let calm = quiet(5)\nmut n = 0\nwhile n < 1 {\n    let limit = after(5)\n    n = n + select {\n        limit -> 1\n        calm -> 2\n    }\n}\n",
+                ),
                 "a timer made inside a loop starts over each turn",
             )
         }
         then "a `Deadline` bound before the loop types" {
             answered(
-                timed("let calm = quiet(5)\nlet limit = after(5)\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        limit -> 1\n        calm -> 2\n    }\n}\nprintln(\"\${n}\")\n"),
+                timed(
+                    "let calm = quiet(5)\nlet limit = after(5)\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        limit -> 1\n        calm -> 2\n    }\n}\nprintln(\"\${n}\")\n",
+                ),
             )
                 .contains("`select` is typed and not yet lowered")
         }
         then "a `Deadline` made each turn beside arms taken once is a limit on each attempt, and types" {
             answered(
-                timed("fn one() -> int {\n    1\n}\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in spawn one() -> r\n        after(5) -> 1\n    }\n}\nprintln(\"\${n}\")\n"),
+                timed(
+                    "fn one() -> int {\n    1\n}\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in spawn one() -> r\n        after(5) -> 1\n    }\n}\nprintln(\"\${n}\")\n",
+                ),
             )
                 .contains("`select` is typed and not yet lowered")
         }
         then "an `Every` made inside a loop is refused, whatever stands beside it" {
             refused_in(
-                timed("mut n = 0\nwhile n < 1 {\n    n = n + select {\n        every(5) -> 1\n    }\n}\n"),
+                timed(
+                    "mut n = 0\nwhile n < 1 {\n    n = n + select {\n        every(5) -> 1\n    }\n}\n",
+                ),
                 "a timer made inside a loop starts over each turn",
             )
         }
