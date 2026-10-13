@@ -3011,6 +3011,7 @@ static void virtual_deadline_cuts(void) {
     CHECK(avra_vtask_next() == other && avra_vtask_unwinding(vt) == 0, "a cancel cuts no scope's end");
     avra_vgate_ended(end, 75);
     CHECK(avra_vtask_next() == vt, "the task's end wakes it");
+    CHECK(avra_vtask_settle(vt, end) == 0, "and a scope's end of a task that has ended parks nothing");
     avra_vtask_free(other);
     avra_vtask_free(vt);
     avra_rc_release(end);
