@@ -10,6 +10,14 @@ cd "$(dirname "$0")/.."
 unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
 
 R=build/cache-attacks; fails=0; steps=0; holds=0
+# ONE RUN HOLDS THE FIXTURE DIRECTORY: a second run would rewrite the first's inputs
+# under it, and every verdict after that is about neither.
+lock=build/cache-attacks.lock
+if ! mkdir "$lock" 2>/dev/null; then
+    held_by=$(cat "$lock/pid" 2>/dev/null); if [ -n "$held_by" ] && kill -0 "$held_by" 2>/dev/null; then echo "cache-attacks: pid $held_by holds $R — refusing to share its fixtures"; exit 1; fi
+    rm -f "$lock/pid"; rmdir "$lock"; mkdir "$lock" || exit 1
+fi
+echo $$ > "$lock/pid"
 # CACHE_ATTACKS names the sections to run, comma-separated (`kr,kv`); unset runs all.
 section() { [ -z "${CACHE_ATTACKS:-}" ] || case ",$CACHE_ATTACKS," in *",$1,"*) ;; *) false ;; esac; }
 rm -rf "$R" .avra-cache && mkdir -p $R/lib/src/inner $R/a/src $R/b/src $R/c/src
