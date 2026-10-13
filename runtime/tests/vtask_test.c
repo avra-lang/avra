@@ -178,6 +178,37 @@ static void a_standing_cancel_at_a_park(void) {
     closed(p[0]); closed(p[1]);
 }
 
+// What an owner's scope end and a yield ask of an evaluated task: a
+// cancel stands once asked — by a cancel or by a joined task's passed
+// one, never by a scope's limit — and a yield meets it unless shielded.
+static void a_standing_cancel_asked(void) {
+    int64_t t = avra_vtask_new();
+    CHECK(avra_vtask_asked(t) == 0, "no cancel stands on a fresh virtual task");
+    avra_vtask_yield_met(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "and its yield raises no bit");
+    int64_t scope = avra_vtask_within(t, 1);
+    struct timespec nap = {0, 3000000};
+    nanosleep(&nap, NULL);
+    CHECK(avra_vtask_asked(t) == 0, "a scope's passed limit is no cancel");
+    avra_vtask_yield_met(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "and a yield under it raises no bit");
+    avra_vtask_within_end(t, scope);
+    avra_vtask_cancel(t, 3);
+    CHECK(avra_vtask_asked(t) == 1, "a cancel asked stands");
+    avra_vtask_shield_enter(t);
+    avra_vtask_yield_met(t);
+    CHECK(avra_vtask_unwinding(t) == 0, "a shielded yield is not cut");
+    CHECK(avra_vtask_asked(t) == 1, "though the cancel still stands for what the task owns");
+    avra_vtask_shield_leave(t);
+    avra_vtask_yield_met(t);
+    CHECK(avra_vtask_unwinding(t) == 1, "an unshielded yield meets it");
+    avra_vtask_free(t);
+    int64_t j = avra_vtask_new();
+    avra_vtask_passed(j, 5);
+    CHECK(avra_vtask_asked(j) == 1, "a cancel passed on by a join stands as the task's own");
+    avra_vtask_free(j);
+}
+
 static void cancelled_join(void) {
     int64_t j = avra_vtask_new();
     void* timed = avra_task_at(in_ms(60000));
@@ -217,6 +248,7 @@ int main(void) {
     a_passed_cancel();
     shields();
     cancelled_join();
+    a_standing_cancel_asked();
     a_standing_cancel_at_a_park();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();

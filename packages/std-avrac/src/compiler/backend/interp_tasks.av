@@ -33,8 +33,11 @@ extern fn avra_vtask_shield_enter(t: int)
 extern fn avra_vtask_shield_leave(t: int)
 /// 1 while the task runs under a shield.
 extern fn avra_vtask_shielded(t: int) -> int
-/// The task's own unwind bit, written.
-extern fn avra_vtask_set_unwinding(t: int, v: int)
+/// 1 while a cancel stands on the task.
+extern fn avra_vtask_asked(t: int) -> int
+/// A yield's cancel point: a cancel that stands raises the task's bit,
+/// unless it runs shielded.
+extern fn avra_vtask_yield_met(t: int)
 extern fn avra_vtask_inherits(t: int, from: int)
 extern fn avra_vtask_next() -> int
 extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
@@ -97,8 +100,6 @@ type Job = {
     clocked: bool,
     // it ended with no answer
     cancelled: bool,
-    // a cancel stands on it: one more than its asker's id, else 0
-    asked: int,
     // who ended it: its own id, or the id of the task that answered or
     // cancelled it (a scope's id when a limit passed)
     ended_by: int,
@@ -131,7 +132,6 @@ fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -
         gate: null,
         clocked: false,
         cancelled: false,
-        asked: 0,
         ended_by: 0,
         arming: false,
     }
@@ -272,7 +272,6 @@ impl Machine {
         if avra_vtask_unwinding(vt) != 0 { return Val.N }
         if avra_vtask_shielded(vt) != 0 { return self.trapped_val("a join takes a task that answers, and this one was cancelled") }
         avra_vtask_passed(vt, by)
-        if self.tasks[self.running].asked == 0 { self.tasks[self.running].asked = by + 1 }
         if self.running == 0 { self.cancelled_by = avra_vtask_asker(vt) }
         self.unwind_met(vt)
         Val.N
@@ -324,7 +323,7 @@ impl Machine {
     }
 
     fn settled(id: int) -> Val {
-        if self.tasks[self.running].asked != 0 { self.cancels(id, self.tasks[self.running].id) }
+        if avra_vtask_asked(self.tasks[self.running].vt) != 0 { self.cancels(id, self.tasks[self.running].id) }
         if !self.tasks[id].done { return self.waited_on(id) }
         Val.I(0)
     }
@@ -353,10 +352,9 @@ impl Machine {
     /// stands is met here, and the task still lets the others run —
     /// unless a deferred call is running shielded.
     fn yield_met() {
-        let t = self.tasks[self.running]
-        if t.asked == 0 || avra_vtask_shielded(t.vt) != 0 { return }
-        avra_vtask_set_unwinding(t.vt, 1)
-        self.unwind_met(t.vt)
+        let vt = self.tasks[self.running].vt
+        avra_vtask_yield_met(vt)
+        self.unwind_met(vt)
     }
 
     fn fiber_yield_val() -> Val {
@@ -718,7 +716,6 @@ impl Machine {
             return
         }
         avra_vtask_cancel(self.tasks[id].vt, by)
-        self.tasks[id].asked = by + 1
     }
 
     /// The slot a key names in the running task, or null past the four.
