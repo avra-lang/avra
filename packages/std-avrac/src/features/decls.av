@@ -659,6 +659,10 @@ export type Decls = {
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
     ensure_refs: Cell<fn() -> bool>,
+    /// Whether each declaration is read as a value anywhere, as the references pass found it,
+    /// by DeclId; a declaration past the end is read nowhere.
+    read_flags: Cell<List<bool>>,
+    ensure_read: Cell<fn(DeclId) -> bool>,
     /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
     /// write it, kept by `face` as every declaration's facts land, so it covers
     /// a module minted after the first ask as well as one parsed before it.
@@ -886,6 +890,8 @@ export fn new_decls() -> Decls {
         composers_of: Cell.new(none_apart),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
+        read_flags: list_cell(),
+        ensure_read: Cell.new(no_answer),
         mut_seat_index: map_cell(),
     }
     // the registry cannot reach a declaration on its own — a struct or
@@ -1712,6 +1718,7 @@ impl Decls {
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_ensure)
         self.ensure_refs.set(no_refs_ensure)
+        self.ensure_read.set(no_answer)
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
@@ -2282,11 +2289,20 @@ impl Decls {
         self.consumed.set_at(d.index, bits)
     }
 
+    /// Whether the pass has recorded `d`'s bits.
+    fn consumed_known(d: DeclId) -> bool { self.consumed.get()[d.index] != null }
+
+    /// The bits recorded for `d`, none where unrecorded.
+    fn consumed_bits(d: DeclId) -> List<bool> {
+        let row: List<bool>? = self.consumed.get()[d.index]
+        row ?? []
+    }
+
     /// Whether the body infers seat `i` CONSUMED — asking runs the
     /// pass; a held (precompiled) declaration answers false, since
     /// nothing here re-infers from a body it never stored.
     fn consumed_seat(d: DeclId, i: int) -> bool {
-        if self.consumed.get()[d.index] == null { (self.ensure_consumed.get())(d) }
+        (self.ensure_consumed.get())(d)
         let row: List<bool>? = self.consumed.get()[d.index]
         row != null && i < row!.length && row![i]
     }
@@ -2316,8 +2332,22 @@ impl Decls {
     /// Whether a plain read names `d`, or null where the references do not
     /// stand: an absence of a finding is no finding of absence.
     fn read_found(d: DeclId) -> bool? {
-        if !self.refs_stand() { return null }
-        Ref.by_decl(self.rows_db.get(), d).any((r: Ref) -> r.kind is .Read)
+        if !(self.ensure_read.get())(d) { return null }
+        self.read_flag_of(d)
+    }
+
+    /// The finding as it stands for `d`: a declaration the pass never saw is read nowhere.
+    fn read_flag_of(d: DeclId) -> bool { d.index < self.read_flags.get().length && self.read_flags.get()[d.index] }
+
+    /// The pass's finding of which declarations are read, kept for `read_found`.
+    fn record_read_flags(rows: List<Ref>) {
+        self.read_flags.set([false for _i in 0..self.decl_count()])
+        for r in rows { if r.kind is .Read { self.read_flags.set_at(r.decl.index, true) } }
+    }
+
+    /// The workspace arms the read-found hook once.
+    fn arm_read_found(ensure: fn(DeclId) -> bool) {
+        self.ensure_read.set(ensure)
     }
 
     /// Every plain read of `d` — never a call, never a write.
