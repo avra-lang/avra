@@ -406,6 +406,24 @@ ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
 fi
 
+if section dp; then
+# A KEPT VERDICT NEVER READS A FILE THAT IS GONE. held.av's const read z/add.av's body; the file is deleted and
+# held.av no longer uses it. The next build is clean and says nothing of the deleted path, and so is the one after.
+mkdir -p $R/dp/src/f $R/dp/src/z
+printf '[package]\nname = "rt-dp"\nversion = "0.1.0"\n' > $R/dp/avra.toml
+printf 'export fn plus(n: int) -> int { n + 1 }\n' > $R/dp/src/z/add.av
+printf 'use z.{plus}\nexport const K: int = plus(1)\nexport fn shown() -> int { K }\n' > $R/dp/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/dp/src/main.av
+S "cold dp" dp
+rm $R/dp/src/z/add.av; rmdir $R/dp/src/z
+printf 'export const K: int = 2\nexport fn shown() -> int { K }\n' > $R/dp/src/f/held.av
+S "dp: the file a kept verdict read is deleted" dp
+steps=$((steps+1)); [ "$($R/dp/src/main 2>&1)" = "2" ] || { fails=$((fails+1)); echo "FAIL  dp: the program printed '$($R/dp/src/main 2>&1)', wanted '2'"; }
+printf '// moved\n' >> $R/dp/src/main.av
+S "dp: and the build after it" dp
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
