@@ -2,14 +2,14 @@
 //! a socket wakes to bytes and a FIN that landed together, reads the
 //! bytes, then finds the end at once; the short read that drained the
 //! bytes never hides the close behind them
-use @std.net.{listen, connect, Conn, NetError}
+use @std.net.{listen, connect, Conn, NetError, timely}
 use @std.time.{ms, secs, sleep}
 
 /// The first read (parked until bytes come), then what a second read
 /// finds within half a second.
 fn two_reads(s: Conn) -> string {
     let first = match s.read(64) { .Ok(b) -> b?.text() ?? "end", .Err(_) -> "failed" }
-    let second = match within ms(500) { s.read(64) } {
+    let second = match timely(within ms(500) { s.read(64) }) {
         .Ok(b) -> if b == null { "end" } else { "more" },
         .Err(e) -> if e.timed_out() { "stalled" } else { "failed" },
     }
