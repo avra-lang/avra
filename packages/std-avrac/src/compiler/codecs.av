@@ -164,7 +164,7 @@ fn codec_workspace() -> Workspace {
             {
                 "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
                 "/w/src/main.av": "fn a() { 1 }\n",
-                "/w/src/other.av": "fn b() { 2 }\n",
+                "/w/src/other.av": "component scales {\n    run: fn(int) -> int\n}\nexport scales twice { n -> n * 2 }\nfn b() { 2 }\n",
             },
             ["/w/avra.toml", "/w/src/main.av", "/w/src/other.av"],
         ),
@@ -247,6 +247,7 @@ impl Workspace {
                 seats: [seat],
                 root: null,
             },
+            self.decls.declared_unit(self.codec_instance()),
         ]
     }
 
@@ -255,8 +256,11 @@ impl Workspace {
         [no_wanted, self.codec_wanted_exemplars()]
     }
 
+    /// The fixture's declared instance.
+    fn codec_instance() -> DeclId { self.items(self.file_id("/w/src/other.av")).find((d) -> self.decls.decl(d).name == "twice")! }
+
     fn codec_same_wanted(a: Wanted, b: Wanted) -> bool {
-        self.wanted_wire(a) == self.wanted_wire(b)
+        a.root == b.root && self.wanted_wire(a) == self.wanted_wire(b)
     }
 
     /// The fixture's real declarations: `items` mints every row of the
@@ -395,7 +399,7 @@ fn type_exemplar_labels() -> List<string> {
 }
 
 fn wanted_batch_labels() -> List<string> {
-    ["empty", "no-seat and one-seat rows"]
+    ["empty", "no-seat, one-seat and instance rows"]
 }
 
 // ── `DbRow` — its decoder needs the KIND alongside the wire (the
