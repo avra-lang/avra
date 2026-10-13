@@ -15,6 +15,11 @@ use commands.{run_binary, refused_by_host, root_workspace, tool, ended_as}
 /// root and one file under it, never a suite binary.
 const refuse_eval_word = "@refuse-eval"
 
+/// What an eval leg exits with when its program could not be derived:
+/// no verdict's 1 and no trap's 2, so a refused derivation is never read
+/// as the end a test asked for.
+const underived = 3
+
 /// The words such a test's eval leg is spawned with.
 export fn refuse_eval_words(root: string, path: string) -> List<string> {
     [refuse_eval_word, root, path]
@@ -44,7 +49,9 @@ export fn light_phase(words: List<string>) -> int? {
 /// this leg reaches for it FIRST. Its own body called by NAME, run
 /// through the evaluator IN THIS PROCESS ALONE — a trap here ends
 /// this child and nothing else, which is the whole point of a leg. It
-/// ends as `avra run` ends a program (`ended_as`).
+/// ends as `avra run` ends a program (`ended_as`). A program that does
+/// not derive is no end at all: its report goes to stderr, where the
+/// suite reads a leg, under an exit of its own.
 fn refuse_eval(root: string, path: string) -> int {
     let ws = root_workspace(root)
     match ws.from_sources(null, Want.Binary) {
@@ -56,8 +63,8 @@ fn refuse_eval(root: string, path: string) -> int {
             },
         },
         .Err(report) -> {
-            println(report)
-            1
+            eprintln(report)
+            underived
         },
     }
 }

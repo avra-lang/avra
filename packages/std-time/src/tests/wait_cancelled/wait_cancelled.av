@@ -1,0 +1,23 @@
+//! proves: a wait on a deadline or a period is a cancel point — a
+//! cancelled task's wait is cut, nothing after it runs, and its `defer`
+//! does
+use @std.time.{after, every, sleep, ms, secs}
+
+let seen = Cell.new(0)
+let on_deadline = spawn {
+    defer seen.set(seen.get() + 1)
+    after(secs(60)).wait()
+    seen.set(seen.get() + 10)
+    0
+}
+let on_period = spawn {
+    defer seen.set(seen.get() + 1)
+    every(secs(60)).wait()
+    seen.set(seen.get() + 10)
+    0
+}
+sleep(ms(10))
+on_deadline.cancel()
+on_period.cancel()
+sleep(ms(50))
+"${seen.get()}"

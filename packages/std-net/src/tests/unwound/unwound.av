@@ -1,0 +1,56 @@
+//! proves: a task unwound inside a lookup or a connect leaves no
+//! descriptor behind — the table reaches no higher than it did
+use @std.net.{NetError, listen, connect, resolve, resolver_for}
+use @std.time.{secs, ms, sleep}
+
+/// The highest of sixteen descriptors taken at once, each returned:
+/// the kernel hands out the lowest free, so one left behind anywhere
+/// below pushes the answer up.
+fn reach() -> Result<int, NetError> {
+    let ls = [listen("127.0.0.1", 0)? for i in 0..16]
+    for l in ls { l.close()? }
+    .Ok(ls[15].fd)
+}
+
+fn looks_up() -> bool { resolver_for(ms(0)).resolve("localhost", secs(5)) is .Ok }
+
+/// A connect that returns what it made.
+fn dials(port: int) -> bool {
+    match connect("127.0.0.1", port, secs(2)) { .Ok(c) -> c.close() is .Ok, .Err(_) -> false }
+}
+
+/// A lookup cancelled before it parks, so its first park unwinds it.
+fn lookup_cut(_i: int) -> int {
+    let t = spawn looks_up()
+    t.cancel()
+    0
+}
+
+/// A connect cancelled before it parks on its race.
+fn connect_cut(port: int) -> int {
+    let t = spawn dials(port)
+    t.cancel()
+    0
+}
+
+/// Whether `n` cuts left the table where it was; a resolver thread may
+/// hold its wake end for a moment, hence the slack.
+fn kept(before: int) -> Result<bool, NetError> {
+    sleep(ms(200))
+    .Ok(reach()? < before + 4)
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    resolve("127.0.0.1", secs(2))?
+    let b0 = reach()?
+    let _ = [lookup_cut(i) for i in 0..20]
+    let lookups = kept(b0)?
+    let b1 = reach()?
+    let _ = [connect_cut(l.port) for i in 0..20]
+    let connects = kept(b1)?
+    l.close()?
+    .Ok("lookups kept: ${lookups} | connects kept: ${connects}")
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"
