@@ -224,16 +224,12 @@ fn wrote(at: string, bytes: Bytes) -> bool {
 
 /// The body's bytes: header · names · sets · content · per-family meta.
 fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: List<Placed>) -> Bytes {
+    let held = [record_of(pack, k)! for fam in FAMILIES for k in keys if record_of(pack, k)?.family == fam]
+    let reads = [reads_of(pack, h) for h in held]
     let n = names()
+    n.filled(flatten(reads))
     let s = sets()
-    for k in keys {
-        let h? = record_of(pack, k) else { continue }
-        for r in reads_of(pack, h) { let _ = n.intern(r) }
-    }
-    for k in keys {
-        let h? = record_of(pack, k) else { continue }
-        let _ = s.intern(named_ids(n, reads_of(pack, h)))
-    }
+    let set_ids = [s.intern(named_ids(n, r)) for r in reads]
     let w = writer()
     w.text(BODY_MAGIC)
     w.int(BODY_VERSION)
@@ -251,41 +247,45 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: 
     w.count(FAMILIES.length)
     for fam in FAMILIES {
         w.text(fam)
-        let mine = [k for k in keys if record_of(pack, k)?.family == fam]
+        let mine = [i for i in 0..held.length if held[i].family == fam]
         w.count(mine.length)
-        for k in mine {
-            let h? = record_of(pack, k) else { continue }
-            w.text(h.key)
-            w.text(h.digest)
-            w.int(s.intern(named_ids(n, reads_of(pack, h))))
+        for i in mine {
+            w.text(held[i].key)
+            w.text(held[i].digest)
+            w.int(set_ids[i])
             w.int(rev)
             w.int(rev)
         }
     }
-    w.octets(reverse_section(pack, keys))
+    w.octets(reverse_section(reads))
     w.bytes()
 }
 
 /// THE REVERSE INDEX, as the body spells it: each input name a row reads, with the ordinals
 /// (in the order the body lists its rows) of the rows that read it. A run is its own octets, so
 /// a lookup skips every name it was not asked for without decoding a row.
-fn reverse_section(pack: Pack, keys: List<string>) -> Bytes {
-    mut runs: Map<string, List<int>> = {}
-    let listed = [k for fam in FAMILIES for k in keys if record_of(pack, k)?.family == fam]
-    for ordinal in 0..listed.length {
-        let h? = record_of(pack, listed[ordinal]) else { continue }
-        for line in reads_of(pack, h) {
+fn reverse_section(reads: List<List<string>>) -> Bytes {
+    mut at_of: Map<string, int> = {}
+    mut runs: List<List<int>> = []
+    for ordinal in 0..reads.length {
+        for line in reads[ordinal] {
             let name? = read_name(line) else { continue }
-            runs.set(name, (runs.get(name) ?? []).concat([ordinal]))
+            let at = at_of.get(name) ?? 0 - 1
+            if at < 0 {
+                at_of.set(name, runs.length)
+                runs.push([ordinal])
+            } else {
+                runs[at].push(ordinal)
+            }
         }
     }
     let w = writer()
-    let names = sorted_by(runs.keys(), text_before)
+    let names = sorted_by(at_of.keys(), text_before)
     w.count(names.length)
     for name in names {
         w.text(name)
         let run = writer()
-        let ords = runs.get(name) ?? []
+        let ords = runs[at_of.get(name) ?? 0]
         run.count(ords.length)
         for o in ords { run.int(o) }
         w.octets(run.bytes())
