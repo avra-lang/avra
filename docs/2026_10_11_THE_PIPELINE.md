@@ -179,6 +179,17 @@ run on ready. Readying the PR,
 or labelling it `full-ci`, is what starts the whole run; the `ready_for_review`
 and `labeled` events are in the trigger list for that reason.
 
+### Batches
+
+A batch is built straight from light-green members, and its own run is the
+test. A ready member needs `test` SUCCESS. A draft member needs its light gate
+green by name (`gate`, `keepers-static`, and `codecs` SUCCESS or SKIPPED), and
+its heavy legs did not run, so it also needs evidence from the Sprite:
+`--attacks-ran` or `--attacks-na` for cache-attacks, and `--suites-ran` for the
+suites. The batch PR is a ready PR, so CI runs the full gate on the composed tree.
+No composed Sprite pre-run is owed, except cache-attacks evidence when CI skipped
+that job for the members.
+
 A run that touches no `.av`, no package and no compiler source **builds
 nothing and owes nothing**. The compiler source paths are
 `sh tools/compiler_paths.sh` (the `cli` package plus every `@std`
