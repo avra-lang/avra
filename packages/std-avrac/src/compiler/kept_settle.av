@@ -76,16 +76,14 @@ impl Workspace {
         self.hold.settle_frames.push(fresh)
         // this settlement's reads alone, then joined to what its file's runs read before
         let reader = self.decls.file(ask.file).path
-        let before = self.hold.runs.get().get(reader) ?? []
-        self.hold.runs.put(reader, no_read_list())
+        let scope = self.opened_reads(reader)
         let touched_from = self.decls.touched_types.get().length
         let r = self
             .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
         self.note_const_types(ask.file, s)
         self.note_touched(touched_from)
         let frame = self.popped_settle_frame()
-        let read = self.hold.runs.get().get(reader) ?? []
-        self.hold.runs.put(reader, distinct_reads(before.concat(read)))
+        let read = self.closed_reads(reader, scope)
         self.hold.settle_reads.put(id, read)
         let kept? = at else { return r }
         if self.hold.body_asks.get().length == asked { self.keep_verdict(kept.key, r, frame, kept.layout, read) }
