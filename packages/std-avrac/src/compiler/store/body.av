@@ -298,19 +298,26 @@ fn reverse_section(pack: Pack, keys: List<string>) -> Bytes {
 export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
     let r = reader(pack.table_reverse.get())
     let count = ok(r.count()) ?? 0
-    flatten([run_keys(pack, r, moved) for _i in 0..count])
+    mut out: List<string> = []
+    for _i in 0..count {
+        let name = ok(r.text()) ?? ""
+        let run? = ok(r.octets()) else { return out }
+        if moved.get(name) == null { continue }
+        let order = pack.order.get()
+        for at in run_ordinals(run) {
+            if at < order.length && resident(pack, order[at]) { out.push(order[at]) }
+        }
+    }
+    out
 }
 
-/// The next name in the section and, when it was asked for, the sealed rows its run lists.
-fn run_keys(pack: Pack, r: Reader, moved: Map<string, bool>) -> List<string> {
-    let name = ok(r.text()) ?? ""
-    let run? = ok(r.octets()) else { return [] }
-    if moved.get(name) == null { return [] }
+/// The row ordinals one reverse run lists.
+fn run_ordinals(run: Bytes) -> List<int> {
     let rr = reader(run)
     let n = ok(rr.count()) ?? 0
-    let order = pack.order.get()
-    let keys = [order[at] for at in [ok(rr.count()) ?? (0 - 1) for _j in 0..n] if at >= 0 && at < order.length]
-    [k for k in keys if resident(pack, k)]
+    mut at: List<int> = []
+    for _j in 0..n { at.push(ok(rr.count()) ?? 0) }
+    at
 }
 
 /// Whether a row still stands as the body wrote it: not overwritten, not withdrawn.
