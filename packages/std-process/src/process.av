@@ -854,10 +854,15 @@ export fn serving<T>(c: Command, ready: Ready, limit: Duration, body: fn() -> T)
     T,
     ProcessError,
 > {
-    mut child = c.start(ready, limit)?
-    let answer = body()
-    child.stop()
-    answer
+    let child = c.start(ready, limit)?
+    defer stopped(child)
+    body()
+}
+
+/// `c`'s child ended through a handle of its own on it.
+fn stopped(c: Child) -> Exit {
+    mut held = Child { stage: c.stage, command: c.command }
+    held.stop()
 }
 
 // ── Pipelines ───────────────────────────────────────────────────
