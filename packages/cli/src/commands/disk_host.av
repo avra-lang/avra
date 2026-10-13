@@ -1,6 +1,7 @@
 //! THE DISK HOST: the workspace's questions answered by this machine's
 //! disk, environment and running binary — the door's body on the CLI's side.
 use @std.avrac.compiler.{digest_of_binary}
+use @std.avrac.core.{qtrace, traced}
 use @std.avrac.compiler.host.{Host, Beneath, Octet, Stamp, process_env}
 use @std.path.{dir_of, joined_path, file_name}
 use @std.process.{tool as process_tool, exit, Exit}
@@ -137,12 +138,33 @@ fn own_binary() -> string? {
     toolchain_files([file_name(avra_selfhost_get_arg_cstr(0))]).find(exists(it))
 }
 
-/// THE RUNNING COMPILER'S PRINT: its binary's bytes as one digest, read
+/// THE RUNNING COMPILER'S PRINT: its binary's bytes as one digest, settled
 /// once a process — a binary rebuilt under a running process is not the
-/// code that runs.
+/// code that runs. A record beside the binary names that digest for the
+/// binary's stamp (size, times, inode): the bytes are read again when the
+/// stamp differs, the path differs, or the host cannot tell (a file written
+/// too recently to trust). The value is the bytes' digest either way.
 once fn own_print() -> string? {
     let at? = own_binary() else { return null }
-    digest_of_binary(at)
+    let mark? = stamp(at) else { return digest_of_binary(at) }
+    let head = "${mark}\t${at}\t"
+    let kept = read_text(print_record(at)) catch ""
+    if kept.starts_with(head) {
+        let digest = kept.substring(head.length, kept.length)
+        printed_by("stamp", digest)
+        return digest
+    }
+    let made? = digest_of_binary(at) else { return null }
+    let _ = write_text(print_record(at), "${head}${made}")
+    printed_by("bytes", made)
+    made
+}
+
+/// Where a binary's digest is remembered: beside it, named for it.
+fn print_record(at: string) -> string { joined_path(dir_of(at), ".${file_name(at)}.print") }
+
+fn printed_by(how: string, digest: string) {
+    if traced() { qtrace("Q\tprint\t${how}\t${digest.substring(0, 12)}\n") }
 }
 
 /// A tool by its word on the disk: where `PATH` finds it, or the path as

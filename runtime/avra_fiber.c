@@ -1732,22 +1732,14 @@ static void cut_met(Fiber* f) {
     else cancel_met();
 }
 
-// A row that predates the wait set, about to park: under a standing
-// cancel it parks nothing and the cancel is met at once — unless a shield
-// scope stands, whose own limit is what the wait is for.
-static int cancel_stands(const Fiber* f) {
-    if (__builtin_expect(f->cancel_by == 0, 1)) return 0;
-    if (shield_scope_stands(f)) return 0;
-    cancel_met();
-    return 1;
-}
-
-// EVERY WAIT IS A CANCEL POINT OF A DEADLINE: under a scope's request
-// that stands, or a limit found passed, a sleep and a join park nothing
-// and the request is met at once.
-static int deadline_stands(Fiber* f) {
-    if (!deadline_passed(f)) return 0;
-    cancel_met();
+// A REQUEST THAT STANDS ON A TASK ABOUT TO WAIT — a cancel no shield
+// scope holds off, a scope's own, a limit found passed: it is met at
+// once, on the bit that is the task's, and nothing parks. Under a shield
+// scope a cancel cuts nothing: that scope's own limit is what the wait
+// is for.
+static int request_stands(Fiber* f) {
+    if ((f->cancel_by == 0 || shield_scope_stands(f)) && !deadline_passed(f)) return 0;
+    cut_met(f);
     return 1;
 }
 
@@ -1971,7 +1963,7 @@ static int64_t* task_awaited(void* task, int deaf) {
     int64_t* cells = task_cells(task);
     if (cells[GATE_OPEN]) return cells;
     Fiber* self = g_current;
-    if (!deaf && (cancel_stands(self) || deadline_stands(self))) return cells;
+    if (!deaf && request_stands(self)) return cells;
     refuse_join_ring(task, self);
     alone(self);
     if (TRACING) traced_join(self, task_id(task));
@@ -2253,7 +2245,7 @@ int64_t avra_vtask_tick_cold(int64_t t) {
 __attribute__((noinline))
 static void slept(int64_t ms) {
     Fiber* self = g_current;
-    if (cancel_stands(self) || deadline_stands(self)) return;
+    if (request_stands(self)) return;
     alone(self);
     waits_until(self, deadline_after(ms), 0, 0);
     legacy_parked(self, 1);
@@ -2292,9 +2284,8 @@ static int park_fd_filed(Fiber* f, int64_t fd, int64_t writable, int64_t timeout
     f->timed_out = 0;
     f->interrupted = 0;
     if (fd < 0 || fd > INT32_MAX) return 0;
-    if (!f->virtual && cancel_stands(f)) { f->timed_out = 1; return 0; }
+    if (request_stands(f)) { f->timed_out = 1; return 0; }
     alone(f);
-    if (deadline_passed(f)) { f->timed_out = 1; cut_met(f); return 0; }
     f->legacy = 1;
     f->heeds = 1;
     waits_fd(f, fd, writable, 0, 0);
@@ -2491,21 +2482,11 @@ static int64_t host_waited(int64_t parked) {
     return parked;
 }
 
-// A request that stands on a virtual task about to sleep or join — a
-// cancel no shield scope holds off, a scope's own, a limit found passed:
-// 1, its bit raised, and it parks nothing. A compiled task's rows ask
-// `cancel_stands` and `deadline_stands`.
-static int virtual_cut(Fiber* f) {
-    if (!(f->cancel_by != 0 && !shield_scope_stands(f)) && !deadline_passed(f)) return 0;
-    f->unwinding = 1;
-    return 1;
-}
-
-int64_t avra_vtask_cut(int64_t t) { return virtual_cut(virtual_at(t)); }
+int64_t avra_vtask_cut(int64_t t) { return request_stands(virtual_at(t)); }
 
 void avra_vtask_sleep(int64_t t, int64_t ms) {
     Fiber* f = virtual_at(t);
-    if (ms < 1 || virtual_cut(f)) { ready_push(f); return; }
+    if (ms < 1 || request_stands(f)) { ready_push(f); return; }
     alone(f);
     waits_until(f, deadline_after(ms), 0, 0);
     legacy_parked(f, 1);

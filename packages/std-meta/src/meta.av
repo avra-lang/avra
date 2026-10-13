@@ -588,20 +588,27 @@ export type Marker = {}
 // ── `collect enum E: T` — `T` implemented over a gathered enum ──
 
 /// The impl of `tr` over `what`: each instance method matches the
-/// variant and calls the member record's own.
-export fn delegate(what: Type, tr: Trait) -> List<Directive> {
-    [
-        Directive {
-            twin: "",
-            name: what.name,
-            at: what.at,
-            source: quote {
-                impl ${tr} for ${what} {
-                    ${[delegated(what, tr, f) for f in tr.fns]}
-                }
+/// variant and calls the member record's own. A `Self` parameter is
+/// matched to the same variant, and `Self` as the answer wraps the
+/// member's answer back in it. Parameters of differing variants answer
+/// `false`, so only a `bool` method may take one; any other is refused
+/// at the trait, and still made, so one mistake is one refusal.
+export fn delegate(what: Type, tr: Trait) -> Declared {
+    Declared {
+        made: [
+            Directive {
+                twin: "",
+                name: what.name,
+                at: what.at,
+                source: quote {
+                    impl ${tr} for ${what} {
+                        ${[delegated(what, tr, f) for f in tr.fns]}
+                    }
+                },
             },
-        },
-    ]
+        ],
+        problems: [unanswerable_pairing(tr, f) for f in tr.fns if pairs_selves(f) && !answers_bool(f)],
+    }
 }
 
 /// The impl of `tr` over `over`, written on the trait: a trait whose
@@ -610,8 +617,9 @@ export fn delegate(what: Type, tr: Trait) -> List<Directive> {
 /// impl is still made, so the enum keeps the method and one mistake
 /// is one refusal.
 export fn delegates(tr: Trait, over: Type) -> Declared {
-    let problems = [unimplemented_member(tr, over, v) for v in over.variants if !v.impls.contains(tr.name)]
-    Declared { made: delegate(over, tr), problems: problems }
+    let made = delegate(over, tr)
+    let unimplemented = [unimplemented_member(tr, over, v) for v in over.variants if !v.impls.contains(tr.name)]
+    Declared { made: made.made, problems: made.problems.concat(unimplemented) }
 }
 
 fn unimplemented_member(tr: Trait, over: Type, v: Variant) -> Diagnostic {
@@ -623,19 +631,41 @@ fn unimplemented_member(tr: Trait, over: Type, v: Variant) -> Diagnostic {
     )
 }
 
+fn unanswerable_pairing(tr: Trait, f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "delegates-self",
+        tr.at,
+        "`${tr.name}.${f.name}` takes `Self` and answers `${f.answer}` — members of different variants have no such answer",
+        "only a `bool` answer may take `Self`: differing variants answer `false`",
+    )
+}
+
+/// Whether a method takes `Self` beside the receiver.
+fn pairs_selves(f: Fn) -> bool { f.params.any(it.ty == self_word) }
+
+const self_word: string = "Self"
+
+fn answers_bool(f: Fn) -> bool { f.answer == "bool" }
+
 fn delegated(t: Type, tr: Trait, f: Fn) -> Decls {
-    let seats = [seat(p) for p in f.params]
+    let seats = [seat(t, p) for p in f.params]
     quote {
-        fn ${f.name}(..${seats}) -> ${f.answer} {
+        fn ${f.name}(..${seats}) -> ${standing(t, f.answer)} {
             match self { ${[delegated_arm(tr, f, v) for v in t.variants]} }
         }
     }
 }
 
 /// One parameter of a delegated method, keeping its `mut` mark.
-fn seat(p: Param) -> Decls {
-    if p.mutable { return quote { fn _(mut ${p.name}: ${p.ty}) {} } }
-    quote { fn _(${p.name}: ${p.ty}) {} }
+fn seat(t: Type, p: Param) -> Decls {
+    let ty = standing(t, p.ty)
+    if p.mutable { return quote { fn _(mut ${p.name}: ${ty}) {} } }
+    quote { fn _(${p.name}: ${ty}) {} }
+}
+
+/// A spelled type, with the trait's `Self` standing as the enum.
+fn standing(t: Type, spelled: string) -> string {
+    if spelled == self_word { t.name } else { spelled }
 }
 
 /// One variant's arm. A member with no impl of `tr` is refused where it
@@ -644,5 +674,22 @@ fn seat(p: Param) -> Decls {
 fn delegated_arm(tr: Trait, f: Fn, v: Variant) -> Arms {
     let args = [name(p.name) for p in f.params]
     if !v.impls.contains(tr.name) { return quote { .${v} -> self.${f.name}(${..args}) } }
-    quote { .${v} as member -> member.${f.name}(${..args}) }
+    let call = if f.answer == self_word { rewrapped(v, quote { member.${f.name}(${..args}) }) } else { quote { member.${f.name}(${..args}) } }
+    let other = if answers_bool(f) { quote { false } } else { quote { self.${f.name}(${..args}) } }
+    quote { .${v} as member -> ${paired(v, [p.name for p in f.params if p.ty == self_word], call, other)} }
+}
+
+/// A member record `made` rebuilt as variant `v`: its fields are the payload.
+fn rewrapped(v: Variant, made: Code) -> Code {
+    if v.fields.is_empty() { return quote { .${v} } }
+    let payload = [quote { made.${f.name} } for f in v.fields]
+    quote { match ${made} { made -> .${v}(${..payload}) } }
+}
+
+/// `call` where every `Self` parameter in `names` holds the same variant
+/// `v` (rebound to its member), `other` where one does not.
+fn paired(v: Variant, names: List<string>, call: Code, other: Code) -> Code {
+    let first? = names.first() else { return call }
+    let inner = paired(v, names.drop(1), call, other)
+    quote { match ${name(first)} { .${v} as ${first} -> ${inner}, rest -> ${other} } }
 }

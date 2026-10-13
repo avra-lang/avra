@@ -1,7 +1,7 @@
 //! The typing rules: `spawn e` is a `Task` of what `e` answers, and
 //! `.await` answers it back; `.done` is a `bool`.
 use core.{ExprId, TypeId, Type, ResSides}
-use features.{TypeCx, MethodCall, this_is}
+use features.{TypeCx, FileView, FailureView, Refusal, MethodCall, this_is}
 use diagnostics.{refusal}
 
 fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -54,16 +54,17 @@ fn check_await(cx: TypeCx, _e: ExprId, ty: TypeId) -> TypeId {
 
 /// A caught `await` recovers the task's answer or, when its end was a
 /// cancel, the `Cancelled` record — the failure view `catch` reads.
-fn await_view(cx: TypeCx, answer: TypeId) -> ResSides? {
-    ResSides { ok: answer, err: cancelled_type(cx) }
+fn await_view(cx: TypeCx, answer: TypeId) -> FailureView {
+    let cancelled? = cancelled_of(cx.view) else { return FailureView.Unloaded(cancelled_unloaded()) }
+    FailureView.Sides(ResSides { ok: answer, err: cancelled })
 }
 
 /// The `Cancelled` record `@std/errors` declares — who asked, where the
-/// cancel was met. Error when the program loads no `@std/errors`.
-fn cancelled_type(cx: TypeCx) -> TypeId {
-    let decl? = cx.view.decls.package_decl("@std.errors", "Cancelled") else { return cx.error_type }
-    let _ = cx.view.decls.sig(decl)
-    cx.view.types.intern(Type.Struct(decl, "Cancelled"))
+/// cancel was met. Null when the program loads no `@std/errors`.
+fn cancelled_of(view: FileView) -> TypeId? {
+    let decl = view.decls.package_decl("@std.errors", "Cancelled")?
+    let _ = view.decls.sig(decl)
+    view.types.intern(Type.Struct(decl, "Cancelled"))
 }
 
 fn check_done(cx: TypeCx, _e: ExprId, _ty: TypeId) -> TypeId { cx.type(bool) }
@@ -119,6 +120,13 @@ fn no_timed_out(mut cx: TypeCx, e: ExprId) -> TypeId {
                 "give the limit as `@std/time`'s span — `use @std.time.{ms}`",
             ),
         )
+}
+
+fn cancelled_unloaded() -> Refusal {
+    Refusal {
+        message: "a caught `await` recovers `@std/errors`' `Cancelled`, and this program loads no `@std/errors`",
+        help: "bring it in — `use @std.errors.{Cancelled}`",
+    }
 }
 
 fn not_a_task(mut cx: TypeCx, t: ExprId) -> TypeId {
