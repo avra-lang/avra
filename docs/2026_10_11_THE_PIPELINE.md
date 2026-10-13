@@ -164,6 +164,32 @@ so no PR run publishes a binary.
 | `codecs` | a PR whose diff reaches the compiler source or the reader |
 | `test` | the aggregate required check, every run |
 
+**A draft runs the light gate.** A draft PR's run builds the compiler when
+its diff owes one, and runs only the compiler-free keepers, the changed-file
+`gate` and the codecs scan. The heavy legs (`keepers-a`, `keepers-b`,
+`runtime-keep`, `seed-check`, `flow-gate`, `cache-attacks`, `suites`) are
+gated on `needs.prepare.outputs.full`, which is `0` for a draft without the
+`full-ci` label. `test` refuses a light run by name (`NOT A VERDICT`), so a
+draft never shows a green required check it did not earn, and the watcher
+and the batcher, which read `test` for SUCCESS, refuse it. A light run
+judges `fmt` and the idioms with the published compiler when one stands, so a
+PR that uses syntax main's compiler cannot read is refused on the light gate and
+asks for `full-ci`; a PR that changes the formatter itself is judged by the full
+run on ready. Readying the PR,
+or labelling it `full-ci`, is what starts the whole run; the `ready_for_review`
+and `labeled` events are in the trigger list for that reason.
+
+### Batches
+
+A batch is built straight from light-green members, and its own run is the
+test. A ready member needs `test` SUCCESS. A draft member needs its light gate
+green by name (`gate`, `keepers-static`, and `codecs` SUCCESS or SKIPPED), and
+its heavy legs did not run, so it also needs evidence from the Sprite:
+`--attacks-ran` or `--attacks-na` for cache-attacks, and `--suites-ran` for the
+suites. The batch PR is a ready PR, so CI runs the full gate on the composed tree.
+No composed Sprite pre-run is owed, except cache-attacks evidence when CI skipped
+that job for the members.
+
 A run that touches no `.av`, no package and no compiler source **builds
 nothing and owes nothing**. The compiler source paths are
 `sh tools/compiler_paths.sh` (the `cli` package plus every `@std`

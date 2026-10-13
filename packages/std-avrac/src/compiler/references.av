@@ -232,8 +232,22 @@ impl Workspace {
             .StructLit(name, _, _) -> some_list(self.named_type_ref(f, names, e, name)),
             .Component(word, _, _, _, _) -> some_list(self.component_ref(f, names, e, word)),
             .Env(tr) -> some_list(self.type_name_ref(f, names, e, tr.name)),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Within(_, _) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
+            .Catch(subject, _, _, values) -> some_list(self.use_of(f, names, e, UseKind.Read))
+                .concat(self.caught_refs(f, facts, e, subject, values)),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Spawn(_) or .Within(_, _) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
         }
+    }
+
+    /// A caught READ's failure type (`t.await catch …` recovers a
+    /// `Cancelled`): no expression names it, and the catch reads it all
+    /// the same. A `Result`'s failure is named where the `Result` is.
+    fn caught_refs(f: FileId, facts: TypeFacts, e: ExprId, subject: ExprId, values: List<ExprId>) -> List<
+        Ref,
+    > {
+        if self.decls.types.res_parts(facts.type_at(subject)) != null { return [] }
+        let arm? = values.first() else { return [] }
+        let failure? = facts.pattern_type(arm, 0) else { return [] }
+        [expr_use(d, f, e, UseKind.TypeUse) for d in some_list(declaring_decl(self.decls.types.shape_of(failure)))]
     }
 
     /// An expression's own binding, when it names a DECLARATION —
