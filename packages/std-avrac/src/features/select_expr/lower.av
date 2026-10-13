@@ -172,10 +172,11 @@ fn first_answered(mut cx: LowerCx, w: Wait, pick: Reg) -> Reg {
     let walk = cx.opened_reg(w.source, w.head, cx.type_at(w.source), w.task)
     let at = cx.turn_open(walk)
     let since = cx.task_since(Type.Int, cx.turn_elem(walk, at))
-    cx.void_region(earlier(cx, since, cx.loaded_as(int, least))) { cx ->
-        cx.stored(least, since)
-        cx.stored(pick, at)
-    }
+    cx
+        .void_region(earlier(cx, since, cx.loaded_as(int, least))) { cx ->
+            cx.stored(least, since)
+            cx.stored(pick, at)
+        }
     cx.loop_end()
     cx.bin(Type.Bool, BinOp.Ge, cx.loaded_as(int, pick), cx.const_int(0))
 }
@@ -183,12 +184,14 @@ fn first_answered(mut cx: LowerCx, w: Wait, pick: Reg) -> Reg {
 /// Whether a stamp is an answer's, and before the least seen so far.
 fn earlier(mut cx: LowerCx, since: Reg, least: Reg) -> Reg {
     let answered = cx.bin(Type.Bool, BinOp.Ne, since, cx.const_int(0))
-    cx.region_as(answered, cx.type(bool)) { cx -> before(cx, since, least) } else { cx -> cx.const_bool(false) }
+    cx
+        .region_as(answered, cx.type(bool)) { cx -> before(cx, since, least) } else { cx -> cx.const_bool(false) }
 }
 
 fn before(mut cx: LowerCx, since: Reg, least: Reg) -> Reg {
     let first = cx.bin(Type.Bool, BinOp.Eq, least, cx.const_int(0))
-    cx.region_as(first, cx.type(bool)) { cx -> cx.const_bool(true) } else { cx -> cx.bin(Type.Bool, BinOp.Lt, since, least) }
+    cx
+        .region_as(first, cx.type(bool)) { cx -> cx.const_bool(true) } else { cx -> cx.bin(Type.Bool, BinOp.Lt, since, least) }
 }
 
 /// Whether a task has ended — answered or cancelled, it is ready: the
