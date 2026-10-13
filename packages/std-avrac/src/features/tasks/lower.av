@@ -67,6 +67,23 @@ fn lower_await(mut cx: LowerCx, _e: ExprId, task: Reg, ty: TypeId) -> Reg {
     cx.slot_read(cell, 0, answer)
 }
 
+/// The caught `.await`: a join that passes no cancel on and answers how
+/// the task ended — its `Cancelled`'s two cells, or nothing. `failed`
+/// runs over the record when it ended cancelled; else the task is done,
+/// and the join that reads its answer is free.
+fn caught_await(
+    mut cx: LowerCx,
+    e: ExprId,
+    task: Reg,
+    ty: TypeId,
+    failed: fn(mut LowerCx, Reg) -> Reg,
+) -> Reg {
+    let cancelled? = cancelled_of(cx.view) else { return cx.lower_defect(e, "a caught await without `Cancelled` survived typing") }
+    let ended = cx.type(List<int>?)
+    cx
+        .presence(cx.task_join_caught(cx.view.types.shape_of(ended), task), ended, e) { cx, cells -> failed(cx, cx.unboxed_at(cells, 0, cancelled)) } else { cx -> lower_await(cx, e, task, ty) }
+}
+
 /// The element a task's one-cell list is typed at: its answer — an int
 /// for a task answering nothing, whose list stays empty.
 fn one_cell_elem(cx: LowerCx, answer: TypeId) -> TypeId {
