@@ -251,6 +251,8 @@ export type Kernel = {
     /// Each family's name for the trace, where its owner gave one; a family
     /// without one is named by its number.
     family_names: Cell<List<string>>,
+    /// The fold a cell `settle_lazy` wrote unasked would answer, kept to be asked on demand.
+    folds: Cell<Map<string, fn() -> int>>,
     audit: Audit,
     graph: Graph,
     /// Recorded reads, counted here for every kernel — the process tally shares this cell.
@@ -295,6 +297,7 @@ export fn new_kernel() -> Kernel {
         spent: list_cell(),
         whole_families: list_cell(),
         family_names: list_cell(),
+        folds: map_cell(),
         audit: Audit {
             on: Cell.new(false),
             width: Cell.new(1),
@@ -675,6 +678,26 @@ impl Kernel {
     /// into a plain int a real hash could also answer.
     fn value_hash_of(key: Key) -> int? { self.cell(key)?.value_hash }
 
+    /// `key`'s value hash, asking the fold a lazy settle left unasked: the digest a
+    /// saved answer standing on it needs, paid only by the one that saves.
+    fn hash_forced(key: Key) -> int? {
+        let c? = self.cell(key) else { return null }
+        if c.value_hash != null { return c.value_hash }
+        let fold? = self.folds.get().get("${edge_of(key)}") else { return null }
+        let h = fold()
+        self
+            .write_cell(
+                key,
+                QueryCell {
+                    deps: c.deps,
+                    changed_at: c.changed_at,
+                    verified_at: c.verified_at,
+                    value_hash: h,
+                },
+            )
+        h
+    }
+
     fn begin(key: Key) {
         let none: List<int> = []
         let no_restore: Cell<List<Restore>>? = null
@@ -730,6 +753,7 @@ impl Kernel {
         let deps = self.closed_frame()
         let prior? = self.cell(key) else {
             self.settled(key, deps, self.rev.get(), null, began)
+            self.folds.put("${edge_of(key)}", fingerprint)
             return
         }
         let value_hash = fingerprint()
