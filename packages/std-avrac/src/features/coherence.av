@@ -1,7 +1,7 @@
 //! Coherence: the composed grammar, the feature tables, and the code
 //! registry must agree before any source parses.
 use core.{flatten, joined}
-use @std.grammar.{Grammar, Alt, Build, Diagnostic, defect}
+use @std.grammar.{Grammar, Alt, Seq, Assoc, Build, Diagnostic, defect}
 use diagnostics.{DiagCode}
 
 /// Every disagreement between a composed grammar's build calls and the
@@ -69,7 +69,18 @@ fn dead_defects(features: List<LanguageFeature>, referenced: Map<string, bool>) 
 /// Build-call names referenced anywhere in a branch tree, groups
 /// included.
 fn call_names_in_alt(a: Alt) -> List<string> {
-    flatten([build_call_name(s.build) for s in a.seqs()])
+    flatten([branch_calls(s) for s in a.seqs()])
+}
+
+/// A branch's own build, and every build and refusal its tiers name.
+fn branch_calls(s: Seq) -> List<string> {
+    let ops? = s.operators else { return build_call_name(s.build) }
+    build_call_name(s.build)
+        .concat(flatten([build_call_name(t.build).concat(refusal_call(t.assoc)) for t in ops.tiers]))
+}
+
+fn refusal_call(a: Assoc) -> List<string> {
+    match a { .Unmixed(refusal) -> [refusal], .Left or .Single -> [] }
 }
 
 /// The build's callee, as a list — empty for pass-through and Var.
