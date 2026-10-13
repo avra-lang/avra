@@ -137,9 +137,9 @@ type MatchContext<T, N> = {
 /// The memo: one table of `rules x (tokens + 1) x 2` slots — a rule
 /// at a cursor, capped or open — a slot holding one past the index
 /// of its answer in `results` (0 is unanswered), so a rule attempt
-/// costs two reads and no key is ever spelled. A struct because a
-/// write reaches a place through its field.
-type Memo<T, N> = { slots: List<int>, results: List<MatchResult<T, N>>, stride: int }
+/// costs two reads and no key is ever spelled. Both tables are Cells: a rule
+/// call writes in place, never through a path.
+type Memo<T, N> = { slots: Cell<List<int>>, results: Cell<List<MatchResult<T, N>>>, stride: int }
 
 impl MatchContext<T, N> {
     /// What a miss at `cursor` would have taken — told only to a run that tracks.
@@ -400,15 +400,15 @@ fn match_rule<T, N>(mut cx: MatchContext<T, N>, name: string, cursor: int, cappe
 > {
     let ordinal? = cx.ordinals.get(name) else { return undefined_rule<T, N>(cx, name, cursor) }
     let at = (ordinal * cx.memo.stride + cursor) * 2 + if capped { 1 } else { 0 }
-    let known = cx.memo.slots[at]
-    if known > 0 { return cx.memo.results[known - 1] }
+    let known = cx.memo.slots.get()[at]
+    if known > 0 { return cx.memo.results.get()[known - 1] }
     let fresh = match_alt<T, N>(cx, name, cx.g.rules[ordinal].body, cursor, [], false, capped)
     if plain_miss<T, N>(fresh) {
-        cx.memo.slots.set(at, 1)
+        cx.memo.slots.set_at(at, 1)
         return fresh
     }
     cx.memo.results.push(fresh)
-    cx.memo.slots.set(at, cx.memo.results.length)
+    cx.memo.slots.set_at(at, cx.memo.results.get().length)
     fresh
 }
 
@@ -1054,8 +1054,8 @@ fn run_as<T, N>(
         farthest: null,
     }
     let memo: Memo<T, N> = Memo {
-        slots: filled(g.rules.length * stride * 2, 0),
-        results: [miss],
+        slots: Cell.new(filled(g.rules.length * stride * 2, 0)),
+        results: Cell.new([miss]),
         stride: stride,
     }
     mut cx: MatchContext<T, N> = MatchContext {
