@@ -406,6 +406,42 @@ ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
 fi
 
+if section lk; then
+# A KEPT BINARY IS REUSED ONLY WHILE WHAT LINKED IT STANDS: the C compiler that linked it (by its word
+# `CC`), the runtime archive and the package objects it linked. A wrapper script stands for the C
+# compiler, so its bytes can be changed and its word can be pointed elsewhere.
+mkdir -p $R/lk/src
+printf '[package]\nname = "rt-lk"\nversion = "0.1.0"\n' > $R/lk/avra.toml
+printf 'println("lk")\n' > $R/lk/src/main.av
+lk_cc=$(command -v clang)
+printf '#!/bin/sh\nexec %s "$@"\n' "$lk_cc" > $R/cc1; chmod +x $R/cc1
+printf '#!/bin/sh\nexec %s "$@"\n' "$lk_cc" > $R/cc2; chmod +x $R/cc2
+LK() { # LK <label> <want: hit|built> -- the env is the caller's
+    steps=$((steps+1)); out=$(./avra build --time $R/lk 2>&1); got=built
+    case "$out" in *"cache hit"*) got=hit ;; esac
+    if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [lk] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [lk] wanted $2, got $got"; fi
+}
+export CC=$R/cc1
+LK "cold lk" built; LK "nothing touched" hit
+printf '# a new revision of the C compiler\n' >> $R/cc1
+LK "the C compiler's bytes moved" built; LK "and again nothing touched" hit
+export CC=$R/cc2
+LK "CC names another C compiler" built; LK "and that one again" hit
+unset CC
+LK "CC back to the default word" built; LK "and nothing touched" hit
+lk_rt=build/libavra_runtime.a
+cp $lk_rt $R/lk.rt.kept
+printf '\n' >> $lk_rt
+LK "the runtime archive moved" built
+cp $R/lk.rt.kept $lk_rt
+LK "and put back" built
+mv $lk_rt $R/lk.rt.away
+steps=$((steps+1)); out=$(./avra build --time $R/lk 2>&1)
+mv $R/lk.rt.away $lk_rt
+case "$out" in *"cache hit"*) fails=$((fails+1)); echo "FAIL  lk: the runtime archive was gone and the kept binary was served" ;; esac
+LK "and back again" hit
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
