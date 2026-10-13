@@ -971,6 +971,7 @@ tool-witnesses:
 ci-invariants:
 	@python3 tools/ci_invariants.py --self-test
 	@python3 tools/ci_invariants.py
+	@python3 tools/pr_mode.py --self-test
 
 # THE AGGREGATE VERDICT'S FIXTURES: the `test` job's arithmetic is a script
 # (tools/ci_verdict.py), and these prove it counts what it claims — a skipped
