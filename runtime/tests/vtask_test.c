@@ -247,9 +247,10 @@ const char* avra_int_text(int64_t v);
 // A virtual task's sites are kept as a compiled one's: the text it was
 // spawned at and the text its scan began at, both let go as it goes.
 static void a_virtual_tasks_sites_are_kept(void) {
+    int64_t t = avra_vtask_new();
+    int64_t before = avra_mem_live();
     const char* spawned = avra_int_text(1717);
     const char* scanned = avra_int_text(2828);
-    int64_t t = avra_vtask_new();
     int64_t held = avra_mem_live();
     avra_vtask_sited(t, spawned);
     avra_vtask_enter(t, scanned);
@@ -257,7 +258,7 @@ static void a_virtual_tasks_sites_are_kept(void) {
     avra_rc_release((void*)scanned);
     CHECK(avra_mem_live() == held, "a virtual task's record holds both texts after their writer let go");
     avra_vtask_free(t);
-    CHECK(avra_mem_live() < held, "and lets both go as it goes");
+    CHECK(avra_mem_live() == before, "and lets both go as it goes");
 }
 
 static void deadlocked(void) {

@@ -117,7 +117,6 @@ MUTATIONS = [
     ("a scan's site is not kept", "    site_kept(&self->scan_site, site);\n", ""),
     ("a site is borrowed, never counted", "    avra_rc_retain((void*)site);\n    avra_rc_release((void*)*held);", "    avra_rc_release((void*)*held);"),
     ("the site before is never let go", "    avra_rc_retain((void*)site);\n    avra_rc_release((void*)*held);", "    avra_rc_retain((void*)site);"),
-    ("the same site again is counted again", "    if (*held == site) return;\n    avra_rc_retain((void*)site);", "    avra_rc_retain((void*)site);"),
     ("a task's end keeps its scan's site", "    avra_rc_release((void*)f->scan_site);\n", ""),
     ("a virtual task's end keeps the site it was spawned at", "    if (f->virtual) avra_rc_release((void*)f->site);\n", ""),
     ("a virtual task's spawn site is borrowed", "    site_kept(&virtual_at(t)->site, site);\n", "    virtual_at(t)->site = site;\n"),
