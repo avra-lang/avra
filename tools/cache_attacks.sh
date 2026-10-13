@@ -485,9 +485,35 @@ rm $R/nrlib/src/added.av;                                  N "and removed" miss 
 cp build/avra build/avra.nr; strip -x build/avra.nr -o build/avra.nr2 2>/dev/null && { codesign -f -s - build/avra.nr2 2>/dev/null || true; }
 [ -x build/avra.nr2 ] && N "the same source under a compiler of other bytes" miss green build/avra.nr2
 rm -f build/avra.nr build/avra.nr2
-cp $nr/avra.toml $R/nr.toml; printf '\n[link]\nflags = ["-L${NR_FLIP}"]\n' >> $nr/avra.toml
-NR_FLIP=/a N "a variable a manifest names, set" miss green; NR_FLIP=/a N "and unchanged" hit green
-NR_FLIP=/b N "and flipped: the check's key reads no variable, so the row stands" hit green
+cp $nr/avra.toml $R/nr.toml
+printf 'int nr_a;\n' > $R/nr_a.c; printf 'int nr_b;\n' > $R/nr_b.c
+cc -c $R/nr_a.c -o $nr/obj_a.o && cc -c $R/nr_b.c -o $nr/obj_b.o
+printf '\n[link]\nobjects = ["${NR_FLIP}"]\n' >> $nr/avra.toml
+NR_FLIP=obj_a.o N "a variable a manifest's object row spells, set" miss green; NR_FLIP=obj_a.o N "and unchanged" hit green
+NR_FLIP=obj_b.o N "and flipped to another object" miss green
+cp $R/nr.toml $nr/avra.toml
+# AN OBJECT THE MANIFEST NAMES is bytes the key covers though no `.av` file holds them.
+printf 'obj-1' > $nr/obj.bin
+printf '\n[link]\nobjects = ["obj.bin"]\n' >> $nr/avra.toml
+N "an object the manifest names" miss green; N "and unchanged" hit green
+printf 'obj-2' > $nr/obj.bin;                                  N "that object's bytes edited" miss green
+cp $R/nr.toml $nr/avra.toml; rm $nr/obj.bin;                   N "and the manifest drops it" miss green
+# A PACKAGE A `use` NEWLY REACHES joins the closure, and its files the leaves.
+rp=$(ls packages/std-path/src/*.av | head -1); cp $rp $R/nr.rp
+ed $nr/src/main.av 'use @rt.nrlib.{dep}' 'use @rt.nrlib.{dep}
+use @std.path.{stem_of}'
+N "a use reaches a toolchain package" miss green; N "and unchanged" hit green
+printf '\n// moved\n' >> $rp;                                   N "a file of that package moves" miss green
+cp $R/nr.rp $rp;                                               N "and back" miss green; N "and unchanged again" hit green
+# A BUILD READS THE SAME ROW: a variable a manifest's link row spells is an input of its key.
+Bn() { # Bn <label> <var value> <want: hit|built>
+    steps=$((steps+1)); out=$(NR_FLIP=$2 ./avra build --time $nr 2>&1); got=built
+    case "$out" in *"cache hit"*) got=hit ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [nr build] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [nr build] wanted $3, got $got"; fi
+}
+printf '\n[link]\nobjects = ["${NR_FLIP}"]\n' >> $nr/avra.toml
+Bn "a build with the variable set" obj_a.o built; Bn "and unchanged" obj_a.o hit
+Bn "and the variable flipped" obj_b.o built
 cp $R/nr.toml $nr/avra.toml
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
