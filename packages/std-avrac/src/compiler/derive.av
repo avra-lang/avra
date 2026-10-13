@@ -125,6 +125,9 @@ fn read_words(root: string, more: List<ReadFile>) -> string {
     joined(named.concat(rest), "; ")
 }
 
+/// Whether a run read a declaration's body, which only a parsed file answers.
+fn bodied(r: RunRead) -> bool { !r.ref.is_empty() }
+
 /// One discarded attempt, as `--time` says it: its whole time, its phases, the turn.
 export fn left_line(l: Left) -> string {
     "discarded: ${l.ns / 1000000}ms — ${joined([ph.shown() for ph in grouped_phases(l.spans)], ", ")} — next ${l.turn}"
@@ -665,14 +668,15 @@ impl Workspace {
         self.cheap_reads(store, row.path, row.name)
     }
 
-    /// The files a const's kept verdict read, when one of its kept rows that needs no
-    /// analysis refuses it; none when every such row stands.
+    /// The files a const's kept verdict read, and what their own runs read, when one of its
+    /// kept rows that needs no analysis refuses it; none when every such row stands.
     fn cheap_reads(store: Store, path: string, name: string) -> List<string> {
-        let said = store.get(Stored.Unit, "${kept_key_for(path, name)}#lines") ?? ""
+        let key = kept_key_for(path, name)
+        let said = store.get(Stored.Unit, "${key}#lines") ?? ""
         let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
         if !rows.any((r: List<string>) -> self.row_refuses(store, r)) { return [] }
-        let reads = rows.find(it[0] == "r") ?? []
-        reads.slice(1, reads.length)
+        let read = [r for r in kept_reads(store, key) ?? [] if bodied(r)]
+        distinct([r.path for r in read].concat(flatten([[q.path for q in self.ran_by(store, r.path) if bodied(q)] for r in read])))
     }
 
     /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
