@@ -3,7 +3,8 @@
 # from the same release asset the checks restore, in place of the first
 # generation a lane would build (the standing compiler building new source).
 #
-#   sh tools/fetch_compiler.sh [<sha>]     # default origin/main
+#   sh tools/fetch_compiler.sh [<sha>]        # default origin/main
+#   sh tools/fetch_compiler.sh --key <key>    # a key read elsewhere (a tree with no .git)
 #   sh tools/fetch_compiler.sh --self-test
 #
 # The key is the compiler's source digest at the commit (tools/compiler_paths.sh
@@ -45,9 +46,11 @@ STUB
     printf 'standing\n' > "$scratch/ok/avra"
     out=$(cd "$here" && FETCH_RELEASE_TOOL="$scratch/stub-ok.sh" FETCH_BUILD="$scratch/ok" sh tools/fetch_compiler.sh HEAD 2>&1) || true
     expect "install names the key and the bytes" "fetch_compiler: installed $scratch/ok/avra" "$out"
+    out=$(cd "$scratch" && FETCH_RELEASE_TOOL="$scratch/stub-ok.sh" FETCH_BUILD="$scratch/keyed" sh "$here/tools/fetch_compiler.sh" --key abc123 2>&1) || true
+    expect "a given key installs with no git" "key abc123" "$out"
     [ "$(cat "$scratch/ok/avra.pre" 2>/dev/null)" = standing ] || { fails=$((fails + 1)); echo "FAIL  standing compiler moves to avra.pre"; }
     [ "$(cat "$scratch/ok/avra" 2>/dev/null)" = "$(printf '#!/bin/sh\necho stub-avra')" ] || { fails=$((fails + 1)); echo "FAIL  fetched compiler is installed as avra"; }
-    if [ "$fails" = 0 ]; then echo "fetch_compiler: self-test clean — 6 case(s)"; exit 0; fi
+    if [ "$fails" = 0 ]; then echo "fetch_compiler: self-test clean — 7 case(s)"; exit 0; fi
     echo "fetch_compiler: self-test FAILED — $fails case(s)"
     exit 1
 fi
@@ -63,14 +66,20 @@ refuse() {
 platform=${FETCH_UNAME:-$(uname -s)}
 [ "$platform" = Linux ] || refuse "the published compiler is a linux binary; this machine is $platform (run it on a Sprite)"
 
-rev=${1:-origin/main}
-sha=$(git rev-parse --verify --quiet "$rev^{commit}") || refuse "no commit named $rev"
-
-mkdir -p "$build"
-index="$build/fetch.index"
-GIT_INDEX_FILE="$index" git read-tree "$sha" || refuse "cannot read the tree of $sha"
-key=$(GIT_INDEX_FILE="$index" sh tools/compiler_paths.sh --key) ||
-    refuse "the compiler source of $sha is not listed"
+if [ "${1:-}" = --key ]; then
+    key=${2:?fetch_compiler: --key takes the key}
+    sha="a key given on the command line"
+else
+    rev=${1:-origin/main}
+    git rev-parse --git-dir >/dev/null 2>&1 ||
+        refuse "no git repository here; read the key where git is (sh tools/compiler_paths.sh --key at the commit) and pass it with --key"
+    sha=$(git rev-parse --verify --quiet "$rev^{commit}") || refuse "no commit named $rev"
+    mkdir -p "$build"
+    index="$build/fetch.index"
+    GIT_INDEX_FILE="$index" git read-tree "$sha" || refuse "cannot read the tree of $sha"
+    key=$(GIT_INDEX_FILE="$index" sh tools/compiler_paths.sh --key) ||
+        refuse "the compiler source of $sha is not listed"
+fi
 
 if [ -z "${GH_TOKEN:-}" ]; then
     GH_TOKEN=$(gh auth token 2>/dev/null || true)
