@@ -172,10 +172,11 @@ gated on `needs.prepare.outputs.full`, which is `0` for a draft without the
 `full-ci` label. `test` refuses a light run by name (`NOT A VERDICT`), so a
 draft never shows a green required check it did not earn, and the watcher
 and the batcher, which read `test` for SUCCESS, refuse it. A light run
-judges `fmt` and the idioms with the published compiler when one stands, so a
-PR that uses syntax main's compiler cannot read is refused on the light gate and
-asks for `full-ci`; a PR that changes the formatter itself is judged by the full
-run on ready. Readying the PR,
+judges `fmt` and the idioms with the tree's own compiler only. When the tree's
+compiler is not the published one, the `gate` job is skipped and the light run
+says so: a skipped gate is not a pass, and the full run on ready is the verdict.
+The mode is read from the PR's API answer at run time (`tools/pr_mode.py`), so a
+queued run cannot keep the light mode after the PR is ready. Readying the PR,
 or labelling it `full-ci`, is what starts the whole run; the `ready_for_review`
 and `labeled` events are in the trigger list for that reason.
 

@@ -203,7 +203,14 @@ batch_build() {
         codecs=$(printf '%s' "$row" | cut -f11)
         [ "$state" = OPEN ] || refuse "#$num is $state, not open"
         if [ "$mdraft" = draft ]; then
-            [ "$gate" = SUCCESS ] || refuse "#$num refused: its light gate check is $gate, not SUCCESS"
+            # A light gate SKIPPED is the compiler-not-published skip: the member's
+            # gate verdict is the batch PR's own full run, so it needs the evidence
+            # for both halves (cache-attacks below, and the suites here).
+            case "$gate" in
+                SUCCESS) ;;
+                SKIPPED) ;;
+                *) refuse "#$num refused: its light gate check is $gate, not SUCCESS or SKIPPED" ;;
+            esac
             [ "$kstatic" = SUCCESS ] || refuse "#$num refused: its keepers-static check is $kstatic, not SUCCESS"
             case "$codecs" in SUCCESS | SKIPPED | ABSENT) ;; *) refuse "#$num refused: its codecs check is $codecs" ;; esac
             ev=$(evidence_from "$num" "$suites")
