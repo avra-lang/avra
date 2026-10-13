@@ -1,0 +1,273 @@
+#!/bin/sh
+# THE AUTO-BATCHER: approved PR branches, one integration PR.
+#
+#   sh tools/work batch [--n N] [--attacks-ran N=EVIDENCE]… <pr>…
+#   sh tools/work batch close <N>
+#
+# `batch` builds batch-<N> off origin/main and merges each member's head in
+# the order given, pushes it, opens ONE PR, arms auto-merge, and retitles each
+# member "DO NOT MERGE (lands via batch #N) — <its title>". A member is refused
+# when its `test` check is not SUCCESS, or its `cache-attacks` job is FAILURE.
+# When `cache-attacks` did not run (SKIPPED, or absent) the member needs
+# --attacks-ran N=EVIDENCE, and that evidence is printed on the batch PR. A
+# merge that conflicts is aborted and named; nothing is resolved here.
+#
+# `batch close <N>` runs once the batch PR has merged: it closes each member
+# with a pointer to the batch PR. A batch that did not merge closes nothing,
+# and names the members whose files its failing job's log names.
+#
+# THE BATCH PR'S BODY CARRIES ITS MEMBERS, as `<!-- batch-members: … -->`, so
+# `close` needs no state of its own. `gh` is AVRA_GH (a test stands in for it).
+set -u
+gh_=${AVRA_GH:-gh}
+die() { echo "batch: $*" >&2; exit 1; }
+
+# One member's facts, tab-separated: number, state, draft, title, head branch,
+# the `test` check, the `cache-attacks` check, and its before/after line.
+member_facts() {
+    $gh_ pr view "$1" --json number,title,headRefName,isDraft,state,body,statusCheckRollup |
+        python3 -c '
+import json, sys
+pr = json.load(sys.stdin)
+checks = {}
+for c in pr.get("statusCheckRollup") or []:
+    name = c.get("name") or c.get("context") or ""
+    checks[name] = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+before = ""
+for line in (pr.get("body") or "").splitlines():
+    if line.strip().lower().lstrip("-* ").startswith(("before/after", "before:", "after:", "before →", "before ->")):
+        before = line.strip()
+        break
+row = [str(pr["number"]), pr["state"], "draft" if pr.get("isDraft") else "ready",
+       pr["title"], pr["headRefName"], checks.get("test", "ABSENT"),
+       checks.get("cache-attacks", "ABSENT"), before]
+print("\t".join(x.replace("\t", " ").replace("\n", " ") for x in row))'
+}
+
+# A title without its own "DO NOT MERGE" lead, for the retitle.
+strip_dnm() {
+    printf '%s' "$1" | sed -e 's/^DO NOT MERGE[:—-]* *//'
+}
+
+# The evidence given for member $1 by a list of N=TEXT lines ($2).
+evidence_from() {
+    printf '%s\n' "$2" | sed -n "s/^$1=//p" | head -n 1
+}
+
+# The members named by a batch PR's body.
+members_in() {
+    python3 -c '
+import json, re, sys
+pr = json.load(sys.stdin)
+pr = pr[0] if isinstance(pr, list) else pr
+m = re.search(r"<!-- batch-members: ([0-9 ]+) -->", pr.get("body") or "")
+print(" ".join(m.group(1).split()) if m else "")'
+}
+
+# A refusal stops a real batch. A plan names every refusal and goes on.
+refuse() {
+    if [ -n "$plan" ]; then
+        echo "plan: would refuse: $*"
+        refused=1
+    else
+        die "$*"
+    fi
+}
+
+# The batch the members would make, merged in memory: each step is a
+# merge-tree over commits made with commit-tree, so no ref and no remote moves.
+plan_merges() {
+    pn=$1; shift
+    base=$(git rev-parse origin/main)
+    conflicted=
+    for pr in "$@"; do
+        head=$(member_facts "$pr" | cut -f5)
+        git fetch -q origin "+refs/heads/$head:refs/remotes/origin/$head" || die "fetch of $head failed"
+        if out=$(git merge-tree --write-tree --name-only "$base" "origin/$head" 2>/dev/null); then
+            tree=$(printf '%s\n' "$out" | head -n 1)
+            base=$(git commit-tree "$tree" -p "$base" -m "plan: batch-$pn with #$pr")
+            echo "plan: #$pr ($head) merges cleanly"
+        else
+            files=$(printf '%s\n' "$out" | tail -n +2 | grep -v '^$' | tr '\n' ' ')
+            echo "plan: #$pr ($head) would CONFLICT; conflicting files: ${files:-(none named)}"
+            conflicted=1
+        fi
+    done
+    echo "plan: batch-$pn would be: PR title \"batch #$pn:$titles\", members in order:$titles"
+    echo "plan: the batch PR body would be:"
+    printf '%s\n' "$body" | sed 's/^/plan: body | /'
+    for pr in "$@"; do
+        title=$(member_facts "$pr" | cut -f4)
+        echo "plan: would retitle #$pr: DO NOT MERGE (lands via batch #$pn) — $(strip_dnm "$title")"
+    done
+    echo "plan: it would arm auto-merge (squash) on the batch PR"
+    [ -z "$conflicted" ] && [ -z "$refused" ] || { echo "plan: NOT BUILDABLE as given"; exit 1; }
+    echo "plan: buildable — nothing was pushed, opened, merged or retitled"
+}
+
+batch_close() {
+    [ "$#" -eq 1 ] || die "usage: batch close <N>"
+    n=$1
+    listing=$($gh_ pr list --head "batch-$n" --state all --json number,state,body,statusCheckRollup) ||
+        die "could not list PRs for batch-$n"
+    bn=$(printf '%s' "$listing" | python3 -c 'import json,sys
+prs = json.load(sys.stdin)
+print(prs[0]["number"] if prs else "")')
+    [ -n "$bn" ] || die "no PR for batch-$n"
+    bstate=$(printf '%s' "$listing" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["state"])')
+    members=$(printf '%s' "$listing" | members_in)
+    case "$bstate" in
+        MERGED)
+            for m in $members; do
+                $gh_ pr close "$m" --comment "Landed via batch #$n (PR #$bn)." >/dev/null
+                echo "batch: closed #$m — landed via batch #$n"
+            done
+            return 0 ;;
+    esac
+    echo "batch: batch #$n (PR #$bn) is $bstate, not merged — no member is closed" >&2
+    failing=$(printf '%s' "$listing" | python3 -c 'import json,sys
+for c in json.load(sys.stdin)[0].get("statusCheckRollup") or []:
+    if (c.get("conclusion") or "").upper() == "FAILURE":
+        print((c.get("name") or c.get("context") or "") + " " + (c.get("detailsUrl") or ""))')
+    [ -n "$failing" ] || { echo "batch: no failing check named on PR #$bn" >&2; exit 1; }
+    echo "$failing" | while read -r job url; do
+        echo "batch: failing job: $job" >&2
+        run=$(printf '%s' "$url" | sed -n 's#.*/runs/\([0-9][0-9]*\).*#\1#p')
+        log=$([ -n "$run" ] && $gh_ run view "$run" --log-failed 2>/dev/null || true)
+        for m in $members; do
+            for f in $($gh_ pr view "$m" --json files | python3 -c 'import json,sys
+print(" ".join(x["path"] for x in json.load(sys.stdin)["files"]))'); do
+                case "$log" in
+                    *"$f"*) echo "batch: #$m's file $f is named by $job" >&2 ;;
+                esac
+            done
+        done
+    done
+    exit 1
+}
+
+batch_build() {
+    n=
+    attacks=
+    na=
+    plan=
+    draft=
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --plan) plan=1; shift ;;
+            --draft) draft=1; shift ;;
+            --n) n=$2; shift 2 ;;
+            --attacks-ran) attacks="$attacks$2
+"; shift 2 ;;
+            --attacks-na) na="$na$2
+"; shift 2 ;;
+            --) shift; break ;;
+            -*) die "unknown flag $1" ;;
+            *) break ;;
+        esac
+    done
+    [ "$#" -ge 1 ] || die "usage: batch [--n N] [--attacks-ran N=EVIDENCE]… <pr>…"
+    [ -n "$plan" ] || [ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or drop your changes first"
+    git fetch -q origin main || die "fetch of main failed"
+    if [ -z "$n" ]; then
+        last=$(git ls-remote --heads origin 'batch-*' | sed -n 's#.*refs/heads/batch-\([0-9][0-9]*\)$#\1#p' | sort -n | tail -n 1)
+        n=$(( ${last:-0} + 1 ))
+    fi
+    git ls-remote --exit-code --heads origin "batch-$n" >/dev/null 2>&1 && die "batch-$n already exists on origin — pass --n"
+
+    members=
+    titles=
+    rows=
+    needs=
+    refused=
+    for pr in "$@"; do
+        row=$(member_facts "$pr") || die "no PR #$pr"
+        num=$(printf '%s' "$row" | cut -f1)
+        state=$(printf '%s' "$row" | cut -f2)
+        title=$(printf '%s' "$row" | cut -f4)
+        head=$(printf '%s' "$row" | cut -f5)
+        test=$(printf '%s' "$row" | cut -f6)
+        attacks_state=$(printf '%s' "$row" | cut -f7)
+        before=$(printf '%s' "$row" | cut -f8)
+        [ "$state" = OPEN ] || refuse "#$num is $state, not open"
+        [ "$test" = SUCCESS ] || refuse "#$num refused: its test check is $test, not SUCCESS"
+        case "$attacks_state" in
+            SUCCESS) ;;
+            FAILURE | ERROR | TIMED_OUT) refuse "#$num refused: its cache-attacks job is $attacks_state" ;;
+            *)
+                ev=$(evidence_from "$num" "$attacks")
+                reason=$(evidence_from "$num" "$na")
+                if [ -n "$ev" ]; then
+                    needs="$needs
+#$num: ran — $ev"
+                elif [ -n "$reason" ]; then
+                    needs="$needs
+#$num: not applicable — $reason"
+                else
+                    refuse "#$num: cache-attacks is $attacks_state, so it did not run — pass --attacks-ran $num=\"<the Sprite result>\", or --attacks-na $num=\"<why it does not apply>\""
+                fi ;;
+        esac
+        members="$members $num"
+        titles="$titles #$num"
+        rows="$rows
+- #$num $(strip_dnm "$title")"
+        [ -n "$before" ] && rows="$rows
+  $before"
+    done
+
+    body="Integration of the members below (\`sh tools/work batch\`).
+
+<!-- batch-members:$members -->
+
+Members, in merge order:$rows"
+    if [ -n "$needs" ]; then
+        body="$body
+
+Cache-attacks did not run for these members; the evidence given for each:$needs"
+    fi
+    if [ -n "$plan" ]; then
+        plan_merges "$n" $members
+        return
+    fi
+    git checkout -q -B "batch-$n" origin/main || die "could not create batch-$n"
+    for pr in $members; do
+        head=$(member_facts "$pr" | cut -f5)
+        git fetch -q origin "+refs/heads/$head:refs/remotes/origin/$head" || die "fetch of $head failed"
+        if ! git merge -q --no-edit "origin/$head" >/dev/null 2>&1; then
+            files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            git merge --abort >/dev/null 2>&1
+            die "#$pr ($head) conflicts with batch-$n; conflicting files: ${files:-(none named)}. Nothing was pushed and nothing was resolved."
+        fi
+        echo "batch: merged #$pr ($head)"
+    done
+
+    git push -q -u origin "batch-$n" || die "push of batch-$n failed"
+    if [ -n "$draft" ]; then
+        url=$($gh_ pr create --draft --base main --head "batch-$n" --title "DO NOT MERGE: batch #$n:$titles" --body "$body") ||
+            die "could not open the batch PR"
+        bpr=${url##*/}
+        echo "batch: #$bpr is a draft; it is not armed — ready it with gh pr ready $bpr when it may land"
+    else
+        url=$($gh_ pr create --base main --head "batch-$n" --title "batch #$n:$titles" --body "$body") ||
+            die "could not open the batch PR"
+        bpr=${url##*/}
+        if $gh_ pr merge "$bpr" --auto --squash >/dev/null 2>&1; then
+            echo "batch: #$bpr armed for auto-merge (squash)"
+        else
+            echo "batch: could not arm auto-merge on #$bpr yet — the watcher will arm it" >&2
+        fi
+    fi
+    for pr in $members; do
+        title=$(member_facts "$pr" | cut -f4)
+        $gh_ api -X PATCH "repos/:owner/:repo/pulls/$pr" \
+            -f title="DO NOT MERGE (lands via batch #$n) — $(strip_dnm "$title")" >/dev/null &&
+            echo "batch: retitled #$pr"
+    done
+    echo "batch: batch #$n is $url"
+}
+
+case "${1:-}" in
+    close) shift; batch_close "$@" ;;
+    "") die "usage: batch [--n N] [--attacks-ran N=EVIDENCE]… <pr>… | batch close <N>" ;;
+    *) batch_build "$@" ;;
+esac
