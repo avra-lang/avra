@@ -209,6 +209,9 @@ fn missed<T, N>(
     ended<T, N>(cx, MatchStatus.Miss, cursor, bindings, diagnostics, farthest)
 }
 
+/// What was said so far, then `more` — the same list when `more` is silent.
+fn heard(said: List<Diagnostic>, more: List<Diagnostic>) -> List<Diagnostic> { if more.is_empty() { said } else { said.concat(more) } }
+
 /// Whether a result is the plain miss — nothing in it but that it missed.
 fn plain_miss<T, N>(r: MatchResult<T, N>) -> bool { r.status == MatchStatus.Miss && r.farthest == null && r.diagnostics.is_empty() }
 
@@ -564,7 +567,7 @@ fn match_seq<T, N>(
         let r = if member.trailer && !open { missed<T, N>(cx, cursor, bindings, cx.silence, null) } else { match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open) }
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit {
-            diagnostics = diagnostics.concat(r.diagnostics)
+            diagnostics = heard(diagnostics, r.diagnostics)
             if r.cursor > cursor { anchored = true }
             if opens(member.prim) { open = true }
             cursor = r.cursor
@@ -783,7 +786,7 @@ fn match_repetition<T, N>(
                 .push(defect(rule_name, "repetition matched without consuming input; stopped"))
             break
         }
-        diagnostics = diagnostics.concat(r.diagnostics)
+        diagnostics = heard(diagnostics, r.diagnostics)
         collected.push(r.value)
         bindings = r.bindings
         cursor = r.cursor
