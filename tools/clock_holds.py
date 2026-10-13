@@ -30,7 +30,10 @@ lines below. PROXIMITY CANNOT TELL a hold inside an `if` from one on the
 call's own path, nor a hold given back early on another branch: those are
 the reader's to see. A call that cannot wait on time, or is knowingly not
 held, says so on the line above: `// the clock: <why>`, with a reason of
-three words at least. Anything else is refused, by file and line.
+three words at least. A call HELD ELSEWHERE names the C fn that holds:
+`// the clock: held by <fn>`, the name in backticks — and that fn must stand in the C read
+here with both halves of a hold in its body, or the line is refused as
+any unheld call is. Anything else is refused, by file and line.
 
     clock_holds.py          the tree
     clock_holds.py --self   the fixtures alone
@@ -45,6 +48,8 @@ BLOCKING = ("poll|ppoll|select|pselect|kevent|epoll_wait|nanosleep|usleep|sleep|
 CALL = re.compile(r"(?<![A-Za-z_0-9.>])(" + BLOCKING + r")\s*\(")
 EXTERN = re.compile(r"^\s*(?:export\s+)?extern\s+fn\s+(" + BLOCKING + r")\s*\(")
 EXCUSE = re.compile(r"//\s*the clock:\s*(.*)$")
+HELD_BY = re.compile(r"//\s*the clock:\s*held by\s+`(\w+)`")
+DEFINED = re.compile(r"^[A-Za-z_][\w\s\*]*?\b(\w+)\s*\([^;{]*\)\s*\{")
 REACH = 3
 
 
@@ -78,13 +83,34 @@ def excused(line):
     return bool(m) and len(m.group(1).split()) >= 3
 
 
-def faults(path, lines, pattern=CALL):
+def holders_of(lines):
+    """Every C fn defined in `lines` whose body takes a hold and gives it
+    back: the name, by its body's own braces."""
+    out, name, depth, took, gave = set(), None, 0, False, False
+    for c in code_of(lines):
+        if depth == 0:
+            m = DEFINED.search(c)
+            name, took, gave = (m.group(1) if m else None), False, False
+        took = took or "avra_clock_hold(1)" in c
+        gave = gave or "avra_clock_hold(-1)" in c
+        depth += c.count("{") - c.count("}")
+        if depth == 0 and name and took and gave:
+            out.add(name)
+    return out
+
+
+def faults(path, lines, pattern=CALL, holders=frozenset()):
     """Each blocking call in `lines` neither held nor excused."""
     out = []
     code = code_of(lines) if pattern is CALL else lines
     for i, c in enumerate(code):
         hit = pattern.search(c)
         if not hit:
+            continue
+        named = HELD_BY.search(lines[i - 1]) if i > 0 else None
+        if named:
+            if named.group(1) not in holders:
+                out.append(f"{path}:{i + 1}: `{hit.group(1)}` says `{named.group(1)}` holds the clock for it, and no C fn of that name read here takes a hold and gives it back")
             continue
         if i > 0 and excused(lines[i - 1]):
             continue
@@ -120,10 +146,27 @@ def proved():
         ("an extern to a step", ["export extern fn sqlite3_step(stmt: ptr?) -> i32"], 1),
         ("an extern excused", ["// the clock: not held, a reason here", "extern fn sqlite3_step(s: ptr?) -> i32"], 0),
         ("an extern of another name", ["extern fn sqlite3_reset(s: ptr?) -> i32"], 0),
+        ("an extern held by a fn that holds", ["// the clock: held by `held_sleep` — where sqlite sleeps", "extern fn sqlite3_step(s: ptr?) -> i32"], 0),
+        ("an extern held by a fn that does not", ["// the clock: held by `half_sleep` — where sqlite sleeps", "extern fn sqlite3_step(s: ptr?) -> i32"], 1),
+        ("an extern held by nobody read", ["// the clock: held by `nobody` — where sqlite sleeps", "extern fn sqlite3_step(s: ptr?) -> i32"], 1),
     ]
+    held = holders_of([
+        "static int held_sleep(sqlite3_vfs* v, int us) {",
+        "    avra_clock_hold(1);",
+        "    int r = base->xSleep(base, us);",
+        "    avra_clock_hold(-1);",
+        "    return r;",
+        "}",
+        "static int half_sleep(sqlite3_vfs* v, int us) {",
+        "    avra_clock_hold(1);",
+        "    return base->xSleep(base, us);",
+        "}",
+        "int one_line(void) { avra_clock_hold(1); usleep(1); avra_clock_hold(-1); return 0; }",
+    ])
     bad = [name for name, lines, want in c if len(faults("fixture", lines)) != want]
-    bad += [name for name, lines, want in av if len(faults("fixture", lines, EXTERN)) != want]
-    return len(c) + len(av), bad
+    bad += [name for name, lines, want in av if len(faults("fixture", lines, EXTERN, held)) != want]
+    bad += ["the holders read"] if held != {"held_sleep", "one_line"} else []
+    return len(c) + len(av) + 1, bad
 
 
 def main():
@@ -138,15 +181,16 @@ def main():
                       + glob.glob("packages/*/src/c/*.c"))
     declaring = sorted(p for p in glob.glob("packages/**/*.av", recursive=True) if "/tests/" not in p)
     vendored = sorted(glob.glob("packages/*/vendor/**/*.c", recursive=True))
-    found, calls, externs = [], 0, 0
+    found, calls, externs, holders = [], 0, 0, set()
     for path in sources:
         lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
         calls += sum(1 for c in code_of(lines) if CALL.search(c))
-        found += faults(path, lines)
+        holders |= holders_of(lines)
+        found += faults(path, lines, CALL, holders)
     for path in declaring:
         lines = open(path, encoding="utf-8", errors="replace").read().split("\n")
         externs += sum(1 for l in lines if EXTERN.search(l))
-        found += faults(path, lines, EXTERN)
+        found += faults(path, lines, EXTERN, holders)
     for f in found:
         print(f)
     print(f"clock-holds: {len(sources)} C source(s) read, {calls} blocking call(s); {len(declaring)} .av file(s) read, {externs} blocking extern(s); {len(vendored)} vendored C file(s) not read; {len(found)} unheld; {n} of the keeper's own cases hold")
