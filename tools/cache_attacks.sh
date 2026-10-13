@@ -404,6 +404,30 @@ steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] && [ "$(hc_count plain)" = 0 ]
 ed $R/hc/src/gb/k.av "K: int = 7" "K: int = 8"
 ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
+
+fi
+
+if section sp; then
+# A KEPT DIAGNOSTIC POINTS WHERE ITS DECLARATION NOW STANDS. `a.pick` carries a warning
+# (an arm nothing reaches). A line inserted ABOVE it moves the warning to the next line and
+# changes nothing the declaration says, so the check reports the new line and types
+# no declaration again.
+mkdir -p $R/sp/src
+printf '[package]\nname = "rt-sp"\nversion = "0.1.0"\n' > $R/sp/avra.toml
+printf 'export fn first() -> int { 1 }\n\nexport fn pick(n: int) -> int {\n    match n {\n        x -> 1\n        5 -> 2\n    }\n}\n' > $R/sp/src/a.av
+printf 'use a.{first, pick}\nprintln("${first() + pick(3)}")\n' > $R/sp/src/main.av
+sp_typed() { AVRA_QTRACE=1 ./avra check $R/sp 2>&1 | grep -ac "^Q.ask.Typed.*compute"; }
+sp_line() { ./avra check $R/sp 2>&1 | grep -a -A1 "never reached" | grep -ao "a.av:[0-9]*" | head -1; }
+HR "cold sp" check sp 0
+sp_before=$(sp_line)
+steps=$((steps+1)); [ -n "$sp_before" ] || { fails=$((fails+1)); echo "FAIL  sp: the fixture's unreachable arm is not reported, so there is no diagnostic to move: $(./avra check $R/sp 2>&1 | head -6 | tr '\n' ' ')"; }
+printf '// moved\n%s' "$(cat $R/sp/src/a.av)" > $R/sp/src/a.av.new && mv $R/sp/src/a.av.new $R/sp/src/a.av
+steps=$((steps+1)); sp_typed_now=$(sp_typed)
+[ "$sp_typed_now" = 0 ] || { fails=$((fails+1)); echo "FAIL  sp: a line inserted above a declaration typed $sp_typed_now declarations again; none says anything new"; }
+sp_after=$(sp_line)
+steps=$((steps+1)); sp_want="a.av:$(( ${sp_before#a.av:} + 1 ))"
+[ "$sp_after" = "$sp_want" ] || { fails=$((fails+1)); echo "FAIL  sp: the warning stood at '$sp_before' and after the insert is at '$sp_after', wanted '$sp_want'"; }
+
 fi
 
 if section vd; then
