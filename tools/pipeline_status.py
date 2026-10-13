@@ -27,6 +27,13 @@ state, proved against synthetic fixtures with no network and no LLM
 
 It must not lie: a signal it cannot read prints `unknown` and is skipped
 by the verdict, never given a plausible default.
+
+WAITING ON A HUMAN/LEAD is the section for what the watcher will never move
+by itself: a green draft (it is a hold, and only a landing takes it), a
+red non-draft PR, a PR BEHIND main, and a PR nobody has pushed to. A green
+draft older than six hours fails the report (exit status 1), so a heartbeat
+can alarm on it. The cap line says how many PRs are open and how old the
+oldest is, so a pile-up is visible at a glance.
 """
 import json
 import os
@@ -48,6 +55,12 @@ DRIVER_FRESH_S = 300
 FAIL_CONCLUSIONS = ("failure", "timed_out", "startup_failure", "action_required")
 RUNNING_STATUS = ("in_progress", "running")
 QUEUED_STATUS = ("queued", "requested", "waiting", "pending")
+# THE WAITING THRESHOLDS: how long a state may stand before a human or the
+# lead is told. A green draft past WAIT_GREEN_DRAFT_EXIT_S fails the report.
+WAIT_RED_S = 2 * 3600
+WAIT_BEHIND_S = 3600
+WAIT_IDLE_S = 24 * 3600
+WAIT_GREEN_DRAFT_EXIT_S = 6 * 3600
 
 
 # ---- the decision (pure; this is what the fixtures prove) --------------
@@ -265,10 +278,112 @@ def collect_state(repo):
             job = names[0] if names else None
             prs_out.append({"number": p["number"], "blocker": blocker_of(p, job)})
 
-    return {"repo": repo, "now": datetime.now(timezone.utc).isoformat(), "main": main,
+    now = datetime.now(timezone.utc)
+    recs = None
+    if prs is not None:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            pushed = [ex.submit(_safe, head_pushed, repo, p["headRefOid"]) for p in prs]
+            recs = [_wait_record(p, job_cache.get(pr_run.get(p["number"])), f.result())
+                    for p, f in zip(prs, pushed)]
+    waiting_out = None
+    if recs is not None:
+        lines, alarm = waiting(recs, now, _when_main(main))
+        waiting_out = {"lines": lines, "alarm": alarm, "cap": cap_line(recs, now),
+                       "landing": landing_effects(recs)}
+    return {"repo": repo, "now": now.isoformat(), "main": main,
             "runs": {"counts": counts, "window": len(window),
                      "failed_jobs": failed_jobs, "unread": unread},
-            "prs": prs_out, "driver": driver_state()}
+            "prs": prs_out, "driver": driver_state(), "waiting": waiting_out}
+
+
+def _when_main(main):
+    return pr_watcher._when(main["date"]) if main and main.get("date") else None
+
+
+# ---- waiting on a human or the lead (pure; proved by the fixtures) -----
+def waiting(recs, now, main_date):
+    """The lines for WAITING ON A HUMAN/LEAD, and whether a green draft is
+    old enough to fail the report. `recs`: one record per open PR (see
+    `_wait_record`); `now` and `main_date` are aware datetimes."""
+    lines, alarm = [], False
+    for r in recs:
+        n, t = r["number"], r["test"]
+        if r["isDraft"]:
+            green = _secs_before(now, t["greenSince"]) if t["conclusion"] == "SUCCESS" else None
+            if green is not None:
+                lines.append(f"  #{n} green draft, green {human_age(green)}: {r['title']}")
+                alarm = alarm or green > WAIT_GREEN_DRAFT_EXIT_S
+            continue
+        red = _secs_before(now, t["doneAt"]) if t["conclusion"] == "FAILURE" else None
+        if red is not None and red > WAIT_RED_S:
+            lines.append(f"  #{n} red for {human_age(red)} — failing: "
+                         f"{', '.join(r['failing']) or 'unknown'}")
+        behind = _secs_before(now, main_date) if r["mss"] == "BEHIND" else None
+        if behind is not None and behind > WAIT_BEHIND_S:
+            lines.append(f"  #{n} BEHIND main; main moved {human_age(behind)} ago")
+        idle = _secs_before(now, r["lastPush"])
+        if idle is not None and idle > WAIT_IDLE_S:
+            lines.append(f"  #{n} no push for {human_age(idle)}")
+    return lines, alarm
+
+
+def cap_line(recs, now):
+    """How many PRs are open, and how old the oldest one is."""
+    opened = [t for t in (pr_watcher._when(r["createdAt"]) for r in recs) if t is not None]
+    if not recs:
+        return "cap      0 open PRs"
+    if not opened:
+        return f"cap      {len(recs)} open PRs; the oldest's age is unknown"
+    old = min(opened)
+    oldest = next(r["number"] for r in recs if pr_watcher._when(r["createdAt"]) == old)
+    return f"cap      {len(recs)} open PRs; oldest #{oldest}, opened {human_age((now - old).total_seconds())} ago"
+
+
+def head_pushed(repo, sha):
+    """When a PR's head commit was committed — its last push, as far as
+    the watcher can read it. None when gh cannot answer."""
+    return pr_watcher._gh_json(["api", f"repos/{repo}/commits/{sha}",
+                                "--jq", "{d: .commit.committer.date}"]).get("d")
+
+
+def landing_effects(recs):
+    """One line per open PR: what landing it NOW would restart. Landing moves
+    `main`, so every other non-draft PR whose `test` check is still running
+    goes BEHIND and restarts. A draft is not landable and says so."""
+    lines = []
+    for r in recs:
+        n = r["number"]
+        if r["isDraft"]:
+            lines.append(f"  #{n} draft — not landable")
+            continue
+        others = [q["number"] for q in recs
+                  if q["number"] != n and not q["isDraft"] and q["running"]]
+        if others:
+            lines.append(f"  #{n} lands now → restarts " + ", ".join(f"#{o}" for o in others)
+                         + " (mid-CI)")
+        else:
+            lines.append(f"  #{n} lands now → restarts nothing")
+    return lines
+
+
+def _secs_before(now, stamp):
+    """Seconds from `stamp` (an ISO string or a datetime) until `now`."""
+    t = stamp if isinstance(stamp, datetime) else pr_watcher._when(stamp)
+    return None if t is None else (now - t).total_seconds()
+
+
+def _wait_record(p, names, pushed=None):
+    check = _test_check(p) or {}
+    concl = (check.get("conclusion") or "").upper()
+    return {"number": p["number"], "title": p.get("title") or "",
+            "isDraft": bool(p.get("isDraft")), "mss": (p.get("mergeStateStatus") or "").upper(),
+            "test": {"conclusion": concl,
+                     "greenSince": check.get("completedAt") if concl == "SUCCESS" else None,
+                     "doneAt": check.get("completedAt")},
+            "failing": names or [], "createdAt": p.get("createdAt"),
+            "lastPush": pushed,
+            "running": check.get("status") is not None
+            and (check.get("status") or "").upper() != "COMPLETED"}
 
 
 # ---- rendering ---------------------------------------------------------
@@ -346,6 +461,18 @@ def render(s):
         for b, nums in ranked:
             lines.append(f"         {b}: " + " ".join(f"#{n}" for n in sorted(nums)))
 
+    waiting_out = s.get("waiting")
+    if waiting_out is None:
+        lines.append("waiting  unknown (gh could not read open PRs)")
+    else:
+        lines.append("")
+        lines.append("WAITING ON A HUMAN/LEAD")
+        lines.extend(waiting_out["lines"] or ["  none"])
+        lines.append(waiting_out["cap"])
+        lines.append("")
+        lines.append("LANDING NOW WOULD")
+        lines.extend(waiting_out["landing"] or ["  no open PRs"])
+
     lines.append("")
     lines.append(f"VERDICT  {verdict(s)}")
     return lines
@@ -362,7 +489,7 @@ def main(argv):
         print(json.dumps(state, indent=2, sort_keys=True, default=str))
         return 0
     print("\n".join(render(state)))
-    return 0
+    return 1 if (state.get("waiting") or {}).get("alarm") else 0
 
 
 # ---- the proof (no network, no LLM) ------------------------------------
@@ -391,6 +518,55 @@ BLOCKER_CASES = [
     ("pending-no-check", _cpr(), None, "pending"),
     ("pending-in-progress", _cpr(statusCheckRollup=[_check("", "IN_PROGRESS")]), None, "pending"),
     ("unknown-conclusion", _cpr(statusCheckRollup=[_check("EXPECTED")]), None, "unknown"),
+]
+
+
+def _wrec(n, draft=False, concl="", done=None, green=None, mss="CLEAN",
+          pushed="2026-10-12T11:00:00Z", failing=(), title="t",
+          created="2026-10-12T00:00:00Z"):
+    return {"number": n, "title": title, "isDraft": draft, "mss": mss,
+            "test": {"conclusion": concl, "greenSince": green, "doneAt": done},
+            "failing": list(failing), "createdAt": created, "lastPush": pushed}
+
+
+NOW = "2026-10-12T12:00:00+00:00"
+# (name, records, now, main's date, lines wanted, alarm wanted)
+WAITING_CASES = [
+    ("green-draft-is-listed-with-its-age", [_wrec(1, draft=True, concl="SUCCESS",
+        green="2026-10-12T11:00:00Z")], NOW, None, 1, False),
+    ("green-draft-named-past-two-hours", [_wrec(1, draft=True, concl="SUCCESS",
+        green="2026-10-12T09:00:00Z")], NOW, None, 1, False),
+    ("green-draft-over-six-hours-alarms", [_wrec(1, draft=True, concl="SUCCESS",
+        green="2026-10-12T05:00:00Z")], NOW, None, 1, True),
+    ("red-under-two-hours-is-quiet", [_wrec(2, concl="FAILURE",
+        done="2026-10-12T11:00:00Z", failing=["gate"])], NOW, None, 0, False),
+    ("red-past-two-hours-names-the-job", [_wrec(2, concl="FAILURE",
+        done="2026-10-12T09:00:00Z", failing=["gate", "keepers-a"])], NOW, None, 1, False),
+    ("behind-under-an-hour-is-quiet", [_wrec(3, mss="BEHIND")], NOW,
+        "2026-10-12T11:30:00+00:00", 0, False),
+    ("behind-past-an-hour-is-named", [_wrec(3, mss="BEHIND")], NOW,
+        "2026-10-12T10:30:00+00:00", 1, False),
+    ("no-push-under-a-day-is-quiet", [_wrec(4, pushed="2026-10-11T13:00:00Z")], NOW, None, 0, False),
+    ("no-push-over-a-day-is-named", [_wrec(4, pushed="2026-10-11T11:00:00Z")], NOW, None, 1, False),
+    ("a-clean-open-pr-is-quiet", [_wrec(5, concl="SUCCESS", green="2026-10-12T11:59:00Z")],
+        NOW, None, 0, False),
+]
+
+
+def _lrec(n, draft=False, running=False):
+    return {"number": n, "isDraft": draft, "running": running}
+
+
+LANDING_CASES = [
+    ("nothing-in-flight", [_lrec(1), _lrec(2)],
+     ["  #1 lands now → restarts nothing", "  #2 lands now → restarts nothing"]),
+    ("a-mid-ci-pr-is-restarted", [_lrec(1), _lrec(2, running=True)],
+     ["  #1 lands now → restarts #2 (mid-CI)", "  #2 lands now → restarts nothing"]),
+    ("a-draft-is-named-not-counted", [_lrec(1), _lrec(3, draft=True, running=True)],
+     ["  #1 lands now → restarts nothing", "  #3 draft — not landable"]),
+    ("two-in-flight-are-both-named", [_lrec(1, running=True), _lrec(2, running=True), _lrec(3)],
+     ["  #1 lands now → restarts #2 (mid-CI)", "  #2 lands now → restarts #1 (mid-CI)",
+      "  #3 lands now → restarts #1, #2 (mid-CI)"]),
 ]
 
 
@@ -470,8 +646,25 @@ def selftest():
     # driver with NO PRs does not become the verdict.
     if "driver" in verdict(_vstate(prs=[], driver={"loaded": False, "fresh": None, "age_s": None})):
         sys.exit("pipeline-status: self-test — a dead driver was blamed with no PRs to land")
-    print(f"pipeline-status: self-test — {len(BLOCKER_CASES)} blocker case(s) and "
-          f"{len(VERDICT_CASES)} verdict scenario(s) hold")
+    for name, recs, now_iso, main_iso, want_lines, want_alarm in WAITING_CASES:
+        now = datetime.fromisoformat(now_iso)
+        main_date = datetime.fromisoformat(main_iso) if main_iso else None
+        lines, alarm = waiting(recs, now, main_date)
+        if len(lines) != want_lines or alarm != want_alarm:
+            sys.exit(f"pipeline-status: self-test — waiting `{name}`: got {lines} "
+                     f"alarm={alarm}, want {want_lines} line(s) alarm={want_alarm}")
+    if "oldest #7" not in cap_line(
+            [_wait_record(_cpr(number=7, createdAt="2026-10-10T12:00:00Z"), None),
+             _wait_record(_cpr(number=8, createdAt="2026-10-11T12:00:00Z"), None)],
+            datetime.fromisoformat("2026-10-12T12:00:00+00:00")):
+        sys.exit("pipeline-status: self-test — the cap line did not name the oldest PR")
+    for name, recs, want in LANDING_CASES:
+        got = landing_effects(recs)
+        if got != want:
+            sys.exit(f"pipeline-status: self-test — landing `{name}`: got {got}, want {want}")
+    print(f"pipeline-status: self-test — {len(BLOCKER_CASES)} blocker case(s), "
+          f"{len(VERDICT_CASES)} verdict scenario(s), {len(WAITING_CASES)} waiting "
+          f"scenario(s) and {len(LANDING_CASES)} landing scenario(s) hold")
     return 0
 
 

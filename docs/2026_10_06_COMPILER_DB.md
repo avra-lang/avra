@@ -432,6 +432,7 @@ settle(q):                                      one append per read; no walk; no
 |---|---|
 | a query's own code | is a read: the digest of the unit that declares it. A plugin edit reruns that plugin's answers (pays `.57.4.6`) |
 | the longest in-memory list | printed by `avra explain --stats`, with p99 reads per saved answer. A family that breaks the gate has the wrong key |
+| a read with no durable name today | **flattened, a bounded imprecision, retired by DB 07a (rows get durable names).** A `@query` over a relation's rows is saved standing on `(relation name, the hash of that relation's rows)` — the relation's own maintained set hash, so nothing is recomputed per restore — and an input by `(name, spelled arguments, value hash)`; a query read stands for what it stood on. A write to the relation, in any process, moves the answer; a write to another relation moves nothing. It can only invalidate too often. A read of rows no open query hears (another Db's) makes the answer unsaved. TRIGGER: DB 07a names rows; then a read records `(row name, row digest)` and this rule is deleted |
 | the guard | `AVRA_DB_CHECK=1` runs an **edit corpus**: one mutation per input and per declaration of a fixture package, then compares against a cold derivation. A second run on an unchanged tree proves nothing |
 
 ### 5.4 The plugin crossing (DB 10)

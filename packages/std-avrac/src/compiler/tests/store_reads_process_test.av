@@ -1,0 +1,86 @@
+// A SAVED ANSWER'S READS ACROSS PROCESSES. `tools/store_reads_attack.sh` runs this file once
+// per phase, each a process of its own over one directory: one keeps an answer with its
+// reads and seals the store, the next asks it back while the input is as it was, the
+// next after the input moved. Run bare, no phase is named and nothing is asserted.
+use @std.io.{env, read_text}
+use @std.time.{now_ns}
+use compiler.store.{Read, Stored, content_digest, node_key, seal, store_at}
+
+fn phase() -> string { env("AVRA_READS_PHASE") ?? "" }
+
+fn root() -> string { env("AVRA_READS_DIR") ?? "" }
+
+/// An input's digest now, absent when it cannot be read.
+fn digest_now(path: string) -> string? {
+    match read_text(path) { .Ok(t) -> content_digest(t), .Err(_) -> null }
+}
+
+fn answer_key() -> string { node_key(Stored.Unit, ["reads-attack"]) }
+
+/// Row `i` of the cost phases, with its three reads.
+fn row_key(i: int) -> string { node_key(Stored.Unit, ["row", "${i}"]) }
+
+fn row_reads(i: int) -> List<Read> {
+    [
+        Read { name: "in-${i % 7}", digest: "d${i % 7}" },
+        Read { name: "in-${i % 11}", digest: "d${i % 11}" },
+        Read { name: "in-${i % 13}", digest: "d${i % 13}" },
+    ]
+}
+
+fn filled(rows: int) -> bool {
+    let s = store_at(root())
+    let wrote = [s.keep_reading(Stored.Unit, row_key(i), "v${i}", row_reads(i)) for i in 0..rows]
+    seal(s.pack) && wrote.all(it)
+}
+
+/// Row inputs' digests, as the cost phases kept them.
+fn row_digest(n: string) -> string? { "d${n.substring(3, n.length)}" }
+
+fn timed(calls: int, rows: int) -> bool {
+    let s = store_at(root())
+    let held_from = now_ns()
+    let holding = [s.holds(Stored.Unit, row_key(i % rows), row_digest) for i in 0..calls]
+        .filter(it)
+        .length
+    let held_ns = (now_ns() - held_from) / calls
+    let from = now_ns()
+    let hits = [s.get_valid(Stored.Unit, row_key(i % rows), row_digest) for i in 0..calls]
+        .filter(it != null)
+        .length
+    println(
+        "store-reads: ${calls} calls over ${rows} rows, 3 reads each: holds ${held_ns} ns, get_valid ${(now_ns() - from) / calls} ns (first value fetch included)",
+    )
+    holding == calls && hits == calls
+}
+
+spec "a saved answer's reads, across processes" {
+    given "the phase this process is" {
+        then "its claim holds" {
+            let s = store_at(root())
+            match phase() {
+                "keep" -> {
+                    let kept = s
+                        .keep_reading(
+                            Stored.Unit,
+                            answer_key(),
+                            "answer",
+                            [
+                                Read {
+                                    name: "${root()}/input",
+                                    digest: digest_now("${root()}/input") ?? "-",
+                                },
+                            ],
+                        )
+                    kept && seal(s.pack)
+                },
+                "hit" -> s.get_valid(Stored.Unit, answer_key(), digest_now) == "answer",
+                "miss" -> s.get(Stored.Unit, answer_key()) == "answer" &&
+                    s.get_valid(Stored.Unit, answer_key(), digest_now) == null,
+                "fill" -> filled(70000),
+                "cost" -> timed(10000, 70000),
+                _ -> true,
+            }
+        }
+    }
+}

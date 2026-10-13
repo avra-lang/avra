@@ -1,0 +1,613 @@
+//! THE PACK — the store's durable half, two tiers: an ACTION table (a
+//! key to the digest of its value) and a CONTENT store (a value digest
+//! to its bytes), REAPI-shaped. A key is content-only: no path, no
+//! machine, no time, no store-local id.
+//!
+//! ONE WRITER, ONE SEGMENT. A process appends to `seg-<writer>.log`;
+//! readers merge every segment at open, later bytes winning. Every frame
+//! ends with its own COMMIT MARKER — the frame's octets then a truncated
+//! BLAKE3 — so a crash between a frame and its marker leaves the frame
+//! unread rather than half read, and a torn frame ends that segment's
+//! read. Nothing past a torn frame is trusted.
+//!
+//! `body-<rev>.pack`/`.idx` are the SEALED half (`store/body.av`), folded
+//! by compaction under the flock at open: the process that takes the lock
+//! seals what it read into one body and retires the dead segments it
+//! folded; a process that cannot take the lock says it skipped.
+use @std.io.{
+    read_bytes,
+    make_dirs,
+    list_dir,
+    remove,
+    opened_for_append,
+    truncate_to,
+    env,
+    open_beneath,
+}
+use @std.path.{joined_path, dir_of}
+use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
+use @std.relation.engine.{map_cell, list_cell}
+use @std.text.{parse_int}
+use core.{digest_of_octets, sorted_by}
+use core.debug.{qtrace, traced}
+use @std.time.{now_ns}
+
+extern fn avra_pid_alive(pid: int) -> int
+extern fn avra_own_pid() -> int
+extern fn avra_process_exit(code: int)
+extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+
+const MAGIC: string = "AVRAPACK"
+const FORMAT_VERSION: int = 2
+
+const CONTENT_TAG: int = 1
+const ACTION_TAG: int = 2
+
+/// Sealed bodies kept besides the newest: the time-travel window `explain` reads.
+const KEPT_BODIES: int = 2
+
+/// Frames in live segments before a writer seals them into a body.
+const SEAL_FRAMES: int = 32
+
+fn hooked_frames() -> int? {
+    // LICENSED input.debug_flag: a test hook that sets the seal threshold, never an input of what is built
+    let raw? = env("AVRA_STORE_SEAL_FRAMES") else { return null }
+    parse_int(raw)
+}
+
+fn seal_frames() -> int { hooked_frames() ?? SEAL_FRAMES }
+
+/// OWED (db-inputs-h's `family_code_hash`): the family's own code hash and
+/// its codec shape fingerprint. Until that table lands, the key folds the
+/// family's name and the key alone, so a codec or family change is a miss
+/// the store cannot see. THE EMPTY STAMP IS A SEAM, NOT A VALUE: the fold is
+/// `BLAKE3(family · stamp · key)` and the first real stamp bytes are one
+/// whole-store miss, which the per-compiler print already allows.
+const FAMILY_STAMP: string = ""
+
+/// ONE ROW: the family and key it answers, the digest of its value and the
+/// keys it read — listed here, or, for a row a sealed body carries, the id of
+/// its read set in that body's tables (`set` is -1 when `read` is the list).
+/// `stamp` is when its writer appended it (0 for a sealed row): of two segment
+/// frames for one key the later stands, whatever order the files merge in.
+export type Held = {
+    family: string,
+    key: string,
+    digest: string,
+    read: List<string>,
+    set: int,
+    stamp: int,
+}
+
+/// A row whose read list is spelled out, as a segment frame or a write carries it.
+fn listed_row(family: string, key: string, digest: string, read: List<string>, stamp: int) -> Held {
+    Held { family: family, key: key, digest: digest, read: read, set: 0 - 1, stamp: stamp }
+}
+
+/// A sealed body's names and read sets, decoded the first time a read set is asked.
+export type Tables = { names: Names, sets: Sets }
+
+/// ONE ANSWER CLAIM for an action key: the value a writer named, and who.
+/// A second claim from ANOTHER writer that names a different value is a
+/// reproducibility defect — the shared store doubling as a detector of
+/// nondeterminism — so it is reported, naming the key, both value digests
+/// and both writers. The later claim still stands.
+type Claim = { digest: string, writer: string }
+
+/// THE PACK for one store directory. Its maps are CELLS, so every copy
+/// of the value shares the one index an open built and a write extends.
+export type Pack = {
+    dir: string,
+    print: string,
+    records: Cell<Map<string, Held>>,
+    withdrawn: Cell<Map<string, bool>>,
+    /// Values this process holds in memory: its own writes and segments.
+    content: Cell<Map<string, string>>,
+    /// Values the newest sealed body holds, read from its `.val` on demand.
+    slots: Cell<Map<string, ValueSlot>>,
+    /// The newest body's name and set tables as written, and the tables decoded from them.
+    table_names: Cell<Bytes>,
+    table_sets: Cell<Bytes>,
+    tables: Cell<List<Tables>>,
+    opened: Cell<bool>,
+    /// Whether a WRITER has taken the compaction lock and sealed. An
+    /// inspection opens the index and never sets this, so the same pack can
+    /// be read by an inspection and written by a check in one process.
+    admitted: Cell<bool>,
+    torn: Cell<bool>,
+    foreign: Cell<bool>,
+    skipped: Cell<bool>,
+    headed: Cell<bool>,
+    folded: Cell<List<string>>,
+    /// Frames in segments since the last seal: those read at open and those
+    /// this process appended.
+    frames: Cell<int>,
+    rev: Cell<int>,
+    /// The revision of the value file the open body names: bodies share one.
+    val_rev: Cell<int>,
+    /// The newest body revision that stood when this pack opened: a seal over an
+    /// older view would drop the rows of whoever sealed since.
+    seen_rev: Cell<int>,
+    lock_fd: Cell<int>,
+}
+
+/// One store's pack, empty — nothing read from disk until the first ask.
+export fn pack_at(root: string, print: string) -> Pack {
+    Pack {
+        dir: joined_path(root, "store"),
+        print: print,
+        records: map_cell(),
+        withdrawn: map_cell(),
+        content: map_cell(),
+        slots: map_cell(),
+        table_names: Cell.new("".bytes()),
+        table_sets: Cell.new("".bytes()),
+        tables: list_cell(),
+        opened: Cell.new(false),
+        admitted: Cell.new(false),
+        torn: Cell.new(false),
+        foreign: Cell.new(false),
+        skipped: Cell.new(false),
+        headed: Cell.new(false),
+        folded: list_cell(),
+        frames: Cell.new(0),
+        rev: Cell.new(0),
+        val_rev: Cell.new(0),
+        seen_rev: Cell.new(0),
+        lock_fd: Cell.new(0 - 1),
+    }
+}
+
+/// A value's digest as it names content here — BLAKE3, the store's one
+/// content hash.
+export fn content_digest(value: string) -> string { digest_of_octets(value.bytes()) }
+
+/// The commit marker: the frame's truncated BLAKE3, sixteen hex characters.
+export fn check_of(body: Bytes) -> string { digest_of_octets(body).substring(0, 16) }
+
+export fn ok<T>(r: Result<T, CodecFault>) -> T? { match r { .Ok(v) -> v, .Err(_) -> null } }
+
+/// THE ACTION KEY — BLAKE3 over the family's name, its stamp (owed) and the
+/// key, so two families naming the same parts stay apart.
+export fn action_key(family: string, key: string) -> string {
+    digest_of_octets("${family}\n${FAMILY_STAMP}\n${key}".bytes())
+}
+
+/// A row's place in the open index: the family and key as they stand. The
+/// index is never persisted, so its key needs no hash.
+export fn record_key(family: string, key: string) -> string { "${family}\n${key}" }
+
+/// A `List<string>` written through the stable codec.
+fn wrote_text(w: Writer, s: string) { w.text(s) }
+
+// ── Frames ──
+
+fn head_bytes(print: string) -> Bytes {
+    let w = writer()
+    w.text(MAGIC)
+    w.int(FORMAT_VERSION)
+    w.text(print)
+    w.bytes()
+}
+
+fn content_body(digest: string, value: string) -> Bytes {
+    let w = writer()
+    w.int(CONTENT_TAG)
+    w.text(digest)
+    w.text(value)
+    w.bytes()
+}
+
+fn action_body(family: string, key: string, digest: string, read: List<string>, stamp: int) -> Bytes {
+    let w = writer()
+    w.int(ACTION_TAG)
+    w.text(family)
+    w.text(key)
+    w.text(digest)
+    w.int(stamp)
+    written_list(w, read, wrote_text)
+    w.bytes()
+}
+
+/// The body's octets as the writer lands them first: length-prefixed.
+fn octets_only(body: Bytes) -> Bytes {
+    let w = writer()
+    w.octets(body)
+    w.bytes()
+}
+
+/// The commit marker's octets alone.
+fn marker_of(body: Bytes) -> Bytes {
+    let w = writer()
+    w.text(check_of(body))
+    w.bytes()
+}
+
+/// One frame's body, or nothing when the bytes ahead are short or fail
+/// their check — the caller stops there.
+export fn read_frame(r: Reader) -> Bytes? {
+    let body? = ok(r.octets()) else { return null }
+    let check? = ok(r.text()) else { return null }
+    if check != check_of(body) { return null }
+    body
+}
+
+// ── Opening: the body first, then every segment ──
+
+/// Whether the process that owns a segment still runs — a torn tail in a
+/// LIVE writer's file is a frame still arriving, never a tail to trim.
+fn writer_alive(name: string) -> bool {
+    let rest = name.substring(4, name.length - 4)
+    let dash = rest.index_of("-")
+    let pid = parse_int(if dash < 0 { rest } else { rest.substring(0, dash) }) ?? 0
+    // LICENSED input.live_process: a segment's writer is asked whether it still runs
+    avra_pid_alive(pid) == 1
+}
+
+/// A dead writer's torn tail is trimmed to its last whole frame, so the
+/// next open reports it once and no run reads past it.
+fn trim(path: string, len: int) {
+    if len >= 0 { let _ = truncate_to(path, len) }
+}
+
+/// Every record in one segment, after its PLAIN header, folded into the pack —
+/// answers whether the segment is this compiler's, the only kind a seal may retire.
+/// A torn frame ends this segment; a foreign header drops it whole. The
+/// header is not framed: a store's own print must be readable, and forgeable,
+/// before any frame is trusted.
+fn scan_segment(
+    pack: Pack,
+    path: string,
+    raw: Bytes,
+    alive: bool,
+    claims: Cell<Map<string, Claim>>,
+    writer: string,
+) -> bool {
+    if raw.length == 0 { return false }
+    let r = reader(raw)
+    let magic? = ok(r.text()) else {
+        torn_at(pack, 0)
+        if !alive { trim(path, 0) }
+        return false
+    }
+    let version? = ok(r.int()) else {
+        torn_at(pack, 0)
+        if !alive { trim(path, 0) }
+        return false
+    }
+    let print? = ok(r.text()) else {
+        torn_at(pack, 0)
+        if !alive { trim(path, 0) }
+        return false
+    }
+    if magic != MAGIC || version != FORMAT_VERSION || print != pack.print {
+        pack.foreign.set(true)
+        if traced() { qtrace("Q\tstore\tforeign\n") }
+        return false
+    }
+    while !r.done() {
+        let before = r.at.get()
+        let body? = read_frame(r) else {
+            torn_at(pack, before)
+            if !alive { trim(path, before) }
+            return true
+        }
+        applied(pack, body, claims, writer)
+        pack.frames.set(pack.frames.get() + 1)
+    }
+    true
+}
+
+export fn torn_at(pack: Pack, at: int) {
+    if pack.torn.get() { return }
+    pack.torn.set(true)
+    if traced() { qtrace("Q\tstore\ttorn\t${at}\n") }
+}
+
+fn applied(pack: Pack, body: Bytes, claims: Cell<Map<string, Claim>>, writer: string) {
+    let r = reader(body)
+    let tag? = ok(r.int()) else { return }
+    if tag == CONTENT_TAG {
+        let digest? = ok(r.text()) else { return }
+        let value? = ok(r.text()) else { return }
+        pack.content.put(digest, value)
+        return
+    }
+    if tag == ACTION_TAG {
+        let family? = ok(r.text()) else { return }
+        let key? = ok(r.text()) else { return }
+        let digest? = ok(r.text()) else { return }
+        let stamp? = ok(r.int()) else { return }
+        let read? = ok(read_list(r, (q) -> q.text())) else { return }
+        claimed(pack, claims, writer, family, key, digest, read, stamp)
+    }
+}
+
+/// One answer CLAIM, filed and compared against the writer who named the
+/// key before — a different writer with a different value is the finding.
+fn claimed(
+    pack: Pack,
+    claims: Cell<Map<string, Claim>>,
+    writer: string,
+    family: string,
+    key: string,
+    digest: string,
+    read: List<string>,
+    stamp: int,
+) {
+    let at = record_key(family, key)
+    let prior = claims.get().get(at)
+    if prior != null {
+        let was = prior!
+        if was.digest != digest && was.writer != writer {
+            if traced() {
+                qtrace(
+                    "Q\tstore\tclaim-conflict\t${family}\t${key}\t${was.digest}\t${digest}\t${was.writer}\t${writer}\n",
+                )
+            }
+        }
+    }
+    claims.put(at, Claim { digest: digest, writer: writer })
+    let standing = pack.records.get().get(at)
+    if standing != null && standing!.stamp > stamp { return }
+    pack.records.put(at, listed_row(family, key, digest, read, stamp))
+}
+
+/// A record folded in without a claim: this process's own writes are the only
+/// claim on its own segment, so no cross-writer comparison applies.
+export fn held(
+    pack: Pack,
+    family: string,
+    key: string,
+    digest: string,
+    read: List<string>,
+    stamp: int,
+) {
+    pack.records.put(record_key(family, key), listed_row(family, key, digest, read, stamp))
+}
+
+fn is_segment(name: string) -> bool {
+    name.starts_with("seg-") && name.ends_with(".log")
+}
+
+fn segments(dir: string) -> List<string> {
+    // LICENSED input.store_io: the store's own segments, listed to merge them
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [n for n in names if is_segment(n)]
+}
+
+/// Seal under compaction's lock: taken if it is free and then held for the
+/// process, so a writer that seals again does not wait on itself. A process
+/// that cannot take the lock says it skipped and returns without sealing.
+fn admit(pack: Pack) {
+    if pack.lock_fd.get() < 0 && !locked(pack) { return }
+    if seal(pack) {
+        if traced() { qtrace("Q\tstore\tsealed\t${pack.rev.get()}\t${pack.records.get().length}\n") }
+        retire(pack)
+        keep_bodies(pack)
+        emptied(pack)
+        pack.frames.set(0)
+    }
+}
+
+fn locked(pack: Pack) -> bool {
+    let at = joined_path(pack.dir, "lock")
+    let af? = match opened_for_append(at) { .Ok(f) -> f, .Err(_) -> null } else { return false }
+    let won = match af.locked() { .Ok(b) -> b, .Err(_) -> false }
+    if !won {
+        pack.skipped.set(true)
+        if traced() { qtrace("Q\tstore\tskipped\tlock held\n") }
+        let _ = af.closed()
+        return false
+    }
+    pack.lock_fd.set(af.fd)
+    hold_ms()
+    true
+}
+
+/// This writer's own segment once a body holds its frames: emptied, so a later
+/// open does not read them twice.
+fn emptied(pack: Pack) {
+    let _ = truncate_to(writer_segment(pack), 0)
+    pack.headed.set(false)
+}
+
+/// Seals only from a write, once the segments hold SEAL_FRAMES frames — or, in a
+/// larger store, half its records, so a cold run's seals sum to a few times its
+/// size. A process that appended nothing never reaches here, so it takes no lock
+/// and writes no store file.
+fn settled(pack: Pack) {
+    let half = pack.records.get().length / 2
+    let due = hooked_frames() ?? if half > SEAL_FRAMES { half } else { SEAL_FRAMES }
+    if pack.frames.get() >= due { admit(pack) }
+}
+
+/// A derivation's end: what it left in the segments is folded into a body once it
+/// is more than a floor's worth, so the next open reads an index and not a log.
+export fn pack_settle(pack: Pack) {
+    if pack.opened.get() && pack.frames.get() >= seal_frames() { admit(pack) }
+}
+
+/// A test hook: hold the lock so a second process's admission fails.
+fn hold_ms() {
+    // LICENSED input.debug_flag: a test hook that holds the store lock, never an input of what is built
+    let raw? = env("AVRA_STORE_HOLD_MS") else { return }
+    let ms = parse_int(raw) ?? 0
+    if ms < 1 { return }
+    // LICENSED input.debug_flag: a test hook that holds the compaction lock
+    let _ = avra_spawn_status("sleep", ["${ms / 1000}.${ms % 1000}"])
+}
+
+/// Read the newest body's index and the live segments once; emit the one open
+/// line a warm command's trace counts. An open never reads a value: `get`
+/// reads one slot at a time. Compaction is a writer's act, so `read_only`
+/// never takes the lock or seals.
+fn opened_at(pack: Pack, read_only: bool) {
+    if !pack.opened.get() {
+        pack.opened.set(true)
+        if traced() { qtrace("Q\tstore\topen\t${pack.dir}\n") }
+        body_scan(pack)
+        pack.seen_rev.set(newest_rev(pack.dir))
+        let claims: Cell<Map<string, Claim>> = map_cell()
+        for name in segments(pack.dir) {
+            let at = joined_path(pack.dir, name)
+            // LICENSED input.store_io: a segment's own bytes, read to merge it
+            let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+            if scan_segment(pack, at, raw, writer_alive(name), claims, name) {
+                pack.folded.set(pack.folded.get().concat([name]))
+            }
+        }
+    }
+    if !read_only && !pack.admitted.get() {
+        pack.admitted.set(true)
+        let _ = make_dirs(pack.dir)
+        let root = dir_of(pack.dir)
+        let _ = make_dirs(joined_path(root, "obj"))
+        let _ = make_dirs(joined_path(root, "bin"))
+    }
+}
+
+/// Every segment whose writer is DEAD folded into the new body, so it can
+/// go; a LIVE writer's segment stays — it appends without the lock, and
+/// unlinking it would silently drop the frames still arriving.
+fn retire(pack: Pack) {
+    for name in pack.folded.get() {
+        if !writer_alive(name) { let _ = remove(joined_path(pack.dir, name)) }
+    }
+}
+
+/// The time-travel window: the last N sealed bodies (default 10,
+/// `AVRA_STORE_REVISIONS`), so `explain` can say what changed.
+fn keep_bodies(pack: Pack) {
+    // LICENSED input.debug_flag: the time-travel window's size, never an input of what is built
+    let raw = env("AVRA_STORE_REVISIONS")
+    let n = if raw == null { KEPT_BODIES } else { parse_int(raw!) ?? KEPT_BODIES }
+    if n < 1 { return }
+    let mine = sorted_by(
+        [name for name in all_body_names(pack.dir) if body_print_of(pack.dir, name) == pack.print],
+        rev_before,
+    )
+    for name in mine.slice(0, if mine.length > n { mine.length - n } else { 0 }) {
+        let _ = remove(joined_path(pack.dir, name))
+        let _ = remove(joined_path(pack.dir, "${name.substring(0, name.length - 5)}.idx"))
+    }
+    drop_unreferenced_values(pack.dir)
+}
+
+fn rev_before(a: string, b: string) -> bool { body_rev_of(a) < body_rev_of(b) }
+
+// ── Reading and writing ──
+
+/// A row is present only when its value can be read back: a record whose value is
+/// missing or damaged is absent, so `has` and `get` never disagree.
+export fn pack_has(pack: Pack, family: string, key: string, read_only: bool = false) -> bool {
+    pack_get(pack, family, key, read_only) != null
+}
+
+export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = false) -> string? {
+    opened_at(pack, read_only)
+    let at = record_key(family, key)
+    if withdrawn(pack, at) { return null }
+    let held? = pack.records.get().get(at) else { return null }
+    content_of(pack, held.digest)
+}
+
+/// The reads a row was kept with, absent for a row not present or whose
+/// read set cannot be named.
+export fn pack_reads(pack: Pack, family: string, key: string, inspect: bool) -> List<string>? {
+    opened_at(pack, inspect)
+    let at = record_key(family, key)
+    if withdrawn(pack, at) { return null }
+    let held? = pack.records.get().get(at) else { return null }
+    reads_known(pack, held)
+}
+
+/// A value by its digest without keeping it: held in memory, else read from the
+/// sealed body.
+fn value_of(pack: Pack, digest: string) -> string? {
+    let here? = pack.content.get().get(digest) else { return spilled(pack, digest) }
+    here
+}
+
+/// A value by its digest: held in memory, else read from the sealed body and
+/// kept in memory, so a value is read and checked once.
+fn content_of(pack: Pack, digest: string) -> string? {
+    let here? = pack.content.get().get(digest) else {
+        let v? = spilled(pack, digest) else { return null }
+        pack.content.put(digest, v)
+        return v
+    }
+    here
+}
+
+/// A sealed value: `get` seeks its slot in the newest body's `.val` and checks
+/// the bytes against the digest, so a missing or damaged value answers absent.
+fn spilled(pack: Pack, digest: string) -> string? {
+    let slot? = pack.slots.get().get(digest) else { return null }
+    if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
+    // LICENSED input.store_io: the store's own value file, seeked for one value
+    let o = match open_beneath(pack.dir, val_name(pack.val_rev.get())) {
+        .Ok(o) -> o,
+        .Err(_) -> { return null },
+    }
+    let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
+    o.close()
+    let v? = raw.text() else { return null }
+    if content_digest(v) != digest { return null }
+    v
+}
+
+/// Whether the open has withdrawn this action key since the index was built.
+fn withdrawn(pack: Pack, at: string) -> bool { pack.withdrawn.get().get(at) ?? false }
+
+/// WITHDRAW a key from this open's index: the row reads ABSENT until a later
+/// write names it again, so a replaced row's old value cannot answer.
+export fn pack_forget(pack: Pack, family: string, key: string) {
+    opened_at(pack, false)
+    pack.withdrawn.put(record_key(family, key), true)
+}
+
+/// The segment this process owns for this compiler's print: one file a print, so a process
+/// that holds two prints never writes one header into the middle of the other's frames.
+// LICENSED input.live_process: this writer's own pid names its segment
+fn writer_segment(pack: Pack) -> string {
+    // LICENSED input.live_process: this writer's own pid names its segment
+    let name = "seg-${avra_own_pid()}-${digest_of_octets(pack.print.bytes()).substring(0, 8)}.log"
+    joined_path(pack.dir, name)
+}
+
+fn append(pack: Pack, body: Bytes) {
+    let _ = make_dirs(pack.dir)
+    let af? = match opened_for_append(writer_segment(pack)) { .Ok(f) -> f, .Err(_) -> null } else { return }
+    if !pack.headed.get() {
+        let _ = af.write(head_bytes(pack.print))
+        pack.headed.set(true)
+    }
+    let _ = af.write(octets_only(body))
+    kill_at_commit()
+    let _ = af.write(marker_of(body))
+    let _ = af.closed()
+    pack.frames.set(pack.frames.get() + 1)
+}
+
+/// A test hook: a writer killed between a frame's octets and its marker.
+fn kill_at_commit() {
+    // LICENSED input.debug_flag: a test hook that kills a writer between a frame and its marker
+    let raw? = env("AVRA_STORE_KILL") else { return }
+    if raw == "commit" { avra_process_exit(137) }
+}
+
+export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
+    opened_at(pack, false)
+    pack.withdrawn.put(record_key(family, key), false)
+    let digest = content_digest(value)
+    if content_of(pack, digest) == null {
+        append(pack, content_body(digest, value))
+        pack.content.put(digest, value)
+    }
+    // LICENSED input.store_clock: orders two writers' frames for one key, never an input of what is built
+    let stamp = now_ns()
+    append(pack, action_body(family, key, digest, read, stamp))
+    held(pack, family, key, digest, read, stamp)
+    settled(pack)
+}

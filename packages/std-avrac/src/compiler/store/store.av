@@ -1,18 +1,19 @@
-//! THE STORE — every artifact a build keeps, on disk, by content.
+//! THE STORE — every artifact a build keeps, by content.
 //!
 //! ONE ROW SHAPE (a key, the bytes it names, the keys it read), ONE VERB SET, and a
-//! family as a KIND rather than a spelling. THE FILESYSTEM IS THE INDEX: `has` uses
-//! two `exists` calls and reads nothing, so "has this changed?" is O(1) with no index to load and
-//! no second copy of the truth to disagree with the first.
+//! family as a KIND rather than a spelling. The five value families ride the packed
+//! store (`store/pack.av`): one index built at open, an append to this writer's own
+//! segment per row. `Obj` and `Bin` stay files, named by content.
 //!
 //! A KEY IS CONTENT — a digest over a STABLE projection, never a per-run id, which is a
 //! slot in one process's table and means nothing to the next.
 //!
-//! A ROW IS PRESENT ONLY WHEN ITS EDGES ARE. Data and edges are two files and `has`
-//! wants both, so a write that never finished reads as ABSENT rather than as half a
-//! value: the edges are the COMMIT, not bookkeeping.
+//! A FILE ROW IS PRESENT ONLY WHEN ITS EDGES ARE, so a write that never finished reads
+//! as ABSENT rather than as half a value. A packed row is present once its commit
+//! marker lands, which is the same law one mechanism over.
 use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
 use @std.path.{joined_path}
+use @std.relation.engine.{map_cell}
 use core.{digest_of, joined}
 
 /// WHAT THE STORE KEEPS, as a KIND — so a family cannot be misspelled and every match
@@ -55,6 +56,11 @@ impl Stored {
             .Rows -> "rows",
         }
     }
+
+    /// Whether this family is a FILE (`Obj`, `Bin`) rather than a packed value.
+    fn file_family() -> bool {
+        match self { .Obj or .Bin -> true, .Sig or .Fp or .Unit or .Warn or .Rows -> false }
+    }
 }
 
 /// WHERE A STORE'S WRITES LAND: on disk, or SET ASIDE in this process — read
@@ -65,11 +71,60 @@ export enum Keeping {
     Aside(Cell<Map<string, string>>)
 }
 
-/// THE STORE — one root, every family under it, and where its writes land.
-export type Store = { root: string, keeping: Keeping }
+/// THE STORE — one root, the packed index, and where its writes land.
+export type Store = { root: string, print: string, keeping: Keeping, pack: Pack }
+
+/// The packs this process has open, one per root and compiler print — so a store
+/// is read from disk once however many workspaces ask for it.
+once fn packs() -> Cell<Map<string, Pack>> { map_cell() }
+
+fn pack_for(root: string, print: string) -> Pack {
+    let at = "${root}\n${print}"
+    let known: Pack? = packs().get().get(at)
+    known ?? mint_pack(at, root, print)
+}
+
+fn mint_pack(at: string, root: string, print: string) -> Pack {
+    let made = pack_at(root, print)
+    packs().put(at, made)
+    made
+}
+
+/// Whether a store's writes are set aside — an inspection keeps to memory.
+fn inspects(keeping: Keeping) -> bool { match keeping { .Disk -> false, .Aside(_) -> true } }
 
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — the root in, the store out, like `new_kernel`.
-export fn store_at(root: string) -> Store { Store { root: root, keeping: Keeping.Disk } }
+export fn store_at(root: string) -> Store { store_with(root, "", Keeping.Disk) }
+
+/// A store with its compiler print and where its writes land — the one place a
+/// workspace turns its own identity into a store.
+// LICENSED compiler.free_state_verb: a CONSTRUCTOR — a root, a print and a mode in.
+export fn store_with(root: string, print: string, keeping: Keeping) -> Store {
+    Store { root: root, print: print, keeping: keeping, pack: pack_for(root, print) }
+}
+
+/// ONE READ OF A SAVED ANSWER: what was read, named by its stable name, and the digest
+/// of exactly what came back. A name holds no newline; a digest holds no space and is
+/// not empty.
+export type Read = { name: string, digest: string }
+
+impl Read {
+    /// The read as the row's list holds it: digest first, since it holds no space and
+    /// the name may.
+    fn spelled() -> string { "${self.digest} ${self.name}" }
+
+    /// Whether the read can be spelled and read back whole.
+    fn writable() -> bool {
+        !self.digest.is_empty() && !self.digest.contains(" ") && !self.name.contains("\n")
+    }
+}
+
+/// A read read back from a row's list; absent for a line that is no pair.
+fn read_spelled(line: string) -> Read? {
+    let at = line.index_of(" ")
+    if at <= 0 { return null }
+    Read { name: line.substring(at + 1, line.length), digest: line.substring(0, at) }
+}
 
 /// A KEY OVER A PROJECTION — the one derivation every family shares, so no family can
 /// key itself differently from its neighbours. The family's name is folded first, so two
@@ -87,22 +142,37 @@ impl Store {
         joined_path(joined_path(self.root, family.name()), key.substring(0, 2))
     }
 
-    /// A key's path.
+    /// A file family's key path.
     fn path(family: Stored, key: string) -> string { joined_path(self.shard(family, key), key) }
 
     fn edge_path(family: Stored, key: string) -> string { "${self.path(family, key)}.deps" }
 
+    /// The key an aside row stands under, one shape per family kind.
+    fn aside_key(family: Stored, key: string) -> string {
+        if family.file_family() { self.path(family, key) } else { "${family.name()}\n${key}" }
+    }
+
     /// Withdraw an earlier commit before replacing its data. If the next
     /// write fails, its old edge cannot make the new data look complete.
     fn uncommit(family: Stored, key: string) -> bool {
+        if !family.file_family() {
+            pack_forget(self.pack, family.name(), key)
+            return true
+        }
         let edge = self.edge_path(family, key)
         if !exists(edge) { return true }
         match remove(edge) { .Ok(_) -> true, .Err(_) -> false }
     }
 
-    /// HAS THIS CHANGED? A row set aside, or two `exists` calls — NOTHING read.
+    /// HAS THIS CHANGED? A row set aside, or — for a packed family — the index an
+    /// open built; a file family asks two `exists`, reading nothing.
     fn has(family: Stored, key: string) -> bool {
-        self.aside_row(family, key) != null || self.on_disk(family, key)
+        if self.aside_row(family, key) != null { return true }
+        if family.file_family() {
+            self.on_disk(family, key)
+        } else {
+            pack_has(self.pack, family.name(), key, inspects(self.keeping))
+        }
     }
 
     fn on_disk(family: Stored, key: string) -> bool {
@@ -111,30 +181,49 @@ impl Store {
 
     /// The row this process set aside under a key — none on a store that keeps to disk.
     fn aside_row(family: Stored, key: string) -> string? {
-        match self.keeping { .Disk -> null, .Aside(rows) -> rows.get().get(self.path(family, key)) }
+        match self.keeping {
+            .Disk -> null,
+            .Aside(rows) -> rows.get().get(self.aside_key(family, key)),
+        }
     }
 
     /// The bytes a key names, or nothing when the row is not committed.
-    fn get(family: Stored, key: string) -> string? { self.aside_row(family, key) ?? self.read_disk(family, key) }
+    fn get(family: Stored, key: string) -> string? {
+        let aside = self.aside_row(family, key)
+        if aside != null { return aside }
+        if family.file_family() {
+            self.read_disk(family, key)
+        } else {
+            pack_get(self.pack, family.name(), key, inspects(self.keeping))
+        }
+    }
 
     fn read_disk(family: Stored, key: string) -> string? {
         if !self.on_disk(family, key) { return null }
-        match read_text(self.path(family, key)) { .Ok(text) -> text, .Err(why) -> null }
+        // LICENSED input.store_io: the store's own kept row, read to answer it
+        match read_text(self.path(family, key)) { .Ok(text) -> text, .Err(_) -> null }
     }
 
     /// REMEMBER A ROW — on disk, or set aside where the store keeps none.
     fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
         match self.keeping {
-            .Disk -> self.written(family, key, bytes, read),
+            .Disk -> self.disk_kept(family, key, bytes, read),
             .Aside(rows) -> {
-                rows.put(self.path(family, key), bytes)
+                rows.put(self.aside_key(family, key), bytes)
+                rows.put(self.reads_key(family, key), joined(read, "\n"))
                 true
             },
         }
     }
 
-    /// A row on disk: the DATA first, then the EDGES, so the second write is what makes
-    /// the row visible and a crash between them leaves nothing rather than half.
+    fn disk_kept(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+        if family.file_family() { return self.written(family, key, bytes, read) }
+        pack_put(self.pack, family.name(), key, bytes, read)
+        true
+    }
+
+    /// A file row on disk: the DATA first, then the EDGES, so the second write is what
+    /// makes the row visible and a crash between them leaves nothing rather than half.
     fn written(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
         match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
         if !self.uncommit(family, key) { return false }
@@ -148,21 +237,67 @@ impl Store {
         }
     }
 
+    /// REMEMBER AN ANSWER WITH WHAT IT READ — each read's name and digest. Refused (false)
+    /// when a read cannot be spelled whole, so no answer is kept on a list that would
+    /// read back as something else.
+    fn keep_reading(family: Stored, key: string, bytes: string, reads: List<Read>) -> bool {
+        if reads.any(!it.writable()) { return false }
+        self.keep(family, key, bytes, [r.spelled() for r in reads])
+    }
+
+    /// THE SAVED-ANSWER RULE, PULLED: the row's bytes only if every read it was kept with
+    /// still has the digest it was read at. `now` answers a name's digest at this moment,
+    /// absent for a name that cannot be read. A row kept with no pairs, or whose reads
+    /// cannot be read back, is a miss — no other check stands in.
+    fn get_valid(family: Stored, key: string, now: fn(string) -> string?) -> string? {
+        if !self.holds(family, key, now) { return null }
+        self.get(family, key)
+    }
+
+    /// Whether a row's reads all still have their digests — the rule alone, with no value
+    /// fetched. A row not present, or kept with edges that are no pairs, does not hold.
+    fn holds(family: Stored, key: string, now: fn(string) -> string?) -> bool {
+        let lines? = self.reads_of(family, key) else { return false }
+        let reads = [read_spelled(l) for l in lines]
+        !reads.any(it == null || now(it!.name) != it!.digest)
+    }
+
+    /// The lines a row was kept with.
+    fn reads_of(family: Stored, key: string) -> List<string>? {
+        if self.aside_row(family, key) != null {
+            return lines_of(self.aside_reads(family, key))
+        }
+        if !family.file_family() { return pack_reads(self.pack, family.name(), key, inspects(self.keeping)) }
+        // LICENSED input.store_io: the store's own edge file, read to prove a row's reads
+        match read_text(self.edge_path(family, key)) { .Ok(t) -> lines_of(t), .Err(_) -> null }
+    }
+
+    /// An aside row's reads, kept beside its bytes.
+    fn aside_reads(family: Stored, key: string) -> string {
+        match self.keeping {
+            .Aside(rows) -> rows.get().get(self.reads_key(family, key)) ?? "",
+            .Disk -> "",
+        }
+    }
+
+    /// Where an aside row's reads stand beside its bytes.
+    fn reads_key(family: Stored, key: string) -> string { "reads\n${self.aside_key(family, key)}" }
+
+    /// A derivation's end: what it appended is folded into a sealed body once there is
+    /// enough of it, so the next open reads an index. An inspection keeps nothing to fold.
+    fn settle() {
+        if !inspects(self.keeping) { pack_settle(self.pack) }
+    }
+
     /// A ROW WHOSE KEY IS ITS CONTENT is kept once: the same key names the same
-    /// bytes, and a write is two files opened, written and closed.
+    /// bytes, so a second write is skipped.
     fn keep_once(family: Stored, key: string, bytes: string, read: List<string> = []) -> bool {
         self.has(family, key) || self.keep(family, key, bytes, read)
     }
 
-    /// THE ONE VERB MOST CALLERS WANT: the stored bytes, or compute, remember, hand back.
-    /// The ladder nobody should write — `if has { get } else { compute; keep }` — has no
-    /// site in the tree, because this is that ladder with the key, the edges and the body
-    /// in one place.
-    ///
     /// REMEMBER A ROW WHOSE BYTES ARE A FILE — the twinned half of `keep`, because a
-    /// linked binary is BYTES and reading it as text is the thing that loses them. The
-    /// edges are the commit here too. A store that keeps aside keeps no file: only a
-    /// build makes one, and an inspection builds nothing.
+    /// linked binary is BYTES and reading it as text is the thing that loses them. A
+    /// store that keeps aside keeps no file: only a build makes one.
     fn keep_file(family: Stored, key: string, from: string, read: List<string>) -> bool {
         match self.keeping {
             .Disk -> self.file_written(family, key, from, read),
@@ -172,7 +307,8 @@ impl Store {
 
     fn file_written(family: Stored, key: string, from: string, read: List<string>) -> bool {
         match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
-        let bytes = match read_bytes(from) { .Ok(b) -> b, .Err(why) -> { return false } }
+        // LICENSED input.store_io: a file's own bytes, read to keep them for the store
+        let bytes = match read_bytes(from) { .Ok(b) -> b, .Err(_) -> { return false } }
         if !self.uncommit(family, key) { return false }
         match write_bytes(self.path(family, key), bytes) {
             .Ok(_) -> {},
@@ -190,8 +326,11 @@ impl Store {
         if !self.has(family, key) { return false }
         let bytes = match read_bytes(self.path(family, key)) {
             .Ok(b) -> b,
-            .Err(why) -> { return false },
+            .Err(_) -> { return false },
         }
         match write_bytes(to, bytes) { .Ok(_) -> true, .Err(_) -> false }
     }
 }
+
+/// A row's lines, none for an empty list.
+fn lines_of(text: string) -> List<string> { text.split("\n").filter(!it.is_empty()) }

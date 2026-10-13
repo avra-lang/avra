@@ -303,10 +303,11 @@ export fn lower(a: Analysis) -> Lowered {
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
-/// wrappers it minted (they never escape it), the bodies of OTHER
+/// wrappers it minted (they never escape it), the code facts a kept row stood
+/// in for, the bodies of OTHER
 /// declarations it wants — the program asks for those, and asking
 /// twice reuses — and every voice lowering earned.
-export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [] }
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static>, hashes: List<string> = [], kept: List<CodeFacts> = [] }
 
 /// A unit lowered in its file's analysis: the body, then its own
 /// lifts and wrappers drained locally — a lambda's body may mint
@@ -742,7 +743,7 @@ fn instance_of(decls: Decls, w: Wanted) -> Instance {
     Instance {
         symbol: w.name,
         home: w.file,
-        shapes: [type_shape_cached(decls, t) for t in w.sub?.args ?? []].join("\n"),
+        shapes: [type_shape_key(decls, t) for t in w.sub?.args ?? []].join("\n"),
     }
 }
 
@@ -800,6 +801,7 @@ fn drained(
         if fresh && !is_held(w.file) {
             minted = minted + 1
             let u = unit_of(w)
+            kept = kept.concat(u.kept)
             if roams {
                 instances
                     .push(
