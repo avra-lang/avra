@@ -113,6 +113,13 @@ fn no_word() {}
 /// A refusal no owner hears ends the program, in its own words.
 fn trapped(words: string) { avra_trap(words) }
 
+/// The longest spelled query key a name can be: a path is bounded by PATH_MAX.
+const KEY_BOUND = 4096
+
+fn key_too_long(n: int) -> string {
+    "a query's key is a name, not a text — this key is ${n} bytes, past the ${KEY_BOUND}-byte bound; read the text through an @input"
+}
+
 /// The next Db id this process mints.
 once fn minted() -> Cell<int> { Cell.new(0) }
 
@@ -628,6 +635,7 @@ impl AnswersUnder<V> {
     }
 
     fn arg(spelled: string) -> int {
+        if spelled.length > KEY_BOUND { trapped(key_too_long(spelled.length)) }
         let known? = self.args.get().get(spelled) else {
             self.make_room()
             let made = self.take_arg()
