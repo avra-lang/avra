@@ -8,11 +8,21 @@
 //! TWO CLOCKS, NEVER CROSSED: `now_ms` bounds things and `wall_secs`
 //! dates them. The wall clock is the host's, and it may step either
 //! way, so no deadline is ever read from it.
+//!
+//! THREE TIMERS, each a value a task may wait on: `after(d)` is one
+//! instant, `quiet(d)` a silence, `every(d)` a period. The monotonic
+//! clock is this process's own: on Linux it stands still while the
+//! machine is suspended, on macOS it runs on, so a timer set across a
+//! suspend falls due late on the first and at once on the second.
 use @std.errors.{Frame}
+use @std.meta.{sealed}
 
 extern fn avra_now_ns() -> int
 extern fn avra_time_wall_s() -> int
 extern fn avra_fiber_sleep(ms: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_park() -> int
+extern fn avra_trap(message: string)
 
 /// A span of time, in whole milliseconds.
 export type Duration = { ms: int }
@@ -97,4 +107,137 @@ export fn duration_text(total: int) -> string {
     let s = total % 60000 / 1000
     let pad = if s < 10 { "0" } else { "" }
     "${total / 60000}m${pad}${s}s"
+}
+
+// ── Timers ──────────────────────────────────────────────────────
+
+/// The last instant the clock can say.
+const farthest: int = 9223372036854775807
+
+const ns_per_ms: int = 1000000
+
+/// `d` in nanoseconds — the largest count there is, either way, when
+/// that is past spelling.
+fn span_ns(d: Duration) -> int {
+    when {
+        d.ms > farthest / ns_per_ms -> farthest
+        d.ms < 0 - farthest / ns_per_ms -> 0 - farthest
+        _ -> d.ms * ns_per_ms
+    }
+}
+
+/// The instant `ns` after `at`: never before the clock's origin, and
+/// the farthest when that is past spelling.
+fn later(at: int, ns: int) -> int {
+    when {
+        ns > farthest - at -> farthest
+        ns < 0 - at -> 0
+        _ -> at + ns
+    }
+}
+
+/// The calling task parked until `at`, the others running meanwhile —
+/// at once when `at` is due.
+fn parked_until(at: int) {
+    if avra_now_ns() >= at { return }
+    avra_wait_until(at, 0, 0)
+    let _ = avra_wait_park()
+}
+
+/// One instant of this process's monotonic clock, in nanoseconds.
+/// SEALED: `after` and `plus` are its doors. The instant means nothing
+/// to another process — `left()` is what crosses a wire or a store, and
+/// `after(left)` rebuilds it there.
+@sealed
+export type Deadline = { at: int }
+
+/// The instant `d` from now. Bound once, it is one budget for
+/// everything that waits on it.
+export fn after(d: Duration) -> Deadline {
+    Deadline { at: later(avra_now_ns(), span_ns(d)) }
+}
+
+impl Deadline {
+    /// The instant `span` after this one.
+    fn plus(span: Duration) -> Deadline {
+        Deadline { at: later(self.at, span_ns(span)) }
+    }
+
+    fn due() -> bool {
+        avra_now_ns() >= self.at
+    }
+
+    /// What is left before it, in whole milliseconds rounded up — zero
+    /// exactly when it is due.
+    fn left() -> Duration {
+        let ns = self.at - avra_now_ns()
+        Duration { ms: if ns <= 0 { 0 } else { (ns - 1) / ns_per_ms + 1 } }
+    }
+
+    /// How far past it the clock is — zero until it is due.
+    fn late() -> Duration {
+        let ns = avra_now_ns() - self.at
+        Duration { ms: if ns <= 0 { 0 } else { ns / ns_per_ms } }
+    }
+
+    /// The calling task parked until the instant, the others running
+    /// meanwhile; at once when it is due.
+    fn wait() {
+        parked_until(self.at)
+    }
+}
+
+/// A silence of `span`. SEALED: `quiet` is its door.
+@sealed
+export type Quiet = { span: Duration }
+
+/// `d` with nothing happening: armed each time the wait it stands in is
+/// entered, for `d` from that entry. Anything taken first, and the time
+/// spent on it, starts it over, so it has no longest wait. IT IS A
+/// DEBOUNCE, NEVER A WATCHDOG: beside a source that keeps speaking,
+/// `quiet(ms(200))` never fires. A watchdog is a `Deadline` the
+/// heartbeat moves — `mut dog = after(ms(200))`, written
+/// `dog = after(ms(200))` at each beat, and due when the beats stop.
+export fn quiet(d: Duration) -> Quiet {
+    Quiet { span: d }
+}
+
+/// A period: one tick every `period`, on instants fixed when it was
+/// made. SEALED: `every` is its door.
+@sealed
+export type Every = { period: Duration, next: Cell<int>, skipped: Cell<int> }
+
+/// A tick every `d`, the first one `d` from now and each next one `d`
+/// after the last DUE instant, whatever was done between them. A period
+/// of nothing traps.
+export fn every(d: Duration) -> Every {
+    if d.ms <= 0 { avra_trap("a period of ${d.ms} ms is no period — `every` takes one longer than nothing") }
+    Every { period: d, next: Cell.new(later(avra_now_ns(), span_ns(d))), skipped: Cell.new(0) }
+}
+
+impl Every {
+    /// Whether a tick is due — and then it is taken: the next tick is
+    /// the first period boundary after now. MISSED PERIODS COALESCE:
+    /// the ones that went by untaken are counted, never delivered.
+    fn passed() -> bool {
+        let behind = avra_now_ns() - self.next.get()
+        if behind < 0 { return false }
+        let period = span_ns(self.period)
+        let gone = behind / period
+        self.skipped.set(self.skipped.get() + gone)
+        self.next.set(later(self.next.get(), later(gone * period, period)))
+        true
+    }
+
+    /// How many periods went by untaken.
+    fn missed() -> int {
+        self.skipped.get()
+    }
+
+    /// The calling task parked until the next tick, which it takes; at
+    /// once when one is due.
+    fn wait() {
+        parked_until(self.next.get())
+        let _ = self.passed()
+    }
 }

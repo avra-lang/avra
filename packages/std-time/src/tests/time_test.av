@@ -1,6 +1,20 @@
 // Durations: the constructors agree on milliseconds, arithmetic
 // adds, the text picks a human's unit, and the clock only advances.
-use @std.time.{ms, secs, mins, now_ms, wall_secs, duration_text, TimedOut, stamp}
+use @std.time.{
+    ms,
+    secs,
+    mins,
+    now_ms,
+    now_ns,
+    sleep,
+    wall_secs,
+    duration_text,
+    TimedOut,
+    after,
+    quiet,
+    every,
+    stamp,
+}
 
 spec "std/time" {
     given "durations" {
@@ -41,6 +55,92 @@ spec "std/time" {
         then "carries the span it was given and the frames the task stood in" {
             let t: TimedOut = TimedOut { after: secs(2), at: [] }
             t.after.ms == 2000 && t.at.is_empty()
+        }
+    }
+    given "a deadline" {
+        then "is the instant its span from now" {
+            let from = now_ns()
+            let d = after(ms(40))
+            d.at >= from + 40000000 && d.at <= now_ns() + 40000000
+        }
+        then "plus moves it by the span, in nanoseconds" {
+            let d = after(secs(1))
+            d.plus(ms(5)).at - d.at == 5000000
+        }
+        then "before it is due, something is left and nothing is late" {
+            let d = after(secs(5))
+            !d.due() && d.left().ms > 4000 && d.left().ms <= 5000 && d.late().is_zero()
+        }
+        then "once due, nothing is left and the lateness is counted" {
+            let d = after(ms(-7))
+            d.due() && d.left().is_zero() && d.late().ms >= 7
+        }
+        then "what is left rounds up, so zero means due" {
+            let d = after(ms(1))
+            d.left().ms == 1
+        }
+        then "a span past spelling is the farthest instant, never one already due" {
+            let d = after(ms(9223372036854775807))
+            d.at == 9223372036854775807 && d.plus(secs(1)).at == d.at && !d.due()
+        }
+        then "a span past spelling the other way is the clock's origin, long due" {
+            let d = after(ms(0 - 9223372036854775807))
+            d.at == 0 && d.due() && d.late().ms > 0 && d.plus(ms(0 - 5)).at == 0
+        }
+        then "what is left rebuilds it in another process's terms" {
+            let d = after(secs(3))
+            let again = after(d.left())
+            again.at >= d.at && again.at - d.at < 1000000000
+        }
+        then "a wait on a due one returns at once" {
+            let d = after(ms(-1))
+            d.wait()
+            d.due()
+        }
+        then "a wait parks until the instant" {
+            let d = after(ms(30))
+            d.wait()
+            d.due()
+        }
+        then "one deadline bounds every wait on it" {
+            let d = after(ms(30))
+            sleep(ms(20))
+            d.wait()
+            d.late().ms < 20
+        }
+    }
+    given "a quiet" {
+        then "holds the span it was given" { quiet(ms(200)).span.ms == 200 }
+    }
+    given "a period" {
+        then "no tick is due before the first period ends" {
+            let tick = every(secs(1))
+            !tick.passed() && tick.missed() == 0
+        }
+        then "a wait takes the next tick, and the one after is a period on" {
+            let tick = every(ms(10))
+            let first = tick.next.get()
+            tick.wait()
+            now_ns() >= first && tick.next.get() - first == 10000000 && tick.missed() == 0
+        }
+        then "ticks stand on instants fixed at the start, whatever is done between" {
+            let tick = every(ms(10))
+            let first = tick.next.get()
+            tick.wait()
+            sleep(ms(4))
+            tick.wait()
+            tick.next.get() - first == 20000000
+        }
+        then "missed periods are counted and never delivered" {
+            let tick = every(ms(10))
+            let first = tick.next.get()
+            sleep(ms(45))
+            let took = tick.passed()
+            took &&
+                tick.missed() >= 3 &&
+                tick.next.get() > now_ns() &&
+                !tick.passed() &&
+                (tick.next.get() - first) % 10000000 == 0
         }
     }
 }
