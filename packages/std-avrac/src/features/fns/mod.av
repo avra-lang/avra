@@ -19,13 +19,10 @@ use diagnostics.{DiagCode}
 
 export fn fns() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name          | build
-        "fn_decl"     | build_fn
-        "once_fn"     | build_once_fn
-        "extern_fn"   | build_extern
-        "call"        | build_call
-        "pinned_call" | build_pinned_call
-        "return_stmt" | build_return
+        name        | build
+        "fn_decl"   | build_fn
+        "once_fn"   | build_once_fn
+        "extern_fn" | build_extern
     }
     let codes = table<DiagCode> {
         kind                    | summary
@@ -55,9 +52,9 @@ export fn fns() -> LanguageFeature {
             stmt = "extern" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type )* ","? )? ")" ( "->" r:type )? ( b:block )? END @recover(sync_to: "END") -> extern_fn(n, ck, mk, ps, pt, r, b)
             stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:type )? ( "," tp:NAME ( ":" tb:type )? )* ","? ">" )? "(" ( ( ( ck:"const" )? ( mk:"mut" )? ( sk:STATE )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? | sp:".." ps:HOLE ) ( "," ( ( ck:"const" )? ( mk:"mut" )? ( sk:STATE )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? | sp:".." ps:HOLE ) )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, ck, mk, sk, ps, pt, pd, r, b, ik, sp)
             stmt = "once" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> once_fn(n, ck, mk, ps, pt, r, b)
-            stmt = "return" ( v:expression )? END @recover(sync_to: "END") -> return_stmt(v)
-            primary = c:NAME "<" pin:type ( "," pin:type )* ","? ">" "(" ( as:argument ( "," as:argument )* ","? )? ")" -> pinned_call(c, pin, as)
-            primary = c:NAME "(" ( as:argument ( "," as:argument )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> call(c, as)
+            stmt = "return" ( value:expression )? END @recover(sync_to: "END") -> Stmt.Return
+            primary = callee:NAME "<" pins:type ( "," pins:type )* ","? ">" "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.Call
+            primary = callee:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> Expr.Call
         }
         builders: rows
         diags: codes
