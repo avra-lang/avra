@@ -3227,6 +3227,16 @@ FLIP (FLOW 03 ladder 14), where the landing turns its unwind into
 RECORDED TRIGGER: ladder 14 reads that cell; until then its store is the
 row's only consumer.
 
+### Interim record — a bounded cleanup wants one phrase
+
+`flow.unbounded_cleanup` makes a `within` the only legal waiting cleanup,
+and `type.defer` refuses a body answering a `Result` — which `within`
+answers at the FLIP (FLOW 03 ladder 14). So 26 sites spell `defer { let _
+= within secs(5) { … } }` (`packages/std-http/src/tests/client_test.av:47`).
+The want: `defer within secs(5) { … }` stays legal, its timeout discarded
+by rule (avra-8sb5.10.172). RECORDED TRIGGER: ladder 14 decides it; until
+then the bare form answers its block's value and checks clean.
+
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
 ### Interim record — the tasks server was unreachable at landing
