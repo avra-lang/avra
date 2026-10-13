@@ -250,9 +250,11 @@ jobs:
         timeout-minutes: 50
         run: |
           s=$(date +%s)
-          gen() { timeout -k 10 1500 make -s avra || { echo "::error::a compiler generation exceeded its 1500 s bound"; return 1; }; }
+          # The status names the cause: 124 is the bound, 137 a kill (the memory cap or the bound's -k), anything else a failure.
+          said() { case $1 in 124) echo "::error::$2 ran past its 1500 s bound" ;; 137) echo "::error::$2 was killed (exit 137: the memory cap or a kill; see the watch: peak line)" ;; *) echo "::error::$2 failed (exit $1)" ;; esac; }
+          gen() { timeout -k 10 1500 make -s avra; rc=$?; [ "$rc" = 0 ] || { said "$rc" "a compiler generation"; return 1; }; }
           if [ -x build/avra ] && gen && gen; then :; else
-            timeout -k 10 1500 make -s bootstrap || { echo "::error::bootstrap exceeded its 1500 s bound"; exit 1; }
+            timeout -k 10 1500 make -s bootstrap; rc=$?; [ "$rc" = 0 ] || { said "$rc" "the bootstrap"; exit 1; }
           fi
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
           echo "compiler: built from source in $(( $(date +%s) - s ))s (starting compiler: ${{ steps.release.outputs.source || 'cache' }})"
