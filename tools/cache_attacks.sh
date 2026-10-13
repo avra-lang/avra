@@ -2024,17 +2024,17 @@ steps=$((steps+1)); rm -rf .avra-cache; ./avra check $eo >/dev/null 2>&1; eo_bui
 if [ -s $R/eo.cold ] && [ -s $R/eo.warm ] && cmp -s $R/eo.cold $R/eo.warm; then [ -n "${VERBOSE:-}" ] && echo "ok    eo: a build after a check is the cold build's bytes"; else fails=$((fails+1)); echo "FAIL  eo: $eo built after a check differs from its cold build in $(cmp -l $R/eo.cold $R/eo.warm 2>/dev/null | wc -l | tr -d ' ') bytes (0 means one side did not build)"; fi
 
 # A FILE THAT LEAVES A MODULE MOVES NO TEXT: its module's interface loses the file's names, and a reader that
-# names one is read again though neither it nor any file still there was edited.
+# boxes through its impl is read again though neither it nor any file still there was edited.
 mkdir -p $R/rmv/src/m $R/rmv/src/n
 printf '[package]\nname = "rt-rmv"\nversion = "0.1.0"\n' > $R/rmv/avra.toml
-printf 'export fn fa() -> int { 1 }\n' > $R/rmv/src/m/a.av
-printf 'export type Pb = { x: int }\n' > $R/rmv/src/m/b.av
-printf 'use m.{fa, Pb}\nexport fn viewed() -> int { fa() + Pb { x: 1 }.x }\n' > $R/rmv/src/n/user.av
+printf 'export type Pt = { v: int }\nexport trait Say { fn say() -> int }\n' > $R/rmv/src/m/a.av
+printf 'impl Say for Pt { fn say() -> int { self.v } }\n' > $R/rmv/src/m/b.av
+printf 'use m.{Say, Pt}\nexport fn viewed() -> int {\n    let s: dyn Say = Pt { v: 4 }\n    s.say()\n}\n' > $R/rmv/src/n/user.av
 printf 'use n.{viewed}\nprintln("${viewed()}")\n' > $R/rmv/src/main.av
 HR "cold rmv" check rmv 0
 HR "rmv: nothing moved" check rmv 0 n/user.av held
 mv $R/rmv/src/m/b.av $R/rmv/b.kept
-HR "rmv: a file leaves the module a reader names a type of — the check refuses" check rmv 1
+HR "rmv: a file leaves the module a reader boxes through — the check refuses" check rmv 1
 mv $R/rmv/b.kept $R/rmv/src/m/b.av
 HR "rmv: and returns — the refused check kept nothing, so the reader stands" check rmv 0 n/user.av held
 
