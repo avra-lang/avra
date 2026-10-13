@@ -19,6 +19,19 @@ lists and refuses by name:
   watcher-fixtures `tools/pr_watcher.py --self-test` is run by a keeper, so
                    a change to the watcher's decision refuses on the PR, not
                    one schedule pass later.
+  light-draft      a draft's run is the light gate: only the jobs in LIGHT_JOBS
+                   run unconditionally; every other leg the `test` aggregate
+                   owes names `needs.prepare.outputs.full` in its `if:`, and
+                   the aggregate refuses a light run by name.
+  run-mode         a PR's run mode is read from the API at run time (tools/pr_mode.py),
+                   never from the event payload; a light run whose compiler is not
+                   the published one skips the gate and says so.
+  compiler-route   a Sprite run's prep installs a published compiler (or the merge-base's)
+                   before it builds one: the route rides the wire, and the build branch
+                   comes last.
+  path-gate        `runtime-keep` runs on a PR only when prepare's path gate
+                   (tools/ci_path_gate.py) says a path it reads changed; main's
+                   push and a hand-run owe it always.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -189,6 +202,89 @@ def check_release_order(jobs):
     return [], ["release-order: fetch before build, build conditional on the fetch miss"]
 
 
+# The legs a draft's light run still owes: the compiler (`prepare`), the
+# compiler-free keepers, the changed-file gate and the codecs scan.
+LIGHT_JOBS = ("prepare", "keepers-static", "gate", "codecs", "test")
+
+
+def check_path_gate(workflow_text):
+    """`runtime-keep` is conditioned on prepare's path-gate output, and that
+    output is the path gate's own decision. Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    refusals = []
+    cond = re.search(r"^    if:\s*(.+)$", jobs.get("runtime-keep", ""), re.M)
+    if not cond or "needs.prepare.outputs.runtime_keep == '1'" not in cond.group(1):
+        refusals.append("`runtime-keep` is not gated on `needs.prepare.outputs.runtime_keep`")
+    if "tools/ci_path_gate.py runtime-keep" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not ask tools/ci_path_gate.py whether runtime-keep is owed")
+    if refusals:
+        return refusals, []
+    return [], ["path-gate: runtime-keep runs on the path gate's decision"]
+
+
+def check_run_mode(workflow_text):
+    """The run mode is decided by tools/pr_mode.py on the PR's API answer, not by
+    the event payload, and a light gate on an unpublished compiler is skipped.
+    Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    refusals = []
+    plan = jobs.get("prepare", "")
+    if "tools/pr_mode.py" not in plan:
+        refusals.append("`prepare` does not read the PR's mode through tools/pr_mode.py")
+    if "github.event.pull_request.draft" in plan:
+        refusals.append("`prepare` decides the run mode from the event payload's draft flag")
+    if "compiler_source: ${{ steps.release.outputs.source }}" not in plan:
+        refusals.append("`prepare` does not expose the compiler's source")
+    gate = jobs.get("gate", "")
+    if "needs.prepare.outputs.compiler_source == 'latest'" not in gate:
+        refusals.append("`gate` runs on a light run whose compiler is not the published one")
+    if "light gate: compiler steps skipped" not in jobs.get("test", ""):
+        refusals.append("`test` does not say why a light gate's compiler steps were skipped")
+    if refusals:
+        return refusals, []
+    return [], ["run-mode: the PR's mode is read from the API; the light gate skips an unpublished compiler"]
+def check_compiler_route(work_text, remote_text):
+    """The run's compiler route rides the wire, and the Sprite's prep takes a
+    published compiler before it builds one. Answers (refusals, words)."""
+    if 'wire="$wire@$route"' not in work_text or "compiler_route" not in work_text:
+        refusals.append("`tools/work run` does not put the compiler route on the wire")
+    published = remote_text.find('"${route%%:*}" = published')
+    merged = remote_text.find('"${route%%:*}" = mergebase')
+    build = remote_text.find("building this tree's compiler")
+    if min(published, merged) < 0:
+        refusals.append("the Sprite's prep does not install a published compiler for a route")
+    elif build < 0 or build < max(published, merged):
+        refusals.append("the Sprite's prep builds before it tries the published compiler")
+    return [], ["compiler-route: a published compiler is installed before a build"]
+
+
+def check_light_draft(workflow_text):
+    """Every heavy leg `test` owes is gated on the full flag, and `test`
+    refuses a light run. Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    owed = re.search(r"^    needs:\s*\[(.*?)\]", jobs.get("test", ""), re.M)
+    if not owed:
+        return ["the `test` aggregate names no `needs:` list"], []
+    refusals = []
+    if "outputs.full" not in jobs.get("prepare", "") and "full:" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not expose the `full` output a light draft is judged by")
+    for leg in (n.strip() for n in owed.group(1).split(",")):
+        if leg in LIGHT_JOBS:
+            continue
+        cond = re.search(r"^    if:\s*(.+)$", jobs.get(leg, ""), re.M)
+        if not cond or "needs.prepare.outputs.full" not in cond.group(1):
+            refusals.append("`%s` is owed by `test` but is not gated on `needs.prepare.outputs.full`" % leg)
+    compiler = re.search(r"^      - if: (.+)\n        name: compiler$", jobs.get("prepare", ""), re.M)
+    if not compiler or "steps.plan.outputs.full == '1'" not in compiler.group(1):
+        refusals.append("`prepare` builds a compiler on a light run the published one could serve")
+    if "needs.prepare.outputs.full == '0'" not in jobs.get("test", ""):
+        refusals.append("`test` does not refuse a light draft's run")
+    if refusals:
+        return refusals, []
+    heavy = [n for n in (x.strip() for x in owed.group(1).split(",")) if n not in LIGHT_JOBS]
+    return [], ["light-draft: %d heavy leg(s) gated on the full flag" % len(heavy)]
+
+
 def check_keeper_coverage(make_text, workflow_text):
     """Every KEEPERS_STATIC member is invoked by a pull_request job, and
     every `*-static` target is too. Answers (refusals, words)."""
@@ -310,6 +406,12 @@ def run(make_text=None, workflow_text=None):
     for check in (lambda: check_release_order(parse_jobs(workflow_text)),
                   lambda: check_keeper_coverage(make_text, workflow_text),
                   lambda: check_watcher_wired(make_text),
+                  lambda: check_light_draft(workflow_text),
+                  lambda: check_run_mode(workflow_text),
+                  lambda: check_compiler_route(
+                      open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read(),
+                      open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()),
+                  lambda: check_path_gate(workflow_text),
                   lambda: check_warm_edit(make_text)):
         r, w = check()
         refusals += r
@@ -478,8 +580,42 @@ rt-header:
         assert any("--warm" in x for x in check_warm_edit(good, good_bench, good_bench)[0]), \
             check_warm_edit(good, good_bench, good_bench)
 
+    # ── light draft: the real workflow passes; a heavy leg the aggregate owes
+    # with no full gate is refused by name; a `test` that never refuses a
+    # light run is refused ──
+    real = open(CHECKS, encoding="utf-8").read()
+    assert check_light_draft(real)[0] == [], check_light_draft(real)
+    ungated = real.replace("    if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'",
+                           "    if: needs.prepare.outputs.cache == '1'")
+    assert ungated != real
+    assert any("cache-attacks" in x for x in check_light_draft(ungated)[0]), check_light_draft(ungated)
+    silent = real.replace("if: needs.prepare.outputs.full == '0'", "if: false")
+    assert any("does not refuse" in x for x in check_light_draft(silent)[0]), check_light_draft(silent)
+
+    # a light run that builds a compiler the published one could serve is refused
+    built = real.replace(" && (steps.plan.outputs.full == '1' || steps.release.outputs.source == 'none')", "")
+    assert built != real
+    assert any("builds a compiler" in x for x in check_light_draft(built)[0]), check_light_draft(built)
+
+    real_wf = open(CHECKS, encoding="utf-8").read()
+    assert check_run_mode(real_wf)[0] == [], check_run_mode(real_wf)
+    payload = real_wf.replace("python3 tools/pr_mode.py)\" = light ] && full=0",
+                              "true)\" = true ] && full=0")
+    assert payload != real_wf
+    assert any("tools/pr_mode.py" in x for x in check_run_mode(payload)[0]), check_run_mode(payload)
+    ungated_gate = real_wf.replace(" && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')", "")
+    assert ungated_gate != real_wf
+    assert any("`gate`" in x for x in check_run_mode(ungated_gate)[0]), check_run_mode(ungated_gate)
+
+    real_wf = open(CHECKS, encoding="utf-8").read()
+    assert check_path_gate(real_wf)[0] == [], check_path_gate(real_wf)
+    ungated_rk = real_wf.replace("    if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
+                                 "    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'")
+    assert ungated_rk != real_wf
+    assert any("runtime-keep" in x for x in check_path_gate(ungated_rk)[0]), check_path_gate(ungated_rk)
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "warm-edit held on fixtures")
+          "light-draft, run-mode, path-gate, warm-edit held on fixtures")
     return 0
 
 

@@ -232,6 +232,8 @@ int64_t avra_vtask_within_end(int64_t t, int64_t id);
 // compiled task's pair carries.
 void avra_vtask_shield_enter(int64_t t);
 void avra_vtask_shield_leave(int64_t t);
+// 1 while the task runs under a shield, else 0.
+int64_t avra_vtask_shielded(int64_t t);
 // The task's deadline, in ns; 0 when none.
 int64_t avra_vtask_deadline(int64_t t);
 // The new task `t` takes the limit `from` stands under, as a compiled
@@ -256,6 +258,9 @@ void avra_vtask_cancel(int64_t t, int64_t by);
 // The gate stands open for ever: every waiter is claimed, and a later
 // wait on it is claimed at once — what a finished task's gate does.
 void avra_vgate_open(void* gate);
+// A task's end gate opens: every waiter — a joiner, a set's arm — is
+// claimed in the order it came, under the id of the task that ended it.
+void avra_vgate_ended(void* gate, int64_t by);
 // `avra_gate_claim`, made by the task `t`: the claimed waiter's member,
 // or -1.
 int64_t avra_vgate_claim(int64_t t, void* gate);

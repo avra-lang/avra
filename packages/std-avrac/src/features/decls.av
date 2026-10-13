@@ -680,18 +680,27 @@ export type Decls = {
 
 /// What a call to a fn may reach, here or in a callee: a cancel point it
 /// waits at (`parks`), or a `while` whose back-edge is one (`spins`).
-export type CancelReach = { parks: bool, spins: bool }
+/// `links` is what it is KNOWN to reach: a row that waits, a waiting
+/// read or a spawn — never a call through a value, which may be any fn
+/// and says nothing of this program's rows. A fn that links parks.
+export type CancelReach = { parks: bool, spins: bool, links: bool }
 
 impl CancelReach {
     /// Whether the call may reach a cancel point at all.
     fn may() -> bool { self.parks || self.spins }
 
     /// Whether this already reaches everything `o` does.
-    fn covers(o: CancelReach) -> bool { (self.parks || !o.parks) && (self.spins || !o.spins) }
+    fn covers(o: CancelReach) -> bool {
+        (self.parks || !o.parks) && (self.spins || !o.spins) && (self.links || !o.links)
+    }
 
     /// What either reaches.
     fn with_reach(o: CancelReach) -> CancelReach {
-        CancelReach { parks: self.parks || o.parks, spins: self.spins || o.spins }
+        CancelReach {
+            parks: self.parks || o.parks,
+            spins: self.spins || o.spins,
+            links: self.links || o.links,
+        }
     }
 }
 

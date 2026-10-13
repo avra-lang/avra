@@ -1,0 +1,19 @@
+//! proves: a task unwound inside a pool's dial frees the slot it held
+use @std.time.{secs, ms, sleep}
+use @std.http.client.{ClientError}
+use @std.http.pool.{Pool, Carrier}
+
+fn slow_dial() -> Result<Carrier, ClientError> {
+    sleep(secs(5))
+    .Err(.NoTls)
+}
+
+fn takes(p: Pool) -> bool { p.take("http://h:1", () -> slow_dial()) is .Ok }
+
+let p = Pool {}
+let t = spawn takes(p)
+sleep(ms(20))
+let held = p.lent("http://h:1")
+t.cancel()
+sleep(ms(20))
+"${held} ${p.lent("http://h:1")}"

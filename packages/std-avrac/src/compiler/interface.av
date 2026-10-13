@@ -33,6 +33,7 @@ use features.{
     Settled,
     kind_word,
     WireIndex,
+    CancelReach,
 }
 use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
@@ -465,7 +466,7 @@ impl Workspace {
         // a record is kept once the build has lowered every body, never inside a resolve,
         // so the cancel bit is the settled pass's and not its conservative stand-in
         let reach = self.reach_of(d.id)
-        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}\t${bit_word(reach.parks)}\t${bit_word(reach.spins)}"
+        "${shape_line(self, sig, "")}\t${marks}\t${writes}\t${self.bounds_wire(d.id)}\t${parks_word(reach)}\t${bit_word(reach.spins)}"
     }
 
     /// A type's shape from its signature — `opaque` for a declaration that has none.
@@ -959,6 +960,16 @@ export fn makers_in(fields: List<List<string>>, path: string) -> Map<string, str
 /// A bit as a record field writes it.
 fn bit_word(b: bool) -> string {
     if b { "1" } else { "0" }
+}
+
+/// How a fn waits, as its record says it: `0` never, `1` it may, `2`
+/// through a row or a spawn — the word `Record.reach` reads back.
+fn parks_word(r: CancelReach) -> string {
+    when {
+        r.links -> "2"
+        r.parks -> "1"
+        _ -> "0"
+    }
 }
 
 /// One read's identity: the file and the declaration read in it.

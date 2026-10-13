@@ -10,7 +10,6 @@ extern fn avra_vtask_free(t: int)
 extern fn avra_vtask_end(t: int)
 extern fn avra_vtask_ready(t: int)
 extern fn avra_vtask_joins(t: int, on: int)
-extern fn avra_vtask_joined(t: int, by: int)
 extern fn avra_vtask_sited(t: int, site: string)
 extern fn avra_vtask_sleep(t: int, ms: int)
 extern fn avra_vtask_park_fd(t: int, fd: int, writable: int, timeout_ms: int) -> int
@@ -28,6 +27,11 @@ extern fn avra_vtask_passed(t: int, by: int)
 extern fn avra_vtask_tick_cold(t: int) -> int
 extern fn avra_vtask_within(t: int, ms: int) -> int
 extern fn avra_vtask_within_end(t: int, id: int) -> int
+/// The shield's pair, over the task's own unwind bit.
+extern fn avra_vtask_shield_enter(t: int)
+extern fn avra_vtask_shield_leave(t: int)
+/// 1 while the task runs under a shield.
+extern fn avra_vtask_shielded(t: int) -> int
 extern fn avra_vtask_inherits(t: int, from: int)
 extern fn avra_vtask_next() -> int
 extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
@@ -48,6 +52,7 @@ extern fn avra_vtask_park(t: int) -> int
 extern fn avra_vtask_claim(t: int) -> int
 extern fn avra_vtask_cancel(t: int, by: int)
 extern fn avra_vgate_open(gate: ptr)
+extern fn avra_vgate_ended(gate: ptr, by: int)
 extern fn avra_vgate_claim(t: int, gate: ptr) -> int
 extern fn avra_gate_new() -> ptr
 extern fn avra_rc_release(p: ptr)
@@ -76,7 +81,8 @@ type Job = {
     // program holds is this box; -1 for the program's own run.
     record: int,
     done: bool,
-    waiters: List<int>,
+    // the tasks joining it, for a ring to be seen: its gate wakes them
+    joiners: List<int>,
     // it parked on the policy at the instruction it resumes on: that
     // row reads its waking
     resumed: bool,
@@ -116,7 +122,7 @@ fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -
         at: at,
         record: record,
         done: false,
-        waiters: [],
+        joiners: [],
         resumed: false,
         slots: [Val.N, Val.N, Val.N, Val.N],
         gate: null,
@@ -231,29 +237,47 @@ impl Machine {
     /// is the awaiter's.
     fn task_join_val(vals: List<Val>) -> Val {
         let id = self.task_of(vals[0])
-        if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
+        if id == self.running { return self.joined_itself() }
         if !self.tasks[id].done { return self.waited_on(id) }
         if self.tasks[id].cancelled { return self.cancel_passed(self.tasks[id].ended_by) }
         self.arrays[self.tasks[id].record][2]
+    }
+
+    fn joined_itself() -> Val { self.trapped_val("a task joined itself — deadlock") }
+
+    /// How the task ended, for a `catch`: the two cells of its
+    /// `Cancelled` — who asked, where the cancel was met — or nothing
+    /// when it answered. Parks until done, and passes no cancel on.
+    fn task_join_caught_val(vals: List<Val>) -> Val {
+        let id = self.task_of(vals[0])
+        if id == self.running { return self.joined_itself() }
+        if !self.tasks[id].done { return self.waited_on(id) }
+        if !self.tasks[id].cancelled { return Val.N }
+        self.fresh_array([Val.I(self.tasks[id].ended_by), Val.I(0)])
     }
 
     /// A JOIN OF A TASK THAT ENDED CANCELLED CANCELS THE RUNNING TASK, by
     /// the same asker: its bit is set at this cancel point, where its
     /// unwind's list begins, and the join answers nothing. A task
     /// already unwinding carries its own request, and takes on no other.
+    /// UNDER A SHIELD A DEFERRED CALL RUNS WHOLE: nothing may cut it, and
+    /// there is no answer for it to go on with, so there the join refuses.
     /// The program's own run keeps who asked for its end to say.
     fn cancel_passed(by: int) -> Val {
         let vt = self.tasks[self.running].vt
         if avra_vtask_unwinding(vt) != 0 { return Val.N }
+        if avra_vtask_shielded(vt) != 0 { return self.trapped_val("a join takes a task that answers, and this one was cancelled") }
         avra_vtask_passed(vt, by)
         if self.running == 0 { self.cancelled_by = avra_vtask_asker(vt) }
         self.unwind_met(vt)
         Val.N
     }
 
-    /// The running task waits for `id`: filed among its waiters — never
-    /// with the policy, which only readies it when `id` finishes — and
-    /// the machine switches. A join that would close a ring traps first.
+    /// The running task waits for `id`, parked with the POLICY on the
+    /// task's end gate as a compiled join parks: ONE LINE HOLDS A TASK'S
+    /// JOINERS AND THE SETS THAT WAIT ON IT, so its end wakes them in
+    /// the order they came. The row runs again to a task that is done.
+    /// A join that would close a ring traps first.
     fn waited_on(id: int) -> Val {
         mut t = id
         while t >= 0 {
@@ -262,26 +286,15 @@ impl Machine {
         }
         if self.tasks[self.running].arming { return self.trapped_val("a task waited inside a wait it had not parked") }
         avra_vtask_joins(self.tasks[self.running].vt, self.tasks[id].id)
-        if self.tasks[id].clocked { return self.waited_on_time(id) }
-        self.tasks[id].waiters.push(self.running)
-        self.parking = true
-        Val.N
-    }
-
-    /// A join of a task a timer ends parks with the POLICY, on the
-    /// task's own gate, as a compiled join does: the heap readies the
-    /// joiner where the time comes, and the row runs again to a task
-    /// that is done.
-    fn waited_on_time(id: int) -> Val {
-        let time? = self.tasks[id].gate else { return self.defect_val("a timer's task lost its time") }
-        if avra_vtask_join(self.tasks[self.running].vt, time) == 0 { return self.defect_val("a timer's task ended and the machine did not hear") }
+        self.tasks[id].joiners.push(self.running)
+        if avra_vtask_join(self.tasks[self.running].vt, self.end_gate(id)) == 0 { return self.defect_val("a task ended and the machine did not hear") }
         self.parking = true
         Val.N
     }
 
     /// The task `id` waits to join, or -1.
     fn joining_of(id: int) -> int {
-        self.tasks.find_index(it.waiters.contains(id)) ?? -1
+        self.tasks.find_index(it.joiners.contains(id)) ?? -1
     }
 
     fn task_done_val(vals: List<Val>) -> Val {
@@ -373,6 +386,21 @@ impl Machine {
         Val.I(avra_vtask_within_end(self.tasks[self.running].vt, self.whole(vals[0])))
     }
 
+    /// A cold exit's deferred calls begin: the running task's bit is saved
+    /// and cleared, as the runtime's own row does for a compiled task.
+    fn shield_enter_val() -> Val {
+        self.rooted()
+        avra_vtask_shield_enter(self.tasks[self.running].vt)
+        Val.I(0)
+    }
+
+    /// They ended: the saved bit is back.
+    fn shield_leave_val() -> Val {
+        self.rooted()
+        avra_vtask_shield_leave(self.tasks[self.running].vt)
+        Val.I(0)
+    }
+
     /// The running task parked on the POLICY — a sleep, a descriptor — so
     /// the row that parked it re-runs as its waking, and reads it there.
     fn policy_parked() {
@@ -397,10 +425,10 @@ impl Machine {
         self.resume_next()
     }
 
-    /// The running task's body came back: it is done, its waiters ready,
-    /// and the machine runs whoever is next. A BODY THAT COMES BACK
-    /// UNWINDING ENDED CANCELLED, by whoever asked the request that
-    /// stands on it; one that answered names itself.
+    /// The running task's body came back: it is done, whoever waited on
+    /// its end ready, and the machine runs whoever is next. A BODY THAT
+    /// COMES BACK UNWINDING ENDED CANCELLED, by whoever asked the request
+    /// that stands on it; one that answered names itself.
     fn finished(answer: Val?) -> Place {
         let t = self.tasks[self.running]
         let cut = avra_vtask_unwinding(t.vt) != 0
@@ -412,21 +440,22 @@ impl Machine {
         self.resume_next()
     }
 
-    /// The task `id` ended: its answer left in its record, its waiters
-    /// ready, what it carried released, and its gate — when a wait set
-    /// asked for one — open for ever. `by` is the task that ended it: its
-    /// own, or the one that answered or cancelled a task nothing runs.
+    /// The task `id` ended: its answer left in its record, what it
+    /// carried released, and its gate — when a join or a wait set asked
+    /// for one — open for ever. `by` is who ended it: its own id, the
+    /// asker of the cancel it left by, or whoever answered or cancelled
+    /// a task nothing runs. Its waiters wake under the task's own id
+    /// when it ran, as a compiled task's do, and under `by` otherwise.
     fn ended(id: int, answer: Val, by: int) {
         let t = self.tasks[id]
         self.tasks[id].ended_by = by
         if t.record >= 0 { self.arrays[t.record].set(2, answer) }
         self.tasks[id].done = true
-        for w in t.waiters { avra_vtask_joined(self.tasks[w].vt, by) }
-        self.tasks[id].waiters = []
+        self.tasks[id].joiners = []
         for v in t.slots { self.releases_val(v) }
         self.tasks[id].slots = []
         let gate? = t.gate else { return }
-        avra_vgate_open(gate)
+        avra_vgate_ended(gate, if t.unrun() { by } else { t.id })
         avra_rc_release(gate)
         self.tasks[id].gate = null
     }

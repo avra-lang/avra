@@ -228,16 +228,23 @@ impl Workspace {
     /// as written, its place among the same annotation written twice on one
     /// declaration, and that declaration's key in its file — the spelling a
     /// nested declaration names its encloser by. Work no written annotation
-    /// asked for is named by the declaration that does it.
+    /// asked for is named by the declaration that does it and the callee it answers.
     fn maker_said(f: FileId, w: DeclareWork) -> string {
         let p = self.parsed(f)
         let anns = p.store.annotations_of(w.stmt)
         let on = self.decls.within_text(w.annotated)
         let at? = [j for j, a in anns if same_expr(a.callee, w.callee)].first() else {
-            return "${self.decls.decl(w.ann).name}#0 @ ${on}"
+            return "${self.decls.decl(w.ann).name}:${p.store.ident_name(w.callee) ?? ""}#0 @ ${on}"
         }
         let said = [annotation_said(p, a.name, a.args) for a in anns]
-        "${said[at]}#${[j for j, text in said if j < at && text == said[at]].length} @ ${on}"
+        "${said[at]}#${[j for j, text in said if j < at && text == said[at]].length} @ ${on}${self.via_trait(w)}"
+    }
+
+    /// The trait whose `derive` is the work, as the maker names it: two
+    /// traits deriving one declaration are two makers, not one.
+    fn via_trait(w: DeclareWork) -> string {
+        let owner? = self.decls.decl(w.ann).parent else { return "" }
+        " via ${self.decls.decl(owner).name}"
     }
 
     /// A WRAP directive over the annotated declaration. An expansion
@@ -1146,8 +1153,10 @@ impl Workspace {
     /// A fn's parameters as `Param` values: name, the type's spelling
     /// AND ITS SHAPE, its `mut` and `const` marks.
     fn crossed_params(v: FileView, s: StmtId, d: DeclId) -> List<MetaParam> {
+        let written = v.store.declared_params(s)
         let kinds = self.seat_kinds(d)
-        [crossed_param(v, p, kind_at(kinds, j)) for j, p in v.store.declared_params(s)]
+        let receiver = if kinds.length > written.length { kinds.length - written.length } else { 0 }
+        [crossed_param(v, p, kind_at(kinds, receiver + j)) for j, p in written]
     }
 
     /// The type or trait a member belongs to, as its block spells it —

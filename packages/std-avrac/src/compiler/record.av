@@ -265,9 +265,16 @@ impl Row {
     /// `Fn`'s bounded seats' trait arguments, one `seat=wire|wire` each.
     fn bounds() -> List<string> { self.list_at(4) }
 
-    /// `Fn`/`Extern`'s cancel bits, parks then spins: a record that says
-    /// nothing says it may.
-    fn reach() -> CancelReach { CancelReach { parks: self.field(5) != "0", spins: self.field(6) != "0" } }
+    /// `Fn`/`Extern`'s cancel bits, how it waits then whether it spins: a
+    /// record that says nothing says it may, a row among what it reaches.
+    fn reach() -> CancelReach {
+        let waits = self.field(5)
+        CancelReach {
+            parks: waits != "0",
+            spins: self.field(6) != "0",
+            links: waits != "0" && waits != "1",
+        }
+    }
 }
 
 /// A record as this build now knows it: its words, its lines and their fields.
@@ -1399,6 +1406,7 @@ impl Workspace {
     /// its text moved but a declaration may still name the same syntax — the token
     /// `resolve_pending_reads` finalizes once the read file is parsed.
     fn read_token(reader: string, read: RunRead) -> string {
+        if !self.there(read.path) { return "" }
         if read.ref == "" || read.print == "" { return self.run_said(read.path) }
         if self.text_digest(read.path) == read.digest { return read.print }
         let key = pending_key(reader, read)

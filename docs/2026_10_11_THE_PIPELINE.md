@@ -155,14 +155,42 @@ so no PR run publishes a binary.
 | job | when it runs |
 |---|---|
 | `prepare` | every run; plan, then a compiler and the objects/libs when `build=1` |
-| `keepers-a` / `keepers-b` | any non-push run with `build=1`; the two keeper halves on two runners |
+| `keepers-a` / `keepers-b` | any non-push run with `build=1`; `keepers-a` is two shards (`keepers-a1`, `keepers-a2`) and `keepers-b` one, each on its own runner |
 | `seed-check` | any non-push run with `build=1`; the committed seed must compile HEAD |
 | `gate` | any non-push run with a changed `.av` or an affected package; `fmt` + idioms |
-| `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks) |
+| `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks); two shards: `cache-attacks-a` (`tools/cache_attacks.sh`) and `cache-attacks-b` (the other attacks, plus `code-hash-attacks`) |
 | `flow-gate` | whenever `runtime/` moved |
+| `runtime-keep` | the C runtime's own tests and mutation breaks: on a PR only when `runtime/`, the Makefile or `tools/memcap.sh` changed (`tools/ci_path_gate.py`); always on main's push and a hand-run |
 | `suites` | any non-push run with a non-empty affected closure; sharded (4 shards) |
 | `codecs` | a PR whose diff reaches the compiler source or the reader |
 | `test` | the aggregate required check, every run |
+
+**A draft runs the light gate.** A draft PR's run builds the compiler when
+its diff owes one, and runs only the compiler-free keepers, the changed-file
+`gate` and the codecs scan. The heavy legs (`keepers-a`, `keepers-b`,
+`runtime-keep`, `seed-check`, `flow-gate`, `cache-attacks`, `suites`) are
+gated on `needs.prepare.outputs.full`, which is `0` for a draft without the
+`full-ci` label. `test` refuses a light run by name (`NOT A VERDICT`), so a
+draft never shows a green required check it did not earn, and the watcher
+and the batcher, which read `test` for SUCCESS, refuse it. A light run
+judges `fmt` and the idioms with the tree's own compiler only. When the tree's
+compiler is not the published one, the `gate` job is skipped and the light run
+says so: a skipped gate is not a pass, and the full run on ready is the verdict.
+The mode is read from the PR's API answer at run time (`tools/pr_mode.py`), so a
+queued run cannot keep the light mode after the PR is ready. Readying the PR,
+or labelling it `full-ci`, is what starts the whole run; the `ready_for_review`
+and `labeled` events are in the trigger list for that reason.
+
+### Batches
+
+A batch is built straight from light-green members, and its own run is the
+test. A ready member needs `test` SUCCESS. A draft member needs its light gate
+green by name (`gate`, `keepers-static`, and `codecs` SUCCESS or SKIPPED), and
+its heavy legs did not run, so it also needs evidence from the Sprite:
+`--attacks-ran` or `--attacks-na` for cache-attacks, and `--suites-ran` for the
+suites. The batch PR is a ready PR, so CI runs the full gate on the composed tree.
+No composed Sprite pre-run is owed, except cache-attacks evidence when CI skipped
+that job for the members.
 
 A run that touches no `.av`, no package and no compiler source **builds
 nothing and owes nothing**. The compiler source paths are

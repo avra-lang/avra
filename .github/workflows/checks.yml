@@ -29,7 +29,10 @@
 name: checks
 
 on:
+  # A DRAFT runs the light gate (see `full` in prepare). Readying it, or
+  # labelling it `full-ci`, is what starts the whole run.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
   # A QUEUE'S EVENT IS STILL ACCEPTED, so a repo that re-enables one needs no
   # edit here.
   merge_group:
@@ -64,11 +67,14 @@ jobs:
     # either heavy step dies there with its own name, not here.
     timeout-minutes: 65
     outputs:
+      full: ${{ steps.plan.outputs.full }}
+      compiler_source: ${{ steps.release.outputs.source }}
       shards: ${{ steps.plan.outputs.shards }}
       changed: ${{ steps.plan.outputs.changed }}
       packages: ${{ steps.plan.outputs.packages }}
       build: ${{ steps.plan.outputs.build }}
       runtime: ${{ steps.plan.outputs.runtime }}
+      runtime_keep: ${{ steps.plan.outputs.runtime_keep }}
       cache: ${{ steps.plan.outputs.cache }}
       codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
@@ -88,6 +94,8 @@ jobs:
       # runs no suite: `check` is the floor, the train runs the programs.
       - id: plan
         name: plan
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           event="${{ github.event_name }}"
           changed=""
@@ -108,6 +116,10 @@ jobs:
           runtime_base=origin/main
           if [ "$event" = push ]; then runtime_base=HEAD~1; fi
           if git diff --name-only "$runtime_base" HEAD -- 'runtime/' | grep -q .; then runtime=1; fi
+          # THE C RUNTIME'S OWN TESTS owe a PR only a change they read (runtime/,
+          # the Makefile rules and the memcap wrapper they run under). Main's push
+          # and a hand-run always carry them (tools/ci_path_gate.py).
+          runtime_keep=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py runtime-keep --event "$event")
           # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
           # train adds the suites over it, never a package the PR skipped.
           if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
@@ -159,17 +171,33 @@ jobs:
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
           shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py 4)
+          # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
+          # the compiler-free keepers and the codecs scan. The heavy legs owe
+          # nothing until the PR is ready or carries `full-ci`, so a draft that
+          # pushes N times costs runners for the light gate only.
+          # THE MODE IS THE PR'S STATE AT RUN TIME, read from the API and not
+          # from the event payload: a run queued before a ready or a label event
+          # would otherwise keep the light mode after the PR is ready.
+          full=1
+          if [ "$event" = pull_request ]; then
+            pr_json=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}") || pr_json=""
+            [ -n "$pr_json" ] || echo "::warning::the PR's state could not be read; the full gate runs"
+            [ "$(printf '%s' "$pr_json" | python3 tools/pr_mode.py)" = light ] && full=0
+          fi
           {
+            echo "full=${full}"
             echo "changed=${changed}"
             echo "packages=$(echo $pkgs)"
             echo "build=${build}"
             echo "runtime=${runtime}"
+            echo "runtime_keep=${runtime_keep}"
             echo "cache=${cache}"
             echo "codecs=${codecs}"
             echo "key=avrac-${key}"
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
-          echo "plan: $event — build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
+          echo "plan: $event — full=$full build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
       # tree whose compiler is main's takes main's binary and builds nothing.
       # Otherwise the newest cached binary only has to BUILD this tree — one
@@ -245,7 +273,9 @@ jobs:
       # builder never falls back to a 22-min bootstrap; lowered back to 900 s / 35 min
       # once main's published compiler carries the shape-key fix (cold check 158 -> 80 s)
       # — measure prepare on three compiler-touching PRs, then --accept.
-      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true'
+      # A LIGHT RUN (a draft) takes the published compiler when one stands: its
+      # gate judges fmt and the idioms with it, and the full run is the proof.
+      - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (steps.plan.outputs.full == '1' || steps.release.outputs.source == 'none')
         name: compiler
         timeout-minutes: 50
         run: |
@@ -321,7 +351,7 @@ jobs:
       # (the restored objects are touched newer than the sources); a miss
       # builds once and the save rides `push`/`workflow_dispatch`. A PREFIX
       # restore is NOT an exact hit (see `objects and libs`).
-      - if: steps.plan.outputs.build == '1'
+      - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
         uses: actions/cache/restore@v4
         id: objcache
         with:
@@ -330,7 +360,7 @@ jobs:
             build/*.a
           key: objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
           restore-keys: objs-
-      - if: steps.plan.outputs.build == '1'
+      - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
         name: objects and libs
         timeout-minutes: 15
         run: |
@@ -364,7 +394,7 @@ jobs:
             build/*.o
             build/*.a
           key: objs-${{ hashFiles('backend/**', 'runtime/**', 'packages/**/src/c/**', 'packages/**/vendor/**', 'Makefile') }}
-      - if: steps.plan.outputs.build == '1'
+      - if: steps.plan.outputs.build == '1' && steps.plan.outputs.full == '1'
         uses: actions/upload-artifact@v4
         with:
           name: avra-build
@@ -420,12 +450,16 @@ jobs:
 
   keepers-a:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1'
+    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ['1', '2']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -474,9 +508,9 @@ jobs:
             python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
           }
           ta=$(date +%s)
-          peak keepers-a make -s -o avra keepers-a || a=1
-          echo "speed keepers-a $(( $(date +%s) - ta ))" >> speed.log
-          [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
+          peak keepers-a${{ matrix.group }} make -s -o avra keepers-a${{ matrix.group }} || a=1
+          echo "speed keepers-a${{ matrix.group }} $(( $(date +%s) - ta ))" >> speed.log
+          [ "$a" = 0 ] || echo "::error::a keeper in keepers-a${{ matrix.group }} refused"
           exit "$a"
 
       - name: speed baseline
@@ -507,7 +541,7 @@ jobs:
   # never a second list kept in step by hand.
   keepers-b:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1'
+    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -545,7 +579,7 @@ jobs:
   # land — and now a refusal is that job's, not the keepers'.
   seed-check:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1'
+    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -572,12 +606,16 @@ jobs:
   # one train later.
   cache-attacks:
     needs: [prepare]
-    if: needs.prepare.outputs.cache == '1'
+    if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['a', 'b']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -592,9 +630,10 @@ jobs:
         timeout-minutes: 15
         run: |
           s=$(date +%s)
-          make -s -o avra cache-attacks
-          echo "speed cache-attacks $(( $(date +%s) - s ))" >> speed.log
-      - name: code-hash-attacks
+          make -s -o avra cache-attacks-${{ matrix.shard }}
+          echo "speed cache-attacks-${{ matrix.shard }} $(( $(date +%s) - s ))" >> speed.log
+      - if: matrix.shard == 'b'
+        name: code-hash-attacks
         timeout-minutes: 15
         run: make -s -o avra code-hash-attacks
 
@@ -640,7 +679,9 @@ jobs:
         run: make -s codecs-static
   gate:
     needs: [prepare]
-    if: github.event_name != 'push' && (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '')
+    # A LIGHT RUN WHOSE TREE'S COMPILER IS NOT PUBLISHED OWES NO GATE: the gate's fmt and
+    # idioms would run an older compiler over this tree's source. Skipped, not passed.
+    if: github.event_name != 'push' && (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -681,7 +722,7 @@ jobs:
   # fires only when runtime/ moved, so a compiler-only PR pays nothing.
   flow-gate:
     needs: [prepare]
-    if: needs.prepare.outputs.runtime == '1'
+    if: needs.prepare.outputs.runtime == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -697,7 +738,7 @@ jobs:
     # THE TRAIN'S, and a hand-run whole gate's. A PR's check does not run a
     # suite: the train runs every AFFECTED package (dependents included) on
     # the combination, which no single PR's tree can. A PR pays fmt + idioms.
-    if: needs.prepare.outputs.packages != '' && github.event_name != 'push'
+    if: needs.prepare.outputs.packages != '' && github.event_name != 'push' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -784,7 +825,7 @@ jobs:
   # exit code.
   runtime-keep:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1'
+    if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -851,11 +892,24 @@ jobs:
         run: |
           echo "test: NOT A VERDICT — this run was asked for with only=${{ inputs.only }}; read the jobs it ran"
           exit 1
+      # A DRAFT'S RUN IS NOT THE GATE: its heavy legs were never owed, so a
+      # verdict over them would pass on skips. It says so and refuses, as the
+      # `only` run does; readying the PR (or the `full-ci` label) runs the gate.
+      - if: needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest'
+        name: light gate compiler
+        run: |
+          echo "light gate: compiler steps skipped — the tree's compiler is not the published one; ready or label full-ci for a verdict"
+      - if: needs.prepare.outputs.full == '0'
+        name: light draft
+        run: |
+          echo "test: NOT A VERDICT — a draft runs the light gate; ready the PR or add the full-ci label for the whole gate"
+          exit 1
       # THE VERDICT NAMES ITS ARITHMETIC: the `test` job's own `needs:` is the
       # expected set and the run's `needs` JSON is what happened, so a skipped
       # leg BY DESIGN is green, a failure is refused by name, and a job the
       # gate owed but the run did not report is refused too (tools/ci_verdict.py).
-      - name: verdict
+      - if: needs.prepare.outputs.full != '0'
+        name: verdict
         run: |
           echo '${{ toJSON(needs) }}' > needs.json
           python3 tools/ci_verdict.py --needs needs.json --workflow .github/workflows/checks.yml --job test
@@ -864,7 +918,7 @@ jobs:
       # reports them, so the queue and the hand-downs count; a ceiling may only
       # fall (`make speed-accept`), and a host with no row is said out loud and
       # not gated rather than passed in silence.
-      - if: always() && github.event_name == 'pull_request'
+      - if: always() && github.event_name == 'pull_request' && needs.prepare.outputs.full != '0'
         name: wall budget
         timeout-minutes: 4
         env:

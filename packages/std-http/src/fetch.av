@@ -360,29 +360,17 @@ fn lent(wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Resu
     match carrier {
         .H1(client) -> {
             mut c = client
-            match exchanged(c, wire, body, o, deadline) {
-                .Ok(done) -> {
-                    o.pool.give(aim.origin, .H1(done.client))
-                    .Ok(done.answer)
-                },
-                .Err(e) -> {
-                    o.pool.drop(aim.origin, .H1(c))
-                    .Err(e)
-                },
-            }
+            errdefer { let _ = within secs(5) { o.pool.drop(aim.origin, .H1(c)) } }
+            let done = exchanged(c, wire, body, o, deadline)?
+            o.pool.give(aim.origin, .H1(done.client))
+            .Ok(done.answer)
         },
         .H2(carried_h2) -> {
             mut h = carried_h2
-            match h2_exchanged(h, wire, aim, body, o, deadline) {
-                .Ok(done) -> {
-                    o.pool.give(aim.origin, .H2(done.h2))
-                    .Ok(done.answer)
-                },
-                .Err(e) -> {
-                    o.pool.drop(aim.origin, .H2(h))
-                    .Err(e)
-                },
-            }
+            errdefer { let _ = within secs(5) { o.pool.drop(aim.origin, .H2(h)) } }
+            let done = h2_exchanged(h, wire, aim, body, o, deadline)?
+            o.pool.give(aim.origin, .H2(done.h2))
+            .Ok(done.answer)
         },
     }
 }

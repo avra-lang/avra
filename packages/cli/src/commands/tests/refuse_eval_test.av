@@ -1,0 +1,48 @@
+//! A child-run program test's eval leg over a program that does not
+//! derive: an exit of its own and the report where the suite reads a
+//! leg — real subprocesses over a package minted fresh for each case.
+//! `avra_ran` and `scratch_dir` are the neighbouring tests' own.
+use @std.io.{make_dirs, write_text}
+use @std.process.{Exit, Outcome}
+use @std.time.{now_ns}
+
+/// A package minted fresh whose one program test does not type. Answers
+/// the package's root.
+fn underived_package() -> string {
+    let root = "${scratch_dir()}/underived_${now_ns()}"
+    let _ = make_dirs("${root}/src/cut")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"underived\"\nversion = \"0.1.0\"\n",
+    )
+    let _ = write_text("${root}/src/cut/cut.av", "let n: int = \"text\"\nprintln(\"\${n}\")\n")
+    let _ = write_text("${root}/src/cut/cut.verdict", "avra: main was cancelled\n")
+    root
+}
+
+/// The eval leg run over that package's program, as the suite spawns it.
+fn underived_leg() -> Outcome? {
+    let root = underived_package()
+    match avra_ran(["@refuse-eval", root, "${root}/src/cut/cut.av"]) {
+        .Ok(o) -> o,
+        .Err(_) -> null,
+    }
+}
+
+/// Whether an exit is the leg's own for a program that did not derive.
+fn exit_is_underived(e: Exit) -> bool {
+    match e { .Code(3) -> true, .Clean or .Code(_) or .Signal(_, _) -> false }
+}
+
+spec "the eval leg of a child-run program test" {
+    given "a program that does not derive" {
+        then "the leg exits 3 — neither a verdict's 1 nor a trap's 2" {
+            let o? = underived_leg() else { return false }
+            exit_is_underived(o.exit)
+        }
+        then "the report is on stderr, where the suite reads a leg, and stdout says nothing" {
+            let o? = underived_leg() else { return false }
+            o.out.stderr.contains("declares `int`") && o.out.stdout == ""
+        }
+    }
+}

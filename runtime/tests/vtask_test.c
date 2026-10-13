@@ -112,9 +112,11 @@ static void shield_bytes(void) {
     avra_vtask_set_unwinding(t, 1);
     avra_vtask_shield_enter(t);
     CHECK(avra_vtask_unwinding(t) == 0, "the shield clears a virtual task's saved bit");
+    CHECK(avra_vtask_shielded(t) == 1, "and the task reads as shielded while it stands");
     avra_vtask_set_unwinding(t, 1);
     avra_vtask_shield_leave(t);
     CHECK(avra_vtask_unwinding(t) == 1, "and the leave keeps a bit raised inside");
+    CHECK(avra_vtask_shielded(t) == 0, "and unshielded after it");
     avra_vtask_free(t);
 }
 
@@ -143,6 +145,32 @@ static void shields(void) {
 
 // A CANCEL CUTS A VIRTUAL JOIN: the task is readied at once with its
 // own unwind bit set, as a compiled join's is.
+// A cancel that stands when an evaluated task reaches a descriptor park
+// is met there: nothing parks, the park answers cut, and the task's own
+// bit is raised. Under a shield scope the park is the scope's to bound.
+static void a_standing_cancel_at_a_park(void) {
+    int p[2];
+    if (pipe(p) != 0) { CHECK(0, "a pipe"); return; }
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    int64_t t = avra_vtask_new();
+    avra_vtask_cancel(t, 3);
+    CHECK(avra_vtask_park_fd(t, p[0], 0, -1) == 0, "a cancelled virtual task parks on no descriptor");
+    CHECK(avra_vtask_timed_out(t) == 1, "its park answers cut");
+    CHECK(avra_vtask_unwinding(t) == 1, "and its unwind bit is raised there");
+    avra_vtask_free(t);
+    int64_t s = avra_vtask_new();
+    avra_vtask_cancel(s, 3);
+    avra_vtask_shield_enter(s);
+    int64_t scope = avra_vtask_within(s, 5);
+    CHECK(avra_vtask_park_fd(s, p[0], 0, -1) == 1, "under a shield scope the cancelled task still parks");
+    CHECK(avra_vtask_unwinding(s) == 0, "and no bit is raised by the cancel");
+    CHECK(avra_vtask_next() == s, "its scope's limit wakes it");
+    avra_vtask_within_end(s, scope);
+    avra_vtask_shield_leave(s);
+    avra_vtask_free(s);
+    closed(p[0]); closed(p[1]);
+}
+
 static void cancelled_join(void) {
     int64_t j = avra_vtask_new();
     void* timed = avra_task_at(in_ms(60000));
@@ -153,6 +181,46 @@ static void cancelled_join(void) {
     avra_task_cancel(timed);
     avra_rc_release(timed);
     avra_vtask_free(j);
+}
+
+// A TASK'S END WAKES ITS JOINERS AND THE SETS ON IT IN ONE ORDER: the
+// order they came, a joiner between two sets as it was filed.
+static void end_wakes_in_order(void) {
+    void* end = avra_gate_new();
+    int64_t first = avra_vtask_new(), joiner = avra_vtask_new(), last = avra_vtask_new();
+    avra_vtask_wait_gate(first, end, 3, 0);
+    CHECK(avra_vtask_park(first) == 1, "a set parks on a task's end");
+    CHECK(avra_vtask_join(joiner, end) == 1, "a joiner parks on it after");
+    avra_vtask_wait_gate(last, end, 4, 0);
+    CHECK(avra_vtask_park(last) == 1, "and a second set after the joiner");
+    avra_vgate_ended(end, 7);
+    CHECK(avra_vtask_next() == first, "the end wakes the first set first");
+    CHECK(avra_vtask_claim(first) == ((int64_t)3 << 32), "on its own arm");
+    CHECK(avra_vtask_next() == joiner, "then the joiner, where it was filed");
+    CHECK(avra_vtask_next() == last, "then the set that came after it");
+    CHECK(avra_vtask_claim(last) == ((int64_t)4 << 32), "on its own arm");
+    CHECK(avra_vtask_join(joiner, end) == 0, "a join after the end parks nothing");
+    avra_rc_release(end);
+    avra_vtask_free(first);
+    avra_vtask_free(joiner);
+    avra_vtask_free(last);
+}
+
+// A VIRTUAL TASK'S OWN CLAIM RANKS AS A COMPILED ONE'S: an arm found
+// ready as it armed gives way to a cancel that stands.
+static void ready_arm_hears_cancel(void) {
+    void* open = avra_gate_new();
+    avra_vgate_open(open);
+    int64_t t = avra_vtask_new();
+    avra_vtask_wait_gate(t, open, 2, 0);
+    CHECK(avra_vtask_park(t) == 0 && avra_vtask_claim(t) == ((int64_t)2 << 32), "an open gate claims a virtual task's set as it arms");
+    avra_vtask_cancel(t, 0);
+    avra_vtask_wait_gate(t, open, 2, 0);
+    CHECK(avra_vtask_park(t) == 0, "under a cancel its next park does not switch either");
+    CHECK(avra_vtask_claim(t) == (int64_t)0xffffffff00000000LL, "and answers the cancel, not the arm");
+    CHECK(avra_vtask_unwinding(t) == 1, "with its own unwind bit set");
+    avra_rc_release(open);
+    avra_vtask_free(t);
 }
 
 static void deadlocked(void) {
@@ -182,6 +250,9 @@ int main(void) {
     a_passed_cancel();
     shields();
     cancelled_join();
+    end_wakes_in_order();
+    ready_arm_hears_cancel();
+    a_standing_cancel_at_a_park();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);

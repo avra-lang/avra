@@ -22,6 +22,7 @@ use core.{
 use features.{TypeCx, Decl, Decls, nothing, duplicate_names}
 use diagnostics.{refusal, Diag, loc_at}
 use @std.errors.{Loc}
+use @std.meta.{Diagnostic}
 
 /// The generic `it` vocabulary every kind answers, beside its own.
 /// `it.line` is in the design (docs/2026_09_22_COLLECTIONS.md) and
@@ -62,7 +63,7 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
     )
     for d in twice { cx.emit(d) }
     for m in members { checked_member(cx, s, p.name, m) }
-    for t in p.traits { checked_trait(cx, p.name, t, members) }
+    for t in p.traits { checked_trait(cx, s, p.name, t, members) }
     checked_enum_scope(cx, s, p.name, p.scope)
     // two members of one name are refused as that; their shared key is the same mistake
     if !p.dense && twice.is_empty() { checked_ties(cx, s, p.kind, p.order, members) }
@@ -70,7 +71,7 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
 
 /// Every member implements each trait the enum is written over; one
 /// that does not is refused where it is declared.
-fn checked_trait(mut cx: TypeCx, owner: string, t: ExprId, members: List<Decl>) {
+fn checked_trait(mut cx: TypeCx, s: StmtId, owner: string, t: ExprId, members: List<Decl>) {
     let word = cx.view.store.ident_name(t) ?? ""
     let tr? = cx.view.decls.trait_named(cx.names, word) else {
         // a name nothing declares is resolve's to refuse
@@ -82,6 +83,16 @@ fn checked_trait(mut cx: TypeCx, owner: string, t: ExprId, members: List<Decl>) 
         if !cx.view.decls.implements(m.id, tr) && !derived_from_elsewhere(cx.view.decls, derive, m) {
             cx.emit(unimplemented(member_loc(cx.view.decls, m), owner, word, m.name))
         }
+    }
+    for x in delegation_problems(cx, s, t) { cx.emit(unpairable(cx.loc_of(t), x)) }
+}
+
+/// What `@std/meta`'s `delegate` refuses over the trait, as it spoke it.
+fn delegation_problems(cx: TypeCx, s: StmtId, t: ExprId) -> List<Diagnostic> {
+    let made_by? = cx.view.decls.meta_named("delegate") else { return [] }
+    match cx.view.decls.lifted(made_by, cx.view.file, s, t, [t]) {
+        .Ok(crossed) -> crossed.declared_problems(),
+        .Err(_) -> [],
     }
 }
 
@@ -440,6 +451,16 @@ fn unimplemented(at: Loc?, owner: string, word: string, member: string) -> Diag 
         "every member of a `collect enum E: T` implements `T`",
         "`${member}` is gathered into `${owner}` and has no `impl ${word} for ${member}`",
         "write `impl ${word} for ${member} { … }` — an empty `impl ${word} for ${member} {}` takes every default",
+    )
+}
+
+fn unpairable(at: Loc?, said: Diagnostic) -> Diag {
+    refusal(
+        "collect_enum.self",
+        said.at ?? at,
+        said.message,
+        "delegated by this `collect enum`",
+        said.help,
     )
 }
 

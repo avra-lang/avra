@@ -454,9 +454,23 @@ impl Workspace {
     /// named type is keyed by its shape, in a `t` line) and its `use` lines.
     fn outline_values(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
-        let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind)]
+        let decls = [fp_str("${self.outline_syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind)]
         let uses = self.use_fps(f)
         "${fp(313, [fp_list(decls), fp_list(uses)])}"
+    }
+
+    /// A declaration's entry in a file's value outline: an impl block is its trait, target and
+    /// members' signatures, since a member's body is the member's own declaration; any other
+    /// declaration is its syntax.
+    fn outline_syntax(d: DeclId) -> int {
+        let x = self.decls.decl(d)
+        match x.kind {
+            .Impl -> {
+                let _ = self.parsed(x.file)
+                self.decls.store(d).impl_outline_fp(x.stmt)
+            },
+            _ -> self.syntax(d),
+        }
     }
 
     /// Whether a kept file outline still stands: a `2` outline is the value outline, any
