@@ -362,8 +362,6 @@ error[flow.select]: `select` is typed and not yet lowered
   · ╰── this `select`
 ──╯
 help: wait on one task with `t.await`
-
-error[language.defect]: defect: register r5 defines out of mint order — r4 is next (mint operands first, the answer last)
 ```
 
 ## flow.arm
