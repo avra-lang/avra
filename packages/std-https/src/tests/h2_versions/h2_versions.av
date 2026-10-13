@@ -13,7 +13,7 @@ use @std.http.client.{Client, ClientError, request, netted}
 use @std.http.h2.{frames_in}
 use @std.http.h2_client_drive.{h2_answer_line, h2_conversing, h2_request, conversed}
 use @std.http.hpack.{HeaderField, header_field}
-use @std.http.wire.{Transport, plainly}
+use @std.http.wire.{Transport, plainly, wire_timely}
 use @std.https.{over_tls, secured, tls_carried, tls_link}
 use @std.tls.{TlsConn, dial}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
@@ -135,7 +135,10 @@ fn prefaced(t: TlsConn) -> string {
         .Ok(_) -> {},
         .Err(_) -> { return "write failed" },
     }
-    let got = match within secs(2) { w.wire_read(65536) } { .Ok(b) -> b, .Err(_) -> null } ?? no_bytes
+    let got = match wire_timely(within secs(2) { w.wire_read(65536) }) {
+        .Ok(b) -> b,
+        .Err(_) -> null,
+    } ?? no_bytes
     if got.length >= 9 && frames_in(got).any(it.kind is .Settings) { return "h2" }
     (got.text() ?? "?").split("\r\n").first() ?? "?"
 }
