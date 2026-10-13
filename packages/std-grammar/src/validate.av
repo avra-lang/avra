@@ -10,7 +10,7 @@
 //! passes its own.
 
 use util.{flatten, some_list}
-use ast.{Grammar, Rule, Alt, Seq, Item, Prim}
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Tier, Build}
 use diagnostics.{Diagnostic, defect}
 use first.{first_defects}
 impl Seq {
@@ -18,7 +18,12 @@ impl Seq {
     /// groups — capture accumulation makes them all visible to the
     /// build.
     fn labels() -> List<string> {
-        flatten([some_list(m.label) for m in self.deep_items()])
+        flatten([some_list(m.label) for m in self.deep_items()]).concat(self.operator_labels())
+    }
+
+    /// The captures an `@operators` branch's builds read besides its operand.
+    fn operator_labels() -> List<string> {
+        if self.operators == null { [] } else { ["op", "r"] }
     }
 }
 
@@ -81,6 +86,41 @@ fn alt_defects(
     flatten([seq_defects(rule_name, s, names, known_terminals, value_needed) for s in a.branches])
 }
 
+/// An `@operators` branch's own shape: one operand item labeled `l`,
+/// at least one tier, each tier naming an operator, and builds
+/// that read only what the climb captures.
+fn operator_defects(rule_name: string, s: Seq, names: List<string>) -> List<Diagnostic> {
+    let ops? = s.operators else { return [] }
+    let shape = if s.items.length == 1 && s.items[0].label == "l" {
+        []
+    } else {
+        [defect(rule_name, "an @operators branch has one item, its operand, captured as `l`")]
+    }
+    let none = if ops.tiers.is_empty() { [defect(rule_name, "@operators holds no tier")] } else { [] }
+    shape.concat(none).concat(flatten([tier_defects(rule_name, l, names) for l in ops.tiers]))
+}
+
+fn tier_defects(rule_name: string, l: Tier, names: List<string>) -> List<Diagnostic> {
+    let empty = if l.words.is_empty() && l.suffixes.is_empty() { [defect(rule_name, "an @operators tier names no operator")] } else { [] }
+    let blank = [defect(rule_name, "an @operators operator spells no token") for w in l.words if w.is_empty() || w.any(it.is_empty())]
+    let unknown = [defect(rule_name, "@operators suffix rule `${x.rule}` is undefined") for x in l.suffixes if !names.contains(x.rule)]
+    empty.concat(blank).concat(unknown).concat(tier_build_defects(rule_name, l.build))
+}
+
+fn tier_build_defects(rule_name: string, b: Build?) -> List<Diagnostic> {
+    let named? = b else { return [] }
+    match named {
+        .Var(_) -> [
+            defect(
+                rule_name,
+                "an @operators tier builds by a call or a node, not by returning a capture",
+            ),
+        ],
+        .Call(_, args) -> [defect(rule_name, "an @operators build reads `l`, `op` and `r`, not `${a}`") for a in args if !["l", "op", "r"].contains(a)],
+        .Node(_, _, _, _) -> [],
+    }
+}
+
 /// One branch's defects: its items', then its build's.
 fn seq_defects(
     rule_name: string,
@@ -93,6 +133,7 @@ fn seq_defects(
         [prim_defects(rule_name, m.prim, names, known_terminals, m.label != null) for m in s.items],
     )
         .concat(build_defects(rule_name, s, value_needed))
+        .concat(operator_defects(rule_name, s, names))
 }
 
 /// The executor indexes rules by name; a duplicate would silently
