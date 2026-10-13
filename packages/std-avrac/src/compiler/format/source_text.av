@@ -23,6 +23,7 @@ use core.{
     Spread,
     Mark,
     Plain,
+    Scoped,
     Variant,
     Case,
     Annotation,
@@ -1427,6 +1428,13 @@ impl SourceText {
             ),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
             .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
+            .Select(fair, arms) -> grouped(
+                self.select_expr(fair, arms, end_of(self.store.expr_span(id)), depth),
+                atom_tier,
+                parent,
+            ),
+            .WaitArm(index, bind, head, guard, value) -> self.wait_arm(index, bind, head, guard, value, depth),
+            .ElseArm(value) -> self.headed_arm("else -> ", value, depth),
             .Collect(body) -> grouped(self.instance("collect", [body], null, depth), loosest_tier, parent),
             .Call(callee, pins, args) -> {
                 let head = "${source_name(callee.of)}${self.pins(pins)}"
@@ -2125,6 +2133,41 @@ impl SourceText {
             .trivia_before(end, depth + 1)
             .concat(["${fallback_line}${self.trailing_of(fallback)}"])
         "when {\n${joined(arms.concat(tail), "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// A `select` always breaks, one arm a line, as a `when` does.
+    mut fn select_expr(fair: bool, arms: List<ExprId>, end: int, depth: int) -> string {
+        let lines = flatten(
+            [self
+                .trivia_before(start_of(self.store.expr_span(a)), depth + 1)
+                .concat(
+                    [
+                        "${source_line(depth + 1, self.expression(a, 0, depth))}${self.trailing_of(a)}",
+                    ],
+                ) for a in arms],
+        )
+            .concat(self.trivia_before(end, depth + 1))
+        "${if fair { "@fair " } else { "" }}select {\n${joined(lines, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// A waiting arm: its binders, its head, its guard, then its body.
+    mut fn wait_arm(
+        index: Scoped,
+        bind: Scoped,
+        head: ExprId,
+        guard: ExprId?,
+        value: ExprId,
+        depth: int,
+    ) -> string {
+        let binds = if bind.of == "" { "" } else if index.of == "" { "${source_name(bind.of)} in " } else { "${source_name(index.of)}, ${source_name(bind.of)} in " }
+        let guarded = if guard == null { "" } else { " if ${self.expression(guard!, 0, depth + 1)}" }
+        self
+            .headed_arm("${binds}${self.expression(head, 0, depth + 1)}${guarded} -> ", value, depth)
+    }
+
+    /// An arm's head and its body after it, on the arm's own line.
+    mut fn headed_arm(head: string, value: ExprId, depth: int) -> string {
+        "${head}${self.expression(value, 0, depth + 1, col_after(head, (depth + 1) * 4))}"
     }
 
     fn when_arm(cond: ExprId, value: ExprId, depth: int) -> string {
