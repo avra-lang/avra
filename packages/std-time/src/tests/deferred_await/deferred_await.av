@@ -1,0 +1,22 @@
+// proves: a valued bare await of a cancelled task inside a `defer` reads
+// no answer — the deferred body leaves at the await, and the task that
+// ran it ends cancelled — in both engines
+use @std.time.{ms, secs, sleep}
+
+let seen = Cell.new(0)
+let holder = spawn {
+    defer {
+        let slow = spawn {
+            sleep(secs(60))
+            1
+        }
+        sleep(ms(1))
+        slow.cancel()
+        let v = slow.await
+        seen.set(seen.get() + v + 100)
+    }
+    seen.set(seen.get() + 10)
+    0
+}
+sleep(ms(5))
+"${holder.done} ${seen.get()}"

@@ -1492,7 +1492,10 @@ registry is the idiom engine's spec, written by dogfooding.
   A program whose proof is a TRAP gets `<name>.refuses` (the voice it
   must speak) instead of `.expected`; `avra test` runs it as a CHILD
   in both engines and passes it only on exit 2 with that voice on
-  stderr. Either marker makes its file a PROGRAM, not a module file:
+  stderr. A program whose proof is a VERDICT — its own run cancelled
+  by a bare `.await` of a cancelled task — gets `<name>.verdict`: the
+  same two children, exit 1, that text on stderr. Any marker makes
+  its file a PROGRAM, not a module file:
   the entry's law (`lower.entry_only`) never refuses its statements,
   so `avra run`/`build` on one program test works beside its siblings
   (`Workspace.is_program`, suite.av — discovery reads the same markers).

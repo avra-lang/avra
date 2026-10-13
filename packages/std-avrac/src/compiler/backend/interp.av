@@ -43,6 +43,10 @@ extern fn avra_host_env(name: string) -> string
 
 extern fn avra_mem_live() -> int
 
+/// What a run says when its own task ended cancelled by `by` — the
+/// runtime's words, the ones a compiled program's end prints.
+extern fn avra_main_cancelled_words(by: int) -> string
+
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
     I(v: int)
@@ -138,6 +142,8 @@ type Machine = {
     parking: bool,
     // how many tasks the run has spawned: the newest one's id
     spawned: int = 0,
+    // who asked the cancel a join passed to the program's own run, or null
+    cancelled_by: int? = null,
     // the schedule the run is seeded with, or -1 for none; and how many
     // choices it made
     schedule: int = -1,
@@ -349,10 +355,13 @@ export fn freed_read_words(l: Lowered) -> string? {
     m.failures.first()
 }
 
-/// How a live run ended: clean, or by a trap in its words.
+/// How a run ended: clean, by a trap in its words, or — its own task
+/// having awaited one that ended cancelled — cancelled, in the
+/// runtime's words.
 export enum Ended {
     Clean
     Trapped(words: string)
+    Cancelled(words: string)
 }
 
 /// Run a lowered program LIVE — what `avra run` is: every line printed
@@ -361,8 +370,7 @@ export enum Ended {
 export fn run_live(l: Lowered) -> Ended {
     mut m = fresh_machine(l) with { live: true, freeing: true }
     let _ = m.run_body(l.entry, [])
-    let words? = m.failures.first() else { return Ended.Clean }
-    Ended.Trapped(words)
+    m.ending()
 }
 
 /// One PROGRAM of a programs binary, run in the evaluator: its body by
@@ -378,13 +386,22 @@ export fn run_scheduled(l: Lowered, symbol: string, schedule: int) -> Result<Sch
     let body = named_body(l, symbol)?
     mut m = fresh_machine(l) with { freeing: true, schedule: schedule }
     let _ = m.run_body(body)
-    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
-    .Ok(Scheduled { out: joined(m.out, "\n"), choices: m.choices })
+    let refused? = m.refusal() else { return .Ok(Scheduled { out: joined(m.out, "\n"), choices: m.choices }) }
+    .Err(refused)
 }
 
 export fn run_program(l: Lowered, symbol: string) -> Result<string, string> {
     let body = named_body(l, symbol)?
     .Ok(printed(ran(l, body)?))
+}
+
+/// One PROGRAM run by its symbol as a process of its own would end
+/// it: how it ended, for the leg whose exit that is.
+export fn program_ended(l: Lowered, symbol: string) -> Result<Ended, string> {
+    let body = named_body(l, symbol)?
+    mut m = fresh_machine(l) with { freeing: true }
+    let _ = m.run_body(body)
+    .Ok(m.ending())
 }
 
 /// One fn run by its symbol under no arguments, its bool answer —
@@ -403,8 +420,8 @@ type Ran = { m: Machine, answer: Val? }
 fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
     mut m = fresh_machine(l) with { freeing: true }
     let answer: Val? = m.run_body(target)
-    if !m.failures.is_empty() { return .Err(m.failures.first()!) }
-    .Ok(Ran { m: m, answer: answer })
+    let refused? = m.refusal() else { return .Ok(Ran { m: m, answer: answer }) }
+    .Err(refused)
 }
 
 /// The body a symbol names, or the refusal.
@@ -432,6 +449,24 @@ fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
 const memory_stride: int = 1024
 
 impl Machine {
+    /// How the run ended. A TRAP OUTRANKS A CANCEL: the trap stopped the
+    /// run where it stood, whatever its own task was unwinding under.
+    fn ending() -> Ended {
+        let words? = self.failures.first() else { return self.untrapped_end() }
+        Ended.Trapped(words)
+    }
+
+    fn untrapped_end() -> Ended {
+        let by? = self.cancelled_by else { return Ended.Clean }
+        Ended.Cancelled(avra_main_cancelled_words(by))
+    }
+
+    /// Why the run has no answer to give, or null for one that ended
+    /// clean: a run answered in-process is refused by either end.
+    fn refusal() -> string? {
+        match self.ending() { .Clean -> null, .Trapped(words) or .Cancelled(words) -> words }
+    }
+
     /// The memory the run holds beyond its start, against the ceiling.
     fn held_within() {
         let held = avra_mem_live() - self.mem_base
@@ -1523,6 +1558,8 @@ impl Machine {
             .FiberInterrupted -> self.fiber_interrupted_val(),
             .FiberWithin -> self.fiber_within_val(vals),
             .FiberWithinEnd -> self.fiber_within_end_val(vals),
+            .ShieldEnter -> self.shield_enter_val(),
+            .ShieldLeave -> self.shield_leave_val(),
             .WaitFd -> self.wait_fd_val(vals),
             .WaitUntil -> self.wait_until_val(vals),
             .WaitGate or .WaitTask -> self.wait_on_val(vals),

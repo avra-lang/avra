@@ -93,6 +93,18 @@ static void joins(void) {
     avra_vtask_free(j);
 }
 
+// A CANCEL A JOIN PASSES TO A VIRTUAL TASK is its own request from
+// there: the bit set, the asker named, a standing request kept.
+static void a_passed_cancel(void) {
+    int64_t t = avra_vtask_new();
+    avra_vtask_passed(t, 7);
+    CHECK(avra_vtask_unwinding(t) == 1, "a cancel passed to a virtual task sets its bit");
+    CHECK(avra_vtask_asker(t) == 7, "and stands as its own request, naming the asker");
+    avra_vtask_passed(t, 9);
+    CHECK(avra_vtask_asker(t) == 7, "a request that stands is not displaced");
+    avra_vtask_free(t);
+}
+
 // The byte pair on a virtual task: the enter saves and clears, the leave
 // ORs the saved bit back, so a bit raised inside the shield stands.
 static void shield_bytes(void) {
@@ -100,9 +112,11 @@ static void shield_bytes(void) {
     avra_vtask_set_unwinding(t, 1);
     avra_vtask_shield_enter(t);
     CHECK(avra_vtask_unwinding(t) == 0, "the shield clears a virtual task's saved bit");
+    CHECK(avra_vtask_shielded(t) == 1, "and the task reads as shielded while it stands");
     avra_vtask_set_unwinding(t, 1);
     avra_vtask_shield_leave(t);
     CHECK(avra_vtask_unwinding(t) == 1, "and the leave keeps a bit raised inside");
+    CHECK(avra_vtask_shielded(t) == 0, "and unshielded after it");
     avra_vtask_free(t);
 }
 
@@ -167,6 +181,7 @@ static void run_deadlocked(void) {
 int main(void) {
     joins();
     shield_bytes();
+    a_passed_cancel();
     shields();
     cancelled_join();
     // one scenario, both engines, one interleaving

@@ -4,18 +4,18 @@
 //! own first word, and the entry reads it before its commands do. The first
 //! red suite stops the run, so a failure names one thing.
 use @std.avrac.compiler.{verdict_of, staged_binaries, Want, Verdict}
-use @std.avrac.compiler.backend.{run_program}
+use @std.avrac.compiler.backend.{program_ended}
 use @std.avrac.compiler.lower.{program_symbol}
 use @std.process.{status_of, cmd, Env, Outcome, ProcessError, minimal}
 use @std.text.{parse_int}
 use @std.io.{env}
-use commands.{run_binary, refused_by_host, root_workspace, tool}
+use commands.{run_binary, refused_by_host, root_workspace, tool, ended_as}
 
-/// A `.refuses` test's EVAL leg's own hand-off word — a package's root and
-/// one file under it, never a suite binary.
+/// A child-run program test's EVAL leg's own hand-off word — a package's
+/// root and one file under it, never a suite binary.
 const refuse_eval_word = "@refuse-eval"
 
-/// The words a `.refuses` test's eval leg is spawned with.
+/// The words such a test's eval leg is spawned with.
 export fn refuse_eval_words(root: string, path: string) -> List<string> {
     [refuse_eval_word, root, path]
 }
@@ -28,7 +28,7 @@ export fn light_phase(words: List<string>) -> int? {
     first_red(binaries)
 }
 
-/// A `.refuses` test's EVAL leg: an EVALUATION NEVER HOLDS A FILE WHOSE
+/// A child-run program test's EVAL leg: an EVALUATION NEVER HOLDS A FILE WHOSE
 /// BODY IT CALLS — a hold is a native-link concept (the store's kept
 /// OBJECT stands in for what the evaluator has no linker to read), so
 /// a program calling its own package's held functions met a body with
@@ -43,13 +43,13 @@ export fn light_phase(words: List<string>) -> int? {
 /// for this exact derivation when a hold taints its first answer, so
 /// this leg reaches for it FIRST. Its own body called by NAME, run
 /// through the evaluator IN THIS PROCESS ALONE — a trap here ends
-/// this child and nothing else, which is the whole point of a leg. A
-/// trap's words on stderr, exit 2; clean, exit 0.
+/// this child and nothing else, which is the whole point of a leg. It
+/// ends as `avra run` ends a program (`ended_as`).
 fn refuse_eval(root: string, path: string) -> int {
     let ws = root_workspace(root)
     match ws.from_sources(null, Want.Binary) {
-        .Ok(d) -> match run_program(d.lowered, program_symbol(ws.file_name(path))) {
-            .Ok(_) -> 0,
+        .Ok(d) -> match program_ended(d.lowered, program_symbol(ws.file_name(path))) {
+            .Ok(end) -> ended_as(end),
             .Err(words) -> {
                 eprintln("avra: ${words}")
                 2
