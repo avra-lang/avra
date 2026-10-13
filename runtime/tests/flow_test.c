@@ -1197,15 +1197,19 @@ static void fork_forgets_deadlines(void) {
     avra_rc_release(g_gate);
 }
 
-// ── a claim made while arming is heard before a standing cancel ─
+// ── a claim another party made while the set armed is heard before a
+//    standing cancel; an arm the task found ready itself is not ──────
 
-static void* cancelled_then_handed(void* self) {
-    (void)self;
+// Cut once, then two waits under the cancel that stands: `self`'s cap
+// says whether the second set's waiter is claimed through its gate
+// before the park.
+static void* cancelled_then_armed(void* self) {
     avra_wait_gate(g_gate, 3, 7);
     note(arm_of(avra_wait_park()));
     avra_wait_gate(g_gates[0], 5, 8);
-    int64_t handed = avra_wait_park();
-    note(arm_of(handed) * 100 + member_of(handed));
+    if (cap(self)) note(avra_gate_claim(g_gates[0]));
+    int64_t second = avra_wait_park();
+    note(arm_of(second) * 100 + member_of(second));
     avra_wait_gate(g_gate, 3, 7);
     note(arm_of(avra_wait_park()));
     return answer(0);
@@ -1215,15 +1219,124 @@ static void claim_before_cancel(void) {
     g_log_len = 0;
     g_gate = avra_gate_new();
     g_gates[0] = avra_gate_new();
-    avra_vgate_open(g_gates[0]);
-    void* t = spawn1(cancelled_then_handed, 0);
+    void* t = spawn1(cancelled_then_armed, 1);
     avra_fiber_sleep(2);
     avra_task_cancel(t);
     ended(t);
-    int64_t want[] = { -1, 508, -1 };
-    CHECK(logged(want, 3), "under a standing cancel a wait a source claims while arming answers that source, and the next answers the cancel");
+    int64_t handed[] = { -1, 8, 508, -1 };
+    CHECK(logged(handed, 4), "under a standing cancel a waiter claimed through its gate while the set armed answers that claim, and the next wait answers the cancel");
+    avra_rc_release(g_gates[0]);
+
+    g_log_len = 0;
+    g_gates[0] = avra_gate_new();
+    avra_vgate_open(g_gates[0]);
+    t = spawn1(cancelled_then_armed, 0);
+    avra_fiber_sleep(2);
+    avra_task_cancel(t);
+    ended(t);
+    int64_t found[] = { -1, -100, -1 };
+    CHECK(logged(found, 3), "under a standing cancel an arm the task found ready as it armed answers the cancel");
     avra_rc_release(g_gate);
     avra_rc_release(g_gates[0]);
+}
+
+// ── a task whose every wait finds an arm ready hears a cancel and a
+//    limit all the same ──────────────────────────────────────────────
+
+static void* ended_task(void) {
+    void* t = avra_task_pending();
+    void* unit = answer(0);
+    avra_task_answer(t, unit);
+    avra_rc_release(unit);
+    return t;
+}
+
+enum { BUSY_TURNS = 20000000 };
+static int64_t g_busy_turns;
+
+// Waits on an ended task, over and over, with no back-edge check: only
+// the park can hear anything.
+static void* always_ready(void* self) {
+    (void)self;
+    void* done = ended_task();
+    avra_fiber_yield();
+    for (g_busy_turns = 0; g_busy_turns < BUSY_TURNS; g_busy_turns++) {
+        avra_wait_task(done, 0, 0);
+        g_byte_b = avra_wait_park();
+        if (arm_of(g_byte_b) == -1) break;
+    }
+    g_byte_a = avra_unwinding;
+    avra_rc_release(done);
+    return answer(0);
+}
+
+static void a_ready_arm_hears_a_cancel(void) {
+    bytes_unseen();
+    void* t = spawn1(always_ready, 0);
+    avra_fiber_yield();
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "a task cancelled while its every wait finds an arm ready ends cancelled");
+    CHECK(g_busy_turns == 0 && g_byte_b == (int64_t)0xffffffff00000000LL && g_byte_a == 1, "the cancel is heard at its first wait: -1:0, the bit set");
+}
+
+static int g_fed[2];
+static void* reads_what_is_fed(void* self) {
+    (void)self;
+    char b;
+    while (read(g_fed[0], &b, 1) != 1) avra_fiber_park_fd(g_fed[0], 0, -1);
+    return answer(0);
+}
+
+// A reader's byte is there while the one running task waits on an ended
+// task over and over: its turns ask the poller, and the reader is
+// readied within a window of them.
+static void a_ready_arms_turns_ask_the_poller(void) {
+    if (pipe(g_fed) != 0) { CHECK(0, "a pipe"); return; }
+    fcntl(g_fed[0], F_SETFL, O_NONBLOCK);
+    void* reader = spawn1(reads_what_is_fed, 0);
+    avra_fiber_yield();
+    CHECK(avra_sched_fd_waiters() == 1, "the reader waits on its descriptor");
+    CHECK(write(g_fed[1], "x", 1) == 1, "its byte is written");
+    void* done = ended_task();
+    int64_t turns = 0;
+    while (avra_sched_fd_waiters() != 0 && turns < 100000) {
+        avra_wait_task(done, 0, 0);
+        avra_wait_park();
+        turns++;
+    }
+    CHECK(avra_sched_fd_waiters() == 0 && turns <= 64, "waits that switch to nobody ask the poller within a window of turns, and the reader is readied");
+    avra_rc_release(done);
+    joined(reader);
+    closed(g_fed[0]);
+    closed(g_fed[1]);
+}
+
+// The program's own task, alone, under a limit that passes while it
+// waits on an ended task over and over: nothing switches, so the turns
+// themselves must ask the heap.
+static void a_ready_arm_hears_a_limit(void) {
+    void* done = ended_task();
+    int64_t t0 = avra_now_ns();
+    int64_t scope = avra_fiber_within(50);
+    int64_t claim = 0, turns = 0;
+    while (turns < (int64_t)1 << 40) {
+        avra_wait_task(done, 0, 0);
+        claim = avra_wait_park();
+        turns++;
+        if (arm_of(claim) == -1 || ((turns & 0xffff) == 0 && ms_since(t0) > 2000)) break;
+    }
+    int64_t spent = ms_since(t0);
+    CHECK(claim == (int64_t)0xffffffff00000001LL, "a limit that passes while every wait finds an arm ready is heard: -1:1");
+    CHECK(turns > 1 && spent >= 45 && spent < 1000, "where it passes, after the waits before it answered their arm");
+    avra_fiber_within_end(scope);
+    avra_rc_release(done);
+
+    done = ended_task();
+    scope = avra_fiber_within(0);
+    avra_wait_task(done, 0, 0);
+    CHECK(avra_wait_park() == (int64_t)0xffffffff00000001LL, "a limit already passed is heard at the first wait, over an arm ready as it armed");
+    avra_fiber_within_end(scope);
+    avra_rc_release(done);
 }
 
 // ── an interrupt reads as time, not readiness ───────────────────
@@ -2653,6 +2766,9 @@ int main(int argc, char** argv) {
     in_child_within("a cancel cuts a descriptor park", cancel_cuts_fd_park, 5);
     on_virtual_clock("a park a cancel claims sets the bit, a deadline does not yet", wait_park_sets_the_bit);
     in_child_within("a yield is a cancel point", a_yield_is_a_cancel_point, 5);
+    in_child_within("a ready arm hears a cancel", a_ready_arm_hears_a_cancel, 10);
+    in_child_within("a ready arm hears a limit", a_ready_arm_hears_a_limit, 10);
+    in_child_within("a ready arm's turns ask the poller", a_ready_arms_turns_ask_the_poller, 10);
     on_virtual_clock("a claim made before a cancel is taken first", claim_first_then_cancel);
     on_virtual_clock("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs);
     on_virtual_clock("the unwind bit is the running task's", the_bit_is_the_running_tasks);

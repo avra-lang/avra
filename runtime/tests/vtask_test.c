@@ -143,6 +143,23 @@ static void cancelled_join(void) {
     avra_vtask_free(j);
 }
 
+// A VIRTUAL TASK'S OWN CLAIM RANKS AS A COMPILED ONE'S: an arm found
+// ready as it armed gives way to a cancel that stands.
+static void ready_arm_hears_cancel(void) {
+    void* open = avra_gate_new();
+    avra_vgate_open(open);
+    int64_t t = avra_vtask_new();
+    avra_vtask_wait_gate(t, open, 2, 0);
+    CHECK(avra_vtask_park(t) == 0 && avra_vtask_claim(t) == ((int64_t)2 << 32), "an open gate claims a virtual task's set as it arms");
+    avra_vtask_cancel(t, 0);
+    avra_vtask_wait_gate(t, open, 2, 0);
+    CHECK(avra_vtask_park(t) == 0, "under a cancel its next park does not switch either");
+    CHECK(avra_vtask_claim(t) == (int64_t)0xffffffff00000000LL, "and answers the cancel, not the arm");
+    CHECK(avra_vtask_unwinding(t) == 1, "with its own unwind bit set");
+    avra_rc_release(open);
+    avra_vtask_free(t);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -169,6 +186,7 @@ int main(void) {
     shield_bytes();
     shields();
     cancelled_join();
+    ready_arm_hears_cancel();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);
