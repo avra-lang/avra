@@ -80,6 +80,18 @@ fn refuses_binary(root: string, path: string) -> string {
     joined_path(joined_path(root, "build"), "refuses-${safe}")
 }
 
+/// What a built program under test runs in: the minimal environment.
+fn tested_env() -> Env {
+    // LICENSED input.live_process: a program test's leg runs as a child, and no compile answer reads it
+    minimal()
+}
+
+/// What the eval leg runs in: the compiler's own environment, whole.
+fn compiler_env() -> Env {
+    // LICENSED input.live_process: a program test's leg runs as a child, and no compile answer reads it
+    inherited()
+}
+
 /// One child-run test, both engines: the built program first (its own
 /// binary, cached like any other build), then the evaluator over the
 /// same scoped derivation, run through the light phase's own
@@ -95,12 +107,12 @@ fn one_refuses(self_binary: string, tools: Toolchain, call: RefusesCall) -> stri
         .Ok(b) -> b.binary,
         .Err(e) -> { return "${call.path}: native build failed — ${e.describe().message}" },
     }
-    let by_native = leg_or_host(native, [], minimal(), "native", call)
+    let by_native = leg_or_host(native, [], tested_env(), "native", call)
     if by_native != null { return "${call.path}: ${by_native!}" }
     let by_eval = leg_or_host(
         self_binary,
         refuse_eval_words(ws.root, call.path),
-        inherited(),
+        compiler_env(),
         "eval",
         call,
     )
