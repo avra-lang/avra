@@ -44,7 +44,7 @@ fn answered_by(mut d: Duo, req: Bytes) -> Result<Answer, ClientError> {
 fn get_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
-    defer d.done()
+    defer { let _ = within secs(5) { d.done() } }
     let a = answered_by(
         d,
         request("GET", "/g", "a", [Header { name: "x-tag", value: "t1" }], "".bytes())!,
@@ -60,7 +60,7 @@ fn get_answer() -> Result<bool, ClientError> {
 fn post_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
-    defer d.done()
+    defer { let _ = within secs(5) { d.done() } }
     let a = answered_by(d, request("POST", "/p", "a", [], "hello".bytes())!)?
     .Ok(a.status == 200 && a.body.text() ?? "" == "/p|hello|-|1")
 }
@@ -68,7 +68,7 @@ fn post_answer() -> Result<bool, ClientError> {
 fn two_on_one_connection() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
-    defer d.done()
+    defer { let _ = within secs(5) { d.done() } }
     let one = answered_by(d, request("GET", "/1", "a", [], "".bytes())!)?
     let two = answered_by(d, request("GET", "/2", "a", [], "".bytes())!)?
     .Ok(
@@ -81,7 +81,7 @@ fn two_on_one_connection() -> Result<bool, ClientError> {
 fn head_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
-    defer d.done()
+    defer { let _ = within secs(5) { d.done() } }
     let a = answered_by(d, request("HEAD", "/h", "a", [], "".bytes())!)?
     let after = answered_by(d, request("GET", "/g", "a", [], "".bytes())!)?
     .Ok(
@@ -95,7 +95,7 @@ fn head_answer() -> Result<bool, ClientError> {
 fn bad_reply_is_refused() -> Result<bool, ClientError> {
     mut d = duo()?
     spawn d.s.run(cores: 1)
-    defer d.done()
+    defer { let _ = within secs(5) { d.done() } }
     let a = answered_by(d, request("GET", "/x", "a", [], "".bytes())!)
     .Ok(passes_client(a))
 }
