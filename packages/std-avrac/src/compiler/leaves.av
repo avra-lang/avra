@@ -8,6 +8,7 @@ use core.{
     fp_str,
     traced,
     DeclId,
+    ExprId,
     ModuleId,
     FileId,
     distinct,
@@ -21,6 +22,7 @@ use @std.errors.{Loc, Frame, Edit}
 use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Read, node_key}
 use compiler.voices.{type_facts_fp, diag_fp}
+use features.{SettleRoot, SeatValue}
 use @std.relation.db.{AnswerRef}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
@@ -64,7 +66,7 @@ impl Workspace {
     }
 
     /// The consts' types, spelled by the const's declaration and the seats it was asked
-    /// under. A settlement of an expression has no declaration to name it.
+    /// under — the name `Settled` wears too.
     fn named_consts(name: string, fam: Family) -> AnswerRef {
         let ws = self
         let ordinal = fam.ordinal
@@ -77,20 +79,55 @@ impl Workspace {
         }
     }
 
+    /// A const's settlement name: its declaration's wire and the fingerprints of the seats it was
+    /// asked under. Nothing in it is a position.
+    fn settle_name(d: DeclId, seats: List<SeatValue>) -> string {
+        "${self.decl_ref(d)}#${joined([x.fp for x in seats], ",")}"
+    }
+
+    /// An expression root's name: the declaration whose range holds it, the offset inside that
+    /// range, and the seats.
+    fn expr_settle_name(owner: DeclId, e: ExprId, seats: List<SeatValue>) -> string {
+        "${self.decl_ref(owner)}+${e.index - self.decls.decl(owner).lo}#${joined([x.fp for x in seats], ",")}"
+    }
+
     fn spelled_settle(arg: int) -> string? {
         if arg < 0 || arg >= self.settle_asks.get().length { return null }
         let ask = self.settle_asks.get()[arg]
         match ask.root {
             .Const(s) -> {
                 let d? = self.decls.decl_of(ask.file, s) else { return null }
-                "${self.decl_ref(d)}#${joined([x.fp for x in ask.seats], ",")}"
+                self.settle_name(d, ask.seats)
             },
-            .Expr(_) -> null,
+            .Expr(e) -> {
+                let owner? = self.root_owner(ask.file, e) else { return null }
+                self.expr_settle_name(owner, e, ask.seats)
+            },
         }
     }
 
+    /// The innermost declaration of `f` whose range holds `e`.
+    fn root_owner(f: FileId, e: ExprId) -> DeclId? {
+        [d for d in self.decls.decls_of_file(f) if self.decls.decl(d).lo <= e.index && e.index < self.decls.decl(d).hi]
+            .last()
+    }
+
+    /// The ask a name spells: the process-local index over the names asked so far, each
+    /// found name checked against what its ask spells now.
     fn settle_arg(spelled: string) -> int? {
-        [i for i in 0..self.settle_asks.get().length if self.spelled_settle(i) == spelled].first()
+        let all = self.settle_asks.get()
+        mut at = self.keys.settle_seen.get()
+        while at < all.length {
+            let name? = self.spelled_settle(at) else {
+                at = at + 1
+                continue
+            }
+            self.keys.settle_named.put(name, at)
+            at = at + 1
+        }
+        self.keys.settle_seen.set(at)
+        let found? = self.keys.settle_named.get().get(spelled) else { return null }
+        if self.spelled_settle(found) == spelled { found } else { [i for i in 0..all.length if self.spelled_settle(i) == spelled].first() }
     }
 
     /// The answers of `fam`, keyed by file, spelled by the file's path.
@@ -229,6 +266,7 @@ impl Workspace {
         [
             self.leaves_meter(Family.Typed, self.decls.decl_count()),
             self.leaves_meter(Family.Lowered, self.asks.get().length),
+            self.leaves_meter(Family.Settled, self.settle_asks.get().length),
         ]
             .join("\n")
     }
