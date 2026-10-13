@@ -23,6 +23,9 @@ lists and refuses by name:
                    run unconditionally; every other leg the `test` aggregate
                    owes names `needs.prepare.outputs.full` in its `if:`, and
                    the aggregate refuses a light run by name.
+  compiler-route   a Sprite run's prep installs a published compiler (or the merge-base's)
+                   before it builds one: the route rides the wire, and the build branch
+                   comes last.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -198,6 +201,24 @@ def check_release_order(jobs):
 LIGHT_JOBS = ("prepare", "keepers-static", "gate", "codecs", "test")
 
 
+def check_compiler_route(work_text, remote_text):
+    """The run's compiler route rides the wire, and the Sprite's prep takes a
+    published compiler before it builds one. Answers (refusals, words)."""
+    refusals = []
+    if 'wire="$wire@$route"' not in work_text or "compiler_route" not in work_text:
+        refusals.append("`tools/work run` does not put the compiler route on the wire")
+    published = remote_text.find('"${route%%:*}" = published')
+    merged = remote_text.find('"${route%%:*}" = mergebase')
+    build = remote_text.find("building this tree's compiler")
+    if min(published, merged) < 0:
+        refusals.append("the Sprite's prep does not install a published compiler for a route")
+    elif build < 0 or build < max(published, merged):
+        refusals.append("the Sprite's prep builds before it tries the published compiler")
+    if refusals:
+        return refusals, []
+    return [], ["compiler-route: a published compiler is installed before a build"]
+
+
 def check_light_draft(workflow_text):
     """Every heavy leg `test` owes is gated on the full flag, and `test`
     refuses a light run. Answers (refusals, words)."""
@@ -347,6 +368,9 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_keeper_coverage(make_text, workflow_text),
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
+                  lambda: check_compiler_route(
+                      open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read(),
+                      open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()),
                   lambda: check_warm_edit(make_text)):
         r, w = check()
         refusals += r

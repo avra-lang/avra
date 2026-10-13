@@ -5,6 +5,12 @@
 #
 #   sh tools/fetch_compiler.sh [<sha>]        # default origin/main
 #   sh tools/fetch_compiler.sh --key <key>    # a key read elsewhere (a tree with no .git)
+#   sh tools/fetch_compiler.sh --key-of <rev> # the key a commit's compiler source has
+#   sh tools/fetch_compiler.sh --probe <key>  # 0 when a compiler is published for the key
+#   sh tools/fetch_compiler.sh --route <dirty> <head-key> <base-key>
+#                                             # how a run's compiler is got: published:<key>,
+#                                             # mergebase:<key> (fetch it, then one generation),
+#                                             # or build
 #   sh tools/fetch_compiler.sh --self-test
 #
 # The key is the compiler's source digest at the commit (tools/compiler_paths.sh
@@ -22,6 +28,8 @@ if [ "${1:-}" = --self-test ]; then
     mkdir -p "$scratch"
     printf '#!/bin/sh\necho stub-avra\n' > "$scratch/published"
     chmod +x "$scratch/published"
+    printf 'x' > "$scratch/pub-hk"
+    printf 'x' > "$scratch/pub-mk"
     export FETCH_UNAME=Linux
     fails=0
     expect() { # expect <label> <wanted text> <output>
@@ -41,17 +49,57 @@ if [ "${1:-}" = --self-test ]; then
     [ "$(cat "$scratch/ok/avra" 2>/dev/null)" = "$(printf '#!/bin/sh\necho stub-avra')" ] || { fails=$((fails + 1)); echo "FAIL  fetched compiler is installed as avra"; }
     out=$(cd "$here" && FETCH_URL="file://$scratch/published" FETCH_BUILD="$scratch/keyed" sh tools/fetch_compiler.sh --key abc123 2>&1) || true
     expect "a given key installs with no git" "key abc123" "$out"
-    if [ "$fails" = 0 ]; then echo "fetch_compiler: self-test clean — 7 case(s)"; exit 0; fi
+    route_of() { (cd "$here" && FETCH_URL="file://$scratch/pub-KEY" sh tools/fetch_compiler.sh --route "$@" 2>&1); }
+    expect "published key takes the published path" "published:hk" "$(route_of 0 hk mk)"
+    expect "a dirty tree takes the merge-base path" "mergebase:mk" "$(route_of 1 hk mk)"
+    expect "an unpublished head takes the merge-base path" "mergebase:mk" "$(route_of 0 hkabs mk)"
+    expect "nothing published builds" "build" "$(route_of 0 hkabs mkabs)"
+    expect "a probe finds a published key" "found" "$(cd "$here" && FETCH_URL="file://$scratch/pub-KEY" sh tools/fetch_compiler.sh --probe hk && echo found)"
+    if [ "$fails" = 0 ]; then echo "fetch_compiler: self-test clean — 12 case(s)"; exit 0; fi
     echo "fetch_compiler: self-test FAILED — $fails case(s)"
     exit 1
 fi
 
 build=${FETCH_BUILD:-build}
 
+# The asset for a key: the public release, or FETCH_URL with KEY standing for it.
+url_for() {
+    printf '%s' "${FETCH_URL:-https://github.com/${GITHUB_REPOSITORY:-avra-lang/avra}/releases/download/avrac-KEY/avra}" | sed "s|KEY|$1|"
+}
+
+# The key a commit's compiler source has: its files as the index of that commit holds them.
+key_of() {
+    index="$build/fetch.index"
+    mkdir -p "$build"
+    GIT_INDEX_FILE="$index" git read-tree "$1" || return 1
+    GIT_INDEX_FILE="$index" sh tools/compiler_paths.sh --key
+}
+
 refuse() {
     echo "fetch_compiler: REFUSED — $*" >&2
     exit 1
 }
+
+if [ "${1:-}" = --probe ]; then
+    curl -fsI --retry 2 "$(url_for "${2:?fetch_compiler: --probe takes the key}")" >/dev/null 2>&1
+    exit $?
+fi
+if [ "${1:-}" = --key-of ]; then
+    key_of "$(git rev-parse --verify --quiet "${2:?fetch_compiler: --key-of takes a commit}^{commit}")"
+    exit $?
+fi
+if [ "${1:-}" = --route ]; then
+    # A dirty compiler source has no published key: the merge-base's is the one to fetch.
+    dirty=${2:?}; hk=${3:-}; mk=${4:-}
+    if [ "$dirty" = 0 ] && [ -n "$hk" ] && curl -fsI --retry 2 "$(url_for "$hk")" >/dev/null 2>&1; then
+        echo "published:$hk"
+    elif [ -n "$mk" ] && curl -fsI --retry 2 "$(url_for "$mk")" >/dev/null 2>&1; then
+        echo "mergebase:$mk"
+    else
+        echo build
+    fi
+    exit 0
+fi
 
 platform=${FETCH_UNAME:-$(uname -s)}
 [ "$platform" = Linux ] || refuse "the published compiler is a linux binary; this machine is $platform (run it on a Sprite)"
@@ -71,8 +119,7 @@ else
         refuse "the compiler source of $sha is not listed"
 fi
 
-repo=${GITHUB_REPOSITORY:-avra-lang/avra}
-url=${FETCH_URL:-https://github.com/$repo/releases/download/avrac-$key/avra}
+url=$(url_for "$key")
 fetched="$build/avra.fetch"
 curl -fsSL --retry 2 -o "$fetched" "$url" 2>/dev/null ||
     refuse "no published compiler for $sha (key $key): $url did not answer"
