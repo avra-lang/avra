@@ -239,7 +239,7 @@ impl Workspace {
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
         rdb.answer_known(self.named_by_decl("Syntax", Family.Syntax))
-        rdb.answer_known(self.named_by_decl("Typed", Family.Typed))
+        rdb.answer_known(self.named_typed())
         rdb
             .answer_known(
                 self
@@ -369,6 +369,27 @@ impl Workspace {
         [f.name for f in Family.all() if f.ordinal == ordinal].first() ?? "family ${ordinal}"
     }
 
+    /// The typed bodies, spelled by declaration; a body's digest is what its typing says, wherever
+    /// it sits.
+    fn named_typed() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Typed.ordinal
+        AnswerRef {
+            name: "Typed",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.typed_digest(arg),
+        }
+    }
+
+    /// A settled body's digest; absent for one not settled here or unplaceable.
+    fn typed_digest(arg: int) -> int? {
+        if self.db.kernel.deps_of(Key { family: Family.Typed.ordinal, arg: arg }).is_empty() { return null }
+        let says? = self.typed_says(DeclId { index: arg }) else { return null }
+        fp_str(says)
+    }
+
     /// What a body's typing says, placed by declaration: the facts' fold, then each voice with
     /// its places kept relative to the declaration holding them. Absent when a voice speaks at
     /// a place no declaration holds.
@@ -377,7 +398,9 @@ impl Workspace {
         let placed = [self.voice_says(v) for v in facts.voices.list]
         if placed.any(it == null) { return null }
         joined(
-            ["${type_facts_fp(facts with { voices: Voices { list: [] } }, self.decls.ids())}"]
+            [
+                "${type_facts_fp(facts with { voices: Voices { list: [] } }, self.decls.ids().rebased(facts.of_expr.lo), false)}",
+            ]
                 .concat([p! for p in placed]),
             "\n",
         )
