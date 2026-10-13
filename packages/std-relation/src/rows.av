@@ -1012,12 +1012,12 @@ fn key_lists_moved(relation: string, was: int, now: int) -> string {
     "a row files one key list per index — a `${relation}` row filed under ${was} is filed again under ${now}"
 }
 
-fn late_write(relation: string, cell: string, reader: string) -> string {
-    "a `${relation}` write moved ${cell} after ${reader} read it this revision — a producer runs before its readers"
+fn late_write(relation: string, cell: string, reader: string, writer: string) -> string {
+    "a `${relation}` write by ${writer} moved ${cell} after ${reader} read it this revision — a producer runs before its readers"
 }
 
-fn torn_read(relation: string, cell: string, reader: string) -> string {
-    "a `${relation}` write moved ${cell} while ${reader}, which read it this revision, is still running — a query settles on one state of what it read"
+fn torn_read(relation: string, cell: string, reader: string, writer: string) -> string {
+    "a `${relation}` write by ${writer} moved ${cell} while ${reader}, which read it this revision, is still running — a query settles on one state of what it read"
 }
 
 fn two_owners(relation: string, id: int, held: string, writer: string) -> string {
@@ -1059,11 +1059,12 @@ impl Marks {
 fn cell_held(db: Db, relation: string, family: int, cell: int, mark: ReadMark) -> string? {
     match db.landing(family, cell, mark.revision.get(), mark.reader.get()) {
         .Stands -> null,
-        .Late -> late_write(relation, cell_named(cell), db.reader(mark.reader.get())),
+        .Late -> late_write(relation, cell_named(cell), db.reader(mark.reader.get()), db.writing()),
         .Torn -> torn_read(
             relation,
             cell_named(cell),
             db.reader(db.running(family, cell, mark.reader.get())),
+            db.writing(),
         ),
     }
 }
