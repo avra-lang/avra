@@ -447,7 +447,7 @@ name = "@rt/nrlib"
 version = "0.1.0"
 
 [lib]
-name = "nrlib"
+name = "rt-nrlib"
 path = "src/lib.av"
 TOML
 printf 'export fn dep() -> int { 4 }\n' > $R/nrlib/src/lib.av
@@ -464,7 +464,7 @@ printf 'export fn spare() -> int { 2 }\n' > $nr/src/spare.av
 printf 'use helper.{helper}\nuse @rt.nrlib.{dep}\nprintln("${helper() + dep()}")\n' > $nr/src/main.av
 N() { # N <label> <want: hit|miss> <check: green|red> [compiler]
     steps=$((steps+1)); out=$(AVRA_CWD=$PWD AVRA_QTRACE=1 ${4:-./avra} check $nr 2>&1); st=$?
-    got=miss; printf '%s\n' "$out" | grep -q "^Q.noop.hit" && got=hit
+    got=miss; [ "$(printf '%s\n' "$out" | grep "^Q.noop" | head -1)" = "$(printf 'Q\tnoop\thit')" ] && got=hit
     ans=green; [ "$st" -ne 0 ] && ans=red
     if [ "$got" = "$2" ] && [ "$ans" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [nr] -> $got/$ans"; else fails=$((fails+1)); echo "FAIL  $1 [nr] wanted $2/$3, got $got/$ans"; fi
 }
