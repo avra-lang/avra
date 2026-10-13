@@ -17,6 +17,7 @@ use core.{
     SyntaxArena,
     Param,
     filled,
+    flatten,
     same_decl,
     SpecParts,
     ImplParts,
@@ -370,6 +371,19 @@ impl Decls {
         let rs = self.decl_row_rows.get()
         [DeclId { index: i } for i in rs.ids_in(rs.bucket_of(home_index, dense_key(f.index)))]
     }
+
+    /// The declarations of the files not held, each file's own rows. A pass that
+    /// surveys bodies never surveys a held one, so it reads no row a held file minted.
+    fn unheld_decls() -> List<Decl> {
+        flatten([[self.raw_decl(d) for d in self.decls_of_file(f)] for f in self.unheld_files()])
+    }
+
+    fn unheld_files() -> List<FileId> {
+        [FileId { index: i } for i in 0..self.file_count() if !self.file_held(FileId { index: i })]
+    }
+
+    /// Whether a file's rows came from a record rather than a parse.
+    fn file_held(f: FileId) -> bool { self.held.get().get(self.file(f).path) != null }
 
     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
 
