@@ -53,7 +53,7 @@ use core.{
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind}
 use @std.relation.db.{Db, new_db}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
-use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
+use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -562,6 +562,9 @@ export type Decls = {
     name_buckets: Cell<List<int>>,
     /// The name each name bucket files, dense by bucket — its `Named` cell's label.
     cell_names: Cell<List<string>>,
+    /// Each declaration's and type's durable fold, dense by index; -1 until asked.
+    decl_fps: Cell<List<int>>,
+    type_fps: Cell<List<int>>,
     rows_state: Cell<List<int>>,
     held_rows: Cell<fn(FileId) -> void>,
     /// The revision each armed relation cell last moved at, by family.
@@ -804,6 +807,8 @@ export fn new_decls() -> Decls {
         recording: Cell.new(false),
         name_buckets: list_cell(),
         cell_names: list_cell(),
+        decl_fps: list_cell(),
+        type_fps: list_cell(),
         rows_state: list_cell(),
         held_rows: Cell.new(no_store),
         ensure_store: Cell.new(no_store),
@@ -1075,6 +1080,26 @@ impl Decls {
         self.bucket_moved(b)
         self.record_kernel.record_at(self.record_names.get(), b)
         self.decl_row_rows.get().members(b)
+    }
+
+    /// Arena ids as a fold reaches them: by the durable name of what they index.
+    fn ids() -> Ids {
+        let ds = self
+        Ids {
+            decl: (i: int) -> if i < 0 { i } else { ds.durable(ds.decl_fps, i, () -> fp_str(ds.decl_wire(DeclId { index: i }))) },
+            ty: (i: int) -> if i < 0 { i } else { ds.durable(ds.type_fps, i, () -> fp_str(ds.type_wire(TypeId { index: i }))) },
+            file: (i: int) -> if i < 0 { i } else { fp_str(ds.file(FileId { index: i }).path) },
+        }
+    }
+
+    /// `memo`'s fold at `at`, made once.
+    fn durable(memo: Cell<List<int>>, at: int, make: fn() -> int) -> int {
+        while memo.get().length <= at { memo.push(-1) }
+        let held = memo.get()[at]
+        if held >= 0 { return held }
+        let made = make()
+        memo.set_at(at, made)
+        made
     }
 
     /// Room for name bucket `b`'s label in the dense table.
