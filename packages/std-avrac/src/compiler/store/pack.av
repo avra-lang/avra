@@ -29,7 +29,7 @@ use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
 use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
-use core.{digest_of_octets, sorted_by}
+use core.{digest_of_octets, distinct, sorted_by}
 use core.debug.{qtrace, traced}
 use @std.time.{now_ns}
 
@@ -131,7 +131,9 @@ export type Pack = {
     seen_rev: Cell<int>,
     lock_fd: Cell<int>,
     /// Input name -> the rows that read it, built on first ask and dropped by a write.
-    reverse: Cell<Map<string, List<string>>?>,
+    /// The newest body's reverse section as written, and its rows' record keys in body order.
+    table_reverse: Cell<Bytes>,
+    order: Cell<List<string>>,
     /// The value file, open once for the revision it was opened at (none or one handle).
     val_open: Cell<List<Opened>>,
     val_open_rev: Cell<int>,
@@ -139,7 +141,6 @@ export type Pack = {
 
 /// One store's pack, empty — nothing read from disk until the first ask.
 export fn pack_at(root: string, print: string) -> Pack {
-    let no_reverse: Map<string, List<string>>? = null
     Pack {
         dir: joined_path(root, "store"),
         print: print,
@@ -162,7 +163,8 @@ export fn pack_at(root: string, print: string) -> Pack {
         val_rev: Cell.new(0),
         seen_rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
-        reverse: Cell.new(no_reverse),
+        table_reverse: Cell.new("".bytes()),
+        order: list_cell(),
         val_open: list_cell(),
         val_open_rev: Cell.new(0 - 1),
     }
@@ -176,6 +178,28 @@ export fn content_digest(value: string) -> string { digest_of_octets(value.bytes
 export fn check_of(body: Bytes) -> string { digest_of_octets(body).substring(0, 16) }
 
 export fn ok<T>(r: Result<T, CodecFault>) -> T? { match r { .Ok(v) -> v, .Err(_) -> null } }
+
+/// The input a read line names: the text after its digest. None for a line that is no pair.
+export fn read_name(line: string) -> string? {
+    let at = line.index_of(" ")
+    if at <= 0 { return null }
+    line.substring(at + 1, line.length)
+}
+
+/// THE SUSPECT SET: the record keys of the rows that read any input in `moved` — the sealed
+/// body's rows through its reverse section, the live segment rows by their own read lists.
+/// Ids only: no value is fetched and no row decoded.
+export fn pack_suspects(pack: Pack, moved: List<string>) -> List<string> {
+    opened_at(pack, true)
+    mut wanted: Map<string, bool> = {}
+    for m in moved { wanted.set(m, true) }
+    mut out = sealed_readers(pack, wanted)
+    for k, h in pack.records.get() {
+        if h.set >= 0 || withdrawn(pack, k) { continue }
+        if reads_of(pack, h).any(wanted.get(read_name(it) ?? "") != null) { out.push(k) }
+    }
+    distinct(out)
+}
 
 /// THE ACTION KEY — BLAKE3 over the family's name, its stamp (owed) and the
 /// key, so two families naming the same parts stay apart.
@@ -629,7 +653,6 @@ fn kill_at_commit() {
 
 export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
     opened_at(pack, false)
-    pack.reverse.set(null)
     pack.withdrawn.put(record_key(family, key), false)
     let digest = content_digest(value)
     if content_of(pack, digest) == null {

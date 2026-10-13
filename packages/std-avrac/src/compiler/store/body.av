@@ -19,7 +19,7 @@ use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
 const IDX_MAGIC: string = "AVRABIDX"
-const BODY_VERSION: int = 2
+const BODY_VERSION: int = 4
 
 /// §6.1's families, in one fixed order so a body's bytes are deterministic.
 const FAMILIES: List<string> = ["sig", "fp", "unit", "warn", "rows"]
@@ -262,7 +262,63 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: 
             w.int(rev)
         }
     }
+    w.octets(reverse_section(pack, keys))
     w.bytes()
+}
+
+/// THE REVERSE INDEX, as the body spells it: each input name a row reads, with the ordinals
+/// (in the order the body lists its rows) of the rows that read it. A run is its own octets, so
+/// a lookup skips every name it was not asked for without decoding a row.
+fn reverse_section(pack: Pack, keys: List<string>) -> Bytes {
+    mut runs: Map<string, List<int>> = {}
+    mut ordinal = 0
+    for fam in FAMILIES {
+        for k in keys {
+            let h? = record_of(pack, k) else { continue }
+            if h.family != fam { continue }
+            for line in reads_of(pack, h) {
+                let name? = read_name(line) else { continue }
+                runs.set(name, (runs.get(name) ?? []).concat([ordinal]))
+            }
+            ordinal = ordinal + 1
+        }
+    }
+    let w = writer()
+    let names = sorted_by(runs.keys(), text_before)
+    w.count(names.length)
+    for name in names {
+        w.text(name)
+        let run = writer()
+        let ords = runs.get(name) ?? []
+        run.count(ords.length)
+        for o in ords { run.count(o) }
+        w.octets(run.bytes())
+    }
+    w.bytes()
+}
+
+/// The record keys of the sealed rows that read any of `moved`, from the body's reverse
+/// section and its row order; a row since overwritten is left to the live scan.
+export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
+    mut out: List<string> = []
+    let r = reader(pack.table_reverse.get())
+    let count? = ok(r.count()) else { return [] }
+    let order = pack.order.get()
+    for _i in 0..count {
+        let name? = ok(r.text()) else { return out }
+        let run? = ok(r.octets()) else { return out }
+        if moved.get(name) == null { continue }
+        let rr = reader(run)
+        let n? = ok(rr.count()) else { continue }
+        for _j in 0..n {
+            let at? = ok(rr.count()) else { break }
+            if at >= order.length { continue }
+            let key = order[at]
+            let h? = record_of(pack, key) else { continue }
+            if h.set >= 0 && !withdrawn(pack, key) { out.push(key) }
+        }
+    }
+    out
 }
 
 fn record_of(pack: Pack, at: string) -> Held? { pack.records.get().get(at) }
@@ -388,11 +444,14 @@ fn body_read(pack: Pack, payload: Bytes) -> bool {
             rows.push(Held { family: fam, key: key, digest: digest, read: [], set: sid, stamp: 0 })
         }
     }
+    let reverse_bytes? = ok(r.octets()) else { return false }
     if !r.done() { return false }
     for d, slot in placed { pack.slots.put(d, slot) }
     pack.table_names.set(names_bytes)
     pack.table_sets.set(sets_bytes)
     pack.tables.set([])
+    pack.table_reverse.set(reverse_bytes)
+    pack.order.set([record_key(h.family, h.key) for h in rows])
     for h in rows { pack.records.put(record_key(h.family, h.key), h) }
     pack.rev.set(rev)
     pack.val_rev.set(val_rev)
@@ -430,24 +489,4 @@ export fn drop_unreferenced_values(dir: string) {
         let rev = parse_int(n.substring(5, n.length - 4)) ?? 0 - 1
         if !wanted.contains(rev) { let _ = remove(joined_path(dir, n)) }
     }
-}
-
-/// THE REVERSE INDEX: for each input name `name_of` finds in a row's read lines, the record keys
-/// of the rows that read it. Ids only: no value is read. Built once from the read sets, and
-/// dropped by the next write.
-export fn pack_reverse(pack: Pack, name_of: fn(string) -> string?) -> Map<string, List<string>> {
-    opened_at(pack, true)
-    let built? = pack.reverse.get() else {
-        mut out: Map<string, List<string>> = {}
-        for k, h in pack.records.get() {
-            if withdrawn(pack, k) { continue }
-            for line in reads_of(pack, h) {
-                let name? = name_of(line) else { continue }
-                out.set(name, (out.get(name) ?? []).concat([k]))
-            }
-        }
-        pack.reverse.set(out)
-        return out
-    }
-    built
 }
