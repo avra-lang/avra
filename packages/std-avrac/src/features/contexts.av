@@ -535,19 +535,23 @@ impl TypeCx {
     /// the view the row its READ selected declares (`await` answers
     /// `(T, Cancelled)`). `catch` asks this ONE verb; the pair is never
     /// interned as a `Result`.
-    fn failure_view(e: ExprId) -> ResSides? {
-        let direct: ResSides? = self.view.types.res_parts(self.type_at(e))
-        if direct != null { return direct }
-        let row? = property_prop(
+    fn failure_view(e: ExprId) -> FailureView {
+        let direct? = self.view.types.res_parts(self.type_at(e)) else { return self.read_view(e) }
+        FailureView.Sides(direct)
+    }
+    /// The view of the row a property READ selected; none for any
+    /// other expression.
+    fn read_view(e: ExprId) -> FailureView {
+        let read? = property_prop(
             self.view.types,
             self.view.lang.properties,
             self.view.store,
             e,
             (s) -> self.type_at(s),
         ) else {
-            return null
+            return FailureView.Nothing
         }
-        row.view(self, self.type_at(e))
+        read.row.view(self, self.type_at(e))
     }
     fn method_sig(target: DeclId, mname: string) -> FnSig? { self.view.decls.method_sig_of(target, mname) }
     fn trait_sig(tname: string, mname: string) -> FnSig? { self.view.decls.trait_sig_of(self.names, tname, mname) }
@@ -662,6 +666,17 @@ impl LowerCx {
         self.view.types.shape_of(sig.types[slot]) is .Fn
     }
     fn bind_patterns(v: ExprId, regs: List<Reg>) { self.body.bind_patterns(v, regs) }
+    /// The property read a caught subject IS, when it is one — the
+    /// door to its row's caught lowering.
+    fn caught_read(e: ExprId) -> PropertyRead? {
+        property_prop(
+            self.view.types,
+            self.view.lang.properties,
+            self.view.store,
+            e,
+            (s) -> self.type_at(s),
+        )
+    }
     /// The registers a pattern's TEST produced, for its BINDS to read.
     fn test_regs_of(p: PatId) -> List<Reg> { self.body.test_regs_of(p) }
     fn bind_test(p: PatId, regs: List<Reg>) { self.body.bind_test(p, regs) }
