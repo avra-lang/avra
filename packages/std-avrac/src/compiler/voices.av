@@ -1142,8 +1142,8 @@ fn use_warning_fp(w: MetaDiagnostic) -> int {
     )
 }
 
-fn opt_decl_id_fp(d: DeclId?) -> int {
-    if d == null { fp(166, []) } else { fp(167, [d!.fingerprint()]) }
+fn opt_decl_id_fp(d: DeclId?, ids: Ids) -> int {
+    if d == null { fp(166, []) } else { fp(167, [d!.fingerprint_in(ids)]) }
 }
 
 fn opt_expr_id_fp(e: ExprId?) -> int {
@@ -1154,19 +1154,19 @@ fn opt_expr_id_fp(e: ExprId?) -> int {
 /// own canonical fingerprint string (`settle_symbol`'s currency), so
 /// this adds only what that string does not carry — the type it
 /// wears and the crossed value itself, walked through its heap.
-fn seat_value_fp(v: SeatValue) -> int {
-    fp(170, [v.index, fp_str(v.fp), v.ty.fingerprint(), meta_hash(v.heap, v.value)])
+fn seat_value_fp(v: SeatValue, ids: Ids) -> int {
+    fp(170, [v.index, fp_str(v.fp), v.ty.fingerprint_in(ids), meta_hash(v.heap, v.value)])
 }
 
-fn wanted_fp(w: Wanted) -> int {
+fn wanted_fp(w: Wanted, ids: Ids) -> int {
     fp(
         171,
         [
-            w.file.fingerprint(),
-            opt_decl_id_fp(w.decl),
+            w.file.fingerprint_in(ids),
+            opt_decl_id_fp(w.decl, ids),
             fp_str(w.name),
-            opt_sub_fp(w.sub, indexed_ids()),
-            fp_list([seat_value_fp(s) for s in w.seats]),
+            opt_sub_fp(w.sub, ids),
+            fp_list([seat_value_fp(s, ids) for s in w.seats]),
             opt_expr_id_fp(w.root),
         ],
     )
@@ -1186,25 +1186,28 @@ fn static_box_fp(b: StaticBox) -> int {
     }
 }
 
-fn opt_file_id_fp(f: FileId?) -> int {
-    if f == null { fp(175, []) } else { fp(176, [f!.fingerprint()]) }
+fn opt_file_id_fp(f: FileId?, ids: Ids) -> int {
+    if f == null { fp(175, []) } else { fp(176, [f!.fingerprint_in(ids)]) }
 }
 
-fn static_fp(s: Static) -> int {
-    fp(177, [fp_str(s.name), fp_list([static_box_fp(b) for b in s.boxes]), opt_file_id_fp(s.file)])
+fn static_fp(s: Static, ids: Ids) -> int {
+    fp(177, [fp_str(s.name), fp_list([static_box_fp(b) for b in s.boxes]), opt_file_id_fp(s.file, ids)])
 }
 
 /// One lowered unit's content: its bodies (`Body` already derives
 /// `Fingerprint`), the instantiations it asked for, its voices, and
 /// the static data it laid out.
-export fn unit_fp(u: Unit) -> int {
+export fn unit_fp(u: Unit) -> int { unit_fp_in(u, indexed_ids()) }
+
+/// `unit_fp` with every arena id folded through `ids`.
+export fn unit_fp_in(u: Unit, ids: Ids) -> int {
     fp(
         178,
         [
-            fp_list([b.fingerprint() for b in u.bodies]),
-            fp_list([wanted_fp(w) for w in u.wants]),
+            fp_list([b.fingerprint_in(ids) for b in u.bodies]),
+            fp_list([wanted_fp(w, ids) for w in u.wants]),
             voices_fp(u.voices),
-            fp_list([static_fp(s) for s in u.statics]),
+            fp_list([static_fp(s, ids) for s in u.statics]),
             fp_list([fp_str(code_facts_wire(k)) for k in u.kept]),
         ],
     )

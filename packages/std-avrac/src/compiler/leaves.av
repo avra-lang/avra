@@ -21,7 +21,7 @@ use diagnostics.{Diag, Voices}
 use @std.errors.{Loc, Frame, Edit}
 use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Read, node_key}
-use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp}
+use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
 use features.{SettleRoot, SeatValue}
 use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Leaf}
@@ -241,16 +241,7 @@ impl Workspace {
         let ws = self
         rdb.answer_known(self.named_by_decl("Syntax", Family.Syntax))
         rdb.answer_known(self.named_typed())
-        rdb
-            .answer_known(
-                self
-                    .named_by(
-                        "LiftLowered",
-                        Family.LiftLowered,
-                        (a: int) -> ws.spelled_spec(a),
-                        (s: string) -> ws.spec_arg(s),
-                    ),
-            )
+        rdb.answer_known(self.named_units())
         rdb
             .answer_known(
                 self
@@ -283,6 +274,27 @@ impl Workspace {
         rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
         rdb.answer_known(self.named_once("References", Family.References))
         rdb.answer_known(self.named_by_bucket())
+    }
+
+    /// The lifted units, spelled by their wanted and digested with arena ids folded by durable
+    /// name, so another process folds the same unit alike.
+    fn named_units() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.LiftLowered.ordinal
+        AnswerRef {
+            name: "LiftLowered",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_spec(arg),
+            arg: (spelled: string) -> ws.spec_arg(spelled),
+            hash: (arg: int) -> ws.durable_unit(arg),
+        }
+    }
+
+    fn durable_unit(arg: int) -> int? {
+        match self.relation(Family.LiftLowered).values.entry(arg) {
+            .Present(r) -> unit_fp_in(lowered_of(r), self.decls.ids()),
+            .Missing -> null,
+        }
     }
 
     /// A declaration's slice of its file's names, spelled by the declaration and digested with
