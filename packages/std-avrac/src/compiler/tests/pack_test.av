@@ -1,6 +1,7 @@
 // THE PACK'S CONTRACT: one writer's segment, each frame ended by a commit
 // marker; a later open reads what committed; a segment whose plain header
-// names another compiler's print is foreign and read not at all.
+// names another compiler's print is read all the same — a row's stamp, which is part
+// of its family's name, says who may address it.
 use @std.time.{stamp}
 use @std.io.{list_dir, remove, read_bytes, write_bytes}
 use @std.path.{joined_path}
@@ -46,11 +47,11 @@ spec "store/pack — segments, commit markers, the two tiers" {
         }
     }
     given "a segment whose plain header names another compiler's print" {
-        then "no row is read, and the pack says foreign" {
-            let root = pack_root("foreign")
+        then "its row is read, and the pack does not say foreign" {
+            let root = pack_root("other-print")
             let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
             let other = pack_at(root, "print-two")
-            !pack_has(other, "unit", "k") && other.foreign.get()
+            pack_get(other, "unit", "k") == "v" && !other.foreign.get()
         }
     }
     given "a read-only open" {
@@ -95,12 +96,27 @@ spec "store/pack — segments, commit markers, the two tiers" {
         }
     }
     given "one process holding two compiler prints" {
-        then "each print reads its own rows and no other's" {
+        then "rows under two stamped family names stand together" {
             let root = pack_root("prints")
-            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "one", [])
-            let _ = pack_put(pack_at(root, "print-two"), "unit", "k", "two", [])
-            pack_get(pack_at(root, "print-one"), "unit", "k") == "one" &&
-                pack_get(pack_at(root, "print-two"), "unit", "k") == "two"
+            let _ = pack_put(pack_at(root, "print-one"), "unit@one", "k", "one", [])
+            let _ = pack_put(pack_at(root, "print-two"), "unit@two", "k", "two", [])
+            let read = pack_at(root, "print-one")
+            pack_get(read, "unit@one", "k") == "one" && pack_get(read, "unit@two", "k") == "two"
+        }
+    }
+    given "a seal when the running compiler addresses some families only" {
+        then "a row of any other family is gone from the sealed body" {
+            let root = pack_root("live")
+            let writer = pack_at(root, "print-one")
+            let _ = pack_put(writer, "unit@one", "k", "one", [])
+            let _ = pack_put(writer, "unit@two", "k", "two", [])
+            writer.live.set(["unit@two"])
+            let _ = seal(writer)
+            for file in pack_files(root) {
+                if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+            }
+            let read = pack_at(root, "print-one")
+            !pack_has(read, "unit@one", "k") && pack_get(read, "unit@two", "k") == "two"
         }
     }
     given "a seal over a view older than the newest body" {

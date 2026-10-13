@@ -10,7 +10,19 @@
 use @std.io.{make_dirs, write_text}
 use @std.time.{stamp}
 use @std.relation.engine.{map_cell}
-use compiler.store.{Keeping, Read, Store, Stored, node_key, store_at, store_with}
+use compiler.store.{
+    Keeping,
+    Producer,
+    Producers,
+    Read,
+    Store,
+    Stored,
+    node_key,
+    producer_under,
+    store_at,
+    store_stamped,
+    store_with,
+}
 
 /// One directory per run, so no earlier run's rows answer for this one.
 once fn store_base() -> string { "/tmp/avra-store-test/${stamp()}" }
@@ -140,4 +152,62 @@ spec "store" {
             s.get_valid(Stored.Obj, k, (n: string) -> null) != null
         }
     }
+    given "a producer's stamp" {
+        then "it is the same for the same parts and toolchain" {
+            stamp(["p", "enc", "dec"], "tc") == stamp(["p", "enc", "dec"], "tc")
+        }
+        then "the producing code's hash moves it" {
+            stamp(["p", "enc", "dec"], "tc") != stamp(["q", "enc", "dec"], "tc")
+        }
+        then "the encode moves it" {
+            stamp(["p", "enc", "dec"], "tc") != stamp(["p", "enx", "dec"], "tc")
+        }
+        then "the decode moves it" {
+            stamp(["p", "enc", "dec"], "tc") != stamp(["p", "enc", "dex"], "tc")
+        }
+        then "the toolchain moves it" {
+            stamp(["p", "enc", "dec"], "tc") != stamp(["p", "enc", "dec"], "td")
+        }
+        then "a part with no hash leaves no stamp" {
+            stamp_of_parts(["p", null, "dec"]) == "absent"
+        }
+    }
+    given "rows filed by a store that shares a family" {
+        then "a compiler of another print with the same producer reads them" {
+            let root = "${store_base()}/shared"
+            let first = shared_store(root, "print-a", Producer.Hashed("s1"))
+            let k = node_key(Stored.Sig, ["m"])
+            let _ = first.keep(Stored.Sig, k, "record", [])
+            shared_store(root, "print-b", Producer.Hashed("s1")).get(Stored.Sig, k) == "record"
+        }
+        then "one whose producer differs never does" {
+            let root = "${store_base()}/shared-moved"
+            let k = node_key(Stored.Sig, ["m"])
+            let _ = shared_store(root, "print-a", Producer.Hashed("s1")).keep(Stored.Sig, k, "record", [])
+            shared_store(root, "print-b", Producer.Hashed("s2")).get(Stored.Sig, k) == null
+        }
+        then "one that cannot hash its producer never does" {
+            let root = "${store_base()}/shared-absent"
+            let k = node_key(Stored.Sig, ["m"])
+            let _ = shared_store(root, "print-a", Producer.Hashed("s1")).keep(Stored.Sig, k, "record", [])
+            shared_store(root, "print-b", Producer.Absent).get(Stored.Sig, k) == null
+        }
+        then "a family with no producer is read by its own print alone" {
+            let root = "${store_base()}/own"
+            let k = node_key(Stored.Unit, ["u"])
+            let _ = shared_store(root, "print-a", Producer.Hashed("s1")).keep(Stored.Unit, k, "unit", [])
+            shared_store(root, "print-a", Producer.Hashed("s1")).get(Stored.Unit, k) == "unit" &&
+                shared_store(root, "print-b", Producer.Hashed("s1")).get(Stored.Unit, k) == null
+        }
+    }
 }
+
+fn shared_store(root: string, print: string, sig: Producer) -> Store {
+    store_stamped(root, print, Producers { sig: sig }, Keeping.Disk)
+}
+
+fn stamp(parts: List<string?>, toolchain: string) -> string { stamp_text(producer_under(parts, toolchain)) }
+
+fn stamp_of_parts(parts: List<string?>) -> string { stamp_text(producer_under(parts, "tc")) }
+
+fn stamp_text(p: Producer) -> string { match p { .Hashed(s) -> s, .Absent -> "absent" } }

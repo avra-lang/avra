@@ -16,6 +16,7 @@ use @std.path.{joined_path}
 use @std.relation.engine.{map_cell}
 use core.{digest_of, joined}
 use core.debug.{qtrace, traced}
+use core.runtime_header.{runtime_header}
 
 /// WHAT THE STORE KEEPS, as a KIND — so a family cannot be misspelled and every match
 /// over it is exhaustive. Adding one is this enum and a directory name, which is the
@@ -73,7 +74,36 @@ export enum Keeping {
 }
 
 /// THE STORE — one root, the packed index, and where its writes land.
-export type Store = { root: string, print: string, keeping: Keeping, pack: Pack }
+export type Store = { root: string, print: string, keeping: Keeping, pack: Pack, producers: Producers }
+
+/// WHAT STAMPS A FAMILY'S ROWS so a compiler that did not write them may read them: the
+/// producing code, its codec and the toolchain, folded to one digest — or the reason there
+/// is none, in which case the rows stay the writing compiler's own.
+export enum Producer {
+    Hashed(stamp: string)
+    /// A hash the producer's closure cannot answer.
+    Absent
+}
+
+/// The producer of each family whose rows can be shared; every other family is the
+/// compiler's own.
+export type Producers = { sig: Producer }
+
+/// No family shared.
+export fn unshared() -> Producers { Producers { sig: Producer.Absent } }
+
+/// What the pack's format and the runtime its values pass through contribute to a stamp.
+export fn store_toolchain() -> string { "${pack_format()}.${digest_of(runtime_header())}" }
+
+/// A producer from the parts that make a row what it is — its producing code's hash, its
+/// encode and decode — and the toolchain: absent when any part is.
+export fn producer_of(parts: List<string?>) -> Producer { producer_under(parts, store_toolchain()) }
+
+/// `producer_of` under a given toolchain.
+export fn producer_under(parts: List<string?>, toolchain: string) -> Producer {
+    if parts.any(it == null) { return Producer.Absent }
+    Producer.Hashed(digest_of(joined([p! for p in parts].concat([toolchain]), "\n")))
+}
 
 /// The packs this process has open, one per root and compiler print — so a store
 /// is read from disk once however many workspaces ask for it.
@@ -100,9 +130,23 @@ export fn store_at(root: string) -> Store { store_with(root, "", Keeping.Disk) }
 /// A store with its compiler print and where its writes land — the one place a
 /// workspace turns its own identity into a store.
 // LICENSED compiler.free_state_verb: a CONSTRUCTOR — a root, a print and a mode in.
-export fn store_with(root: string, print: string, keeping: Keeping) -> Store {
-    Store { root: root, print: print, keeping: keeping, pack: pack_for(root, print) }
+export fn store_with(root: string, print: string, keeping: Keeping) -> Store { store_stamped(root, print, unshared(), keeping) }
+
+/// `store_with`, the families it shares named: a row of one is filed under its producer's
+/// stamp and read by any compiler of the same stamp; every other row under this compiler's.
+// LICENSED compiler.free_state_verb: a CONSTRUCTOR — a root, a print, the producers and a mode in.
+export fn store_stamped(root: string, print: string, producers: Producers, keeping: Keeping) -> Store {
+    let made = Store { root: root, print: print, keeping: keeping, pack: pack_for(root, print), producers: producers }
+    made.pack.live.set([made.packed(f) for f in packed_families()])
+    if traced() { qtrace("Q\tstore\tstamp\tsig\t${stamp_word(producers.sig)}\n") }
+    made
 }
+
+/// The families that live in the pack.
+fn packed_families() -> List<Stored> { [Stored.Sig, Stored.Fp, Stored.Unit, Stored.Warn, Stored.Rows] }
+
+/// How a producer reads in the trace.
+fn stamp_word(p: Producer) -> string { match p { .Hashed(_) -> "shared", .Absent -> "absent" } }
 
 /// ONE READ OF A SAVED ANSWER: what was read, named by its stable name, and the digest
 /// of exactly what came back. A name holds no newline; a digest holds no space and is
@@ -146,6 +190,22 @@ fn kind_line(op: string, hit: bool, family: Stored, key: string) -> string {
 }
 
 impl Store {
+    /// A family's name as the pack files it: with the stamp its rows stand under.
+    fn packed(family: Stored) -> string { "${family.name()}@${self.stamp_of(family)}" }
+
+    /// What a family's rows stand under. THE REGISTRY OF WHO MAY READ THEM: a family with a
+    /// producer stands under its stamp, every other under the compiler that wrote it.
+    fn stamp_of(family: Stored) -> string {
+        match family {
+            .Sig -> self.shared_or_own(self.producers.sig),
+            .Fp or .Unit or .Obj or .Bin or .Warn or .Rows -> self.own_stamp(),
+        }
+    }
+
+    fn shared_or_own(p: Producer) -> string { match p { .Hashed(stamp) -> "shared ${stamp}", .Absent -> self.own_stamp() } }
+
+    fn own_stamp() -> string { "own ${self.print}" }
+
     /// THE SHARD a key lands in — one projection, because the writer that makes the
     /// directory and the writer that names the file must agree about it. A content key is
     /// uniform, so two characters make 256 buckets and no directory grows unbounded.
@@ -167,7 +227,7 @@ impl Store {
     /// write fails, its old edge cannot make the new data look complete.
     fn uncommit(family: Stored, key: string) -> bool {
         if !family.file_family() {
-            pack_forget(self.pack, family.name(), key)
+            pack_forget(self.pack, self.packed(family), key)
             return true
         }
         let edge = self.edge_path(family, key)
@@ -188,7 +248,7 @@ impl Store {
         if family.file_family() {
             self.on_disk(family, key)
         } else {
-            pack_has(self.pack, family.name(), key, inspects(self.keeping))
+            pack_has(self.pack, self.packed(family), key, inspects(self.keeping))
         }
     }
 
@@ -217,7 +277,7 @@ impl Store {
         if family.file_family() {
             self.read_disk(family, key)
         } else {
-            pack_get(self.pack, family.name(), key, inspects(self.keeping))
+            pack_get(self.pack, self.packed(family), key, inspects(self.keeping))
         }
     }
 
@@ -241,7 +301,7 @@ impl Store {
 
     fn disk_kept(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
         if family.file_family() { return self.written(family, key, bytes, read) }
-        pack_put(self.pack, family.name(), key, bytes, read)
+        pack_put(self.pack, self.packed(family), key, bytes, read)
         true
     }
 
@@ -290,7 +350,7 @@ impl Store {
         if self.aside_row(family, key) != null {
             return lines_of(self.aside_reads(family, key))
         }
-        if !family.file_family() { return pack_reads(self.pack, family.name(), key, inspects(self.keeping)) }
+        if !family.file_family() { return pack_reads(self.pack, self.packed(family), key, inspects(self.keeping)) }
         // LICENSED input.store_io: the store's own edge file, read to prove a row's reads
         match read_text(self.edge_path(family, key)) { .Ok(t) -> lines_of(t), .Err(_) -> null }
     }

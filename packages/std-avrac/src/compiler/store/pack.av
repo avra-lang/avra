@@ -38,7 +38,7 @@ extern fn avra_process_exit(code: int)
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 
 const MAGIC: string = "AVRAPACK"
-const FORMAT_VERSION: int = 2
+const FORMAT_VERSION: int = 3
 
 const CONTENT_TAG: int = 1
 const ACTION_TAG: int = 2
@@ -56,14 +56,6 @@ fn hooked_frames() -> int? {
 }
 
 fn seal_frames() -> int { hooked_frames() ?? SEAL_FRAMES }
-
-/// OWED (db-inputs-h's `family_code_hash`): the family's own code hash and
-/// its codec shape fingerprint. Until that table lands, the key folds the
-/// family's name and the key alone, so a codec or family change is a miss
-/// the store cannot see. THE EMPTY STAMP IS A SEAM, NOT A VALUE: the fold is
-/// `BLAKE3(family · stamp · key)` and the first real stamp bytes are one
-/// whole-store miss, which the per-compiler print already allows.
-const FAMILY_STAMP: string = ""
 
 /// ONE ROW: the family and key it answers, the digest of its value and the
 /// keys it read — listed here, or, for a row a sealed body carries, the id of
@@ -129,6 +121,9 @@ export type Pack = {
     /// older view would drop the rows of whoever sealed since.
     seen_rev: Cell<int>,
     lock_fd: Cell<int>,
+    /// The families the running compiler can still address; a seal keeps no other row.
+    /// None until a store names them: every row stands.
+    live: Cell<List<string>?>,
 }
 
 /// One store's pack, empty — nothing read from disk until the first ask.
@@ -155,6 +150,7 @@ export fn pack_at(root: string, print: string) -> Pack {
         val_rev: Cell.new(0),
         seen_rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
+        live: Cell.new(null),
     }
 }
 
@@ -167,10 +163,14 @@ export fn check_of(body: Bytes) -> string { digest_of_octets(body).substring(0, 
 
 export fn ok<T>(r: Result<T, CodecFault>) -> T? { match r { .Ok(v) -> v, .Err(_) -> null } }
 
-/// THE ACTION KEY — BLAKE3 over the family's name, its stamp (owed) and the
+/// The format a pack and its bodies are written in: a stamp folds it, so rows of another
+/// format are never addressed.
+export fn pack_format() -> string { "${FORMAT_VERSION}.${BODY_VERSION}" }
+
+/// THE ACTION KEY — BLAKE3 over the family's name, which carries its stamp, and the
 /// key, so two families naming the same parts stay apart.
 export fn action_key(family: string, key: string) -> string {
-    digest_of_octets("${family}\n${FAMILY_STAMP}\n${key}".bytes())
+    digest_of_octets("${family}\n${key}".bytes())
 }
 
 /// A row's place in the open index: the family and key as they stand. The
@@ -280,7 +280,7 @@ fn scan_segment(
         if !alive { trim(path, 0) }
         return false
     }
-    if magic != MAGIC || version != FORMAT_VERSION || print != pack.print {
+    if magic != MAGIC || version != FORMAT_VERSION {
         pack.foreign.set(true)
         if traced() { qtrace("Q\tstore\tforeign\n") }
         return false
@@ -484,7 +484,7 @@ fn keep_bodies(pack: Pack) {
     let n = if raw == null { KEPT_BODIES } else { parse_int(raw!) ?? KEPT_BODIES }
     if n < 1 { return }
     let mine = sorted_by(
-        [name for name in all_body_names(pack.dir) if body_print_of(pack.dir, name) == pack.print],
+        all_body_names(pack.dir),
         rev_before,
     )
     for name in mine.slice(0, if mine.length > n { mine.length - n } else { 0 }) {
