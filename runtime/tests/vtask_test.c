@@ -72,7 +72,7 @@ static void as_virtual(void) {
 }
 
 // A join by a virtual task parks as a compiled join does: readied where
-// the task ends, deaf to a cancel and to its own deadline.
+// the task ends, deaf to its own deadline.
 static int64_t in_ms(int64_t ms) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
@@ -84,9 +84,8 @@ static void joins(void) {
     int64_t before = in_ms(0);
     int64_t outer = avra_vtask_within(j, 5);
     CHECK(avra_vtask_join(j, timed) == 1, "a virtual task joins a task the timer ends, and parks");
-    avra_vtask_cancel(j, 0);
     CHECK(avra_vtask_next() == j, "the policy names it when the task's time comes");
-    CHECK(in_ms(0) - before >= 35 * 1000000, "at that time: not at its own deadline, and not at a cancel");
+    CHECK(in_ms(0) - before >= 35 * 1000000, "at that time: not at its own deadline");
     avra_vtask_within_end(j, outer);
     CHECK(avra_vtask_join(j, timed) == 0, "a join of a task that has ended parks nothing");
     CHECK(avra_sched_timers() == 0, "and nothing stays filed");
@@ -130,6 +129,20 @@ static void shields(void) {
     avra_vtask_free(t);
 }
 
+// A CANCEL CUTS A VIRTUAL JOIN: the task is readied at once with its
+// own unwind bit set, as a compiled join's is.
+static void cancelled_join(void) {
+    int64_t j = avra_vtask_new();
+    void* timed = avra_task_at(in_ms(60000));
+    CHECK(avra_vtask_join(j, timed) == 1, "a virtual task parks on a timer's task");
+    avra_vtask_cancel(j, 0);
+    CHECK(avra_vtask_next() == j, "a cancel cuts the join and the policy names it at once");
+    CHECK(avra_vtask_unwinding(j) == 1, "with its own unwind bit set");
+    avra_task_cancel(timed);
+    avra_rc_release(timed);
+    avra_vtask_free(j);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -155,6 +168,7 @@ int main(void) {
     joins();
     shield_bytes();
     shields();
+    cancelled_join();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);
