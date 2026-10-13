@@ -1,7 +1,17 @@
 // The front end, vertically: every arm form parses and prints back as
 // written, the laws a builder holds are spoken in its words, and a
 // `select` that types is refused by name where it is lowered.
-use @std.avrac.testing.{projected, refused_with, refused_at_run, refusals, refused_in, floored_beside, answered, shown, ir_of}
+use @std.avrac.testing.{
+    projected,
+    refused_with,
+    refused_at_run,
+    refusals,
+    refused_in,
+    floored_beside,
+    answered,
+    shown,
+    ir_of,
+}
 use compiler.{Program}
 use compiler.backend.{render_ir}
 
@@ -127,7 +137,10 @@ spec "features/select_expr" {
         }
         then "an index beside `_` is still bound" { types("let v: int = select {\n    i, _ in jobs -> i\n}\nv") }
         then "an index on one task is refused" {
-            refuses("select {\n    i, r in job -> r\n}", "`i` counts a list's members, and this arm waits on one task")
+            refuses(
+                "select {\n    i, r in job -> r\n}",
+                "`i` counts a list's members, and this arm waits on one task",
+            )
         }
         then "a name over a task that answers nothing is refused" {
             refuses("select {\n    r in mute -> 1\n}", "`r` has nothing to hold")
@@ -144,10 +157,16 @@ spec "features/select_expr" {
     }
     given "what an arm waits on" {
         then "a head that is no task, list of tasks or timer is refused" {
-            refuses("select {\n    1 -> 2\n}", "a `select` arm waits on a task, a list of tasks or a timer, and this is `int`")
+            refuses(
+                "select {\n    1 -> 2\n}",
+                "a `select` arm waits on a task, a list of tasks or a timer, and this is `int`",
+            )
         }
         then "an awaited head is refused as the value it already is" {
-            refuses("select {\n    job.await -> 2\n}", "a head ending `.await` has already waited: drop it")
+            refuses(
+                "select {\n    job.await -> 2\n}",
+                "a head ending `.await` has already waited: drop it",
+            )
         }
         then "a list arm inside a loop is refused" {
             refuses(
@@ -162,7 +181,9 @@ spec "features/select_expr" {
             )
         }
         then "a task arm inside a loop types" {
-            types("mut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in job -> r\n    }\n}\nn")
+            types(
+                "mut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in job -> r\n    }\n}\nn",
+            )
         }
     }
     given "a guard" {
@@ -184,7 +205,10 @@ spec "features/select_expr" {
             types("let v: int = select {\n    r in job -> r\n    else -> 0\n}\nv")
         }
         then "arms that disagree are refused" {
-            refuses("let v = select {\n    r in job -> r\n    else -> \"none\"\n}", "a `select`'s arms disagree")
+            refuses(
+                "let v = select {\n    r in job -> r\n    else -> \"none\"\n}",
+                "a `select`'s arms disagree",
+            )
         }
         then "a name the arm binds is not read by a later arm" {
             refuses("select {\n    r in job -> r\n    else -> r\n}", "`r` is not defined")
@@ -193,7 +217,9 @@ spec "features/select_expr" {
     given "the timers of `@std/time`" {
         then "a `Deadline` head is an arm, binding nothing" {
             answered(
-                timed("let limit = after(5)\nlet v = select {\n    limit -> 1\n}\nprintln(\"\${v}\")\n"),
+                timed(
+                    "let limit = after(5)\nlet v = select {\n    limit -> 1\n}\nprintln(\"\${v}\")\n",
+                ),
             )
                 .contains("`select` is typed and not yet lowered")
         }
@@ -211,27 +237,39 @@ spec "features/select_expr" {
         }
         then "an `Every` beside `else` types" {
             answered(
-                timed("let tick = every(5)\nlet v = select {\n    tick -> 1\n    else -> 2\n}\nprintln(\"\${v}\")\n"),
+                timed(
+                    "let tick = every(5)\nlet v = select {\n    tick -> 1\n    else -> 2\n}\nprintln(\"\${v}\")\n",
+                ),
             )
                 .contains("`select` is typed and not yet lowered")
         }
     }
     given "lowering — the scan chooses" {
         then "a task arm binds the answer and its body answers" {
-            shown("fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r + 1\n}\n\"\${v}\"") == "42"
+            shown(
+                "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r + 1\n}\n\"\${v}\"",
+            ) == "42"
         }
         then "a bare head waits and binds nothing" {
-            shown("fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    job -> 7\n}\n\"\${v}\"") == "7"
+            shown(
+                "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    job -> 7\n}\n\"\${v}\"",
+            ) == "7"
         }
         then "`else` answers when nothing is ready" {
-            shown("fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    else -> 0 - 1\n}\n\"\${v}\"") == "-1"
+            shown(
+                "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    else -> 0 - 1\n}\n\"\${v}\"",
+            ) == "-1"
         }
         then "a `select` answering nothing stands as a statement" {
-            shown("fn one() -> int {\n    41\n}\nlet seen = Cell.new(0)\nlet job = spawn one()\nselect {\n    r in job -> seen.set(r)\n}\nseen.get()") == "41"
+            shown(
+                "fn one() -> int {\n    41\n}\nlet seen = Cell.new(0)\nlet job = spawn one()\nselect {\n    r in job -> seen.set(r)\n}\nseen.get()",
+            ) == "41"
         }
         then "the loop: a scan begins, the arm is asked, taken and left, or filed and rested on" {
             let text = render_ir(
-                ir_of("fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n}\nv"),
+                ir_of(
+                    "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n}\nv",
+                ),
             )
             in_order(
                 text,
@@ -249,16 +287,26 @@ spec "features/select_expr" {
         }
         then "an `else` lets the world run instead of resting" {
             let text = render_ir(
-                ir_of("fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    else -> 0\n}\nv"),
+                ir_of(
+                    "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    else -> 0\n}\nv",
+                ),
             )
-            in_order(text, ["call avra_wait_enter(", "call avra_task_done(", "call avra_fiber_yield("]) &&
+            in_order(
+                    text,
+                    ["call avra_wait_enter(", "call avra_task_done(", "call avra_fiber_yield("],
+                ) &&
                 !text.contains("call avra_wait_rest(")
         }
         then "a false guard leaves its arm dead, and reads no head" {
-            shown("fn one() -> int {\n    41\n}\nlet a = spawn one()\nlet b = spawn one()\nlet both = a.await + b.await\nlet v = select {\n    x in a if both > 100 -> 1\n    y in b -> 2\n}\n\"\${v}\"") == "2"
+            shown(
+                "fn one() -> int {\n    41\n}\nlet a = spawn one()\nlet b = spawn one()\nlet both = a.await + b.await\nlet v = select {\n    x in a if both > 100 -> 1\n    y in b -> 2\n}\n\"\${v}\"",
+            ) == "2"
         }
         then "a shape with no lowering yet is refused by name, once" {
-            refused_at_run("${tasks()}select {\n    r in jobs -> r\n}", "`select` is typed and not yet lowered")
+            refused_at_run(
+                "${tasks()}select {\n    r in jobs -> r\n}",
+                "`select` is typed and not yet lowered",
+            )
         }
     }
 }
