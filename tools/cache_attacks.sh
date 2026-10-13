@@ -406,6 +406,36 @@ ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
 fi
 
+if section gg; then
+# A GUESS ONLY PRE-ADMITS. Editing held.av's const to need calc.av's body turns the attempt once (calc.av
+# is held and a compile-time run asks for its body); the same edit again starts with calc.av read and
+# stands on its first attempt. Whatever the guess holds — a file the next edit no longer needs — the
+# answer is the one a store with no guess gives: the same exit, the same binary output.
+mkdir -p $R/gg/src/f $R/gg/src/y
+printf '[package]\nname = "rt-gg"\nversion = "0.1.0"\n' > $R/gg/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/gg/src/y/calc.av
+printf 'use y.{twice}\nexport const K: int = twice(3)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/gg/src/main.av
+gg_attempts() { AVRA_QTRACE=1 ./avra check $R/gg 2>&1 >/dev/null | grep -ac -P '^Q\tattempt'; }
+S "cold gg" gg
+printf 'use y.{twice}\nexport const K: int = twice(4)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+gg_first=$(gg_attempts)
+S "gg: the const needs calc.av's body" gg
+steps=$((steps+1)); [ "$gg_first" = 2 ] || { fails=$((fails+1)); echo "FAIL  gg: a const that needs a held body turned $gg_first attempts, wanted 2 (the turn that reads calc.av)"; }
+printf 'use y.{twice}\nexport const K: int = twice(5)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+gg_again=$(gg_attempts)
+steps=$((steps+1)); [ "$gg_again" = 1 ] || { fails=$((fails+1)); echo "FAIL  gg: the same edit again turned $gg_again attempts, wanted 1 (calc.av is remembered)"; }
+S "gg: the remembered read stands" gg
+steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "10" ] || { fails=$((fails+1)); echo "FAIL  gg: the program printed '$($R/gg/src/main 2>&1)', wanted '10'"; }
+printf 'export const K: int = 7\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+S "gg: the guess names a file the edit no longer needs" gg
+steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "7" ] || { fails=$((fails+1)); echo "FAIL  gg: with an unneeded remembered read the program printed '$($R/gg/src/main 2>&1)', wanted '7'"; }
+gg_warm=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
+rm -rf .avra-cache; gg_cold=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
+steps=$((steps+1)); [ "$gg_warm" = "$gg_cold" ] || { fails=$((fails+1)); echo "FAIL  gg: a guess changed what a check says: $gg_warm lines warm, $gg_cold with no store"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
