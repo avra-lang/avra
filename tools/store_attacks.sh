@@ -16,6 +16,8 @@
 #   Q store skipped <why>    a process that did not take the compaction lock
 #   Q store torn <offset>    a tail that failed its check, ignored from there
 #   Q store foreign          a segment whose plain header names another compiler
+#   Q store hit|miss <family>  a lookup of one row, by the family it asked
+#   Q db hit|miss <kind>       a durable DbRow recalled, by its kind
 # and two hooks: AVRA_STORE_KILL=commit kills the writer after a segment's
 # frame octets and before its commit marker; AVRA_STORE_HOLD_MS=n holds the
 # compaction lock n ms before appending.

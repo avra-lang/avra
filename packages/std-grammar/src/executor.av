@@ -117,6 +117,9 @@ type MatchContext<T, N> = {
     // each of the grammar's terminal classes as this parse's lexer
     // numbers it, by the class's slot — resolved once per run
     kinds: List<int>,
+    // per token, the classes it wears by slot as bits (bit 62: it closes a body) — the
+    // branch check reads one int where it would ask the lexeme class by class
+    masks: List<int>,
     // one absence and one silence per run: a miss is the engine's
     // commonest outcome, and a value it shares costs nothing to hand
     // out (a consumer that changed one would copy it)
@@ -322,7 +325,10 @@ fn accumulated_all<T, N>(prev: Captured<T, N>, vs: List<Captured<T, N>>) -> Capt
 }
 
 fn binding_for<T, N>(bindings: List<Binding<T, N>>, label: string) -> Captured<T, N>? {
-    bindings.find(it.label == label)?.value
+    for b in bindings {
+        if b.label == label { return b.value }
+    }
+    null
 }
 
 /// Skip to just past the sync target: a terminal-class name in the
@@ -411,12 +417,6 @@ fn undefined_rule<T, N>(cx: MatchContext<T, N>, name: string, cursor: int) -> Ma
     broke<T, N>(cx, cursor, [], [defect(name, "undefined rule `${name}`")], null)
 }
 
-/// Whether a branch's first terminals can take `t` — the one question
-/// that lets the engine skip a branch whole.
-fn starts_at<T>(lex: Lexeme<T>, kinds: List<int>, terms: List<StartTerm>, t: T) -> bool {
-    terms.any(takes_term(lex, kinds, it, t))
-}
-
 /// Whether one closed terminal accepts `t`, exactly as `match_prim`
 /// judges it.
 fn takes_term<T>(lex: Lexeme<T>, kinds: List<int>, st: StartTerm, t: T) -> bool {
@@ -436,9 +436,39 @@ fn skip_point(st: BranchStart, cursor: int) -> FarthestFailure {
 
 /// Whether a branch cannot consume `tok`: it is not nullable and none of
 /// its first terminals accepts.
-fn cannot_take<T>(lex: Lexeme<T>, kinds: List<int>, st: BranchStart?, tok: T) -> bool {
+fn cannot_take<T>(
+    lex: Lexeme<T>,
+    kinds: List<int>,
+    masks: List<int>,
+    cursor: int,
+    st: BranchStart?,
+    tok: T,
+) -> bool {
     let s? = st else { return false }
-    !s.nullable && !starts_at(lex, kinds, s.terminals, tok)
+    !s.nullable && !starts_at_masked(lex, kinds, masks[cursor], s.terminals, tok)
+}
+
+/// A token's bits for the branch check: bit `s` when it wears the class of slot `s`, bit 62
+/// when it closes a body. Slots past 61 are asked the long way.
+fn token_mask<T>(lex: Lexeme<T>, kinds: List<int>, t: T) -> int {
+    let bits = [1 << s for s in 0..kinds.length if s < 62 && lex.wears_kind(t, kinds[s])]
+    bits.fold(if closes_body(lex, t) { 1 << 62 } else { 0 }, (acc, b) -> acc | b)
+}
+
+/// `starts_at`, read off the token's bits where a class has a slot in range.
+fn starts_at_masked<T>(lex: Lexeme<T>, kinds: List<int>, mask: int, terms: List<StartTerm>, t: T) -> bool {
+    for st in terms {
+        if takes_masked(lex, kinds, mask, st, t) { return true }
+    }
+    false
+}
+
+/// `takes_term`, the same answer, read from the bits when the class has a slot in range.
+fn takes_masked<T>(lex: Lexeme<T>, kinds: List<int>, mask: int, st: StartTerm, t: T) -> bool {
+    match st.prim {
+        .Named(term) if st.slot >= 0 && st.slot < kinds.length && st.slot < 62 -> { (mask >> st.slot) & 1 == 1 || is_end(term) && (mask >> 62) & 1 == 1 },
+        .Named(_) or .Lit(_) or .Ref(_) or .Group(_) or .NotChar(_) -> takes_term(lex, kinds, st, t),
+    }
 }
 
 /// The kind id a terminal wears in this parse: its slot's, resolved
@@ -468,7 +498,7 @@ fn match_alt<T, N>(
     mut fb_diags: List<Diagnostic>? = null
     let tok = cx.tokens[cursor]
     for br in a.branches {
-        if cannot_take(cx.lex, cx.kinds, br.start, tok) {
+        if cannot_take(cx.lex, cx.kinds, cx.masks, cursor, br.start, tok) {
             if cx.tracking { farthest = far_merge(farthest, skip_point(br.start!, cursor)) }
         } else {
             let r = match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped)
@@ -1012,6 +1042,7 @@ fn run_as<T, N>(
         return RunOutcome { result: null, diagnostics: rd.defects }
     }
     let g = rd.g
+    let kinds: List<int> = [lex.kind_of(term) for term in rd.terms]
     let stride = tokens.length + 1
     let silence: List<Diagnostic> = []
     let miss: MatchResult<T, N> = MatchResult {
@@ -1035,7 +1066,8 @@ fn run_as<T, N>(
         lit_expects: rd.lit_expects,
         kind_expects: rd.kind_expects,
         known_terminals: rd.known_terminals,
-        kinds: [lex.kind_of(term) for term in rd.terms],
+        kinds: kinds,
+        masks: [token_mask(lex, kinds, t) for t in tokens],
         absent: captured_absent<T, N>(),
         silence: silence,
         build: build,
