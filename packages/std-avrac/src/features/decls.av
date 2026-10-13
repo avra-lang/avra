@@ -50,7 +50,7 @@ use core.{
     Annotation,
     At,
 }
-use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind}
+use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind, db_verified}
 use @std.relation.db.{Db, new_db}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
 use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
@@ -1086,11 +1086,21 @@ impl Decls {
     fn ids() -> Ids {
         let ds = self
         Ids {
-            decl: (i: int) -> if i < 0 { i } else { ds.durable(ds.decl_fps, i, () -> fp_str(ds.decl_wire(DeclId { index: i }))) },
+            decl: (i: int) -> if i < 0 { i } else { ds.decl_door(DeclId { index: i }) },
             ty: (i: int) -> if i < 0 { i } else { ds.durable(ds.type_fps, i, () -> fp_str(ds.type_wire(TypeId { index: i }))) },
             file: (i: int) -> if i < 0 { i } else { fp_str(ds.file(FileId { index: i }).path) },
             expr: (i: int) -> i,
         }
+    }
+
+    /// A declaration's durable fold. Its wire counts same-named siblings, which are all minted
+    /// only once the file's rows settle, so a fold made earlier is never remembered.
+    fn decl_door(d: DeclId) -> int {
+        let ds = self
+        let make = () -> fp_str(ds.decl_wire(d))
+        if self.is_builtin(d) || self.home_stand(self.decl(d).file) != 0 { return self.durable(self.decl_fps, d.index, make) }
+        if db_verified() { wreck("a declaration's durable name was asked before its file's rows settled") }
+        make()
     }
 
     /// `memo`'s fold at `at`, made once.
