@@ -33,6 +33,8 @@ extern fn avra_vtask_shield_enter(t: int)
 extern fn avra_vtask_shield_leave(t: int)
 /// 1 while the task runs under a shield.
 extern fn avra_vtask_shielded(t: int) -> int
+/// The task's own unwind bit, written.
+extern fn avra_vtask_set_unwinding(t: int, v: int)
 extern fn avra_vtask_inherits(t: int, from: int)
 extern fn avra_vtask_next() -> int
 extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
@@ -95,6 +97,8 @@ type Job = {
     clocked: bool,
     // it ended with no answer
     cancelled: bool,
+    // a cancel stands on it: one more than its asker's id, else 0
+    asked: int,
     // who ended it: its own id, or the id of the task that answered or
     // cancelled it (a scope's id when a limit passed)
     ended_by: int,
@@ -127,6 +131,7 @@ fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -
         gate: null,
         clocked: false,
         cancelled: false,
+        asked: 0,
         ended_by: 0,
         arming: false,
     }
@@ -267,6 +272,7 @@ impl Machine {
         if avra_vtask_unwinding(vt) != 0 { return Val.N }
         if avra_vtask_shielded(vt) != 0 { return self.trapped_val("a join takes a task that answers, and this one was cancelled") }
         avra_vtask_passed(vt, by)
+        if self.tasks[self.running].asked == 0 { self.tasks[self.running].asked = by + 1 }
         if self.running == 0 { self.cancelled_by = avra_vtask_asker(vt) }
         self.unwind_met(vt)
         Val.N
@@ -310,9 +316,15 @@ impl Machine {
     }
 
     /// An owner's scope ended: its task joined, or each in its list.
+    /// AN OWNER LEAVING UNDER A CANCEL CANCELS WHAT IT OWNS, then waits
+    /// it out.
     fn task_settle_val(vals: List<Val>) -> Val {
         if vals[0] is .N { return Val.I(0) }
-        let id = self.task_of(vals[0])
+        self.settled(self.task_of(vals[0]))
+    }
+
+    fn settled(id: int) -> Val {
+        if self.tasks[self.running].asked != 0 { self.cancels(id, self.tasks[self.running].id) }
         if !self.tasks[id].done { return self.waited_on(id) }
         Val.I(0)
     }
@@ -334,12 +346,23 @@ impl Machine {
     fn task_settle_all_val(vals: List<Val>) -> Val {
         let list? = array_id(vals[0]) else { return self.defect_val("a list of tasks that is not a list survived typing") }
         let open? = self.arrays[list].find((v) -> !self.task_spent(v)) else { return Val.I(0) }
-        self.waited_on(self.task_of(open))
+        self.settled(self.task_of(open))
+    }
+
+    /// A YIELD WAITS FOR NOTHING, SO A CANCEL CUTS NOTHING: one that
+    /// stands is met here, and the task still lets the others run —
+    /// unless a deferred call is running shielded.
+    fn yield_met() {
+        let t = self.tasks[self.running]
+        if t.asked == 0 || avra_vtask_shielded(t.vt) != 0 { return }
+        avra_vtask_set_unwinding(t.vt, 1)
+        self.unwind_met(t.vt)
     }
 
     fn fiber_yield_val() -> Val {
         self.rooted()
         if self.woke() { return Val.I(0) }
+        self.yield_met()
         avra_vtask_ready(self.tasks[self.running].vt)
         self.parking = true
         Val.I(0)
@@ -364,6 +387,7 @@ impl Machine {
     fn fiber_sleep_val(vals: List<Val>) -> Val {
         self.rooted()
         if self.woke() { return Val.I(0) }
+        if self.whole(vals[0]) < 1 { self.yield_met() }
         avra_vtask_sleep(self.tasks[self.running].vt, self.whole(vals[0]))
         self.policy_parked()
         Val.I(0)
@@ -681,15 +705,20 @@ impl Machine {
     /// runs simply ends, with no answer.
     fn task_cancel_val(vals: List<Val>) -> Val {
         self.rooted()
-        let id = self.task_of(vals[0])
-        if self.tasks[id].done { return Val.I(0) }
-        if !self.tasks[id].unrun() {
-            avra_vtask_cancel(self.tasks[id].vt, self.tasks[self.running].id)
-            return Val.I(0)
-        }
-        self.tasks[id].cancelled = true
-        self.unrun_ended(id, Val.N, self.tasks[self.running].id)
+        self.cancels(self.task_of(vals[0]), self.tasks[self.running].id)
         Val.I(0)
+    }
+
+    /// The task `id` cancelled by `by`.
+    fn cancels(id: int, by: int) {
+        if self.tasks[id].done { return }
+        if self.tasks[id].unrun() {
+            self.tasks[id].cancelled = true
+            self.unrun_ended(id, Val.N, by)
+            return
+        }
+        avra_vtask_cancel(self.tasks[id].vt, by)
+        self.tasks[id].asked = by + 1
     }
 
     /// The slot a key names in the running task, or null past the four.
