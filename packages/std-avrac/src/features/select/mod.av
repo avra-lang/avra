@@ -1,0 +1,37 @@
+//! `select { arm -> body … }` — one wait over several: the arms are
+//! tried TOP TO BOTTOM, and the first that is ready runs its body. An
+//! arm is a head to wait on (`stop`), a head whose answer it binds
+//! (`r in job`, `i, page in mirrors`), either under a guard (`if`), or
+//! `else ->`, which runs when nothing is ready. `@fair select` takes
+//! the arm ready longest instead. The front end alone stands here: a
+//! `select` parses, prints, and is refused by name where it is typed.
+use features.{LanguageFeature, BuilderRow}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn select() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name          | build
+        "select_expr" | build_select
+        "select_stmt" | build_select_stmt
+        "wait_arm"    | build_wait_arm
+        "else_arm"    | build_else_arm
+        "any_arm"     | build_any_arm
+    }
+    let codes = table<DiagCode> {
+        kind          | summary
+        "flow.select" | "a `select` waits on its arms, top to bottom"
+    }
+    LanguageFeature select {
+        gram: grammar {
+            primary = ( f:PKG )? "select" "{" ( BREAK | "," | a:sel_arm )* "}" @expect("}", "expected `}` to close the `select`") -> select_expr(f, a)
+            stmt = f:PKG "select" "{" ( BREAK | "," | a:sel_arm )* "}" END -> select_stmt(f, a)
+            sel_arm = "else" "->" v:expression -> else_arm(v)
+            sel_arm = "_" "->" v:expression -> any_arm(v)
+            sel_arm = ( ( ix:NAME "," )? ( w:"_" | b:NAME ) "in" )? h:expression ( "if" g:expression )? "->" v:expression -> wait_arm(ix, w, b, h, g, v)
+        }
+        builders: rows
+        diags: codes
+    }
+    select
+}

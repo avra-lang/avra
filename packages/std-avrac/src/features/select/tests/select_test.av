@@ -1,0 +1,80 @@
+// The front end, vertically: every arm form parses and prints back as
+// written, the laws a builder holds are spoken in its words, and a
+// `select` that parses is refused by name where it is typed.
+use @std.avrac.testing.{projected, refused_with}
+
+/// Whether `source` is its own canonical form — it parsed, and the
+/// printer said it back unchanged.
+fn stands(source: string) -> bool {
+    projected(source) == source
+}
+
+spec "features/select" {
+    given "the arm forms" {
+        then "a bare head" { stands("select {\n    stop -> halt()\n}\n") }
+        then "a head whose answer is bound" { stands("select {\n    r in job -> use(r)\n}\n") }
+        then "an index beside the binder" {
+            stands("select {\n    i, page in mirrors -> keep(i, page)\n}\n")
+        }
+        then "a binder that binds nothing" { stands("select {\n    _ in ts -> done()\n}\n") }
+        then "an index and no value" { stands("select {\n    i, _ in ts -> done(i)\n}\n") }
+        then "a guard before the arrow" { stands("select {\n    r in job if open -> use(r)\n}\n") }
+        then "a guard on a bare head" { stands("select {\n    stop if armed -> halt()\n}\n") }
+        then "a head made where it is written" {
+            stands("select {\n    p in spawn fetch(url) -> pages.push(p)\n}\n")
+        }
+        then "a block for a body" { stands("select {\n    limit -> {\n        return pages\n    }\n}\n") }
+        then "`else`, last" { stands("select {\n    r in job -> use(r)\n    else -> idle()\n}\n") }
+        then "several arms, in written order" {
+            stands("select {\n    stop -> halt()\n    r in job -> use(r)\n    limit -> late()\n}\n")
+        }
+    }
+    given "its positions" {
+        then "a value" { stands("let page = select {\n    page in mirrors -> page\n}\n") }
+        then "one line, commas between arms, prints one arm a line" {
+            projected("select { stop -> halt(), r in job -> use(r) }") ==
+                "select {\n    stop -> halt()\n    r in job -> use(r)\n}\n"
+        }
+        then "a trailing comma" {
+            projected("select { stop -> halt(), }") == "select {\n    stop -> halt()\n}\n"
+        }
+    }
+    given "the `@fair` mark" {
+        then "on a statement" { stands("@fair select {\n    a in left -> merge(a)\n}\n") }
+        then "on a value" { stands("let v = @fair select {\n    a in left -> a\n}\n") }
+    }
+    given "what a builder refuses" {
+        then "a catch-all arm" {
+            refused_with(
+                "select {\n    _ -> 1\n}",
+                "a `select` has no catch-all — `else ->` runs when nothing is ready",
+            )
+        }
+        then "an `else` arm that is not last" {
+            refused_with(
+                "select {\n    else -> 1\n    stop -> 2\n}",
+                "the `else` arm ends a `select` — move it last",
+            )
+        }
+        then "two `else` arms" {
+            refused_with("select {\n    else -> 1\n    else -> 2\n}", "a `select` has ONE `else` arm")
+        }
+        then "another mark" {
+            refused_with(
+                "let v = @slow select {\n    else -> 1\n}",
+                "a `select` reads one mark, `@fair` — `@slow` is not it",
+            )
+        }
+    }
+    given "typing" {
+        then "a parsed `select` is refused by name, once" {
+            refused_with("select {\n    else -> 1\n}", "`select` is parsed and not yet lowered")
+        }
+        then "nothing inside it is read — an undefined name there says nothing more" {
+            refused_with(
+                "select {\n    r in nowhere -> lost(r)\n}",
+                "`select` is parsed and not yet lowered",
+            )
+        }
+    }
+}
