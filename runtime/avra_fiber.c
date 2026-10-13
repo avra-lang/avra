@@ -265,10 +265,11 @@ static int64_t* task_cells(void* task) { return ((AvraArray*)task)->data; }
 // READINESS IS A STAMP, AND THE STAMP IS A COUNTER, NEVER THE CLOCK: 0
 // while a thing is not ready, else when it became so — one count for
 // the process, drawn where a task ends answered, so a seed and a frozen
-// clock change nothing about it. 1 is before every event: a time that
-// is due.
-enum { STAMP_DUE = 1 };
-static int64_t g_stamp = STAMP_DUE;
+// clock change nothing about it. THE LEAST STAMP IS THE OLDEST. A time
+// that has come was never seen coming, so it has no place in the count:
+// its stamp is below zero — before every event — and ordered by its
+// instant among its own.
+static int64_t g_stamp = 0;
 
 // The switch reads these three by their place.
 _Static_assert(offsetof(Fiber, sp) == 0 && offsetof(Fiber, floor) == 8 && offsetof(Fiber, canary) == 16, "the switch reads a fiber's first three words");
@@ -1937,12 +1938,18 @@ int64_t avra_wait_enter(const char* site) {
 // cancelled.
 int64_t avra_task_since(void* task) { return task_cells(task)[TASK_SINCE]; }
 
-// A time that has come is ready before every event; one that has not
-// is not ready.
+// A time that has come is ready before every event, the earlier
+// instant first; one that has not is not ready.
 int64_t avra_time_since(int64_t at_ns) {
     if (g_scan_now == 0) g_scan_now = now_ns();
-    return at_ns <= g_scan_now ? STAMP_DUE : 0;
+    return at_ns <= g_scan_now ? (at_ns | INT64_MIN) : 0;
 }
+
+// The next stamp, for a thing found ready that no task's end here
+// stamped — a period found due, and THE END OF A TASK THE EVALUATOR
+// RUNS, whose record is the evaluator's: it queues behind every event
+// before it and ahead of every one after, compiled or evaluated.
+int64_t avra_stamp_next(void) { return ++g_stamp; }
 
 // Whether a park on the set can ever end: an arm is filed, or the set
 // is claimed already.

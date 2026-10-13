@@ -116,7 +116,11 @@ int64_t avra_wait_park(void);
 // cancel that stands, `-1:1` past a limit. An arm's readiness is a
 // stamp: 0 not ready, else when it became so, least first.
 // `avra_task_since` is a task's — 0 while it lives and when it ended
-// cancelled; `avra_time_since` a time's — due, it is before every task.
+// cancelled; `avra_time_since` a time's — due, it is below zero: before
+// every task, the earlier instant first. `avra_stamp_next` draws the
+// next stamp for a thing found ready that no task's end here stamped: a
+// period found due, and a virtual task's end, which the evaluator stamps
+// from this one count.
 // `rest` parks on the arms filed and answers the claim, which is a hint:
 // the caller scans again. With nothing filed it traps. `site` is where
 // the wait was written: the task's record keeps the text, and a listing
@@ -124,6 +128,7 @@ int64_t avra_wait_park(void);
 int64_t avra_wait_enter(const char* site);
 int64_t avra_task_since(void* task);
 int64_t avra_time_since(int64_t at_ns);
+int64_t avra_stamp_next(void);
 int64_t avra_wait_rest(void);
 
 // A gate: a queue of waiters in memory, owned.

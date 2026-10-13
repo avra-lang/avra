@@ -1588,7 +1588,7 @@ static void stamps_follow_the_ends(void) {
     avra_task_cancel(cut_running);
     avra_task_settle(cut_running);
     CHECK(avra_task_since(live) == 0, "a live task is not ready");
-    CHECK(avra_task_since(first) > 1, "an answered task's stamp is after every due time's");
+    CHECK(avra_task_since(first) > 0, "an answered task's stamp is above zero");
     CHECK(avra_task_since(first) < avra_task_since(ran) && avra_task_since(ran) < avra_task_since(timed) && avra_task_since(timed) < avra_task_since(last),
         "each end that answered — another's answer, a body's own, a timer's — draws the next stamp");
     CHECK(avra_task_done(cut) == 1 && avra_task_since(cut) == 0, "a task nothing ran that ended cancelled is done and never ready");
@@ -1603,11 +1603,11 @@ static void stamps_follow_the_ends(void) {
 static void a_due_time_is_ready_first(void) {
     int64_t soon = avra_now_ns() + 20 * 1000000;
     CHECK(avra_wait_enter("pkg/main.av:7") == 0, "a scan begins with nothing standing");
-    CHECK(avra_time_since(avra_now_ns() - 1) == 1, "a time that has come is ready, under every task's stamp");
+    CHECK(avra_time_since(avra_now_ns() - 1) < 0, "a time that has come is ready, below every task's stamp");
     CHECK(avra_time_since(soon) == 0, "a time to come is not");
     avra_fiber_sleep(30);
     CHECK(avra_time_since(soon) == 0, "one scan reads the clock once: a time that came since is not seen by it");
-    CHECK(avra_wait_enter("pkg/main.av:7") == 0 && avra_time_since(soon) == 1, "and the next scan sees it");
+    CHECK(avra_wait_enter("pkg/main.av:7") == 0 && avra_time_since(soon) < 0, "and the next scan sees it");
 }
 
 static void* scans_for_ever(void* self) {
@@ -1712,6 +1712,62 @@ static void a_cancelled_member_is_passed_over(void) {
     joined(other);
     avra_rc_release(g_task);
     avra_rc_release(g_pending);
+}
+
+// The oldest of `n` stamps: the least that is not 0, or -1.
+static int oldest(const int64_t* since, int n) {
+    int best = -1;
+    for (int i = 0; i < n; i++) if (since[i] != 0 && (best < 0 || since[i] < since[best])) best = i;
+    return best;
+}
+
+// TIMES THAT HAVE COME GO FIRST, THE EARLIER INSTANT AHEAD: beside a
+// task that answered long before, and whichever is asked first.
+static void due_times_go_first(void) {
+    void* done = ended_task();
+    int64_t now = avra_now_ns();
+    CHECK(avra_wait_enter("pkg/main.av:7") == 0, "a scan begins");
+    int64_t since[] = { avra_task_since(done), avra_time_since(now - 1000), avra_time_since(now - 5000), avra_time_since(now + 5000000000LL) };
+    CHECK(since[3] == 0, "a time to come is not ready");
+    CHECK(oldest(since, 4) == 2, "of a task that answered and two times that have come, the earlier time is the oldest");
+    since[2] = 0;
+    CHECK(oldest(since, 4) == 1, "then the later time, still ahead of the task");
+    avra_rc_release(done);
+}
+
+// A DRAWN STAMP QUEUES WITH THE EVENTS: behind the task that answered
+// before it was drawn, ahead of the one that answered after.
+static void a_drawn_stamp_queues_with_the_events(void) {
+    void* before = ended_task();
+    int64_t drawn = avra_stamp_next();
+    void* after = ended_task();
+    CHECK(avra_task_since(before) < drawn && drawn < avra_task_since(after), "a stamp drawn between two answers stands between them");
+    CHECK(avra_stamp_next() > avra_task_since(after), "and the next drawn is the newest");
+    avra_rc_release(before);
+    avra_rc_release(after);
+}
+
+// OLDEST-READY FIRST HAS A HARD BOUND: with every arm ready and each
+// taken arm made ready anew — its stamp the newest — no arm is passed
+// over more than arms - 1 times, and each is passed over that often.
+static void oldest_ready_is_bounded(void) {
+    enum { ARMS = 5, TURNS = 10000 };
+    void* arm[ARMS];
+    int passed[ARMS] = {0}, most = 0, least = ARMS;
+    for (int i = 0; i < ARMS; i++) arm[i] = ended_task();
+    for (int turn = 0; turn < TURNS; turn++) {
+        int64_t since[ARMS];
+        for (int i = 0; i < ARMS; i++) since[i] = avra_task_since(arm[i]);
+        int a = oldest(since, ARMS);
+        if (turn >= ARMS) { if (passed[a] > most) most = passed[a]; if (passed[a] < least) least = passed[a]; }
+        for (int i = 0; i < ARMS; i++) passed[i] += i != a;
+        passed[a] = 0;
+        avra_rc_release(arm[a]);
+        arm[a] = ended_task();
+    }
+    CHECK(most == ARMS - 1, "no ready arm is passed over more than arms - 1 times in ten thousand turns");
+    CHECK(least == ARMS - 1, "and none is taken sooner: the oldest goes first every turn");
+    for (int i = 0; i < ARMS; i++) avra_rc_release(arm[i]);
 }
 
 // ── on one instant the scope wins ───────────────────────────────
@@ -3210,6 +3266,9 @@ int main(int argc, char** argv) {
     in_child_within("a scan hears a limit", a_scan_hears_a_limit, 10);
     in_child_within("the scan outranks the claim", the_scan_outranks_the_claim, 10);
     in_child_within("a cancelled member is passed over", a_cancelled_member_is_passed_over, 10);
+    in_child_within("due times go first", due_times_go_first, 10);
+    in_child_within("a drawn stamp queues with the events", a_drawn_stamp_queues_with_the_events, 10);
+    in_child_within("oldest-ready is bounded", oldest_ready_is_bounded, 10);
     on_virtual_clock("a limit wins its instant", a_limit_wins_its_instant);
     in_child_within("a counted site is kept", a_counted_site_is_kept, 10);
     in_child_within("overflow waiters are kept and trimmed", overflow_waiters_are_kept_and_trimmed, 10);

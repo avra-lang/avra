@@ -261,6 +261,25 @@ static void a_virtual_tasks_sites_are_kept(void) {
     CHECK(avra_mem_live() == before, "and lets both go as it goes");
 }
 
+// A VIRTUAL TASK'S END AND A COMPILED ONE'S SHARE ONE ORDER: the
+// evaluator stamps its own task's end from the count a compiled end
+// draws from, so the three stand in the order they ended.
+static void ends_of_both_kinds_share_one_order(void) {
+    void* unit = avra_array_sized(1);
+    avra_array_push(unit, 0);
+    void* first = avra_task_pending();
+    avra_task_answer(first, unit);
+    int64_t t = avra_vtask_new();
+    int64_t virtual_end = avra_stamp_next();
+    avra_vtask_end(t);
+    void* last = avra_task_pending();
+    avra_task_answer(last, unit);
+    CHECK(avra_task_since(first) < virtual_end && virtual_end < avra_task_since(last), "a virtual task's end stands between the compiled ends before and after it");
+    avra_rc_release(unit);
+    avra_rc_release(first);
+    avra_rc_release(last);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -293,6 +312,7 @@ int main(void) {
     a_standing_cancel_at_a_park();
     a_virtual_scan();
     a_virtual_tasks_sites_are_kept();
+    ends_of_both_kinds_share_one_order();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);
