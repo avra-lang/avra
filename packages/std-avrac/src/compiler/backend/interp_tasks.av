@@ -104,6 +104,9 @@ type Job = {
     // who ended it: its own id, or the id of the task that answered or
     // cancelled it (a scope's id when a limit passed)
     ended_by: int,
+    // when it answered, among the run's answers; 0 while it lives and
+    // for one that ended cancelled
+    since: int,
     // a wait row filed for it and it has not parked on its set: one
     // set at a time, so no other wait may begin
     arming: bool,
@@ -134,6 +137,7 @@ fn job_of(vt: int, id: int, record: int, at: Place?, frames: List<List<Val?>>) -
         clocked: false,
         cancelled: false,
         ended_by: 0,
+        since: 0,
         arming: false,
     }
 }
@@ -456,6 +460,7 @@ impl Machine {
         self.tasks[id].ended_by = by
         if t.record >= 0 { self.arrays[t.record].set(2, answer) }
         self.tasks[id].done = true
+        if !self.tasks[id].cancelled { self.tasks[id].since = self.stamped() }
         self.tasks[id].joiners = []
         for v in t.slots { self.releases_val(v) }
         self.tasks[id].slots = []
@@ -611,6 +616,18 @@ impl Machine {
     fn claimed(vt: int) -> Val {
         self.tasks[self.running].arming = false
         Val.I(avra_vtask_claim(vt))
+    }
+
+    /// The next answer's stamp: answers are counted as they are made.
+    fn stamped() -> int {
+        self.answers = self.answers + 1
+        self.answers
+    }
+
+    /// When the task answered: its stamp, or 0.
+    fn task_since_val(vals: List<Val>) -> Val {
+        self.rooted()
+        Val.I(self.tasks[self.task_of(vals[0])].since)
     }
 
     /// A scan begins: a standing cancel or a passed limit is heard
