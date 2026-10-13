@@ -53,6 +53,7 @@ MUTATIONS = [
     ("a cut descriptor park sets no unwind bit", "        run_next();\n        if (claimed_by_cancel(self)) cancel_met();\n", "        run_next();\n"),
     ("a park a cancel claims sets no unwind bit", "    if (park_begun(self)) run_next();\n    if (claimed_by_cancel(self)) cancel_met();\n", "    if (park_begun(self)) run_next();\n"),
     ("a standing cancel lets a sleep park", "    if (cancel_stands(self)) return;\n    alone(self);\n    waits_until(", "    alone(self);\n    waits_until("),
+    ("a standing cancel stops a park and sets no bit", "    cancel_met();\n    return 1;\n}", "    return 1;\n}"),
     ("a standing cancel lets a join park", "    if (!deaf && cancel_stands(self)) return cells;\n", ""),
     ("a standing cancel lets a descriptor park", "    if (!f->virtual && cancel_stands(f)) { f->timed_out = 1; return 0; }\n", ""),
     ("a yield is no cancel point", "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n", "    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n"),
