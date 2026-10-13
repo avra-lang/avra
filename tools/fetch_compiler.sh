@@ -67,6 +67,20 @@ url_for() {
     printf '%s' "${FETCH_URL:-https://github.com/${GITHUB_REPOSITORY:-avra-lang/avra}/releases/download/avrac-KEY/avra}" | sed "s|KEY|$1|"
 }
 
+# A file:// asset is a local copy (the fixtures); any other URL is downloaded or probed.
+fetch_asset() {
+    case "$1" in
+        file://*) cp "${1#file://}" "$2" ;;
+        *) curl -fsSL --retry 2 -o "$2" "$1" 2>/dev/null ;;
+    esac
+}
+asset_there() {
+    case "$1" in
+        file://*) [ -f "${1#file://}" ] ;;
+        *) curl -fsI --retry 2 "$1" >/dev/null 2>&1 ;;
+    esac
+}
+
 # The key a commit's compiler source has: its files as the index of that commit holds them.
 key_of() {
     index="$build/fetch.index"
@@ -81,7 +95,7 @@ refuse() {
 }
 
 if [ "${1:-}" = --probe ]; then
-    curl -fsI --retry 2 "$(url_for "${2:?fetch_compiler: --probe takes the key}")" >/dev/null 2>&1
+    asset_there "$(url_for "${2:?fetch_compiler: --probe takes the key}")"
     exit $?
 fi
 if [ "${1:-}" = --key-of ]; then
@@ -91,9 +105,9 @@ fi
 if [ "${1:-}" = --route ]; then
     # A dirty compiler source has no published key: the merge-base's is the one to fetch.
     dirty=${2:?}; hk=${3:-}; mk=${4:-}
-    if [ "$dirty" = 0 ] && [ -n "$hk" ] && curl -fsI --retry 2 "$(url_for "$hk")" >/dev/null 2>&1; then
+    if [ "$dirty" = 0 ] && [ -n "$hk" ] && asset_there "$(url_for "$hk")"; then
         echo "published:$hk"
-    elif [ -n "$mk" ] && curl -fsI --retry 2 "$(url_for "$mk")" >/dev/null 2>&1; then
+    elif [ -n "$mk" ] && asset_there "$(url_for "$mk")"; then
         echo "mergebase:$mk"
     else
         echo build
@@ -121,7 +135,7 @@ fi
 
 url=$(url_for "$key")
 fetched="$build/avra.fetch"
-curl -fsSL --retry 2 -o "$fetched" "$url" 2>/dev/null ||
+fetch_asset "$url" "$fetched" ||
     refuse "no published compiler for $sha (key $key): $url did not answer"
 chmod +x "$fetched"
 "$fetched" --version >/dev/null 2>&1 || refuse "the compiler published for $sha does not run here"

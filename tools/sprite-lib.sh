@@ -9,7 +9,7 @@ sprite_cli=${AVRA_SPRITE_CLI:-sprite}
 remote_script=$(cat "$here/sprite-remote.sh")
 ci_packages=$(grep -v '^#' "$here/../.github/ci/packages.txt" | tr '\n' ' ')
 # A Sprite also carries the profilers (never the checks' image).
-sprite_packages="$ci_packages $(grep -v '^#' "$here/../.github/ci/packages-dev.txt" | tr '\n' ' ')"
+sprite_packages="$ci_packages $(grep -v '^#' "$here/../.github/ci/packages-dev.txt" 2>/dev/null | tr '\n' ' ')"
 
 # sx <sprite> <seconds> <command...>
 sx() {
