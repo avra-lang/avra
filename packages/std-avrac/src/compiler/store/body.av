@@ -14,15 +14,12 @@ use @std.path.{joined_path}
 use @std.relation.stable.{writer, reader, Writer}
 use @std.relation.engine.{list_cell, map_cell}
 use @std.text.{parse_int}
-use core.{sorted_by, text_before}
+use core.{distinct, sorted_by, text_before}
 use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
 const IDX_MAGIC: string = "AVRABIDX"
 const BODY_VERSION: int = 3
-
-/// §6.1's families, in one fixed order so a body's bytes are deterministic.
-const FAMILIES: List<string> = ["sig", "fp", "unit", "warn", "rows"]
 
 /// The path a sealed body stands at.
 export fn body_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.pack") }
@@ -256,8 +253,9 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: 
         w.int(p.at)
         w.int(p.len)
     }
-    w.count(FAMILIES.length)
-    for fam in FAMILIES {
+    let families = sorted_by(distinct([record_of(pack, k)?.family ?? "" for k in keys]), text_before)
+    w.count(families.length)
+    for fam in families {
         w.text(fam)
         let mine = [k for k in keys if record_of(pack, k)?.family == fam]
         w.count(mine.length)
