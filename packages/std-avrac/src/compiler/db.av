@@ -52,6 +52,7 @@
 //! warnings are already-serialized text by the time either reaches
 //! here, so their row is the text itself — no codec to write or
 //! derive, the wire format IS the value.
+use core.debug.{qtrace, traced}
 use core.{
     wire_fields,
     watched_kernel,
@@ -697,6 +698,12 @@ impl Db {
     }
 
     fn recalled(store: Store, kind: DbKind, name: string) -> DbRow? {
+        let found = self.recalled_row(store, kind, name)
+        if traced() { qtrace("Q\tdb\t${if found == null { "miss" } else { "hit" }}\t${kind.tag()}\n") }
+        found
+    }
+
+    fn recalled_row(store: Store, kind: DbKind, name: string) -> DbRow? {
         let text? = store.get(Stored.Rows, durable_key(kind, name)) else { return null }
         let row? = decoded(kind, name, text) else { return null }
         if !still_valid(row) { return null }
