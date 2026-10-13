@@ -1,0 +1,34 @@
+// A SERVER WHOSE SERVING TASK IS CANCELLED LEAVES NO CONNECTION BEHIND:
+// an open one is closed, so its client reads the end, and none is
+// counted.
+use @std.net.{NetError, Read, connect, listen}
+use @std.time.{ms, secs, sleep}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Server, served, timing}
+
+type SuQuiet = {}
+
+fn su_serves(s: Server<SuQuiet>) -> bool { s.run(cores: 1) is .Ok }
+
+fn su_unwound() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s = served(l, () -> SuQuiet {}, limits(), timing()) { _a, q -> text(200, "ok") }
+    let t = spawn su_serves(s)
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    c.write("GET / HT".bytes())?
+    sleep(ms(50))
+    let open = s.connections()
+    t.cancel()
+    sleep(ms(50))
+    let ended = c.try_read(16)? is .Eof
+    c.close()?
+    s.stop()
+    .Ok("${open} ${s.connections()} ${ended}")
+}
+
+spec "std.http a server's task unwound" {
+    given "one connection open, mid-request" {
+        then "it is closed and counted out" { (su_unwound() catch e -> e.describe().message) == "1 0 true" }
+    }
+}

@@ -633,9 +633,8 @@ fn denied<T>(host: string, port: int, a: Address) -> Result<T, NetError> {
 fn looked_up(host: string, timeout: Duration) -> Result<List<Address>, NetError> {
     let h = avra_net_lookup(host)
     if h < 0 { return failed("resolve", host, h) }
-    let answer: Result<List<Address>, NetError> = if awaited(h, now_ms() + timeout.ms) { answered(host, h) } else { timed_out("resolve", host) }
-    let _ = avra_net_lookup_close(h)
-    answer
+    defer avra_net_lookup_close(h)
+    if awaited(h, now_ms() + timeout.ms) { answered(host, h) } else { timed_out("resolve", host) }
 }
 
 /// Whether lookup `h` answered by `deadline`, the task parked on its
@@ -700,20 +699,18 @@ fn attempt_delay() -> int { 250 }
 fn raced(addresses: List<Address>, port: int, deadline: int) -> int {
     let p = avra_net_poll_new()
     if p < 0 { return p }
+    defer avra_net_close(p)
     mut race = Race {
         poller: p,
         order: interleaved(addresses),
         port: port,
         next: 0,
-        live: [],
         last: 0 - avra_errno_invalid(),
         due: now_ms(),
         deadline: deadline,
     }
-    let won = race.run()
-    for fd in race.live { if fd != won { let _ = avra_net_close(fd) } }
-    let _ = avra_net_close(p)
-    won
+    defer race.abandoned()
+    race.run()
 }
 
 /// A race in flight: the poller its attempts are watched on, the next
@@ -724,7 +721,7 @@ type Race = {
     order: List<Address>,
     port: int,
     next: int,
-    live: List<int>,
+    live: Cell<List<int>> = Cell.new([]),
     last: int,
     due: int,
     deadline: int,
@@ -738,6 +735,11 @@ impl Race {
         answer
     }
 
+    /// Every attempt still in flight, closed.
+    fn abandoned() {
+        for fd in self.live.get() { let _ = avra_net_close(fd) }
+    }
+
     /// One turn: an attempt started if one is due, the task parked
     /// until an attempt settles, the next is due or the deadline, and
     /// what settled read. An answer ends the race.
@@ -745,7 +747,7 @@ impl Race {
         let now = now_ms()
         if now >= self.deadline { return 0 - avra_errno_timed_out() }
         if self.waiting() && now >= self.due { self.start(now) }
-        if self.live.is_empty() { return if self.waiting() { null } else { self.last } }
+        if self.live.get().is_empty() { return if self.waiting() { null } else { self.last } }
         let until = if self.waiting() && self.due < self.deadline { self.due } else { self.deadline }
         if avra_fiber_park_fd(self.poller, 0, until - now) == 0 && now_ms() < until {
             return 0 - avra_errno_timed_out()
@@ -778,14 +780,17 @@ impl Race {
         let fds = [avra_net_event_fd(i) for i in 0..if n < 0 { 0 } else { n }]
         let errs = [avra_net_dialed(fd) for fd in fds]
         let won = errs.index_of(0)
-        if won >= 0 { return fds[won] }
+        if won >= 0 {
+            self.live.set([f for f in self.live.get() if f != fds[won]])
+            return fds[won]
+        }
         for i, fd in fds { self.dropped(fd, errs[i]) }
         null
     }
 
     mut fn dropped(fd: int, err: int) {
         self.last = err
-        self.live = [f for f in self.live if f != fd]
+        self.live.set([f for f in self.live.get() if f != fd])
         let _ = avra_net_close(fd)
         self.due = now_ms()
     }
@@ -987,10 +992,10 @@ impl Bell {
         let budget = timeout?.ms
         if spent(budget) { return timed_out("wait", "a bell") }
         self.waiting.set(self.waiting.get() + 1)
+        defer self.waiting.set(self.waiting.get() - 1)
         avra_wait_gate(self.gate.get(), rung_arm, 0)
         if budget != null { avra_wait_until(wake_at(budget!), timed_arm, 0) }
         let claim = avra_wait_park()
-        self.waiting.set(self.waiting.get() - 1)
         if claim == rung_arm { return .Ok(-1) }
         if claim == cancelled_claim { avra_trap("a bell's wait has no answer for a cancel") }
         timed_out("wait", "a bell")

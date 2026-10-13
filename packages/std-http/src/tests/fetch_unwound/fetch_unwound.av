@@ -1,0 +1,32 @@
+//! proves: a fetch unwound while it waits for its reply hands back
+//! what it held — the pool's slot is free and the connection closed,
+//! so the server reads the end
+use @std.net.{Conn, NetError, Read, listen}
+use @std.time.{ms, sleep}
+use @std.http.fetch.{Options, fetch}
+use @std.http.pool.{Pool, origin_of}
+
+/// Whether the peer has closed: everything it wrote read, then the end.
+fn ended(c: Conn) -> Result<bool, NetError> {
+    match c.try_read(65536)? { .Data(_) -> ended(c), .Eof -> true, .Pending -> false }
+}
+
+fn fetches(url: string, p: Pool) -> bool { fetch(.Get, url, .Empty, Options { pool: p }) is .Ok }
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let p = Pool {}
+    let origin = origin_of("http", "127.0.0.1", l.port)
+    let t = spawn fetches("http://127.0.0.1:${l.port}/", p)
+    let peer = l.accept()?
+    sleep(ms(50))
+    let held = p.lent(origin)
+    t.cancel()
+    sleep(ms(50))
+    let closed = ended(peer)?
+    let _ = peer.close()
+    l.close()?
+    .Ok("${held} ${p.lent(origin)} ${closed}")
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"
