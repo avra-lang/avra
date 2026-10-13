@@ -271,16 +271,12 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: 
 /// a lookup skips every name it was not asked for without decoding a row.
 fn reverse_section(pack: Pack, keys: List<string>) -> Bytes {
     mut runs: Map<string, List<int>> = {}
-    mut ordinal = 0
-    for fam in FAMILIES {
-        for k in keys {
-            let h? = record_of(pack, k) else { continue }
-            if h.family != fam { continue }
-            for line in reads_of(pack, h) {
-                let name? = read_name(line) else { continue }
-                runs.set(name, (runs.get(name) ?? []).concat([ordinal]))
-            }
-            ordinal = ordinal + 1
+    let listed = [k for fam in FAMILIES for k in keys if record_of(pack, k)?.family == fam]
+    for ordinal, k in listed {
+        let h? = record_of(pack, k) else { continue }
+        for line in reads_of(pack, h) {
+            let name? = read_name(line) else { continue }
+            runs.set(name, (runs.get(name) ?? []).concat([ordinal]))
         }
     }
     let w = writer()
