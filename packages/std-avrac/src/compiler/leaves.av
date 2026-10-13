@@ -2,7 +2,24 @@
 //! read by a name that outlives the process and the digest of the value read. A relation
 //! is named by its rows; a compiler family is named here, by the durable key of the
 //! declaration it answers for and its settled hash.
-use core.{DeclId, FileId, distinct, joined}
+use core.{
+    TypeId,
+    sorted_texts,
+    fp_str,
+    traced,
+    DeclId,
+    FileId,
+    distinct,
+    joined,
+    flatten,
+    wreck,
+    some_list,
+}
+use diagnostics.{Diag, Voices}
+use @std.errors.{Loc, Frame, Edit}
+use compiler.rel_loc.{anchoring_wire}
+use compiler.store.{Store, Stored, Read, node_key}
+use compiler.voices.{type_facts_fp, diag_fp}
 use @std.relation.db.{AnswerRef}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
@@ -31,14 +48,18 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }) ?? ws
-                .sig_digest(arg),
+            hash: (arg: int) -> ws.sig_digest(arg),
         }
     }
 
+    /// A type's digest is its spelling, which another process spells alike.
+    fn type_digest(t: TypeId) -> int { fp_str(self.type_ref(t)) }
+
+    /// A signature's digest is its wire: types by their spelling, never by the interner's index.
     fn sig_digest(arg: int) -> int? {
         if arg < 0 || arg >= self.decls.sigs.get().length { return null }
-        sig_hash(self.decls.sigs.get()[arg])
+        let s? = self.decls.sigs.get()[arg] else { return null }
+        fp_str(self.decl_sig_wire(s))
     }
 
     /// The consts' types, spelled by the const's declaration and the seats it was asked
@@ -107,8 +128,16 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.decls.bucket_label(arg),
             arg: (spelled: string) -> ws.decls.bucket_standing(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.bucket_digest(arg),
         }
+    }
+
+    /// A bucket's digest is its members' identities, which another process names alike.
+    fn bucket_digest(b: int) -> int? {
+        let name? = self.decls.bucket_label(b) else { return null }
+        fp_str(
+            joined(sorted_texts([self.decl_ref(x.id) for x in self.decls.named_rows(name)]), "\n"),
+        )
     }
 
     fn spelled_file(arg: int) -> string? {
@@ -157,5 +186,108 @@ impl Workspace {
 
     fn family_name(ordinal: int) -> string {
         [f.name for f in Family.all() if f.ordinal == ordinal].first() ?? "family ${ordinal}"
+    }
+
+    /// What a body's typing says, placed by declaration: the facts' fold, then each voice with
+    /// its places kept relative to the declaration holding them. Absent when a voice speaks at
+    /// a place no declaration holds.
+    fn typed_says(d: DeclId) -> string? {
+        let facts = self.typed(d)
+        let placed = [self.voice_says(v) for v in facts.voices.list]
+        if placed.any(it == null) { return null }
+        joined(
+            ["${type_facts_fp(facts with { voices: Voices { list: [] } })}"]
+                .concat([p! for p in placed]),
+            "\n",
+        )
+    }
+
+    fn voice_says(v: Diag) -> string? {
+        let frames = [v.primary].concat(v.secondary)
+        let locs = flatten([some_list(f.loc) for f in frames])
+            .concat(flatten([[e.loc for e in s.edits] for s in v.suggestions]))
+        let wires = [anchoring_wire(self.anchoring(l)) for l in locs]
+        if wires.any(it == anchoring_wire(.Unplaceable)) { return null }
+        "${diag_fp(unplaced(v))}\t${joined(wires, ",")}"
+    }
+
+    /// Typed answers standing on names, kept as saved answers and judged against what a
+    /// fresh typing says: a kept answer still valid must equal it, or a read is missing.
+    fn typed_said_pass(store: Store) {
+        let rdb = self.decls.rows_db.get()
+        mut settled = 0
+        mut stood = 0
+        mut why: Map<string, int> = {}
+        mut valid = 0
+        mut recomputed = 0
+        mut unplaceable = 0
+        mut mismatched = 0
+        for arg in 0..self.decls.decl_count() {
+            let reads = self.db.kernel.deps_of(Key { family: Family.Typed.ordinal, arg: arg })
+            if reads.is_empty() { continue }
+            settled = settled + 1
+            let leaves? = rdb.leaves_of(reads) else { continue }
+            let d = DeclId { index: arg }
+            stood = stood + 1
+            let says? = self.typed_says(d) else {
+                unplaceable = unplaceable + 1
+                continue
+            }
+            let row = node_key(Stored.Unit, ["typedsaid", self.decl_ref(d)])
+            let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
+            if kept == null {
+                recomputed = recomputed + 1
+                let cause = self.first_moved(store, row, (n) -> rdb.leaf_digest(n))
+                why.set(cause, (why.get(cause) ?? 0) + 1)
+            } else {
+                valid = valid + 1
+                if kept != says {
+                    mismatched = mismatched + 1
+                    eprintln("Q typedsaid mismatch ${self.decl_ref(d)}")
+                }
+            }
+            let _ = store
+                .keep_reading(
+                    Stored.Unit,
+                    row,
+                    says,
+                    [Read { name: l.id(), digest: l.digest_text() } for l in leaves],
+                )
+        }
+        eprintln(
+            "typedsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, unplaceable ${unplaceable}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
+        )
+        if mismatched > 0 { wreck("a valid TypedSaid differs from a fresh typing: a read is missing") }
+    }
+}
+
+/// Why a kept row does not hold: the first read it was kept with that moved or cannot be
+/// read now, by the family it names; "new" for a row never kept.
+impl Workspace {
+    fn first_moved(store: Store, row: string, now_of: fn(string) -> string?) -> string {
+        let lines? = store.reads_of(Stored.Unit, row) else { return "new" }
+        let gone = lines.find(now_of(read_name(it)) != read_digest(it))
+        if gone == null { return "unknown" }
+        let id = read_name(gone!)
+        let now = now_of(id)
+        if traced() { eprintln("Q typedsaid moved ${id} was ${read_digest(gone!)} now ${now ?? "-"}") }
+        "${id.split("\t")[1]} ${if now == null { "unreadable" } else { "moved" }}"
+    }
+}
+
+fn read_digest(line: string) -> string { line.substring(0, line.index_of(" ")) }
+
+fn read_name(line: string) -> string { line.substring(line.index_of(" ") + 1, line.length) }
+
+/// A voice with its places zeroed, which the kept places say instead.
+fn unplaced(v: Diag) -> Diag {
+    let blank = Loc { file: null, lo: 0, hi: 0 }
+    v with { primary: unplaced_frame(v.primary), secondary: [unplaced_frame(f) for f in v.secondary], suggestions: [s with { edits: [Edit { loc: blank, replacement: e.replacement } for e in s.edits] } for s in v.suggestions] }
+}
+
+fn unplaced_frame(f: Frame) -> Frame {
+    Frame {
+        label: f.label,
+        loc: if f.loc == null { null } else { Loc { file: null, lo: 0, hi: 0 } },
     }
 }
