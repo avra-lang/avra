@@ -186,6 +186,21 @@ spec "features/defers" {
             )
             ir.contains("static fn\$") && ir.contains("callptr") && !ir.contains("avra_array_sized")
         }
+        then "a cold exit with a deferred call brackets it with the shield's pair, once each" {
+            let ir = render_ir(
+                ir_of(
+                    "${puts()}fn f() -> int {\n    defer avra_puts(\"x\")\n    let u = spawn 1\n    u.await\n}\nf()",
+                ),
+            )
+            ir.split("call avra_fiber_shield_enter").length == 2 &&
+                ir.split("call avra_fiber_shield_leave").length == 2
+        }
+        then "a cold exit that defers nothing pays no shield row" {
+            let ir = render_ir(
+                ir_of("${puts()}fn f() -> int {\n    let u = spawn 1\n    u.await\n}\nf()"),
+            )
+            ir.contains("flag unwinding") && !ir.contains("avra_fiber_shield")
+        }
         then "a method call on a captured receiver needs no closure box — called directly, never through a pointer" {
             let ir = render_ir(
                 ir_of(

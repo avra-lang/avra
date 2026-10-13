@@ -177,15 +177,17 @@ impl LowerCx {
     /// The fn leaves unwinding: with a `within` open, that scope's own
     /// landing catches it — the frames inside run, and control jumps
     /// to the landing; with none, what a failure runs, then the exit.
+    /// Either way the deferred calls run shielded.
     mut fn unwinds() {
         let landing = self.within_loops.last()
         if landing == null {
             self.push_frame()
-            self.failing()
+            self.shielded(0) { cx -> cx.failing() }
             self.emit(Ins.FnExit(self.exit_answer()))
             return
         }
-        self.run_from(landing!.frame, null)
+        let floor = landing!.frame
+        self.shielded(floor) { cx -> cx.run_from(floor, null) }
         self.emit(Ins.LoopJump(self.loops.length - 1 - landing!.loop, false))
     }
 
@@ -200,6 +202,18 @@ impl LowerCx {
         let f = self.mint_shape(Type.Ptr)
         self.static_read(f, bf.sym, bf.boxes)
         self.unwind_push(f)
+    }
+
+    /// A COLD EXIT'S DEFERRED CALLS RUN UNDER THE SHIELD: the bracket
+    /// saves and clears the unwind bit, so a call inside is not cut at
+    /// its test and only a wait answers the standing cancel; its end
+    /// puts the bit back. Frames from `floor` that defer no call pay
+    /// nothing, and a program that links no scheduler emits none.
+    mut fn shielded(floor: int, run: fn(mut LowerCx) -> void) {
+        let bracket = self.checks && self.defers_a_call(floor)
+        if bracket { self.fiber_shield_enter() }
+        run(self)
+        if bracket { self.fiber_shield_leave() }
     }
 
     /// What the cold exit answers. A task's answer rides a CELL, so it
