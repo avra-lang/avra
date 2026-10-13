@@ -231,18 +231,20 @@ impl Machine {
     /// is the awaiter's.
     fn task_join_val(vals: List<Val>) -> Val {
         let id = self.task_of(vals[0])
-        if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
+        if id == self.running { return self.joined_itself() }
         if !self.tasks[id].done { return self.waited_on(id) }
         if self.tasks[id].cancelled { return self.cancel_passed(self.tasks[id].ended_by) }
         self.arrays[self.tasks[id].record][2]
     }
+
+    fn joined_itself() -> Val { self.trapped_val("a task joined itself — deadlock") }
 
     /// How the task ended, for a `catch`: the two cells of its
     /// `Cancelled` — who asked, where the cancel was met — or nothing
     /// when it answered. Parks until done, and passes no cancel on.
     fn task_join_caught_val(vals: List<Val>) -> Val {
         let id = self.task_of(vals[0])
-        if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
+        if id == self.running { return self.joined_itself() }
         if !self.tasks[id].done { return self.waited_on(id) }
         if !self.tasks[id].cancelled { return Val.N }
         self.fresh_array([Val.I(self.tasks[id].ended_by), Val.I(0)])
