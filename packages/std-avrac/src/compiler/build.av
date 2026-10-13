@@ -445,12 +445,16 @@ impl Workspace {
             .get_valid(Stored.Unit, host_fns_key(key), (name: string) -> linked_now(name, tools.tools)) else {
             return null
         }
-        if !store.has(Stored.Bin, key) || !store.place(Stored.Bin, key, staged) {
-            return null
+        if !store.has(Stored.Bin, key) { return null }
+        // A binary already standing at its place with the kept bytes is left untouched: replacing
+        // a file costs more than the hit it answers.
+        let there = digest_of_binary(binary)
+        if there == null || there != digest_of_binary(store.path(Stored.Bin, key)) {
+            if !store.place(Stored.Bin, key, staged) { return null }
+            // a stored binary is bytes, and its mode is not in them
+            let _ = avra_spawn_status("chmod", ["+x", staged])
+            if !published(staged, binary) { return null }
         }
-        // a stored binary is bytes, and its mode is not in them
-        let _ = avra_spawn_status("chmod", ["+x", staged])
-        if !published(staged, binary) { return null }
         BuildOutcome {
             binary: binary,
             warnings: warnings,

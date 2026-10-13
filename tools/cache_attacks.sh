@@ -425,6 +425,9 @@ LK() { # LK <label> <want: hit|built> -- the env is the caller's
 sleep 3
 export CC=$R/cc1
 LK "cold lk" built; LK "nothing touched" hit
+# A HIT LEAVES THE BINARY WHERE IT STANDS: the file keeps its inode (a replacement would not).
+lk_bin=$R/lk/src/main; lk_i1=$(ls -i $lk_bin | awk '{print $1}'); LK "and again" hit; lk_i2=$(ls -i $lk_bin | awk '{print $1}')
+steps=$((steps+1)); [ -n "$lk_i1" ] && [ "$lk_i1" = "$lk_i2" ] || { fails=$((fails+1)); echo "FAIL  lk: a cache hit replaced the binary it answered with (inode $lk_i1 -> $lk_i2)"; }
 printf '# a new revision of the C compiler\n' >> $R/cc1; sleep 3
 LK "the C compiler's bytes moved" built; LK "and again nothing touched" hit
 export CC=$R/cc2
