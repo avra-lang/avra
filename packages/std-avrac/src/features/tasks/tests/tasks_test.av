@@ -73,9 +73,7 @@ spec "features/tasks" {
             let text = render_ir(floored_with_errors(caught("let v = t.await catch c -> c.by\nv")).lowered())
             let parts = text.split("call avra_task_join_caught(")
             parts.length == 2 &&
-                joins_inside_else(parts[1]) &&
-                parts[1].index_of("flag unwinding") >= 0 &&
-                parts[1].index_of("flag unwinding") < parts[1].index_of("if ")
+                in_order(parts[1], ["flag unwinding", " != ", "pack ", "} else {", "call avra_task_join("])
         }
         then "an answered task answers its value, and the arm does not run" {
             answered(floored_with_errors(caught("let v = t.await catch _ -> 0\n\"\${v}\""))) == "5"
@@ -198,12 +196,15 @@ fn caught(rest: string) -> string {
     "use @std.errors.{Cancelled}\nfn w() -> int { 5 }\nlet t = spawn w()\n" + rest
 }
 
-/// Whether the join that reads an answer stands in the region's absent
-/// arm — past its `else`, never before the region opens.
-fn joins_inside_else(text: string) -> bool {
-    let at = text.index_of("call avra_task_join(")
-    let other = text.index_of("} else")
-    other >= 0 && at > other
+/// Whether each of `marks` stands in `text` past the one before it.
+fn in_order(text: string, marks: List<string>) -> bool {
+    mut rest = text
+    for m in marks {
+        let at = rest.index_of(m)
+        if at < 0 { return false }
+        rest = rest.substring(at + m.length, rest.length)
+    }
+    true
 }
 
 /// Whether the first flag-read region in `text` jumps to its landing —
