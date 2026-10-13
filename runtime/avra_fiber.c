@@ -248,7 +248,7 @@ struct Fiber {
 // answer it owns; the list and the fiber are C pointers in unowned
 // cells.
 enum { GATE_HEAD, GATE_TAIL, GATE_OPEN, GATE_CELLS };
-enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_FRAMES };
+enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_SITE, TASK_FRAMES };
 // The unwind frames a task has passed: sixteen on the record, the
 // middle dropped and counted once they fill.
 enum { UNWIND_CAP = 16, TASK_FRAMES_N = TASK_FRAMES + UNWIND_CAP, TASK_DROPPED, TASK_CELLS };
@@ -827,6 +827,10 @@ static int set_claimed(Fiber* f, int32_t arm, int32_t member, int64_t by) {
     f->claimed = 1;
     f->arm = arm;
     f->member = member;
+    // A CANCEL CLAIM IS AN EVALUATED TASK'S UNWIND BIT: it has no
+    // park row to hear the claim after the switch, where a compiled
+    // one calls `cancel_met`. `avra_vtask_unwinding` reads this field.
+    if (arm == -1 && member == 0 && f->virtual) f->unwinding = 1;
     if (TRACING) traced_claim(f, by);
     if (f->legacy) {
         f->timed_out = arm != 0;
@@ -1954,6 +1958,7 @@ static int64_t* task_awaited(void* task, int deaf) {
     waits_gate(self, task, 0, 0);
     legacy_parked(self);
     run_next();
+    if (claimed_by_cancel(self)) cancel_met();
     self->joining = NULL;
     self->deaf = 0;
     return task_cells(task);
@@ -1962,19 +1967,35 @@ static int64_t* task_awaited(void* task, int deaf) {
 __attribute__((noinline, cold, noreturn))
 static void join_refused(void) { avra_trap("a join takes a task that answers, and this one was cancelled"); }
 
-__attribute__((noinline, cold, noreturn))
-static void join_cut(void) { avra_trap("a join was cut by a cancel, and its task has not answered"); }
-
-// A JOIN TAKES A TASK THAT ANSWERS: a cancelled one has no answer, and
-// none is made up for it. A join a cancel cut has none either — until
-// the code after it tests the unwind bit, it traps.
+// A JOIN IS A CANCEL POINT: a cancel the caller's own asker left cuts
+// the park, the bit the after-call test reads is set, and no answer is
+// handed back. A JOIN TAKES A TASK THAT ANSWERS: one that ended
+// cancelled has no answer, and none is made up for it — a caller
+// already unwinding reads none, so it is refused nothing.
 void* avra_task_join(void* task) {
     int64_t* cells = task_awaited(task, 0);
-    if (!cells[GATE_OPEN]) join_cut();
-    if (cells[TASK_END] == END_CANCELLED) join_refused();
+    if (!cells[GATE_OPEN]) return NULL;
+    if (cells[TASK_END] == END_CANCELLED) {
+        if (avra_unwinding) return NULL;
+        join_refused();
+    }
     void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];
     avra_rc_retain(answer);
     return answer;
+}
+
+// A CAUGHT JOIN waits for `task` to end and does NOT pass the awaited
+// task's cancel to the caller — the caller's own cancel still cuts it.
+// Answers a two-cell `Cancelled` box (the asker's id, the site) when the
+// task ended cancelled, and NULL when it answered.
+void* avra_task_join_caught(void* task) {
+    int64_t* cells = task_awaited(task, 0);
+    if (!cells[GATE_OPEN]) return NULL;
+    if (cells[TASK_END] != END_CANCELLED) return NULL;
+    void* box = avra_array_sized(2);
+    avra_array_push(box, cells[TASK_BY]);
+    avra_array_push(box, cells[TASK_SITE]);
+    return box;
 }
 
 // An owner's scope ends: the task is joined, its answer left to its
@@ -2101,11 +2122,14 @@ static void fiber_cancelled(Fiber* f, int64_t by) {
         f->scope_by = 0;
     }
     if (f->deaf && f->joining) { task_cancelled(f->joining, by); return; }
-    if (f->parked && !shield_scope_stands(f) && !(f->legacy && f->virtual)) set_claimed(f, -1, 0, by);
+    if (f->parked && !shield_scope_stands(f)) set_claimed(f, -1, 0, by);
 }
 
 static void task_cancelled(void* task, int64_t by) {
     int64_t* cells = task_cells(task);
+    // The asker is kept on the task where a caught join reads it: a
+    // fiber task ends in `fiber_start` and never reaches `task_ended`.
+    cells[TASK_BY] = by;
     Fiber* f = (Fiber*)(uintptr_t)cells[TASK_FIBER];
     if (f) { fiber_cancelled(f, by); return; }
     if (cells[TASK_END] == END_LIVE) task_ended(task, END_CANCELLED, by);

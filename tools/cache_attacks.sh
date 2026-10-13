@@ -386,6 +386,26 @@ steps=$((steps+1)); rb_out=$($R/rb/src/main 2>&1)
 
 fi
 
+if section hc; then
+# A PLAIN UNIT'S ROW KEEPS THE CONSTS IT READ. fn.av reads a const of another module; the const is
+# edited beside an edit that reads fn.av again, and the unit is lowered afresh rather than served from
+# a row that baked the old value. (A cold derivation keeps no rows: the first warm one does.)
+mkdir -p $R/hc/src/ga $R/hc/src/gb
+printf '[package]\nname = "rt-hc"\nversion = "0.1.0"\n' > $R/hc/avra.toml
+printf 'export const K: int = 7\nexport fn quiet() -> int { 1 }\n' > $R/hc/src/gb/k.av
+printf 'use gb.{K, quiet}\nexport fn reads_k() -> int { K + 1 }\nexport fn plain() -> int { quiet() + 2 }\n' > $R/hc/src/ga/fn.av
+printf 'use ga.{reads_k, plain}\nprintln("${reads_k()} ${plain()}")\n' > $R/hc/src/main.av
+hc_run() { AVRA_QTRACE=1 ./avra check $R/hc 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "unit" && $3 == "lowered" { print $4 }' | sort -u > $R/hc.lowered; }
+hc_count() { grep -c "$1" $R/hc.lowered | tr -d ' '; }
+HR "cold hc" check hc 0
+ed $R/hc/src/ga/fn.av "K + 1" "K + 2"; hc_run
+ed $R/hc/src/ga/fn.av "K + 2" "K + 3"; hc_run
+steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] && [ "$(hc_count plain)" = 0 ] || { fails=$((fails+1)); echo "FAIL  hc: after editing reads_k's own body, lowered afresh reads_k=$(hc_count reads_k) plain=$(hc_count plain), wanted 1/0"; }
+ed $R/hc/src/gb/k.av "K: int = 7" "K: int = 8"
+ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
+steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
@@ -422,6 +442,30 @@ vd_case "e: a type reached only through a field of a type it reads gains a field
 vd_case "f: a fn the const calls reads a type's field, which changes type" ran fg 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
 vd_case "g: a variant of an enum the const builds gains a variant" ran gg 'ed $R/vdc/vd/src/y/calc.av "export enum E { V(int) }" "export enum E { V(int), W }"'
 vd_case "h: a method the const calls on a type gains a field the receiver shows" ran hh 'ed $R/vdc/vd/src/y/calc.av "export type S = { s: int }" "export type S = { s: int, t: int = 0 }"'
+fi
+
+# A HOST FN IS THE LINK'S, HELD OR FRESH. A module a build holds still defines its
+# symbol for the whole program: the bare name and the program's own are both in
+# the binary, and the build lists the host fn, exactly as the cold build did.
+if section lh; then
+lh=$R/lh; mkdir -p $lh/src/x
+printf '[package]\nname = "lh"\nversion = "0.1.0"\n' > $lh/avra.toml
+printf 'extern fn avra_lh_event(who: int) -> int { who + 1 }\n' > $lh/src/x/host.av
+printf 'println("lh")\n' > $lh/src/main.av
+lh_state() { # lh_state <label>: the host symbols and the build's host fn lines
+    steps=$((steps+1)); lh_out=$(./avra build --time $lh 2>&1)
+    nm $lh/src/main 2>/dev/null | grep -E 'avra_lh_event' | sed 's/^[0-9a-f ]*//' | sort > $R/lh.$1.nm
+    printf '%s\n' "$lh_out" | grep -a '^host fn:' | sort > $R/lh.$1.fns
+}
+lh_state cold
+printf '// edited\n' >> $lh/src/main.av
+lh_state warm
+for k in nm fns; do
+    if [ -s $R/lh.cold.$k ] && cmp -s $R/lh.cold.$k $R/lh.warm.$k; then :; else
+        fails=$((fails+1)); echo "FAIL  lh: a held module's host fn ($k) differs warm from cold: cold [$(tr '\n' ' ' < $R/lh.cold.$k)] warm [$(tr '\n' ' ' < $R/lh.warm.$k)]"
+    fi
+done
+rm -rf $lh
 fi
 
 # CACHE_ATTACKS set: the sections named above are the whole run.
