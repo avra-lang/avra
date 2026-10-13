@@ -582,6 +582,12 @@ fn max_of_opens(opens: List<Open>) -> int {
     best
 }
 
+/// The accumulator with one hole bound: a new list, the other holes shared, so
+/// an attempt that fails leaves the list it was handed standing.
+fn with_hole(acc: List<List<At>?>, hole: int, bound: List<At>) -> List<List<At>?> {
+    [if i == hole { bound } else { acc[i] } for i in 0..acc.length]
+}
+
 /// A binder seat: the FIRST occurrence records the subject, held as
 /// the ONE-ELEMENT list every ordinary bind wears (`Run`'s own binds
 /// share this same accumulator, at more than one element — one shape,
@@ -589,11 +595,7 @@ fn max_of_opens(opens: List<Open>) -> int {
 /// name the SAME subtree, span-blind — same binder, same code.
 fn bound_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
     let seen: List<At>? = acc[hole]
-    if seen == null {
-        mut next = acc
-        next.set(hole, [subject])
-        return next
-    }
+    if seen == null { return with_hole(acc, hole, [subject]) }
     if store.subtree_fp(seen![0]) == store.subtree_fp(subject) &&
         same_subtree(store, seen![0], subject) {
         acc
@@ -610,11 +612,7 @@ fn bound_name_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At
     List<At>?,
 >? {
     let seen: List<At>? = acc[hole]
-    if seen == null {
-        mut next = acc
-        next.set(hole, [subject])
-        return next
-    }
+    if seen == null { return with_hole(acc, hole, [subject]) }
     if own_name_at(store, seen![0]) == own_name_at(store, subject) { acc } else { null }
 }
 
@@ -627,11 +625,7 @@ fn bound_type_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At
     List<At>?,
 >? {
     let seen: List<At>? = acc[hole]
-    if seen == null {
-        mut next = acc
-        next.set(hole, [subject])
-        return next
-    }
+    if seen == null { return with_hole(acc, hole, [subject]) }
     if spelled(own_type_at(store, seen![0])!) == spelled(own_type_at(store, subject)!) { acc } else { null }
 }
 
@@ -642,11 +636,7 @@ fn bound_type_hole(store: SyntaxArena, subject: At, hole: int, acc: List<List<At
 /// list of code.
 fn bound_run(store: SyntaxArena, ats: List<At>, hole: int, acc: List<List<At>?>) -> List<List<At>?>? {
     let seen: List<At>? = acc[hole]
-    if seen == null {
-        mut next = acc
-        next.set(hole, ats)
-        return next
-    }
+    if seen == null { return with_hole(acc, hole, ats) }
     if same_run(store, seen!, ats) { acc } else { null }
 }
 

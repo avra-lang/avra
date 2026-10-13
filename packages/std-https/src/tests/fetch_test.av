@@ -39,7 +39,7 @@ fn hf_twice(host: string) -> Result<string, ClientError> {
     spawn s.run(1)
     defer s.stop()
     let o = hf_trusting()?
-    defer o.pool.close_all()
+    defer { let _ = within secs(5) { o.pool.close_all() } }
     let base = "https://${host}:${s.listener.port}"
     let one = hf_shown(fetch(.Get, "${base}/one", .Empty, o))
     let two = hf_shown(fetch(.Get, "${base}/two", .Empty, o))
@@ -51,7 +51,7 @@ fn hf_plain_through_tls_options() -> Result<string, ClientError> {
     spawn s.run(1)
     defer s.stop()
     let o = hf_trusting()?
-    defer o.pool.close_all()
+    defer { let _ = within secs(5) { o.pool.close_all() } }
     .Ok(hf_shown(fetch(.Get, "http://127.0.0.1:${s.listener.port}/p", .Empty, o)))
 }
 
@@ -60,7 +60,7 @@ fn hf_system_anchors() -> Result<string, ClientError> {
     spawn s.run(1)
     defer s.stop()
     let o = options() with { pool: pool() }
-    defer o.pool.close_all()
+    defer { let _ = within secs(5) { o.pool.close_all() } }
     .Ok(hf_shown(fetch(.Get, "https://localhost:${s.listener.port}/", .Empty, o)))
 }
 
@@ -71,7 +71,7 @@ fn hf_at_plain_port() -> Result<string, ClientError> {
     spawn s.run(1)
     defer s.stop()
     let o = hf_trusting()? with { timeouts: Timeouts { tls: ms(500) } }
-    defer o.pool.close_all()
+    defer { let _ = within secs(5) { o.pool.close_all() } }
     let t0 = now_ms()
     let r = fetch(.Get, "https://localhost:${s.listener.port}/", .Empty, o)
     .Ok("${hf_refusal(r)} ${if now_ms() - t0 < 3000 { "promptly" } else { "slowly" }}")
