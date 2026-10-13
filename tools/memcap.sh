@@ -2,7 +2,7 @@
 # Run a command with a resident-memory ceiling over its whole process tree.
 # Polls every second; past the cap the tree is killed and the exit is 137.
 # Usage: sh memcap.sh <cap-MB> <command> [args...]
-# Default cap for a compiler build or suite: 4000 MB (a healthy one peaks ~2 GB).
+# Default cap for a compiler build or suite: 6000 MB (the compiler self-build peaks at ~4.5 GB).
 #
 # THE COMMAND IS A PROCESS-GROUP LEADER, WITH OR WITHOUT A TTY: `setsid`
 # gives a background job its own pgid, equal to its own pid, that every

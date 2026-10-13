@@ -19,6 +19,14 @@ ok() { total=$((total + 1)); echo "ok    $1"; }
 bad() { total=$((total + 1)); failed=$((failed + 1)); echo "FAIL  $1"; [ -n "${2:-}" ] && sed 's/^/      | /' "$2" 2>/dev/null; }
 check() { if [ "$1" = "$2" ]; then ok "$3"; else bad "$3 (got '$1', wanted '$2')" "${4:-}"; fi; }
 
+# The land guard's decision, proved on fixtures: the non-draft PRs of OTHER
+# branches whose test check is still running.
+midci_fn=$(sed -n '/^midci_of() {/,/^}$/p' "$here/work")
+midci() { printf '%s' "$1" | sh -c "$midci_fn; midci_of mine"; }
+check "$(midci '[{"number":5,"headRefName":"a","isDraft":false,"statusCheckRollup":[{"name":"test","status":"IN_PROGRESS"}]},{"number":6,"headRefName":"mine","isDraft":false,"statusCheckRollup":[{"name":"test","status":"IN_PROGRESS"}]},{"number":7,"headRefName":"d","isDraft":true,"statusCheckRollup":[{"name":"test","status":"IN_PROGRESS"}]},{"number":8,"headRefName":"e","isDraft":false,"statusCheckRollup":[{"name":"test","status":"COMPLETED"}]}]')" "#5" "land guard: names the other non-draft PR mid-CI, not its own branch, a draft, or a finished one"
+check "$(midci '[{"number":9,"headRefName":"f","isDraft":false,"statusCheckRollup":[{"name":"gate","status":"IN_PROGRESS"},{"name":"test","status":"QUEUED"}]}]')" "#9" "land guard: a queued test check counts as mid-CI"
+check "$(midci '[{"number":10,"headRefName":"g","isDraft":false,"statusCheckRollup":[]}]')" "" "land guard: a PR with no checks yet is not mid-CI"
+
 # The scratch repository: origin, a main checkout carrying the tools
 # under test, and room beside it for lanes.
 git init -q --bare "$scratch/origin.git"

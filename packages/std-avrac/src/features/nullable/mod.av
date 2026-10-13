@@ -21,8 +21,7 @@ use diagnostics.{DiagCode}
 
 export fn nullable() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name        | build
-        "match_opt" | build_match_opt
+        name | build
     }
     let codes = table<DiagCode> {
         kind                  | summary
@@ -36,9 +35,9 @@ export fn nullable() -> LanguageFeature {
     }
     LanguageFeature nullable {
         gram: grammar {
-            primary = "if" "let" b:NAME "?" "=" s:expression p:block "else" a:block @expect("else", "an `if let` needs its `else` branch — absence must be answered") -> match_opt(s, b, p, a) @head(s)
-            primary = "match" s:expression "{" BREAK? b:NAME "?" "->" p:expression BREAK? "null" "->" a:expression BREAK? "}" -> match_opt(s, b, p, a) @head(s)
-            primary = "match" s:expression "{" BREAK? "null" "->" a:expression BREAK? b:NAME "?" "->" p:expression BREAK? "}" -> match_opt(s, b, p, a) @head(s)
+            primary = "if" "let" bind:NAME "?" "=" subject:expression present:block "else" absent:block @expect("else", "an `if let` needs its `else` branch — absence must be answered") -> Expr.MatchOpt @head(subject)
+            primary = "match" subject:expression "{" BREAK? bind:NAME "?" "->" present:expression BREAK? "null" "->" absent:expression BREAK? "}" -> Expr.MatchOpt @head(subject)
+            primary = "match" subject:expression "{" BREAK? "null" "->" absent:expression BREAK? bind:NAME "?" "->" present:expression BREAK? "}" -> Expr.MatchOpt @head(subject)
             primary = "null" -> Expr.NullLit
         }
         builders: rows

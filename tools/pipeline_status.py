@@ -288,7 +288,8 @@ def collect_state(repo):
     waiting_out = None
     if recs is not None:
         lines, alarm = waiting(recs, now, _when_main(main))
-        waiting_out = {"lines": lines, "alarm": alarm, "cap": cap_line(recs, now)}
+        waiting_out = {"lines": lines, "alarm": alarm, "cap": cap_line(recs, now),
+                       "landing": landing_effects(recs)}
     return {"repo": repo, "now": now.isoformat(), "main": main,
             "runs": {"counts": counts, "window": len(window),
                      "failed_jobs": failed_jobs, "unread": unread},
@@ -345,6 +346,26 @@ def head_pushed(repo, sha):
                                 "--jq", "{d: .commit.committer.date}"]).get("d")
 
 
+def landing_effects(recs):
+    """One line per open PR: what landing it NOW would restart. Landing moves
+    `main`, so every other non-draft PR whose `test` check is still running
+    goes BEHIND and restarts. A draft is not landable and says so."""
+    lines = []
+    for r in recs:
+        n = r["number"]
+        if r["isDraft"]:
+            lines.append(f"  #{n} draft — not landable")
+            continue
+        others = [q["number"] for q in recs
+                  if q["number"] != n and not q["isDraft"] and q["running"]]
+        if others:
+            lines.append(f"  #{n} lands now → restarts " + ", ".join(f"#{o}" for o in others)
+                         + " (mid-CI)")
+        else:
+            lines.append(f"  #{n} lands now → restarts nothing")
+    return lines
+
+
 def _secs_before(now, stamp):
     """Seconds from `stamp` (an ISO string or a datetime) until `now`."""
     t = stamp if isinstance(stamp, datetime) else pr_watcher._when(stamp)
@@ -360,7 +381,9 @@ def _wait_record(p, names, pushed=None):
                      "greenSince": check.get("completedAt") if concl == "SUCCESS" else None,
                      "doneAt": check.get("completedAt")},
             "failing": names or [], "createdAt": p.get("createdAt"),
-            "lastPush": pushed}
+            "lastPush": pushed,
+            "running": check.get("status") is not None
+            and (check.get("status") or "").upper() != "COMPLETED"}
 
 
 # ---- rendering ---------------------------------------------------------
@@ -446,6 +469,9 @@ def render(s):
         lines.append("WAITING ON A HUMAN/LEAD")
         lines.extend(waiting_out["lines"] or ["  none"])
         lines.append(waiting_out["cap"])
+        lines.append("")
+        lines.append("LANDING NOW WOULD")
+        lines.extend(waiting_out["landing"] or ["  no open PRs"])
 
     lines.append("")
     lines.append(f"VERDICT  {verdict(s)}")
@@ -524,6 +550,23 @@ WAITING_CASES = [
     ("no-push-over-a-day-is-named", [_wrec(4, pushed="2026-10-11T11:00:00Z")], NOW, None, 1, False),
     ("a-clean-open-pr-is-quiet", [_wrec(5, concl="SUCCESS", green="2026-10-12T11:59:00Z")],
         NOW, None, 0, False),
+]
+
+
+def _lrec(n, draft=False, running=False):
+    return {"number": n, "isDraft": draft, "running": running}
+
+
+LANDING_CASES = [
+    ("nothing-in-flight", [_lrec(1), _lrec(2)],
+     ["  #1 lands now → restarts nothing", "  #2 lands now → restarts nothing"]),
+    ("a-mid-ci-pr-is-restarted", [_lrec(1), _lrec(2, running=True)],
+     ["  #1 lands now → restarts #2 (mid-CI)", "  #2 lands now → restarts nothing"]),
+    ("a-draft-is-named-not-counted", [_lrec(1), _lrec(3, draft=True, running=True)],
+     ["  #1 lands now → restarts nothing", "  #3 draft — not landable"]),
+    ("two-in-flight-are-both-named", [_lrec(1, running=True), _lrec(2, running=True), _lrec(3)],
+     ["  #1 lands now → restarts #2 (mid-CI)", "  #2 lands now → restarts #1 (mid-CI)",
+      "  #3 lands now → restarts #1, #2 (mid-CI)"]),
 ]
 
 
@@ -615,9 +658,13 @@ def selftest():
              _wait_record(_cpr(number=8, createdAt="2026-10-11T12:00:00Z"), None)],
             datetime.fromisoformat("2026-10-12T12:00:00+00:00")):
         sys.exit("pipeline-status: self-test — the cap line did not name the oldest PR")
+    for name, recs, want in LANDING_CASES:
+        got = landing_effects(recs)
+        if got != want:
+            sys.exit(f"pipeline-status: self-test — landing `{name}`: got {got}, want {want}")
     print(f"pipeline-status: self-test — {len(BLOCKER_CASES)} blocker case(s), "
-          f"{len(VERDICT_CASES)} verdict scenario(s) and {len(WAITING_CASES)} waiting "
-          f"scenario(s) hold")
+          f"{len(VERDICT_CASES)} verdict scenario(s), {len(WAITING_CASES)} waiting "
+          f"scenario(s) and {len(LANDING_CASES)} landing scenario(s) hold")
     return 0
 
 
