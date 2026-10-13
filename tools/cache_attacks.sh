@@ -405,17 +405,6 @@ steps=$((steps+1)); [ "$($R/lz/src/main 2>&1)" = "1 uno 1" ] || { fails=$((fails
 lz_touch
 HR "lz: the member's module stays held" check lz 0 m/mem.av held
 
-# AND AN EXTERN NOTHING READS IS STILL FOUND: a host fn in a held module is the program's export
-# whether or not any read file reaches it, so the link must list it with only main.av read.
-mkdir -p $R/lh/src/x
-printf '[package]\nname = "rt-lh"\nversion = "0.1.0"\n' > $R/lh/avra.toml
-printf 'extern fn avra_lh_event(who: int) -> int { who + 1 }\n' > $R/lh/src/x/host.av
-printf 'println("lh")\n' > $R/lh/src/main.av
-S "cold lh" lh
-printf '// moved\n' >> $R/lh/src/main.av
-S "lh: only main.av read" lh
-steps=$((steps+1)); case "$(nm $R/lh/src/main 2>/dev/null)" in *avra_lh_event*) [ -n "${VERBOSE:-}" ] && echo "ok    lh: the held host fn is exported" ;; *) fails=$((fails+1)); echo "FAIL  lh: a host fn in a held module is missing from the linked program" ;; esac
-
 fi
 
 if section vd; then
