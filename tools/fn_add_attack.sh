@@ -11,7 +11,9 @@ export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 
 R=build/fn-add; fails=0; steps=0
-rm -rf "$R" .avra-cache
+T=build/aside/fa.$$; mkdir -p $T
+[ -e "$R" ] && mv "$R" $T/fn-add
+[ -e .avra-cache ] && mv .avra-cache $T/cache
 P=$R/fa
 mkdir -p $P/src/m/tests $P/src/n $P/src/w
 fail() { fails=$((fails + 1)); echo "FAIL  $1"; }
@@ -30,7 +32,7 @@ printf 'use n.{gu, go, gcount}\nuse m.{gb}\nprintln("${gu()} ${go()} ${gb()} ${g
 for f in m/a m/b m/c n/user n/other n/third n/count w/widget w/members w/table main; do cp $P/src/$f.av $P/$(echo $f | tr / _).orig; done
 
 chk() { steps=$((steps + 1)); OUT=$(./avra check --time $P 2>&1); ST=$?; }
-back() { for f in m/a m/b m/c n/user n/other n/third n/count w/widget w/members w/table main; do cp $P/$(echo $f | tr / _).orig $P/src/$f.av; done; rm -f $P/src/m/tests/*.av; }
+back() { for f in m/a m/b m/c n/user n/other n/third n/count w/widget w/members w/table main; do cp $P/$(echo $f | tr / _).orig $P/src/$f.av; done; for t in $P/src/m/tests/*.av; do [ -e "$t" ] && mv "$t" $T/; done; }
 add() { printf '\n%s\n' "$2" >> $P/src/$1.av; }
 read_list() { printf '%s\n' "$OUT" | sed -n '/^read:/,$p' | grep '^  ' | awk '{print $1}'; }
 
@@ -68,7 +70,7 @@ was_read "a fn colliding with a sibling's import" n/other.av
 back; chk
 
 # 5. a rename: its users are read, and the program no longer checks
-sed -i.bak 's/export fn f()/export fn f2()/' $P/src/m/a.av; rm -f $P/src/m/a.av.bak; chk
+sed 's/export fn f()/export fn f2()/' $P/src/m/a.av > $T/a.new && mv $T/a.new $P/src/m/a.av; chk
 [ $ST != 0 ] || fail "a renamed fn left its users checking clean"
 case "$OUT" in *"f"*) ;; *) fail "a renamed fn: the refusal names nothing" ;; esac
 back; chk
@@ -101,7 +103,7 @@ back; chk
 # 9. a test file reading a private name of its module by an explicit use
 printf 'use m.{p}\nspec "p" { given "the private fn" { then "answers two" { p() == 2 } } }\n' > $P/src/m/tests/priv_test.av; chk
 [ $ST = 0 ] || fail "a test could not read its module's private name: $(printf '%s' "$OUT" | head -3 | tr '\n' ' ')"
-sed -i.bak 's/^fn p()/fn q()/' $P/src/m/a.av; rm -f $P/src/m/a.av.bak; chk
+sed 's/^fn p()/fn q()/' $P/src/m/a.av > $T/a.new && mv $T/a.new $P/src/m/a.av; chk
 [ $ST != 0 ] || fail "a renamed private fn left the test that read it checking clean"
 back; chk
 

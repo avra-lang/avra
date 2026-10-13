@@ -444,6 +444,30 @@ vd_case "g: a variant of an enum the const builds gains a variant" ran gg 'ed $R
 vd_case "h: a method the const calls on a type gains a field the receiver shows" ran hh 'ed $R/vdc/vd/src/y/calc.av "export type S = { s: int }" "export type S = { s: int, t: int = 0 }"'
 fi
 
+# A HOST FN IS THE LINK'S, HELD OR FRESH. A module a build holds still defines its
+# symbol for the whole program: the bare name and the program's own are both in
+# the binary, and the build lists the host fn, exactly as the cold build did.
+if section lh; then
+lh=$R/lh; mkdir -p $lh/src/x
+printf '[package]\nname = "lh"\nversion = "0.1.0"\n' > $lh/avra.toml
+printf 'extern fn avra_lh_event(who: int) -> int { who + 1 }\n' > $lh/src/x/host.av
+printf 'println("lh")\n' > $lh/src/main.av
+lh_state() { # lh_state <label>: the host symbols and the build's host fn lines
+    steps=$((steps+1)); lh_out=$(./avra build --time $lh 2>&1)
+    nm $lh/src/main 2>/dev/null | grep -E 'avra_lh_event' | sed 's/^[0-9a-f ]*//' | sort > $R/lh.$1.nm
+    printf '%s\n' "$lh_out" | grep -a '^host fn:' | sort > $R/lh.$1.fns
+}
+lh_state cold
+printf '// edited\n' >> $lh/src/main.av
+lh_state warm
+for k in nm fns; do
+    if [ -s $R/lh.cold.$k ] && cmp -s $R/lh.cold.$k $R/lh.warm.$k; then :; else
+        fails=$((fails+1)); echo "FAIL  lh: a held module's host fn ($k) differs warm from cold: cold [$(tr '\n' ' ' < $R/lh.cold.$k)] warm [$(tr '\n' ' ' < $R/lh.warm.$k)]"
+    fi
+done
+rm -rf $lh
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
