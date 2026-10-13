@@ -1,0 +1,50 @@
+//! The select nodes: variants of `Expr` (core/nodes.av), declared
+//! where their meaning is. An arm is a node of its own, so a `select`
+//! holds its arms as one list in written order.
+use core.{expr_node, ExprId, TypeId, Reg, Scoped}
+use core.marks.{apart}
+
+use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing}
+
+/// `select { … }` — `arms` in written order, each a `WaitArm` or the
+/// one `ElseArm`; `fair` when the `@fair` mark stands on it.
+@expr_node
+@apart
+export type Select = { fair: bool, arms: List<ExprId> }
+
+impl Meaning for Select {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { unlowered(cx, e) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { select_reg(cx, e) }
+}
+
+/// One arm that waits: `head` is what it waits on, `bind` the name its
+/// answer takes (`_` for none asked) and `index` the member's place in
+/// a list head — each empty when unwritten — `guard` the condition
+/// read before the head, `value` the body.
+@expr_node
+@apart
+export type WaitArm = { index: Scoped, bind: Scoped, head: ExprId, guard: ExprId?, value: ExprId }
+
+impl Meaning for WaitArm {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.error_type }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { select_reg(cx, e) }
+}
+
+/// `else -> value` — the arm that runs when nothing is ready.
+@expr_node
+@apart
+export type ElseArm = { value: ExprId }
+
+impl Meaning for ElseArm {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        nothing()
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { cx.error_type }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { select_reg(cx, e) }
+}
