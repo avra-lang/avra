@@ -1,0 +1,38 @@
+// proves: a delegated method takes `Self` as a parameter (variants that differ answer
+// `false`, two `Self` parameters pair up) and answers `Self` (the member's answer, rewrapped).
+use @std.meta.{Named}
+
+fn node(_t: Named, _rank: int) {}
+
+trait Shape {
+    fn same(other: Self) -> bool
+    fn between(lo: Self, hi: Self) -> bool
+    fn grown(by: int) -> Self
+}
+
+@node(0)
+type Dot = { at: int }
+
+impl Shape for Dot {
+    fn same(other: Dot) -> bool { self.at == other.at }
+    fn between(lo: Dot, hi: Dot) -> bool { lo.at <= self.at && self.at <= hi.at }
+    fn grown(by: int) -> Dot { Dot { at: self.at + by } }
+}
+
+@node(1)
+type Line = { from: int, to: int }
+
+impl Shape for Line {
+    fn same(other: Line) -> bool { self.from == other.from && self.to == other.to }
+    fn between(lo: Line, hi: Line) -> bool { lo.from <= self.from && self.to <= hi.to }
+    fn grown(by: int) -> Line { Line { from: self.from, to: self.to + by } }
+}
+
+collect enum Item: Shape = @node in self by it.mark.args[0] dense
+
+let d = Item.Dot(4)
+let l = Item.Line(2, 9)
+let same = "${d.same(Item.Dot(4))} ${d.same(Item.Dot(5))} ${d.same(l)} ${l.same(Item.Line(2, 9))}"
+let between = "${d.between(Item.Dot(1), Item.Dot(5))} ${d.between(Item.Dot(1), l)} ${d.between(l, Item.Dot(5))}"
+let grown = "${d.grown(1).same(Item.Dot(5))} ${l.grown(1).same(Item.Line(2, 10))} ${l.grown(1).same(d)}"
+"${same} | ${between} | ${grown}"

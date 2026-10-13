@@ -46,7 +46,7 @@ impl Workspace {
         let k = key(Family.CancelReach, 0)
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
-        let fns = [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
+        let fns = [x.id for x in self.decls.unheld_decls() if self.cancel_member(x.id)]
         self.decls.clear_cancels(fns)
         self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
         self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns])]))
@@ -54,13 +54,19 @@ impl Workspace {
     }
 
     /// Whether any fn this compile knows LINKS A SCHEDULER: a member by
-    /// the bit the pass settled, a held fn by its interface's. A held fn
-    /// counts though nothing here calls it by name: its body may be
-    /// reached through a value. PURE: it reads the bits and writes
-    /// nothing.
+    /// the bit the pass settled, a held fn by its interface's. PURE: it
+    /// reads the bits and writes nothing.
     fn members_link_scheduler() -> bool {
         let _ = self.cancel_reach()
-        self.decls.all_decls().any((x) -> !x.external && self.call_links(x.id))
+        self.decls.unheld_decls().any((x) -> self.cancel_member(x.id) && self.call_links(x.id)) ||
+            self.held_link_scheduler()
+    }
+
+    /// Whether a HELD fn links, by its interface's bit. It counts though
+    /// nothing here calls it by name: its body may be reached through a
+    /// value, and a build that holds it must answer as one that parsed it.
+    fn held_link_scheduler() -> bool {
+        self.decls.held_files().any((f) -> self.decls.decls_of_file(f).any((d) -> self.decls.cancel_bits(d)?.links ?? false))
     }
 
     /// Whether a FILE's own expressions wait through a row that links a

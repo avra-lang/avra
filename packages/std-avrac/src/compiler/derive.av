@@ -21,6 +21,7 @@ use core.{
     Static,
     FileId,
     DeclId,
+    TypeId,
 }
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path, joined_path}
@@ -38,7 +39,7 @@ export enum Want { Diagnostics, Binary }
 /// whatever the store holds, whether it reads the program's instantiation HOMES,
 /// whether it holds anything, how many times the records moved under it, and
 /// the attempts that gave way to it.
-type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0, left: List<Left> = [] }
+type Attempt = { entry: string?, want: Want, parse: List<ReadFile> = [], homes: bool = false, hold: bool = true, moved: int = 0, turned: int = 0, left: List<Left> = [], sealed: List<string> = [] }
 
 /// The entry a derivation trims its root walk by: a build's, whose program is
 /// what the entry reaches; a check reads every file of the package.
@@ -606,6 +607,7 @@ impl Workspace {
         at.having_read(self.unruled(store, at.want))?
         clock.next(PHASES)
         self.admit_all()
+        self.presealed(at)
         clock.next(PHASES)
         let p = self.analysed(at, store)?
         clock.next(PHASES)
@@ -681,7 +683,7 @@ impl Workspace {
         // a held collector judged against what it gathers now, before a stale set is refused
         at.having_read(self.gathered_moved())?
         if !p.clean() { fail Turn.Refused(p.report()) }
-        if self.layouts_moved(store, p) { fail at.unheld("a sealed layout moved") }
+        self.layouts_judged(at, store, p)?
         at.having_read(self.read_held_asks(store))?
         at.having_read(self.read_held_codes(store))?
         p
@@ -836,19 +838,79 @@ impl Workspace {
     /// flat and this attempt boxed, or one a parsed file's last record kept boxed and
     /// this attempt did not, is a layout the stored objects and this analysis read
     /// two ways — and only the sources whole can say which.
-    fn layouts_moved(store: Store, p: Program) -> bool {
-        if held_paths(self).is_empty() { return false }
+    fn flat_moved() -> bool {
         // peek, not the tracked read: this compares what typing just
         // decided against what the store remembered, after the fact —
         // never the ask a later write must answer to
-        if self.hold.held_flat.get().any((t) -> !self.decls.types.peek_flat(t)) { return true }
-        p
-            .files
+        !held_paths(self).is_empty() &&
+            self.hold.held_flat.get().any((t) -> !self.decls.types.peek_flat(t))
+    }
+
+    /// The records a parsed file's last record kept boxed that this attempt left flat.
+    fn unsealed(store: Store, p: Program) -> List<DeclId> {
+        if held_paths(self).is_empty() { return [] }
+        flatten(
+            [[d for d in self.kept_boxed(store, a.view.file) if !self.decls.types.peek_boxed_flat(self.decls.record_type(d))] for a in p.files],
+        )
+    }
+
+    /// THE SEALS A HELD DECLARATION KEEPS STAND. A record kept boxed that a held
+    /// `mut` seat still seals is boxed again before anything reads its layout, in
+    /// the attempt that follows; one nothing held seals has lost its sealer, and
+    /// only the sources whole can say what its layout is.
+    fn layouts_judged(at: Attempt, store: Store, p: Program) -> Result<int, Turn> {
+        if self.flat_moved() { fail at.unheld(sealed_layout_moved()) }
+        let loose = self.unsealed(store, p)
+        if loose.is_empty() { return .Ok(0) }
+        let keys = [self.seal_key(d) for d in loose]
+        if loose.any((d) -> !self.sealed_by_held(store, d)) ||
+            keys.any((k) -> at.sealed.contains(k)) {
+            fail at.unheld(sealed_layout_moved())
+        }
+        fail Turn.Again(at with { sealed: at.sealed.concat(keys) })
+    }
+
+    /// Whether a held fn seats this record under `mut`, or writes it as its receiver.
+    fn sealed_by_held(store: Store, d: DeclId) -> bool {
+        let t = self.decls.record_type(d)
+        held_paths(self).any((path) -> self.seals_in(store, path, t))
+    }
+
+    fn seals_in(store: Store, path: string, t: TypeId) -> bool {
+        let m = self.module_path_of(path)
+        let rows = file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))
+        rows.any((parts) -> self.row_seals(parts, t))
+    }
+
+    fn row_seals(parts: List<string>, t: TypeId) -> bool {
+        let row? = read_row(parts) else { return false }
+        if !fn_shape(row.shape) { return false }
+        let marks = row.marks()
+        let bits = row.writes()
+        [j for j, w in row.items() if self.interface_type(w) == t]
             .any(
-                (a: Analysis) -> self
-                    .kept_boxed(store, a.view.file)
-                    .any((d: DeclId) -> !self.decls.types.peek_boxed_flat(self.decls.record_type(d))),
+                (j) -> j < marks.length && marks[j].mutable ||
+                    j < bits.length && bits.char_code(j) == 49,
             )
+    }
+
+    /// Records a previous attempt found sealed by a held declaration, sealed before typing reads them.
+    fn presealed(at: Attempt) {
+        for key in at.sealed {
+            let found? = self.sealed_record(key) else { continue }
+            self.decls.types.unflatten(self.decls.record_type(found))
+        }
+    }
+
+    /// A record's durable key among the seals: its file, then its name.
+    fn seal_key(d: DeclId) -> string { "${self.decls.file(self.decl_at(d).file).path}\t${self.decl_at(d).name}" }
+
+    fn sealed_record(key: string) -> DeclId? {
+        let at = key.split("\t")
+        self
+            .decls
+            .decls_of_file(self.file_id(at[0]))
+            .find((d) -> self.decl_at(d).name == at[1] && self.decl_at(d).kind is .Record)
     }
 
     /// The records of a parsed file its module's last record kept BOXED, as they
@@ -1180,4 +1242,11 @@ fn filed<T>(xs: List<T>, at: fn(T) -> FileId?) -> Map<string, List<T>> {
         if f != null { out.set("${f!.index}", (out.get("${f!.index}") ?? []).concat([x])) }
     }
     out
+}
+
+fn sealed_layout_moved() -> string { "a sealed layout moved" }
+
+/// Whether a record row declares a fn.
+fn fn_shape(s: Shape) -> bool {
+    match s { .Fn or .Extern -> true, rest -> false }
 }
