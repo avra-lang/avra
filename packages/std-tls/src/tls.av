@@ -24,8 +24,8 @@
 //! The engine is mbedTLS 4.1 LTS, vendored (vendor/import.sh); the
 //! mechanisms compiled in are the two config headers in src/c.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.net.{Conn, NetError, connect}
-use @std.time.{Duration}
+use @std.net.{Conn, NetError, connect, outran}
+use @std.time.{Duration, TimedOut}
 use @std.io.{env, is_file, read_bytes}
 
 extern fn avra_tls_config(server: int) -> int
@@ -69,7 +69,8 @@ export enum TlsError {
 }
 
 impl TlsError {
-    /// Whether the wire's deadline passed — a `within` running out.
+    /// Whether the wire's deadline passed — a connect's own budget, or
+    /// a `within` read through `tls_timely`.
     fn timed_out() -> bool {
         match self {
             .Net(e) -> e.timed_out(),
@@ -360,10 +361,18 @@ export fn dial(host: string, port: int, timeout: Duration, config: Config) -> Re
     TlsConn,
     TlsError,
 > {
-    within timeout {
-        let c = wired(connect(host, port, timeout))?
-        handshake(c, config, host)
-    }
+    tls_timely(
+        within timeout {
+            let c = wired(connect(host, port, timeout))?
+            handshake(c, config, host)
+        },
+    )
+}
+
+/// A `within` over a verb of this package, as that verb's own answer: a
+/// deadline the block ran past is the wire's timed-out failure.
+export fn tls_timely<T>(r: Result<Result<T, TlsError>, TimedOut>) -> Result<T, TlsError> {
+    match r { .Ok(inner) -> inner, .Err(_) -> wired(outran<T>("wait", "a deadline")) }
 }
 
 /// `conn` secured: the handshake run to completion, the calling task
