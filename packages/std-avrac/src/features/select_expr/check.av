@@ -4,7 +4,7 @@
 //! asked; a timer binds nothing. A guard is a `bool` read BEFORE its
 //! head, so it reads nothing the arm binds. The arms answer one type,
 //! by `match`'s rule, and that is the `select`'s.
-use core.{ExprId, TypeId, Binding, flatten, some_list}
+use core.{ExprId, StmtId, TypeId, Type, Span, Binding, flatten, some_list, same_type}
 use features.{TypeCx, FileView, post_order, this_is}
 use diagnostics.{Diag, refusal}
 
@@ -27,7 +27,29 @@ impl Waited {
             .Task(_) or .Tasks(_) or .Deadline or .Every or .Nothing -> false,
         }
     }
+
+    /// Whether the arm can fire again after it was taken — a task, a
+    /// list and a deadline are taken once.
+    fn again() -> bool {
+        match self {
+            .Quiet or .Every -> true,
+            .Task(_) or .Tasks(_) or .Deadline or .Nothing -> false,
+        }
+    }
+
+    /// Whether a head of this kind MADE inside a loop is refused: a
+    /// period always, a deadline beside an arm that fires `again`.
+    fn stale_made_fresh(again: bool) -> bool {
+        match self {
+            .Every -> true,
+            .Deadline -> again,
+            .Task(_) or .Tasks(_) or .Quiet or .Nothing -> false,
+        }
+    }
 }
+
+/// The timers `@std/time` declares, as types.
+type Timers = { deadline: TypeId, quiet: TypeId, every: TypeId }
 
 /// One arm's written seats: the arm, its index and binder names — each
 /// empty when unwritten — and its head.
@@ -50,6 +72,7 @@ fn arm_binds(index: string, bind: string) -> List<string> {
 /// `select` wears it.
 fn select_type(mut cx: TypeCx, e: ExprId, arms: List<ExprId>) -> TypeId {
     quiet_law(cx, arms)
+    fresh_law(cx, arms)
     if arms.any((a) -> cx.errored(a)) { return cx.error_type }
     let values = flatten([some_list(arm_value(cx, a)) for a in arms])
     let head? = values.find((v) -> cx.stays(v)) else { return cx.error_type }
@@ -63,6 +86,49 @@ fn quiet_law(mut cx: TypeCx, arms: List<ExprId>) {
     for h in flatten([some_list(arm_head(cx, a)) for a in arms]) {
         if !cx.errored(h) && waited(cx, h).quiet() { cx.emit(quiet_never(cx, h)) }
     }
+}
+
+/// THE FRESH TIMER LAW: a timer made inside a loop starts over each
+/// turn. A period so made never reaches its second firing; a deadline
+/// so made never passes while a sibling arm fires again before it. A
+/// deadline beside arms taken once is a limit on each attempt, and
+/// stands.
+fn fresh_law(mut cx: TypeCx, arms: List<ExprId>) {
+    if !looped(cx) { return }
+    let heads = [h for h in flatten([some_list(arm_head(cx, a)) for a in arms]) if !cx.errored(h)]
+    let again = heads.any((h) -> waited(cx, h).again())
+    for h in heads {
+        if waited(cx, h).stale_made_fresh(again) && made_in_loop(cx, h) { cx.emit(fresh_timer(cx, h)) }
+    }
+}
+
+/// Whether a loop's turn is being typed here, no lambda between.
+fn looped(cx: TypeCx) -> bool {
+    cx.loops.any(it.bars == cx.lam_bar.length)
+}
+
+/// Whether a head's value is made inside the loop being typed: written
+/// where it is waited on, or bound by a statement of the loop's body.
+fn made_in_loop(cx: TypeCx, head: ExprId) -> bool {
+    if cx.view.store.expr_is_call(head) { return true }
+    let b? = cx.names.binding(head) else { return false }
+    match b {
+        .Def(made) -> bodies_hold(cx, made),
+        .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
+    }
+}
+
+/// Whether a statement stands inside a loop whose turn is being typed.
+fn bodies_hold(cx: TypeCx, made: StmtId) -> bool {
+    let at? = cx.view.store.stmt_span(made) else { return false }
+    let owners = flatten([some_list(l.owner) for l in cx.loops if l.bars == cx.lam_bar.length])
+    owners.any((o) -> spans(cx.view.store.stmt_span(o), at))
+}
+
+/// Whether `outer` holds `inner`; an unknown span holds nothing.
+fn spans(outer: Span?, inner: Span) -> bool {
+    let o? = outer else { return false }
+    o.lo <= inner.lo && inner.hi <= o.hi
 }
 
 fn is_else(cx: TypeCx, arm: ExprId) -> bool {
@@ -105,9 +171,10 @@ fn waited_of(view: FileView, ty: TypeId) -> Waited {
     if one != null { return Waited.Task(one!) }
     let each: TypeId? = member_answer(view, ty)
     if each != null { return Waited.Tasks(each!) }
-    if timer_named(view, ty, "Deadline") { return Waited.Deadline }
-    if timer_named(view, ty, "Quiet") { return Waited.Quiet }
-    if timer_named(view, ty, "Every") { return Waited.Every }
+    let t? = timers_of(view) else { return Waited.Nothing }
+    if same_type(ty, t.deadline) { return Waited.Deadline }
+    if same_type(ty, t.quiet) { return Waited.Quiet }
+    if same_type(ty, t.every) { return Waited.Every }
     Waited.Nothing
 }
 
@@ -116,10 +183,19 @@ fn member_answer(view: FileView, ty: TypeId) -> TypeId? {
     view.types.task_answer(view.types.element(ty)?)
 }
 
-/// Whether a type is the timer `@std/time` declares under `name`.
-fn timer_named(view: FileView, ty: TypeId, name: string) -> bool {
-    let decl? = view.decls.package_decl("@std.time", name) else { return false }
-    match view.types.shape_of(ty) { .Struct(at, _) -> at == decl, _ -> false }
+/// The three timers; null when the program loads no `@std/time`.
+fn timers_of(view: FileView) -> Timers? {
+    let deadline = timer_type(view, "Deadline")?
+    let quiet = timer_type(view, "Quiet")?
+    let every = timer_type(view, "Every")?
+    Timers { deadline: deadline, quiet: quiet, every: every }
+}
+
+/// The record `@std/time` declares under `name`, as a type.
+fn timer_type(view: FileView, name: string) -> TypeId? {
+    let decl = view.decls.package_decl("@std.time", name)?
+    let _ = view.decls.sig(decl)
+    view.types.intern(Type.Struct(decl, name))
 }
 
 /// The types of the names an arm binds, in `arm_binds`' order; null
@@ -147,7 +223,7 @@ fn task_binds(mut cx: TypeCx, s: ArmSeats, answer: TypeId) -> List<TypeId>? {
 /// turn and a loop may not hold it; a literal has no index worth
 /// asking — its members are written in the head.
 fn member_binds(mut cx: TypeCx, s: ArmSeats, answer: TypeId) -> List<TypeId>? {
-    if cx.loops.any(it.bars == cx.lam_bar.length) {
+    if looped(cx) {
         cx.emit(spent_arm(cx, s))
         return null
     }
@@ -179,7 +255,14 @@ fn timer_binds(mut cx: TypeCx, s: ArmSeats) -> List<TypeId>? {
 
 /// A head no arm can wait on.
 fn no_wait(mut cx: TypeCx, head: ExprId) -> List<TypeId>? {
-    cx.emit(not_waitable(cx, head))
+    cx
+        .emit(
+            not_waitable(
+                cx,
+                head,
+                if timers_of(cx.view) == null { timers_unloaded() } else { waitable() },
+            ),
+        )
     null
 }
 
@@ -190,7 +273,9 @@ fn guard_checks(mut cx: TypeCx, guard: ExprId, tys: List<TypeId>) {
     let _ = cx.walk_type(guard)
     cx.require_bool(guard, "a `select` arm's guard", "this decides whether the arm waits")
     let read? = post_order(cx.dispatch, cx.view.store, guard)
-        .find((k) -> reads_binder(cx, guard, k)) else { return }
+        .find((k) -> reads_binder(cx, guard, k)) else {
+        return
+    }
     cx.emit(guard_binder(cx, read))
 }
 
@@ -205,14 +290,32 @@ fn reads_binder(cx: TypeCx, guard: ExprId, k: ExprId) -> bool {
 
 // ── The voices ──
 
-fn not_waitable(cx: TypeCx, head: ExprId) -> Diag {
+fn not_waitable(cx: TypeCx, head: ExprId, help: string) -> Diag {
     let n = cx.name_at(head)
     refusal(
         "flow.arm",
         cx.loc_of(head),
         "a `select` arm waits on a task, a list of tasks or a timer, and this is `${n}`",
         this_is(n),
-        "wait on what `spawn` answers, or on `after`, `quiet` or `every` of `@std/time` — a head ending `.await` has already waited: drop it",
+        help,
+    )
+}
+
+fn waitable() -> string {
+    "wait on what `spawn` answers, or on `after`, `quiet` or `every` of `@std/time` — a head ending `.await` has already waited: drop it"
+}
+
+fn timers_unloaded() -> string {
+    "wait on what `spawn` answers — a head ending `.await` has already waited: drop it; the timers are `@std/time`'s, and this program loads no `@std/time`"
+}
+
+fn fresh_timer(cx: TypeCx, head: ExprId) -> Diag {
+    refusal(
+        "flow.fresh_deadline",
+        cx.loc_of(head),
+        "a timer made inside a loop starts over each turn, so it never runs out across the loop",
+        "made anew each turn",
+        "for one limit over the whole loop bind it before the loop; for nothing having happened for `d` write `quiet(d)`; for each `d`, bind `every(d)` before the loop",
     )
 }
 
