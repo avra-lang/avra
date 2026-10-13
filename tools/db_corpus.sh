@@ -39,12 +39,22 @@ printf '%s\n' "use a.{target, helper}" "use @dc.dep.{shared}" "println(\"\${targ
 
 say() { steps=$((steps + 1)); echo "db-corpus: $1"; }
 fail() { fails=$((fails + 1)); echo "db-corpus: FAILED — $1"; }
+# a tree built: its binary's defined symbols (sorted), what the program prints and its status
+built() {
+    rm -f "$1/src/main"
+    AVRA_CWD="$1" "$BIN" build . > /dev/null 2>&1; echo "build status $?"
+    if [ -x "$1/src/main" ]; then
+        nm -g --defined-only "$1/src/main" 2>/dev/null | awk '{print $NF}' | sort | tr '\n' ' '; echo
+        "$1/src/main" 2>&1; echo "run status $?"
+    fi
+}
 # one tree's answers, normalised: check's blocks sorted, then docs for two names
 answers() {
     (cd "$1" && {
         AVRA_CWD="$1" "$BIN" check . 2>&1; echo "status $?"
         AVRA_CWD="$1" "$BIN" docs target 2>&1; echo "status $?"
         AVRA_CWD="$1" "$BIN" docs shared 2>&1; echo "status $?"
+        built "$1"
     }) | python3 -I -c '
 import sys
 t = sys.stdin.read()
@@ -58,7 +68,7 @@ cold() {
 last=""
 step() { # step NAME: the tree is edited already
     warm=$(answers "$R/p"); want=$(cold)
-    if [ "$warm" = "$want" ]; then say "$1"; else fail "$1: the warm answers differ from the cold ones"; printf '%s\n' "$warm" > "$R/warm.txt"; printf '%s\n' "$want" > "$R/cold.txt"; diff "$R/warm.txt" "$R/cold.txt" | head -40; fi
+    if [ "$warm" = "$want" ]; then say "$1$(printf '%s' "$warm" | grep -q avra_corpus_hosted && echo ' [the binary defines the host fn]')"; else fail "$1: the warm answers differ from the cold ones"; printf '%s\n' "$warm" > "$R/warm.txt"; printf '%s\n' "$want" > "$R/cold.txt"; diff "$R/warm.txt" "$R/cold.txt" | head -40; fi
     if [ "$want" = "$last" ] && [ "${2:-}" != noop ]; then fail "$1: the edit changed nothing the corpus can see"; fi
     last="$want"
 }
@@ -87,6 +97,12 @@ printf '%s\n' "export fn x() -> int { 1 }" "export fn unused_x() -> int { 7 }" >
 step "an unrelated declaration added to the dependency" noop
 rm "$R/p/src/util/b.av"
 step "an unused file deleted" noop
+printf '%s\n' "extern fn avra_corpus_hosted(a: int) -> int { a + 1 }" > "$R/p/src/host.av"
+step "a host fn added to a module"
+printf '%s\n' "/// target doc, edited" "export fn target() -> int { 4 }" "export fn helper() -> int { target() + 1 }" > "$R/p/src/a.av"
+step "a body edited beside a held module that carries a host fn"
+rm "$R/p/src/host.av"
+step "and the host fn removed"
 
 [ $fails -eq 0 ] || { echo "db-corpus: $fails of $steps FAILED"; exit 1; }
 echo "db-corpus: $steps steps, the warm answers equal the cold ones"
