@@ -12,7 +12,7 @@
 //! driver sets. A key is a FAMILY number and the dense id the family
 //! keys by — two list indexes, no strings. Values live in the
 //! families' own typed tables; the kernel holds only bookkeeping.
-use @std.meta.{identity}
+use @std.meta.{identity, plain_field}
 
 /// A cell's address: its family, and the dense id the family keys
 /// by (a FileId, a DeclId).
@@ -205,6 +205,8 @@ fn spelled(edges: List<int>) -> string { ["${family_of(e)}:${arg_of(e)}" for e i
 /// stack, dependencies, and counters. Every table is its own cell, so
 /// a write lands in place and copies nothing beside it.
 @identity
+@plain_field("timing")
+@plain_field("reporting")
 export type Kernel = {
     rev: Cell<int>,
     /// ONE TABLE PER FAMILY, each its own `Cell` — `cells[family]`
@@ -236,7 +238,9 @@ export type Kernel = {
     settles: Cell<int>,
     /// The clock the open frames are timed by, when the process asked for timing.
     clock: Cell<fn() -> int>,
-    timing: Cell<bool>,
+    /// Whether the open frames are timed — fixed when the kernel was made, so a
+    /// frame pays one field load and no cell read.
+    timing: bool,
     /// Each open frame's start, and the time its closed children took.
     starts: Cell<List<int>>,
     inners: Cell<List<int>>,
@@ -251,6 +255,9 @@ export type Kernel = {
     graph: Graph,
     /// Recorded reads, counted here for every kernel — the process tally shares this cell.
     tally: Cell<int>,
+    /// Whether this kernel reports served/computed asks — fixed when the kernel was
+    /// made, so a plain ask pays one field load and no cell read.
+    reporting: bool,
     /// Whether this kernel counts its reads and abandoned frames — off unless asked for.
     counting: Cell<bool>,
     /// Whether the graph writes its trace, mirrored here so a counted read never reaches into the graph.
@@ -282,7 +289,7 @@ export fn new_kernel() -> Kernel {
         verdicts: list_cell(),
         settles: Cell.new(0),
         clock: Cell.new(timed_clock().get()),
-        timing: Cell.new(timing_all().get()),
+        timing: timing_all().get(),
         starts: list_cell(),
         inners: list_cell(),
         spent: list_cell(),
@@ -303,6 +310,7 @@ export fn new_kernel() -> Kernel {
         },
         graph: new_graph(),
         tally: reads_tally(),
+        reporting: counting_all().get(),
         counting: Cell.new(counting_all().get()),
         writes: Cell.new(false),
     }
@@ -680,7 +688,7 @@ impl Kernel {
         self.asker.reader.set(reader)
         self.asker.last.set(no_edge())
         self.asker.whole.set(self.family_whole(key.family))
-        if self.timing.get() { self.frame_opened() }
+        if self.timing { self.frame_opened() }
     }
 
     /// Whether `family`'s queries read rows whole.
@@ -748,7 +756,7 @@ impl Kernel {
         let restores = self.asker.restore.get()
         // LICENSED lists.last_index: `last()!` of a nullable element never lets its referent go
         let restored: Cell<List<Restore>>? = restores[restores.length - 1]
-        if self.timing.get() { self.frame_closed(family_of(self.asker.open.get().last() ?? 0 - 1)) }
+        if self.timing { self.frame_closed(family_of(self.asker.open.get().last() ?? 0 - 1)) }
         dropped(self.asker.pending)
         dropped(self.asker.restore)
         dropped(self.asker.open)
@@ -763,7 +771,8 @@ impl Kernel {
 
     /// Writes a settled cell and publishes it.
     fn settled(key: Key, deps: List<int>, changed: int, value_hash: int?, verified: int) {
-        self.settles.set(self.settles.get() + 1)
+        // The settle count is a report's number, not a compile's: a compiling kernel pays nothing.
+        if self.reporting { self.settles.set(self.settles.get() + 1) }
         self
             .write_cell(
                 key,
@@ -864,13 +873,14 @@ impl Kernel {
 
     fn hit(family: int) -> Verdict {
         self.hits.set(self.hits.get() + 1)
-        self.verdict_counted(2 * family)
+        // Served/computed is a report's number, not a compile's: the tally's reads run only when reporting.
+        if self.reporting { self.verdict_counted(2 * family) }
         Verdict.Reuse
     }
 
     fn miss(family: int) -> Verdict {
         self.misses.set(self.misses.get() + 1)
-        self.verdict_counted(2 * family + 1)
+        if self.reporting { self.verdict_counted(2 * family + 1) }
         Verdict.Compute
     }
 
