@@ -1,0 +1,28 @@
+// proves: a fn that parks, reached only through a value from a loop, is
+// still cut by a cancel — its loop runs no further turn
+use @std.time.{ms, secs, sleep}
+
+fn napped(seen: Cell<int>) {
+    sleep(secs(60))
+    seen.set(seen.get() + 1)
+}
+
+fn looped(nap: fn(Cell<int>) -> void, seen: Cell<int>) {
+    mut i = 0
+    while i < 3 {
+        nap(seen)
+        seen.set(seen.get() + 10)
+        i = i + 1
+    }
+}
+
+let seen = Cell.new(0)
+let t = spawn {
+    let nap = napped
+    looped(nap, seen)
+    0
+}
+sleep(ms(1))
+t.cancel()
+sleep(ms(1))
+"${t.done} ${seen.get()}"

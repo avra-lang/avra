@@ -10,7 +10,10 @@
 //! parameter, any of which may be anything — or calls a fn that may.
 //! A lambda's body counts as its maker's: where it runs, it runs
 //! inside a call the maker made, and where it runs elsewhere that call
-//! is through a value. A WHOLE-PROGRAM PASS: each member surveyed ONCE
+//! is through a value. A THIRD BIT, `links`, is what a fn is KNOWN to
+//! reach — a row, a waiting read, a spawn, here or in a callee, never a
+//! call through a value — and it alone decides whether a program links
+//! a scheduler. A WHOLE-PROGRAM PASS: each member surveyed ONCE
 //! from its typed facts — every node through `node_waits` (node_waits.av,
 //! the one answer every reader asks) — into its own evidence and the
 //! members it calls, then
@@ -50,14 +53,14 @@ impl Workspace {
         fns.length
     }
 
-    /// Whether any MEMBER's body waits through a row that links a
-    /// scheduler: a spawn, a waiting property, or a call to a fn the
-    /// pass settled as parking. PURE: it reads the bits the pass settled
-    /// and writes nothing.
+    /// Whether any fn this compile knows LINKS A SCHEDULER: a member by
+    /// the bit the pass settled, a held fn by its interface's. A held fn
+    /// counts though nothing here calls it by name: its body may be
+    /// reached through a value. PURE: it reads the bits and writes
+    /// nothing.
     fn members_link_scheduler() -> bool {
         let _ = self.cancel_reach()
-        [x.id for x in self.decls.all_decls() if self.cancel_member(x.id)]
-            .any((d) -> self.cancel_survey(d).waits().any((w) -> self.wait_links(w)))
+        self.decls.all_decls().any((x) -> !x.external && self.call_links(x.id))
     }
 
     /// Whether a FILE's own expressions wait through a row that links a
@@ -110,8 +113,12 @@ impl Workspace {
                 // a row by its column; any other extern is package C,
                 // which never switches a task out — it reaches the
                 // scheduler only through a row
-                x.external -> CancelReach { parks: rt_waits(x.name), spins: false }
-                self.is_held(x.file) -> self.decls.cancel_bits(g) ?? reaches_both()
+                x.external -> CancelReach {
+                    parks: rt_waits(x.name),
+                    spins: false,
+                    links: rt_waits(x.name),
+                }
+                self.is_held(x.file) -> self.decls.cancel_bits(g) ?? reaches_all()
                 _ -> reaches_both()
             },
             .Const or .State -> reaches_both(),
@@ -146,7 +153,11 @@ impl Workspace {
         let spins = !self.decls.marks_unbroken(d) && s.spins()
         let known = [known_reach(a) for a in answers]
         CancelSummary {
-            own: CancelReach { parks: known.any(it.parks), spins: spins || known.any(it.spins) },
+            own: CancelReach {
+                parks: known.any(it.parks),
+                spins: spins || known.any(it.spins),
+                links: known.any(it.links),
+            },
             callees: flatten([via_member(a) for a in answers]),
         }
     }
@@ -204,11 +215,10 @@ impl Workspace {
     }
 
     /// Whether one wait LINKS A SCHEDULER: a spawn, a waiting property,
-    /// or a call to a fn whose OWN body parks — a member by its settled
-    /// bit, a runtime row by its column. A call to a bodiless
-    /// declaration, or through a value, does not: it may be any fn, and
-    /// it says nothing about this program's rows. Read AFTER the pass
-    /// settled, when every member's bit is set.
+    /// or a call to a fn that links. A call to a bodiless declaration,
+    /// or through a value, does not: it may be any fn, and it says
+    /// nothing about this program's rows. Read AFTER the pass settled,
+    /// when every member's bit is set.
     fn wait_links(w: NodeWait) -> bool {
         match w {
             .Calls(g, _) -> self.call_links(g),
@@ -217,13 +227,13 @@ impl Workspace {
         }
     }
 
-    /// Whether a call to `g` runs a body that parks: a runtime row by its
-    /// column, a member or held fn by its settled may-reach bit,
+    /// Whether a call to `g` runs a body that links: a runtime row by
+    /// its column, a member or held fn by its settled `links` bit,
     /// anything else no.
     fn call_links(g: DeclId) -> bool {
         let x = self.decls.decl(g)
         if x.external { return rt_waits(x.name) }
-        if self.cancel_member(g) || self.is_held(x.file) { return self.decls.cancel_bits(g)?.parks ?? false }
+        if self.cancel_member(g) || self.is_held(x.file) { return self.decls.cancel_bits(g)?.links ?? false }
         false
     }
 
@@ -321,7 +331,7 @@ impl CancelSurvey {
     fn answer(w: NodeWait) -> CallAnswer {
         match w {
             .Calls(g, _) -> self.ws.call_answer(g),
-            .Spawns or .Reads(_) -> CallAnswer.Known(CancelReach { parks: true, spins: false }),
+            .Spawns or .Reads(_) -> CallAnswer.Known(CancelReach { parks: true, spins: false, links: true }),
             .Value -> CallAnswer.Known(reaches_both()),
         }
     }
@@ -331,10 +341,15 @@ fn known_reach(a: CallAnswer) -> CancelReach {
     match a { .Known(r) -> r, .Via(_) -> reaches_nothing() }
 }
 
-fn reaches_nothing() -> CancelReach { CancelReach { parks: false, spins: false } }
+fn reaches_nothing() -> CancelReach { CancelReach { parks: false, spins: false, links: false } }
 
-/// The answer of a call nothing can see into.
-fn reaches_both() -> CancelReach { CancelReach { parks: true, spins: true } }
+/// The answer of a call nothing can see into: it may reach either
+/// way, and is known to reach no row.
+fn reaches_both() -> CancelReach { CancelReach { parks: true, spins: true, links: false } }
+
+/// The answer of a held fn whose record says nothing: it may reach
+/// everything, a row among it.
+fn reaches_all() -> CancelReach { CancelReach { parks: true, spins: true, links: true } }
 
 fn via_member(a: CallAnswer) -> List<DeclId> {
     match a { .Known(_) -> [], .Via(m) -> [m] }
@@ -343,7 +358,7 @@ fn via_member(a: CallAnswer) -> List<DeclId> {
 /// The bits as the settled fingerprint reads them — unsettled ones as `4`.
 fn cancel_word(bits: CancelReach?) -> int {
     let r? = bits else { return 4 }
-    if r.parks { 1 } else { 0 } + if r.spins { 2 } else { 0 }
+    if r.parks { 1 } else { 0 } + if r.spins { 2 } else { 0 } + if r.links { 8 } else { 0 }
 }
 
 /// A bit a held interface answers for.
