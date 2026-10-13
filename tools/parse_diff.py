@@ -70,14 +70,20 @@ def mutants(text, every):
 
 
 def units(args, work):
-    """Every unit: ("fmt", path, None) for tree files, ("mut", index, (name, text)) for mutants."""
+    """Every unit: ("fmt", path, None) for tree files, ("mut", index, (name, text)) for mutants.
+
+    With --walk, the tree is one unit: `fmt --check packages`, one process over every file.
+    """
     out = []
     files = tree_files()
-    for f in files:
-        out.append(("fmt", f, None))
+    if args.walk:
+        out.append(("walk", "packages", None))
+    else:
+        for f in files:
+            out.append(("fmt", f, None))
     base = files[:: args.mutant_stride]
     index = 0
-    for f in base:
+    for f in ([] if args.walk and not args.mutants else base):
         with open(os.path.join(ROOT, f), encoding="utf-8") as fh:
             text = fh.read()
         for name, mutated in mutants(text, args.mutant_every):
@@ -107,6 +113,9 @@ def plan(binary, todo, work, check_every):
     results = {}
     mutant_no = 0
     for u in todo:
+        if u[0] == "walk":
+            results[("walk", u[1])] = run(binary, ["fmt", "--check", u[1]], ROOT)
+            continue
         if u[0] == "fmt":
             results[("fmt", u[1])] = run(binary, ["fmt", "--check", u[1]], ROOT)
             continue
@@ -150,7 +159,7 @@ def run_shard(args, binary_a, binary_b):
     res_b = plan(binary_b, selected, work, args.check_every)
     clear_store(ROOT, work)
     diffs = compare(res_a, res_b)
-    files = sum(1 for u in selected if u[0] == "fmt")
+    files = sum(1 for u in selected if u[0] in ("fmt", "walk"))
     muts = sum(1 for u in selected if u[0] == "mut")
     checks = sum(1 for k in res_a if k[0] == "check")
     print("shard %s: files examined %d, mutants examined %d, check runs %d, differences %d"
@@ -180,7 +189,8 @@ def self_test():
     for f in (same, other):
         os.chmod(f, 0o755)
     ns = argparse.Namespace(a=same, b=same, shard="0/1", mutant_stride=400, mutant_every=50,
-                            check_every=10**9, work=os.path.join(tmp, "work"), report=None, show=5)
+                            check_every=10**9, work=os.path.join(tmp, "work"), report=None, show=5,
+                            walk=False, mutants=False)
     equal = run_shard(ns, same, same)
     ns.shard = "0/1"
     unequal = run_shard(ns, same, other)
@@ -201,6 +211,8 @@ def main(argv):
     p.add_argument("--work", default=os.path.join(ROOT, "build", "pdiff"))
     p.add_argument("--report")
     p.add_argument("--show", type=int, default=10)
+    p.add_argument("--walk", action="store_true", help="the tree as one fmt --check walk, not per file")
+    p.add_argument("--mutants", action="store_true", help="with --walk, also the mutants")
     p.add_argument("--self-test", action="store_true")
     args = p.parse_args(argv)
     if args.self_test:
