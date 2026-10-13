@@ -53,6 +53,8 @@ fn names_the_set(k: InputKind) -> bool {
 /// The name a file's text is asked by.
 fn text_named(path: string) -> InputName { InputName { kind: .Text, key: path } }
 
+fn octets_named(path: string) -> InputName { InputName { kind: .Octets, key: path } }
+
 fn loaded(seen: Read) -> Loaded<DbRow> {
     Loaded { value: DbRow.Input(seen), fingerprint: seen.input().digest.word }
 }
@@ -87,6 +89,16 @@ impl Workspace {
     /// on the first read and on every read after: it is never an empty
     /// file passed on in silence. Under a host that refuses nothing it
     /// reads as no text.
+    /// A file's bytes as a list of octets, read once and never decoded: the
+    /// digest of a file is over its bytes, not over a string made of them.
+    fn listed_octets(path: string) -> Bytes {
+        let octets? = self.input(octets_named(path)).as_octets() else {
+            (self.host.refused)(path)
+            return "".bytes()
+        }
+        octets
+    }
+
     fn listed_text(path: string) -> string {
         let text? = self.input(text_named(path)).as_text() else {
             (self.host.refused)(path)
@@ -124,6 +136,8 @@ impl Workspace {
     /// The cell key of a file's text.
     fn text_key(path: string) -> int { self.world_key(text_named(path)) }
 
+    fn octets_key(path: string) -> int { self.world_key(octets_named(path)) }
+
     /// A name's cell key, minted the first time it is asked.
     fn world_key(name: InputName) -> int {
         let key = spelled(name)
@@ -152,6 +166,8 @@ impl Workspace {
 
     /// The word a file's Text input is cut by; zero before it is read.
     fn text_word(path: string) -> int { self.db.value_hash_of(key(Family.Input, self.text_key(path))) ?? 0 }
+
+    fn octets_word(path: string) -> int { self.db.value_hash_of(key(Family.Input, self.octets_key(path))) ?? 0 }
 
     /// THE WORLD MAY HAVE MOVED: every input read so far is read again
     /// through the door, but one that stands for the running process. A TEXT that differs moves the revision — a
