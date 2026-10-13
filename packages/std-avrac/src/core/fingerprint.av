@@ -74,14 +74,15 @@ fn folding(t: MetaType, leaf: fn(Code) -> Code) -> Code {
 
 /// `fp(tag, [name, f1, f2, …])` over `self.<field>`.
 fn record_fold(t: MetaType, leaf: fn(Code) -> Code) -> Code {
-    parted(t.name, [folded(f.kind, quote { self.${f.name} }, leaf) for f in t.fields if !local(f)])
+    parted(t.name, [folded(f.kind, quote { self.${f.name} }, leaf) for f in counted(t.fields)])
 }
 
 /// The mark on a field that is not part of what its node IS: a span, a
 /// process-local id. A field with no mark folds.
 export const local_word: string = "local"
 
-fn local(f: Field) -> bool { f.marks.any(it.name == local_word) }
+/// The fields that are part of what a value IS: all but the `@local` ones.
+export fn counted(fields: List<Field>) -> List<Field> { [f for f in fields if !f.marks.any(it.name == local_word)] }
 
 /// One arm per variant: its INDEX pins the arity, so two variants of
 /// one type cannot fold alike however their payloads line up.
@@ -102,7 +103,7 @@ fn binders(v: MetaVariant) -> List<string> {
 }
 
 fn payload_folds(v: MetaVariant, leaf: fn(Code) -> Code) -> List<Code> {
-    [folded(f.kind, name(f.name), leaf) for f in v.fields]
+    [folded(f.kind, name(f.name), leaf) for f in counted(v.fields)]
 }
 
 /// The type's NAME folded first, then its parts. THE NAME IS FOLDED

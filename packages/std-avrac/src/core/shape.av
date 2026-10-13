@@ -468,20 +468,16 @@ fn same_at(a: At, b: At) -> bool {
 /// same code.
 fn same_subtree(store: SyntaxArena, a: At, b: At) -> bool {
     match a {
-        .Expr(x) -> match b { .Expr(y) -> store.exact_expr(store.expr(x), store.expr(y)), rest -> false },
-        .Stmt(x) -> match b { .Stmt(y) -> store.exact_stmt(store.stmt(x), store.stmt(y)), rest -> false },
-        .Pat(x) -> match b { .Pat(y) -> store.exact_pat(store.pat(x), store.pat(y)), rest -> false },
+        .Expr(x) -> match b { .Expr(y) -> x.exact(y, store), rest -> false },
+        .Stmt(x) -> match b { .Stmt(y) -> x.exact(y, store), rest -> false },
+        .Pat(x) -> match b { .Pat(y) -> x.exact(y, store), rest -> false },
         .Field(ox, ix) -> match b {
             .Field(oy, iy) -> field_name_of(store, ox, ix) == field_name_of(store, oy, iy) &&
-                store
-                    .exact_expr(
-                        store.expr(field_value_of(store, ox, ix)),
-                        store.expr(field_value_of(store, oy, iy)),
-                    ),
+                field_value_of(store, ox, ix).exact(field_value_of(store, oy, iy), store),
             rest -> false,
         },
         .Param(ox, ix) -> match b {
-            .Param(oy, iy) -> store.exact_param(param_of(store, ox, ix), param_of(store, oy, iy)),
+            .Param(oy, iy) -> param_of(store, ox, ix).exact(param_of(store, oy, iy), store),
             rest -> false,
         },
     }

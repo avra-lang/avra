@@ -189,6 +189,7 @@ export fn binds_type(kind: DeclKind) -> bool {
 /// written name alone (a declaration's annotations are a fact of
 /// the declaration, not a word a component index minted).
 @derive(Identity)
+@derive(Exact)
 export enum CollectKind {
     Component(word: string)
     UnknownKind(word: string)
@@ -205,6 +206,7 @@ impl CollectKind {
 
 /// Where a `collect` gathers from.
 @derive(Identity)
+@derive(Exact)
 export enum CollectScope {
     Self
     Package
@@ -217,10 +219,12 @@ export enum CollectScope {
 /// `path` is a NAME run because the grammar may grow multi-segment
 /// paths; today it holds zero or one.
 @derive(Identity)
+@derive(Exact)
 export type ProjField = { field: Plain, path: List<Plain> }
 
 /// A collect's projection: the type it builds, and each field's fill.
 @derive(Identity)
+@derive(Exact)
 export type Projection = { ty: TypeRef, fields: List<ProjField> }
 
 /// A MODULE's identity — a directory under the root, interned. `@dense`:
@@ -239,6 +243,7 @@ export type ModuleId = { index: int }
 /// renumbering would silently rewrite every memo key.
 @derive(Fingerprint)
 @derive(Identity)
+@derive(Exact)
 export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or, BitAnd, BitOr, BitXor, Shl, Shr }
 
 /// A jump's surface word — THE one projection: `continue` starts the
@@ -323,6 +328,7 @@ export type Nominal = string
 /// Several heads nest (the left outermost); a filter may sit between
 /// them or after the last.
 @derive(Identity)
+@derive(Exact)
 export enum CompClause {
     Head(index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?)
     Filter(cond: ExprId)
@@ -364,11 +370,10 @@ export fn stmt_makers() -> List<Maker<Stmt>> {
 @derive(Children)
 @derive(Flow)
 @derive(Matchable)
-@derive(Exact)
 @derive(Makes)
 @relation
 @arena
-export collect enum Expr: Identity = @expr_node in package by it.name
+export collect enum Expr: Identity, Exact = @expr_node in package by it.name
 
 /// Marks a record as `Expr`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -461,12 +466,13 @@ export type BodyParts = { word: string, parts: List<string>, holes: List<ExprId>
 /// A body's PARSED form and EXPANSION — a FIXED payload set, so the
 /// derives read it by type like any other. `None` is the honest empty
 /// for a body with no parsed form (`text`), never an empty list.
+@derive(Exact)
 export enum BodyView {
     None
     /// A quote's body as written: its placeholders are its own.
     Verbatim(stmts: List<StmtId>, arms: List<Arm>)
     /// A sublanguage's expansion, which STANDS IN PLACE OF the holes.
-    Expanded(expansion: ExprId)
+    Expanded(@local expansion: ExprId)
 }
 
 impl BodyView {
@@ -526,6 +532,7 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 /// every other field is unused: the 2+ members are ordinary written
 /// types in their own right, each resolved the usual way.
 @derive(Fingerprint)
+@derive(Exact)
 export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, @local span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
@@ -604,6 +611,7 @@ export const pronoun_param: Param = Param {
 // mitigation the doctrine names is paid in full: the unknown SPEAKS
 // (workspace's claim law) rather than falling through.
 @derive(Identity)
+@derive(Exact)
 export type Mark = { name: string, args: List<string>, @local span: Span? = null, call: ExprId? = null }
 
 /// A handler an instance hears an event with: the event it names,
@@ -633,6 +641,7 @@ export enum Unheard {
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
 @derive(Identity)
+@derive(Exact)
 export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null }
 
 /// A seat's identity in the store's span table — a fn's param, a
@@ -672,9 +681,8 @@ export fn same_pat(a: PatId, b: PatId) -> bool {
 @derive(Rebuild)
 @derive(Grammar)
 @derive(Matchable)
-@derive(Exact)
 @derive(Makes)
-export collect enum Pat = @pat_node in package by it.name
+export collect enum Pat: Exact = @pat_node in package by it.name
 
 /// Marks a record as `Pat`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -689,9 +697,11 @@ export fn pat_node(_node: Named) {}
 /// the two agree, because a suffix anchor already fixes that hole's
 /// end — which is why the mark reads there as a statement of what the
 /// hole does rather than a change to it.
+@derive(Exact)
 export type Hole = { name: string, ty: TypeRef?, greedy: bool }
 
 /// A hole and the literal text that follows it.
+@derive(Exact)
 export type FormatPart = { hole: Hole, piece: string }
 
 /// The format a `grammar` declaration read. Its holes became the
@@ -730,17 +740,20 @@ export fn bound_names(parts: List<FormatPart>) -> List<string> {
 /// its value. A false guard tries the next arm; a guarded arm covers
 /// nothing, so coverage and repeats never count it.
 @derive(Identity)
+@derive(Exact)
 export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 
 /// One declared variant: its name, what it carries in order — a
 /// single positional payload, or named fields — and the marks
 /// written before it.
 @derive(Identity)
+@derive(Exact)
 export type Variant = { name: Plain, payloads: List<Param>, @local span: Span? = null, marks: List<Mark> = [] }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
 @derive(Identity)
+@derive(Exact)
 export type Case = { group: string, name: string, body: ExprId, @local span: Span? = null }
 
 /// One step of a PLACE — where a mutation lands.
@@ -773,11 +786,10 @@ impl UseParts {
 @derive(Children)
 @derive(Flow)
 @derive(Matchable)
-@derive(Exact)
 @derive(Makes)
 @relation
 @arena
-export collect enum Stmt: Identity = @stmt_node in package by it.name
+export collect enum Stmt: Identity, Exact = @stmt_node in package by it.name
 
 /// Marks a record as `Stmt`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -907,98 +919,3 @@ fn fp_binop(op: BinOp) -> int {
         .Shr -> 18,
     }
 }
-
-// ── Exact equality, `@derive(Exact)`'s own siblings ────────────────
-// Every compound type ABOVE that a `*_fp` fold hashes gets an exact
-// twin here — never a hash, always the actual fields, span-blind (a
-// `span` field is skipped exactly where its `*_fp` sibling skips it).
-// `@derive(Exact)` (exact_derive.av) calls these for the payload
-// types it does not itself own.
-
-fn exact_strs(a: List<string>, b: List<string>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(a[it] == b[it])
-}
-
-fn exact_plains(a: List<Plain>, b: List<Plain>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(a[it].of == b[it].of)
-}
-
-fn exact_scopeds(a: List<Scoped>, b: List<Scoped>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(a[it].of == b[it].of)
-}
-
-fn exact_seat_mark(a: SeatMark, b: SeatMark) -> bool {
-    a.mutable == b.mutable && a.settled == b.settled && a.unshared == b.unshared
-}
-
-fn exact_seat_marks(a: List<SeatMark>, b: List<SeatMark>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(exact_seat_mark(a[it], b[it]))
-}
-
-fn exact_mark(a: Mark, b: Mark) -> bool {
-    a.name == b.name && exact_strs(a.args, b.args)
-}
-
-fn exact_marks(a: List<Mark>, b: List<Mark>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(exact_mark(a[it], b[it]))
-}
-
-/// `type_fp`'s exact twin: the same fields, compared, never hashed.
-fn exact_type_ref(a: TypeRef?, b: TypeRef?) -> bool {
-    if a == null || b == null { return a == null && b == null }
-    let wa = a!
-    let wb = b!
-    wa.name == wb.name &&
-        wa.optional == wb.optional &&
-        wa.dynamic == wb.dynamic &&
-        wa.arrow == wb.arrow &&
-        wa.spliced == wb.spliced &&
-        exact_seat_marks(wa.marks, wb.marks) &&
-        exact_type_refs(wa.args, wb.args)
-}
-
-fn exact_type_refs(a: List<TypeRef>, b: List<TypeRef>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(exact_type_ref(a[it], b[it]))
-}
-
-fn exact_collect_kind(a: CollectKind, b: CollectKind) -> bool {
-    match a {
-        .Component(w1) -> match b { .Component(w2) -> w1 == w2, rest -> false },
-        .UnknownKind(w1) -> match b { .UnknownKind(w2) -> w1 == w2, rest -> false },
-        .Annotated(w1) -> match b { .Annotated(w2) -> w1 == w2, rest -> false },
-    }
-}
-
-fn exact_collect_scope(a: CollectScope, b: CollectScope) -> bool {
-    match a {
-        .Self -> match b { .Self -> true, rest -> false },
-        .Package -> match b { .Package -> true, rest -> false },
-        .Closure -> match b { .Closure -> true, rest -> false },
-        .UnknownScope(w1) -> match b { .UnknownScope(w2) -> w1 == w2, rest -> false },
-    }
-}
-
-fn exact_proj_field(a: ProjField, b: ProjField) -> bool {
-    a.field.of == b.field.of && exact_plains(a.path, b.path)
-}
-
-fn exact_proj_fields(a: List<ProjField>, b: List<ProjField>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(exact_proj_field(a[it], b[it]))
-}
-
-fn exact_projection(a: Projection, b: Projection) -> bool {
-    exact_type_ref(a.ty, b.ty) && exact_proj_fields(a.fields, b.fields)
-}
-
-fn exact_hole(a: Hole, b: Hole) -> bool {
-    a.name == b.name && exact_type_ref(a.ty, b.ty) && a.greedy == b.greedy
-}
-
-fn exact_format_part(a: FormatPart, b: FormatPart) -> bool {
-    a.piece == b.piece && exact_hole(a.hole, b.hole)
-}
-
-fn exact_format_parts(a: List<FormatPart>, b: List<FormatPart>) -> bool {
-    a.length == b.length && [i for i in 0..a.length].all(exact_format_part(a[it], b[it]))
-}
-
