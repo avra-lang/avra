@@ -2102,9 +2102,21 @@ impl Workspace {
     }
 
     /// The one context over a declaration's expression range: the view
-    /// of its file, the names it reads.
+    /// of its file, the names it reads. Stands on `syntax(x)` — a
+    /// declaration's own nodes, the one edge a body owes the file, and
+    /// one a declaration with no statements of its own does not owe — and
+    /// reads the file's `parsed` table UNRECORDED, so an edit elsewhere
+    /// in the file never retypes this declaration.
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
-        let p = self.parsed(x.file)
+        if x.stmt.index < self.decls.store(x.id).stmts.count() { let _ = self.syntax(x.id) }
+        let p = if self.relation(Family.Parsed).open(x.file.index) {
+            self.parsed(x.file)
+        } else {
+            match self.relation(Family.Parsed).values.entry(x.file.index) {
+                .Present(r) -> parsed_of(r),
+                .Missing -> self.parsed(x.file),
+            }
+        }
         let view = file_view(self.lang, p, self.decls, x.file)
         new_type_cx(
             self.lang.dispatch,
