@@ -1,6 +1,7 @@
 //! Parse-time lowering: each arm is its own node, and the `select`
 //! holds them in written order. The laws the grammar cannot state are
-//! the builders': one `else`, last; one mark, `@fair`; no catch-all.
+//! the builders': an arm that waits; one `else`, last; one mark, `@fair`;
+//! no catch-all.
 use core.{Expr, Stmt, ExprId, Scoped}
 use grammar.{Token}
 use features.{LangNode, Builder}
@@ -17,7 +18,7 @@ fn build_select_stmt(b: Builder) -> Result<LangNode, string> {
 /// The `Select` node of a mark and its arms.
 fn selected(b: Builder) -> Result<Expr, string> {
     let arms = b.exprs(1)?
-    let wrong = else_misplaced(b, arms)
+    let wrong = arms_wrong(b, arms)
     if wrong != null { return .Err(wrong!) }
     let marks = b.tokens(0)?
     .Ok(Expr.Select(fair_marked(marks)?, arms))
@@ -30,10 +31,11 @@ fn fair_marked(marks: List<Token>) -> Result<bool, string> {
     .Err("a `select` reads one mark, `@fair` — `${m.text}` is not it")
 }
 
-/// What is wrong with where the `else` arms stand, when anything is:
-/// a `select` has at most one, and it is written last.
-fn else_misplaced(b: Builder, arms: List<ExprId>) -> string? {
+/// What is wrong with the arms as a set, when anything is: one at least
+/// waits, and `else` is written once, last.
+fn arms_wrong(b: Builder, arms: List<ExprId>) -> string? {
     let elses = [j for j, a in arms if is_else(b, a)]
+    if elses.length == arms.length { return "a `select` needs an arm to wait on" }
     if elses.length > 1 { return "a `select` has ONE `else` arm" }
     let at? = elses.first() else { return null }
     if at != arms.length - 1 { return "the `else` arm ends a `select` — move it last" }
