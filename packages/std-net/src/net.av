@@ -11,13 +11,12 @@
 //! are the addresses resolved, never looked up again — and an
 //! `Admission` judges each before it is dialed, so `.Public` refuses
 //! the loopback, private and metadata addresses however a name spelled
-//! them. Inside a `within`
-//! a park that outlasts it fails the verb, `timed_out()` true. Their `try_`
-//! twins never wait: a read that finds nothing answers `.Pending`, a
+//! them. Inside a `within` a park that outlasts it is cut, and the
+//! `within` answers the deadline. Their `try_` twins never wait: a read that finds nothing answers `.Pending`, a
 //! write that takes nothing answers 0, and a poller loop decides.
 use @std.errors.{Error, ErrorInfo, info}
 use @std.meta.{unbroken}
-use @std.time.{Duration, ms, now_ms, now_ns}
+use @std.time.{Duration, TimedOut, ms, now_ms, now_ns}
 
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
 extern fn avra_net_listen_all(port: int, backlog: int) -> int
@@ -228,21 +227,28 @@ fn streamed(fd: int, verb: string, subject: string) -> Result<Conn, NetError> {
 }
 
 /// The calling task parked until `fd` is readable, or writable —
-/// false when the task's `within` ran out first, or another task
-/// interrupted it.
+/// false when another task interrupted it. A `within` that runs out
+/// first cuts the park: the task unwinds to that scope.
 fn parked(fd: int, write: bool) -> bool {
     avra_fiber_park_fd(fd, if write { 1 } else { 0 }, -1) != 0
 }
 
-fn timed_out<T>(verb: string, subject: string) -> Result<T, NetError> {
+/// A verb that ran out of time: its failure, `timed_out()` true.
+export fn outran<T>(verb: string, subject: string) -> Result<T, NetError> {
     failed(verb, subject, 0 - avra_errno_timed_out())
+}
+
+/// A `within` over a verb of this package, as that verb's own answer: a
+/// deadline the block ran past is the timed-out failure.
+export fn timely<T>(r: Result<Result<T, NetError>, TimedOut>) -> Result<T, NetError> {
+    match r { .Ok(inner) -> inner, .Err(_) -> outran("wait", "a deadline") }
 }
 
 /// What a park that found no readiness answers: interrupted when another
 /// task woke it, else timed out.
 fn unparked<T>(verb: string, subject: string) -> Result<T, NetError> {
     if avra_fiber_interrupted() != 0 { return failed(verb, subject, 0 - avra_net_errno_interrupted()) }
-    timed_out(verb, subject)
+    outran(verb, subject)
 }
 
 fn gone<T>(verb: string, fd: int) -> Result<T, NetError> {
@@ -347,7 +353,7 @@ impl Conn {
         mut at = 0
         while at < bytes.length {
             let n = self.try_write(bytes, at)?
-            if n == 0 && !parked(self.fd, true) { return timed_out("write", self.named()) }
+            if n == 0 && !parked(self.fd, true) { return outran("write", self.named()) }
             at = at + n
         }
         .Ok(bytes.length)
@@ -633,7 +639,7 @@ fn denied<T>(host: string, port: int, a: Address) -> Result<T, NetError> {
 fn looked_up(host: string, timeout: Duration) -> Result<List<Address>, NetError> {
     let h = avra_net_lookup(host)
     if h < 0 { return failed("resolve", host, h) }
-    let answer: Result<List<Address>, NetError> = if awaited(h, now_ms() + timeout.ms) { answered(host, h) } else { timed_out("resolve", host) }
+    let answer: Result<List<Address>, NetError> = if awaited(h, now_ms() + timeout.ms) { answered(host, h) } else { outran("resolve", host) }
     let _ = avra_net_lookup_close(h)
     answer
 }
@@ -978,14 +984,13 @@ impl Bell {
         while avra_gate_claim(self.gate.get()) >= 0 {}
     }
 
-    /// The calling task parked until the bell rings, `timeout` passes —
-    /// null is none of its own, a negative one is spent — or the
-    /// deadline of a `within` around it; the last two fail the wait
-    /// `timed_out()`, as every parking verb here does. A ring answers
-    /// -1: a bell has no descriptor.
+    /// The calling task parked until the bell rings or `timeout` passes —
+    /// null is none of its own, a negative one is spent — which fails
+    /// the wait `timed_out()`. The deadline of a `within` around it
+    /// cuts the wait. A ring answers -1: a bell has no descriptor.
     fn waited(timeout: Duration?) -> Result<int, NetError> {
         let budget = timeout?.ms
-        if spent(budget) { return timed_out("wait", "a bell") }
+        if spent(budget) { return outran("wait", "a bell") }
         self.waiting.set(self.waiting.get() + 1)
         avra_wait_gate(self.gate.get(), rung_arm, 0)
         if budget != null { avra_wait_until(wake_at(budget!), timed_arm, 0) }
@@ -993,7 +998,7 @@ impl Bell {
         self.waiting.set(self.waiting.get() - 1)
         if claim == rung_arm { return .Ok(-1) }
         if claim == cancelled_claim { avra_trap("a bell's wait has no answer for a cancel") }
-        timed_out("wait", "a bell")
+        outran("wait", "a bell")
     }
 
     /// How many times the bell has rung.

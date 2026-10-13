@@ -1,6 +1,7 @@
 // proves: a socket read parked past its `within` limit is cut — the
-// block answers `Err(TimedOut)`, never the read's own error
-use @std.net.{listen, connect, NetError}
+// block answers `Err(TimedOut)`, never the read's own error — and
+// `timely` folds that deadline into the read's timed-out failure
+use @std.net.{listen, connect, timely, NetError}
 use @std.time.{ms, secs}
 
 fn run() -> Result<string, NetError> {
@@ -12,10 +13,14 @@ fn run() -> Result<string, NetError> {
         .Ok(.Err(_)) -> "failed",
         .Err(t) -> "late ${t.after.ms}",
     }
+    let folded = match timely(within ms(10) { s.read(64) }) {
+        .Ok(_) -> "read",
+        .Err(e) -> "timed out ${e.timed_out()}",
+    }
     let _ = s.close()
     let _ = c.close()
     let _ = l.close()
-    .Ok(said)
+    .Ok("${said}, ${folded}")
 }
 
 run() catch _ -> "refused"

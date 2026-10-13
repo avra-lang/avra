@@ -64,6 +64,7 @@ use client.{
     method_word,
     own_head,
     staged,
+    in_stage,
     carried,
     netted,
 }
@@ -147,7 +148,7 @@ export type Aim = { origin: string, secure: bool, host: string, port: int, field
 export fn fetch(method: Method, url: string, body: Payload, o: Options) -> Fetched {
     let deadline = now_ms() + o.timeouts.total.ms
     let answer = within o.timeouts.total { followed(Hop { method: method, url: url, body: body, via: [] }, o, deadline) }
-    overran(answer, deadline)
+    overran(in_stage(.Total, answer), deadline)
 }
 
 /// What a request by URL answers.
@@ -423,7 +424,7 @@ fn exchanged(mut c: Client, wire: Bytes, body: Payload, o: Options, deadline: in
     ClientError,
 > {
     sent(c, wire, body, deadline)?
-    let first = staged(.FirstByte, within o.timeouts.first_byte { c.received() })?
+    let first = in_stage(.FirstByte, within o.timeouts.first_byte { c.received() })?
     let answer = first ?? received_whole(c)?
     .Ok(Exchanged { client: c, answer: answer })
 }
