@@ -596,7 +596,13 @@ impl Db {
     fn read_in(family: int) -> bool { family >= 0 && self.kernel.get()?.read_any(family) ?? false }
 
     /// The name a reader's token stands for.
-    fn reader(token: int) -> string { "a query (reader ${token})" }
+    fn reader(token: int) -> string {
+        let kernel? = self.kernel.get() else { return "a query (reader ${token})" }
+        "a query (reader ${token}, ${kernel.reader_text(token)})"
+    }
+
+    /// Who is writing now, in words: the innermost open query, or the driver.
+    fn writing() -> string { self.writer(self.kernel.get()?.asking_edge() ?? 0 - 1) }
 
     /// A write the law refuses, told to whoever hears.
     fn refuse(words: string) {
