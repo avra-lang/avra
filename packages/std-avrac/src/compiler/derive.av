@@ -668,7 +668,10 @@ impl Workspace {
     fn cheap_reads(store: Store, path: string, name: string) -> List<string> {
         let said = store.get(Stored.Unit, "${kept_key_for(path, name)}#lines") ?? ""
         let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
-        if !rows.any((r: List<string>) -> judged_by_files(r) && !self.kept_row_stands(r)) { return [] }
+        let refused = [r for r in rows if judged_by_files(r) && !self.kept_row_stands(r)]
+        if refused.is_empty() { return [] }
+        // a file whose text moved is read all the same, and its outline may still stand for the verdict
+        if refused.all(saved_by_outline(it)) { return [r[1] for r in refused] }
         let reads = rows.find(it[0] == "r") ?? []
         reads.slice(1, reads.length)
     }
@@ -1168,6 +1171,9 @@ fn nothing_held(why: string) -> string {
 fn records_adrift(paths: List<string>) -> string {
     "avra: interface records did not stabilize — still moving under ${joined(paths, ", ")}"
 }
+
+/// Whether a refused file line carries an outline a read of the file can still match.
+fn saved_by_outline(r: List<string>) -> bool { r[0] == "f" && r.length == 4 && r[3] != "" }
 
 /// Whether a kept row is judged from its file alone, with no analysis run.
 fn judged_by_files(r: List<string>) -> bool {

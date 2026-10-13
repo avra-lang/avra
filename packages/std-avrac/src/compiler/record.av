@@ -1273,7 +1273,7 @@ type FnForm = { name: string, form: string }
 
 /// A module's view split by what a name reaches: the digest of the lines no name reaches, per
 /// module seen, and the plain free fns by name. `whole` when a file of the view carries no digest.
-export type NarrowIndex = { whole: bool, globals: List<string>, named: Map<string, List<NamedForm>> }
+export type NarrowIndex = { whole: bool, globals: List<string>, alone: List<string>, named: Map<string, List<NamedForm>> }
 
 /// WHETHER A RECORD LINE IS A PLAIN FREE FN: reached by its name and by nothing else — not a
 /// method, a nested or generated declaration, an annotated one a collect gathers, a component
@@ -1423,7 +1423,8 @@ impl Workspace {
         let deps = sorted_texts([m.text()].concat(r.mods))
         let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in deps]
         self.keys.view_parts.put(m.text(), made)
-        self.keys.view_index.put(m.text(), self.narrow_index(store, m, deps, r))
+        let ni = self.narrow_index(store, m, deps, r)
+        self.keys.view_index.put(m.text(), ni)
         made
     }
 
@@ -1445,9 +1446,14 @@ impl Workspace {
                 buckets.put(key, (buckets.get().get(key) ?? []).concat([hit.form]))
             }
         }
-        [s with { bytes_key: digest_of(
-            joined([index.globals[i]].concat(sorted_texts(buckets.get().get("${i}") ?? [])), "\n"),
-        ) } for i, s in whole]
+        [s with { bytes_key: self.named_key(index, i, buckets.get().get("${i}") ?? []) } for i, s in whole]
+    }
+
+    /// What a file sees of the `i`th module: the lines no name reaches alone when it mentions
+    /// none of its fns, else with the forms of those it does.
+    fn named_key(index: NarrowIndex, i: int, forms: List<string>) -> string {
+        if forms.is_empty() { return index.alone[i] }
+        digest_of(joined([index.globals[i]].concat(sorted_texts(forms)), "\n"))
     }
 
     /// A file's plain free fns, each with its form — remembered for the build, since every
@@ -1493,7 +1499,12 @@ impl Workspace {
             }
             globals.push(ifaces_digest(digests))
         }
-        NarrowIndex { whole: whole, globals: globals, named: named.get() }
+        NarrowIndex {
+            whole: whole,
+            globals: globals,
+            alone: [digest_of(g) for g in globals],
+            named: named.get(),
+        }
     }
 
     /// EVERY OTHER MODULE'S FILE A MODULE'S OBJECTS CAN DEPEND ON: each file its own
