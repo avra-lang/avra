@@ -119,6 +119,11 @@ impl Leaf {
             .Input(name, spelled, _) -> "i\t${name}\t${spelled}",
         }
     }
+
+    /// The read's digest as a saved answer spells it.
+    fn digest_text() -> string {
+        match self { .Rows(_, digest) -> "${digest}", .Input(_, _, digest) -> "${digest}" }
+    }
 }
 
 /// What a settled query stands on, or that something it read has no name.
@@ -541,6 +546,18 @@ impl Db {
                 now == digest
             },
         }
+    }
+
+    /// The digest of the read `Leaf.id` names, as it stands here; absent when this Db cannot
+    /// name the read.
+    fn leaf_digest(id: string) -> string? {
+        if id.starts_with("r\t") { return "${self.rows_digest(id.substring(2, id.length))}" }
+        if !id.starts_with("i\t") { return null }
+        let rest = id.substring(2, id.length)
+        let at = rest.index_of("\t")
+        if at < 0 { return null }
+        let now? = self.input_digest(rest.substring(0, at), rest.substring(at + 1, rest.length)) else { return null }
+        "${now}"
     }
 
     /// A relation's rows' hash here; an unreached relation holds none.
