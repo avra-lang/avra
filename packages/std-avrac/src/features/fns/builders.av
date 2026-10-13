@@ -1,8 +1,8 @@
 //! Parse-time lowering: captured tokens and expressions -> the
-//! FnDecl statement and the Call node. A `fn`'s seats arrive built, one
-//! `Record.ParamSyntax` each; the other declaring forms zip theirs.
+//! FnDecl statement and the Call node. A declaration's seats arrive
+//! built, one `Record.ParamSyntax` each.
 use core.{Expr, Stmt, Scoped}
-use features.{LangNode, Builder, aligned_param_types, expr_id_at, seats, marked_seats, params_at}
+use features.{LangNode, Builder, expr_id_at, params_at}
 
 fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
@@ -24,59 +24,23 @@ fn build_fn(b: Builder) -> Result<LangNode, string> {
 /// guarded body is lowering's.
 fn build_once_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    // a mark parses so the LAW may speak: a `once` fn takes no
-    // parameters at all, marked or plain, and F2055 says which
-    let ps = b.tokens(3)?
-    let r = b.answer(5)
-    let body = b.expr(6)?
-    let ends? = b.span_end() else {
-        return .Err(
-            "defect: a once declaration without a span — the arena and the grammar disagree",
-        )
-    }
     let s = b
         .store
-        .alloc_stmt(
-            Stmt
-                .FnDecl(
-                    Scoped(n.text),
-                    [],
-                    seats(b.store, ps, aligned_param_types(ps, b.type_refs(4)?, ends)),
-                    r,
-                    body,
-                ),
-            b.span,
-        )
+        .alloc_stmt(Stmt.FnDecl(Scoped(n.text), [], params_at(b.args, 1), b.answer(2), b.expr(3)?), b.span)
     b.store.mark_once(s)
     .Ok(LangNode.NStmt(s))
 }
 
 /// `extern fn name(mut p: T, …) -> R` — every seat typed by the
-/// grammar, so the names and types pair by index. A `mut` seat is an
-/// INOUT: the C prototype takes the address of the caller's cell,
+/// grammar. A `mut` seat is an INOUT: the C prototype takes the address of the caller's cell,
 /// which is the only way a callee with no box can write back.
 fn build_extern(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let consts = b.tokens(1)?
-    let muts = b.tokens(2)?
-    let ps = b.tokens(3)?
-    let ends? = b.span_end() else {
-        return .Err(
-            "defect: an extern declaration without a span — the arena and the grammar disagree",
-        )
-    }
-    let params = marked_seats(
-        b.store,
-        ps,
-        aligned_param_types(ps, b.type_refs(4)?, ends),
-        muts,
-        consts,
-        n.span.lo,
-    )
+    let params = params_at(b.args, 1)
     // A BODY MAKES IT A HOST FN: the same seats, and a fn like any other
     // under them — the mark says its name is the symbol it defines.
-    let body? = expr_id_at(b.args, 6) else { return b.make_stmt(Stmt.ExternFn(Scoped(n.text), params, b.answer(5))) }
-    let s = b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), [], params, b.answer(5), body), b.span)
+    let body? = expr_id_at(b.args, 3) else { return b.make_stmt(Stmt.ExternFn(Scoped(n.text), params, b.answer(2))) }
+    let s = b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), [], params, b.answer(2), body), b.span)
     b.store.mark_host(s)
     .Ok(LangNode.NStmt(s))
 }

@@ -551,12 +551,6 @@ impl Builder {
         )
     }
 
-    /// Seats with the defaults some carry — a default finds its seat
-    /// by POSITION, as a field's does.
-    fn defaulted(ps: List<Token>, seats: List<Param>, pds: List<ExprId>) -> List<Param> {
-        [p with { default: self.default_before(ps, pds, j) } for j, p in seats]
-    }
-
     /// The default whose position falls between field `j`'s name and
     /// the next field's — null when none does.
     fn default_before(fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
@@ -634,13 +628,6 @@ fn state_before(fs: List<Token>, states: List<Token>, j: int, from: int) -> bool
     states.any((s) -> between(s.span.lo, lo, fs[j].span.lo))
 }
 
-/// Parameter seats from two parallel captures — the names and the
-/// types they aligned to — with no defaults: what every fn-shaped
-/// declaration zips.
-export fn seats(store: SyntaxArena, ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
-    marked_seats(store, ps, tys, [], [], 0)
-}
-
 /// Seats with their marks: a `mut` or `const` token between the
 /// previous name (or `from`, before the first) and a name marks that
 /// seat. ONE window law, so every param list — a fn's, a method's, a
@@ -660,27 +647,6 @@ export fn marked_seats(
         promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo),
         id: store.alloc_param_id(p.span),
     } for j, p in ps]
-}
-
-/// Seats marked `isolated` by the tokens in their windows — the same
-/// window law `marked_seats` reads.
-export fn isolating(seats: List<Param>, ps: List<Token>, isos: List<Token>, from: int) -> List<
-    Param,
-> {
-    [s with { promises: s.promises with { unshared: isos.any(mark_within(it, seat_since(ps, j, from), ps[j].span.lo)) } } for j, s in seats]
-}
-
-/// Seats marked `state` by the tokens in their windows — the same
-/// window law `marked_seats` reads. A `state` seat is a PLACE the
-/// caller owns, so it is written through like a `mut` seat.
-export fn stating(seats: List<Param>, ps: List<Token>, states: List<Token>, from: int) -> List<
-    Param,
-> {
-    [if states.any(mark_within(it, seat_since(ps, j, from), ps[j].span.lo)) {
-        s with { promises: s.promises with { state: true } }
-    } else {
-        s
-    } for j, s in seats]
 }
 
 /// One seat's contract: the `mut` and `const` tokens written in its
