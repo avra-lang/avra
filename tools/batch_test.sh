@@ -297,6 +297,14 @@ reset_clone
 batch --n 22 --attacks-na "26=tools only" --suites-ran "26=ran" 26
 check "$?" "1" "gate failed: refused even with evidence"
 check "$(grep -c '#26 refused: its light gate check is FAILURE' "$scratch/err")" "1" "gate failed: names the failed gate"
+# ── 13. the retitle strips every "DO NOT MERGE" lead an earlier batch left ──
+# The function is read from batch.sh itself, so the test runs the one definition.
+sed -n '/^strip_dnm()/,/^}/p' "$here/batch.sh" > "$scratch/strip.sh"
+. "$scratch/strip.sh"
+check "$(strip_dnm "DO NOT MERGE (lands via batch #9) — h9: x")" "h9: x" "retitle: an earlier batch's lead is stripped"
+check "$(strip_dnm "DO NOT MERGE: h2: a")" "h2: a" "retitle: a plain lead is stripped"
+check "$(strip_dnm "h4: plain title")" "h4: plain title" "retitle: a title with no lead is kept"
+check "$(strip_dnm "DO NOT MERGE: DB 06 step 3 — docs")" "DB 06 step 3 — docs" "retitle: a dash inside the title is kept"
 
 echo
 echo "batch tests: $((total - failed))/$total passed"
