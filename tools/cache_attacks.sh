@@ -386,6 +386,58 @@ steps=$((steps+1)); rb_out=$($R/rb/src/main 2>&1)
 
 fi
 
+if section sl; then
+# A SEAL A HELD DECLARATION KEEPS STANDS. `Cnt` is sealed boxed by `own/s.av` (a `mut` seat and
+# a writing method), which stays held while `rec/r.av`, where `Cnt` is declared, is read: no
+# attempt may give up the hold. Once the sealer is edited away and `Cnt` is read, nothing keeps
+# it boxed, and only the sources whole can say what its layout is — the hold is given up.
+mkdir -p $R/sl/src/rec $R/sl/src/own $R/sl/src/use
+printf '[package]\nname = "rt-sl"\nversion = "0.1.0"\n' > $R/sl/avra.toml
+printf 'export type Cnt = { n: int }\n' > $R/sl/src/rec/r.av
+printf 'use rec.{Cnt}\nexport fn bump(mut c: Cnt) { c.n = c.n + 1 }\nimpl Cnt {\n    mut fn up() { self.n = self.n + 10 }\n}\n' > $R/sl/src/own/s.av
+printf 'use rec.{Cnt}\nuse own.{bump}\nexport fn total() -> int {\n    mut c = Cnt { n: 1 }\n    bump(c)\n    c.up()\n    c.n\n}\n' > $R/sl/src/use/u.av
+printf 'use use.{total}\nprintln("${total()}")\n' > $R/sl/src/main.av
+sl_n=0
+sl_touch() { sl_n=$((sl_n+1)); printf '// moved %s\n' "$sl_n" >> $R/sl/src/rec/r.av; }
+sl_held() { AVRA_QTRACE=1 ./avra check $R/sl 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "attempt" { split($4, w, " "); print w[2] }' | tr '\n' ' '; }
+S "cold sl" sl
+sl_touch; sl_got=$(sl_held)
+steps=$((steps+1)); case "$sl_got" in *false*) fails=$((fails+1)); echo "FAIL  sl: reading the file a held seal's record is declared in gave up the hold (attempts: '$sl_got')" ;; "true "|"true true ") [ -n "${VERBOSE:-}" ] && echo "ok    sl: the declaring file read, the hold kept" ;; *) fails=$((fails+1)); echo "FAIL  sl: reading the file a held seal's record is declared in gave up the hold (attempts: '$sl_got')" ;; esac
+S "sl: the declaring file read" sl
+steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "12" ] || { fails=$((fails+1)); echo "FAIL  sl: bump and up lost a write through the held seal: '$($R/sl/src/main 2>&1)', wanted '12'"; }
+printf 'use rec.{Cnt}\nexport fn bump(c: Cnt) -> int { c.n + 1 }\nexport fn up(c: Cnt) -> int { c.n + 10 }\n' > $R/sl/src/own/s.av
+printf 'use rec.{Cnt}\nuse own.{bump, up}\nexport fn total() -> int {\n    let c = Cnt { n: 1 }\n    bump(c) + up(c)\n}\n' > $R/sl/src/use/u.av
+sl_touch; sl_got=$(sl_held)
+steps=$((steps+1)); case "$sl_got" in *"false"*) [ -n "${VERBOSE:-}" ] && echo "ok    sl: the sealer gone, the hold given up" ;; *) fails=$((fails+1)); echo "FAIL  sl: a record nothing seals any more stayed boxed under the hold (attempts: '$sl_got')" ;; esac
+S "sl: the sealer edited away" sl
+steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || { fails=$((fails+1)); echo "FAIL  sl: after the seal left, the program printed '$($R/sl/src/main 2>&1)', wanted '13'"; }
+# a NEW sealing site in a read file seals as it is typed, and the record it boxes follows; when
+# that site goes and nothing held seals the record, the hold is given up again
+printf 'use rec.{Cnt}\nuse own.{bump, up}\nfn grow(mut c: Cnt) { c.n = c.n + 5 }\nexport fn total() -> int {\n    mut c = Cnt { n: 1 }\n    grow(c)\n    bump(c) + up(c) + c.n\n}\n' > $R/sl/src/use/u.av
+sl_touch
+S "sl: a new sealing site in a read file" sl
+steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "29" ] || { fails=$((fails+1)); echo "FAIL  sl: with a new seal the program printed '$($R/sl/src/main 2>&1)', wanted '29'"; }
+printf 'use rec.{Cnt}\nuse own.{bump, up}\nexport fn total() -> int {\n    let c = Cnt { n: 1 }\n    bump(c) + up(c)\n}\n' > $R/sl/src/use/u.av
+sl_touch; sl_got=$(sl_held)
+steps=$((steps+1)); case "$sl_got" in *false*) [ -n "${VERBOSE:-}" ] && echo "ok    sl: the new site gone, the hold given up" ;; *) fails=$((fails+1)); echo "FAIL  sl: a record whose only sealer left a read file stayed boxed under the hold (attempts: '$sl_got')" ;; esac
+S "sl: the new sealing site removed" sl
+steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || { fails=$((fails+1)); echo "FAIL  sl: after the site left, the program printed '$($R/sl/src/main 2>&1)', wanted '13'"; }
+# the held sealer's FILE deleted: nothing held seals the record any more
+printf 'use rec.{Cnt}\nexport fn bump(mut c: Cnt) { c.n = c.n + 1 }\nimpl Cnt {\n    mut fn up() { self.n = self.n + 10 }\n}\n' > $R/sl/src/own/s.av
+printf 'use rec.{Cnt}\nuse own.{bump}\nexport fn total() -> int {\n    mut c = Cnt { n: 1 }\n    bump(c)\n    c.up()\n    c.n\n}\n' > $R/sl/src/use/u.av
+sl_touch
+S "sl: the sealer restored" sl
+sl_touch; sl_got=$(sl_held)
+steps=$((steps+1)); case "$sl_got" in *false*) fails=$((fails+1)); echo "FAIL  sl: the restored held seal gave up the hold (attempts: '$sl_got')" ;; esac
+rm $R/sl/src/own/s.av
+printf 'use rec.{Cnt}\nexport fn total() -> int {\n    let c = Cnt { n: 1 }\n    c.n + 12\n}\n' > $R/sl/src/use/u.av
+sl_touch; sl_got=$(sl_held)
+steps=$((steps+1)); case "$sl_got" in *false*) [ -n "${VERBOSE:-}" ] && echo "ok    sl: the sealing file deleted, the hold given up" ;; *) fails=$((fails+1)); echo "FAIL  sl: a record whose held sealer's file was deleted stayed boxed under the hold (attempts: '$sl_got')" ;; esac
+S "sl: the sealing file deleted" sl
+steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || { fails=$((fails+1)); echo "FAIL  sl: after the file left, the program printed '$($R/sl/src/main 2>&1)', wanted '13'"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
