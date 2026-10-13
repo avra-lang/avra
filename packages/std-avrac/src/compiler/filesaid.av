@@ -1,0 +1,124 @@
+//! A FILE'S KEPT ANSWER, AS A SAVED ANSWER: the file's `Said` stands while the answers it
+//! was kept on still have the digests they had — its text, each recorded compile-time
+//! read's token, what its collects gathered, each module it sees by its interface, and
+//! the SETS of those, so a read added or dropped moves the answer. Kept beside the hold's
+//! hand-folded key and judged beside it under `AVRA_DB_VERIFY`: the two must agree on
+//! which files hold.
+use @std.text.{parse_int}
+use core.{digest_of, joined, qtrace, traced, db_verified, ModulePath}
+use compiler.{Want}
+use compiler.store.{Store, Stored, Read, node_key}
+use compiler.record.{KeyParts}
+
+/// What a file's kept answer stood on: one named answer each.
+enum FileRead {
+    Text
+    Run(int)
+    Runs
+    Gathered
+    Seen(string)
+    SeenSet
+}
+
+impl FileRead {
+    /// The read as its row names it.
+    fn name() -> string {
+        match self {
+            .Text -> "text",
+            .Run(j) -> "run ${j}",
+            .Runs -> "runs",
+            .Gathered -> "gathered",
+            .Seen(m) -> "seen ${m}",
+            .SeenSet -> "seen-set",
+        }
+    }
+}
+
+/// A read read back from its name; null for one this compiler never wrote.
+fn file_read_of(name: string) -> FileRead? {
+    let word = name.split(" ").first() ?? ""
+    let rest = name.substring(word.length + 1, name.length)
+    when {
+        name == "text" -> FileRead.Text
+        name == "runs" -> FileRead.Runs
+        name == "gathered" -> FileRead.Gathered
+        name == "seen-set" -> FileRead.SeenSet
+        word == "run" -> if parse_int(rest) != null { FileRead.Run(parse_int(rest)!) } else { null }
+        name.starts_with("seen ") -> FileRead.Seen(rest)
+        _ -> null
+    }
+}
+
+/// Where a file's kept answer is filed.
+fn filesaid_key(path: string) -> string { node_key(Stored.Unit, ["filesaid", path]) }
+
+/// The digest a read has in these parts; null for a read the parts no longer carry.
+fn answer_in(k: KeyParts, r: FileRead) -> string? {
+    match r {
+        .Text -> digest_of(k.text),
+        .Run(j) -> if j < k.runs.length { digest_of(k.runs[j]) } else { null },
+        .Runs -> digest_of("${k.runs.length}"),
+        .Gathered -> digest_of(joined(k.gathered, "\n")),
+        .Seen(m) -> seen_answer(k, m),
+        .SeenSet -> digest_of(joined([s.module for s in k.seen], "\n")),
+    }
+}
+
+/// What the module `m` is seen as in these parts; null for one not seen.
+fn seen_answer(k: KeyParts, m: string) -> string? {
+    let s? = k.seen.find(it.module == m) else { return null }
+    digest_of("${s.bytes_key} ${s.files}")
+}
+
+/// Every answer these parts stand on, named.
+fn reads_of_parts(k: KeyParts) -> List<Read> {
+    let reads = [FileRead.Text, FileRead.Runs, FileRead.Gathered, FileRead.SeenSet]
+        .concat([FileRead.Run(j) for j in 0..k.runs.length])
+        .concat([FileRead.Seen(s.module) for s in k.seen])
+    [Read { name: r.name(), digest: answer_in(k, r) ?? "" } for r in reads]
+}
+
+impl Workspace {
+    /// A file's kept answer filed with what it stands on, beside its parts.
+    fn keep_filesaid(store: Store, path: string, k: KeyParts) {
+        let _ = store
+            .keep_reading(Stored.Unit, filesaid_key(path), self.held_okey(store, path), reads_of_parts(k))
+    }
+
+    /// The first answer a file's kept answer stood on that has moved, or null when none
+    /// has; "no row" for a file never kept so.
+    fn filesaid_moved(store: Store, path: string, k: KeyParts) -> string? {
+        let lines? = store.reads_of(Stored.Unit, filesaid_key(path)) else { return "no row" }
+        let moved = [name! for line in lines for name in [self.moved_name(line, k)] if name != null]
+        moved.first()
+    }
+
+    /// The read a row line names, when its answer is not the one the parts have.
+    fn moved_name(line: string, k: KeyParts) -> string? {
+        let at = line.index_of(" ")
+        if at <= 0 { return line }
+        let name = line.substring(at + 1, line.length)
+        let r? = file_read_of(name) else { return name }
+        if answer_in(k, r) == line.substring(0, at) { null } else { name }
+    }
+
+    /// JUDGED BESIDE THE HOLD: the file's kept answer under the saved-answer rule against
+    /// `held`, the hold's own verdict. Said under `AVRA_QTRACE` when the two disagree,
+    /// with the first answer that moved.
+    fn filesaid_judged(
+        store: Store,
+        m: ModulePath,
+        path: string,
+        okey: string,
+        held: bool,
+        want: Want,
+    ) {
+        if !db_verified() { return }
+        let k = self.key_parts_cached(store, m, path)
+        let moved = self.filesaid_moved(store, path, k)
+        let recorded = store.get(Stored.Unit, filesaid_key(path))
+        let stands = moved == null && recorded != null && self.stands_in(store, recorded!, want)
+        let why = moved ?? if recorded == null { "no value" } else if !stands { "rows gone" } else if recorded! != okey { "key memo" } else { "" }
+        if traced() { qtrace("Q\tverify\t${path}\thold ${held}\tsaved ${stands}\t${why}\n") }
+    }
+}
