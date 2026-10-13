@@ -3,7 +3,7 @@
 //! leg — real subprocesses over a package minted fresh for each case.
 //! `avra_ran` and `scratch_dir` are the neighbouring tests' own.
 use @std.io.{make_dirs, write_text}
-use @std.process.{Exit, Outcome}
+use @std.process.{Exit, Outcome, ProcessError, cmd, inherited, tool}
 use @std.time.{now_ns}
 
 /// A package minted fresh whose one program test does not type. Answers
@@ -34,6 +34,34 @@ fn exit_is_underived(e: Exit) -> bool {
     match e { .Code(3) -> true, .Clean or .Code(_) or .Signal(_, _) -> false }
 }
 
+/// A package minted fresh whose manifest's `[link]` row has a hole only
+/// the invoker's environment fills, holding one `.verdict` program.
+/// Answers the package's root.
+fn holed_package() -> string {
+    let root = "${scratch_dir()}/holed_${now_ns()}"
+    let _ = make_dirs("${root}/src/cut")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"holed\"\nversion = \"0.1.0\"\n\n[link]\nsearch = [\"\${AVRA_LEG_PROBE}/lib\"]\n",
+    )
+    let _ = write_text(
+        "${root}/src/cut/cut.av",
+        "use @std.time.{ms, secs, sleep}\n\nlet slow = spawn {\n    sleep(secs(60))\n    1\n}\nsleep(ms(1))\nslow.cancel()\nlet v = slow.await\nprintln(\"unreached \${v}\")\n",
+    )
+    let _ = write_text(
+        "${root}/src/cut/cut.verdict",
+        "avra: main was cancelled — awaiting a task cancelled by main\n",
+    )
+    root
+}
+
+/// `avra test` over that package with the hole's variable set.
+fn holed_suite() -> Result<Outcome, ProcessError> {
+    let root = holed_package()
+    (cmd(tool(avra_bin())?, ["test", root]) with { env: inherited().with_var("AVRA_LEG_PROBE", root), timeout: hang_bound() })
+        .outcome()
+}
+
 spec "the eval leg of a child-run program test" {
     given "a program that does not derive" {
         then "the leg exits 3 — neither a verdict's 1 nor a trap's 2" {
@@ -43,6 +71,14 @@ spec "the eval leg of a child-run program test" {
         then "the report is on stderr, where the suite reads a leg, and stdout says nothing" {
             let o? = underived_leg() else { return false }
             o.out.stderr.contains("declares `int`") && o.out.stdout == ""
+        }
+    }
+    given "a manifest whose `[link]` hole the invoker's environment fills" {
+        then "the eval leg derives under that environment, and the verdict is proved in both engines" {
+            match holed_suite() {
+                .Ok(o) -> exit_is_zero(o.exit) && o.out.stdout.contains("1 refusal proved"),
+                .Err(_) -> false,
+            }
         }
     }
 }
