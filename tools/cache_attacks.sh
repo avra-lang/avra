@@ -522,7 +522,37 @@ fi
 
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
-    echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
+    # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
+# a stamp that holds reuses it, anything else reads the bytes, and the digest is the
+# bytes' either way. Each step wants how the print was settled and which bytes it named.
+bi=build/avra.bi
+mkdir -p $R/bi/src; printf 'export fn one() -> int { 1 }\n' > $R/bi/src/m.av
+printf '[package]\nname = "bi"\nversion = "0.1.0"\n' > $R/bi/avra.toml
+Pr() { # Pr <binary>: "<how> <digest prefix>"
+    AVRA_CWD=$PWD AVRA_QTRACE=1 $1 check $R/bi 2>&1 | grep "^Q.print" | head -1 | cut -f3,4 | tr '\t' ' '
+}
+BI() { # BI <label> <binary> <want how> <want same|other as the first digest>
+    steps=$((steps+1)); got=$(Pr $2); how=${got%% *}; dig=${got#* }
+    [ -z "${bi_first:-}" ] && bi_first=$dig
+    same=other; [ "$dig" = "$bi_first" ] && same=same
+    if [ "$how" = "$3" ] && [ "$same" = "$4" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [bi] -> $how/$same"; else fails=$((fails+1)); echo "FAIL  $1 [bi] wanted $3/$4, got $how/$same"; fi
+}
+rm -f $bi build/.avra.bi.print; cp build/avra $bi; sleep 3; bi_first=
+BI "first sight reads the bytes" $bi bytes same
+BI "the same binary again is trusted" $bi stamp same
+touch $bi; sleep 3
+BI "touched with no change reads once" $bi bytes same
+BI "and is trusted again" $bi stamp same
+cp $bi $R/bi.orig; strip -x $bi -o $R/bi.other 2>/dev/null && { codesign -f -s - $R/bi.other 2>/dev/null || true; }
+if [ -x $R/bi.other ]; then
+    touch -r $bi $R/bi.other; cp -p $R/bi.other $bi; sleep 3
+    BI "other bytes copied over the path with its mtime kept" $bi bytes other
+    cp -p $R/bi.orig $bi; sleep 3
+    BI "and the first bytes back" $bi bytes same
+fi
+rm -f $bi build/.avra.bi.print $R/bi.orig $R/bi.other
+
+echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
     [ "$fails" -eq 0 ]; exit $?
 fi
 S "cold a" a; S "b after a (shared leaf, other bodies + other instantiation)" b
