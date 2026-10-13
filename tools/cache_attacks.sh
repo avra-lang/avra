@@ -430,6 +430,14 @@ steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "10" ] || { fails=$((fails+1));
 printf 'export const K: int = 7\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
 S "gg: the guess names a file the edit no longer needs" gg
 steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "7" ] || { fails=$((fails+1)); echo "FAIL  gg: with an unneeded remembered read the program printed '$($R/gg/src/main 2>&1)', wanted '7'"; }
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/gg/src/main.av
+rm $R/gg/src/y/calc.av; rmdir $R/gg/src/y
+printf 'export const K: int = 8\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+S "gg: the remembered file is gone" gg
+steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "8" ] || { fails=$((fails+1)); echo "FAIL  gg: with the remembered file deleted the program printed '$($R/gg/src/main 2>&1)', wanted '8'"; }
+printf 'export const K: int = 9\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+gg_third=$(gg_attempts)
+steps=$((steps+1)); [ "$gg_third" = 1 ] || { fails=$((fails+1)); echo "FAIL  gg: a body edit after another edit of the same file turned $gg_third attempts, wanted 1"; }
 gg_warm=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
 rm -rf .avra-cache; gg_cold=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
 steps=$((steps+1)); [ "$gg_warm" = "$gg_cold" ] || { fails=$((fails+1)); echo "FAIL  gg: a guess changed what a check says: $gg_warm lines warm, $gg_cold with no store"; }
