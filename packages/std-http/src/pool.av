@@ -98,19 +98,24 @@ impl Pool {
     /// request and the origin has room, closed otherwise — and whoever
     /// waits for a slot woken.
     fn give(origin: string, c: Carrier) {
-        self.lend(origin, -1)
         if !reusable(c) || self.kept_for(origin) >= self.idle_per_host {
             closed(c)
         } else {
             self.kept.push(Idle { origin: origin, carrier: c, since: now_ms() })
         }
-        self.freed.ring()
+        self.freed_for(origin)
     }
 
-    /// A lent carrier that failed, closed and its slot freed.
+    /// A lent carrier that failed: its slot freed, and it closed.
     fn drop(origin: string, c: Carrier) {
-        self.lend(origin, -1)
+        self.freed_for(origin)
         closed(c)
+    }
+
+    /// One of `origin`'s slots handed back, and whoever waits for one
+    /// woken.
+    fn freed_for(origin: string) {
+        self.lend(origin, -1)
         self.freed.ring()
     }
 
@@ -182,7 +187,7 @@ impl Pool {
 
     fn dialed(origin: string, dial: Dialer) -> Result<Carrier, ClientError> {
         self.lend(origin, 1)
-        errdefer self.lend(origin, -1)
+        errdefer self.freed_for(origin)
         dial()
     }
 }

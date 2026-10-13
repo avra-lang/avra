@@ -506,7 +506,8 @@ export fn dialed(host: string, port: int, target: string, timeout: Duration, lim
 /// A client socket over `w`, any transport already connected — a TLS
 /// one from `@std/https` makes it `wss` — `target` asked of `authority`
 /// to upgrade with a fresh key, and the `101` verified within `timeout`:
-/// the status, the upgrade, and the accept the key earns.
+/// the status, the upgrade, and the accept the key earns. An opening
+/// that fails closes `w`.
 export fn opened_over(
     w: dyn Transport,
     authority: string,
@@ -514,6 +515,7 @@ export fn opened_over(
     timeout: Duration,
     lim: WsLimits,
 ) -> Result<Socket, WsError> {
+    errdefer { let _ = w.wire_close() }
     let key = base64(
         (mask_key()?).concat(mask_key()?).concat(mask_key()?).concat(mask_key()?).bytes()!,
     )

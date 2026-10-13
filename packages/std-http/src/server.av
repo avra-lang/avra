@@ -353,15 +353,15 @@ impl Server {
     /// One connection, served on its own copy of the application.
     fn connection(c: Conn, app: A) -> int {
         self.opened(1)
-        let fd = self.conversation(c, app)
-        self.opened(-1)
-        fd
+        defer self.opened(-1)
+        self.conversation(c, app)
     }
 
     /// The connection's transport made, then its requests served —
     /// none when a TLS connection never completed its handshake.
     fn conversation(c: Conn, app: A) -> int {
         let w? = self.transport(c) else { return c.fd }
+        defer { let _ = w.wire_close() }
         mut serving = Serving {
             app: app,
             handle: self.handle,
@@ -382,9 +382,8 @@ impl Server {
             return null
         }
         self.shaking.set(self.shaking.get() + 1)
-        let opened = opener.open(c, ms(self.drain.clipped(self.timing.handshake.ms)))
-        self.shaking.set(self.shaking.get() - 1)
-        opened
+        defer self.shaking.set(self.shaking.get() - 1)
+        opener.open(c, ms(self.drain.clipped(self.timing.handshake.ms)))
     }
 
     /// This process's open connections moved by `by`, and published to
@@ -437,6 +436,7 @@ impl Serving {
             closing: false,
             served: 0,
         }
+        defer self.drain.parked(c.wire_fd(), false)
         if c.wire_protocol() == h2_protocol { return self.h2_conversed(l) }
         while true {
             if opens_h2(l) { return self.h2_conversed(l) }
