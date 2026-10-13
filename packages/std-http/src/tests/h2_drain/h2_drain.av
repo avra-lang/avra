@@ -2,7 +2,7 @@
 //! idle one is sent GOAWAY and ends at once; one with a stream in flight
 //! answers that stream, then sends GOAWAY and ends; and `run` answers
 //! within the drain, never the idle deadline
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{Duration, ms, secs, sleep, now_ms}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{text}
@@ -36,7 +36,7 @@ fn heard_to_end(c: Conn, quiet: Duration) -> Heard {
     mut got = no_bytes
     mut ended = false
     while true {
-        match within quiet { c.read(65536) } {
+        match timely(within quiet { c.read(65536) }) {
             .Ok(b) -> {
                 got = got.concat(b ?? no_bytes)
                 if b == null {
