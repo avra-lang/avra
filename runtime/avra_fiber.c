@@ -2468,7 +2468,7 @@ static int64_t host_waited(int64_t parked) {
 
 void avra_vtask_sleep(int64_t t, int64_t ms) {
     Fiber* f = virtual_at(t);
-    if (ms < 1) { ready_push(f); return; }
+    if (ms < 1 || virtual_cancel_stands(f)) { ready_push(f); return; }
     alone(f);
     waits_until(f, deadline_after(ms), 0, 0);
     legacy_parked(f);

@@ -158,6 +158,13 @@ static void a_standing_cancel_at_a_park(void) {
     CHECK(avra_vtask_timed_out(t) == 1, "its park answers cut");
     CHECK(avra_vtask_unwinding(t) == 1, "and its unwind bit is raised there");
     avra_vtask_free(t);
+    int64_t z = avra_vtask_new(), other = avra_vtask_new();
+    avra_vtask_cancel(z, 3);
+    avra_vtask_sleep(other, 2);
+    avra_vtask_sleep(z, 1000);
+    CHECK(avra_vtask_next() == z, "a cancelled virtual task's sleep parks for no time");
+    CHECK(avra_vtask_unwinding(z) == 1, "and its unwind bit is raised there");
+    avra_vtask_free(z); avra_vtask_free(other);
     int64_t s = avra_vtask_new();
     avra_vtask_cancel(s, 3);
     avra_vtask_shield_enter(s);
