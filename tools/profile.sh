@@ -6,9 +6,10 @@
 #   sh tools/profile.sh <cmd> [args...]
 #   sh tools/profile.sh --self-test
 #
-# The command's children are followed (`./avra` is a shell that execs the
-# compiler), and the largest profile is the one annotated. The profiles and the
-# top list are written to build/profile/.
+# The command runs as one process: children are not followed, because the
+# compiler forks a worker per core and each one under callgrind takes far longer
+# than the work. Give the compiler itself (build/avra), not the `./avra` shell.
+# The profile and the top list are written to build/profile/.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -33,10 +34,9 @@ cd "$here/.."
 mkdir -p build/profile
 
 status=0
+profile=build/profile/callgrind.out
 sh tools/capped.sh build/profile/run.log 200000 \
-    valgrind --tool=callgrind --trace-children=yes --callgrind-out-file=build/profile/callgrind.out.%p "$@" || status=$?
-profile=$(ls -S build/profile/callgrind.out.* 2>/dev/null | head -n 1)
-[ -n "$profile" ] || { echo "profile: no callgrind output — see build/profile/run.log" >&2; exit "$status"; }
+    valgrind --tool=callgrind --callgrind-out-file="$profile" "$@" || status=$?
 sh tools/capped.sh build/profile/top.txt 60000 \
     sh -c "callgrind_annotate --inclusive=yes '$profile' 2>/dev/null | head -n 40" || :
 cat build/profile/top.txt
