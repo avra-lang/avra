@@ -2503,6 +2503,8 @@ void avra_vtask_cancel(int64_t t, int64_t by) { fiber_cancelled(virtual_at(t), b
 
 void avra_vgate_open(void* gate) { gate_opened(gate, BY_CLOSE); }
 
+void avra_vgate_ended(void* gate, int64_t by) { gate_opened(gate, by); }
+
 // A claim made by a virtual task: the claimant is that task, never
 // whoever the host happens to be running.
 int64_t avra_vgate_claim(int64_t t, void* gate) {

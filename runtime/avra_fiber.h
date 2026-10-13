@@ -246,6 +246,9 @@ void avra_vtask_cancel(int64_t t, int64_t by);
 // The gate stands open for ever: every waiter is claimed, and a later
 // wait on it is claimed at once — what a finished task's gate does.
 void avra_vgate_open(void* gate);
+// A task's end gate opens: every waiter — a joiner, a set's arm — is
+// claimed in the order it came, under the id of the task that ended it.
+void avra_vgate_ended(void* gate, int64_t by);
 // `avra_gate_claim`, made by the task `t`: the claimed waiter's member,
 // or -1.
 int64_t avra_vgate_claim(int64_t t, void* gate);
