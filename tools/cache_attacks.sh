@@ -419,29 +419,35 @@ printf '[package]\nname = "rt-bk"\nversion = "0.1.0"\n' > $R/bk/avra.toml
   printf 'mut total = 0\n'
   for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do printf 'total = total + gid(mk%s()).v%s + gtwo(mk%s(), mk%s()).length\n' $n $n $n $n; done
   printf 'println("${total}")\n'; } > $R/bk/src/main.av
-bk_objects() { AVRA_QTRACE=1 ./avra build --time $R/bk 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "objects" { print $3, $4, $5, $6 }' | tail -1; }
+bk_run() { AVRA_QTRACE=1 ./avra build --time $R/bk 2>$R/bk.q >/dev/null; }
+bk_objects() { awk -F'\t' '$1 == "Q" && $2 == "objects" { print $3, $4, $5, $6 }' $R/bk.q | tail -1; }
+bk_keys() { awk -F'\t' '$1 == "Q" && $2 == "bucket" { print $3, $4 }' $R/bk.q | sort -n; }
+bk_changed() { awk 'NR == FNR { a[$1] = $2; next } a[$1] != $2 { print $1 }' $R/bk.prev - | sort -n | tr '\n' ' '; }
+bk_placed() { awk -F'\t' -v pat="$1" '$1 == "Q" && $2 == "placed" && index($3, pat) { print $4 }' $R/bk.q | sort -un | tr '\n' ' '; }
 S "cold bk" bk
 printf '// moved\n' >> $R/bk/src/main.av
-bk_cold=$(bk_objects)
-steps=$((steps+1)); set -- $bk_cold; bk_linked=${4:-0}
-[ "${bk_linked:-0}" -gt 3 ] || { fails=$((fails+1)); echo "FAIL  bk: the program's bodies fell in $bk_linked bucket(s) only, so the fixture splits nothing ('$bk_cold')"; }
+bk_run; bk_keys > $R/bk.prev
+set -- $(bk_objects); bk_linked=${4:-0}
+steps=$((steps+1)); [ "${bk_linked:-0}" -gt 3 ] || { fails=$((fails+1)); echo "FAIL  bk: the program's bodies fell in $bk_linked bucket(s) only, so the fixture splits nothing"; }
+# MOVING ONE GENERIC compiles the buckets ITS instantiations fall in, exactly: the expected set is read from where
+# the build placed every gtwo instantiation, the observed one from which bucket keys moved.
 ed $R/bk/src/g/gen.av "-> List<T> { [a, b] }" "-> List<T> { [a, b, a] }"
-bk_after=$(bk_objects); set -- $bk_after
-steps=$((steps+1)); [ "${3:-99}" -ge 1 ] && [ "${3:-99}" -lt "${4:-0}" ] || { fails=$((fails+1)); echo "FAIL  bk: one generic's body moved and the build compiled $3 of $4 program buckets (owed/linked/buckets/of: '$bk_after')"; }
+bk_run; want=$(bk_placed 'gtwo$'); got=$(bk_keys | bk_changed); set -- $(bk_objects)
+steps=$((steps+1)); [ -n "$want" ] && [ "$got" = "$want" ] && [ "$3" = "$(printf '%s' "$want" | wc -w | tr -d ' ')" ] || { fails=$((fails+1)); echo "FAIL  bk: gtwo moved: buckets whose key moved '$got', its instantiations fall in '$want', compiled $3 (owed/linked/buckets/of '$*')"; }
+bk_keys > $R/bk.prev
 S "bk: and the program follows" bk
 steps=$((steps+1)); bk_out=$($R/bk/src/main 2>&1)
 [ "$bk_out" = "270" ] || { fails=$((fails+1)); echo "FAIL  bk: the program printed '$bk_out' after gtwo grew, wanted 270"; }
-# ONE NEW INSTANTIATION DIRTIES ONE BUCKET: a bucket is a function of its own members' names, not of their
-# order or number, so adding gid<R21> moves exactly the bucket it falls in.
+# ONE NEW INSTANTIATION DIRTIES ITS BUCKET AND NO OTHER: a bucket is a function of its own members' names, not of
+# their order or number, so adding gid<R21> moves exactly the bucket the new body falls in.
 printf 'export type R21 = { v21: int }\nexport fn mk21() -> R21 { R21 { v21: 21 } }\n' >> $R/bk/src/g/gen.av
 ed $R/bk/src/main.av 'use g.{gid, gtwo' 'use g.{gid, gtwo, mk21'
 printf 'println("${gid(mk21()).v21}")\n' >> $R/bk/src/main.av
-bk_one=$(bk_objects); set -- $bk_one
-steps=$((steps+1)); [ "${3:-99}" = 1 ] || { fails=$((fails+1)); echo "FAIL  bk: one new instantiation compiled ${3:-?} program buckets, wanted exactly 1 (owed/linked/buckets/of: '$bk_one')"; }
+bk_run; want=$(bk_placed 'R21'); got=$(bk_keys | bk_changed); set -- $(bk_objects)
+steps=$((steps+1)); [ -n "$want" ] && [ "$got" = "$want" ] && [ "$3" = 1 ] || { fails=$((fails+1)); echo "FAIL  bk: one new instantiation: buckets whose key moved '$got', the new bodies fall in '$want', compiled $3 (owed/linked/buckets/of '$*')"; }
 # TWO COLD BUILDS OF ONE TREE KEY EVERY BUCKET ALIKE: a bucket's bytes are a function of its source alone.
-bk_keys() { rm -rf .avra-cache; AVRA_QTRACE=1 ./avra build $R/bk 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "bucket" { print $3, $4 }' | sort -n; }
-bk_k1=$(bk_keys); bk_k2=$(bk_keys)
-steps=$((steps+1)); [ -n "$bk_k1" ] && [ "$bk_k1" = "$bk_k2" ] || { fails=$((fails+1)); echo "FAIL  bk: two cold builds of one tree keyed their buckets differently ($(printf '%s\n' "$bk_k1" | wc -l | tr -d ' ') vs $(printf '%s\n' "$bk_k2" | wc -l | tr -d ' ') buckets, first difference: $(printf '%s\n' "$bk_k1" > $R/bk.k1; printf '%s\n' "$bk_k2" > $R/bk.k2; diff $R/bk.k1 $R/bk.k2 | head -2 | tr '\n' ' '))"; }
+rm -rf .avra-cache; bk_run; bk_keys > $R/bk.k1; rm -rf .avra-cache; bk_run; bk_keys > $R/bk.k2
+steps=$((steps+1)); [ -s $R/bk.k1 ] && cmp -s $R/bk.k1 $R/bk.k2 || { fails=$((fails+1)); echo "FAIL  bk: two cold builds of one tree keyed their buckets differently ($(wc -l < $R/bk.k1 | tr -d ' ') vs $(wc -l < $R/bk.k2 | tr -d ' ') buckets, first difference: $(diff $R/bk.k1 $R/bk.k2 | head -2 | tr '\n' ' '))"; }
 fi
 
 if section vd; then
