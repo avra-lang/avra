@@ -222,7 +222,9 @@ hash-door: packages/std-hash/src/c/tests/door_test.c $(HASH_OBJS)
 STACK_PROBES := $(if $(filter Darwin,$(shell uname -s)),,-fstack-clash-protection)
 # A PROGRAM CARRIES WHAT IT REACHES: every C function and datum stands in a
 # section of its own, so a link that drops unreached sections drops it.
-SECTIONS := -ffunction-sections -fdata-sections
+# AVRA_FRAME_POINTERS=1 keeps frame pointers in the runtime and, read by the backend, in every
+# emitted fn, so a sampling profiler can walk Avra stacks. Off, nothing changes.
+SECTIONS := -ffunction-sections -fdata-sections $(if $(AVRA_FRAME_POINTERS),-fno-omit-frame-pointer)
 
 build/%.o: %.c build/%.sha
 	@mkdir -p build
