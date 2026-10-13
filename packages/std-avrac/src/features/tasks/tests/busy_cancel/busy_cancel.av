@@ -1,0 +1,26 @@
+// proves: a task whose every wait finds its arm ready still hears a
+// cancel at its next wait — it runs none of its turns.
+use @std.time.{ms, sleep}
+
+extern fn avra_wait_task(t: ptr, arm: int, member: int)
+extern fn avra_wait_park() -> int
+extern fn avra_task_pending() -> ptr
+extern fn avra_task_answer(t: ptr, v: ptr)
+extern fn avra_array_sized(n: int) -> ptr
+
+let turns = Cell.new(0)
+let ended = avra_task_pending()
+avra_task_answer(ended, avra_array_sized(1))
+let busy = spawn {
+    sleep(ms(0))
+    for i in 0..1000 {
+        avra_wait_task(ended, 0, 0)
+        let _ = avra_wait_park()
+        turns.set(i + 1)
+    }
+    0
+}
+sleep(ms(0))
+busy.cancel()
+sleep(ms(5))
+"${turns.get()}"
