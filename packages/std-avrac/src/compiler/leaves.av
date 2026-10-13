@@ -24,7 +24,7 @@ use compiler.store.{Store, Stored, Read, node_key}
 use compiler.voices.{type_facts_fp, diag_fp}
 use features.{SettleRoot, SeatValue}
 use compiler.lower.{code_facts, code_facts_wire}
-use @std.relation.db.{AnswerRef}
+use @std.relation.db.{AnswerRef, Leaf}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
 
@@ -365,6 +365,20 @@ impl Workspace {
         "leaves-digest\t${r.name}\t${name}\t${digest}"
     }
 
+    /// A read as `identity=digest`, or `?` when it has no name.
+    fn read_word(k: Key) -> string {
+        let found? = self.decls.rows_db.get().leaves_at(k) else { return "?" }
+        found.map(leaf_word).join(",")
+    }
+
+    /// A typed declaration's reads: its name and each read's identity and digest.
+    fn reads_line(arg: int) -> string? {
+        let name? = self.spelled_decl(arg) else { return null }
+        let reads = self.db.kernel.deps_of(Key { family: Family.Typed.ordinal, arg: arg })
+        if reads.is_empty() { return null }
+        "leaves-reads\t${name}\t${[self.read_word(k) for k in reads].join(";")}"
+    }
+
     /// Every named answer's digest, one line each, so two processes' digests can be compared.
     fn leaves_digests() -> List<string> {
         let top = [
@@ -383,6 +397,12 @@ impl Workspace {
         [l! for l in lines if l != null]
     }
 
+    /// Every typed declaration's reads, one line each.
+    fn leaves_reads() -> List<string> {
+        let lines = [self.reads_line(a) for a in 0..self.decls.decl_count()]
+        [l! for l in lines if l != null]
+    }
+
     /// Every family the meter covers.
     fn leaves_report() -> string {
         [
@@ -391,6 +411,7 @@ impl Workspace {
             self.leaves_meter(Family.Settled, self.settle_asks.get().length),
         ]
             .concat(self.leaves_digests())
+            .concat(self.leaves_reads())
             .join("\n")
     }
 
@@ -589,5 +610,13 @@ fn unplaced_frame(f: Frame) -> Frame {
     Frame {
         label: f.label,
         loc: if f.loc == null { null } else { Loc { file: null, lo: 0, hi: 0 } },
+    }
+}
+
+/// A leaf as `identity=digest`: a relation by its name, an answer by its family and name.
+fn leaf_word(l: Leaf) -> string {
+    match l {
+        .Rows(name, digest) -> "rows|${name}=${digest}",
+        .Input(name, spelled, digest) -> "${name}|${spelled}=${digest}",
     }
 }
