@@ -5,7 +5,7 @@
 //! hand-folded key and judged beside it under `AVRA_DB_VERIFY`: the two must agree on
 //! which files hold.
 use @std.text.{parse_int}
-use core.{digest_of, joined, qtrace, traced, ModulePath, sorted_texts}
+use core.{digest_of, joined, qtrace, traced, ModulePath}
 use core.debug.{db_fast, db_verified_files}
 use compiler.{Want}
 use compiler.store.{Store, Stored, Read, node_key, read_name, record_key}
@@ -162,10 +162,8 @@ impl Workspace {
         mut row_of: Map<string, string> = {}
         for p in paths { row_of.set(record_key(Stored.Warn.name(), said_row(p)), p) }
         let edited = [p for p in paths if self.text_moved(store, p)]
-        let departed = self.departed_modules(store, paths)
         mut moved = [FileRead.Text.name(p) for p in edited]
             .concat([self.seen_name(p) for p in edited])
-            .concat([FileRead.Seen(m).name("") for m in departed])
         mut rows: Map<string, bool> = {}
         mut grown = true
         while grown {
@@ -196,41 +194,5 @@ impl Workspace {
         let read = FileRead.Text.name(path)
         let line? = lines.find(read_name(it) == read) else { return true }
         line.substring(0, line.index_of(" ")) != digest_of(self.text_digest(path))
-    }
-
-    /// Where the modules' file lists are kept, one line each: the module and the digest of its files.
-    fn members_key() -> string { node_key(Stored.Unit, ["members"]) }
-
-    /// Each module with the digest of the files it has now.
-    fn members_now(paths: List<string>) -> Map<string, string> {
-        mut by: Map<string, List<string>> = {}
-        for p in paths { by.set(self.module_of(p), (by.get(self.module_of(p)) ?? []).concat([p])) }
-        mut out: Map<string, string> = {}
-        for m, files in by { out.set(m, digest_of(joined(sorted_texts(files), "\n"))) }
-        out
-    }
-
-    /// The modules whose file list is not the one kept: a file left, so no text moved to say so.
-    fn departed_modules(store: Store, paths: List<string>) -> List<string> {
-        let now = self.members_now(paths)
-        let kept = self.kept_members(store)
-        [m for m in kept.keys() if now.get(m) != kept.get(m)]
-    }
-
-    /// The module file lists as last kept.
-    fn kept_members(store: Store) -> Map<string, string> {
-        mut out: Map<string, string> = {}
-        for line in (store.get(Stored.Unit, self.members_key()) ?? "").split("\n") {
-            let at = line.index_of("\t")
-            if at > 0 { out.set(line.substring(0, at), line.substring(at + 1, line.length)) }
-        }
-        out
-    }
-
-    /// The module file lists, kept when they moved.
-    fn keep_members(store: Store) {
-        let now = self.members_now([fi.path for fi in self.decls.all_files()])
-        let wire = joined(["${m}\t${d}" for m, d in now], "\n")
-        if store.get(Stored.Unit, self.members_key()) != wire { let _ = store.keep(Stored.Unit, self.members_key(), wire, []) }
     }
 }
