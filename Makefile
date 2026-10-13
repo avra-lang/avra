@@ -741,6 +741,12 @@ dogfooding-rules:
 families-left:
 	@python3 tools/families.py
 
+# THE SAVED-ANSWER METER MAY ONLY IMPROVE. A settled answer can be saved only if every
+# read it made has a name that outlives the process; tools/leaves.sh counts, per blocking
+# family, the answers a read of which cannot be named, and the baseline only falls.
+leaves:
+	@sh tools/leaves.sh --check
+
 # THE LAYERING IS ONE-WAY: no `use` names a layer above its own, and
 # `@std/relation` — the engine below them all — never names the compiler.
 layers:
