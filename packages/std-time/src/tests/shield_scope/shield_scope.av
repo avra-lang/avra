@@ -1,0 +1,21 @@
+// proves: a `within` written in a `defer` that runs under a cancel is
+// that cleanup's own limit — the wait under it is not cut by the cancel
+use @std.time.{ms, secs, sleep}
+
+let seen = Cell.new(0)
+let t = spawn {
+    defer {
+        seen.set(seen.get() + 1)
+        let waited = within secs(1) {
+            sleep(ms(20))
+            10
+        }
+        seen.set(seen.get() + waited)
+    }
+    sleep(secs(60))
+    0
+}
+sleep(ms(1))
+t.cancel()
+sleep(ms(50))
+"${t.done} ${seen.get()}"
