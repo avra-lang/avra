@@ -29,6 +29,9 @@ lists and refuses by name:
   compiler-route   a Sprite run's prep installs a published compiler (or the merge-base's)
                    before it builds one: the route rides the wire, and the build branch
                    comes last.
+  path-gate        `runtime-keep` runs on a PR only when prepare's path gate
+                   (tools/ci_path_gate.py) says a path it reads changed; main's
+                   push and a hand-run owe it always.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -202,6 +205,21 @@ def check_release_order(jobs):
 # The legs a draft's light run still owes: the compiler (`prepare`), the
 # compiler-free keepers, the changed-file gate and the codecs scan.
 LIGHT_JOBS = ("prepare", "keepers-static", "gate", "codecs", "test")
+
+
+def check_path_gate(workflow_text):
+    """`runtime-keep` is conditioned on prepare's path-gate output, and that
+    output is the path gate's own decision. Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    refusals = []
+    cond = re.search(r"^    if:\s*(.+)$", jobs.get("runtime-keep", ""), re.M)
+    if not cond or "needs.prepare.outputs.runtime_keep == '1'" not in cond.group(1):
+        refusals.append("`runtime-keep` is not gated on `needs.prepare.outputs.runtime_keep`")
+    if "tools/ci_path_gate.py runtime-keep" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not ask tools/ci_path_gate.py whether runtime-keep is owed")
+    if refusals:
+        return refusals, []
+    return [], ["path-gate: runtime-keep runs on the path gate's decision"]
 
 
 def check_run_mode(workflow_text):
@@ -393,6 +411,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_compiler_route(
                       open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read(),
                       open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()),
+                  lambda: check_path_gate(workflow_text),
                   lambda: check_warm_edit(make_text)):
         r, w = check()
         refusals += r
@@ -588,8 +607,15 @@ rt-header:
     assert ungated_gate != real_wf
     assert any("`gate`" in x for x in check_run_mode(ungated_gate)[0]), check_run_mode(ungated_gate)
 
+    real_wf = open(CHECKS, encoding="utf-8").read()
+    assert check_path_gate(real_wf)[0] == [], check_path_gate(real_wf)
+    ungated_rk = real_wf.replace("    if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
+                                 "    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'")
+    assert ungated_rk != real_wf
+    assert any("runtime-keep" in x for x in check_path_gate(ungated_rk)[0]), check_path_gate(ungated_rk)
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, warm-edit held on fixtures")
+          "light-draft, run-mode, path-gate, warm-edit held on fixtures")
     return 0
 
 
