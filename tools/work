@@ -461,7 +461,7 @@ manifest_at() { sh -c 'AVRA_REMOTE_SCRIPT=$1; shift; eval "$AVRA_REMOTE_SCRIPT"'
 sync_tree() {
     echo "work: $sprite — sync ($(since)s)" >&2
     paths=$(cd "$tree" && for p in Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
-        backend runtime packages tools bootstrap corpus .github/ci; do [ ! -e "$p" ] || printf "%s " "$p"; done)
+        backend runtime packages tools bootstrap corpus .github/ci .github/workflows; do [ ! -e "$p" ] || printf "%s " "$p"; done)
     held=$(mktemp -d "${TMPDIR:-/tmp}/avra-sync.XXXXXX")
     manifest_at "$tree" $paths > "$held/mine"
     # A second pass compares contents: a file of the same size and time is not always the same file.
@@ -584,15 +584,18 @@ run() {
         seed "$sprite" "$remote_tree" "$tree" "$hash"
     fi
 
-    echo "work: $sprite — run ($(since)s): $(printf '%s' "$cmd" | head -n 1 | cut -c1-100)" >&2
+    echo "work: $sprite — run ($(since)s) on source $(printf '%s' "$hash" | cut -c1-12)$([ "${AVRA_PROBE_BUILD:-}" = one ] && echo ', probe: one generation, never cached'): $(printf '%s' "$cmd" | head -n 1 | cut -c1-100)" >&2
     id="$(hostname -s)-$$-$t0"
+    # The probe mode rides the source hash it is asked for: `one:<hash>`.
+    wire=$hash
+    [ "${AVRA_PROBE_BUILD:-}" != one ] || wire="one:$hash"
     build_s=${AVRA_BUILD_S:-1200}
     # A start whose answer was lost is asked after, never repeated blind.
     begun=
     for _ in 1 2 3; do
         sr=0
         said=$(remote "$sprite" 60 start "$id" "$(hostname -s) $$ $(born $$)" "$build_s" $((minutes * 60)) \
-            "$remote_tree" "$hash" bash -lc "export LLVM_PREFIX=/usr/lib/llvm-22; $cmd" 2>/dev/null) || sr=$?
+            "$remote_tree" "$wire" bash -lc "export LLVM_PREFIX=/usr/lib/llvm-22; $cmd" 2>/dev/null) || sr=$?
         [ "$sr" != 76 ] || busy "$(printf '%s\n' "$said" | sed -n 's/^busy=\([^ ]*\).*/\1/p')"
         [ "$sr" != 0 ] || { begun=1; break; }
         res=$(woken "$sprite" 60 result "$id") || break
@@ -834,10 +837,35 @@ fmt_changed() {
         die "fmt --check refused — \`build/avra fmt --write <files>\`, commit, land again (a build/avra older than the branch's own syntax refuses it too: rebuild it)"
 }
 
+# The non-draft PRs of OTHER branches whose `test` check is still running,
+# read from `gh pr list --json number,headRefName,isDraft,statusCheckRollup`
+# on stdin: landing now moves main under them, so each restarts. Answers their
+# numbers, space-separated, or nothing.
+midci_of() {
+    python3 -c '
+import json, sys
+mine = sys.argv[1]
+out = []
+for p in json.load(sys.stdin):
+    if p.get("isDraft") or p.get("headRefName") == mine:
+        continue
+    tests = [c for c in p.get("statusCheckRollup") or [] if c.get("name") == "test"]
+    if any((c.get("status") or "") != "COMPLETED" for c in tests):
+        out.append("#%d" % p["number"])
+print(" ".join(out))
+' "$1"
+}
+
 land() {
     inside
     branch=$(git branch --show-current)
     [ "$branch" != main ] || die "land a branch, never main"
+    batch=
+    for a in "$@"; do [ "$a" != --batch ] || batch=1; done
+    if [ -z "$batch" ]; then
+        mid=$($gh_ pr list --state open --json number,headRefName,isDraft,statusCheckRollup | midci_of "$branch")
+        [ -z "$mid" ] || die "$mid is mid-CI on another branch: landing now moves main under it and restarts its checks. Wait for it to land, or run \`sh tools/work land --batch\` to land beside it"
+    fi
     [ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or drop your changes first"
     git fetch -q origin main
     git rebase -q origin/main || die "rebase onto main conflicted; resolve, then run land again"
@@ -930,7 +958,7 @@ usage() {
         new) echo "usage: sh tools/work new <name>   — a worktree ../avra-<name> off main, and its Sprite" ;;
         run) echo "usage: sh tools/work run [--for <minutes>] <cmd…>   — run it on this lane's Sprite, followed to its exit status through any dropped connection (bound: 15 minutes); Ctrl-C or \`work stop\` ends it, this client ending does not" ;;
         test) echo "usage: sh tools/work test   — what this branch touches, on this lane's Sprite" ;;
-        land) echo "usage: sh tools/work land   — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; no Sprite involved" ;;
+        land) echo "usage: sh tools/work land [--batch]  — push, PR, ready, strip a DO NOT MERGE title, arm auto-merge; refuses while another PR is mid-CI unless --batch; no Sprite involved" ;;
         status) echo "usage: sh tools/work status   — PRs and their merge state; each lane and its Sprite" ;;
         sprites) echo "usage: sh tools/work sprites [--fix [<sprite>…]]   — every Sprite at a glance; --fix repairs" ;;
         done) echo "usage: sh tools/work done   — remove this lane, end its run, free its Sprite" ;;
@@ -960,7 +988,7 @@ case "${1:-}" in
     built-from) built_from "${2:-$PWD}" ;;
     seed-local) seed_local "$2" ;;
     libs-step) printf '%s\n' "$libs_step" ;;
-    land) land ;;
+    land) shift; land "$@" ;;
     status) status ;;
     wait) shift; wait_landed "$@" ;;
     attach) attach ;;
