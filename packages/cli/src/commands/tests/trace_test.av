@@ -117,6 +117,13 @@ spec "commands/trace — the wait graph" {
         }
         then "a gate nobody claimed through is named alone" { graph_lines(graphed(), 1500000).contains("  task 2 -> gate 0xg") }
     }
+    given "a task parked on nothing, and a timer that says when it is due" {
+        then "the first waits on nothing, the second on a time" {
+            graph_lines("ts=0 spawn id=1 0\nts=0 spawn id=2 0\nts=5 park id=1 src=none arm=0:0\nts=5 park id=2 src=at arm=0:0 due_in=40\nts=5 select id=2 site=pkg/main.av:7 for=3\n", null)
+                .slice(1, 3)
+                .join("\n") == "  task 1 -> nothing — a cancel or its limit ends it\n  task 2 -> a time"
+        }
+    }
     given "a task that ended" {
         then "it waits on nothing" { !graph_lines(compiled(), null).any(it.contains("task 1")) }
     }

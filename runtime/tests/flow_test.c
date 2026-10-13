@@ -1573,12 +1573,12 @@ static void stamps_follow_the_ends(void) {
 // the clock once, and the next reads it afresh.
 static void a_due_time_is_ready_first(void) {
     int64_t soon = avra_now_ns() + 20 * 1000000;
-    CHECK(avra_wait_enter() == 0, "a scan begins with nothing standing");
+    CHECK(avra_wait_enter("pkg/main.av:7") == 0, "a scan begins with nothing standing");
     CHECK(avra_time_since(avra_now_ns() - 1) == 1, "a time that has come is ready, under every task's stamp");
     CHECK(avra_time_since(soon) == 0, "a time to come is not");
     avra_fiber_sleep(30);
     CHECK(avra_time_since(soon) == 0, "one scan reads the clock once: a time that came since is not seen by it");
-    CHECK(avra_wait_enter() == 0 && avra_time_since(soon) == 1, "and the next scan sees it");
+    CHECK(avra_wait_enter("pkg/main.av:7") == 0 && avra_time_since(soon) == 1, "and the next scan sees it");
 }
 
 static void* scans_for_ever(void* self) {
@@ -1586,7 +1586,7 @@ static void* scans_for_ever(void* self) {
     void* done = ended_task();
     avra_fiber_yield();
     for (g_busy_turns = 0; g_busy_turns < BUSY_TURNS; g_busy_turns++) {
-        g_byte_b = avra_wait_enter();
+        g_byte_b = avra_wait_enter("pkg/main.av:7");
         if (g_byte_b != 0 || !avra_task_since(done)) break;
     }
     g_byte_a = avra_unwinding;
@@ -1611,7 +1611,7 @@ static void a_scan_hears_a_limit(void) {
     int64_t scope = avra_fiber_within(50);
     int64_t word = 0, turns = 0;
     while (turns < (int64_t)1 << 40) {
-        word = avra_wait_enter();
+        word = avra_wait_enter("pkg/main.av:7");
         turns++;
         if (word != 0 || !avra_task_since(done) || ((turns & 0xffff) == 0 && ms_since(t0) > 2000)) break;
     }
@@ -1639,12 +1639,12 @@ static void the_scan_outranks_the_claim(void) {
     g_task = avra_task_pending();
     g_pending = avra_task_pending();
     void* ender = spawn1(answers_low_then_high, 0);
-    CHECK(avra_wait_enter() == 0 && avra_task_since(g_task) == 0 && avra_task_since(g_pending) == 0, "the first scan finds neither arm ready");
+    CHECK(avra_wait_enter("pkg/main.av:7") == 0 && avra_task_since(g_task) == 0 && avra_task_since(g_pending) == 0, "the first scan finds neither arm ready");
     avra_wait_task(g_task, 0, 0);
     avra_wait_task(g_pending, 1, 0);
     int64_t claim = avra_wait_rest();
     CHECK(arm_of(claim) == 1, "the arm that ended first claims the park: the lower");
-    CHECK(avra_wait_enter() == 0 && avra_task_since(g_task) != 0, "and the scan from the top finds the upper ready");
+    CHECK(avra_wait_enter("pkg/main.av:7") == 0 && avra_task_since(g_task) != 0, "and the scan from the top finds the upper ready");
     CHECK(avra_task_since(g_pending) < avra_task_since(g_task), "the stamps keep the order the two ended in");
     joined(ender);
     avra_rc_release(g_task);
@@ -1670,7 +1670,7 @@ static void a_cancelled_member_is_passed_over(void) {
     void* members[] = { g_task, g_pending };
     void* other = spawn1(cancels_then_answers, 0);
     int taken = -1, parks = 0;
-    while (taken < 0 && parks < 10 && avra_wait_enter() == 0) {
+    while (taken < 0 && parks < 10 && avra_wait_enter("pkg/main.av:7") == 0) {
         for (int i = 0; i < 2 && taken < 0; i++) if (avra_task_since(members[i])) taken = i;
         if (taken >= 0) break;
         for (int i = 0; i < 2; i++) if (!avra_task_done(members[i])) avra_wait_task(members[i], 0, i);
@@ -1685,14 +1685,68 @@ static void a_cancelled_member_is_passed_over(void) {
     avra_rc_release(g_pending);
 }
 
+// ── on one instant the scope wins ───────────────────────────────
+
+// A limit and an arm's time on one instant, parked on once: the claim.
+// `waited_before` puts an earlier park under the scope, so the limit's
+// waiter is the older entry in the heap.
+static int64_t tied(int waited_before) {
+    int64_t at = avra_now_ns() + 5000LL * 1000000;
+    int64_t scope = avra_fiber_within(5000);
+    if (waited_before) {
+        avra_wait_until(avra_now_ns() + 1000000, 7, 0);
+        avra_wait_park();
+    }
+    avra_wait_until(at, 0, 0);
+    int64_t claim = avra_wait_park();
+    avra_fiber_within_end(scope);
+    return claim;
+}
+
+static void a_limit_wins_its_instant(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    CHECK(tied(0) == (int64_t)0xffffffff00000001LL, "a limit and an arm's time on one instant, the arm filed first: the limit answers");
+    CHECK(tied(1) == (int64_t)0xffffffff00000001LL, "and the same when the limit was filed first");
+    avra_clock_run_ends();
+}
+
+// Counted text, as a program's own would be.
+const char* avra_int_text(int64_t v);
+
+// A SITE THAT IS COUNTED TEXT IS KEPT BY THE RECORD: the writer gives
+// its own reference up and the text stands; the next site, and the
+// task's end, let it go.
+static void* scans_under_owned_text(void* self) {
+    (void)self;
+    const char* site = avra_int_text(4242);
+    avra_wait_enter(site);
+    avra_rc_release((void*)site);
+    return answer(0);
+}
+
+static void a_counted_site_is_kept(void) {
+    int64_t live = avra_mem_live();
+    const char* site = avra_int_text(4242);
+    CHECK(avra_mem_live() > live, "the text is counted");
+    CHECK(avra_wait_enter(site) == 0, "a scan begins under it");
+    avra_rc_release((void*)site);
+    CHECK(avra_mem_live() > live, "its writer lets go and the record still holds it");
+    CHECK(avra_wait_enter(site) == 0 && avra_mem_live() > live, "the same site again takes nothing more");
+    CHECK(avra_wait_enter("pkg/main.av:7") == 0 && avra_mem_live() == live, "the next site lets it go");
+    joined(spawn1(scans_under_owned_text, 0));
+    avra_fiber_yield();
+    CHECK(avra_mem_live() == live, "and a task's end lets go of the site it held");
+}
+
 static void rests_on_nothing(void) {
-    if (avra_wait_enter() == 0) avra_wait_rest();
+    if (avra_wait_enter("pkg/main.av:7") == 0) avra_wait_rest();
 }
 
 static void scans_inside_a_set(void) {
     g_gate = avra_gate_new();
     avra_wait_gate(g_gate, 0, 0);
-    avra_wait_enter();
+    avra_wait_enter("pkg/main.av:7");
 }
 
 // ── an interrupt reads as time, not readiness ───────────────────
@@ -3127,6 +3181,8 @@ int main(int argc, char** argv) {
     in_child_within("a scan hears a limit", a_scan_hears_a_limit, 10);
     in_child_within("the scan outranks the claim", the_scan_outranks_the_claim, 10);
     in_child_within("a cancelled member is passed over", a_cancelled_member_is_passed_over, 10);
+    on_virtual_clock("a limit wins its instant", a_limit_wins_its_instant);
+    in_child_within("a counted site is kept", a_counted_site_is_kept, 10);
     trapped("a park with no arm filed", rests_on_nothing, "a `select` had no open arm");
     trapped("a scan begun inside a set", scans_inside_a_set, "a task waited inside a wait it had not parked");
     on_virtual_clock("a claim made before a cancel is taken first", claim_first_then_cancel);
