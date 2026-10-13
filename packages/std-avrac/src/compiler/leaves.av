@@ -7,6 +7,7 @@ use features.{SettleRoot, SeatValue}
 use @std.relation.db.{AnswerRef}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
+use @std.text.{parse_int}
 
 impl Workspace {
     /// The answers of `fam`, keyed by declaration, spelled by the declaration's wire.
@@ -107,6 +108,71 @@ impl Workspace {
         if self.spelled_settle(found) == spelled { found } else { [i for i in 0..all.length if self.spelled_settle(i) == spelled].first() }
     }
 
+    /// The world reads, spelled as `explain` shows them: the kind, then the key.
+    fn named_inputs() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Input.ordinal
+        AnswerRef {
+            name: "Input",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_input(arg),
+            arg: (spelled: string) -> ws.input_named(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    fn spelled_input(arg: int) -> string? {
+        if arg < 0 || arg >= self.input_names.get().length { return null }
+        self.input_shown(self.input_names.get()[arg])
+    }
+
+    /// The manifests, spelled by their package's root.
+    fn named_manifests() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Manifest.ordinal
+        AnswerRef {
+            name: "Manifest",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_manifest(arg),
+            arg: (spelled: string) -> ws.manifest_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    fn spelled_manifest(arg: int) -> string? {
+        if arg < 0 || arg >= self.packages().length { return null }
+        self.package_shown(self.packages()[arg].root)
+    }
+
+    fn manifest_arg(spelled: string) -> int? {
+        [i for i in 0..self.packages().length if self.spelled_manifest(i) == spelled].first()
+    }
+
+    /// The annotation runs, spelled by the declaration they annotate and the call's offset from
+    /// that declaration's range.
+    fn named_lifts() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Lifted.ordinal
+        AnswerRef {
+            name: "Lifted",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_lift(arg),
+            arg: (spelled: string) -> ws.lift_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    fn spelled_lift(arg: int) -> string? {
+        if arg < 0 || arg >= self.lift_asks.get().length { return null }
+        let ask = self.lift_asks.get()[arg]
+        let call? = parse_int(ask.name.split("\$")[2]) else { return null }
+        "${self.decl_ref(ask.decl)}+${call - self.decls.decl(ask.decl).lo}"
+    }
+
+    fn lift_arg(spelled: string) -> int? {
+        [i for i in 0..self.lift_asks.get().length if self.spelled_lift(i) == spelled].first()
+    }
+
     /// The answers of `fam`, keyed by file, spelled by the file's path.
     fn named_by_file(name: string, fam: Family) -> AnswerRef {
         let ws = self
@@ -154,6 +220,9 @@ impl Workspace {
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
         rdb.answer_known(self.named_by_decl("Marks", Family.Marks))
         rdb.answer_known(self.named_by_decl("Writes", Family.Writes))
+        rdb.answer_known(self.named_inputs())
+        rdb.answer_known(self.named_manifests())
+        rdb.answer_known(self.named_lifts())
         rdb.answer_known(self.named_by_decl("Methods", Family.Methods))
         rdb.answer_known(self.named_by_file("Parsed", Family.Parsed))
         rdb.answer_known(self.named_by_file("Items", Family.Items))
@@ -227,7 +296,8 @@ impl Workspace {
             if unnamed.is_empty() { named = named + 1 }
             for n in unnamed { blocked.set(n, (blocked.get(n) ?? 0) + 1) }
         }
-        "leaves ${fam.name}: ${named} of ${settled} answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}"
+        let asks = self.db.kernel.stood_computed(fam.ordinal)
+        "leaves ${fam.name}: ${named} of ${settled} answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}; asks ${asks[0]} stood, ${asks[1]} computed"
     }
 
     /// Every family the meter covers.

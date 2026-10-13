@@ -230,6 +230,8 @@ export type Kernel = {
     tracing: Cell<bool>,
     hits: Cell<int>,
     misses: Cell<int>,
+    /// Asks answered by family: slot `2 * family` stood, `2 * family + 1` computed.
+    verdicts: Cell<List<int>>,
     /// Each family's GRAIN — whether its queries read rows whole.
     whole_families: Cell<List<bool>>,
     /// Each family's name for the trace, where its owner gave one; a family
@@ -269,6 +271,7 @@ export fn new_kernel() -> Kernel {
         tracing: Cell.new(false),
         hits: Cell.new(0),
         misses: Cell.new(0),
+        verdicts: list_cell(),
         whole_families: list_cell(),
         family_names: list_cell(),
         folds: map_cell(),
@@ -506,17 +509,17 @@ impl Kernel {
     fn ask(key: Key) -> Verdict {
         self.record_at(key.family, key.arg)
         if self.active(key) { return Verdict.Cycle }
-        let cell? = self.cell(key) else { return self.miss() }
+        let cell? = self.cell(key) else { return self.miss(key.family) }
         let rev = self.rev.get()
-        if cell.verified_at == rev { return self.hit() }
+        if cell.verified_at == rev { return self.hit(key.family) }
         // Marked verified at this revision BEFORE its deps are walked: a
         // verifier may recursively update this database and re-enter this
         // key, and a re-entry reads the mark and reuses rather than walking
         // again. The mark names the revision the walk began at, so a late
         // write during the walk leaves it stale.
         self.write_cell(key, cell with { verified_at: rev })
-        if self.any_dep_changed(cell) { return self.miss() }
-        self.hit()
+        if self.any_dep_changed(cell) { return self.miss(key.family) }
+        self.hit(key.family)
     }
 
     fn any_dep_changed(cell: QueryCell) -> bool {
@@ -856,14 +859,28 @@ impl Kernel {
         if self.graph.writes.get() { self.graph.evicted(family) }
     }
 
-    fn hit() -> Verdict {
+    fn hit(family: int) -> Verdict {
         self.hits.set(self.hits.get() + 1)
+        self.verdict_counted(2 * family)
         Verdict.Reuse
     }
 
-    fn miss() -> Verdict {
+    fn miss(family: int) -> Verdict {
         self.misses.set(self.misses.get() + 1)
+        self.verdict_counted(2 * family + 1)
         Verdict.Compute
+    }
+
+    /// One more ask of `slot`'s kind answered.
+    fn verdict_counted(slot: int) {
+        while self.verdicts.get().length <= slot { self.verdicts.push(0) }
+        self.verdicts.set_at(slot, self.verdicts.get()[slot] + 1)
+    }
+
+    /// How many asks of `family` stood, and how many computed.
+    fn stood_computed(family: int) -> List<int> {
+        let all = self.verdicts.get()
+        [if 2 * family + i < all.length { all[2 * family + i] } else { 0 } for i in 0..2]
     }
 
     fn stats() -> string { "rev ${self.rev.get()}: ${self.hits.get()} hits, ${self.misses.get()} misses" }

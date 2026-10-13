@@ -29,7 +29,7 @@ def parse(path):
         pkg, rest = line.split(" ", 1)
         pkg = pkg + " " + rest.split(":")[0]
         m = re.search(r"(\d+) of (\d+) answers", rest)
-        blocked = dict((a, int(b)) for a, b in re.findall(r"(\w+) (\d+)", rest.split("family:")[1])) if "family:" in rest else {}
+        blocked = dict((a, int(b)) for a, b in re.findall(r"(\w+) (\d+)", rest.split("family:")[1].split(";")[0])) if "family:" in rest else {}
         r[pkg] = (int(m.group(1)), int(m.group(2)), blocked)
     return r
 now, was = parse(sys.argv[1]), parse(sys.argv[2])
