@@ -26,6 +26,7 @@ use core.{
     same_file,
     static_code_syms,
     distinct,
+    fp_str,
 }
 use features.{nothing}
 use compiler.lower.{Body, Lowered}
@@ -101,17 +102,26 @@ type Refs = { whole: bool, bodies: Map<string, bool>, hosted: Map<string, bool>,
 /// A whole-program module: every name is carried, so the lists are unread.
 fn every_name() -> Refs { Refs { whole: true, bodies: {}, hosted: {}, statics: {} } }
 
-/// WHICH BODIES A MODULE DEFINES: every one; one file's; or the PROGRAM's — what
+/// WHICH BODIES A MODULE DEFINES: every one; one file's; the PROGRAM's — what
 /// no file owns (an instantiation, a wrapper several files ask for) and the
-/// entry. Exactly one module of a program defines the entry.
-export enum Owned { Whole, File(f: FileId), Program }
+/// entry — or one BUCKET of that: the program's bodies whose name falls in bucket
+/// `i` of `of` (a power of two), bucket 0 carrying the entry. Exactly one module
+/// of a program defines the entry.
+export enum Owned { Whole, File(f: FileId), Program, Bucket(i: int, of: int) }
 
 impl Owned {
     fn defines(b: Body) -> bool {
-        match self { .Whole -> true, .File(f) -> owns(b, f), .Program -> home_of(b) == null }
+        match self {
+            .Whole -> true,
+            .File(f) -> owns(b, f),
+            .Program -> home_of(b) == null,
+            .Bucket(i, of) -> home_of(b) == null && program_bucket(b, of) == i,
+        }
     }
 
-    fn carries_entry() -> bool { !(self is .File) }
+    fn carries_entry() -> bool {
+        match self { .Whole or .Program -> true, .File(_) -> false, .Bucket(i, _) -> i == 0 }
+    }
 }
 
 /// WHERE A BODY BELONGS — `Body.file`, the file that asked for it. A WRAPPER is asked
@@ -126,6 +136,10 @@ fn owns(b: Body, f: FileId) -> bool {
     let home = home_of(b)
     home != null && same_file(home!, f)
 }
+
+/// The bucket of `of` a program body falls in: its name's hash — except
+/// the code hashes' answers, which share the last, since their constants move with any edit.
+export fn program_bucket(b: Body, of: int) -> int { if b.hash_answer { of - 1 } else { (fp_str(b.name) & 9223372036854775807) % (of - 1) } }
 
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a body in, the file it belongs to out.
 export fn home_of(b: Body) -> FileId? { b.file }
