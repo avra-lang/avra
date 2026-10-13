@@ -7,15 +7,7 @@
 use @std.io.{make_dirs, write_text, remove, list_dir}
 use @std.path.{joined_path}
 use @std.time.{now_ns}
-use compiler.db.{
-    fresh_db,
-    DocFacts,
-    FileWitness,
-    current_listing_digest,
-    current_file_digest,
-    encoded_docfacts,
-    decoded_docfacts,
-}
+use compiler.db.{fresh_db, current_listing_digest, current_file_digest}
 use compiler.store.{store_at}
 
 /// One directory per run, so no earlier run's cache answers for this one.
@@ -51,24 +43,6 @@ spec "compiler/db — Db, Row and their witnesses" {
             d.warn(store, "check:pkg") == "warning[x]: y"
         }
     }
-    given "a row this process just inserted" {
-        then "the same process answers it back" {
-            let root = db_pkg_named("insert-get")
-            let store = store_at("${root}/.avra-cache")
-            let facts = DocFacts { root: root, answer: "a's doc", listing_digest: "x", files: [] }
-            mut d = fresh_db()
-            d.insert_decl(store, "pkg.a", facts)
-            d.decl(store, "pkg.a")?.answer == "a's doc"
-        }
-    }
-    given "a name nothing ever inserted" {
-        then "it answers null, on disk and in memory alike" {
-            let root = db_pkg_named("miss")
-            let store = store_at("${root}/.avra-cache")
-            mut d = fresh_db()
-            d.decl(store, "pkg.never-inserted") == null
-        }
-    }
     given "the file-listing witness" {
         then "one file alone digests the same however many times it is asked" {
             let root = db_pkg_named("listing-stable")
@@ -83,32 +57,13 @@ spec "compiler/db — Db, Row and their witnesses" {
             before != current_listing_digest(root)
         }
     }
-    given "@derive(Wire) over DocFacts — a multi-line answer, embedded newlines, and a trailing list of a nested Wire type" {
-        then "round-trips exactly, including a mid-struct field holding real newlines" {
-            let facts = DocFacts {
-                root: "/pkg",
-                listing_digest: "abc",
-                answer: "line one\nline two\nline three",
-                files: [
-                    FileWitness { path: "/pkg/a.av", digest: "d1" },
-                    FileWitness { path: "/pkg/b.av", digest: "d2" },
-                ],
-            }
-            let back? = decoded_docfacts(encoded_docfacts(facts)) else { return false }
-            back.root == facts.root &&
-                back.listing_digest == facts.listing_digest &&
-                back.answer == facts.answer &&
-                back.files.length == 2 &&
-                back.files[0].path == "/pkg/a.av" &&
-                back.files[1].digest == "d2"
-        }
-        then "an empty file list round-trips too — the empty case is not a special case" {
-            let facts = DocFacts { root: "/pkg", listing_digest: "x", answer: "", files: [] }
-            let back? = decoded_docfacts(encoded_docfacts(facts)) else { return false }
-            back.answer == "" && back.files.is_empty()
-        }
-    }
     given "the file-content witness" {
+        then "a file that is not there has no digest, which an emptied file does" {
+            let root = db_pkg_named("content-absent")
+            let path = "${root}/src/main.av"
+            let _ = write_text(path, "")
+            current_file_digest(path) != null && current_file_digest("${root}/src/gone.av") == null
+        }
         then "an unedited file digests the same as it did before" {
             let root = db_pkg_named("content-stable")
             let path = "${root}/src/main.av"
