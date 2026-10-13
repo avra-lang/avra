@@ -3,17 +3,24 @@
 //! own syntax and the surface its file shows it. A kept unit stands in for its
 //! lowering exactly when it spoke nothing, so serving one can never hide a voice.
 use core.{DeclId, DeclKind, FileId, flatten, distinct, fp, fp_str, fp_list, joined}
-use features.{Wanted}
+use features.{Wanted, Sub, SettleRoot}
 use diagnostics.{no_voices}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Unit, CodeFacts, code_facts, code_facts_wire, code_facts_from_wire}
+use compiler.lower.{
+    Unit,
+    CodeFacts,
+    code_facts,
+    code_facts_wire,
+    code_facts_from_wire,
+    type_shape_key,
+}
 
 /// A unit served from its kept row: the file it belongs to and the code it stood for.
 type Served = { file: FileId, facts: CodeFacts }
 
-/// A kept lowering: the unit's name and syntax, the instantiations it asked for and
-/// the code facts it hashed, each as the wire that keeps it.
-type UnitRow = { key: string, wants: string, facts: string }
+/// A kept lowering: the unit's name and syntax, the instantiations it asked for, the code
+/// facts it hashed and the consts it read with the value each had, each as the wire that keeps it.
+type UnitRow = { key: string, wants: string, facts: string, consts: string }
 
 impl Workspace {
     /// The unit a kept row stands for, when this derivation may be served one: it
@@ -26,10 +33,17 @@ impl Workspace {
         let row? = self.row_file(s, at.path, at.surface).get(at.key) else { return null }
         let wants? = self.wanted_list_from_wire(row.wants) else { return null }
         let facts? = code_facts_from_wire(row.facts) else { return null }
+        if !self.consts_stand(row.consts) { return null }
         let stub? = self.stub_of(self.decls.decl(w.decl!)) else { return null }
         self.hold.served.push(Served { file: w.file, facts: facts })
         self.row_lives(at.path, row)
-        Unit { bodies: [stub], wants: wants, voices: no_voices(), statics: [], kept: [facts] }
+        Unit {
+            bodies: [stub with { name: w.name }],
+            wants: wants,
+            voices: no_voices(),
+            statics: [],
+            kept: [facts],
+        }
     }
 
     /// A unit's lowering kept as a row: only one that spoke nothing.
@@ -37,6 +51,7 @@ impl Workspace {
         if !out.voices.list.is_empty() || !self.hold.warm.get() { return }
         let s? = self.store.get() else { return }
         let at? = self.row_place(s, w) else { return }
+        let consts? = self.consts_read(w) else { return }
         let facts = code_facts(self.decls, out.bodies, out.statics, out.hashes)
         self
             .row_lives(
@@ -45,9 +60,46 @@ impl Workspace {
                     key: at.key,
                     wants: self.wanted_list_wire(out.wants),
                     facts: code_facts_wire(facts),
+                    consts: consts,
                 },
             )
         self.hold.rows_fresh.put(at.path, true)
+    }
+
+    /// The consts a unit's lowering read, each with its value's fingerprint, as the wire a
+    /// row keeps. Absent for a unit that read one a row cannot name again: an expression
+    /// root, or a const settled at seats.
+    fn consts_read(w: Wanted) -> string? {
+        let asks = self.hold.unit_asks.get().get("${self.spec_id(w)}") ?? []
+        mut words: List<string> = []
+        for ask in asks {
+            let s = match ask.root { .Const(s) -> s, .Expr(_) -> { return null } }
+            if !ask.seats.is_empty() { return null }
+            let d? = self.decls.decl_of(ask.file, s) else { return null }
+            let got = match self.settled(ask.file, ask.root, ask.seats) {
+                .Ok(v) -> v,
+                .Err(_) -> { return null },
+            }
+            words = words.concat([self.decl_ref(d), "${got.fingerprint}"])
+        }
+        "C1" + fields_wire(words)
+    }
+
+    /// Whether every const a row read still settles to the value it read.
+    fn consts_stand(wire: string) -> bool {
+        mut r = wire_reader(wire)
+        let words? = r.fields() else { return false }
+        if words.length % 2 != 0 { return false }
+        for i in 0..words.length / 2 {
+            let d? = self.decl_from_ref(words[2 * i]) else { return false }
+            let x = self.decls.decl(d)
+            let got = match self.settled(x.file, SettleRoot.Const(x.stmt), []) {
+                .Ok(v) -> v,
+                .Err(_) -> { return false },
+            }
+            if "${got.fingerprint}" != words[2 * i + 1] { return false }
+        }
+        true
     }
 
     /// Every file that lowered a unit afresh keeps its live rows, whole, under the
@@ -61,7 +113,7 @@ impl Workspace {
                 .keep(
                     Stored.Unit,
                     rows_key(path, surface),
-                    "R1" + fields_wire(flatten([[r.key, r.wants, r.facts] for r in live])),
+                    "R2" + fields_wire(flatten([[r.key, r.wants, r.facts, r.consts] for r in live])),
                     [],
                 )
         }
@@ -72,15 +124,22 @@ impl Workspace {
     /// interface of every module it sees. Absent for a unit no row stands for.
     fn row_place(s: Store, w: Wanted) -> RowPlace? {
         let d? = w.decl else { return null }
-        if w.sub != null || !w.seats.is_empty() || w.root != null || self.comptime_active() { return null }
+        if !w.seats.is_empty() || w.root != null || self.comptime_active() { return null }
         let x = self.decls.decl(d)
         if !plain_unit(x.kind) || x.external || self.is_held(x.file) { return null }
         let surface? = self.unit_surface(s, x.file) else { return null }
         RowPlace {
             path: self.decls.file(x.file).path,
             surface: surface,
-            key: "${self.decl_ref(d)}\t${self.syntax(d)}",
+            key: "${self.decl_ref(d)}\t${self.syntax(d)}\t${w.name}\t${self.specialization(w.sub)}",
         }
+    }
+
+    /// The type arguments and consts a specialization is lowered at, by shape — empty for
+    /// a unit that is no specialization.
+    fn specialization(sub: Sub?) -> string {
+        let s? = sub else { return "" }
+        joined([type_shape_key(self.decls, t) for t in s.args].concat(s.consts), "\n")
     }
 
     /// A file's kept rows by key, read once for the derivation.
@@ -141,15 +200,20 @@ fn rows_key(path: string, surface: string) -> string { node_key(Stored.Unit, ["u
 /// A file's rows as the store keeps them; none for text no `keep_unit_rows` wrote.
 fn rows_of(raw: string) -> Map<string, UnitRow> {
     mut out: Map<string, UnitRow> = {}
-    if !raw.starts_with("R1") { return out }
+    if !raw.starts_with("R2") { return out }
     mut r = wire_reader(raw)
     let fields? = r.fields() else { return out }
-    if fields.length % 3 != 0 { return out }
-    for i in 0..fields.length / 3 {
+    if fields.length % 4 != 0 { return out }
+    for i in 0..fields.length / 4 {
         out
             .set(
-                fields[3 * i],
-                UnitRow { key: fields[3 * i], wants: fields[3 * i + 1], facts: fields[3 * i + 2] },
+                fields[4 * i],
+                UnitRow {
+                    key: fields[4 * i],
+                    wants: fields[4 * i + 1],
+                    facts: fields[4 * i + 2],
+                    consts: fields[4 * i + 3],
+                },
             )
     }
     out

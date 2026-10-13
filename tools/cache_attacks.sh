@@ -386,6 +386,48 @@ steps=$((steps+1)); rb_out=$($R/rb/src/main 2>&1)
 
 fi
 
+if section hb; then
+# AN INSTANTIATION IS KEPT BY WHAT IT IS A FUNCTION OF: its generic's declaration and syntax,
+# its name (which spells the type arguments) and their shapes, and the surface of the file the
+# generic lives in. Each edit below runs a check and counts the instantiations it LOWERED afresh
+# (a `Q unit lowered` line naming the generic); the rest are served from their rows.
+mkdir -p $R/hb/src/ga $R/hb/src/gb
+printf '[package]\nname = "rt-hb"\nversion = "0.1.0"\n' > $R/hb/avra.toml
+printf 'use gb.{K}\nexport type Cell2 = { a: int }\nexport fn gpick<T>(a: T, b: T, first: bool) -> T { if first && K > 0 { a } else { b } }\nexport fn aplain() -> int { K + 1 }\n' > $R/hb/src/ga/gen.av
+printf 'export const K: int = 7\nexport fn gwrap<T>(x: T) -> List<T> { [x] }\n' > $R/hb/src/gb/gen.av
+printf 'use ga.{gpick, aplain, Cell2}\nuse gb.{gwrap}\nprintln("${gpick(1, 2, true)} ${gpick("a", "b", false)} ${gwrap(3).length} ${aplain()} ${gpick(Cell2 { a: 5 }, Cell2 { a: 6 }, true).a}")\n' > $R/hb/src/main.av
+hb_run() { AVRA_QTRACE=1 ./avra check $R/hb 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "unit" && $3 == "lowered" { print $4 }' | sort -u > $R/hb.lowered; }
+hb_count() { grep -c "$1\\$" $R/hb.lowered | tr -d ' '; }
+hb_expect() { # hb_expect <label> <gpick wanted> <gwrap wanted>
+    steps=$((steps+1)); got_p=$(hb_count gpick); got_w=$(hb_count gwrap)
+    [ "$got_p:$got_w" = "$2:$3" ] || { fails=$((fails+1)); echo "FAIL  hb: $1: lowered afresh gpick=$got_p gwrap=$got_w, wanted $2/$3"; }
+}
+HR "cold hb" check hb 0
+# a cold derivation keeps no rows: the first warm one writes them
+ed $R/hb/src/ga/gen.av "aplain() -> int { K + 1 }" "aplain() -> int { K + 2 }"; hb_run
+ed $R/hb/src/ga/gen.av "aplain() -> int { K + 2 }" "aplain() -> int { K + 3 }"; hb_run
+hb_expect "a home edited where no instantiation moved" 0 0
+ed $R/hb/src/ga/gen.av "aplain() -> int { K + 3 }" "aplain() -> int { K + 4 }"; hb_run
+hb_expect "again, a different plain body" 0 0
+ed $R/hb/src/ga/gen.av "{ if first && K > 0 { a } else { b } }" "{ if first && K > 0 { b } else { a } }"; hb_run
+hb_expect "a generic's own body edited: its instantiations, none of the other home's" 3 0
+ed $R/hb/src/main.av 'gpick(1, 2, true)' 'gpick(1.5, 2.5, true)'; hb_run
+hb_expect "a type argument changed at one call site: that instantiation alone" 1 0
+ed $R/hb/src/gb/gen.av "K: int = 7" "K: int = 8"; hb_run
+hb_expect "a const the generic's body reads moved: every instantiation of it, and its own file's (its surface moved)" 3 1
+steps=$((steps+1)); got_a=$(grep -c "aplain" $R/hb.lowered | tr -d ' ')
+[ "$got_a" = 1 ] || { fails=$((fails+1)); echo "FAIL  hb: a const a PLAIN fn reads moved and its unit was served stale ($got_a lowered afresh)"; }
+ed $R/hb/src/ga/gen.av 'aplain() -> int { K + 4 }' 'aplain() -> int { 4 }'
+rm $R/hb/src/gb/gen.av
+ed $R/hb/src/ga/gen.av 'use gb.{K}
+' ''
+ed $R/hb/src/ga/gen.av 'first && K > 0' 'first'
+ed $R/hb/src/main.av 'use gb.{gwrap}
+' ''
+ed $R/hb/src/main.av '${gwrap(3).length} ' ''
+HR "a home deleted: the check stands" check hb 0
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
