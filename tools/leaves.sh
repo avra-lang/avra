@@ -13,9 +13,9 @@ out=${TMPDIR:-/tmp}/leaves.$$
 for pkg in packages/cli packages/std-avrac; do
     n=0
     for d in $(find . -name .avra-cache -type d -prune); do n=$((n + 1)); mv "$d" "/tmp/avra-cache-old-$$-$(date +%s)-$n"; done
-    line=$(AVRA_LEAVES=1 "$A" check "$pkg" 2>&1 | grep -a '^leaves ' | head -1)
-    [ -n "$line" ] || { echo "leaves: $pkg answered no meter line"; exit 1; }
-    echo "$pkg $line" >> "$out"
+    lines=$(AVRA_LEAVES=1 "$A" check "$pkg" 2>&1 | grep -a '^leaves ')
+    [ -n "$lines" ] || { echo "leaves: $pkg answered no meter line"; exit 1; }
+    echo "$lines" | while IFS= read -r line; do echo "$pkg $line" >> "$out"; done
 done
 cat "$out"
 case "$mode" in
@@ -27,6 +27,7 @@ def parse(path):
     r = {}
     for line in open(path):
         pkg, rest = line.split(" ", 1)
+        pkg = pkg + " " + rest.split(":")[0]
         m = re.search(r"(\d+) of (\d+) answers", rest)
         blocked = dict((a, int(b)) for a, b in re.findall(r"(\w+) (\d+)", rest.split("family:")[1])) if "family:" in rest else {}
         r[pkg] = (int(m.group(1)), int(m.group(2)), blocked)
