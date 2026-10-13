@@ -610,6 +610,10 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
         let no_view: Map<string, List<SeenPart>> = {}
         ws.keys.bytes_keys.set(no_bytes)
         ws.keys.view_parts.set(no_view)
+        let no_index: Map<string, NarrowIndex> = {}
+        ws.keys.view_index.set(no_index)
+        let no_fns: Map<string, List<FnForm>> = {}
+        ws.keys.file_fns.set(no_fns)
         let no_typed: Map<string, Map<string, List<string>>> = {}
         ws.keys.typed_files.set(no_typed)
         ws.keys.file_owners.set(no_bytes)
@@ -1263,6 +1267,90 @@ export fn object_key_of_parts(ws: Workspace, k: KeyParts) -> string { node_key(S
 /// these parts' digest, so a key and the parts it is shown as never disagree.
 export type KeyParts = { module: string, path: string, text: string, runs: List<string>, gathered: List<string>, seen: List<SeenPart> }
 
+/// A plain free fn of a module as the narrowed view names it: the module's place in the
+/// view, and its interface form.
+type NamedForm = { dep: int, form: string }
+
+/// A plain free fn of one file as its contract reads: its name and its form.
+type FnForm = { name: string, form: string }
+
+/// A module's view split by what a name reaches: the digest of the lines no name reaches, per
+/// module seen, and the plain free fns by name. `whole` when a file of the view carries no digest.
+export type NarrowIndex = { whole: bool, globals: List<string>, alone: List<string>, named: Map<string, List<NamedForm>> }
+
+/// WHETHER A RECORD LINE IS A PLAIN FREE FN: reached by its name and by nothing else — not a
+/// method, a nested or generated declaration, an annotated one a collect gathers, a component
+/// or an instance, a host or external one, a static one.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a record line's fields in, whether a name alone reaches it.
+fn plain_fn(p: List<string>) -> bool {
+    if p.length < 13 ||
+        p[0] != "fn" ||
+        p[6] != "fn" ||
+        !p[7].is_empty() ||
+        p[8] != "-1" ||
+        p[11] != "1" {
+        return false
+    }
+    let top = unpacked(p[12])
+    if top.is_empty() { return false }
+    let facts = top[0].split(";")
+    facts.length > 16 &&
+        facts[0] == "0" &&
+        facts[1] == "0" &&
+        facts[2] == "0" &&
+        facts[9] == "0" &&
+        facts[11] == "0" &&
+        facts[12] == "0" &&
+        facts[16] == "0"
+}
+
+/// The lines of a file no name reaches, as one digest.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a file's record lines in, its unnamed interface digest out.
+fn global_digest(lines: List<string>) -> string {
+    digest_of(
+        joined(
+            sorted_texts([placed_form(unordered(l)) for l in lines if !plain_fn(l.split("\t"))]),
+            "\n",
+        ),
+    )
+}
+
+/// A line's contract and the file it stands in: moving a declaration between files is not
+/// nothing — an impl's home is where its methods lower.
+fn placed_form(line: string) -> string { "${line.split("\t")[1]}\t${interface_form(line)}" }
+
+/// A file's own entry declaration (`main`, the statements it runs) stands wherever the last
+/// declaration ended: its ordinal counts declarations, and nothing else reads it.
+fn unordered(line: string) -> string {
+    let p = line.split("\t")
+    if p.length > 6 && p[6] == "main" { joined(["main", p[1], "-"].concat(p.slice(3, p.length)), "\t") } else { line }
+}
+
+/// Every identifier a text spells, once, in name order. A token is a run of letters,
+/// digits and `_`: names in comments and strings count too, which only widens a file's key.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a text in, the names it spells out.
+fn idents_of(text: string) -> List<string> { sorted_texts(token_counts(text).keys()) }
+
+/// Every identifier a text spells, with how many times.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a text in, the names it spells out.
+fn token_counts(text: string) -> Map<string, int> {
+    let b = text.bytes()
+    let found: Cell<Map<string, int>> = Cell.new({})
+    mut start = 0 - 1
+    for i in 0..b.length + 1 {
+        let c = if i < b.length { b.at(i) } else { 0 }
+        let inside = c >= 97 && c <= 122 || c >= 65 && c <= 90 || c >= 48 && c <= 57 || c == 95
+        if inside {
+            if start < 0 { start = i }
+        } else if start >= 0 {
+            let word = b.slice(start, i).text()
+            if word != null { found.put(word!, (found.get().get(word!) ?? 0) + 1) }
+            start = 0 - 1
+        }
+    }
+    found.get()
+}
+
 /// A module a file sees: its name, its interface's bytes key, its file count.
 export type SeenPart = { module: string, bytes_key: string, files: int }
 
@@ -1277,7 +1365,7 @@ impl Workspace {
             runs: [self.read_token(path, read) for read in kept_runs(record_places(self, store, m).get(path))],
             // an object that bakes a collect's members in reads the set it gathered
             gathered: self.gathered_said(store, m, path),
-            seen: self.view_parts(store, m),
+            seen: self.seen_by_name(store, m, path),
         }
     }
 
@@ -1339,9 +1427,91 @@ impl Workspace {
         let known: List<SeenPart>? = self.keys.view_parts.get().get(m.text())
         if known != null { return known! }
         let r = self.reach(store, m)
-        let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in sorted_texts([m.text()].concat(r.mods))]
+        let deps = sorted_texts([m.text()].concat(r.mods))
+        let made = [if dep == m.text() { self.seen_part_of(store, m) } else { self.reached_part(store, dep, r.files_of(dep)) } for dep in deps]
         self.keys.view_parts.put(m.text(), made)
+        let ni = self.narrow_index(store, m, deps, r)
+        self.keys.view_index.put(m.text(), ni)
         made
+    }
+
+    /// WHAT A FILE SEES OF THE MODULES ITS MODULE SEES: each part's key covers the module's
+    /// lines no name reaches — types, impls, consts, collects, re-exports, whatever a body
+    /// takes by inference — and, of its plain free fns, the ones whose NAME the file mentions.
+    /// An added, renamed or retyped fn nothing in the file spells moves nothing here. A file
+    /// whose tokens the record does not carry, or a view whose files lack their digest, is
+    /// seen whole.
+    fn seen_by_name(store: Store, m: ModulePath, path: string) -> List<SeenPart> {
+        let whole = self.view_parts(store, m)
+        let index? = self.keys.view_index.get().get(m.text()) else { return whole }
+        let columns = record_places(self, store, m).get(path)?.file ?? []
+        if index.whole || columns.length < 7 || columns[5] == "" { return whole }
+        let buckets: Cell<Map<string, List<string>>> = Cell.new({})
+        for name in columns[5].split(",") {
+            for hit in index.named.get(name) ?? [] {
+                let key = "${hit.dep}"
+                buckets.put(key, (buckets.get().get(key) ?? []).concat([hit.form]))
+            }
+        }
+        [s with { bytes_key: self.named_key(index, i, buckets.get().get("${i}") ?? []) } for i, s in whole]
+    }
+
+    /// What a file sees of the `i`th module: the lines no name reaches alone when it mentions
+    /// none of its fns, else with the forms of those it does.
+    fn named_key(index: NarrowIndex, i: int, forms: List<string>) -> string {
+        if forms.is_empty() { return index.alone[i] }
+        digest_of(joined([index.globals[i]].concat(sorted_texts(forms)), "\n"))
+    }
+
+    /// A file's plain free fns, each with its form — remembered for the build, since every
+    /// module that reaches the file asks for them; cleared with the view they feed.
+    fn file_fns(f: string, fields: List<List<string>>, p: Placed) -> List<FnForm> {
+        let known = self.keys.file_fns.get().get(f)
+        if known != null { return known! }
+        let made = [FnForm { name: fields[j][5], form: placed_form(joined(fields[j], "\t")) } for j in p.lo..p.hi if j < fields.length && plain_fn(fields[j])]
+        self.keys.file_fns.put(f, made)
+        made
+    }
+
+    /// The narrowed view of a module: for each module it sees, in `view_parts` order, the digest
+    /// of its files' lines no name reaches, and every plain free fn of those files by name.
+    fn narrow_index(store: Store, m: ModulePath, deps: List<string>, r: Reach) -> NarrowIndex {
+        let named: Cell<Map<string, List<NamedForm>>> = Cell.new({})
+        mut globals: List<string> = []
+        mut whole = false
+        for i, dep in deps {
+            let at = module_path(dep.split("."))
+            let files = if dep == m.text() { self.module_files(m) } else { r.files_of(dep) }
+            let places = record_places(self, store, at)
+            let fields = record_fields(self, store, at)
+            mut digests: List<string> = []
+            for f in files {
+                let p? = places.get(f) else {
+                    whole = true
+                    continue
+                }
+                if p.file.length < 7 || p.file[6] == "" || !self.there(f) {
+                    whole = true
+                    continue
+                }
+                digests.push(p.file[6])
+                for entry in self.file_fns(f, fields, p) {
+                    named
+                        .put(
+                            entry.name,
+                            (named.get().get(entry.name) ?? [])
+                                .concat([NamedForm { dep: i, form: entry.form }]),
+                        )
+                }
+            }
+            globals.push(ifaces_digest(digests))
+        }
+        NarrowIndex {
+            whole: whole,
+            globals: globals,
+            alone: [digest_of(g) for g in globals],
+            named: named.get(),
+        }
     }
 
     /// EVERY OTHER MODULE'S FILE A MODULE'S OBJECTS CAN DEPEND ON: each file its own
