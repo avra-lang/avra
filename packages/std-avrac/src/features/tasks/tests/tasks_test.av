@@ -119,11 +119,16 @@ spec "features/tasks" {
         }
     }
     given "tasks nothing runs" {
-        then "a join of a cancelled task traps in the row's words" {
+        then "a join of a cancelled task cancels the run that joined, which says who asked" {
             refused_at_run(
                 "extern fn avra_task_pending() -> ptr\nextern fn avra_task_cancel(t: ptr)\nextern fn avra_task_join(t: ptr) -> ptr\nlet p = avra_task_pending()\navra_task_cancel(p)\nlet _a = avra_task_join(p)\n1",
-                "a join takes a task that answers, and this one was cancelled",
+                "main was cancelled — awaiting a task cancelled by main",
             )
+        }
+        then "a run that awaits no cancelled task ends as it chose" {
+            shown(
+                "extern fn avra_task_pending() -> ptr\nextern fn avra_task_cancel(t: ptr)\nlet p = avra_task_pending()\navra_task_cancel(p)\n1",
+            ) == "1"
         }
         then "a join between a wait row and its park traps as the runtime's does" {
             refused_at_run(
