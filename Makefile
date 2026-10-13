@@ -593,6 +593,7 @@ cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
 	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
+	@sh tools/store_reads_attack.sh
 	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
 	@sh tools/held_runs_attack.sh
