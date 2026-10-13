@@ -1,7 +1,15 @@
 // The vertical: `spawn` runs beside the spawner, `.await` answers what
 // the body did, `.done` asks without parking, and a task is joined where
 // the last thing holding it ends.
-use @std.avrac.testing.{shown, refused_at_run, ir_of, refusals}
+use @std.avrac.testing.{
+    shown,
+    refused_at_run,
+    refused_with,
+    refused_in,
+    ir_of,
+    floored_with_errors,
+    answered,
+}
 use compiler.backend.{render_ir}
 
 extern fn avra_sched_timers() -> int
@@ -19,9 +27,6 @@ spec "features/tasks" {
         }
         then "`t.cancel()` lowers to the row and answers nothing" {
             render_ir(ir_of("let t = spawn 1\nt.cancel()")).contains("call avra_task_cancel")
-        }
-        then "a caught await TYPES clean — the arm hears the answer and the cancel" {
-            refusals("fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv") == 0
         }
         then "a `within` lowers as a one-turn loop whose end is its landing" {
             let text = render_ir(
@@ -61,6 +66,56 @@ spec "features/tasks" {
         }
         then "a task's body may await a sibling — both join here" {
             shown("let a = spawn 4\nlet b = spawn { a.await + 100 }\nb.await") == "104"
+        }
+    }
+    given "a caught await" {
+        then "it lowers to the join that passes no cancel on, and a region on what that answered" {
+            let text = render_ir(floored_with_errors(caught("let v = t.await catch c -> c.by\nv")).lowered())
+            let parts = text.split("call avra_task_join_caught(")
+            parts.length == 2 &&
+                joins_inside_else(parts[1]) &&
+                parts[1].index_of("flag unwinding") >= 0 &&
+                parts[1].index_of("flag unwinding") < parts[1].index_of("if ")
+        }
+        then "an answered task answers its value, and the arm does not run" {
+            answered(floored_with_errors(caught("let v = t.await catch _ -> 0\n\"\${v}\""))) == "5"
+        }
+        then "a task nothing answers is caught as a statement" {
+            answered(
+                floored_with_errors(
+                    "use @std.errors.{Cancelled}\nlet seen = Cell.new(0)\nlet t = spawn { seen.set(1) }\nt.await catch _ -> { seen.set(9) }\nseen.get()",
+                ),
+            ) == "1"
+        }
+        then "a program that loads no `@std/errors` is told what the catch recovers" {
+            refused_with(
+                "fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv",
+                "a caught `await` recovers `@std/errors`' `Cancelled`, and this program loads no `@std/errors`",
+            )
+        }
+        then "its help names the import" {
+            refused_with(
+                "fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv",
+                "bring it in — `use @std.errors.{Cancelled}`",
+            )
+        }
+        then "a variant arm is refused — a `Cancelled` has none to name" {
+            refused_in(
+                floored_with_errors(caught("let v = t.await catch .Gone -> 0\nv")),
+                "`.Gone` names a variant, but `Cancelled` has none",
+            )
+        }
+        then "the arm answers what the task answers" {
+            refused_in(
+                floored_with_errors(caught("let v = t.await catch _ -> \"no\"\nv")),
+                "a `catch` arm answers the ok side: `int`, this is `string`",
+            )
+        }
+        then "an await bound first is no failure to catch — the cancel left at the await" {
+            refused_in(
+                floored_with_errors(caught("let v = t.await\nlet u = v catch _ -> 0\nu")),
+                "`catch` recovers a `Result`, this is `int`",
+            )
         }
     }
     given "tasks nothing runs" {
@@ -131,6 +186,19 @@ spec "features/tasks" {
                 flows()
         }
     }
+}
+
+/// A program over `@std/errors` whose task `t` answers 5, then `rest`.
+fn caught(rest: string) -> string {
+    "use @std.errors.{Cancelled}\nfn w() -> int { 5 }\nlet t = spawn w()\n" + rest
+}
+
+/// Whether the join that reads an answer stands in the region's absent
+/// arm — past its `else`, never before the region opens.
+fn joins_inside_else(text: string) -> bool {
+    let at = text.index_of("call avra_task_join(")
+    let other = text.index_of("} else")
+    other >= 0 && at > other
 }
 
 /// Whether the first flag-read region in `text` jumps to its landing —

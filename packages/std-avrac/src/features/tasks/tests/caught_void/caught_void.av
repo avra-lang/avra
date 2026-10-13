@@ -1,0 +1,16 @@
+// proves: a task answering nothing is caught as a statement — the arm
+// runs for a cancelled one and not for one that ended — in both engines
+use @std.errors.{Cancelled}
+use @std.time.{ms, sleep}
+
+fn idle() {
+    while true { sleep(ms(0)) }
+}
+
+let seen = Cell.new(0)
+let t = spawn idle()
+t.cancel()
+t.await catch c -> { seen.set(1 + c.by) }
+let u = spawn { seen.set(seen.get() + 10) }
+u.await catch _ -> { seen.set(99) }
+"${seen.get()}"
