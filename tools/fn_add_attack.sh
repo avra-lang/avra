@@ -11,7 +11,9 @@ export AVRA_WATCH_HELD=1
 export AVRA_MAX_COMPILES=0
 
 R=build/fn-add; fails=0; steps=0
-rm -rf "$R" .avra-cache
+T=build/aside/fa.$$; mkdir -p $T
+[ -e "$R" ] && mv "$R" $T/fn-add
+[ -e .avra-cache ] && mv .avra-cache $T/cache
 P=$R/fa
 mkdir -p $P/src/m/tests $P/src/n $P/src/w
 fail() { fails=$((fails + 1)); echo "FAIL  $1"; }
@@ -30,7 +32,7 @@ printf 'use n.{gu, go, gcount}\nuse m.{gb}\nprintln("${gu()} ${go()} ${gb()} ${g
 for f in m/a m/b m/c n/user n/other n/third n/count w/widget w/members w/table main; do cp $P/src/$f.av $P/$(echo $f | tr / _).orig; done
 
 chk() { steps=$((steps + 1)); OUT=$(./avra check --time $P 2>&1); ST=$?; }
-back() { for f in m/a m/b m/c n/user n/other n/third n/count w/widget w/members w/table main; do cp $P/$(echo $f | tr / _).orig $P/src/$f.av; done; rm -f $P/src/m/tests/*.av; }
+back() { for f in m/a m/b m/c n/user n/other n/third n/count w/widget w/members w/table main; do cp $P/$(echo $f | tr / _).orig $P/src/$f.av; done; for t in $P/src/m/tests/*.av; do [ -e "$t" ] && mv "$t" $T/; done; }
 add() { printf '\n%s\n' "$2" >> $P/src/$1.av; }
 read_list() { printf '%s\n' "$OUT" | sed -n '/^read:/,$p' | grep '^  ' | awk '{print $1}'; }
 
@@ -68,7 +70,7 @@ was_read "a fn colliding with a sibling's import" n/other.av
 back; chk
 
 # 5. a rename: its users are read, and the program no longer checks
-sed -i.bak 's/export fn f()/export fn f2()/' $P/src/m/a.av; rm -f $P/src/m/a.av.bak; chk
+sed 's/export fn f()/export fn f2()/' $P/src/m/a.av > $T/a.new && mv $T/a.new $P/src/m/a.av; chk
 [ $ST != 0 ] || fail "a renamed fn left its users checking clean"
 case "$OUT" in *"f"*) ;; *) fail "a renamed fn: the refusal names nothing" ;; esac
 back; chk
@@ -101,7 +103,7 @@ back; chk
 # 9. a test file reading a private name of its module by an explicit use
 printf 'use m.{p}\nspec "p" { given "the private fn" { then "answers two" { p() == 2 } } }\n' > $P/src/m/tests/priv_test.av; chk
 [ $ST = 0 ] || fail "a test could not read its module's private name: $(printf '%s' "$OUT" | head -3 | tr '\n' ' ')"
-sed -i.bak 's/^fn p()/fn q()/' $P/src/m/a.av; rm -f $P/src/m/a.av.bak; chk
+sed 's/^fn p()/fn q()/' $P/src/m/a.av > $T/a.new && mv $T/a.new $P/src/m/a.av; chk
 [ $ST != 0 ] || fail "a renamed private fn left the test that read it checking clean"
 back; chk
 
@@ -122,6 +124,35 @@ add n/third 'fn zz_beside_const() -> int { 1 }'
 [ "$(verdict)" = "stood " ] || fail "an unspelled fn added beside a const re-ran its verdict"
 printf 'export fn gt() -> int { 3 }\nexport const k3: int = gt() * 2\nexport fn gk() -> int { k3 }\nfn zz_beside_const() -> int { 1 }\nexport fn gz() -> int { zz_beside_const() }\n' > $P/src/n/third.av
 case "$(verdict)" in *ran*) ;; *) fail "a fn the file now spells did not re-run the const verdict" ;; esac
+back; chk
+
+# 12. the narrowed names digest: what it must NOT miss. A verdict is read as "stood"/"ran" per const.
+VOUT=
+vstate() { VOUT=$(AVRA_QTRACE=1 ./avra check $P 2>&1); V=$(printf '%s\n' "$VOUT" | grep "const_verdict" | grep "m.c.const" | awk '{print $NF}' | sort -u | tr '\n' ' '); }
+# a) a fn that SHADOWS the prelude's println in the module a const's run resolves through
+printf 'export fn gc() -> int {\n    println("c")\n    10\n}\nexport const kc: int = gc() + 1\nexport fn gk() -> int { kc }\n' > $P/src/m/c.av; chk; steps=$((steps + 1))
+add m/a 'fn println(s: string) {}'
+vstate
+case "$V" in *ran*) ;; *) fail "a fn shadowing println left a const verdict standing: [$V] $(printf '%s' "$VOUT" | grep -v '^Q' | head -4 | tr '\n' ' ' | cut -c1-500)" ;; esac
+back; chk
+# b) a name only a comment of the const's file spells: counted (tokens read comments), which only widens
+printf 'export fn gc() -> int { 10 }\n// zz_commented\nexport const kc: int = gc() + 1\nexport fn gk() -> int { kc }\n' > $P/src/m/c.av; chk; steps=$((steps + 1))
+add m/a 'fn zz_commented() -> int { 1 }'
+vstate; case "$V" in *stood*|*ran*) ;; *) fail "a fn named in a comment: no verdict read" ;; esac
+back; chk
+# c) a module holding generated code: every name counts, so even an unspelled fn re-runs the verdict
+printf 'use @std.meta.{Directive, Type}\nexport trait Gen {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: "", name: t.name, at: t.at, source: quote { fn gen_made() -> int { 1 } } }]\n    }\n}\n' > $P/src/m/gen.av
+printf 'use @std.meta.{derive}\nuse m.{Gen}\n@derive(Gen)\nexport type G = { n: int }\n' > $P/src/m/g.av
+printf 'export fn gc() -> int { 10 }\nexport const kc: int = gc() + 1\nexport fn gk() -> int { kc }\n' > $P/src/m/c.av; chk; steps=$((steps + 1))
+[ $ST = 0 ] || fail "the generated-code fixture does not check: $(printf '%s' "$OUT" | head -3 | tr '\n' ' ')"
+add m/a 'fn zz_unspelled() -> int { 1 }'
+vstate
+case "$V" in *stood*) fail "a fn added beside generated code left a const verdict standing: [$V]" ;; esac
+mv $P/src/m/gen.av $P/src/m/g.av $T/; back; chk
+# d) a rename of a spelled fn: the const that calls it re-runs, and the program no longer checks
+printf 'export fn gc() -> int { f() }\nexport const kc: int = gc() + 1\nexport fn gk() -> int { kc }\n' > $P/src/m/c.av; chk; steps=$((steps + 1))
+sed 's/export fn f()/export fn f2()/' $P/src/m/a.av > $T/a.new && mv $T/a.new $P/src/m/a.av
+vstate; [ "$V" != "stood " ] || fail "a renamed fn left the verdict of a const calling it standing"
 back; chk
 
 echo "fn-add-attack: $steps checks, $fails failed"

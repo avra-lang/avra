@@ -668,10 +668,7 @@ impl Workspace {
     fn cheap_reads(store: Store, path: string, name: string) -> List<string> {
         let said = store.get(Stored.Unit, "${kept_key_for(path, name)}#lines") ?? ""
         let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
-        let refused = [r for r in rows if judged_by_files(r) && !self.kept_row_stands(r)]
-        if refused.is_empty() { return [] }
-        // a file whose text moved is read all the same, and its outline may still stand for the verdict; one that is gone is not read
-        if refused.all((r: List<string>) -> saved_by_outline(r) && self.there(r[1])) { return [r[1] for r in refused] }
+        if !rows.any((r: List<string>) -> self.row_refuses(store, r)) { return [] }
         let reads = rows.find(it[0] == "r") ?? []
         reads.slice(1, reads.length)
     }
@@ -1071,17 +1068,14 @@ impl Workspace {
                 parts_wire(own),
                 if was == null { [] } else { parts_moved(store, self.record_bodies(), was!, own) },
             )
-        // THE MODULE'S SEEN ROW is the module's whole view, one row its files share: the key a
-        // file wears narrows it by name, and the move a reader is told of is the module's
-        let whole = self.view_parts(store, self.module_path_of(path))
         let seen = store.get(Stored.Unit, seen_key(now.module))
         let seen_was = seen_of(seen ?? "")
         self
             .keep_moved(
                 store,
                 seen_key(now.module),
-                seen_wire(whole),
-                if seen == null || seen_was == null { [] } else { seen_list_moved(store, self.record_bodies(), seen_was!, whole) },
+                seen_wire(now.seen),
+                if seen == null || seen_was == null { [] } else { seen_list_moved(store, self.record_bodies(), seen_was!, now.seen) },
             )
     }
 
@@ -1171,9 +1165,6 @@ fn nothing_held(why: string) -> string {
 fn records_adrift(paths: List<string>) -> string {
     "avra: interface records did not stabilize — still moving under ${joined(paths, ", ")}"
 }
-
-/// Whether a refused file line carries an outline a read of the file can still match.
-fn saved_by_outline(r: List<string>) -> bool { r[0] == "f" && r.length == 4 && r[3] != "" }
 
 /// Whether a kept row is judged from its file alone, with no analysis run.
 fn judged_by_files(r: List<string>) -> bool {

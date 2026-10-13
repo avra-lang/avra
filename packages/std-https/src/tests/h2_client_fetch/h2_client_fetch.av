@@ -4,7 +4,7 @@
 //! a server offering only `http/1.1` answers the same fetch over 1.1;
 //! and a second fetch on the same origin reuses the kept carrier.
 use @std.net.{listen}
-use @std.time.{ms}
+use @std.time.{ms, secs}
 use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.server.{Timing, served}
@@ -38,7 +38,7 @@ fn served_over(offered: List<string>) -> Result<string, ClientError> {
         pool: pool(),
         tls: verified(tls_carried((tls_carried(trusting_localhost())?).offering(["h2", "http/1.1"]))?),
     }
-    defer o.pool.close_all()
+    defer { let _ = within secs(5) { o.pool.close_all() } }
     let url = "https://localhost:${l.port}/hello"
     .Ok("${shown(fetch(.Get, url, .Empty, o))}, then ${shown(fetch(.Get, url, .Empty, o))}")
 }
