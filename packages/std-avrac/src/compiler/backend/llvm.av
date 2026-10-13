@@ -402,8 +402,10 @@ export fn program_closed(l: Lowered) -> string? {
 
 /// THE ENTRY. The program's own statements become `avra_main`; C's
 /// `main` hands the runtime its arguments and answers what the
-/// entry answered. The argument pair crosses the seam exactly here
-/// — a program reads it through the host from then on. A reactor links
+/// entry answered, as the runtime's end of the run reads it — a run
+/// that ended cancelled answers its verdict. The argument pair
+/// crosses the seam exactly here — a program reads it through the
+/// host from then on. A reactor links
 /// no `main`, so its link exports the entry and its host runs the
 /// program's statements by that name (`reactor_entry_words`).
 fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, target: string) -> string? {
@@ -414,12 +416,18 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, targe
         [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)],
         false,
     )
+    if !is_wasm(target) { declare(m, RUN_ENDED, avra_llvm_int32_type(lc), [avra_llvm_int32_type(lc)], false) }
     declare(m, HOST_ENTRY, avra_llvm_int32_type(lc), [], false)
     let entry = avra_llvm_get_named_function(m, HOST_ENTRY)
     let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
     if failure != null { return failure }
-    open_main(lc, m, b, entry, entry_symbol(target))
+    open_main(lc, m, b, entry, target)
 }
+
+/// The runtime's end of a native run: the entry's code in, the
+/// process's out. A wasm module links no scheduler, so nothing
+/// cancels its run and its entry's code stands.
+const RUN_ENDED = "avra_main_ended"
 
 /// The symbol the program's own statements are emitted under — and the
 /// name a reactor's host runs them by.
@@ -439,8 +447,9 @@ fn is_wasm(target: string) -> bool { target.starts_with("wasm") }
 fn entry_symbol(target: string) -> string { if is_wasm(target) { "__main_argc_argv" } else { "main" } }
 
 /// `int main(int argc, char** argv)`: the arguments handed over,
-/// then the entry.
-fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr, symbol: string) -> string? {
+/// then the entry, then the run's end.
+fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr, target: string) -> string? {
+    let symbol = entry_symbol(target)
     declare(
         m,
         symbol,
@@ -465,9 +474,19 @@ fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr, symbol: string) -> string? {
     let seatless = avra_llvm_value_array_new(0)
     let answer = avra_llvm_build_call(b, avra_llvm_fn_type_of(entry), entry, seatless, 0, "code")
     avra_llvm_value_array_free(seatless)
-    let _ = avra_llvm_build_ret(b, answer)
+    let _ = avra_llvm_build_ret(b, if is_wasm(target) { answer } else { run_ended(m, b, answer) })
     if avra_llvm_verify_function(f) != 0 { return "internal compiler error: LLVM verification failed for main" }
     null
+}
+
+/// What the runtime makes of the entry's `code` at the run's end.
+fn run_ended(m: ptr, b: ptr, code: ptr) -> ptr {
+    let ended = avra_llvm_get_named_function(m, RUN_ENDED)
+    let args = avra_llvm_value_array_new(1)
+    avra_llvm_value_array_set(args, 0, code)
+    let said = avra_llvm_build_call(b, avra_llvm_fn_type_of(ended), ended, args, 1, "ended")
+    avra_llvm_value_array_free(args)
+    said
 }
 
 /// One body into one function: params seed the value table, every

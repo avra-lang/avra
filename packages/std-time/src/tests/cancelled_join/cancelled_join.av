@@ -1,9 +1,12 @@
-// proves: a join takes a task that answers — a cancelled one traps.
-extern fn avra_task_pending() -> ptr
-extern fn avra_task_cancel(t: ptr)
-extern fn avra_task_join(t: ptr) -> ptr
+// proves: a bare await of a task that ended cancelled cancels the
+// awaiter — here the program's own run, which says who asked and exits 1
+use @std.time.{ms, secs, sleep}
 
-let p = avra_task_pending()
-avra_task_cancel(p)
-let _answer = avra_task_join(p)
-"unreached"
+let t = spawn {
+    sleep(secs(60))
+    5
+}
+sleep(ms(1))
+t.cancel()
+let v = t.await
+println("unreached ${v}")
