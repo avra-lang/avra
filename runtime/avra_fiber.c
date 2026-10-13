@@ -211,7 +211,8 @@ struct Fiber {
     uint8_t parked;         // switched out on an unclaimed set
     uint8_t legacy;         // parked by a sleep, a join or a descriptor park: cleared at its claim
     uint8_t deaf;           // a scope's end joining what it owns: no cancel cuts the join
-    uint8_t heeds;          // the task's deadline may claim this set
+    uint8_t heeds;          // the task's deadline may claim this park; every park writes it
+    uint8_t cuts;           // parked by a sleep or a join: its deadline's claim is a cancel point
     uint8_t timed_out;      // whether the last legacy park ended by time
     uint8_t interrupted;    // whether the last descriptor park ended by an interrupt
     uint8_t unwinding;      // the unwind bit while switched out (`avra_unwinding` while running)
@@ -827,16 +828,17 @@ static int set_claimed(Fiber* f, int32_t arm, int32_t member, int64_t by) {
     f->claimed = 1;
     f->arm = arm;
     f->member = member;
-    // A CANCEL CLAIM IS AN EVALUATED TASK'S UNWIND BIT: it has no
-    // park row to hear the claim after the switch, where a compiled
-    // one calls `cancel_met`. `avra_vtask_unwinding` reads this field.
-    if (arm == -1 && member == 0 && f->virtual) f->unwinding = 1;
+    // A CUT'S CLAIM IS AN EVALUATED TASK'S UNWIND BIT — a cancel's, or
+    // its deadline's of a sleep or a join: it has no park row to hear
+    // the claim after the switch, where a compiled one calls
+    // `cancel_met`. `avra_vtask_unwinding` reads this field.
+    if (arm == -1 && f->virtual && (member == 0 || (member == 1 && f->cuts))) f->unwinding = 1;
     if (TRACING) traced_claim(f, by);
+    f->cuts = 0;
     if (f->legacy) {
         f->timed_out = arm != 0;
         f->interrupted = arm == -1 && member == 2;
         f->legacy = 0;
-        f->heeds = 0;
         f->claimed = 0;
         retract(f);
     }
@@ -1717,6 +1719,10 @@ static int64_t asker_of(const Fiber* f) { return f->cancel_by ? f->cancel_by - 1
 // Whether the claim a task resumed on was a cancel's: `-1:0`.
 static int claimed_by_cancel(const Fiber* f) { return f->arm == -1 && f->member == 0; }
 
+// Whether the claim a sleep or a join resumed on cut it: a cancel's, or
+// its task's deadline's (`-1:1`).
+static int claimed_by_cut(const Fiber* f) { return f->arm == -1 && f->member <= 1; }
+
 // A `within` opened while a `defer` ran shielded: its own limit alone
 // cuts a wait under it, never the task's cancel.
 static int shield_scope_stands(const Fiber* f) {
@@ -1729,6 +1735,15 @@ static int shield_scope_stands(const Fiber* f) {
 static int cancel_stands(const Fiber* f) {
     if (__builtin_expect(f->cancel_by == 0, 1)) return 0;
     if (shield_scope_stands(f)) return 0;
+    cancel_met();
+    return 1;
+}
+
+// A SLEEP AND A JOIN ARE CANCEL POINTS OF A DEADLINE TOO: under a scope's
+// request that stands, or a limit found passed, they park nothing and the
+// request is met at once.
+static int deadline_stands(Fiber* f) {
+    if (!deadline_passed(f)) return 0;
     cancel_met();
     return 1;
 }
@@ -1751,7 +1766,6 @@ static int park_begun(Fiber* f) {
 static int64_t claim_taken(Fiber* f) {
     int64_t claim = (int64_t)(((uint64_t)(uint32_t)f->arm << 32) | (uint32_t)f->member);
     f->claimed = 0;
-    f->heeds = 0;
     retract(f);
     return claim;
 }
@@ -1928,10 +1942,12 @@ static void refuse_join_ring(void* task, Fiber* self) {
     }
 }
 
-// The caller parks by one of the rows that predate the wait set: its
-// waiters are filed, no cancel reaches it, and its claim clears itself.
-static void legacy_parked(Fiber* self) {
+// The caller parks by a sleep or a join: its waiters are filed, and its
+// claim clears itself. `cuts` when its task's deadline may claim it — a
+// scope's end joining what it owns waits its tasks out.
+static void legacy_parked(Fiber* self, int cuts) {
     self->legacy = 1;
+    self->cuts = self->heeds = (uint8_t)cuts;
     self->parked = 1;
     self->state = FIBER_PARKED;
 }
@@ -1952,16 +1968,16 @@ static int64_t* task_awaited(void* task, int deaf) {
     int64_t* cells = task_cells(task);
     if (cells[GATE_OPEN]) return cells;
     Fiber* self = g_current;
-    if (!deaf && cancel_stands(self)) return cells;
+    if (!deaf && (cancel_stands(self) || deadline_stands(self))) return cells;
     refuse_join_ring(task, self);
     alone(self);
     if (TRACING) traced_join(self, task_id(task));
     self->joining = task;
     self->deaf = (uint8_t)deaf;
     waits_gate(self, task, 0, 0);
-    legacy_parked(self);
+    legacy_parked(self, !deaf);
     run_next();
-    if (claimed_by_cancel(self)) cancel_met();
+    if (claimed_by_cut(self)) cancel_met();
     self->joining = NULL;
     self->deaf = 0;
     return task_cells(task);
@@ -2234,12 +2250,12 @@ int64_t avra_vtask_tick_cold(int64_t t) {
 __attribute__((noinline))
 static void slept(int64_t ms) {
     Fiber* self = g_current;
-    if (cancel_stands(self)) return;
+    if (cancel_stands(self) || deadline_stands(self)) return;
     alone(self);
     waits_until(self, deadline_after(ms), 0, 0);
-    legacy_parked(self);
+    legacy_parked(self, 1);
     run_next();
-    if (claimed_by_cancel(self)) cancel_met();
+    if (claimed_by_cut(self)) cancel_met();
 }
 
 // A sleep of no time is a yield, and costs what a yield costs.
@@ -2446,9 +2462,13 @@ static void joined_traced(Fiber* f, int64_t by) {
     ready_push(f);
 }
 
+// A joiner a cut readied first is told nothing: it is in the queue once.
 void avra_vtask_joined(int64_t t, int64_t by) {
-    if (TRACING) { joined_traced(virtual_at(t), by); return; }
-    ready_push(virtual_at(t));
+    Fiber* f = virtual_at(t);
+    if (f->state == FIBER_READY) return;
+    f->parked = f->legacy = f->heeds = f->cuts = 0;
+    if (TRACING) { joined_traced(f, by); return; }
+    ready_push(f);
 }
 
 // The evaluator's reads of the clock are its host's: when one of its
@@ -2458,13 +2478,33 @@ static int64_t host_waited(int64_t parked) {
     return parked;
 }
 
+// A request that stands on a virtual task about to sleep or join — a
+// cancel no shield scope holds off, a scope's own, a limit found passed:
+// 1, its bit raised, and it parks nothing. A compiled task's rows ask
+// `cancel_stands` and `deadline_stands`.
+static int virtual_cut(Fiber* f) {
+    if (!(f->cancel_by != 0 && !shield_scope_stands(f)) && !deadline_passed(f)) return 0;
+    f->unwinding = 1;
+    return 1;
+}
+
+int64_t avra_vtask_cut(int64_t t) { return virtual_cut(virtual_at(t)); }
+
 void avra_vtask_sleep(int64_t t, int64_t ms) {
     Fiber* f = virtual_at(t);
-    if (ms < 1) { ready_push(f); return; }
+    if (ms < 1 || virtual_cut(f)) { ready_push(f); return; }
     alone(f);
     waits_until(f, deadline_after(ms), 0, 0);
-    legacy_parked(f);
+    legacy_parked(f, 1);
     host_waited(1);
+}
+
+// A join the evaluator's own machine wakes (`avra_vtask_joined`): parked
+// on no source, so only a cancel or the task's deadline claims it.
+void avra_vtask_join_parked(int64_t t) {
+    Fiber* f = virtual_at(t);
+    alone(f);
+    legacy_parked(f, 1);
 }
 
 int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms) {
@@ -2517,7 +2557,7 @@ int64_t avra_vtask_join(int64_t t, void* task) {
     if (task_cells(task)[GATE_OPEN]) return 0;
     alone(f);
     waits_gate(f, task, 0, 0);
-    legacy_parked(f);
+    legacy_parked(f, 1);
     return host_waited(1);
 }
 

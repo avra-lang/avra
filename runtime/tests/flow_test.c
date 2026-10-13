@@ -1299,13 +1299,15 @@ static void* ends_inside_within(void* self) {
 }
 
 // A real wait files the deadline; a sleep or a join after it, running
-// past the deadline, must not be cut short by it.
+// past the deadline, is cut short by it. The joined task is spawned
+// before the scope, so it inherits no limit and sleeps its whole sleep.
 static void* sleeps_past_deadline(void* self) {
+    void* slow = cap(self) ? spawn1(sleeper, 40) : NULL;
     int64_t outer = avra_fiber_within(15);
     avra_wait_gate(g_gate, 0, 0);
     avra_wait_park();
     int64_t t0 = now_ns();
-    if (cap(self)) joined(spawn1(sleeper, 40)); else avra_fiber_sleep(40);
+    if (slow) joined(slow); else avra_fiber_sleep(40);
     int64_t ms = (now_ns() - t0) / 1000000;
     avra_fiber_within_end(outer);
     return answer(ms);
@@ -1331,7 +1333,9 @@ static void deadline_reach(void) {
         t = spawn1(sleeps_past_deadline, joins);
         avra_fiber_sleep(2);
         CHECK(avra_gate_claim(g_gate) == 0, "the task under the deadline is claimed");
-        CHECK(joined(t) >= 39, joins ? "a deadline filed by an earlier wait does not cut a join short" : "a deadline filed by an earlier wait does not cut a sleep short");
+        avra_fiber_sleep(45);
+        CHECK(avra_task_ended(t) == 2, joins ? "a deadline filed by an earlier wait cuts a join short" : "a deadline filed by an earlier wait cuts a sleep short");
+        avra_rc_release(t);
     }
     CHECK(avra_sched_timers() == 0, "and leaves the heap with its scope");
 
@@ -2071,6 +2075,14 @@ static int64_t g_outer = 0, g_inner = 0;
 static void* g_me;      // the task the case runs as
 static void* g_kid;     // the task it spawns
 
+// `ms` pass with the task at no cancel point: it waits a timer's task out
+// as a scope's end does, where a sleep would heed its deadline.
+static void unheeding(int64_t ms) {
+    void* timed = avra_task_at(avra_now_ns() + ms * 1000000);
+    avra_task_settle(timed);
+    avra_rc_release(timed);
+}
+
 static void* outer_fires_inner_passes(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
@@ -2088,7 +2100,7 @@ static void* inner_fires_outer_stands(void* self) {
     g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
     g_byte_b = avra_sched_timers() == 1;
     int64_t under = avra_fiber_within(10);
-    avra_fiber_sleep(20);
+    unheeding(20);
     g_byte_c = avra_scope_end(under) == 0 && avra_task_request(g_me) == g_inner && avra_sched_timers() == 1;
     g_byte_c = g_byte_c && avra_scope_end(g_inner) == 1 && avra_task_request(g_me) == 0 && avra_sched_timers() == 1;
     int64_t t0 = avra_now_ns();
@@ -2127,7 +2139,7 @@ static void* equal_limits_outer_owns(void* self) {
     g_inner = avra_fiber_within(10);
     g_byte_c = g_byte_c && parks_silent() == 0 && avra_task_request(g_me) == g_inner;
     g_byte_c = g_byte_c && parks_silent() == 0 && avra_task_request(g_me) == g_inner;
-    avra_fiber_sleep(30);
+    unheeding(30);
     g_byte_d = avra_task_request(g_me) == g_outer && avra_scope_end(g_inner) == 0 && avra_scope_end(mid) == 0 && avra_scope_end(g_outer) == 1;
     return answer(0);
 }
@@ -2137,7 +2149,7 @@ static void* fires_while_running(void* self) {
     (void)self;
     g_outer = avra_fiber_within(5000);
     g_inner = avra_fiber_within(20);
-    avra_fiber_sleep(30);
+    unheeding(30);
     g_byte_a = avra_task_request(g_me) == 0;
     g_byte_b = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
     g_byte_c = avra_scope_end(g_inner) == 1 && avra_scope_end(g_outer) == 0;
@@ -2148,7 +2160,7 @@ static void* fires_while_running(void* self) {
 static void* late_limit(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
-    avra_fiber_sleep(30);
+    unheeding(30);
     g_byte_a = avra_scope_end(g_outer) == 0 && avra_task_request(g_me) == 0;
     return answer(0);
 }
@@ -2326,12 +2338,14 @@ static void scope_ended_out_of_order(void) {
     avra_scope_end(outer);
 }
 
-// A deadline's request stands; then the task is cancelled.
+// A deadline's request stands; then the task is cancelled, and meets
+// the cancel at its next point.
 static void* fired_then_cancelled(void* self) {
     (void)self;
     g_outer = avra_fiber_within(20);
     g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
-    avra_fiber_sleep(10000);
+    unheeding(10000);
+    avra_fiber_yield();
     g_byte_b = avra_task_request(g_me) == 1;
     g_byte_c = avra_scope_end(g_outer) == 0 && avra_task_request(g_me) == 1;
     return answer(0);
@@ -2375,13 +2389,13 @@ static void a_scope_does_not_displace_a_task_cancel(void) {
     avra_rc_release(g_gate);
 }
 
-// Two limits pass during one sleep, the inner's first: the outer's stands.
+// Two limits pass during one wait, the inner's first: the outer's stands.
 static void* inner_then_outer(void* self) {
     (void)self;
     g_outer = avra_fiber_within(40);
     g_inner = avra_fiber_within(20);
     g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_inner;
-    avra_fiber_sleep(60);
+    unheeding(60);
     g_byte_b = avra_task_request(g_me) == g_outer;
     g_byte_c = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
     return answer(0);
@@ -2393,7 +2407,7 @@ static void* outer_then_inner(void* self) {
     g_outer = avra_fiber_within(20);
     g_inner = avra_fiber_within(40);
     g_byte_a = parks_silent() == 0 && avra_task_request(g_me) == g_outer;
-    avra_fiber_sleep(60);
+    unheeding(60);
     g_byte_b = avra_task_request(g_me) == g_outer && avra_sched_timers() == 0;
     g_byte_c = avra_scope_end(g_inner) == 0 && avra_scope_end(g_outer) == 1;
     return answer(0);
@@ -2660,6 +2674,224 @@ static void a_shield_scope_sleep_is_not_cut(void) {
     avra_clock_run_ends();
 }
 
+// ── a deadline cuts a sleep and a join ──────────────────────────
+
+// Forty ms of sleep under `cap` ms of limit: what the task held after.
+static void* sleeps_under_a_limit(void* self) {
+    g_outer = avra_fiber_within(cap(self));
+    int64_t t0 = avra_now_ns();
+    avra_fiber_sleep(40);
+    g_spent_ms = ms_since(t0);
+    g_byte_a = avra_unwinding;
+    g_byte_b = avra_scope_end(g_outer);
+    return answer(0);
+}
+
+// A forty-ms sleeper spawned under a limit, waited out by its owner.
+static void* spawns_a_sleeper_under_a_limit(void* self) {
+    (void)self;
+    g_outer = avra_fiber_within(5);
+    g_kid = spawn1(sleeper, 40);
+    avra_task_settle(g_kid);
+    g_byte_a = avra_task_ended(g_kid) == 2 && avra_task_ended_by(g_kid) == g_outer;
+    avra_rc_release(g_kid);
+    g_byte_b = avra_scope_end(g_outer);
+    return answer(0);
+}
+
+static void deadline_cuts_sleep(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    CHECK(ended(spawn1(sleeps_under_a_limit, 5)) == 2, "a task whose sleep its deadline cut ends cancelled");
+    CHECK(g_spent_ms >= 5 && g_spent_ms < 40, "the sleep ends where the limit passes");
+    CHECK(g_byte_a == 1, "a sleep its deadline cuts sets the bit");
+    CHECK(g_byte_b == 1, "and the scope that asked lands it");
+    bytes_unseen();
+    CHECK(ended(spawn1(sleeps_under_a_limit, 0)) == 2, "a sleep under a limit already passed ends its task cancelled");
+    CHECK(g_spent_ms == 0 && g_byte_a == 1 && g_byte_b == 1, "it parks nothing, and the bit is set at once");
+    bytes_unseen();
+    CHECK(ended(spawn1(sleeps_under_a_limit, 5000)) == 1, "a sleep its limit outlasts answers");
+    CHECK(g_spent_ms >= 40 && g_byte_a == 0 && g_byte_b == 0, "whole, with the bit clear and nothing to land");
+    CHECK(avra_sched_timers() == 0, "no deadline stays filed");
+    bytes_unseen();
+    CHECK(ended(spawn1(spawns_a_sleeper_under_a_limit, 0)) == 1, "a spawner at no cancel point answers");
+    CHECK(g_byte_a == 1, "a child whose sleep an inherited limit cut ends cancelled by the scope that asked");
+    CHECK(g_byte_b == 0, "and the spawner's scope, which heard nothing, has nothing to land");
+    avra_clock_run_ends();
+}
+
+// A join of a forty-ms task under `cap` ms of limit. The task is spawned
+// before the scope, so the limit is the joiner's alone; its owner's
+// settle then waits it out under the request that stands.
+static void* joins_under_a_limit(void* self) {
+    void* slow = spawn1(sleeper, 40);
+    g_outer = avra_fiber_within(cap(self));
+    int64_t t0 = avra_now_ns();
+    void* got = avra_task_join(slow);
+    g_spent_ms = ms_since(t0);
+    g_byte_a = avra_unwinding;
+    g_byte_c = got == NULL;
+    avra_rc_release(got);
+    g_byte_d = ended(slow) == 1 && ms_since(t0) >= 40;
+    g_byte_b = avra_scope_end(g_outer);
+    return answer(0);
+}
+
+static void deadline_cuts_join(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    CHECK(ended(spawn1(joins_under_a_limit, 5)) == 2, "a task whose join its deadline cut ends cancelled");
+    CHECK(g_spent_ms >= 5 && g_spent_ms < 40, "the join ends where the limit passes");
+    CHECK(g_byte_a == 1 && g_byte_c == 1, "a join its deadline cuts sets the bit and hands back no answer");
+    CHECK(g_byte_d == 1, "a scope's end under the request that stands still waits its task out");
+    CHECK(g_byte_b == 1, "and the scope that asked lands it");
+    bytes_unseen();
+    CHECK(ended(spawn1(joins_under_a_limit, 0)) == 2, "a join under a limit already passed ends its task cancelled");
+    CHECK(g_spent_ms == 0 && g_byte_a == 1 && g_byte_c == 1 && g_byte_b == 1, "it parks nothing, and the bit is set at once");
+    bytes_unseen();
+    CHECK(ended(spawn1(joins_under_a_limit, 5000)) == 1, "a join its limit outlasts answers");
+    CHECK(g_spent_ms >= 40 && g_byte_a == 0 && g_byte_c == 0 && g_byte_b == 0, "with the task's answer, the bit clear and nothing to land");
+    CHECK(avra_sched_timers() == 0, "no deadline stays filed");
+    avra_clock_run_ends();
+}
+
+// A scope's end parked on a forty-ms task when the limit passes. The
+// sleep before it files the deadline.
+static void* settles_under_a_limit(void* self) {
+    (void)self;
+    void* slow = spawn1(sleeper, 40);
+    g_outer = avra_fiber_within(5);
+    avra_fiber_sleep(1);
+    int64_t t0 = avra_now_ns();
+    g_byte_c = ended(slow) == 1;
+    g_spent_ms = ms_since(t0);
+    g_byte_a = avra_unwinding;
+    g_byte_b = avra_scope_end(g_outer);
+    return answer(0);
+}
+
+static void a_deadline_does_not_cut_a_scopes_end(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    bytes_unseen();
+    CHECK(ended(spawn1(settles_under_a_limit, 0)) == 1, "a task whose scope's end outlived its limit answers");
+    CHECK(g_byte_c == 1 && g_spent_ms >= 39, "a scope's end waits its task out past the limit");
+    CHECK(g_byte_a == 0, "and no bit is set by it");
+    CHECK(g_byte_b == 1, "though the scope's request stands for its next cancel point");
+    avra_clock_run_ends();
+}
+
+// A sleep under a shield scope past that scope's own limit.
+static void* shield_scope_sleeps_past_its_limit(void* self) {
+    (void)self;
+    avra_fiber_sleep(2);                    // cut by the cancel; the bit is set
+    avra_fiber_shield_enter();
+    int64_t scope = avra_fiber_within(5);
+    int64_t t0 = avra_now_ns();
+    avra_fiber_sleep(40);
+    g_spent_ms = ms_since(t0);
+    g_byte_a = avra_unwinding;              // raised inside the shield, by the wait
+    g_byte_b = avra_scope_end(scope) == 1;
+    avra_fiber_shield_leave();
+    return answer(0);
+}
+
+static void a_shield_scope_sleep_is_cut_by_its_own_limit(void) {
+    bytes_unseen();
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    void* t = spawn1(shield_scope_sleeps_past_its_limit, 0);
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "the shielded task still ends cancelled");
+    CHECK(g_spent_ms >= 5 && g_spent_ms < 40, "a sleep under a shield scope ends where that scope's limit passes");
+    CHECK(g_byte_a == 1, "and raises the bit inside the shield");
+    CHECK(g_byte_b == 1, "and that scope's end lands it");
+    avra_clock_run_ends();
+}
+
+// A VIRTUAL TASK'S DEADLINE CUTS ITS SLEEP AND ITS JOIN: the claim
+// readies it and sets its own unwind bit, and a request that stands
+// parks neither.
+static void virtual_deadline_cuts(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    int64_t vt = avra_vtask_new_at(11, 72);
+    int64_t scope = avra_vtask_within(vt, 5);
+    avra_vtask_sleep(vt, 10000);
+    CHECK(avra_vtask_next() == vt, "a deadline readies the virtual task whose sleep it cut");
+    CHECK(avra_vtask_unwinding(vt) == 1, "and sets its unwind bit");
+    avra_vtask_set_unwinding(vt, 0);
+    avra_vtask_sleep(vt, 10000);
+    CHECK(avra_vtask_next() == vt && avra_vtask_unwinding(vt) == 1, "a sleep under the request that stands parks nothing and sets the bit");
+    CHECK(avra_vtask_within_end(vt, scope) == 1, "and the scope that asked lands it");
+    avra_vtask_free(vt);
+
+    vt = avra_vtask_new_at(11, 73);
+    scope = avra_vtask_within(vt, 5);
+    CHECK(avra_vtask_cut(vt) == 0 && avra_vtask_unwinding(vt) == 0, "a join under a limit not yet passed may wait");
+    avra_vtask_join_parked(vt);
+    CHECK(avra_vtask_next() == vt && avra_vtask_unwinding(vt) == 1, "a deadline readies the virtual task whose join it cut, its bit set");
+    CHECK(avra_vtask_cut(vt) == 1, "and a join under the request that stands must not wait");
+    avra_vtask_within_end(vt, scope);
+    avra_vtask_free(vt);
+
+    vt = avra_vtask_new_at(11, 74);
+    int64_t other = avra_vtask_new_at(11, 75);
+    avra_vtask_join_parked(vt);
+    avra_vtask_cancel(vt, 0);               // the cut: the joiner is in the queue
+    avra_vtask_ready(other);
+    avra_vtask_joined(vt, 75);              // the task it joined ends before it runs
+    CHECK(avra_vtask_next() == vt && avra_vtask_next() == other, "a joiner a cut readied first is in the queue once");
+    avra_vtask_free(vt);
+
+    vt = avra_vtask_new_at(11, 76);
+    avra_vtask_join_parked(vt);
+    avra_vtask_joined(vt, 75);
+    CHECK(avra_vtask_next() == vt && avra_vtask_unwinding(vt) == 0, "a join its task's end wakes is readied with the bit clear");
+    avra_vtask_cancel(vt, 0);
+    avra_vtask_ready(other);
+    CHECK(avra_vtask_unwinding(vt) == 0 && avra_vtask_next() == other, "and a cancel that comes once it runs claims nothing of it");
+    avra_vtask_free(other);
+    avra_vtask_free(vt);
+
+    vt = avra_vtask_new_at(11, 77);
+    scope = avra_vtask_within(vt, 5);
+    void* timed = avra_task_at(in_ms(60000));
+    CHECK(avra_vtask_cut(vt) == 0 && avra_vtask_join(vt, timed) == 1, "a virtual task parks on a timer's task under its limit");
+    CHECK(avra_vtask_next() == vt && avra_vtask_unwinding(vt) == 1, "and its deadline cuts that join too");
+    avra_vtask_within_end(vt, scope);
+    avra_task_cancel(timed);
+    avra_rc_release(timed);
+    avra_vtask_free(vt);
+
+    vt = avra_vtask_new_at(11, 78);
+    avra_vtask_cancel(vt, 0);
+    CHECK(avra_vtask_cut(vt) == 1 && avra_vtask_unwinding(vt) == 1, "a cancel that stands on a virtual task parks no join either");
+    avra_vtask_shield_enter(vt);
+    scope = avra_vtask_within(vt, 5000);
+    CHECK(avra_vtask_cut(vt) == 0 && avra_vtask_unwinding(vt) == 0, "under a shield scope the cancel cuts nothing: its own limit is what the wait is for");
+    avra_vtask_within_end(vt, scope);
+    avra_vtask_shield_leave(vt);
+    avra_vtask_free(vt);
+    avra_clock_run_ends();
+}
+
+// A DESCRIPTOR PARK'S DEADLINE IS A VALUE: the park answers that its time
+// ran out, and no bit is raised — after a sleep on the same task too.
+static void virtual_fd_park_deadline_is_a_value(void) {
+    int64_t vt = avra_vtask_new_at(11, 79);
+    avra_vtask_sleep(vt, 1);
+    CHECK(avra_vtask_next() == vt && avra_vtask_unwinding(vt) == 0, "a virtual sleep wakes at its time, the bit clear");
+    int64_t scope = avra_vtask_within(vt, 5);
+    CHECK(avra_vtask_park_fd(vt, g_pipe[0], 0, -1) == 1, "a virtual task parks on the descriptor under its limit");
+    CHECK(avra_vtask_next() == vt && avra_vtask_timed_out(vt) == 1, "its deadline ends the park as time run out");
+    CHECK(avra_vtask_unwinding(vt) == 0, "and raises no bit");
+    avra_vtask_within_end(vt, scope);
+    avra_vtask_free(vt);
+}
+
 // Without a `within` written in the defer, the wait cuts at once.
 static void* plain_shield_wait(void* self) {
     (void)self;
@@ -2855,6 +3087,7 @@ int main(int argc, char** argv) {
     a_shield_scope_waits_only_its_own_limit();
     a_cancel_while_a_shield_scope_waits_does_not_claim_it();
     a_shield_scope_sleep_is_not_cut();
+    a_shield_scope_sleep_is_cut_by_its_own_limit();
     a_plain_shield_wait_still_cuts();
     the_cap_drops_the_middle();
     the_programs_own_run_pushes();
@@ -2876,6 +3109,11 @@ int main(int argc, char** argv) {
     world_within_reach();
     CHECK(avra_mem_live() == live, "the fibers leave nothing behind");
     virtual_cut_at_a_park();
+    on_virtual_clock("a deadline cuts a sleep", deadline_cuts_sleep);
+    on_virtual_clock("a deadline cuts a join", deadline_cuts_join);
+    on_virtual_clock("a deadline does not cut a scope's end", a_deadline_does_not_cut_a_scopes_end);
+    on_virtual_clock("a virtual task's deadline cuts its sleep and its join", virtual_deadline_cuts);
+    in_child_within("a virtual descriptor park's deadline is a value", virtual_fd_park_deadline_is_a_value, 5);
     as_virtual();
     trace_names_virtual_tasks(argv[0]);
     trace_names_sites(argv[0]);

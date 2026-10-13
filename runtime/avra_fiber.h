@@ -201,6 +201,13 @@ void avra_tasks_listed(FILE* out);
 // (negative: one nothing runs), `joined` when `by`'s end readies it.
 void avra_vtask_joins(int64_t t, int64_t on);
 void avra_vtask_joined(int64_t t, int64_t by);
+// A join its machine wakes parks so: a cancel or the task's deadline
+// claims it, and `joined` tells one a cut readied first nothing.
+void avra_vtask_join_parked(int64_t t);
+// 1 when a request stands on the task about to sleep or join — a cancel,
+// a scope's own, a limit found passed: its bit is raised and it must not
+// wait. A sleep asks for itself.
+int64_t avra_vtask_cut(int64_t t);
 void avra_vtask_sleep(int64_t t, int64_t ms);
 // 1 when parked; 0 when it did not wait: the descriptor cannot be
 // watched (ready at once, so its read or write reports the error), or

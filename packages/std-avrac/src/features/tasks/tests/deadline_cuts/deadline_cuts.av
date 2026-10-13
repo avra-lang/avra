@@ -1,0 +1,29 @@
+// proves: a `within` whose limit passes cuts the sleep and the join under
+// it — the task ends cancelled where it waited, its `defer` runs and
+// nothing after the wait does — in both engines
+use @std.time.{ms, secs, sleep}
+
+let seen = Cell.new(0)
+let slow = spawn {
+    sleep(secs(60))
+    1
+}
+let sleeper = spawn {
+    defer seen.set(seen.get() + 10)
+    let v = within ms(5) {
+        sleep(secs(60))
+        7
+    }
+    seen.set(seen.get() + 1)
+    v
+}
+let joiner = spawn {
+    defer seen.set(seen.get() + 100)
+    let v = within ms(5) { slow.await }
+    seen.set(seen.get() + 1000)
+    v
+}
+sleep(ms(50))
+let told = "${sleeper.done} ${joiner.done} ${slow.done} ${seen.get()}"
+slow.cancel()
+told
