@@ -414,7 +414,7 @@ printf 'println("lh")\n' > $R/lh/src/main.av
 S "cold lh" lh
 printf '// moved\n' >> $R/lh/src/main.av
 S "lh: only main.av read" lh
-steps=$((steps+1)); case "$(cat $R/lh.err)" in *"host fn"*avra_lh_event*) [ -n "${VERBOSE:-}" ] && echo "ok    lh: the held host fn is listed" ;; *) fails=$((fails+1)); echo "FAIL  lh: a host fn in a held module was not listed by the build: '$(grep -a 'host fn' $R/lh.err | head -2)'" ;; esac
+steps=$((steps+1)); case "$(nm $R/lh/src/main 2>/dev/null)" in *avra_lh_event*) [ -n "${VERBOSE:-}" ] && echo "ok    lh: the held host fn is exported" ;; *) fails=$((fails+1)); echo "FAIL  lh: a host fn in a held module is missing from the linked program" ;; esac
 
 fi
 
