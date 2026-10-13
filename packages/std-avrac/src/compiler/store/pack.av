@@ -23,6 +23,7 @@ use @std.io.{
     truncate_to,
     env,
     open_beneath,
+    Opened,
 }
 use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
@@ -129,10 +130,16 @@ export type Pack = {
     /// older view would drop the rows of whoever sealed since.
     seen_rev: Cell<int>,
     lock_fd: Cell<int>,
+    /// Input name -> the rows that read it, built on first ask and dropped by a write.
+    reverse: Cell<Map<string, List<string>>?>,
+    /// The value file, open once for the revision it was opened at (none or one handle).
+    val_open: Cell<List<Opened>>,
+    val_open_rev: Cell<int>,
 }
 
 /// One store's pack, empty — nothing read from disk until the first ask.
 export fn pack_at(root: string, print: string) -> Pack {
+    let no_reverse: Map<string, List<string>>? = null
     Pack {
         dir: joined_path(root, "store"),
         print: print,
@@ -155,6 +162,9 @@ export fn pack_at(root: string, print: string) -> Pack {
         val_rev: Cell.new(0),
         seen_rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
+        reverse: Cell.new(no_reverse),
+        val_open: list_cell(),
+        val_open_rev: Cell.new(0 - 1),
     }
 }
 
@@ -551,16 +561,30 @@ fn content_of(pack: Pack, digest: string) -> string? {
 fn spilled(pack: Pack, digest: string) -> string? {
     let slot? = pack.slots.get().get(digest) else { return null }
     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
-    // LICENSED input.store_io: the store's own value file, seeked for one value
-    let o = match open_beneath(pack.dir, val_name(pack.val_rev.get())) {
-        .Ok(o) -> o,
-        .Err(_) -> { return null },
-    }
+    let o? = value_file(pack) else { return null }
     let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-    o.close()
     let v? = raw.text() else { return null }
     if content_digest(v) != digest { return null }
     v
+}
+
+/// The value file for the open revision, opened once and kept: a value is a seek and a read,
+/// never an open. A revision that moved closes the old handle first.
+fn value_file(pack: Pack) -> Opened? {
+    let rev = pack.val_rev.get()
+    if pack.val_open_rev.get() == rev {
+        let held = pack.val_open.get().first()
+        if held != null { return held }
+    }
+    for old in pack.val_open.get() { old.close() }
+    // LICENSED input.store_io: the store's own value file, opened once to seek for its values
+    let o = match open_beneath(pack.dir, val_name(rev)) {
+        .Ok(o) -> o,
+        .Err(_) -> { return null },
+    }
+    pack.val_open.set([o])
+    pack.val_open_rev.set(rev)
+    o
 }
 
 /// Whether the open has withdrawn this action key since the index was built.
@@ -605,6 +629,7 @@ fn kill_at_commit() {
 
 export fn pack_put(pack: Pack, family: string, key: string, value: string, read: List<string>) {
     opened_at(pack, false)
+    pack.reverse.set(null)
     pack.withdrawn.put(record_key(family, key), false)
     let digest = content_digest(value)
     if content_of(pack, digest) == null {

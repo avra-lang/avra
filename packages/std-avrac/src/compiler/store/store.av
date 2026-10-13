@@ -14,7 +14,7 @@
 use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
 use @std.path.{joined_path}
 use @std.relation.engine.{map_cell}
-use core.{digest_of, joined}
+use core.{digest_of, distinct, flatten, joined}
 use core.debug.{qtrace, traced}
 
 /// WHAT THE STORE KEEPS, as a KIND — so a family cannot be misspelled and every match
@@ -283,6 +283,13 @@ impl Store {
         let lines? = self.reads_of(family, key) else { return false }
         let reads = [read_spelled(l) for l in lines]
         !reads.any(it == null || now(it!.name) != it!.digest)
+    }
+
+    /// THE SUSPECT SET: the record keys of the rows that read any of the inputs in `moved`, by
+    /// name. Ids only — no value is fetched, no row decoded. A row not in the set stands.
+    fn suspects(moved: List<string>) -> List<string> {
+        let index = pack_reverse(self.pack, (line) -> read_spelled(line)?.name)
+        distinct(flatten([index.get(m) ?? [] for m in moved]))
     }
 
     /// The lines a row was kept with.
