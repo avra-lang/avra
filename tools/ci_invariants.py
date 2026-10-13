@@ -26,6 +26,12 @@ lists and refuses by name:
   run-mode         a PR's run mode is read from the API at run time (tools/pr_mode.py),
                    never from the event payload; a light run whose compiler is not
                    the published one skips the gate and says so.
+  compiler-route   a Sprite run's prep installs a published compiler (or the merge-base's)
+                   before it builds one: the route rides the wire, and the build branch
+                   comes last.
+  path-gate        `runtime-keep` runs on a PR only when prepare's path gate
+                   (tools/ci_path_gate.py) says a path it reads changed; main's
+                   push and a hand-run owe it always.
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -201,6 +207,21 @@ def check_release_order(jobs):
 LIGHT_JOBS = ("prepare", "keepers-static", "gate", "codecs", "test")
 
 
+def check_path_gate(workflow_text):
+    """`runtime-keep` is conditioned on prepare's path-gate output, and that
+    output is the path gate's own decision. Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    refusals = []
+    cond = re.search(r"^    if:\s*(.+)$", jobs.get("runtime-keep", ""), re.M)
+    if not cond or "needs.prepare.outputs.runtime_keep == '1'" not in cond.group(1):
+        refusals.append("`runtime-keep` is not gated on `needs.prepare.outputs.runtime_keep`")
+    if "tools/ci_path_gate.py runtime-keep" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not ask tools/ci_path_gate.py whether runtime-keep is owed")
+    if refusals:
+        return refusals, []
+    return [], ["path-gate: runtime-keep runs on the path gate's decision"]
+
+
 def check_run_mode(workflow_text):
     """The run mode is decided by tools/pr_mode.py on the PR's API answer, not by
     the event payload, and a light gate on an unpublished compiler is skipped.
@@ -222,6 +243,19 @@ def check_run_mode(workflow_text):
     if refusals:
         return refusals, []
     return [], ["run-mode: the PR's mode is read from the API; the light gate skips an unpublished compiler"]
+def check_compiler_route(work_text, remote_text):
+    """The run's compiler route rides the wire, and the Sprite's prep takes a
+    published compiler before it builds one. Answers (refusals, words)."""
+    if 'wire="$wire@$route"' not in work_text or "compiler_route" not in work_text:
+        refusals.append("`tools/work run` does not put the compiler route on the wire")
+    published = remote_text.find('"${route%%:*}" = published')
+    merged = remote_text.find('"${route%%:*}" = mergebase')
+    build = remote_text.find("building this tree's compiler")
+    if min(published, merged) < 0:
+        refusals.append("the Sprite's prep does not install a published compiler for a route")
+    elif build < 0 or build < max(published, merged):
+        refusals.append("the Sprite's prep builds before it tries the published compiler")
+    return [], ["compiler-route: a published compiler is installed before a build"]
 
 
 def check_light_draft(workflow_text):
@@ -374,6 +408,10 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
                   lambda: check_run_mode(workflow_text),
+                  lambda: check_compiler_route(
+                      open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read(),
+                      open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()),
+                  lambda: check_path_gate(workflow_text),
                   lambda: check_warm_edit(make_text)):
         r, w = check()
         refusals += r
@@ -569,8 +607,15 @@ rt-header:
     assert ungated_gate != real_wf
     assert any("`gate`" in x for x in check_run_mode(ungated_gate)[0]), check_run_mode(ungated_gate)
 
+    real_wf = open(CHECKS, encoding="utf-8").read()
+    assert check_path_gate(real_wf)[0] == [], check_path_gate(real_wf)
+    ungated_rk = real_wf.replace("    if: needs.prepare.outputs.runtime_keep == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
+                                 "    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'")
+    assert ungated_rk != real_wf
+    assert any("runtime-keep" in x for x in check_path_gate(ungated_rk)[0]), check_path_gate(ungated_rk)
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, warm-edit held on fixtures")
+          "light-draft, run-mode, path-gate, warm-edit held on fixtures")
     return 0
 
 

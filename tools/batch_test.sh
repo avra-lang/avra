@@ -28,7 +28,10 @@ cat > "$scratch/gh" <<'SH'
 #!/bin/sh
 echo "$*" >> "$FX/gh.log"
 case "$1" in
-    api) exit 0 ;;
+    api)
+        r=$(printf '%s' "$2" | sed -n 's#.*runs/\([0-9][0-9]*\).*#\1#p')
+        [ -n "$r" ] && [ -f "$FX/run-head-$r.txt" ] && cat "$FX/run-head-$r.txt"
+        exit 0 ;;
 esac
 case "$1 $2" in
     "pr view")
@@ -171,16 +174,82 @@ batch 2
 check "$?" "0" "numbering: a batch with no --n takes the next number after the remote's"
 check "$(grep -c 'pr create --base main --head batch-7' "$fx/gh.log")" "1" "numbering: batch-7 when batch-6 is the highest on origin"
 
-# ── 8. close after a merge closes the members with a pointer ─────────────
-reset_clone
-python3 - "$fx/list-batch-6.json" <<'PY'
+merged_batch_6() {
+    python3 - "$fx/list-batch-6.json" <<'PY'
 import json, sys
 json.dump([{"number": 900, "state": "MERGED", "body": "<!-- batch-members: 2 3 -->", "statusCheckRollup": []}], open(sys.argv[1], "w"))
 PY
+}
+
+# ── 8. close after a merge closes the members whose change is on main ────
+# Member 2 edits a.txt and member 3 edits b.txt. `landed` holds both on main;
+# `landed2` holds only member 2's.
+pr_json 2 "h2: a's edit" h2 OPEN SUCCESS SUCCESS "2.1 s -> 1.6 s" a.txt
+pr_json 3 "h3: b's edit" h3 OPEN SUCCESS SUCCESS - b.txt
+reset_clone
+git -C "$scratch/clone" fetch -q origin
+git -C "$scratch/clone" checkout -q -B landed origin/h2
+printf 'b3\n' > "$scratch/clone/b.txt"
+git -C "$scratch/clone" commit -q -am landed-both
+git -C "$scratch/clone" push -q origin landed
+git -C "$scratch/clone" checkout -q -B landed2 origin/h2
+git -C "$scratch/clone" push -q origin landed2
+reset_clone
+merged_batch_6
+export BATCH_MAIN_REF=origin/landed
 batch close 6
 check "$?" "0" "close: a merged batch closes and exits 0"
-check "$(grep -c '^pr close 2 --comment Landed via batch #6' "$fx/gh.log")" "1" "close: member 2 closed with a pointer to the batch"
-check "$(grep -c '^pr close 3 --comment Landed via batch #6' "$fx/gh.log")" "1" "close: member 3 closed with a pointer to the batch"
+check "$(grep -c '^pr comment 2 --body landed via #900 (main ' "$fx/gh.log")" "1" "close: member 2 is commented with its landing"
+check "$(grep -c '^pr close 2$' "$fx/gh.log")" "1" "close: member 2 is closed once it is on main"
+check "$(grep -c '^pr close 3$' "$fx/gh.log")" "1" "close: member 3 is closed once it is on main"
+reset_clone
+merged_batch_6
+export BATCH_MAIN_REF=origin/landed2
+batch close 6
+check "$?" "0" "close: a partly landed batch still exits 0"
+check "$(grep -c '^pr close 2$' "$fx/gh.log")" "1" "close: the landed member is closed"
+check "$(grep -c '^pr close 3$' "$fx/gh.log")" "0" "close: a member not on main is not closed"
+check "$(grep -c '#3 left open — not fully on main; its files that differ: b.txt' "$scratch/err")" "1" "close: the member left open is named with its differing file"
+unset BATCH_MAIN_REF
+reset_clone
+python3 - "$fx/pr-900.json" <<'PY'
+import json, sys
+json.dump({"number": 900, "state": "MERGED", "headRefName": "batch-6", "body": "<!-- batch-members: 2 3 -->", "statusCheckRollup": [], "title": "batch #6"}, open(sys.argv[1], "w"))
+PY
+export BATCH_MAIN_REF=origin/landed
+batch close --pr 900
+check "$?" "0" "close --pr: the batch PR's number closes its members"
+check "$(grep -c '^pr close 2$' "$fx/gh.log")" "1" "close --pr: member 2 is closed"
+unset BATCH_MAIN_REF
+
+# ── 15. the newest check on the current head is the verdict ───────────────
+# Two `test` runs: an older head's failure must not refuse, a current head's must.
+reset_clone
+printf 'oldsha\n' > "$fx/run-head-201.txt"
+printf 'newsha\n' > "$fx/run-head-202.txt"
+printf 'oldsha\n' > "$fx/run-head-203.txt"
+printf 'newsha\n' > "$fx/run-head-204.txt"
+python3 - "$fx" <<'PY'
+import json, sys
+fx = sys.argv[1]
+def pr(n, checks):
+    json.dump({"number": n, "title": "h3: stale verdicts", "headRefName": "h3", "headRefOid": "newsha", "isDraft": False,
+               "state": "OPEN", "body": "Work.\n", "statusCheckRollup": checks, "files": [{"path": "b.txt"}]},
+              open(f"{fx}/pr-{n}.json", "w"))
+def run(rid, name, conclusion, started):
+    return {"name": name, "conclusion": conclusion, "startedAt": started,
+            "detailsUrl": f"https://github.com/x/y/actions/runs/{rid}/job/2"}
+pr(31, [run(201, "test", "FAILURE", "2026-10-13T10:00:00Z"), run(202, "test", "SUCCESS", "2026-10-13T11:00:00Z"),
+        {"name": "cache-attacks", "conclusion": "SUCCESS", "detailsUrl": "https://github.com/x/y/actions/runs/1/job/3"}])
+pr(32, [run(203, "test", "SUCCESS", "2026-10-13T10:00:00Z"), run(204, "test", "FAILURE", "2026-10-13T11:00:00Z"),
+        {"name": "cache-attacks", "conclusion": "SUCCESS", "detailsUrl": "https://github.com/x/y/actions/runs/1/job/3"}])
+PY
+batch --n 27 31
+check "$?" "0" "newest: a red run on an older head does not refuse a green current head"
+reset_clone
+batch --n 28 32
+check "$?" "1" "newest: a red run on the current head refuses even when an older head was green"
+check "$(grep -c '#32 refused: its test check is FAILURE' "$scratch/err")" "1" "newest: names the current head's failure"
 
 # ── 9. close on a red batch closes nothing and names the file's job ───────
 reset_clone
@@ -195,7 +264,7 @@ printf 'error at src/a.txt:3: boom\n' > "$fx/run-77.log"
 batch close 2
 check "$?" "1" "red close: a batch that did not merge exits 1"
 check "$(grep -c '^pr close' "$fx/gh.log")" "0" "red close: no member is closed"
-check "$(grep -c "#2's file src/a.txt is named by cache-attacks" "$scratch/err")" "1" "red close: names the member whose file the failing log names"
+check "$(grep -c "#2's file a.txt is named by cache-attacks" "$scratch/err")" "1" "red close: names the member whose file the failing log names"
 
 # ── 10. --plan names every refusal and conflict, and moves nothing ───────
 reset_clone
@@ -297,6 +366,14 @@ reset_clone
 batch --n 22 --attacks-na "26=tools only" --suites-ran "26=ran" 26
 check "$?" "1" "gate failed: refused even with evidence"
 check "$(grep -c '#26 refused: its light gate check is FAILURE' "$scratch/err")" "1" "gate failed: names the failed gate"
+# ── 13. the retitle strips every "DO NOT MERGE" lead an earlier batch left ──
+# The function is read from batch.sh itself, so the test runs the one definition.
+sed -n '/^strip_dnm()/,/^}/p' "$here/batch.sh" > "$scratch/strip.sh"
+. "$scratch/strip.sh"
+check "$(strip_dnm "DO NOT MERGE (lands via batch #9) — h9: x")" "h9: x" "retitle: an earlier batch's lead is stripped"
+check "$(strip_dnm "DO NOT MERGE: h2: a")" "h2: a" "retitle: a plain lead is stripped"
+check "$(strip_dnm "h4: plain title")" "h4: plain title" "retitle: a title with no lead is kept"
+check "$(strip_dnm "DO NOT MERGE: DB 06 step 3 — docs")" "DB 06 step 3 — docs" "retitle: a dash inside the title is kept"
 
 echo
 echo "batch tests: $((total - failed))/$total passed"
