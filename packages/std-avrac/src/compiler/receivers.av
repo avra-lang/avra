@@ -64,6 +64,19 @@ impl Workspace {
         fns.length
     }
 
+    /// One declaration's written seats, as the pass settled them: the cell a reader of the
+    /// fn's write bit stands on, so a fn whose bits did not move leaves its readers standing
+    /// however the survey moved.
+    fn writes_of(d: DeclId) -> int {
+        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
+        let k = key(Family.Writes, d.index)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let _ = self.receivers()
+        self.db.settle(k, fp(18, [fp_list(self.decls.written_bits(d))]))
+        0
+    }
+
     /// The pass's answer as a reader can tell it, order-free: each WRITER's bits under
     /// its own key. A fn that writes no seat reads as one never declared, so a
     /// bystander added, renamed or removed moves nothing.

@@ -593,7 +593,7 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 fn reads_rows_whole(f: Family) -> bool {
     match f {
         .Lowered or .LiftLowered or .Lifted or .Settled -> true,
-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach -> false,
+        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach or .Writes -> false,
     }
 }
 
@@ -670,6 +670,10 @@ fn manifest_verified(ws: Workspace, arg: int) -> int {
 fn receivers_verified(ws: Workspace, arg: int) -> int {
     touch(ws.receivers())
     ws.db.changed_at(key(Family.Receivers, arg))
+}
+fn writes_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.writes_of(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Writes, arg))
 }
 fn expanded_verified(ws: Workspace, arg: int) -> int {
     touch(ws.expanded(file_at(arg)))
@@ -783,6 +787,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Marks -> marks_verified(ws, arg),
+        .Writes -> writes_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
         .ReadReach -> read_reach_verified(ws, arg),
@@ -956,7 +961,7 @@ fn built(
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
-    ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured(d))
     ws.decls.arm_consumed((d: DeclId) -> ws.consumed_ensured(d))
     ws.decls.arm_references(() -> ws.refs_ensured())
     ws.decls.arm_failures(() -> ws.failures_ensured())
@@ -1088,9 +1093,9 @@ impl Workspace {
 
     /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
     /// runs inside a resolve.
-    fn writes_ensured() -> bool {
+    fn writes_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
-        let _ = self.receivers()
+        let _ = self.writes_of(d)
         true
     }
 
@@ -2326,6 +2331,7 @@ export fn family_code_hash(f: Family) -> string {
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Marks -> code_hash(marks_verified) ?? "",
+        .Writes -> code_hash(writes_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
         .ReadReach -> code_hash(read_reach_verified) ?? "",
