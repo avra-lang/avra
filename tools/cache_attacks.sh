@@ -406,6 +406,19 @@ ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
 fi
 
+if section um; then
+# AN UNCHANGED CHECK ENTERS NO DERIVATION. The program's key stands against the kept roots, so no attempt
+# starts: nothing is held, loaded, admitted, parsed or judged per file.
+mkdir -p $R/um/src/a
+printf '[package]\nname = "rt-um"\nversion = "0.1.0"\n' > $R/um/avra.toml
+printf 'export fn one() -> int { 1 }\n' > $R/um/src/a/a.av
+printf 'use a.{one}\nprintln("${one()}")\n' > $R/um/src/main.av
+HR "cold um" check um 0
+um_trace=$(AVRA_DB_VERIFY=1 AVRA_QTRACE=1 ./avra check $R/um 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && ($2 == "attempt" || $2 == "parse" || $2 == "verify" || $2 == "mint") { n++ } END { print n + 0 }')
+steps=$((steps+1)); [ "$um_trace" = 0 ] || { fails=$((fails+1)); echo "FAIL  um: an unchanged check entered a derivation ($um_trace attempt/parse/verify/mint events)"; }
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
