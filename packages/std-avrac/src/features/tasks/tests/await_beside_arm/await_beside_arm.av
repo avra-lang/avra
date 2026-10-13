@@ -1,0 +1,42 @@
+// proves: an `.await` and a wait-set arm on ONE spawned task wake in
+// the order they began waiting, when the task ends.
+use @std.time.{ms, sleep}
+
+extern fn avra_wait_task(t: Task<int>, arm: int, member: int)
+extern fn avra_wait_park() -> int
+extern fn avra_array_sized(n: int) -> ptr
+extern fn avra_array_push(a: ptr, v: int)
+extern fn avra_array_get(a: ptr, i: int) -> int
+
+fn slept(wait: int) -> int {
+    sleep(ms(wait))
+    wait
+}
+
+/// An odd name waits on `on` in a set, an even one awaits it; each
+/// notes its name as it wakes.
+fn waiter(name: int, log: ptr, on: Task<int>) -> int {
+    if name % 2 == 1 {
+        avra_wait_task(on, 0, 0)
+        let _ = avra_wait_park()
+    } else {
+        let _ = on.await
+    }
+    avra_array_push(log, name)
+    0
+}
+
+/// Four waiters begin in the order of their names, from `first`, and
+/// the task ends after the last has parked: the order they woke in.
+fn woken(first: int) -> string {
+    let log = avra_array_sized(4)
+    let on = spawn slept(3)
+    let a = spawn waiter(first, log, on)
+    let b = spawn waiter(first + 1, log, on)
+    let c = spawn waiter(first + 2, log, on)
+    let d = spawn waiter(first + 3, log, on)
+    let _ = a.await + b.await + c.await + d.await
+    ["${avra_array_get(log, i)}" for i in 0..4].join("")
+}
+
+"${woken(1)} ${woken(2)}"
