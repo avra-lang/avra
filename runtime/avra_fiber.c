@@ -463,15 +463,6 @@ static void traced_join(const Fiber* f, int64_t on) {
     traced(line);
 }
 
-// A joiner readied by the end of the task it waited for.
-__attribute__((noinline, cold))
-static void traced_joined(const Fiber* f, int64_t by) {
-    char line[160];
-    if (by < 0) avra_fmt(line, sizeof line, "claim id=%lld by=unrun arm=0:0", (long long)id_of(f));
-    else avra_fmt(line, sizeof line, "claim id=%lld by=%lld arm=0:0", (long long)id_of(f), (long long)by);
-    traced(line);
-}
-
 // The program's site table (avra_box.h): its rows and their count.
 #if defined(__APPLE__)
 static const AvraSiteRow* site_rows(size_t* n) {
@@ -838,6 +829,7 @@ static int set_claimed(Fiber* f, int32_t arm, int32_t member, int64_t by) {
         f->interrupted = arm == -1 && member == 2;
         f->legacy = 0;
         f->claimed = 0;
+        if (f->virtual) f->deaf = 0;
         retract(f);
     }
     if (f->parked) {
@@ -996,8 +988,12 @@ static int64_t within_opened(Fiber* f, int64_t ms) {
     *scope_at(f, i) = (Scope){ id, at, first, f->shield_depth > 0 };
     f->scopes_n = i + 1;
     // A STANDING DEADLINE ARMS THE SOURCE: a task that never waits files
-    // no timer, so the tick must fire for the cold side to see it.
+    // no timer, so the tick must fire for the cold side to see it. The
+    // source is brought up here too: a lone main readies no task, so no
+    // other transition starts one. An evaluated task's turns are the
+    // evaluator's own count and need no thread.
     __atomic_store_n(&avra_tick_wanted, 1, __ATOMIC_RELAXED);
+    if (!f->virtual && !pinned()) avra_tick_armed();
     if (f->armed != i) return id;
     f->armed = i + 1;
     owner_found(f);
@@ -1436,7 +1432,7 @@ void avra_fiber_overflowed(const Fiber* f) {
 __attribute__((noinline, cold))
 static void switched_to_fresh(Fiber* self, Fiber* next) {
     fiber_bound(next);
-    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1454,8 +1450,9 @@ static inline void switch_to(Fiber* next) {
     if (next == self) return;
     if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
     // PRECOMPTION WORK STANDS exactly while a task runs with others
-    // ready or a deadline filed; the source stands down otherwise.
-    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
+    // ready, a deadline filed or a cancel asked of it; the source stands
+    // down otherwise.
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -2141,7 +2138,10 @@ static void fiber_cancelled(Fiber* f, int64_t by) {
         if (TRACING) traced_dropped(f, f->scope_by, by + 1);
         f->scope_by = 0;
     }
-    if (f->deaf && f->joining) { task_cancelled(f->joining, by); return; }
+    if (f->deaf) {
+        if (f->joining) task_cancelled(f->joining, by);
+        return;
+    }
     if (f->parked && !shield_scope_stands(f)) set_claimed(f, -1, 0, by);
 }
 
@@ -2236,7 +2236,13 @@ void avra_tick_cold(void) {
 // tick set (no thread exists), so this counts every back-edge.
 int64_t avra_vtask_tick_cold(int64_t t) {
     Fiber* f = virtual_at(t);
-    if (g_seeded) return tick_turn_comes(f);
+    // A CANCEL IS HEARD BEFORE THE TURN IS COUNTED: a schedule decides who
+    // runs next, never whether a request is heard, and a task that
+    // unwinds draws nothing from it.
+    if (g_seeded) {
+        if (f->cancel_by != 0) { f->unwinding = 1; return 0; }
+        return tick_turn_comes(f);
+    }
     if (g_timers_len > 0) fire_due_timers(now_ns());
     if (deadline_passed(f) || f->cancel_by != 0) f->unwinding = 1;
     return g_ready_head != NULL;
@@ -2460,21 +2466,6 @@ void avra_vtask_joins(int64_t t, int64_t on) {
     if (TRACING) traced_join(virtual_at(t), on);
 }
 
-__attribute__((noinline, cold))
-static void joined_traced(Fiber* f, int64_t by) {
-    traced_joined(f, by);
-    ready_push(f);
-}
-
-// A joiner a cut readied first is told nothing: it is in the queue once.
-void avra_vtask_joined(int64_t t, int64_t by) {
-    Fiber* f = virtual_at(t);
-    if (f->state == FIBER_READY) return;
-    f->parked = f->legacy = f->heeds = 0;
-    if (TRACING) { joined_traced(f, by); return; }
-    ready_push(f);
-}
-
 // The evaluator's reads of the clock are its host's: when one of its
 // tasks parks, that count begins again.
 static int64_t host_waited(int64_t parked) {
@@ -2491,14 +2482,6 @@ void avra_vtask_sleep(int64_t t, int64_t ms) {
     waits_until(f, deadline_after(ms), 0, 0);
     legacy_parked(f, 1);
     host_waited(1);
-}
-
-// A join the evaluator's own machine wakes (`avra_vtask_joined`): parked
-// on no source, so only a cancel or the task's deadline claims it.
-void avra_vtask_join_parked(int64_t t) {
-    Fiber* f = virtual_at(t);
-    alone(f);
-    legacy_parked(f, 1);
 }
 
 int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms) {
@@ -2557,6 +2540,18 @@ int64_t avra_vtask_join(int64_t t, void* task) {
     return host_waited(1);
 }
 
+// A scope's end waiting what it owns out: parked on the task's end as a
+// join is, and deaf — no cancel and no deadline claims it.
+int64_t avra_vtask_settle(int64_t t, void* task) {
+    Fiber* f = virtual_at(t);
+    if (task_cells(task)[GATE_OPEN]) return 0;
+    alone(f);
+    waits_gate(f, task, 0, 0);
+    legacy_parked(f, 0);
+    f->deaf = 1;
+    return host_waited(1);
+}
+
 int64_t avra_vtask_park(int64_t t) { return host_waited(park_begun(virtual_at(t))); }
 
 int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
@@ -2564,6 +2559,8 @@ int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
 void avra_vtask_cancel(int64_t t, int64_t by) { fiber_cancelled(virtual_at(t), by); }
 
 void avra_vgate_open(void* gate) { gate_opened(gate, BY_CLOSE); }
+
+void avra_vgate_ended(void* gate, int64_t by) { gate_opened(gate, by); }
 
 // A claim made by a virtual task: the claimant is that task, never
 // whoever the host happens to be running.

@@ -199,13 +199,9 @@ void avra_vtask_ready(int64_t t);
 // through the signal door; a target with no signals calls it directly.
 void avra_tasks_listed(FILE* out);
 // A join in the evaluator's own files, said to the trace as a compiled
-// one is: `joins` when the task is about to wait for the task `on`
-// (negative: one nothing runs), `joined` when `by`'s end readies it.
+// one is: the task is about to wait for the task `on` (negative: one
+// nothing runs).
 void avra_vtask_joins(int64_t t, int64_t on);
-void avra_vtask_joined(int64_t t, int64_t by);
-// A join its machine wakes parks so: a cancel or the task's deadline
-// claims it, and `joined` tells one a cut readied first nothing.
-void avra_vtask_join_parked(int64_t t);
 // 1 when a request stands on the task about to sleep or join — a cancel,
 // a scope's own, a limit found passed: its bit is raised and it must not
 // wait. A sleep asks for itself.
@@ -260,6 +256,8 @@ void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member);
 // by the timer heap, for a task its time ends. 1 parked; 0 when the task
 // has ended already.
 int64_t avra_vtask_join(int64_t t, void* task);
+// The same park for a scope's end: no cancel and no deadline claims it.
+int64_t avra_vtask_settle(int64_t t, void* task);
 int64_t avra_vtask_park(int64_t t);
 int64_t avra_vtask_claim(int64_t t);
 // A cancel on `t`, asked by the task whose id is `by`.
@@ -267,6 +265,9 @@ void avra_vtask_cancel(int64_t t, int64_t by);
 // The gate stands open for ever: every waiter is claimed, and a later
 // wait on it is claimed at once — what a finished task's gate does.
 void avra_vgate_open(void* gate);
+// A task's end gate opens: every waiter — a joiner, a set's arm — is
+// claimed in the order it came, under the id of the task that ended it.
+void avra_vgate_ended(void* gate, int64_t by);
 // `avra_gate_claim`, made by the task `t`: the claimed waiter's member,
 // or -1.
 int64_t avra_vgate_claim(int64_t t, void* gate);

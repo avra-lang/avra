@@ -1,18 +1,8 @@
 // The vertical: `spawn` runs beside the spawner, `.await` answers what
 // the body did, `.done` asks without parking, and a task is joined where
 // the last thing holding it ends.
-use @std.avrac.testing.{
-    shown,
-    refused_at_run,
-    refused_with,
-    refused_in,
-    ir_of,
-    floored_with_errors,
-    answered,
-}
+use @std.avrac.testing.{shown, refused_at_run, refused_with, refused_in, ir_of, floored, answered}
 use compiler.backend.{render_ir}
-use compiler.{Program}
-use core.{At, StmtId}
 
 extern fn avra_sched_timers() -> int
 extern fn avra_sched_pick_links() -> int
@@ -70,9 +60,7 @@ spec "features/tasks" {
     }
     given "a caught await" {
         then "it lowers to the join that passes no cancel on, and a region on what that answered" {
-            let text = render_ir(
-                floored_with_errors(caught("let v = t.await catch c -> c.by\nv")).lowered(),
-            )
+            let text = render_ir(floored(caught("let v = t.await catch c -> c.by\nv")).lowered())
             let parts = text.split("call avra_task_join_caught(")
             parts.length == 2 &&
                 in_order(
@@ -81,48 +69,42 @@ spec "features/tasks" {
                 )
         }
         then "an answered task answers its value, and the arm does not run" {
-            answered(floored_with_errors(caught("let v = t.await catch _ -> 0\n\"\${v}\""))) == "5"
+            answered(floored(caught("let v = t.await catch _ -> 0\n\"\${v}\""))) == "5"
         }
         then "a task nothing answers is caught as a statement" {
             answered(
-                floored_with_errors(
-                    "use @std.errors.{Cancelled}\nlet seen = Cell.new(0)\nlet t = spawn { seen.set(1) }\nt.await catch _ -> { seen.set(9) }\nseen.get()",
+                floored(
+                    "let seen = Cell.new(0)\nlet t = spawn { seen.set(1) }\nt.await catch _ -> { seen.set(9) }\nseen.get()",
                 ),
             ) == "1"
         }
-        then "a program that loads no `@std/errors` is told what the catch recovers" {
+        then "a lone source sees no prelude, and is told what the catch recovers" {
             refused_with(
                 "fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv",
-                "a caught `await` recovers `@std/errors`' `Cancelled`, and this program loads no `@std/errors`",
+                "a caught `await` recovers the prelude's `Cancelled`, and this program sees no `@std/prelude`",
             )
         }
-        then "its help names the import" {
+        then "its help says where the prelude is seen" {
             refused_with(
                 "fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv",
-                "bring it in — `use @std.errors.{Cancelled}`",
+                "a file in a package sees the prelude",
             )
-        }
-        then "the catch reads the import it never names — no unused import" {
-            unused_in(floored_with_errors(caught("let v = t.await catch _ -> 0\nv"))).is_empty()
-        }
-        then "an import no catch reads is still unused" {
-            unused_in(floored_with_errors(caught("let v = t.await\nv"))).join(",") == "Cancelled"
         }
         then "a variant arm is refused — a `Cancelled` has none to name" {
             refused_in(
-                floored_with_errors(caught("let v = t.await catch .Gone -> 0\nv")),
+                floored(caught("let v = t.await catch .Gone -> 0\nv")),
                 "`.Gone` names a variant, but `Cancelled` has none",
             )
         }
         then "the arm answers what the task answers" {
             refused_in(
-                floored_with_errors(caught("let v = t.await catch _ -> \"no\"\nv")),
+                floored(caught("let v = t.await catch _ -> \"no\"\nv")),
                 "a `catch` arm answers the ok side: `int`, this is `string`",
             )
         }
         then "an await bound first is no failure to catch — the cancel left at the await" {
             refused_in(
-                floored_with_errors(caught("let v = t.await\nlet u = v catch _ -> 0\nu")),
+                floored(caught("let v = t.await\nlet u = v catch _ -> 0\nu")),
                 "`catch` recovers a `Result`, this is `int`",
             )
         }
@@ -202,16 +184,9 @@ spec "features/tasks" {
     }
 }
 
-/// A program over `@std/errors` whose task `t` answers 5, then `rest`.
+/// A program whose task `t` answers 5, then `rest`.
 fn caught(rest: string) -> string {
-    "use @std.errors.{Cancelled}\nfn w() -> int { 5 }\nlet t = spawn w()\n" + rest
-}
-
-/// The imports a program's entry `use` line names and nothing reads.
-fn unused_in(p: Program) -> List<string> {
-    let a = p.entry_file()!
-    let line = a.view.store.stmt_ids().find((s: StmtId) -> a.view.store.stmt(s) is .Use)!
-    a.code_at(At.Stmt(line)).unused_imports()
+    "fn w() -> int { 5 }\nlet t = spawn w()\n" + rest
 }
 
 /// Whether each of `marks` stands in `text` past the one before it.
