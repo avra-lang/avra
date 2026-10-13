@@ -433,6 +433,23 @@ steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "7" ] || { fails=$((fails+1)); 
 gg_warm=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
 rm -rf .avra-cache; gg_cold=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
 steps=$((steps+1)); [ "$gg_warm" = "$gg_cold" ] || { fails=$((fails+1)); echo "FAIL  gg: a guess changed what a check says: $gg_warm lines warm, $gg_cold with no store"; }
+fi
+
+if section dp; then
+# A KEPT VERDICT NEVER READS A FILE THAT IS GONE. held.av's const read z/add.av's body; the file is deleted and
+# held.av no longer uses it. The next build is clean and says nothing of the deleted path, and so is the one after.
+mkdir -p $R/dp/src/f $R/dp/src/z
+printf '[package]\nname = "rt-dp"\nversion = "0.1.0"\n' > $R/dp/avra.toml
+printf 'export fn plus(n: int) -> int { n + 1 }\n' > $R/dp/src/z/add.av
+printf 'use z.{plus}\nexport const K: int = plus(1)\nexport fn shown() -> int { K }\n' > $R/dp/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/dp/src/main.av
+S "cold dp" dp
+rm $R/dp/src/z/add.av; rmdir $R/dp/src/z
+printf 'export const K: int = 2\nexport fn shown() -> int { K }\n' > $R/dp/src/f/held.av
+S "dp: the file a kept verdict read is deleted" dp
+steps=$((steps+1)); [ "$($R/dp/src/main 2>&1)" = "2" ] || { fails=$((fails+1)); echo "FAIL  dp: the program printed '$($R/dp/src/main 2>&1)', wanted '2'"; }
+printf '// moved\n' >> $R/dp/src/main.av
+S "dp: and the build after it" dp
 
 fi
 
