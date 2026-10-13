@@ -141,28 +141,69 @@ export type PropertyRow = {
     lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg,
     waits: bool = false,
     /// The failure a READ of this property carries, when it is not a
-    /// `Result`'s: the sides `catch` recovers from. `await` declares
-    /// `(T, Cancelled)` — a subject whose cancel is seen only by `catch`.
-    view: fn(TypeCx, TypeId) -> ResSides? = no_view,
+    /// `Result`'s. `await` declares `(T, Cancelled)` — a subject whose
+    /// cancel is seen only by `catch`.
+    view: fn(TypeCx, TypeId) -> FailureView = no_view,
+    /// The CAUGHT read's lowering, for a row whose view has sides: the
+    /// receiver's register and type, and the arm to run over the
+    /// failure. It answers what the read, or the arm, answered.
+    caught: fn(mut LowerCx, ExprId, Reg, TypeId, fn(mut LowerCx, Reg) -> Reg) -> Reg = no_caught,
+}
+
+/// The failure a subject carries for `catch` to recover.
+export enum FailureView {
+    /// None `catch` sees.
+    Nothing
+    /// The sides `catch` recovers from; never interned as a `Result`.
+    Sides(sides: ResSides)
+    /// One whose type the program does not load — the row's own words.
+    Unloaded(said: Refusal)
+}
+
+impl FailureView {
+    /// Whether the subject carries a failure at all, loaded or not.
+    fn stands() -> bool {
+        match self { .Nothing -> false, .Sides(_) or .Unloaded(_) -> true }
+    }
 }
 
 /// A property with no failure view — its read carries none `catch` sees.
 // LICENSED fns.dead_parameter: a row's rule wears the row's signature
 // LICENSED compiler.free_state_verb: a property ROW holds this fn as a value, and a method is none
-export fn no_view(_cx: TypeCx, _ty: TypeId) -> ResSides? { null }
+export fn no_view(_cx: TypeCx, _ty: TypeId) -> FailureView { FailureView.Nothing }
 
-/// The property row a subject READ selected, when the subject IS a
-/// property read — `catch`'s door to a row's own failure view. Null
-/// for every other expression; `read` answers a subject's type.
+/// A property with no caught lowering — typing admits no `catch` over
+/// its read.
+// LICENSED fns.dead_parameter: a row's rule wears the row's signature
+// LICENSED compiler.free_state_verb: a property ROW holds this fn as a value, and a method is none
+export fn no_caught(
+    mut cx: LowerCx,
+    e: ExprId,
+    _subject: Reg,
+    _ty: TypeId,
+    _failed: fn(mut LowerCx, Reg) -> Reg,
+) -> Reg {
+    cx.lower_defect(e, "a caught read whose row lowers none survived typing")
+}
+
+/// A property READ: the row it selected, and the receiver it reads.
+export type PropertyRead = { row: PropertyRow, subject: ExprId }
+
+/// The property read a subject IS, when it is one — `catch`'s door to
+/// a row's failure view and its caught lowering. Null for every other
+/// expression; `read` answers a subject's type.
 export fn property_prop(
     types: TypeRegistry,
     rows: List<PropertyRow>,
     store: SyntaxArena,
     e: ExprId,
     read: fn(ExprId) -> TypeId,
-) -> PropertyRow? {
+) -> PropertyRead? {
     match store.expr(e) {
-        .Prop(s, name) -> property_of(types, rows, name.of, read(s)),
+        .Prop(s, name) -> {
+            let row? = property_of(types, rows, name.of, read(s)) else { return null }
+            PropertyRead { row: row, subject: s }
+        },
         rest -> null,
     }
 }
