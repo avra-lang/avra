@@ -121,9 +121,20 @@ export fn turn_said(root: string, more: List<ReadFile>, homes: bool, unheld: boo
 
 /// The first read files by path and why, the rest counted.
 fn read_words(root: string, more: List<ReadFile>) -> string {
-    let named = ["${relative_path(root, r.path)} — ${r.why.says()}" for r in more.slice(0, TURN_NAMED)]
+    let named = ["${read_label(root, r.path)} — ${r.why.says()}" for r in more.slice(0, TURN_NAMED)]
     let rest = if more.length > TURN_NAMED { ["… and ${more.length - TURN_NAMED} more"] } else { [] }
     joined(named.concat(rest), "; ")
+}
+
+/// A read as a turn names it: a file by its path, a kept verdict's read by its file and the
+/// unit it is a read of.
+fn read_label(root: string, path: string) -> string {
+    let parts = path.split("~")
+    if parts.length < 3 { return relative_path(root, path) }
+    let file? = unhex_text(parts[0]) else { return relative_path(root, path) }
+    let unit? = unhex_text(parts[2]) else { return relative_path(root, path) }
+    if file.is_empty() { return relative_path(root, path) }
+    "${relative_path(root, file)} · ${if unit.starts_with(file) { unit.substring(file.length + 1, unit.length) } else { unit }}"
 }
 
 /// One discarded attempt, as `--time` says it: its whole time, its phases, the turn.
