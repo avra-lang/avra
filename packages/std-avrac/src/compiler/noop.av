@@ -52,8 +52,8 @@ impl Workspace {
         let f = line.split("\t")
         match f[0] {
             "I" -> self.noop_input(f) == f[2],
-            "O" -> (digest_of_binary(joined(f.drop(2), "\t")) ?? "-") == f[1],
-            "R" -> joined(f.drop(1), "\t") == (self.host.std_root ?? ""),
+            "O" -> digest_of_binary(joined(f.drop(2), "\t")) ?? "-" == f[1],
+            "R" -> joined(f.drop(1), "\t") == self.host.std_root ?? "",
             "P" -> true,
             _ -> false,
         }
@@ -65,20 +65,65 @@ impl Workspace {
         self.asked(InputName { kind: kind, key: joined(f.drop(3), "\t") }).input().digest.key
     }
 
+    /// The inputs a row lists: those a key can depend on, less each that a
+    /// read of the same file's octets already says — its text is those
+    /// bytes decoded, and that something stands there is that they do.
+    fn noop_leaves() -> List<InputName> {
+        let keyed = [n for n in self.input_names.get() if keys_the_program(n.kind)]
+        mut octets: Map<string, bool> = {}
+        mut texts: Map<string, bool> = {}
+        for n in keyed {
+            if reads_octets(n.kind) { octets.set(n.key, true) }
+            if reads_text(n.kind) { texts.set(n.key, true) }
+        }
+        [n for n in keyed if !noop_said_by(n, octets, texts)]
+    }
+
     /// The row for a key just folded: the toolchain root, the closure, every
     /// leaf the door holds (its cell's digest, so a file that moved since
     /// it was read cannot be recorded as it now is) and the objects as
     /// folded.
-    fn noop_keep(at: string, named: string, key: string, objects: List<string>, digests: List<string>) {
-        let leaves = [n for n in self.input_names.get() if keys_the_program(n.kind)]
+    fn noop_keep(
+        at: string,
+        named: string,
+        key: string,
+        objects: List<string>,
+        digests: List<string>,
+    ) {
+        let leaves = self.noop_leaves()
         let row = joined(
             ["K\t${key}", "R\t${self.host.std_root ?? ""}"]
                 .concat(["P\t${c}" for c in self.closure(named)])
-                .concat(["I\t${kind_word(n.kind)}\t${self.input(n).input().digest.key}\t${n.key}" for n in leaves])
+                .concat(
+                    ["I\t${kind_word(n.kind)}\t${self.input(n).input().digest.key}\t${n.key}" for n in leaves],
+                )
                 .concat(["O\t${d}\t${objects[i]}" for i, d in digests]),
             "\n",
         )
         let store = self.opened_store()
         if store.get(Stored.Unit, at) != row { let _ = store.keep(Stored.Unit, at, row, []) }
+    }
+}
+
+/// Whether a read of the same file's octets (or text) says all `n` does.
+fn noop_said_by(n: InputName, octets: Map<string, bool>, texts: Map<string, bool>) -> bool {
+    match n.kind {
+        .Text -> octets.has(n.key),
+        .Exists -> octets.has(n.key) || texts.has(n.key),
+        .Octets or .Listing or .Env or .Tool or .Embedded or .Range or .Compiler -> false,
+    }
+}
+
+fn reads_octets(k: InputKind) -> bool {
+    match k {
+        .Octets -> true,
+        .Text or .Listing or .Exists or .Env or .Tool or .Embedded or .Range or .Compiler -> false,
+    }
+}
+
+fn reads_text(k: InputKind) -> bool {
+    match k {
+        .Text -> true,
+        .Octets or .Listing or .Exists or .Env or .Tool or .Embedded or .Range or .Compiler -> false,
     }
 }

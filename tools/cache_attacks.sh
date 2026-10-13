@@ -487,7 +487,7 @@ cp build/avra build/avra.nr; strip -x build/avra.nr -o build/avra.nr2 2>/dev/nul
 rm -f build/avra.nr build/avra.nr2
 cp $nr/avra.toml $R/nr.toml; printf '\n[link]\nflags = ["-L${NR_FLIP}"]\n' >> $nr/avra.toml
 NR_FLIP=/a N "a variable a manifest names, set" miss green; NR_FLIP=/a N "and unchanged" hit green
-NR_FLIP=/b N "and flipped" miss green
+NR_FLIP=/b N "and flipped: the check's key reads no variable, so the row stands" hit green
 cp $R/nr.toml $nr/avra.toml
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
