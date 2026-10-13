@@ -3247,6 +3247,18 @@ modules as text and cannot reach a real package. The want: a marker
 naming the kind — `<name>.refused-at-check` holding `type.sealed` — that
 `avra test` passes only when `check` refuses with it (avra-8sb5.34.53.50).
 
+### Interim record — a package cannot pin "this does not build"
+
+A program test's markers say an answer (`.expected`), a trap (`.refuses`)
+and a cancelled run (`.verdict`); none says `avra check` must speak a
+diagnostic kind. So `@std/time`'s `Deadline`, `Quiet` and `Every` are
+`@sealed` (`packages/std-time/src/time.av`) and no test holds that they
+carry the mark: the law is pinned against a stand-in module
+(`features/structs/tests/sealed_test.av`), whose harness is handed its
+modules as text and cannot reach a real package. The want: a marker
+naming the kind — `<name>.refused-at-check` holding `type.sealed` — that
+`avra test` passes only when `check` refuses with it (avra-8sb5.34.53.50).
+
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
 ### Interim record — the tasks server was unreachable at landing
