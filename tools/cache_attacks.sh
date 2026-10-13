@@ -1266,7 +1266,7 @@ HR "ee: what inferred fails moves its inferred E — user's stale row is refused
 S "ee: and the binary reads the inferred E" ee
 ee_got=$($R/ee/src/main 2>&1); steps=$((steps+1))
 [ "$ee_got" = "ee ok 1 err neg err inferred" ] || { fails=$((fails+1)); echo "FAIL  ee printed '$ee_got', wanted 'ee ok 1 err neg err inferred'"; }
-HR "ee: a check reads user, which no build kept rule findings for" check ee 0 user/mod.av read
+HR "ee: a check holds user, whose rule findings the build kept" check ee 0 user/mod.av held
 printf '// checked\n' >> $R/ee/src/main.av
 HR "ee: and the next check holds it" check ee 0 user/mod.av held
 ed $R/ee/src/errs/mod.av "Result<int, Said> {
