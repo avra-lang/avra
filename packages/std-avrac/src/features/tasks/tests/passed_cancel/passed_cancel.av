@@ -1,0 +1,19 @@
+// proves: a task that awaits a cancelled task ends cancelled itself —
+// its `defer` runs, nothing after its await does — in both engines
+use @std.time.{ms, secs, sleep}
+
+let seen = Cell.new(0)
+let slow = spawn {
+    sleep(secs(60))
+    1
+}
+let awaiter = spawn {
+    defer seen.set(seen.get() + 10)
+    let v = slow.await
+    seen.set(seen.get() + 1)
+    v
+}
+sleep(ms(1))
+slow.cancel()
+sleep(ms(1))
+"${awaiter.done} ${seen.get()}"

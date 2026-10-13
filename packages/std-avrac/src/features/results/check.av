@@ -25,7 +25,23 @@ fn catched_type(
     values: List<ExprId>,
 ) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
-    let sides? = cx.failure_view(subject) else { return not_a_result(cx, subject) }
+    match cx.failure_view(subject) {
+        .Nothing -> not_a_result(cx, subject),
+        .Unloaded(said) -> failure_unloaded(cx, subject, said),
+        .Sides(sides) -> recovered_type(cx, e, sides, variants, binds, values),
+    }
+}
+
+/// The arms judged against the failure side, and the answer COVERAGE
+/// decides.
+fn recovered_type(
+    mut cx: TypeCx,
+    e: ExprId,
+    sides: ResSides,
+    variants: List<string>,
+    binds: List<string>,
+    values: List<ExprId>,
+) -> TypeId {
     let t = sides.ok
     let err = sides.err
     if cx.view.types.shape_of(err) is .Union && !variants.contains("") {
@@ -34,6 +50,9 @@ fn catched_type(
     for j, vn in variants { arm_bind(cx, e, err, vn, binds[j], values[j]) }
     for v in values { arm_answer(cx, t, v) }
     if covers(cx, err, variants) { return t }
+    // a side with no variants has no rest to carry: each arm naming
+    // one was refused in its own words
+    if cx.variants_of(err) == null { return cx.error_type }
     // SELECTIVE: the answer is STILL the ok side — the matched kinds
     // recover, and the unmatched have already LEFT through the same
     // exit `?` uses. Which is why the channel must exist (§5.6).
@@ -100,7 +119,8 @@ fn union_arm_bind(mut cx: TypeCx, e: ExprId, err: TypeId, vn: string, bind: stri
 /// unit variant refuses a bind it cannot fill.
 fn arm_bind(mut cx: TypeCx, e: ExprId, err: TypeId, vn: string, bind: string, value: ExprId) {
     if vn == "" {
-        if bind != "" { cx.bind_types(value, [err]) }
+        // recorded whether or not a name binds it: the catch reads the type
+        cx.bind_types(value, [err])
         return
     }
     let held: EnumSig? = cx.variants_of(err)
@@ -174,6 +194,10 @@ fn not_a_result(mut cx: TypeCx, subject: ExprId) -> TypeId {
                 "only a fallible value has a failure to recover from",
             ),
         )
+}
+
+fn failure_unloaded(mut cx: TypeCx, subject: ExprId, said: Refusal) -> TypeId {
+    cx.spoken(refusal("type.catch", cx.loc_of(subject), said.message, "caught here", said.help))
 }
 
 fn uncarried_rest(mut cx: TypeCx, e: ExprId, err: TypeId) -> TypeId {

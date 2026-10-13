@@ -3,13 +3,19 @@
 // frame; `errdefer` waits on the failure channel; and the laws
 // refuse what would fail unheard or never run.
 
-use @std.avrac.testing.{shown, refused_with, ir_of}
+use @std.avrac.testing.{shown, refused_with, refused_at_run, ir_of, refusals}
 use compiler.backend.{render_ir}
 
 /// The one observer a deferred body has: the runtime's puts, which
 /// the evaluator collects line by line.
 fn puts() -> string {
     "extern fn avra_puts(s: string)\n"
+}
+
+/// A fn with a `defer` and a call that may reach a cancel point — one
+/// through a fn value — so its cold exit carries deferred work.
+fn settled_parts() -> string {
+    "fn inc(n: int) -> int { n + 1 }\nfn noted() { }\nfn f(n: int) -> int {\n    defer noted()\n    let g = inc\n    g(n)\n}\n"
 }
 
 /// A fallible fixture: `g` fails, `ok` answers.
@@ -172,6 +178,12 @@ spec "features/defers" {
                 "argument 1 of `avra_puts` wants `string`, found `int`",
             )
         }
+        then "a deferred body that parks with no `within` is refused — the wait would outlast the cleanup" {
+            refused_at_run(
+                "${puts()}extern fn avra_fiber_sleep(ms: int)\nfn clean() {\n    defer avra_fiber_sleep(1)\n}\nclean()",
+                "no `within` it writes bounds the wait",
+            )
+        }
     }
     given "the IR, as `avra ir` prints it" {
         then "a capture-free deferred body is static data — read once, called through, and never released" {
@@ -179,6 +191,27 @@ spec "features/defers" {
                 ir_of("${puts()}fn f() -> int {\n    defer avra_puts(\"x\")\n    1\n}\nf()"),
             )
             ir.contains("static fn\$") && ir.contains("callptr") && !ir.contains("avra_array_sized")
+        }
+        then "a cold exit with a deferred call brackets it with the shield's pair, once each" {
+            let ir = render_ir(
+                ir_of(
+                    "${puts()}fn f() -> int {\n    defer avra_puts(\"x\")\n    let u = spawn 1\n    u.await\n}\nf()",
+                ),
+            )
+            ir.split("call avra_fiber_shield_enter").length == 2 &&
+                ir.split("call avra_fiber_shield_leave").length == 2
+        }
+        then "a cold exit that defers nothing pays no shield row" {
+            let ir = render_ir(
+                ir_of("${puts()}fn f() -> int {\n    let u = spawn 1\n    u.await\n}\nf()"),
+            )
+            ir.contains("flag unwinding") && !ir.contains("avra_fiber_shield")
+        }
+        then "a const settles through a fn whose cold exit the program's own lowering shields" {
+            let src = "${settled_parts()}const X: int = f(3)\nlet t = spawn f(X)\nt.await"
+            refusals(src) == 0 &&
+                shown(src) == "5" &&
+                render_ir(ir_of(src)).contains("call avra_fiber_shield_enter")
         }
         then "a method call on a captured receiver needs no closure box — called directly, never through a pointer" {
             let ir = render_ir(

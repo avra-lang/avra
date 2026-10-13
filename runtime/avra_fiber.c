@@ -961,7 +961,6 @@ static void poller_wait(int64_t timeout_ns) {
 // EVERY SCOPE KEEPS ITS OWN LIMIT. The task's deadline is the earliest
 // limit of the scopes that may still ask; the scope holding it OWNS it,
 // the outer one on a tie, and the heap holds that one limit.
-#define SCOPE_IDS ((int64_t)1 << 62)
 static int64_t g_scope_seq = 0;
 
 static Scope* scope_at(const Fiber* f, uint32_t i) {
@@ -992,7 +991,7 @@ static int64_t within_opened(Fiber* f, int64_t ms) {
     uint32_t i = f->scopes_n;
     if (i >= SCOPES && i - SCOPES >= f->deeper_cap) scopes_deepened(f);
     int64_t at = deadline_after(ms < 0 ? 0 : ms);
-    int64_t id = SCOPE_IDS | ++g_scope_seq;
+    int64_t id = AVRA_SCOPE_IDS | ++g_scope_seq;
     uint32_t first = i;
     if (i > 0) {
         uint32_t outer = scope_at(f, i - 1)->first;
@@ -1045,7 +1044,7 @@ static void due_filed(Fiber* f) {
 __attribute__((noinline, cold))
 static void traced_dropped(const Fiber* f, int64_t scope, int64_t standing) {
     char line[160];
-    if (standing & SCOPE_IDS) avra_fmt(line, sizeof line, "request-dropped id=%lld by=scope:%lld for=scope:%lld", (long long)id_of(f), (long long)scope, (long long)standing);
+    if (standing & AVRA_SCOPE_IDS) avra_fmt(line, sizeof line, "request-dropped id=%lld by=scope:%lld for=scope:%lld", (long long)id_of(f), (long long)scope, (long long)standing);
     else avra_fmt(line, sizeof line, "request-dropped id=%lld by=scope:%lld for=task:%lld", (long long)id_of(f), (long long)scope, (long long)(standing - 1));
     traced(line);
 }
@@ -1719,6 +1718,10 @@ static void cancel_met(void) {
     unwind_cleared();
 }
 
+// Who asked the request that stands on a task: a task's cancel, else
+// the scope whose limit passed.
+static int64_t asker_of(const Fiber* f) { return f->cancel_by ? f->cancel_by - 1 : f->scope_by; }
+
 // Whether the claim a task resumed on was a cancel's: `-1:0`.
 static int claimed_by_cancel(const Fiber* f) { return f->arm == -1 && f->member == 0; }
 
@@ -1735,6 +1738,14 @@ static int cancel_stands(const Fiber* f) {
     if (__builtin_expect(f->cancel_by == 0, 1)) return 0;
     if (shield_scope_stands(f)) return 0;
     cancel_met();
+    return 1;
+}
+
+// The same question of an evaluated task, whose own bit is the one
+// raised: no compiled task's is touched.
+static int virtual_cancel_stands(Fiber* f) {
+    if (f->cancel_by == 0 || shield_scope_stands(f)) return 0;
+    f->unwinding = 1;
     return 1;
 }
 
@@ -1911,11 +1922,10 @@ static void fiber_start(void) {
     cells[TASK_ANSWER] = (int64_t)(uintptr_t)answer;
     cells[TASK_FIBER] = 0;
     // A BODY THAT COMES BACK UNWINDING LEFT AT A CANCEL POINT: it ended
-    // cancelled, and a join refuses what it answered. WHO ASKED is the
-    // standing request — a task's cancel, else the scope whose limit
-    // passed; a body that answered names itself.
+    // cancelled, and a join reads no answer of its. WHO ASKED is the
+    // standing request; a body that answered names itself.
     cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;
-    cells[TASK_BY] = avra_unwinding ? (self->cancel_by ? self->cancel_by - 1 : self->scope_by) : id_of(self);
+    cells[TASK_BY] = avra_unwinding ? asker_of(self) : id_of(self);
     gate_opened(task, id_of(self));
     // A TASK THAT ENDS WAITS ON NOTHING: what it registered and never
     // parked on leaves with it, before its record is anyone else's.
@@ -1977,6 +1987,7 @@ static int64_t task_id(void* task) {
 }
 
 static void task_cancelled(void* task, int64_t by);
+static void cancel_passed(Fiber* f, int64_t by);
 
 // The calling task parked until `task` has ended; its cells, read after.
 // A JOIN IS A CANCEL POINT and a scope's end joining what it owns is NOT
@@ -2005,15 +2016,21 @@ static void join_refused(void) { avra_trap("a join takes a task that answers, an
 
 // A JOIN IS A CANCEL POINT: a cancel the caller's own asker left cuts
 // the park, the bit the after-call test reads is set, and no answer is
-// handed back. A JOIN TAKES A TASK THAT ANSWERS: one that ended
-// cancelled has no answer, and none is made up for it — a caller
-// already unwinding reads none, so it is refused nothing.
+// handed back. A TASK THAT ENDED CANCELLED HAS NO ANSWER, AND ITS
+// CANCEL IS ITS AWAITER'S: the caller is cancelled by the same asker
+// and unwinds from here. A CALLER UNWINDING WHEN THE WAIT RETURNS TAKES
+// NO ANSWER, however the task ended: nothing is retained for a caller
+// that leaves, and it takes on no request but its own. UNDER A SHIELD
+// A DEFERRED CALL RUNS WHOLE: nothing may cut it, and there is no
+// answer for it to go on with, so there the join refuses.
 void* avra_task_join(void* task) {
     int64_t* cells = task_awaited(task, 0);
-    if (!cells[GATE_OPEN]) return NULL;
+    if (avra_unwinding) return NULL;
     if (cells[TASK_END] == END_CANCELLED) {
-        if (avra_unwinding) return NULL;
-        join_refused();
+        if (g_current->shield_depth) join_refused();
+        cancel_passed(g_current, cells[TASK_BY]);
+        cancel_met();
+        return NULL;
     }
     void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];
     avra_rc_retain(answer);
@@ -2173,6 +2190,15 @@ static void task_cancelled(void* task, int64_t by) {
 
 void avra_task_cancel(void* task) { task_cancelled(task, id_of(g_current)); }
 
+// A CANCEL PASSED ON BY A JOIN IS ITS AWAITER'S OWN REQUEST from here:
+// what the awaiter owns is cancelled as it leaves, and its end names
+// the asker. A request that stands already is not displaced. The
+// program's own run keeps the request where its end reads it.
+static void cancel_passed(Fiber* f, int64_t by) {
+    if (f->cancel_by == 0) fiber_cancelled(f, by);
+    if (f == &g_main) avra_main_asker = f->cancel_by;
+}
+
 // ── The rows that predate the wait set ──────────────────────────
 
 // A YIELD WAITS FOR NOTHING, SO A CANCEL CUTS NOTHING: it is met here
@@ -2291,7 +2317,7 @@ static int park_fd_filed(Fiber* f, int64_t fd, int64_t writable, int64_t timeout
     f->timed_out = 0;
     f->interrupted = 0;
     if (fd < 0 || fd > INT32_MAX) return 0;
-    if (!f->virtual && cancel_stands(f)) { f->timed_out = 1; return 0; }
+    if (f->virtual ? virtual_cancel_stands(f) : cancel_stands(f)) { f->timed_out = 1; return 0; }
     alone(f);
     if (deadline_passed(f)) { f->timed_out = 1; return 0; }
     f->legacy = 1;
@@ -2511,6 +2537,16 @@ void avra_vtask_shield_leave(int64_t t) { Fiber* f = virtual_at(t); shield_left(
 // The task's unwind bit, as the evaluator sets it: a wait that cuts in a
 // virtual task raises it the way the switch raises a compiled task's.
 void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }
+
+int64_t avra_vtask_asker(int64_t t) { return asker_of(virtual_at(t)); }
+
+int64_t avra_vtask_shielded(int64_t t) { return virtual_at(t)->shield_depth != 0; }
+
+void avra_vtask_passed(int64_t t, int64_t by) {
+    Fiber* f = virtual_at(t);
+    cancel_passed(f, by);
+    f->unwinding = 1;
+}
 
 int64_t avra_vtask_deadline(int64_t t) { return virtual_at(t)->deadline; }
 

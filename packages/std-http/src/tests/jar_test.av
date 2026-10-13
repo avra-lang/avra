@@ -7,6 +7,7 @@ use @std.http.client.{Answer, ClientError}
 use @std.text.{from_codepoint, repeat}
 use @std.http.jar.{Jar, jar}
 use @std.net.{listen}
+use @std.time.{secs}
 use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.server.{served, timing}
@@ -38,7 +39,7 @@ fn ja_over_fetch(paths: List<string>, headers: List<Header>) -> string {
     spawn s.run(1)
     defer s.stop()
     let o = Options { pool: pool(), jar: jar(), headers: headers }
-    defer o.pool.close_all()
+    defer { let _ = within secs(5) { o.pool.close_all() } }
     [ja_body(fetch(.Get, "http://127.0.0.1:${l.port}${p}", .Empty, o)) for p in paths].join(" ")
 }
 
@@ -92,7 +93,7 @@ fn ja_plain() -> string {
     spawn s.run(1)
     defer s.stop()
     let o = Options { pool: pool() }
-    defer o.pool.close_all()
+    defer { let _ = within secs(5) { o.pool.close_all() } }
     let _ = fetch(.Get, "http://127.0.0.1:${l.port}/in", .Empty, o)
     ja_body(fetch(.Get, "http://127.0.0.1:${l.port}/echo", .Empty, o))
 }
