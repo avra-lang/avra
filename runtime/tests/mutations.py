@@ -65,6 +65,7 @@ MUTATIONS = [
     ("a standing cancel lets a join park", "    if (!deaf && (cancel_stands(self) || deadline_stands(self))) return cells;\n", "    if (!deaf && deadline_stands(self)) return cells;\n"),
     ("a passed limit lets a sleep park", "    if (cancel_stands(self) || deadline_stands(self)) return;\n", "    if (cancel_stands(self)) return;\n"),
     ("a passed limit lets a join park", "    if (!deaf && (cancel_stands(self) || deadline_stands(self))) return cells;\n", "    if (!deaf && cancel_stands(self)) return cells;\n"),
+    ("a standing cancel stops a park and sets no bit", "    if (shield_scope_stands(f)) return 0;\n    cancel_met();\n    return 1;\n}", "    if (shield_scope_stands(f)) return 0;\n    return 1;\n}"),
     ("a scope's end under a passed limit does not wait", "    if (!deaf && (cancel_stands(self) || deadline_stands(self))) return cells;\n", "    if (cancel_stands(self) || deadline_stands(self)) return cells;\n"),
     ("a standing cancel lets a descriptor park", "    if (!f->virtual && cancel_stands(f)) { f->timed_out = 1; return 0; }\n", ""),
     ("a yield is no cancel point", "    if (!g_current->shield_depth && __builtin_expect(g_current->cancel_by != 0, 0)) cancel_met();\n    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n", "    if (!g_ready_head && g_timers_len == 0 && g_parked_fds == 0) return;\n"),
