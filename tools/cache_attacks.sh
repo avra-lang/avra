@@ -402,8 +402,27 @@ ed $R/hc/src/ga/fn.av "K + 1" "K + 2"; hc_run
 ed $R/hc/src/ga/fn.av "K + 2" "K + 3"; hc_run
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] && [ "$(hc_count plain)" = 0 ] || { fails=$((fails+1)); echo "FAIL  hc: after editing reads_k's own body, lowered afresh reads_k=$(hc_count reads_k) plain=$(hc_count plain), wanted 1/0"; }
 ed $R/hc/src/gb/k.av "K: int = 7" "K: int = 8"
-ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
+ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"
+hc_verify=$(AVRA_ROW_VERIFY=1 AVRA_QTRACE=1 ./avra check $R/hc 2>&1)
+printf '%s\n' "$hc_verify" | awk -F'\t' '$1 == "Q" && $2 == "unit" && $3 == "lowered" { print $4 }' | sort -u > $R/hc.lowered
+steps=$((steps+1)); case "$hc_verify" in *"differs from its fresh lowering"*) fails=$((fails+1)); echo "FAIL  hc: AVRA_ROW_VERIFY trapped on a served row that differs from its fresh lowering: $(printf '%s' "$hc_verify" | grep 'differs' | head -1 | cut -c1-200)" ;; esac
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
+fi
+
+if section rv; then
+# EVERY SERVED ROW AGREES WITH ITS FRESH LOWERING, over the compiler's own source: a core file is
+# edited twice (the first warm derivation keeps rows, the second serves them) and the third check
+# runs with AVRA_ROW_VERIFY, which lowers every served unit afresh and traps on a difference. A key
+# field a lowering reads and no key names serves stale here.
+rv_file=packages/std-avrac/src/core/side_table.av
+cp $rv_file $R/rv.orig
+rm -rf .avra-cache; ./avra check packages/cli >/dev/null 2>&1
+printf '\n// rv one\n' >> $rv_file; ./avra check packages/cli >/dev/null 2>&1
+printf '// rv two\n' >> $rv_file
+steps=$((steps+1)); rv_out=$(AVRA_ROW_VERIFY=1 ./avra check packages/cli 2>&1); rv_st=$?
+cp $R/rv.orig $rv_file
+case "$rv_out" in *"differs from its fresh lowering"*) fails=$((fails+1)); echo "FAIL  rv: a served row differs from its fresh lowering: $(printf '%s' "$rv_out" | grep 'differs' | head -1 | cut -c1-200)" ;; esac
+[ "$rv_st" -le 1 ] || { fails=$((fails+1)); echo "FAIL  rv: the verified check of the cli exited $rv_st"; }
 fi
 
 if section vd; then

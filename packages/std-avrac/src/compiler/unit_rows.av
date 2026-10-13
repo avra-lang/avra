@@ -4,6 +4,7 @@
 //! lowering exactly when it spoke nothing, so serving one can never hide a voice.
 use core.{DeclId, DeclKind, FileId, flatten, distinct, fp, fp_str, fp_list, joined}
 use features.{Wanted, SettleRoot}
+use @std.io.{env}
 use diagnostics.{no_voices}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Unit, CodeFacts, code_facts, code_facts_wire, code_facts_from_wire}
@@ -31,6 +32,22 @@ impl Workspace {
         self.hold.served.push(Served { file: w.file, facts: facts })
         self.row_lives(at.path, row)
         Unit { bodies: [stub], wants: wants, voices: no_voices(), statics: [], kept: [facts] }
+    }
+
+    /// THE KEEPER FOR EVERY KEY FIELD: under AVRA_ROW_VERIFY a served unit is also lowered
+    /// afresh, and its code facts and wanted instantiations must be the row's — a key that
+    /// leaves out something the lowering reads serves a stale row here and traps.
+    fn unit_verified(w: Wanted, served: Unit) {
+        // LICENSED input.debug_flag: a debug flag is the process's own, not an input
+        if env("AVRA_ROW_VERIFY") ?? "" == "" { return }
+        let fresh = self.lower_requested(w)
+        let facts = code_facts_wire(
+            code_facts(self.decls, fresh.bodies, fresh.statics, fresh.hashes),
+        )
+        if facts != code_facts_wire(served.kept[0]) ||
+            self.wanted_list_wire(fresh.wants) != self.wanted_list_wire(served.wants) {
+            avra_trap("a served unit row differs from its fresh lowering: ${w.name}")
+        }
     }
 
     /// A unit's lowering kept as a row: only one that spoke nothing.
