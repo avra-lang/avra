@@ -36,6 +36,8 @@ lists and refuses by name:
                    pull_request runs, so the label and the open of one PR cannot
                    cancel each other; the run mode is read at run time, so the
                    runs that remain give one verdict.
+  dup-run          a `labeled` run waits for the full run on its head and mirrors its verdict;
+                   it never runs a second gate beside it (tools/ci_dup_run.py).
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -242,6 +244,38 @@ def check_race_split(workflow_text):
     return [], ["race-split: a labeled run has its own concurrency group"]
 
 
+def check_dup_run(workflow_text):
+    """The labeled run asks tools/ci_dup_run.py for the verdict and mirrors it, and
+    the test job's light and verdict steps stand down for a mirror. Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    refusals = []
+    if "tools/ci_dup_run.py" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not ask tools/ci_dup_run.py whether a labeled run owes the gate")
+    if "mirror: ${{ steps.plan.outputs.mirror }}" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not expose the mirror verdict")
+    test = jobs.get("test", "")
+    if "needs.prepare.outputs.mirror != ''" not in test:
+        refusals.append("`test` does not mirror another run's verdict")
+    if "needs.prepare.outputs.full == '0' && needs.prepare.outputs.mirror == ''" not in test:
+        refusals.append("`test` names a light draft beside a mirrored verdict")
+    if refusals:
+        return refusals, []
+    return [], ["dup-run: a labeled run mirrors the full run on its head"]
+
+
+def check_ready_race(pr_mode_mod):
+    """#701's race: a PR readied while its update runs. Its mode is the PR's state at
+    run time, so the ready run and the synchronize run both read full. Answers (refusals, words)."""
+    refusals = []
+    if pr_mode_mod.mode('{"draft": false, "labels": []}') != "full":
+        refusals.append("a readied PR is not read as full, so a run queued before the ready event would stay light")
+    if pr_mode_mod.mode('{"draft": true, "labels": []}') != "light":
+        refusals.append("a draft without the label is not read as light")
+    if refusals:
+        return refusals, []
+    return [], ["ready-race: a readied PR's run is full whichever event started it"]
+
+
 def check_run_mode(workflow_text):
     """The run mode is decided by tools/pr_mode.py on the PR's API answer, not by
     the event payload, and a light gate on an unpublished compiler is skipped.
@@ -433,6 +467,8 @@ def run(make_text=None, workflow_text=None):
                       open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read(),
                       open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()),
                   lambda: check_path_gate(workflow_text),
+                  lambda: check_dup_run(workflow_text),
+                  lambda: check_ready_race(__import__("pr_mode")),
                   lambda: check_warm_edit(make_text)):
         r, w = check()
         refusals += r
@@ -635,8 +671,15 @@ rt-header:
     assert ungated_rk != real_wf
     assert any("runtime-keep" in x for x in check_path_gate(ungated_rk)[0]), check_path_gate(ungated_rk)
 
+    real_dup = open(CHECKS, encoding="utf-8").read()
+    assert check_dup_run(real_dup)[0] == [], check_dup_run(real_dup)
+    unmirrored = real_dup.replace("needs.prepare.outputs.mirror != ''", "needs.prepare.outputs.mirror == ''", 1)
+    assert unmirrored != real_dup
+    assert any("mirror" in x for x in check_dup_run(unmirrored)[0]), check_dup_run(unmirrored)
+    import pr_mode as _pm
+    assert check_ready_race(_pm)[0] == [], check_ready_race(_pm)
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, race-split, path-gate, warm-edit held on fixtures")
+          "light-draft, run-mode, race-split, path-gate, dup-run, ready-race, warm-edit held on fixtures")
     return 0
 
 
