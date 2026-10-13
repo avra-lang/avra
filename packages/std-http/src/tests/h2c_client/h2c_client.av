@@ -1,7 +1,7 @@
 // TWO REQUESTS, ONE CONNECTION, ONE TASK. A client connection mints
 // two odd streams, sends both requests at once, and reads both answers
 // off the one socket — the shape HTTP/2 exists for. Both engines.
-use @std.net.{Conn, NetError, connect}
+use @std.net.{Conn, NetError, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.route.{get}
 use @std.http.server.{server}
@@ -45,7 +45,7 @@ fn two_at_once(port: int) -> Result<string, NetError> {
     mut turns = 0
     while (heads < 2 || !done1 || !done2) && turns < 60 {
         turns = turns + 1
-        let got = match within ms(300) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> null }
+        let got = match timely(within ms(300) { c.read(65536) }) { .Ok(b) -> b, .Err(_) -> null }
         if got == null { break }
         buf = buf.concat(got!)
         at = h.fed(buf, at)

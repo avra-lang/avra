@@ -37,8 +37,12 @@ SCHEDULER = ("avra_fiber.o", "avra_cores.o", "avra_tick.o")
 SCHEDULER_NAMED = re.compile(r"avra_(fiber|wait_|gate_|vgate_|vtask|task_|tasks_|sched_|cores|tick)")
 TASK_STATE = {"avra_task_slot", "avra_task_slot_set", "avra_task_id", "avra_task_local"}
 # Programs that spawn nothing, and the one that must be refused.
-CLEAN = ("hello", "data", "slot")
-SPAWNING = "spawns"
+# A call through a fn VALUE may be any fn and links nothing: beside a
+# `while` or a `defer` it must not bring the scheduler in.
+CLEAN = ("hello", "data", "slot", "closure_loop", "defer_closure")
+# The witnesses: a spawn written plainly, and one only a value-called
+# closure makes.
+SPAWNING = ("spawns", "spawns_by_value")
 SIZED = ("hello", "data")
 CEILING = 10
 # A C program that only reads the runtime's unwind byte. The tree cannot
@@ -213,7 +217,7 @@ def gate(accept):
     say(f"{here[0]}, {here[1]}")
     sizes, read = {}, 0
     with tempfile.TemporaryDirectory(prefix="avra-footprint.") as work:
-        for name in CLEAN + (SPAWNING,):
+        for name in CLEAN + SPAWNING:
             binary, ir = built(avra, name, work)
             if binary is None:
                 say(f"{name} did not build:\n{ir}")
@@ -226,7 +230,7 @@ def gate(accept):
                 fail = 1
                 continue
             found = carried(symbols, banned)
-            if name == SPAWNING:
+            if name in SPAWNING:
                 if not found:
                     say(f"{name} spawns a task and carries no scheduler symbol — the gate cannot see one")
                     fail = 1
@@ -284,7 +288,7 @@ def gate(accept):
     if fail:
         say("REFUSED")
         return 1
-    say(f"clean — {len(CLEAN)} Avra program(s) and the C flag read carry no scheduler, 1 witness refused, {read} symbol(s) read, "
+    say(f"clean — {len(CLEAN)} Avra program(s) and the C flag read carry no scheduler, {len(SPAWNING)} witness(es) refused, {read} symbol(s) read, "
         f"{len(sizes)} sized, {sum(1 for n in sizes if here + (n,) in accepted)} held to a baseline")
     return 0
 

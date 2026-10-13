@@ -673,6 +673,27 @@ done
 rm -rf $lh
 fi
 
+# A HELD FN THAT PARKS STILL LINKS THE SCHEDULER, REACHED ONLY THROUGH A VALUE. No call
+# by name leads to it, so only its interface's word says the program links: the build
+# that holds its module must check the loop's back-edge exactly as the cold build did.
+if section lv; then
+lv=$R/lv; mkdir -p $lv/src/x
+printf '[package]\nname = "lv"\nversion = "0.1.0"\n\n[bin]\nname = "lv"\npath = "src/main.av"\n' > $lv/avra.toml
+printf 'extern fn avra_fiber_sleep(ms: int)\nexport fn napped(n: int) -> int {\n    avra_fiber_sleep(0)\n    n + 1\n}\n' > $lv/src/x/nap.av
+printf 'use x.{napped}\nfn looped(g: fn(int) -> int) -> int {\n    mut i = 0\n    while i < 3 { i = g(i) }\n    i\n}\nlet g = napped\nprintln("${looped(g)}")\n' > $lv/src/main.av
+lv_state() { # lv_state <label>: how many back-edge checks the program's own code makes
+    steps=$((steps+1)); ./avra build $lv > /dev/null 2>&1
+    objdump -d $lv/src/main 2>/dev/null | grep -c '<_\{0,1\}avra_tick_cold>$' > $R/lv.$1.ticks
+}
+lv_state cold
+printf '// edited\n' >> $lv/src/main.av
+lv_state warm
+if [ "$(cat $R/lv.cold.ticks)" -gt 0 ] 2>/dev/null && cmp -s $R/lv.cold.ticks $R/lv.warm.ticks; then :; else
+    fails=$((fails+1)); echo "FAIL  lv: a held fn that parks, reached only through a value: the loop's check differs warm from cold: cold [$(cat $R/lv.cold.ticks)] warm [$(cat $R/lv.warm.ticks)]"
+fi
+rm -rf $lv
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:

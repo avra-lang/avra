@@ -399,9 +399,18 @@ start() {
 # hash moved to one it holds, and built and cached otherwise — a source
 # that does not build gets no command (70), since an older compiler
 # would answer about a different program.
+# Installs the compiler published for a key, from the tree's own fetch tool.
+install_published() {
+    [ -f tools/fetch_compiler.sh ] || return 1
+    sh tools/fetch_compiler.sh --key "$1" >&2
+}
+
 supervise() {
     id=$1 build_s=$2 cmd_s=$3 remote=$4 chash=$5
     shift 5
+    # The route rides after the hash (`<hash>@<route>`): see compiler_route in tools/work.
+    route=build
+    case $chash in *@*) route=${chash#*@}; chash=${chash%%@*} ;; esac
     # A probe asks for one generation of the tree, never cached (`one:<hash>`).
     probe=
     case $chash in one:*) probe=one; chash=${chash#one:} ;; esac
@@ -446,6 +455,19 @@ supervise() {
             fi
         elif [ -x build/avra ] && [ "$(cat build/.avra-compiler-hash 2>/dev/null)" = "$chash" ]; then
             compiler=warm
+        elif [ "${route%%:*}" = published ] && install_published "${route#published:}"; then
+            printf '%s' "$chash" > build/.avra-compiler-hash
+            compiler="published (key ${route#published:})"
+        elif [ "${route%%:*}" = mergebase ] && install_published "${route#mergebase:}"; then
+            # The merge-base's compiler builds this tree once: one generation, never
+            # cached, so the stamp that names a cached compiler is emptied.
+            s0=$(date +%s)
+            if make -s avra >> "$rd/probe.log" 2>&1; then
+                : > build/.avra-compiler-hash
+                compiler="merge-base published, one generation ($(($(date +%s) - s0))s)"
+            else
+                echo "sprite-run: the merge-base generation FAILED — see $rd/probe.log" >&2; exit 70
+            fi
         elif [ -x "$compilers/$chash/avra" ]; then
             for f in $(compiler_objs); do
                 b=$(basename "$f")

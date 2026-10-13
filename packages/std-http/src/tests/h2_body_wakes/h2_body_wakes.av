@@ -6,7 +6,7 @@
 // reader's stack is no deeper for the wait or the pings (one that woke
 // itself and recursed per wake overflowed in the second alone), and
 // the link answers every ping on the way. Both engines.
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{ms, secs, sleep}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{Request, Unrouted, Response, text}
@@ -34,7 +34,7 @@ fn posted() -> Bytes {
 fn heard_until(c: Conn, done: fn(List<Frame>) -> bool) -> List<Frame> {
     mut buf = no_bytes
     while !done(frames_in(buf)) {
-        let read = match within secs(1) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> null }
+        let read = match timely(within secs(1) { c.read(65536) }) { .Ok(b) -> b, .Err(_) -> null }
         let got? = read else { return frames_in(buf) }
         buf = buf.concat(got)
     }

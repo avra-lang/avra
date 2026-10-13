@@ -14,7 +14,7 @@ use @std.io.{
     remove,
     env_or,
 }
-use @std.io.watch.{Watch, Seen, Moved, Change, watch}
+use @std.io.watch.{Watch, Seen, Moved, Change, watch, or_quiet}
 use @std.text.{from_codepoint}
 use @std.time.{ms, sleep, now_ms}
 
@@ -388,7 +388,7 @@ spec "std/io watch" {
             let _ = w.add("${dir}/f")
             let began = now_ms()
             let writer = spawn wt_appends_later("${dir}/f", "b", 60)
-            let said = wt_of(within ms(5000) { w.next() }, "${dir}/f")
+            let said = wt_of(or_quiet(within ms(5000) { w.next() }), "${dir}/f")
             let waited = now_ms() - began
             writer.await
             w.close()
@@ -400,7 +400,7 @@ spec "std/io watch" {
             let w = wt_watch()
             let _ = w.add("${dir}/f")
             let began = now_ms()
-            let said = wt_of(within ms(80) { w.next() }, "${dir}/f")
+            let said = wt_of(or_quiet(within ms(80) { w.next() }), "${dir}/f")
             let waited = now_ms() - began
             w.close()
             said == "-" && waited >= 70 && waited < 2000
@@ -412,7 +412,7 @@ spec "std/io watch" {
             let _ = w.add("${dir}/f")
             wt_appended("${dir}/f", "b")
             let began = now_ms()
-            let said = wt_of(within ms(5000) { w.next() }, "${dir}/f")
+            let said = wt_of(or_quiet(within ms(5000) { w.next() }), "${dir}/f")
             w.close()
             said == "changed" && now_ms() - began < 1000
         }
@@ -421,7 +421,7 @@ spec "std/io watch" {
             let w = wt_watch()
             let _ = w.add(dir)
             let closer = spawn wt_closes_later(w, 40)
-            let woke = within ms(5000) { w.next() } is .Err
+            let woke = or_quiet(within ms(5000) { w.next() }) is .Err
             closer.await
             woke
         }

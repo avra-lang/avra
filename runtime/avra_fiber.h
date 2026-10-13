@@ -139,6 +139,8 @@ int64_t avra_fiber_within(int64_t ms);
 // The innermost scope, `id`, ends (any other traps by name): 1 when the
 // request that stands is this scope's, which then stands no longer.
 int64_t avra_scope_end(int64_t id);
+// The same end as a `within`'s LANDING: 1 when an unwind this scope
+// asked for ends here — the unwind bit is cleared — else 0.
 int64_t avra_fiber_within_end(int64_t id);
 
 // A `defer` runs whole under a shield: the frame's cold exit brackets
@@ -197,10 +199,13 @@ void avra_vtask_ready(int64_t t);
 // through the signal door; a target with no signals calls it directly.
 void avra_tasks_listed(FILE* out);
 // A join in the evaluator's own files, said to the trace as a compiled
-// one is: `joins` when the task is about to wait for the task `on`
-// (negative: one nothing runs), `joined` when `by`'s end readies it.
+// one is: the task is about to wait for the task `on` (negative: one
+// nothing runs).
 void avra_vtask_joins(int64_t t, int64_t on);
-void avra_vtask_joined(int64_t t, int64_t by);
+// 1 when a request stands on the task about to sleep or join — a cancel,
+// a scope's own, a limit found passed: its bit is raised and it must not
+// wait. A sleep asks for itself.
+int64_t avra_vtask_cut(int64_t t);
 void avra_vtask_sleep(int64_t t, int64_t ms);
 // 1 when parked; 0 when it did not wait: the descriptor cannot be
 // watched (ready at once, so its read or write reports the error), or
@@ -253,6 +258,8 @@ void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member);
 // by the timer heap, for a task its time ends. 1 parked; 0 when the task
 // has ended already.
 int64_t avra_vtask_join(int64_t t, void* task);
+// The same park for a scope's end: no cancel and no deadline claims it.
+int64_t avra_vtask_settle(int64_t t, void* task);
 int64_t avra_vtask_park(int64_t t);
 int64_t avra_vtask_claim(int64_t t);
 // A cancel on `t`, asked by the task whose id is `by`.

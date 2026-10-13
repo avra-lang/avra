@@ -6,7 +6,7 @@
 //! under a megabyte at either size.
 use @std.io.{env_or}
 use @std.text.{parse_int}
-use @std.net.{NetError, listen, connect}
+use @std.net.{NetError, listen, connect, timely}
 use @std.time.{secs}
 use @std.http.frame.{limits}
 use @std.http.http.{text}
@@ -47,7 +47,7 @@ fn uploaded(port: int) -> Result<string, NetError> {
                 .bytes(),
         )?
     for _i in 0..pieces() { c.write(piece())? }
-    let got? = within secs(20) { c.read(4096) }? else { return .Ok("no reply") }
+    let got? = timely(within secs(20) { c.read(4096) })? else { return .Ok("no reply") }
     let _ = c.close()
     let t = got.text() ?? ""
     .Ok(t.substring(t.index_of("\r\n\r\n") + 4, t.length))

@@ -3,7 +3,7 @@
 // sends stream 5 a body in two DATA frames. The PING is answered, stream
 // 3 and stream 5 are answered — each on a task of its own — and stream 1
 // last, when its handler wakes. Both engines.
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{ms, secs, sleep, now_ms}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{Request, Unrouted, Response, text}
@@ -46,7 +46,7 @@ fn heard(c: Conn) -> List<Frame> {
     let start = now_ms()
     while !frames_in(buf).any(it.stream == 1 && it.flags & end_stream != 0) &&
         now_ms() - start < 2000 {
-        let got = match within ms(100) { c.read(65536) } {
+        let got = match timely(within ms(100) { c.read(65536) }) {
             .Ok(b) -> b ?? no_bytes,
             .Err(_) -> no_bytes,
         }
