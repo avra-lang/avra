@@ -108,10 +108,7 @@ fn framed(payload: Bytes) -> Bytes {
 /// leaves the segments as the store.
 export fn seal(pack: Pack) -> bool {
     if newest_rev(pack.dir) > pack.seen_rev.get() { return false }
-    let keys = sorted_by(
-        [k for k in pack.records.get().keys() if !withdrawn(pack, k) && addressable(pack, k)],
-        text_before,
-    )
+    let keys = sorted_by([k for k in pack.records.get().keys() if !withdrawn(pack, k)], text_before)
     if keys.is_empty() { return false }
     let rev = newest_rev(pack.dir) + 1
     let digests = referenced_digests(pack, keys)
@@ -138,14 +135,6 @@ export fn seal(pack: Pack) -> bool {
     for p in slots { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
     pack.content.set({})
     true
-}
-
-/// Whether the running compiler can still address a row: a row of another stamp is
-/// dropped at the seal, where the stamp is part of the family's name.
-fn addressable(pack: Pack, k: string) -> bool {
-    let live? = pack.live.get() else { return true }
-    let h? = record_of(pack, k) else { return false }
-    live.contains(h.family)
 }
 
 /// The places the open value file already holds for these digests.

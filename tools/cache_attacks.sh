@@ -976,9 +976,10 @@ K "d, by the compiler itself" hit
 cp build/avra build/avra.twin;                 W "the same bytes from another path" build/avra.twin hit
 strip -x build/avra -o build/avra.other 2>/dev/null && { codesign -f -s - build/avra.other 2>/dev/null || true; }
 W "a compiler of other bytes" build/avra.other built
-# ONE STORE FOR EVERY COMPILER: S2 keeps a second compiler's rows out of the first's
-# by the print in each pack's header, never by a directory of its own. The behaviour
-# below — each compiler reading its own rows and not the other's — is the claim.
+# ONE STORE FOR EVERY COMPILER: a row's family carries the stamp it stands under — the
+# writing compiler's print, or a shared producer's hash — so a second compiler's rows
+# neither hide nor displace the first's, and no directory of its own is needed. The
+# behaviour below — each compiler reading its own rows — is the claim.
 W "and its own store serves it" build/avra.other hit
 K "while the first compiler's still serves the first" hit
 rm -f build/avra.twin build/avra.other
