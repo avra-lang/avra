@@ -996,8 +996,12 @@ static int64_t within_opened(Fiber* f, int64_t ms) {
     *scope_at(f, i) = (Scope){ id, at, first, f->shield_depth > 0 };
     f->scopes_n = i + 1;
     // A STANDING DEADLINE ARMS THE SOURCE: a task that never waits files
-    // no timer, so the tick must fire for the cold side to see it.
+    // no timer, so the tick must fire for the cold side to see it. The
+    // source is brought up here too: a lone main readies no task, so no
+    // other transition starts one. An evaluated task's turns are the
+    // evaluator's own count and need no thread.
     __atomic_store_n(&avra_tick_wanted, 1, __ATOMIC_RELAXED);
+    if (!f->virtual && !pinned()) avra_tick_armed();
     if (f->armed != i) return id;
     f->armed = i + 1;
     owner_found(f);
@@ -1436,7 +1440,7 @@ void avra_fiber_overflowed(const Fiber* f) {
 __attribute__((noinline, cold))
 static void switched_to_fresh(Fiber* self, Fiber* next) {
     fiber_bound(next);
-    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
@@ -1454,8 +1458,9 @@ static inline void switch_to(Fiber* next) {
     if (next == self) return;
     if (__builtin_expect(!next->sp, 0)) { switched_to_fresh(self, next); return; }
     // PRECOMPTION WORK STANDS exactly while a task runs with others
-    // ready or a deadline filed; the source stands down otherwise.
-    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || next->deadline != 0, __ATOMIC_RELAXED);
+    // ready, a deadline filed or a cancel asked of it; the source stands
+    // down otherwise.
+    __atomic_store_n(&avra_tick_wanted, g_ready_head != NULL || g_timers_len != 0 || (next->deadline | next->cancel_by) != 0, __ATOMIC_RELAXED);
     g_current = next;
     avra_task_local = next->local;
     self->unwinding = avra_unwinding;
