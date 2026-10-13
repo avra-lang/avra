@@ -3214,28 +3214,26 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
-### Interim record — FLOW 03's `within`-end answer is unconsumed
-
-A `within` scope's end answers `I64` — whether the request that stood was
-this scope's own (`avra_fiber_within_end`, `runtime/avra_fiber.h`). The
-landing stores it in `Deferral.Landing`'s cell (`landed_scope`,
-`packages/std-avrac/src/compiler/lower/walk.av`) and nothing reads it:
-`within_epilogue` answers the body's own value, and the epilogue's own
-unwind path cannot land (its mark was popped). It earns its keep at the
-FLIP (FLOW 03 ladder 14), where the landing turns its unwind into
-`Err(TimedOut)` and this cell decides whether the timeout was the scope's.
-RECORDED TRIGGER: ladder 14 reads that cell; until then its store is the
-row's only consumer.
-
 ### Interim record — a bounded cleanup wants one phrase
 
 `flow.unbounded_cleanup` makes a `within` the only legal waiting cleanup,
 and `type.defer` refuses a body answering a `Result` — which `within`
-answers at the FLIP (FLOW 03 ladder 14). So 26 sites spell `defer { let _
-= within secs(5) { … } }` (`packages/std-http/src/tests/client_test.av:47`).
-The want: `defer within secs(5) { … }` stays legal, its timeout discarded
-by rule (avra-8sb5.10.172). RECORDED TRIGGER: ladder 14 decides it; until
-then the bare form answers its block's value and checks clean.
+answers. So 26 sites spell `defer { let _ = within secs(5) { … } }`
+(`packages/std-http/src/tests/client_test.av:47`), and a block that
+answers nothing is refused (`type.within`), so a cleanup over a void
+closer ends on a value. The want: `defer within secs(5) { … }`, its
+timeout discarded by rule (avra-8sb5.10.172).
+
+### Interim record — a deadline folded into a verb's own failure wants one helper
+
+`within d { verb() }` over a fallible verb answers `Result<Result<T, E>,
+TimedOut>`, and each error currency folds it back with its own copy of
+one fn: `timely` (`packages/std-net/src/net.av`), `wire_timely`
+(`packages/std-http/src/wire.av`), `in_stage`
+(`packages/std-http/src/client.av`), and std-tls's and std-io's twins.
+The mint differs per error type, and a bound lands only on a free fn's
+parameter, so no trait can carry "make me a timed-out one". The want: one
+generic fold over an error that says how it times out.
 
 Tracked in the tasks db under epic `avra-8sb5.10` (the canonical SUGAR BACKLOG epic; `tasks tree avra-8sb5.10`), not here — this section used to hand-list them, which let the same ask get filed three or four times under different wording before anyone noticed. Every ticket carries an `Example:` and a `Callsite:`. Landed asks are closed there with the evidence that proved it (a probe against `build/avra check`, not a doc's memory); duplicates found across ROADMAP/FEEDBACK/DOGFOODING and the SURVEY epic were merged into one ticket each.
 
