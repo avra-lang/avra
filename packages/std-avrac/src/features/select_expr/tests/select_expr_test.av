@@ -302,9 +302,14 @@ spec "features/select_expr" {
                 "fn one() -> int {\n    41\n}\nlet a = spawn one()\nlet b = spawn one()\nlet both = a.await + b.await\nlet v = select {\n    x in a if both > 100 -> 1\n    y in b -> 2\n}\n\"\${v}\"",
             ) == "2"
         }
+        then "a list arm binds the member that answered, and its index when asked" {
+            shown(
+                "fn n(k: int) -> int {\n    k\n}\nlet ts = [spawn n(4), spawn n(5)]\nlet both = ts[0].await + ts[1].await\nlet v = select {\n    i, r in ts -> r * 10 + i\n}\n\"\${both} \${v}\"",
+            ) == "9 40"
+        }
         then "a shape with no lowering yet is refused by name, once" {
             refused_at_run(
-                "${tasks()}select {\n    r in jobs -> r\n}",
+                "${tasks()}@fair select {\n    r in job -> r\n}",
                 "`select` is typed and not yet lowered",
             )
         }
