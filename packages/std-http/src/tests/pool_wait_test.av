@@ -98,7 +98,8 @@ fn pw_wait_bounds() -> Result<string, ClientError> {
 }
 
 /// THE TASK'S DEADLINE BOUNDS THE WAIT: a take under a `within` shorter
-/// than the pool's `wait` is refused when the `within` ends.
+/// than the pool's `wait` is cut when the `within` ends, and dials
+/// nothing more.
 fn pw_within_bounds() -> Result<string, ClientError> {
     let s = pw_server()?
     spawn s.run(cores: 1)
@@ -108,8 +109,13 @@ fn pw_within_bounds() -> Result<string, ClientError> {
     let o = origin_of("http", "127.0.0.1", s.listener.port)
     let dials = Cell.new(0)
     let _held = p.take(o, () -> pw_dial(s.listener.port, dials))?
-    let w = within ms(150) { pw_waited(p, o, s.listener.port, dials) }
-    .Ok("${w.kind} ${w.ms >= 140 && w.ms < 1000} ${dials.get()}")
+    let t0 = now_ms()
+    let kind = match within ms(150) { pw_waited(p, o, s.listener.port, dials) } {
+        .Ok(w) -> w.kind,
+        .Err(_) -> "timed out",
+    }
+    let waited = now_ms() - t0
+    .Ok("${kind} ${waited >= 140 && waited < 1000} ${dials.get()}")
 }
 
 /// A GIVE FOR ANOTHER ORIGIN wakes the waiter, which looks again and
@@ -147,6 +153,6 @@ spec "std.http a pool's take waits for a slot" {
     }
     given "nobody gives" {
         then "the pool's wait bounds the take, refused by name" { pw_shown(pw_wait_bounds()) == "http.exhausted true 1" }
-        then "the task's within bounds it sooner" { pw_shown(pw_within_bounds()) == "http.exhausted true 1" }
+        then "the task's within bounds it sooner" { pw_shown(pw_within_bounds()) == "timed out true 1" }
     }
 }

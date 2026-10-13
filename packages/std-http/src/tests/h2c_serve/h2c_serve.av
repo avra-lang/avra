@@ -3,7 +3,7 @@
 // knowledge (h2c): every answer — status, content type, body — must be
 // identical, the 1.1 connection and the h2 one each served by the same
 // router. Both engines, one law.
-use @std.net.{Conn, NetError, connect}
+use @std.net.{Conn, NetError, connect, timely}
 use @std.time.{ms, secs, sleep}
 use @std.http.http.{text}
 use @std.http.route.{get, post}
@@ -57,7 +57,7 @@ fn http1_text(a: Ask) -> string {
 fn drained_from(c: Conn) -> Bytes {
     mut got = no_bytes
     while true {
-        match within ms(300) { c.read(65536) } {
+        match timely(within ms(300) { c.read(65536) }) {
             .Ok(b) -> {
                 got = got.concat(b ?? no_bytes)
                 if b == null { break }
