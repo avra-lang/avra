@@ -118,6 +118,9 @@ export fn turn_said(root: string, more: List<ReadFile>, homes: bool, unheld: boo
     if said.is_empty() { "asks the same again" } else { joined(said, "; ") }
 }
 
+/// Whether a run read a declaration's body, which only a parsed file answers.
+fn bodied(r: RunRead) -> bool { !r.ref.is_empty() }
+
 /// The first read files by path and why, the rest counted.
 fn read_words(root: string, more: List<ReadFile>) -> string {
     let named = ["${relative_path(root, r.path)} — ${r.why.says()}" for r in more.slice(0, TURN_NAMED)]
@@ -644,12 +647,45 @@ impl Workspace {
     }
 
     /// The reads an attempt takes up front: the files a held module's kept verdicts read,
-    /// for those whose file lines already refuse them — read from the store alone, before
-    /// the attempt starts, so the attempt never turns to read them.
+    /// for those whose kept rows refuse them once the files those rows name are parsed.
+    /// An edited file is parsed here first, so a row is judged by what the declaration it
+    /// names says NOW — a file whose text moved but whose read declarations did not leaves
+    /// the reader holding, and nothing is read for it.
     fn lead_reads(at: Attempt) -> List<ReadFile> {
         if !at.hold { return [] }
         let store = self.opened_store()
-        [ReadFile { path: path, why: Reads.Unkept } for path in self.verdict_reads_first(store, held_modules(self, store, built_entry(at)))]
+        let mods = held_modules(self, store, built_entry(at))
+        self.parse_edited(store, mods)
+        [ReadFile { path: path, why: Reads.Unkept } for path in self.verdict_reads_first(store, mods)]
+    }
+
+    /// THE EDITED FILES A HELD VERDICT NAMES, PARSED: every read file whose text moved since
+    /// the record that names it was written. A file whose text matches its record is held,
+    /// never parsed here; only a file the record itself says moved is.
+    fn parse_edited(store: Store, mods: List<ModulePath>) {
+        for path in distinct(flatten([self.edit_reads(store, m) for m in mods])) {
+            if self.there(path) { touch(self.items(self.file_id(path))) }
+        }
+    }
+
+    /// The read files one held module's verdicts name whose text moved.
+    fn edit_reads(store: Store, m: ModulePath) -> List<string> {
+        flatten([self.verdict_edit_reads(store, parts) for parts in record_fields(self, store, m)])
+    }
+
+    /// The moved read files one record line's verdict names, from the `f` rows of the
+    /// view its `v` row points at (a verdict's own lines carry the units it entered, not
+    /// the files that view shows).
+    fn verdict_edit_reads(store: Store, parts: List<string>) -> List<string> {
+        let row? = read_row(parts) else { return [] }
+        if row.kind != "const" { return [] }
+        let said = store.get(Stored.Unit, "${kept_key_for(row.path, row.name)}#lines") ?? ""
+        let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
+        let views = [r[1] for r in rows if r[0] == "v" && r.length == 2]
+        let view = flatten(
+            [[l.split("\t") for l in (store.get(Stored.Unit, view_key(v)) ?? "").split("\n") if !l.is_empty()] for v in views],
+        )
+        [r[1] for r in view if r[0] == "f" && r.length > 2 && self.there(r[1]) && self.text_digest(r[1]) != r[2]]
     }
 
     /// The files a held module's kept const verdicts read, for those whose file lines
@@ -670,11 +706,51 @@ impl Workspace {
     /// The files a const's kept verdict read, when one of its kept rows that needs no
     /// analysis refuses it; none when every such row stands.
     fn cheap_reads(store: Store, path: string, name: string) -> List<string> {
-        let said = store.get(Stored.Unit, "${kept_key_for(path, name)}#lines") ?? ""
+        let key = kept_key_for(path, name)
+        let said = store.get(Stored.Unit, "${key}#lines") ?? ""
         let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
-        if !rows.any((r: List<string>) -> self.row_refuses(store, r)) { return [] }
-        let reads = rows.find(it[0] == "r") ?? []
-        reads.slice(1, reads.length)
+        if !rows.any((r: List<string>) -> self.cheap_refuses(store, r)) &&
+            !(kept_reads(store, key) ?? []).any((r: RunRead) -> bodied(r) && self.read_moved(r)) {
+            return []
+        }
+        let read = [r for r in kept_reads(store, key) ?? [] if bodied(r)]
+        distinct(
+            [r.path for r in read]
+                .concat(
+                    flatten(
+                        [[q.path for q in self.ran_by(store, r.path) if bodied(q)] for r in read],
+                    ),
+                ),
+        )
+    }
+
+    /// Whether ONE of a verdict's reads moved: its declaration's syntax or its file's
+    /// outline, or, where no declaration rode it, the file it named. This is the trigger
+    /// for a re-run — the run that re-runs reads ALL its held reads, not only this one, so
+    /// the reads returned are never narrowed by this.
+    fn read_moved(r: RunRead) -> bool {
+        if self.there(r.path) && self.text_digest(r.path) == r.digest { return false }
+        if r.print.is_empty() { return true }
+        touch(self.items(self.file_id(r.path)))
+        let d? = self.decl_from_ref(r.ref) else { return true }
+        "${self.syntax(d)}" != r.print || self.outline(r.path) != r.outline
+    }
+
+    /// Whether a kept verdict's row refuses its run before the hold is settled: a view by
+    /// the FILE rows in it, any other row that needs no analysis by its own. The view's
+    /// names digest is the module's own interface, judged where the hold is settled —
+    /// here, before a held declaration is minted, it would refuse every reader.
+    fn cheap_refuses(store: Store, r: List<string>) -> bool {
+        if r[0] == "v" { return self.view_files_refuse(store, r) }
+        judged_by_files(r) && !self.kept_row_stands(r)
+    }
+
+    /// Whether a kept view has a FILE row that no longer stands.
+    fn view_files_refuse(store: Store, r: List<string>) -> bool {
+        if r.length != 2 { return false }
+        let said? = store.get(Stored.Unit, view_key(r[1])) else { return true }
+        let rows = [l.split("\t") for l in said.split("\n") if !l.is_empty()]
+        rows.any((x: List<string>) -> x[0] != "n" && judged_by_files(x) && !self.kept_row_stands(x))
     }
 
     /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
