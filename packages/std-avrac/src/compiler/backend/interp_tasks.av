@@ -16,6 +16,12 @@ extern fn avra_vtask_park_fd(t: int, fd: int, writable: int, timeout_ms: int) ->
 extern fn avra_vtask_timed_out(t: int) -> int
 extern fn avra_vtask_interrupted(t: int) -> int
 extern fn avra_vtask_unwinding(t: int) -> int
+/// Who asked the request that stands on the task: the asker's id, or a
+/// scope's.
+extern fn avra_vtask_asker(t: int) -> int
+/// The task joined one that ended cancelled by `by`: the cancel is its
+/// own from here, and its unwind bit is set.
+extern fn avra_vtask_passed(t: int, by: int)
 /// The checked back-edge's cold side, over the evaluator's own task:
 /// 1 when it must yield, 0 when it goes on.
 extern fn avra_vtask_tick_cold(t: int) -> int
@@ -222,13 +228,28 @@ impl Machine {
     fn task_spent(handle: Val) -> bool { self.tasks[self.task_of(handle)].done }
 
     /// The task's answer — the one-cell list its body answered. Parks
-    /// until done.
+    /// until done. A task that ended cancelled has none, and its cancel
+    /// is the awaiter's.
     fn task_join_val(vals: List<Val>) -> Val {
         let id = self.task_of(vals[0])
         if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
         if !self.tasks[id].done { return self.waited_on(id) }
-        if self.tasks[id].cancelled { return self.trapped_val("a join takes a task that answers, and this one was cancelled") }
+        if self.tasks[id].cancelled { return self.cancel_passed(self.tasks[id].ended_by) }
         self.arrays[self.tasks[id].record][2]
+    }
+
+    /// A JOIN OF A TASK THAT ENDED CANCELLED CANCELS THE RUNNING TASK, by
+    /// the same asker: its bit is set at this cancel point, where its
+    /// unwind's list begins, and the join answers nothing. A task
+    /// already unwinding carries its own request, and takes on no other.
+    /// The program's own run keeps who asked for its end to say.
+    fn cancel_passed(by: int) -> Val {
+        let vt = self.tasks[self.running].vt
+        if avra_vtask_unwinding(vt) != 0 { return Val.N }
+        avra_vtask_passed(vt, by)
+        if self.running == 0 { self.cancelled_by = avra_vtask_asker(vt) }
+        self.unwind_met(vt)
+        Val.N
     }
 
     /// The running task waits for `id`, parked with the POLICY on the
@@ -368,12 +389,16 @@ impl Machine {
         self.resume_next()
     }
 
-    /// The running task answered: it is done, whoever waited on its end
-    /// ready, and the machine runs whoever is next.
+    /// The running task's body came back: it is done, whoever waited on
+    /// its end ready, and the machine runs whoever is next. A BODY THAT
+    /// COMES BACK UNWINDING ENDED CANCELLED, by whoever asked the request
+    /// that stands on it; one that answered names itself.
     fn finished(answer: Val?) -> Place {
         let t = self.tasks[self.running]
+        let cut = avra_vtask_unwinding(t.vt) != 0
         self.tasks[self.running].frames = []
-        self.ended(self.running, answer ?? Val.N, t.id)
+        self.tasks[self.running].cancelled = cut
+        self.ended(self.running, answer ?? Val.N, if cut { avra_vtask_asker(t.vt) } else { t.id })
         avra_vtask_end(t.vt)
         if t.record >= 0 { self.releases_val(Val.A(t.record)) }
         self.resume_next()
@@ -381,9 +406,10 @@ impl Machine {
 
     /// The task `id` ended: its answer left in its record, what it
     /// carried released, and its gate — when a join or a wait set asked
-    /// for one — open for ever, each waiter woken under `by`: the task
-    /// that ended it, its own or the one that answered or cancelled a
-    /// task nothing runs.
+    /// for one — open for ever. `by` is who ended it: its own id, the
+    /// asker of the cancel it left by, or whoever answered or cancelled
+    /// a task nothing runs. Its waiters wake under the task's own id
+    /// when it ran, as a compiled task's do, and under `by` otherwise.
     fn ended(id: int, answer: Val, by: int) {
         let t = self.tasks[id]
         self.tasks[id].ended_by = by
@@ -393,7 +419,7 @@ impl Machine {
         for v in t.slots { self.releases_val(v) }
         self.tasks[id].slots = []
         let gate? = t.gate else { return }
-        avra_vgate_ended(gate, by)
+        avra_vgate_ended(gate, if t.unrun() { by } else { t.id })
         avra_rc_release(gate)
         self.tasks[id].gate = null
     }

@@ -44,7 +44,10 @@ void avra_tasks_push(void* owner, void* task);
 
 // The task's answer, owned — parking the caller until it is done. A
 // cancel of the caller cuts the park: the unwind bit is set and NULL
-// comes back. A task that ended cancelled has no answer: it traps.
+// comes back — whatever the task did meanwhile, an unwinding caller is
+// handed nothing. A task that ended cancelled has no answer, and its
+// cancel is the caller's: cancelled by the same asker, the bit set,
+// NULL back. Under a shield, where a deferred call runs whole, it traps.
 void* avra_task_join(void* task);
 
 // A caught join: waits for the task to end WITHOUT passing its cancel
@@ -216,6 +219,13 @@ int64_t avra_vtask_tick_cold(int64_t t);
 // The task's unwind bit, as the evaluator sets it: a wait that cuts in a
 // virtual task raises it the way the switch raises a compiled task's.
 void avra_vtask_set_unwinding(int64_t t, int64_t v);
+// Who asked the request that stands on the task: the asker's id, or a
+// scope's — what its record names when it ends unwinding.
+int64_t avra_vtask_asker(int64_t t);
+// The task joined one that ended cancelled by `by`: the cancel is its
+// own from here — a request that stands is not displaced — and its
+// unwind bit is set.
+void avra_vtask_passed(int64_t t, int64_t by);
 int64_t avra_vtask_within(int64_t t, int64_t ms);
 int64_t avra_vtask_within_end(int64_t t, int64_t id);
 // The shield's row pair, on the virtual task `t` — the same policy a
