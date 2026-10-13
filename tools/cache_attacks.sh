@@ -1370,7 +1370,7 @@ got_drm2=$($R/drm/src/main 2>&1)
 [ "$got_drm2" = "drm 22" ] || { fails=$((fails+1)); echo "FAIL  warm drm printed '$got_drm2', wanted 'drm 22' — decl()'s pinned-handle read lost the file-grain edge"; }
 
 # A TYPE ADDED, INSERTED OR REMOVED MOVES ITS MODULE'S INTERFACE, AND THE
-# HOLD TAKES IT (a fn nobody names moves nothing: tools/fn_add_attack.sh): `b` names
+# HOLD TAKES IT, while a fn `b` never names moves nothing (both pinned): `b` names
 # `a` and a collect in `coll`, so an interface move in `a` re-reads `b` while `coll`
 # stays held — and `b` types `entries.length`
 # against the held collect's recorded type. ND judges one warm check (held,
@@ -1383,7 +1383,8 @@ printf 'export widget one { n -> n + 1 }\nexport widget two { n -> n + 2 }\n' > 
 printf 'type Entry = { name: string, ran: fn(int) -> int }\nexport collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name\n' > $R/nd/src/coll/table.av
 printf 'use a.{fa}\nuse coll.{entries}\nexport fn fb() -> int { entries.length + fa() }\n' > $R/nd/src/b/mod.av
 printf 'use b.{fb}\nprintln("nd ${fb()}")\n' > $R/nd/src/main.av
-ND() { # ND <label>
+ND() { # ND <label> [read|held]: whether b re-reads (default read)
+    want_b=${2:-read}
     steps=$((steps+1))
     rm -rf $R/nd.warm; cp -R .avra-cache $R/nd.warm
     out=$(./avra check --time $R/nd 2>&1); st=$?
@@ -1394,21 +1395,32 @@ ND() { # ND <label>
         *) fails=$((fails+1)); echo "FAIL  $1: held nothing (exit $st)" ;;
     esac
     case "$read_list" in *coll/*) fails=$((fails+1)); echo "FAIL  $1: coll was read, wanted held: $(printf '%s' "$read_list" | tr '\n' ' ')" ;; esac
-    case "$read_list" in *b/mod.av*) ;; *) fails=$((fails+1)); echo "FAIL  $1: b was held, wanted read: $(printf '%s' "$read_list" | tr '\n' ' ')" ;; esac
+    case "$read_list" in
+        *b/mod.av*) [ "$want_b" = read ] || { fails=$((fails+1)); echo "FAIL  $1: b was read, wanted held: $(printf '%s' "$read_list" | tr '\n' ' ')"; } ;;
+        *) [ "$want_b" = held ] || { fails=$((fails+1)); echo "FAIL  $1: b was held, wanted read: $(printf '%s' "$read_list" | tr '\n' ' ')"; } ;;
+    esac
     rm -rf .avra-cache; cp -R $R/nd.warm .avra-cache
     held_says=$(./avra check $R/nd 2>&1 | unwatched)
     rm -rf .avra-cache; plain_says=$(./avra check $R/nd 2>&1 | unwatched)
     steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  $1: a warm check speaks otherwise than a cold one: $(printf '%s' "$held_says" | head -3 | tr '\n' ' ')"; }
 }
 rm -rf .avra-cache; ./avra check $R/nd >/dev/null 2>&1
+printf 'export fn fnew() -> int { 3 }\n' >> $R/nd/src/a/mod.av
+ND "nd: a fn nobody in b names, appended to a" held
+ed $R/nd/src/a/mod.av 'export fn fz()' 'fn fmid() -> int { 4 }
+export fn fz()'
+ND "nd: a fn nobody in b names, inserted between two in a" held
+ed $R/nd/src/a/mod.av 'export fn fnew() -> int { 3 }
+' ''
+ND "nd: a fn nobody in b names, removed from a" held
 printf 'export type Fnew = { n: int }\n' >> $R/nd/src/a/mod.av
-ND "nd: a type appended to a"
+ND "nd: a type appended to a" read
 ed $R/nd/src/a/mod.av 'export fn fz()' 'type Fmid = { n: int }
 export fn fz()'
-ND "nd: a type inserted between two in a"
+ND "nd: a type inserted between two in a" read
 ed $R/nd/src/a/mod.av 'export type Fnew = { n: int }
 ' ''
-ND "nd: a type nobody uses removed from a"
+ND "nd: a type nobody uses removed from a" read
 vh_nd=$(./avra check $R/nd --verify-held 2>&1 | unwatched)
 steps=$((steps+1))
 case "$vh_nd" in
