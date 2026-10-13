@@ -82,7 +82,7 @@ MUTATIONS = [
     ("a standing cancel is answered before a claim another party made while the set armed", "    if (f->claimed == CLAIMED) return 0;\n", ""),
     ("an arm found ready at arming outranks a standing cancel and a passed limit", "    if (f->claimed == CLAIMED) return 0;\n", "    if (f->claimed) return 0;\n"),
     ("an open gate's claim at arming is read as another party's", "        if (f->claimed) f->claimed = CLAIMED_OWN;\n", ""),
-    ("a passed limit is not heard at a wait", "    if (deadline_passed(f)) { cut_claims(f, 1, BY_DEADLINE); return 0; }\n", ""),
+    ("a passed limit is not heard at a wait", "    if ((f->scope_by | f->deadline) != 0 && deadline_passed(f)) { cut_claims(f, 1, BY_DEADLINE); return 0; }\n", ""),
     ("a cut leaves the arm a task claimed for itself standing", "    f->claimed = 0;\n    set_claimed(f, -1, member, by);", "    set_claimed(f, -1, member, by);"),
     ("a task that waits without switching never asks the world", " && ++f->own_turns >= FAIR_TURNS) world_asked(f);", " && 0) world_asked(f);"),
     ("the turns that ask the world never ask the poller", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n    if (g_parked_fds > 0) poller_wait(0);\n}", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n}"),

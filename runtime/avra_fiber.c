@@ -1754,6 +1754,7 @@ static void world_asked(Fiber* f) {
 
 // A cut — a cancel, a passed limit — answers in place of the arm a
 // task claimed for itself.
+__attribute__((noinline, cold))
 static void cut_claims(Fiber* f, int32_t member, int64_t by) {
     f->claimed = 0;
     set_claimed(f, -1, member, by);
@@ -1763,13 +1764,16 @@ static void cut_claims(Fiber* f, int32_t member, int64_t by) {
 // ANOTHER PARTY'S CLAIM COMES FIRST — a value handed while the set was
 // arming is taken before anything else is heard — then a cancel that
 // stands, then a deadline that has passed, and THE TASK'S OWN CLAIM
-// LAST: a task whose every wait finds an arm ready hears both.
-static int park_begun(Fiber* f) {
+// LAST: a task whose every wait finds an arm ready hears both. Such a
+// task takes this path every turn, so it stays in line and calls
+// nothing while no cancel, no limit and no count comes due.
+__attribute__((always_inline))
+static inline int park_begun(Fiber* f) {
     f->heeds = 1;
     if (f->claimed == CLAIMED) return 0;
     if (f->claimed && (g_timers_len > 0 || g_parked_fds > 0) && ++f->own_turns >= FAIR_TURNS) world_asked(f);
     if (f->cancel_by != 0 && !shield_scope_stands(f)) { cut_claims(f, 0, f->cancel_by - 1); return 0; }
-    if (deadline_passed(f)) { cut_claims(f, 1, BY_DEADLINE); return 0; }
+    if ((f->scope_by | f->deadline) != 0 && deadline_passed(f)) { cut_claims(f, 1, BY_DEADLINE); return 0; }
     if (f->claimed) return 0;
     f->parked = 1;
     f->state = FIBER_PARKED;
