@@ -15,6 +15,7 @@ use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, 
 use @std.path.{joined_path}
 use @std.relation.engine.{map_cell}
 use core.{digest_of, joined}
+use core.debug.{qtrace, traced}
 
 /// WHAT THE STORE KEEPS, as a KIND — so a family cannot be misspelled and every match
 /// over it is exhaustive. Adding one is this enum and a directory name, which is the
@@ -131,7 +132,17 @@ fn read_spelled(line: string) -> Read? {
 /// families naming the same parts stay apart.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a family and its parts in, the key out.
 export fn node_key(family: Stored, parts: List<string>) -> string {
-    digest_of(joined([family.name()].concat(parts), "\n"))
+    let key = digest_of(joined([family.name()].concat(parts), "\n"))
+    if traced() { key_words().put(key, parts.first() ?? "") }
+    key
+}
+
+/// Under a trace, the first word of each key's parts — what kind of row the key names.
+once fn key_words() -> Cell<Map<string, string>> { map_cell() }
+
+/// One lookup's trace line by the kind of row it asked, so a family's traffic can be told apart.
+fn kind_line(op: string, hit: bool, family: Stored, key: string) -> string {
+    "Q\tstore\tkind\t${op}\t${if hit { "hit" } else { "miss" }}\t${family.name()}\t${key_words().get().get(key) ?? "?"}\n"
 }
 
 impl Store {
@@ -167,6 +178,12 @@ impl Store {
     /// HAS THIS CHANGED? A row set aside, or — for a packed family — the index an
     /// open built; a file family asks two `exists`, reading nothing.
     fn has(family: Stored, key: string) -> bool {
+        let found = self.holds_row(family, key)
+        if traced() { qtrace(kind_line("has", found, family, key)) }
+        found
+    }
+
+    fn holds_row(family: Stored, key: string) -> bool {
         if self.aside_row(family, key) != null { return true }
         if family.file_family() {
             self.on_disk(family, key)
@@ -189,6 +206,12 @@ impl Store {
 
     /// The bytes a key names, or nothing when the row is not committed.
     fn get(family: Stored, key: string) -> string? {
+        let found = self.read_row(family, key)
+        if traced() { qtrace(kind_line("get", found != null, family, key)) }
+        found
+    }
+
+    fn read_row(family: Stored, key: string) -> string? {
         let aside = self.aside_row(family, key)
         if aside != null { return aside }
         if family.file_family() {
