@@ -250,7 +250,7 @@ impl Workspace {
         // resolved and a declaration a `@derive` generated stands —
         // the same completeness `failures()` leans on. A pass that ran
         // earlier is refused above.
-        let fns = [x.id for x in self.decls.all_decls() if self.read_member(x.kind, x.external, x.file, x.root)]
+        let fns = [x.id for x in self.decls.unheld_decls() if self.read_member(x.kind, x.external, x.file, x.root)]
         let solved = self
             .read_fixpoint
             .solve([d.index for d in fns], (arg: int) -> self.read_contribution(DeclId { index: arg }))
@@ -434,6 +434,14 @@ impl Workspace {
         )
     }
 
+    /// Every body a unit lowered belongs to the unit's declaration: a specialization
+    /// wears a name no declaration spells, and its read names the generic that holds
+    /// the body it was made from.
+    fn owned(w: Wanted, out: Unit) {
+        let d? = w.decl else { return }
+        for b in out.bodies { self.hold.owners.put(b.name, d) }
+    }
+
     /// One unit: served from its kept row when `rows` allows, else lowered and,
     /// when it spoke nothing, kept.
     fn lowered_unit(w: Wanted, rows: bool) -> Unit {
@@ -441,6 +449,7 @@ impl Workspace {
         if traced() { qtrace("Q\tunit\t${if served == null { "lowered" } else { "served" }}\t${w.name}\n") }
         if served != null { return served! }
         let out = self.lower_requested(w)
+        self.owned(w, out)
         if rows { self.unit_kept(w, out) }
         out
     }
@@ -681,6 +690,8 @@ impl Workspace {
     /// `const<index>`, so a prefix match resolves index 12 to index 1 and
     /// holds the reader on the wrong declaration.
     fn decl_for_body(f: FileId, name: string) -> DeclId? {
+        let owner = self.hold.owners.get().get(name)
+        if owner != null && self.decls.decl(owner!).file == f { return owner }
         if name.ends_with("\$w") { return self.decl_for_body(f, name.split("\$w")[0]) }
         let by_symbol = [d for d in self.decls.decls_of_file(f) if self.decls.symbol(d) == name]
             .first()

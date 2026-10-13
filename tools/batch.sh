@@ -1,16 +1,19 @@
 #!/bin/sh
 # THE AUTO-BATCHER: approved PR branches, one integration PR.
 #
-#   sh tools/work batch [--n N] [--attacks-ran N=EVIDENCE]… <pr>…
+#   sh tools/work batch [--n N] [--attacks-ran N=EVIDENCE]… [--suites-ran N=EVIDENCE]… <pr>…
 #   sh tools/work batch close <N>
 #
 # `batch` builds batch-<N> off origin/main and merges each member's head in
 # the order given, pushes it, opens ONE PR, arms auto-merge, and retitles each
-# member "DO NOT MERGE (lands via batch #N) — <its title>". A member is refused
-# when its `test` check is not SUCCESS, or its `cache-attacks` job is FAILURE.
-# When `cache-attacks` did not run (SKIPPED, or absent) the member needs
-# --attacks-ran N=EVIDENCE, and that evidence is printed on the batch PR. A
-# merge that conflicts is aborted and named; nothing is resolved here.
+# member "DO NOT MERGE (lands via batch #N) — <its title>". A READY member is
+# refused when its `test` check is not SUCCESS. A DRAFT member's run is the
+# light gate, so it is judged by its `gate`, `keepers-static` and `codecs`
+# checks, and its heavy legs did not run: each needs its evidence from the
+# Sprite, --attacks-ran / --attacks-na for cache-attacks and --suites-ran for
+# the suites. A member whose `cache-attacks` job is FAILURE is refused either
+# way. The batch PR is a ready PR, so its own run is the full gate. A merge
+# that conflicts is aborted and named; nothing is resolved here.
 #
 # `batch close <N>` runs once the batch PR has merged: it closes each member
 # with a pointer to the batch PR. A batch that did not merge closes nothing,
@@ -23,7 +26,8 @@ gh_=${AVRA_GH:-gh}
 die() { echo "batch: $*" >&2; exit 1; }
 
 # One member's facts, tab-separated: number, state, draft, title, head branch,
-# the `test` check, the `cache-attacks` check, and its before/after line.
+# the `test` check, the `cache-attacks` check, its before/after line, and the
+# light gate's checks (`gate`, `keepers-static`, `codecs`).
 member_facts() {
     $gh_ pr view "$1" --json number,title,headRefName,isDraft,state,body,statusCheckRollup |
         python3 -c '
@@ -40,7 +44,8 @@ for line in (pr.get("body") or "").splitlines():
         break
 row = [str(pr["number"]), pr["state"], "draft" if pr.get("isDraft") else "ready",
        pr["title"], pr["headRefName"], checks.get("test", "ABSENT"),
-       checks.get("cache-attacks", "ABSENT"), before]
+       checks.get("cache-attacks", "ABSENT"), before,
+       checks.get("gate", "ABSENT"), checks.get("keepers-static", "ABSENT"), checks.get("codecs", "ABSENT")]
 print("\t".join(x.replace("\t", " ").replace("\n", " ") for x in row))'
 }
 
@@ -150,6 +155,7 @@ batch_build() {
     n=
     attacks=
     na=
+    suites=
     plan=
     draft=
     while [ "$#" -gt 0 ]; do
@@ -161,12 +167,14 @@ batch_build() {
 "; shift 2 ;;
             --attacks-na) na="$na$2
 "; shift 2 ;;
+            --suites-ran) suites="$suites$2
+"; shift 2 ;;
             --) shift; break ;;
             -*) die "unknown flag $1" ;;
             *) break ;;
         esac
     done
-    [ "$#" -ge 1 ] || die "usage: batch [--n N] [--attacks-ran N=EVIDENCE]… <pr>…"
+    [ "$#" -ge 1 ] || die "usage: batch [--n N] [--attacks-ran N=EVIDENCE]… [--suites-ran N=EVIDENCE]… <pr>…"
     [ -n "$plan" ] || [ -z "$(git status --porcelain --untracked-files=no)" ] || die "commit or drop your changes first"
     git fetch -q origin main || die "fetch of main failed"
     if [ -z "$n" ]; then
@@ -186,11 +194,25 @@ batch_build() {
         state=$(printf '%s' "$row" | cut -f2)
         title=$(printf '%s' "$row" | cut -f4)
         head=$(printf '%s' "$row" | cut -f5)
+        mdraft=$(printf '%s' "$row" | cut -f3)
         test=$(printf '%s' "$row" | cut -f6)
         attacks_state=$(printf '%s' "$row" | cut -f7)
         before=$(printf '%s' "$row" | cut -f8)
+        gate=$(printf '%s' "$row" | cut -f9)
+        kstatic=$(printf '%s' "$row" | cut -f10)
+        codecs=$(printf '%s' "$row" | cut -f11)
         [ "$state" = OPEN ] || refuse "#$num is $state, not open"
-        [ "$test" = SUCCESS ] || refuse "#$num refused: its test check is $test, not SUCCESS"
+        if [ "$mdraft" = draft ]; then
+            [ "$gate" = SUCCESS ] || refuse "#$num refused: its light gate check is $gate, not SUCCESS"
+            [ "$kstatic" = SUCCESS ] || refuse "#$num refused: its keepers-static check is $kstatic, not SUCCESS"
+            case "$codecs" in SUCCESS | SKIPPED | ABSENT) ;; *) refuse "#$num refused: its codecs check is $codecs" ;; esac
+            ev=$(evidence_from "$num" "$suites")
+            [ -n "$ev" ] || refuse "#$num is a draft: its suites did not run on the light gate — pass --suites-ran $num=\"<the Sprite result>\""
+            needs="$needs
+#$num: suites ran — $ev"
+        else
+            [ "$test" = SUCCESS ] || refuse "#$num refused: its test check is $test, not SUCCESS"
+        fi
         case "$attacks_state" in
             SUCCESS) ;;
             FAILURE | ERROR | TIMED_OUT) refuse "#$num refused: its cache-attacks job is $attacks_state" ;;
