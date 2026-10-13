@@ -2,7 +2,7 @@
 //! read by a name that outlives the process and the digest of the value read. A relation
 //! is named by its rows; a compiler family is named here, by the durable key of the
 //! declaration it answers for and its settled hash.
-use core.{DeclId, ExprId, FileId, ModuleId, distinct, joined}
+use core.{DeclId, ExprId, FileId, ModuleId, distinct, joined, leaves_digests}
 use features.{SettleRoot, SeatValue}
 use @std.relation.db.{AnswerRef}
 use @std.relation.engine.{Key}
@@ -215,24 +215,40 @@ impl Workspace {
     /// The families whose answers are named, registered with the declaration table's Db.
     fn answers_named() {
         let rdb = self.decls.rows_db.get()
-        rdb.answer_known(self.named_sigs())
-        rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
-        rdb.answer_known(self.named_consts("Settled", Family.Settled))
-        rdb.answer_known(self.named_by_decl("Marks", Family.Marks))
-        rdb.answer_known(self.named_by_decl("Writes", Family.Writes))
-        rdb.answer_known(self.named_inputs())
-        rdb.answer_known(self.named_manifests())
-        rdb.answer_known(self.named_lifts())
-        rdb.answer_known(self.named_by_decl("Methods", Family.Methods))
-        rdb.answer_known(self.named_by_file("Parsed", Family.Parsed))
-        rdb.answer_known(self.named_by_file("Items", Family.Items))
-        rdb.answer_known(self.named_by_file("Visible", Family.Visible))
-        rdb.answer_known(self.named_by_file("Resolved", Family.Resolved))
-        rdb.answer_known(self.named_by_file("Analysis", Family.Analysis))
-        rdb.answer_known(self.named_by_decl("Names", Family.Names))
-        rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
-        rdb.answer_known(self.named_once("References", Family.References))
-        rdb.answer_known(self.named_by_bucket())
+        for r in self.named_answers() { rdb.answer_known(r) }
+    }
+
+    /// Every named family, in registration order.
+    fn named_answers() -> List<AnswerRef> {
+        [
+            self.named_sigs(),
+            self.named_consts("ConstTyped", Family.ConstTyped),
+            self.named_consts("Settled", Family.Settled),
+            self.named_by_decl("Marks", Family.Marks),
+            self.named_by_decl("Writes", Family.Writes),
+            self.named_inputs(),
+            self.named_manifests(),
+            self.named_lifts(),
+            self.named_by_decl("Methods", Family.Methods),
+            self.named_by_file("Parsed", Family.Parsed),
+            self.named_by_file("Items", Family.Items),
+            self.named_by_file("Visible", Family.Visible),
+            self.named_by_file("Resolved", Family.Resolved),
+            self.named_by_file("Analysis", Family.Analysis),
+            self.named_by_decl("Names", Family.Names),
+            self.named_by_module("Namespace", Family.Namespace),
+            self.named_once("References", Family.References),
+            self.named_by_bucket(),
+        ]
+    }
+
+    /// One line per settled answer of a named family: its name, what it is spelled as, its
+    /// digest. Two processes over one tree agree line for line where a digest is durable.
+    fn digest_lines() -> List<string> {
+        let refs = self.named_answers()
+        flatten(
+            [["digest\t${r.name}\t${(r.spelled)(k.arg) ?? "?${k.arg}"}\t${(r.hash)(k.arg) ?? 0 - 1}" for k in self.db.kernel.settled_keys() if k.family == r.family_now()] for r in refs],
+        )
     }
 
     /// The `Named` cells: a name's bucket of declarations, spelled by the name.
@@ -302,12 +318,12 @@ impl Workspace {
 
     /// Every family the meter covers.
     fn leaves_report() -> string {
-        [
+        let meters = [
             self.leaves_meter(Family.Typed, self.decls.decl_count()),
             self.leaves_meter(Family.Lowered, self.asks.get().length),
             self.leaves_meter(Family.Settled, self.settle_asks.get().length),
         ]
-            .join("\n")
+        if leaves_digests() { self.digest_lines() } else { [] }.concat(meters).join("\n")
     }
 
     fn family_name(ordinal: int) -> string {
