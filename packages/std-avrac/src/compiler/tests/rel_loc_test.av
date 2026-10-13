@@ -49,6 +49,25 @@ spec "compiler/rel_loc — a kept place follows its declaration" {
         then "a place in a method nested in an impl" { lands("self.v", 0, 6) }
         then "a place on a use line, which is a declaration of its own" { lands("use a", 0, 5) }
     }
+    given "a place in another file's declaration" {
+        then "a copied template's place names its ORIGIN file, and follows that file's declaration" {
+            let origin = "/w/src/o.av"
+            let text = "fn made() -> int {\n    7\n}\n"
+            let moved = "// moved\n${text}"
+            let what = Loc { file: origin, lo: text.index_of("7"), hi: text.index_of("7") + 1 }
+            let files = {origin: text, "/w/src/b.av": "fn other() -> int {\n    1\n}\n"}
+            let a = a_process_over(files, [origin, "/w/src/b.av"])
+            let read? = anchoring_of_wire(anchoring_wire(a.anchoring(what))) else { return false }
+            let b = a_process_over(
+                {origin: moved, "/w/src/b.av": "fn other() -> int {\n    1\n}\n"},
+                [origin, "/w/src/b.av"],
+            )
+            match b.whereabouts(read) {
+                .At(l) -> l.file == origin && l.lo == what.lo + 9 && l.hi == what.hi + 9,
+                .Gone -> false,
+            }
+        }
+    }
     given "a place no declaration holds whole" {
         then "one that starts in a declaration and ends in the next is unplaceable" {
             match kept_of(base(), place_of(base(), "1\n}", 0, 20)) {
