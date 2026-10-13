@@ -67,12 +67,18 @@ spec "compiler/answers — a workspace's @query answers carry the texts they rea
             asked(files_of("12345", "an edit elsewhere"), s) == "5/0"
         }
     }
-    given "a store the workspace never attached" {
-        then "nothing is kept and the query runs every time" {
-            let a = new_workspace(memory_host(files_of("12345", "b"), ["/w/avra.toml"]), "/w", avra())
-            a.stage_text("/w/src/a.av")
-            let first = text_length(a.decls.rows_db.get(), "/w/src/a.av")
-            first == 5
+    given "a workspace that never attached a store" {
+        then "nothing is kept: each process runs the query" {
+            asked_detached(files_of("12345", "b")) == "5/1" && asked_detached(files_of("12345", "b")) == "5/1"
         }
     }
+}
+
+/// `asked`, in a process with no store attached.
+fn asked_detached(files: Map<string, string>) -> string {
+    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    ws.stage_text("/w/src/a.av")
+    let before = computes().get()
+    let n = text_length(ws.decls.rows_db.get(), "/w/src/a.av")
+    "${n}/${computes().get() - before}"
 }
