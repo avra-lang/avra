@@ -666,6 +666,36 @@ fn same_key_parts(a: KeyParts, b: KeyParts) -> bool {
         list_eq(a.seen, b.seen, same_seen)
 }
 
+/// A kept place in a declaration with a file, with none, with an empty anchor, and with
+/// separators in the words; and the unplaceable one.
+fn anchoring_exemplars() -> List<Anchoring> {
+    [
+        Anchoring.Within(RelLoc { anchor: "src/a.av~fn~~f", file: "src/a.av", lo: 4, hi: 9 }),
+        Anchoring.Within(RelLoc { anchor: "", file: null, lo: 0, hi: 0 }),
+        Anchoring.Within(RelLoc { anchor: "a\tb\n~c", file: "", lo: 12, hi: 12 }),
+        Anchoring.Unplaceable,
+    ]
+}
+
+fn anchoring_labels() -> List<string> {
+    [
+        "a place in a declaration of a named file",
+        "no file, an empty anchor, zero width",
+        "separators in the words and an empty file",
+        "unplaceable",
+    ]
+}
+
+fn same_anchoring(a: Anchoring, b: Anchoring) -> bool {
+    match a {
+        .Within(x) -> match b {
+            .Within(y) -> x.anchor == y.anchor && x.file == y.file && x.lo == y.lo && x.hi == y.hi,
+            .Unplaceable -> false,
+        },
+        .Unplaceable -> match b { .Within(y) -> false, .Unplaceable -> true },
+    }
+}
+
 fn seen_exemplars() -> List<List<SeenPart>> {
     [
         [],
@@ -821,6 +851,14 @@ export fn codec_pairs() -> List<CodecCheck> {
             code_facts_wire,
             code_facts_from_wire,
             same_code_facts,
+        ),
+        derived(
+            "rel_loc.anchoring_wire/anchoring_of_wire",
+            anchoring_exemplars(),
+            anchoring_labels(),
+            anchoring_wire,
+            anchoring_of_wire,
+            same_anchoring,
         ),
         derived(
             "record.parts_wire/parts_of",
