@@ -431,3 +431,23 @@ export fn drop_unreferenced_values(dir: string) {
         if !wanted.contains(rev) { let _ = remove(joined_path(dir, n)) }
     }
 }
+
+/// THE REVERSE INDEX: for each input name `name_of` finds in a row's read lines, the record keys
+/// of the rows that read it. Ids only: no value is read. Built once from the read sets, and
+/// dropped by the next write.
+export fn pack_reverse(pack: Pack, name_of: fn(string) -> string?) -> Map<string, List<string>> {
+    opened_at(pack, true)
+    let built? = pack.reverse.get() else {
+        mut out: Map<string, List<string>> = {}
+        for k, h in pack.records.get() {
+            if withdrawn(pack, k) { continue }
+            for line in reads_of(pack, h) {
+                let name? = name_of(line) else { continue }
+                out.set(name, (out.get(name) ?? []).concat([k]))
+            }
+        }
+        pack.reverse.set(out)
+        return out
+    }
+    built
+}

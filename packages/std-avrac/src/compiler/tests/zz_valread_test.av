@@ -1,0 +1,18 @@
+use @std.time.{now_ns}
+use compiler.store.{pack_at, pack_put, pack_get, seal}
+
+spec "probe" {
+    given "x" {
+        then "values read" {
+            let root = "/tmp/avra-valread/${now_ns()}"
+            let w = pack_at(root, "p")
+            for i in 0..3000 { let _ = pack_put(w, "unit", "k${i}", "value number ${i} ${"x" * 0}", []) }
+            let _ = seal(w)
+            let r = pack_at(root, "p")
+            let t = now_ns()
+            let n = [pack_get(r, "unit", "k${i}") for i in 0..3000].filter(it != null).length
+            println("VALREAD ${n} reads, ${(now_ns() - t) / 3000} ns each")
+            true
+        }
+    }
+}
