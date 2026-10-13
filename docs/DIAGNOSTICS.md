@@ -33,7 +33,7 @@ the parse needed a token that is not there
 ```
 
 ```
-error[parse.expected]: expected `component`, COMPONENT, PKG, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
+error[parse.expected]: expected PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `select`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
   ╭─[witness.av:1:1]
 1 │ }
   · ┬
@@ -345,6 +345,26 @@ No witness yet.
 an `@unbroken` fn lets no other task run
 
 No witness here: `@unbroken` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is compiler/tests/unbroken_test.av.
+
+## flow.select
+
+a `select` waits on its arms, top to bottom
+
+```avra
+select {
+    1 -> 2
+}
+```
+
+```
+error[flow.select]: `select` is parsed and not yet lowered
+  ╭─[witness.av:1:1]
+1 │ select {
+  · ┬
+  · ╰── this `select`
+──╯
+help: wait on one task with `t.await`
+```
 
 ## type.component_expand
 

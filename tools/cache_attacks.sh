@@ -530,6 +530,62 @@ rm -rf .avra-cache; bk_run; bk_keys > $R/bk.k1; rm -rf .avra-cache; bk_run; bk_k
 steps=$((steps+1)); [ -s $R/bk.k1 ] && cmp -s $R/bk.k1 $R/bk.k2 || { fails=$((fails+1)); echo "FAIL  bk: two cold builds of one tree keyed their buckets differently ($(wc -l < $R/bk.k1 | tr -d ' ') vs $(wc -l < $R/bk.k2 | tr -d ' ') buckets, first difference: $(diff $R/bk.k1 $R/bk.k2 | head -2 | tr '\n' ' '))"; }
 fi
 
+if section lk; then
+# A KEPT BINARY IS REUSED ONLY WHILE WHAT LINKED IT STANDS: the C compiler that linked it (by its word
+# `CC`), the runtime archive and the package objects it linked. A wrapper script stands for the C
+# compiler, so its bytes can be changed and its word can be pointed elsewhere.
+mkdir -p $R/lk/src
+printf '[package]\nname = "rt-lk"\nversion = "0.1.0"\n' > $R/lk/avra.toml
+printf 'println("lk")\n' > $R/lk/src/main.av
+lk_cc=$(command -v clang)
+printf '#!/bin/sh\nexec %s "$@"\n' "$lk_cc" > $R/cc1; chmod +x $R/cc1
+printf '#!/bin/sh\nexec %s "$@"\n' "$lk_cc" > $R/cc2; chmod +x $R/cc2
+LK() { # LK <label> <want: hit|built> -- the env is the caller's
+    steps=$((steps+1)); out=$(./avra build --time $R/lk 2>&1); got=built
+    case "$out" in *"cache hit"*) got=hit ;; esac
+    if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [lk] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [lk] wanted $2, got $got"; fi
+}
+# a file written in the last two seconds has no stamp (two writes can wear one time), so a tool is aged first
+sleep 3
+export CC=$R/cc1
+LK "cold lk" built; LK "nothing touched" hit
+printf '# a new revision of the C compiler\n' >> $R/cc1; sleep 3
+LK "the C compiler's bytes moved" built; LK "and again nothing touched" hit
+export CC=$R/cc2
+LK "CC names another C compiler" built; LK "and that one again" hit
+unset CC
+LK "CC back to the default word" built; LK "and nothing touched" hit
+lk_rt=build/libavra_runtime.a
+cp $lk_rt $R/lk.rt.kept
+printf '\n' >> $lk_rt
+LK "the runtime archive moved" built
+cp $R/lk.rt.kept $lk_rt
+LK "and put back" built
+mv $lk_rt $R/lk.rt.away
+steps=$((steps+1)); out=$(./avra build --time $R/lk 2>&1)
+mv $R/lk.rt.away $lk_rt
+case "$out" in *"cache hit"*) fails=$((fails+1)); echo "FAIL  lk: the runtime archive was gone and the kept binary was served" ;; esac
+LK "and back again" hit
+fi
+
+if section dp; then
+# A KEPT VERDICT NEVER READS A FILE THAT IS GONE. held.av's const read z/add.av's body; the file is deleted and
+# held.av no longer uses it. The next build is clean and says nothing of the deleted path, and so is the one after.
+mkdir -p $R/dp/src/f $R/dp/src/z
+printf '[package]\nname = "rt-dp"\nversion = "0.1.0"\n' > $R/dp/avra.toml
+printf 'export fn plus(n: int) -> int { n + 1 }\n' > $R/dp/src/z/add.av
+printf 'use z.{plus}\nexport const K: int = plus(1)\nexport fn shown() -> int { K }\n' > $R/dp/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/dp/src/main.av
+S "cold dp" dp
+rm $R/dp/src/z/add.av; rmdir $R/dp/src/z
+printf 'export const K: int = 2\nexport fn shown() -> int { K }\n' > $R/dp/src/f/held.av
+S "dp: the file a kept verdict read is deleted" dp
+steps=$((steps+1)); [ "$($R/dp/src/main 2>&1)" = "2" ] || { fails=$((fails+1)); echo "FAIL  dp: the program printed '$($R/dp/src/main 2>&1)', wanted '2'"; }
+printf '// moved\n' >> $R/dp/src/main.av
+S "dp: and the build after it" dp
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
@@ -615,6 +671,27 @@ for k in nm fns; do
     fi
 done
 rm -rf $lh
+fi
+
+# A HELD FN THAT PARKS STILL LINKS THE SCHEDULER, REACHED ONLY THROUGH A VALUE. No call
+# by name leads to it, so only its interface's word says the program links: the build
+# that holds its module must check the loop's back-edge exactly as the cold build did.
+if section lv; then
+lv=$R/lv; mkdir -p $lv/src/x
+printf '[package]\nname = "lv"\nversion = "0.1.0"\n\n[bin]\nname = "lv"\npath = "src/main.av"\n' > $lv/avra.toml
+printf 'extern fn avra_fiber_sleep(ms: int)\nexport fn napped(n: int) -> int {\n    avra_fiber_sleep(0)\n    n + 1\n}\n' > $lv/src/x/nap.av
+printf 'use x.{napped}\nfn looped(g: fn(int) -> int) -> int {\n    mut i = 0\n    while i < 3 { i = g(i) }\n    i\n}\nlet g = napped\nprintln("${looped(g)}")\n' > $lv/src/main.av
+lv_state() { # lv_state <label>: how many back-edge checks the program's own code makes
+    steps=$((steps+1)); ./avra build $lv > /dev/null 2>&1
+    objdump -d $lv/src/main 2>/dev/null | grep -c '<_\{0,1\}avra_tick_cold>$' > $R/lv.$1.ticks
+}
+lv_state cold
+printf '// edited\n' >> $lv/src/main.av
+lv_state warm
+if [ "$(cat $R/lv.cold.ticks)" -gt 0 ] 2>/dev/null && cmp -s $R/lv.cold.ticks $R/lv.warm.ticks; then :; else
+    fails=$((fails+1)); echo "FAIL  lv: a held fn that parks, reached only through a value: the loop's check differs warm from cold: cold [$(cat $R/lv.cold.ticks)] warm [$(cat $R/lv.warm.ticks)]"
+fi
+rm -rf $lv
 fi
 
 # CACHE_ATTACKS set: the sections named above are the whole run.
