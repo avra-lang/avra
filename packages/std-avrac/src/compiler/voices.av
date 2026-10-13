@@ -700,24 +700,31 @@ fn file_lexes_block(ws: Workspace, path: string) -> bool {
             .relation(Family.BlockScan)
             .demand(
                 ws.text_key(path),
-                () -> {
-                    let text = ws.listed_text(path)
-                    // THE DB ANSWERS BEFORE THE LEXER: the verdict is the text's own, so a
-                    // row under its digest holds for every process that reads these bytes —
-                    // but the VERDICT also depends on which keywords THIS compiler's
-                    // assembled grammar opens a block with, so the compiler's own print
-                    // joins the key too. So what the store answers is a function of the
-                    // input this query already read: its read records nothing more.
-                    let store = ws.opened_store()
-                    let key = digest_of("scan\n${ws.compiler_id()}\n${text}")
-                    let kept = ws.db.scan(store, key)
-                    let found = if kept != null { kept! == "1" } else { text_opens_block(text, ws.lang.keywords) }
-                    if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
-                    DbRow.Flag(found)
-                },
+                () -> DbRow
+                    .Flag(
+                        scanned_flag(
+                            ws,
+                            "block",
+                            ws.listed_text(path),
+                            (text) -> text_opens_block(text, ws.lang.keywords),
+                        ),
+                    ),
                 flag_print,
             ),
     )
+}
+
+/// A text's yes-or-no scan verdict, answered by the store before the lexer runs. The verdict is
+/// the text's own and this compiler's grammar's, so the row's key is the text under `tag` and the
+/// compiler's print; what the store answers is a function of the input the query already read.
+// LICENSED compiler.free_state_verb: see interface.av's record helpers — a Workspace method trips F2010.
+fn scanned_flag(ws: Workspace, tag: string, text: string, asked: fn(string) -> bool) -> bool {
+    let store = ws.opened_store()
+    let key = digest_of("${tag}\n${ws.compiler_id()}\n${text}")
+    let kept = ws.db.scan(store, key)
+    let found = if kept != null { kept! == "1" } else { asked(text) }
+    if kept == null { ws.db.insert_scan(store, key, if found { "1" } else { "0" }) }
+    found
 }
 
 /// Whether a file declares a component — `component NAME`, then its
@@ -731,7 +738,8 @@ fn file_declares_component(ws: Workspace, path: string) -> bool {
             .relation(Family.ComponentScan)
             .demand(
                 ws.text_key(path),
-                () -> DbRow.Flag(declares_a_component(ws.listed_text(path))),
+                () -> DbRow
+                    .Flag(scanned_flag(ws, "component", ws.listed_text(path), declares_a_component)),
                 flag_print,
             ),
     )
