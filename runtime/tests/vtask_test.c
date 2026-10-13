@@ -183,6 +183,64 @@ static void cancelled_join(void) {
     avra_vtask_free(j);
 }
 
+// A TASK'S END WAKES ITS JOINERS AND THE SETS ON IT IN ONE ORDER: the
+// order they came, a joiner between two sets as it was filed.
+static void end_wakes_in_order(void) {
+    void* end = avra_gate_new();
+    int64_t first = avra_vtask_new(), joiner = avra_vtask_new(), last = avra_vtask_new();
+    avra_vtask_wait_gate(first, end, 3, 0);
+    CHECK(avra_vtask_park(first) == 1, "a set parks on a task's end");
+    CHECK(avra_vtask_join(joiner, end) == 1, "a joiner parks on it after");
+    avra_vtask_wait_gate(last, end, 4, 0);
+    CHECK(avra_vtask_park(last) == 1, "and a second set after the joiner");
+    avra_vgate_ended(end, 7);
+    CHECK(avra_vtask_next() == first, "the end wakes the first set first");
+    CHECK(avra_vtask_claim(first) == ((int64_t)3 << 32), "on its own arm");
+    CHECK(avra_vtask_next() == joiner, "then the joiner, where it was filed");
+    CHECK(avra_vtask_next() == last, "then the set that came after it");
+    CHECK(avra_vtask_claim(last) == ((int64_t)4 << 32), "on its own arm");
+    CHECK(avra_vtask_join(joiner, end) == 0, "a join after the end parks nothing");
+    avra_rc_release(end);
+    avra_vtask_free(first);
+    avra_vtask_free(joiner);
+    avra_vtask_free(last);
+}
+
+// A VIRTUAL TASK'S OWN CLAIM RANKS AS A COMPILED ONE'S: an arm found
+// ready as it armed gives way to a cancel that stands.
+static void ready_arm_hears_cancel(void) {
+    void* open = avra_gate_new();
+    avra_vgate_open(open);
+    int64_t t = avra_vtask_new();
+    avra_vtask_wait_gate(t, open, 2, 0);
+    CHECK(avra_vtask_park(t) == 0 && avra_vtask_claim(t) == ((int64_t)2 << 32), "an open gate claims a virtual task's set as it arms");
+    avra_vtask_cancel(t, 0);
+    avra_vtask_wait_gate(t, open, 2, 0);
+    CHECK(avra_vtask_park(t) == 0, "under a cancel its next park does not switch either");
+    CHECK(avra_vtask_claim(t) == (int64_t)0xffffffff00000000LL, "and answers the cancel, not the arm");
+    CHECK(avra_vtask_unwinding(t) == 1, "with its own unwind bit set");
+    avra_rc_release(open);
+    avra_vtask_free(t);
+}
+
+// A VIRTUAL TASK SCANS AS A COMPILED ONE DOES: its scan hears a cancel
+// on its own bit, and its rest says when nothing is filed.
+static void a_virtual_scan(void) {
+    void* shut = avra_gate_new();
+    int64_t t = avra_vtask_new();
+    CHECK(avra_vtask_enter(t) == 0, "a virtual scan begins with nothing standing");
+    CHECK(avra_vtask_rest(t) == -1, "its rest with nothing filed answers -1");
+    avra_vtask_wait_gate(t, shut, 0, 0);
+    CHECK(avra_vtask_rest(t) == 1, "and parks on what is filed");
+    CHECK(avra_vgate_claim(t, shut) == 0 && avra_vtask_next() == t, "a claim readies it");
+    avra_vtask_claim(t);
+    avra_vtask_cancel(t, 0);
+    CHECK(avra_vtask_enter(t) == (int64_t)0xffffffff00000000LL, "under a cancel its next scan answers -1:0");
+    CHECK(avra_vtask_unwinding(t) == 1, "with its own unwind bit set");
+    avra_rc_release(shut);
+    avra_vtask_free(t);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -210,7 +268,10 @@ int main(void) {
     a_passed_cancel();
     shields();
     cancelled_join();
+    end_wakes_in_order();
+    ready_arm_hears_cancel();
     a_standing_cancel_at_a_park();
+    a_virtual_scan();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);

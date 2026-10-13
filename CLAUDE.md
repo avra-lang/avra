@@ -888,7 +888,8 @@ registry is the idiom engine's spec, written by dogfooding.
   that refresh, and the pin law holds across the tree.
 - THE PRELUDE IS THE FLOOR: `@std/prelude` (packages/std-prelude) is
   seen by every file in every package without a `use` — `println`,
-  `eprintln` and `Entry<K, V>` (what `m.entries()` answers) today,
+  `eprintln`, `Entry<K, V>` (what `m.entries()` answers) and
+  `Cancelled` (what `t.await catch c ->` binds) today,
   and nothing a program can be compiled without; a name that fails
   that test belongs to a package above.
   It is a PACKAGE the toolchain carries, not a scope the resolver
