@@ -64,7 +64,8 @@ fn bits_word(ws: Workspace, name: string) -> string {
 fn links_of(lines: List<string>, names: List<string>) -> string {
     let ws = reach_workspace(lines.concat([""]).join("\n"))
     let _ = ws.analyze_file(REACH_PATH)
-    ["${n}=${if ws.reach_of(reach_decl(ws, n)).links { "L" } else { "-" }}" for n in names].join(" ")
+    ["${n}=${if ws.reach_of(reach_decl(ws, n)).links { "L" } else { "-" }}" for n in names]
+        .join(" ")
 }
 
 /// A program's IR, as `avra ir` prints it.
@@ -72,7 +73,13 @@ fn ir_text(lines: List<string>) -> string { render_ir(ir_of(lines.join("\n"))) }
 
 /// A fn that calls its seat in a `while`.
 fn looping() -> List<string> {
-    ["fn looped(g: fn(int) -> int) -> int {", "    mut i = 0", "    while i < 3 { i = g(i) }", "    i", "}"]
+    [
+        "fn looped(g: fn(int) -> int) -> int {",
+        "    mut i = 0",
+        "    while i < 3 { i = g(i) }",
+        "    i",
+        "}",
+    ]
 }
 
 /// A fn with a `defer` that calls its seat.
@@ -152,7 +159,14 @@ spec "compiler/cancel_reach — what links a scheduler" {
     }
     then "a lambda that parks links its maker — its body is the maker's" {
         links_of(
-            napping().concat(["fn call(f: fn() -> void) { f() }", "fn makes() { call(() -> nap()) }", "makes()"]),
+            napping()
+                .concat(
+                    [
+                        "fn call(f: fn() -> void) { f() }",
+                        "fn makes() { call(() -> nap()) }",
+                        "makes()",
+                    ],
+                ),
             ["call", "makes"],
         ) == "call=- makes=L"
     }
@@ -461,8 +475,12 @@ spec "compiler/cancel_reach — the interface" {
     then "a held fn links by the word its record carries, and one that says nothing links" {
         let lines = napping().concat(["fn plain() -> int { 1 }", "plain()"])
         let said = held_from(lines)
-        let spoken = said.reach_of(reach_decl(said, "nap")).links && !said.reach_of(reach_decl(said, "plain")).links
-        let silent = held_reading(lines, (line) -> if line.contains("\tplain\t") { bitless(line) } else { line })
+        let spoken = said.reach_of(reach_decl(said, "nap")).links &&
+            !said.reach_of(reach_decl(said, "plain")).links
+        let silent = held_reading(
+            lines,
+            (line) -> if line.contains("\tplain\t") { bitless(line) } else { line },
+        )
         spoken && silent.reach_of(reach_decl(silent, "plain")).links
     }
     then "each bit moves the interface digest, so a caller keyed on it is rebuilt" {
