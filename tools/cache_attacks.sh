@@ -431,6 +431,17 @@ steps=$((steps+1)); [ "${3:-99}" -ge 1 ] && [ "${3:-99}" -lt "${4:-0}" ] || { fa
 S "bk: and the program follows" bk
 steps=$((steps+1)); bk_out=$($R/bk/src/main 2>&1)
 [ "$bk_out" = "270" ] || { fails=$((fails+1)); echo "FAIL  bk: the program printed '$bk_out' after gtwo grew, wanted 270"; }
+# ONE NEW INSTANTIATION DIRTIES ONE BUCKET: a bucket is a function of its own members' names, not of their
+# order or number, so adding gid<R21> moves exactly the bucket it falls in.
+printf 'export type R21 = { v21: int }\nexport fn mk21() -> R21 { R21 { v21: 21 } }\n' >> $R/bk/src/g/gen.av
+ed $R/bk/src/main.av 'use g.{gid, gtwo' 'use g.{gid, gtwo, mk21'
+printf 'println("${gid(mk21()).v21}")\n' >> $R/bk/src/main.av
+bk_one=$(bk_objects); set -- $bk_one
+steps=$((steps+1)); [ "${3:-99}" = 1 ] || { fails=$((fails+1)); echo "FAIL  bk: one new instantiation compiled ${3:-?} program buckets, wanted exactly 1 (owed/linked/buckets/of: '$bk_one')"; }
+# TWO COLD BUILDS OF ONE TREE KEY EVERY BUCKET ALIKE: a bucket's bytes are a function of its source alone.
+bk_keys() { rm -rf .avra-cache; AVRA_QTRACE=1 ./avra build $R/bk 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "bucket" { print $3, $4 }' | sort -n; }
+bk_k1=$(bk_keys); bk_k2=$(bk_keys)
+steps=$((steps+1)); [ -n "$bk_k1" ] && [ "$bk_k1" = "$bk_k2" ] || { fails=$((fails+1)); echo "FAIL  bk: two cold builds of one tree keyed their buckets differently ($(printf '%s\n' "$bk_k1" | wc -l | tr -d ' ') vs $(printf '%s\n' "$bk_k2" | wc -l | tr -d ' ') buckets, first difference: $(printf '%s\n' "$bk_k1" > $R/bk.k1; printf '%s\n' "$bk_k2" > $R/bk.k2; diff $R/bk.k1 $R/bk.k2 | head -2 | tr '\n' ' '))"; }
 fi
 
 if section vd; then
