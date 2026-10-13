@@ -386,6 +386,38 @@ steps=$((steps+1)); rb_out=$($R/rb/src/main 2>&1)
 
 fi
 
+if section lz; then
+# A HELD MODULE THAT IS NEVER READ IS NEVER MINTED, AND A BUCKET READ STILL FINDS ITS ROWS. `m/mem.av`
+# is held throughout and carries the one `@seq` member; the collector beside it is edited to be read.
+# What the collector gathers must still be that member, found through the mark's bucket alone.
+mkdir -p $R/lz/src/m $R/lz/src/c
+printf '[package]\nname = "rt-lz"\nversion = "0.1.0"\n' > $R/lz/avra.toml
+printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $R/lz/src/k.av
+printf 'use k.{seq}\n/// one\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $R/lz/src/m/mem.av
+printf 'use k.{seq}\ntype Entry = { name: string, module: string, call: fn() -> int }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name, module: it.module, call: it } by it.mark.args[0]\nexport fn shown() -> string { "${xs.length} ${xs[0].name} ${xs[0].call()}" }\n' > $R/lz/src/c/col.av
+printf 'use c.{shown}\nprintln(shown())\n' > $R/lz/src/main.av
+lz_n=0
+lz_touch() { lz_n=$((lz_n+1)); printf '// moved %s\n' "$lz_n" >> $R/lz/src/c/col.av; }
+S "cold lz" lz
+lz_touch; lz_touch
+S "lz: the collector read, the member held" lz
+steps=$((steps+1)); [ "$($R/lz/src/main 2>&1)" = "1 uno 1" ] || { fails=$((fails+1)); echo "FAIL  lz: the collector gathered '$($R/lz/src/main 2>&1)', wanted '1 uno 1'"; }
+lz_touch
+HR "lz: the member's module stays held" check lz 0 m/mem.av held
+
+# AND AN EXTERN NOTHING READS IS STILL FOUND: a host fn in a held module is the program's export
+# whether or not any read file reaches it, so the link must list it with only main.av read.
+mkdir -p $R/lh/src/x
+printf '[package]\nname = "rt-lh"\nversion = "0.1.0"\n' > $R/lh/avra.toml
+printf 'extern fn avra_lh_event(who: int) -> int { who + 1 }\n' > $R/lh/src/x/host.av
+printf 'println("lh")\n' > $R/lh/src/main.av
+S "cold lh" lh
+printf '// moved\n' >> $R/lh/src/main.av
+S "lh: only main.av read" lh
+steps=$((steps+1)); case "$(cat $R/lh.err)" in *"host fn"*avra_lh_event*) [ -n "${VERBOSE:-}" ] && echo "ok    lh: the held host fn is listed" ;; *) fails=$((fails+1)); echo "FAIL  lh: a host fn in a held module was not listed by the build: '$(grep -a 'host fn' $R/lh.err | head -2)'" ;; esac
+
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
