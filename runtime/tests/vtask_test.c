@@ -183,6 +183,29 @@ static void cancelled_join(void) {
     avra_vtask_free(j);
 }
 
+// A TASK'S END WAKES ITS JOINERS AND THE SETS ON IT IN ONE ORDER: the
+// order they came, a joiner between two sets as it was filed.
+static void end_wakes_in_order(void) {
+    void* end = avra_gate_new();
+    int64_t first = avra_vtask_new(), joiner = avra_vtask_new(), last = avra_vtask_new();
+    avra_vtask_wait_gate(first, end, 3, 0);
+    CHECK(avra_vtask_park(first) == 1, "a set parks on a task's end");
+    CHECK(avra_vtask_join(joiner, end) == 1, "a joiner parks on it after");
+    avra_vtask_wait_gate(last, end, 4, 0);
+    CHECK(avra_vtask_park(last) == 1, "and a second set after the joiner");
+    avra_vgate_ended(end, 7);
+    CHECK(avra_vtask_next() == first, "the end wakes the first set first");
+    CHECK(avra_vtask_claim(first) == ((int64_t)3 << 32), "on its own arm");
+    CHECK(avra_vtask_next() == joiner, "then the joiner, where it was filed");
+    CHECK(avra_vtask_next() == last, "then the set that came after it");
+    CHECK(avra_vtask_claim(last) == ((int64_t)4 << 32), "on its own arm");
+    CHECK(avra_vtask_join(joiner, end) == 0, "a join after the end parks nothing");
+    avra_rc_release(end);
+    avra_vtask_free(first);
+    avra_vtask_free(joiner);
+    avra_vtask_free(last);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -210,6 +233,7 @@ int main(void) {
     a_passed_cancel();
     shields();
     cancelled_join();
+    end_wakes_in_order();
     a_standing_cancel_at_a_park();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
