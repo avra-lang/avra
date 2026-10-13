@@ -155,10 +155,10 @@ so no PR run publishes a binary.
 | job | when it runs |
 |---|---|
 | `prepare` | every run; plan, then a compiler and the objects/libs when `build=1` |
-| `keepers-a` / `keepers-b` | any non-push run with `build=1`; the two keeper halves on two runners |
+| `keepers-a` / `keepers-b` | any non-push run with `build=1`; `keepers-a` is two shards (`keepers-a1`, `keepers-a2`) and `keepers-b` one, each on its own runner |
 | `seed-check` | any non-push run with `build=1`; the committed seed must compile HEAD |
 | `gate` | any non-push run with a changed `.av` or an affected package; `fmt` + idioms |
-| `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks) |
+| `cache-attacks` | whenever `cache=1` (a push to `main`, a hand-run gate, or a PR that reaches the store or the attacks); two shards: `cache-attacks-a` (`tools/cache_attacks.sh`) and `cache-attacks-b` (the other attacks, plus `code-hash-attacks`) |
 | `flow-gate` | whenever `runtime/` moved |
 | `suites` | any non-push run with a non-empty affected closure; sharded (4 shards) |
 | `codecs` | a PR whose diff reaches the compiler source or the reader |

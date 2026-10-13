@@ -352,7 +352,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
+.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -588,8 +588,14 @@ compile-slots: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # kind a hold must survive, each binary held to the evaluator — and a kept binary held
 # to the archive and objects it linked. It CLEARS the store, so it runs last, and it
 # refuses a run in which no step held.
-cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+# The two shards are one job each on CI, one runner each, so the store they clear
+# is their own; locally they run in order.
+cache-attacks: cache-attacks-a cache-attacks-b
+
+cache-attacks-a: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
+
+cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
 	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
@@ -943,13 +949,17 @@ no-threads:
 # scheduler), so nothing may compete with them for a core. The mutation run
 # drives the same clocked tests, so it stands here beside them.
 KEEPERS_ALONE = runtime-tests runtime-mutations
-KEEPERS_A = read-cost speed-ratchet warm-edit codecs traps compile-slots witness stems fmt-lossless flow-trace hash-door
+# KEEPERS_A is two halves, one CI runner each, balanced by measured seconds
+# (speed-ratchet is the longest keeper, alone it is half the set).
+KEEPERS_A1 = speed-ratchet fmt-lossless hash-door stems
+KEEPERS_A2 = read-cost warm-edit codecs traps compile-slots witness flow-trace
+KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = fingerprints vocab families-left layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
-keepers keepers-alone keepers-a keepers-b:
-	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))); do \
+keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
+	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))))); do \
 	  t0=$$(date +%s); \
 	  echo "keepers: running $$k" >&2; \
 	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
@@ -1013,7 +1023,7 @@ pipeline-status:
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
 KEEPERS_STATIC = fingerprints vocab families-left layers inputs cited http-cites externs suites ci-invariants ci-verdict pr-watcher pipeline-doc
-.PHONY: keepers keepers-alone keepers-a keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
+.PHONY: keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
 	@fail=0; for k in $(KEEPERS_STATIC); do \

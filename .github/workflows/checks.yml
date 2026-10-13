@@ -450,6 +450,10 @@ jobs:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ['1', '2']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -498,9 +502,9 @@ jobs:
             python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
           }
           ta=$(date +%s)
-          peak keepers-a make -s -o avra keepers-a || a=1
-          echo "speed keepers-a $(( $(date +%s) - ta ))" >> speed.log
-          [ "$a" = 0 ] || echo "::error::a keeper in the first half refused"
+          peak keepers-a${{ matrix.group }} make -s -o avra keepers-a${{ matrix.group }} || a=1
+          echo "speed keepers-a${{ matrix.group }} $(( $(date +%s) - ta ))" >> speed.log
+          [ "$a" = 0 ] || echo "::error::a keeper in keepers-a${{ matrix.group }} refused"
           exit "$a"
 
       - name: speed baseline
@@ -602,6 +606,10 @@ jobs:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ['a', 'b']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -616,9 +624,10 @@ jobs:
         timeout-minutes: 15
         run: |
           s=$(date +%s)
-          make -s -o avra cache-attacks
-          echo "speed cache-attacks $(( $(date +%s) - s ))" >> speed.log
-      - name: code-hash-attacks
+          make -s -o avra cache-attacks-${{ matrix.shard }}
+          echo "speed cache-attacks-${{ matrix.shard }} $(( $(date +%s) - s ))" >> speed.log
+      - if: matrix.shard == 'b'
+        name: code-hash-attacks
         timeout-minutes: 15
         run: make -s -o avra code-hash-attacks
 
