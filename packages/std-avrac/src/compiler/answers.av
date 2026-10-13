@@ -4,15 +4,16 @@
 //! file and fetch bytes under the query's durable name — which already holds its
 //! code hash — and its arguments' hash, in the store the workspace attaches.
 //! A workspace with no store attached keeps nothing and finds nothing.
-use @std.relation.db.{Db, Durable}
+use @std.relation.{input}
+use @std.relation.db.{Db as RelDb, Durable}
 use compiler.store.{Store, Stored, node_key}
-use core.digest.{hex, hex_digits}
+use core.digest.{hex, hex_digit, hex_digits}
 
 /// A source file's text as a query reads it. The workspace stages every text a
 /// query is asked about (`stage_text`) before asking, so a record names the text
 /// by its hash; a query asked an unstaged path is a defect, never an empty text.
 @input
-export fn file_text(_db: Db, _path: string) -> string {
+export fn file_text(_db: RelDb, _path: string) -> string {
     avra_trap("defect: a source text was read before the workspace staged it")
     ""
 }
@@ -40,6 +41,9 @@ fn keep_answer(slot: Cell<Store?>, query: string, args: int, record: Bytes) {
     let store? = slot.get() else { return }
     let _ = store.keep(Stored.Answer, answer_key(query, args), hex(record), [])
 }
+
+/// A whole int as sixteen lowercase hex digits, its high digit first.
+export fn hex_word(v: int) -> string { [hex_digit((v >> 60 - 4 * i) & 15) for i in 0..16].join("") }
 
 /// `hex` read back; absent for text that is not whole pairs of digits.
 fn unhex(s: string) -> Bytes? {
