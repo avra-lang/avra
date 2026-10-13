@@ -293,6 +293,9 @@ fn case_of(line: string) -> CaseCall? {
 /// Where a program's instantiation homes are remembered, by its entry.
 fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", entry]) }
 
+/// Where the files a program's compile-time runs read are remembered, by its entry.
+fn runs_key(entry: string) -> string { node_key(Stored.Unit, ["runs", entry]) }
+
 /// Where "these instantiations lowered clean" is remembered.
 fn clean_key(asked: string) -> string { node_key(Stored.Unit, ["clean", asked]) }
 
@@ -642,10 +645,21 @@ impl Workspace {
     /// The reads an attempt takes up front: the files a held module's kept verdicts read,
     /// for those whose file lines already refuse them — read from the store alone, before
     /// the attempt starts, so the attempt never turns to read them.
+    /// Whether a path is on disk now, asked of the host directly: a remembered path
+    /// is a guess, so the memo's Exists answer for a file deleted since is not trusted.
+    fn on_disk(path: string) -> bool {
+        match self.host.there(path) {
+            .Exists(_, there) -> there,
+            _ -> false,
+        }
+    }
+
     fn lead_reads(at: Attempt) -> List<ReadFile> {
         if !at.hold { return [] }
         let store = self.opened_store()
-        [ReadFile { path: path, why: Reads.Unkept } for path in self.verdict_reads_first(store, held_modules(self, store, built_entry(at)))]
+        let kept = self.verdict_reads_first(store, held_modules(self, store, built_entry(at)))
+        let ran = [path for path in remembered(store, runs_key(self.known_as(at))) if !path.is_empty() && self.on_disk(path)]
+        [ReadFile { path: path, why: Reads.Unkept } for path in distinct(kept.concat(ran))]
     }
 
     /// The files a held module's kept const verdicts read, for those whose file lines
@@ -701,6 +715,7 @@ impl Workspace {
             homes_key(self.known_as(at)),
             distinct([self.decls.file(f).path for f in lo.homes]),
         )
+        remember(store, runs_key(self.known_as(at)), [r.path for r in at.parse])
         if at.homes && lo.homes.any((f) -> self.is_held(f)) { fail Turn.Again(at) }
         lo
     }
