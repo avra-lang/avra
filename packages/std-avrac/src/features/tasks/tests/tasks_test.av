@@ -11,6 +11,8 @@ use @std.avrac.testing.{
     answered,
 }
 use compiler.backend.{render_ir}
+use compiler.{Program}
+use core.{At, StmtId}
 
 extern fn avra_sched_timers() -> int
 extern fn avra_sched_pick_links() -> int
@@ -101,6 +103,12 @@ spec "features/tasks" {
                 "fn w() -> int { 5 }\nlet t = spawn w()\nlet v = t.await catch _ -> 0\nv",
                 "bring it in — `use @std.errors.{Cancelled}`",
             )
+        }
+        then "the catch reads the import it never names — no unused import" {
+            unused_in(floored_with_errors(caught("let v = t.await catch _ -> 0\nv"))).is_empty()
+        }
+        then "an import no catch reads is still unused" {
+            unused_in(floored_with_errors(caught("let v = t.await\nv"))).join(",") == "Cancelled"
         }
         then "a variant arm is refused — a `Cancelled` has none to name" {
             refused_in(
@@ -199,6 +207,13 @@ spec "features/tasks" {
 /// A program over `@std/errors` whose task `t` answers 5, then `rest`.
 fn caught(rest: string) -> string {
     "use @std.errors.{Cancelled}\nfn w() -> int { 5 }\nlet t = spawn w()\n" + rest
+}
+
+/// The imports a program's entry `use` line names and nothing reads.
+fn unused_in(p: Program) -> List<string> {
+    let a = p.entry_file()!
+    let line = a.view.store.stmt_ids().find((s: StmtId) -> a.view.store.stmt(s) is .Use)!
+    a.code_at(At.Stmt(line)).unused_imports()
 }
 
 /// Whether each of `marks` stands in `text` past the one before it.
