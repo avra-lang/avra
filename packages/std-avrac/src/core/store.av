@@ -1526,6 +1526,29 @@ impl SyntaxArena {
         ) for p in params]
     }
 
+    /// A fn declaration's SIGNATURE as one value: its name, seats, answer and marks, never its body.
+    fn signature_fp(s: StmtId) -> int {
+        let f? = self.fn_parts(s) else { return 0 }
+        let m = self.marks_at(s)
+        fp(
+            198,
+            [
+                fp_str(f.name),
+                fp_list(self.param_fps(f.tparams)),
+                fp_list(self.param_fps(f.params)),
+                type_fp(f.ret),
+                fp_list([flagged(m.is_mutating), flagged(m.is_once), flagged(m.is_static), flagged(m.is_exported), flagged(m.is_host)]),
+            ],
+        )
+    }
+
+    /// An impl block as a declaration list sees it: the trait, the target and each member's
+    /// signature — never a member's body, which a member's own declaration answers for.
+    fn impl_outline_fp(s: StmtId) -> int {
+        let p? = self.impl_parts(s) else { return self.stmt_fingerprint(s) }
+        fp(199, [fp_str(p.of ?? ""), fp_str(p.target), fp_list([self.signature_fp(m) for m in p.fns])])
+    }
+
     /// What an event says, as ONE value — and an event that says
     /// nothing is not a seat that is no event.
     fn says_fp(says: List<Param>?) -> int {

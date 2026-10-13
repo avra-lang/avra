@@ -442,6 +442,12 @@ vd_case "e: a type reached only through a field of a type it reads gains a field
 vd_case "f: a fn the const calls reads a type's field, which changes type" ran fg 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
 vd_case "g: a variant of an enum the const builds gains a variant" ran gg 'ed $R/vdc/vd/src/y/calc.av "export enum E { V(int) }" "export enum E { V(int), W }"'
 vd_case "h: a method the const calls on a type gains a field the receiver shows" ran hh 'ed $R/vdc/vd/src/y/calc.av "export type S = { s: int }" "export type S = { s: int, t: int = 0 }"'
+vd_case "i: a method body no run of the const enters changes" stood mid 'ed $R/vdc/vd/src/y/calc.av "fn m() -> int { self.s }" "fn m() -> int { self.s + 0 }"'
+vd_case "j: a method body the const's run enters changes" ran hh 'ed $R/vdc/vd/src/y/calc.av "fn m() -> int { self.s }" "fn m() -> int { self.s + 0 }"'
+vd_case "k: a method signature changes" ran mid 'ed $R/vdc/vd/src/y/calc.av "fn m() -> int { self.s }" "fn m(k: int = 0) -> int { self.s }"'
+NL='
+'
+vd_case "l: a method is added to an impl" ran mid 'ed $R/vdc/vd/src/y/calc.av "fn m() -> int { self.s }" "fn m() -> int { self.s }${NL}    fn n() -> int { self.s }"'
 fi
 
 # A HOST FN IS THE LINK'S, HELD OR FRESH. A module a build holds still defines its
