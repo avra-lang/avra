@@ -2496,6 +2496,8 @@ void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding =
 
 int64_t avra_vtask_asker(int64_t t) { return asker_of(virtual_at(t)); }
 
+int64_t avra_vtask_shielded(int64_t t) { return virtual_at(t)->shield_depth != 0; }
+
 void avra_vtask_passed(int64_t t, int64_t by) {
     Fiber* f = virtual_at(t);
     cancel_passed(f, by);
