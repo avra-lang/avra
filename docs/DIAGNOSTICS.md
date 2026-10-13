@@ -334,6 +334,12 @@ error[type.task_escape]: a task cannot outlive the block that spawned it
 help: keep it in a binding or a list of tasks here — its answer can leave: `t.await`
 ```
 
+## type.within
+
+`within` answers its block or the deadline it ran past
+
+No witness yet.
+
 ## flow.broken
 
 an `@unbroken` fn lets no other task run
@@ -2357,7 +2363,7 @@ error[flow.unbounded_cleanup]: this `defer`'s body waits, and no `within` it wri
   ·           ┬
   ·           ╰── waits here
 ──╯
-help: bound the cleanup in its own body — `defer { within ms(100) { … } }`
+help: bound the cleanup in its own body — `defer { let _ = within ms(100) { … } }`
 ```
 
 ## type.duplicate_param
