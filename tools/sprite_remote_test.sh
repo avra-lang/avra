@@ -179,6 +179,29 @@ else
     echo "skip  the hold: no Sprite socket here (/.sprite/api.sock)"
 fi
 
+# ══ THE COMPILER ROUTE: a merge-base compiler too old to read the tree
+# bootstraps from the seed, and says so. The tree holds a fake fetch tool and
+# a Makefile whose `avra` refuses and whose `bootstrap` succeeds, so the
+# fallback is exercised with no compiler and no network.
+route_tree="$scratch/route-tree"
+mkdir -p "$route_tree/tools"
+cat > "$route_tree/tools/fetch_compiler.sh" <<'FETCH'
+#!/bin/sh
+echo "fetch_compiler: installed (fixture)"
+FETCH
+cat > "$route_tree/Makefile" <<'MK'
+avra:
+	@exit 1
+bootstrap:
+	@mkdir -p build
+	@printf 'fixture compiler\n' > build/avra
+	@echo bootstrapped > bootstrapped
+MK
+remote start route "fixture 0 0" 60 route "$route_tree" 'routehash@mergebase:mk' echo route-ran > "$scratch/start"
+settled route 20
+check "$(res route)|$(grep -c '^route-ran$' "$AVRA_SPRITE_HOME/avra-runs/route/out")|$(grep -c 'bootstrapped from the seed' "$AVRA_SPRITE_HOME/avra-runs/route/out")|$(left route)" \
+      "status 0|1|1|0" "a merge-base compiler that cannot read the tree falls back to the seed and says so" "$AVRA_SPRITE_HOME/avra-runs/route/out"
+
 # ══ A NEW RUN CLEARS THE OLD RECORDS, and a record that never was is `gone`
 begin fresh 60 true > /dev/null
 settled fresh 20
