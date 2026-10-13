@@ -1,10 +1,11 @@
 // proves: a `@query` answer outlives its Db where the owner keeps it — a
 // fresh Db (a later process) reads the record back instead of running;
 // a moved owner key, a record that does not read back, and a run that
-// wrote rows each run again; an answer that read an input is never kept,
-// and an input set moves every answer read back; what a record cannot
-// see — another Db's rows, this Db's rows held differently — is pinned
-// as it stands today — in both engines
+// wrote rows each run again; a record carries what its answer stood on
+// (the rows of the relations it read, the inputs it read) and is read back
+// only while every digest stands — a write to an unrelated relation, or an
+// input nothing read, moves nothing; another Db's rows are never trusted —
+// in both engines
 use @std.relation.{relation, query, input}
 use @std.relation.db.{Db, Durable, durable_db}
 
@@ -15,6 +16,9 @@ enum Mood {
     Calm
     Loud
 }
+
+@relation
+type Other = { @key name: string }
 
 type Pair = { a: int, b: int }
 
@@ -176,8 +180,8 @@ fn midway() -> string {
     "${cold}${restored}${moved}${next} ${since(before)}"
 }
 
-/// An answer that read an input runs in every process, so a set input
-/// is answered.
+/// An answer that read an input is read back once the input is set to
+/// the value it read, and runs for any other.
 fn input_read() -> string {
     let before = computes().get()
     let cold = doubled(process(), "x")
@@ -187,8 +191,7 @@ fn input_read() -> string {
     "${cold} ${warm} ${doubled(db, "x")} ${since(before)}"
 }
 
-/// An input set in this process moves an answer read back, whatever it
-/// read when it was kept.
+/// An input set in this process moves only the answers that read it.
 fn input_set() -> string {
     let _ = fixed(process())
     let before = computes().get()
@@ -208,11 +211,9 @@ fn notes_elsewhere(_db: Db) -> int {
     Note.all(elsewhere()).length
 }
 
-/// KNOWN, UNTIL A RECORD CARRIES ITS READS: an answer that read another
-/// Db's rows is kept, and the next process reads it back though those
-/// rows moved (1, where 2 is right); and an answer over this Db's rows is
-/// read back by a process whose Db holds other rows before it asks (0,
-/// where 1 is right) — the owner's key alone decides.
+/// An answer that read another Db's rows is never kept (the next process
+/// reads the rows that moved), and an answer over this Db's rows is not read
+/// back by a process whose Db holds other rows.
 fn blind() -> string {
     file_key().set("f3")
     let _ = Note.insert(elsewhere(), name: "one")
@@ -227,6 +228,41 @@ fn blind() -> string {
     "${cold}${stale} ${empty}${other}"
 }
 
+/// A write to a relation the answer never read moves nothing, in this process or
+/// the next; a write to the relation it read does.
+fn unrelated() -> string {
+    file_key().set("f4")
+    let _ = notes(process())
+    let before = computes().get()
+    let next = process()
+    let _ = Other.insert(next, name: "o")
+    let restored = notes(next)
+    let _ = Other.insert(next, name: "p")
+    let still = notes(next)
+    let _ = Note.insert(next, name: "n")
+    let moved = notes(next)
+    file_key().set("f1")
+    "${restored}${still}${moved} ${since(before)}"
+}
+
+/// An input that moved between two processes makes the record a miss; set back, it hits.
+fn moved_input() -> string {
+    file_key().set("f5")
+    let first = process()
+    set_size(first, "m", 5)
+    let cold = doubled(first, "m")
+    let before = computes().get()
+    let same = process()
+    set_size(same, "m", 5)
+    let warm = doubled(same, "m")
+    let kept = since(before)
+    let other = process()
+    set_size(other, "m", 6)
+    let moved = doubled(other, "m")
+    file_key().set("f1")
+    "${cold} ${warm} ${moved} ${kept} ${since(before)}"
+}
+
 /// Seats named like the wrapper's locals reach the body as written.
 fn shadowed() -> string {
     let first = shadow(process(), 1, 2, 3, 4)
@@ -234,4 +270,4 @@ fn shadowed() -> string {
     "${first} ${again}"
 }
 
-"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()} | ${input_read()} | ${input_set()} | ${blind()}"
+"${survives()} | ${shapes()} | ${reruns()} | ${midway()} | ${shadowed()} | ${input_read()} | ${input_set()} | ${blind()} | ${unrelated()} | ${moved_input()}"

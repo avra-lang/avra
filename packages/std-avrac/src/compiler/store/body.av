@@ -271,12 +271,16 @@ fn record_of(pack: Pack, at: string) -> Held? { pack.records.get().get(at) }
 /// decoded on the first ask, since an open reads values and never read sets.
 /// A set the tables cannot name reads as none: a read set is a record of
 /// edges, and a row stands without them.
-fn reads_of(pack: Pack, h: Held) -> List<string> {
+fn reads_of(pack: Pack, h: Held) -> List<string> { reads_known(pack, h) ?? [] }
+
+/// A row's read list, absent when its set cannot be named: a row that must
+/// prove its reads cannot take a list it could not read for none.
+fn reads_known(pack: Pack, h: Held) -> List<string>? {
     if h.set < 0 { return h.read }
-    let t? = tables_of(pack) else { return [] }
-    if h.set >= t.sets.length() { return [] }
+    let t? = tables_of(pack) else { return null }
+    if h.set >= t.sets.length() { return null }
     let ids = t.sets.members(h.set)
-    if ids.any(it < 0 || it >= t.names.length()) { return [] }
+    if ids.any(it < 0 || it >= t.names.length()) { return null }
     [t.names.text_of(id) for id in ids]
 }
 
