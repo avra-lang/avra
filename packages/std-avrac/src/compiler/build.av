@@ -666,6 +666,7 @@ impl Workspace {
         let held = self.held_objects(d.store)?
         clock.mark("place")
         let staged = staged_beside(binary)
+        let hosted = [self.decls.decl(h).name for h in self.program_host_fns([a.view.file for a in d.program.files])]
         let code = avra_spawn_status(
             tools.linker,
             link_objects(
@@ -678,12 +679,12 @@ impl Workspace {
                 tools.reactor,
                 tools.debug,
                 tools.ld,
-                [self.decls.decl(h).name for h in self.program_host_fns([a.view.file for a in d.program.files])],
+                hosted,
             ),
         )
         if code != 0 {
             fail BuildError
-                .LinkFailed(code, if tools.target == "" { unanswered_externs(full) } else { [] })
+                .LinkFailed(code, if tools.target == "" { unanswered_externs(full, hosted) } else { [] })
         }
         clock.mark("link")
         let ready = shipped(staged, tools)
@@ -836,9 +837,8 @@ fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string 
 /// lacked. A host's own row is one of these on every target but that
 /// host's.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names nothing in it defines out.
-fn unanswered_externs(l: Lowered) -> List<string> {
+fn unanswered_externs(l: Lowered, defined: List<string>) -> List<string> {
     let claimed = flatten([p.externs for p in l.libraries if p.library != ""])
-    let defined = [b.name for b in l.fns if b.hosted]
     [row.name for row in l.externs if !rt_sigs().any(it.name == row.name) &&
         !claimed.contains(row.name) &&
         !defined.contains(row.name)]
