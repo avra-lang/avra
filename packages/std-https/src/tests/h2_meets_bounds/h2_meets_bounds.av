@@ -16,7 +16,7 @@ use @std.http.fetch.{Options, fetch}
 use @std.http.h2.{preface, frame_bytes, frames_in, end_stream, end_headers, value_named}
 use @std.http.hpack.{header_field, encoder, decoder}
 use @std.https.{over_tls, tls_carried, verified}
-use @std.tls.{TlsConn, dial}
+use @std.tls.{TlsConn, dial, tls_timely}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
 
 type App = {}
@@ -56,7 +56,10 @@ fn status_on_one(t: TlsConn) -> string {
     mut buf = no_bytes
     mut open = true
     while open && heads_on_one(buf).is_empty() {
-        let got = match within secs(2) { t.read(65536) } { .Ok(b) -> b, .Err(_) -> null }
+        let got = match tls_timely(within secs(2) { t.read(65536) }) {
+            .Ok(b) -> b,
+            .Err(_) -> null,
+        }
         open = got != null
         buf = buf.concat(got ?? no_bytes)
     }
