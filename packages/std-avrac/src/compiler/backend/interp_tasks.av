@@ -28,6 +28,11 @@ extern fn avra_vtask_passed(t: int, by: int)
 extern fn avra_vtask_tick_cold(t: int) -> int
 extern fn avra_vtask_within(t: int, ms: int) -> int
 extern fn avra_vtask_within_end(t: int, id: int) -> int
+/// The shield's pair, over the task's own unwind bit.
+extern fn avra_vtask_shield_enter(t: int)
+extern fn avra_vtask_shield_leave(t: int)
+/// 1 while the task runs under a shield.
+extern fn avra_vtask_shielded(t: int) -> int
 extern fn avra_vtask_inherits(t: int, from: int)
 extern fn avra_vtask_next() -> int
 extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
@@ -241,10 +246,13 @@ impl Machine {
     /// the same asker: its bit is set at this cancel point, where its
     /// unwind's list begins, and the join answers nothing. A task
     /// already unwinding carries its own request, and takes on no other.
+    /// UNDER A SHIELD A DEFERRED CALL RUNS WHOLE: nothing may cut it, and
+    /// there is no answer for it to go on with, so there the join refuses.
     /// The program's own run keeps who asked for its end to say.
     fn cancel_passed(by: int) -> Val {
         let vt = self.tasks[self.running].vt
         if avra_vtask_unwinding(vt) != 0 { return Val.N }
+        if avra_vtask_shielded(vt) != 0 { return self.trapped_val("a join takes a task that answers, and this one was cancelled") }
         avra_vtask_passed(vt, by)
         if self.running == 0 { self.cancelled_by = avra_vtask_asker(vt) }
         self.unwind_met(vt)
@@ -371,6 +379,21 @@ impl Machine {
     fn fiber_within_end_val(vals: List<Val>) -> Val {
         self.rooted()
         Val.I(avra_vtask_within_end(self.tasks[self.running].vt, self.whole(vals[0])))
+    }
+
+    /// A cold exit's deferred calls begin: the running task's bit is saved
+    /// and cleared, as the runtime's own row does for a compiled task.
+    fn shield_enter_val() -> Val {
+        self.rooted()
+        avra_vtask_shield_enter(self.tasks[self.running].vt)
+        Val.I(0)
+    }
+
+    /// They ended: the saved bit is back.
+    fn shield_leave_val() -> Val {
+        self.rooted()
+        avra_vtask_shield_leave(self.tasks[self.running].vt)
+        Val.I(0)
     }
 
     /// The running task parked on the POLICY — a sleep, a descriptor — so

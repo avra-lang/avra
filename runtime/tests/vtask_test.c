@@ -112,9 +112,11 @@ static void shield_bytes(void) {
     avra_vtask_set_unwinding(t, 1);
     avra_vtask_shield_enter(t);
     CHECK(avra_vtask_unwinding(t) == 0, "the shield clears a virtual task's saved bit");
+    CHECK(avra_vtask_shielded(t) == 1, "and the task reads as shielded while it stands");
     avra_vtask_set_unwinding(t, 1);
     avra_vtask_shield_leave(t);
     CHECK(avra_vtask_unwinding(t) == 1, "and the leave keeps a bit raised inside");
+    CHECK(avra_vtask_shielded(t) == 0, "and unshielded after it");
     avra_vtask_free(t);
 }
 
