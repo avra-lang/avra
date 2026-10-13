@@ -49,9 +49,10 @@ row = [str(pr["number"]), pr["state"], "draft" if pr.get("isDraft") else "ready"
 print("\t".join(x.replace("\t", " ").replace("\n", " ") for x in row))'
 }
 
-# A title without its own "DO NOT MERGE" lead, for the retitle.
+# A title without its own "DO NOT MERGE" lead, nor any "(lands via batch #N) —"
+# an earlier batch already put there, for the retitle.
 strip_dnm() {
-    printf '%s' "$1" | sed -e 's/^DO NOT MERGE[:—-]* *//'
+    printf '%s' "$1" | sed -E 's/^(DO NOT MERGE[:—-]* *|\(lands via batch #[0-9]+\) *— *)+//'
 }
 
 # The evidence given for member $1 by a list of N=TEXT lines ($2).
