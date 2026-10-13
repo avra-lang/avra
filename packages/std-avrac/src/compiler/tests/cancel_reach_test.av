@@ -468,6 +468,13 @@ spec "compiler/cancel_reach — the interface" {
         let analysed = record_lines(lines, ["nap", "spin"])
         analysed == [line_with(lines, "nap", "2", "0"), line_with(lines, "spin", "0", "1")].join("\n")
     }
+    then "a held fn that links makes its program link, though nothing calls it by name" {
+        held_from(napping().concat(["fn plain() -> int { 1 }", "plain()"])).members_link_scheduler()
+    }
+    then "a program holding only fns that link nothing links none" {
+        !held_from(["fn call(f: fn() -> int) -> int { f() }", "fn plain() -> int { 1 }", "plain()"])
+            .members_link_scheduler()
+    }
     then "a fn that parks only through a value records `1`: it may wait, and links nothing" {
         let lines = ["fn call(f: fn() -> int) -> int { f() }", "call(() -> 1)"]
         record_lines(lines, ["call"]) == line_with(lines, "call", "1", "1")
