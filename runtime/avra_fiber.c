@@ -1733,6 +1733,14 @@ static int cancel_stands(const Fiber* f) {
     return 1;
 }
 
+// The same question of an evaluated task, whose own bit is the one
+// raised: no compiled task's is touched.
+static int virtual_cancel_stands(Fiber* f) {
+    if (f->cancel_by == 0 || shield_scope_stands(f)) return 0;
+    f->unwinding = 1;
+    return 1;
+}
+
 // The set is about to be waited on: whether the task must switch out.
 // A CLAIM COMES FIRST — a value handed while the set was arming is
 // taken before anything else is heard — then a cancel that stands, then
@@ -2273,7 +2281,7 @@ static int park_fd_filed(Fiber* f, int64_t fd, int64_t writable, int64_t timeout
     f->timed_out = 0;
     f->interrupted = 0;
     if (fd < 0 || fd > INT32_MAX) return 0;
-    if (!f->virtual && cancel_stands(f)) { f->timed_out = 1; return 0; }
+    if (f->virtual ? virtual_cancel_stands(f) : cancel_stands(f)) { f->timed_out = 1; return 0; }
     alone(f);
     if (deadline_passed(f)) { f->timed_out = 1; return 0; }
     f->legacy = 1;
@@ -2495,6 +2503,8 @@ void avra_vtask_shield_leave(int64_t t) { Fiber* f = virtual_at(t); shield_left(
 void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }
 
 int64_t avra_vtask_asker(int64_t t) { return asker_of(virtual_at(t)); }
+
+int64_t avra_vtask_shielded(int64_t t) { return virtual_at(t)->shield_depth != 0; }
 
 void avra_vtask_passed(int64_t t, int64_t by) {
     Fiber* f = virtual_at(t);

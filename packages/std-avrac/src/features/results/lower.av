@@ -23,10 +23,28 @@ fn catched_reg(
     binds: List<string>,
     values: List<ExprId>,
 ) -> Reg {
+    let held? = cx.view.types.res_parts(cx.type_at(subject)) else { return caught_read_reg(cx, e, subject, variants, binds, values) }
     let r = cx.reg_of(subject)
-    let held? = cx.view.types.res_parts(cx.type_at(subject)) else { return cx.lower_defect(e, "a catch without a Result survived typing") }
     cx
         .region(cx.okness_of(r), e) { cx -> cx.payload_of(r, held.ok) } else { cx -> failure_reg(cx, e, r, held, variants, binds, values) }
+}
+
+/// A catch over a READ whose failure is its row's own (`t.await`): the
+/// row lowers the caught read, and runs the one arm typing admits over
+/// such a failure — the catch-all.
+fn caught_read_reg(
+    mut cx: LowerCx,
+    e: ExprId,
+    subject: ExprId,
+    variants: List<string>,
+    binds: List<string>,
+    values: List<ExprId>,
+) -> Reg {
+    let read? = cx.caught_read(subject) else { return cx.lower_defect(e, "a catch without a failure to recover survived typing") }
+    if !catches_all(variants) { return cx.lower_defect(e, "variant arms over a read's failure survived typing") }
+    read
+        .row
+        .caught(cx, e, cx.reg_of(read.subject), cx.type_at(read.subject)) { cx, failed -> arm_over(cx, binds[0], values[0], failed) }
 }
 
 /// The failure arm's whole story. A single catch-all arm answers
@@ -40,9 +58,7 @@ fn failure_reg(
     binds: List<string>,
     values: List<ExprId>,
 ) -> Reg {
-    if variants.length == 1 && variants[0] == "" {
-        return all_arm_reg(cx, r, sides, binds[0], values[0])
-    }
+    if catches_all(variants) { return all_arm_reg(cx, r, sides, binds[0], values[0]) }
     if cx.view.types.shape_of(sides.err) is .Union { return switched_union_reg(cx, e, r, sides, variants, binds, values) }
     switched_reg(cx, e, r, sides, variants, binds, values)
 }
@@ -50,8 +66,19 @@ fn failure_reg(
 /// The catch-all arm: the whole error binds (when named), the value
 /// answers.
 fn all_arm_reg(mut cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: ExprId) -> Reg {
-    if bind != "" { cx.bind_patterns(value, [cx.payload_of(r, sides.err)]) }
+    if bind == "" { return cx.reg_of(value) }
+    arm_over(cx, bind, value, cx.payload_of(r, sides.err))
+}
+
+/// One arm over the whole failure: bound when named, the value answers.
+fn arm_over(mut cx: LowerCx, bind: string, value: ExprId, failed: Reg) -> Reg {
+    if bind != "" { cx.bind_patterns(value, [failed]) }
     cx.reg_of(value)
+}
+
+/// One arm, naming no variant — the catch-all.
+fn catches_all(variants: List<string>) -> bool {
+    variants.length == 1 && variants[0] == ""
 }
 
 /// Variant arms as ONE switch on the error's tag — a jump table,

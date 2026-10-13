@@ -233,6 +233,48 @@ check "$?" "0" "draft: a draft batch builds and exits 0"
 check "$(grep -c '^pr create --draft --base main --head batch-14 --title DO NOT MERGE: batch #14: #2 #3' "$fx/gh.log")" "1" "draft: the PR is opened as a draft, titled DO NOT MERGE"
 check "$(grep -c '^pr merge' "$fx/gh.log")" "0" "draft: auto-merge is not armed"
 
+# ── 13. A DRAFT member is judged by its light gate, and its heavy legs ────
+# pr_draft_json <number> <title> <head> <gate> <keepers-static> <codecs> <attacks> <file>…
+pr_draft_json() {
+    n=$1; title=$2; head=$3; gate=$4; kstatic=$5; codecs=$6; attacks=$7; shift 7
+    python3 - "$fx/pr-$n.json" "$n" "$title" "$head" "$gate" "$kstatic" "$codecs" "$attacks" "$@" <<'PY'
+import json, sys
+path, n, title, head, gate, kstatic, codecs, attacks = sys.argv[1:9]
+files = sys.argv[9:]
+checks = [
+    {"name": "test", "conclusion": "FAILURE", "detailsUrl": "https://github.com/x/y/actions/runs/1/job/2"},
+    {"name": "gate", "conclusion": gate, "detailsUrl": "https://github.com/x/y/actions/runs/1/job/4"},
+    {"name": "keepers-static", "conclusion": kstatic, "detailsUrl": "https://github.com/x/y/actions/runs/1/job/5"},
+    {"name": "codecs", "conclusion": codecs, "detailsUrl": "https://github.com/x/y/actions/runs/1/job/6"},
+    {"name": "cache-attacks", "conclusion": attacks, "detailsUrl": "https://github.com/x/y/actions/runs/1/job/3"},
+]
+json.dump({"number": int(n), "title": title, "headRefName": head, "isDraft": True,
+           "state": "OPEN", "body": "Work.\n\n", "statusCheckRollup": checks,
+           "files": [{"path": f} for f in files]}, open(path, "w"))
+PY
+}
+pr_draft_json 20 "d20: light green draft" h3 SUCCESS SUCCESS SKIPPED SKIPPED src/b.txt
+pr_draft_json 21 "d21: keepers-static red" h3 SUCCESS FAILURE SKIPPED SKIPPED src/b.txt
+pr_draft_json 22 "d22: gate absent" h3 ABSENT SUCCESS SKIPPED SKIPPED src/b.txt
+
+reset_clone
+batch --n 15 20
+check "$?" "1" "draft: a light-green draft without suites evidence is refused"
+check "$(grep -c '#20 is a draft: its suites did not run on the light gate' "$scratch/err")" "1" "draft: names the missing suites evidence"
+reset_clone
+batch --n 16 --attacks-na "20=tools only" --suites-ran "20=sprite: suites clean" 20
+check "$?" "0" "draft: light gate green + attacks reason + suites evidence is accepted"
+check "$(grep -c 'suites ran — sprite: suites clean' "$fx/gh.log")" "1" "draft: the suites evidence is printed on the batch PR body"
+check "$(grep -c '^pr create --base main --head batch-16' "$fx/gh.log")" "1" "draft: the batch PR is ready (not a draft), so its own run is the full gate"
+reset_clone
+batch --n 17 --attacks-na "21=tools only" --suites-ran "21=ran" 21
+check "$?" "1" "draft: a red keepers-static refuses the draft even with evidence"
+check "$(grep -c '#21 refused: its keepers-static check is FAILURE' "$scratch/err")" "1" "draft: names the red keepers-static"
+reset_clone
+batch --n 18 --attacks-na "22=tools only" --suites-ran "22=ran" 22
+check "$?" "1" "draft: an absent gate refuses the draft"
+check "$(grep -c '#22 refused: its light gate check is ABSENT' "$scratch/err")" "1" "draft: names the absent gate"
+
 echo
 echo "batch tests: $((total - failed))/$total passed"
 [ "$failed" = 0 ]
