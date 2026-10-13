@@ -58,7 +58,7 @@ cold() {
 last=""
 step() { # step NAME: the tree is edited already
     warm=$(answers "$R/p"); want=$(cold)
-    if [ "$warm" = "$want" ]; then say "$1"; else fail "$1: the warm answers differ from the cold ones"; printf '%s\n' "$warm" > "$R/warm.txt"; printf '%s\n' "$want" > "$R/cold.txt"; diff "$R/warm.txt" "$R/cold.txt" | head -8; fi
+    if [ "$warm" = "$want" ]; then say "$1"; else fail "$1: the warm answers differ from the cold ones"; printf '%s\n' "$warm" > "$R/warm.txt"; printf '%s\n' "$want" > "$R/cold.txt"; diff "$R/warm.txt" "$R/cold.txt" | head -40; fi
     if [ "$want" = "$last" ] && [ "${2:-}" != noop ]; then fail "$1: the edit changed nothing the corpus can see"; fi
     last="$want"
 }
