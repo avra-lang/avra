@@ -112,22 +112,83 @@ impl Workspace {
             .last()
     }
 
-    /// The ask a name spells: the process-local index over the names asked so far, each
-    /// found name checked against what its ask spells now.
-    fn settle_arg(spelled: string) -> int? {
-        let all = self.settle_asks.get()
-        mut at = self.keys.settle_seen.get()
-        while at < all.length {
-            let name? = self.spelled_settle(at) else {
+    /// The ask a name spells, through the process-local index over the names `count` asks
+    /// spell so far; a found name is checked against what its ask spells now.
+    fn spelled_ask(family: string, count: int, spell: fn(int) -> string?, spelled: string) -> int? {
+        mut at = self.keys.name_seen.get().get(family) ?? 0
+        while at < count {
+            let name? = spell(at) else {
                 at = at + 1
                 continue
             }
-            self.keys.settle_named.put(name, at)
+            self.keys.name_index.put("${family}\t${name}", at)
             at = at + 1
         }
-        self.keys.settle_seen.set(at)
-        let found? = self.keys.settle_named.get().get(spelled) else { return null }
-        if self.spelled_settle(found) == spelled { found } else { [i for i in 0..all.length if self.spelled_settle(i) == spelled].first() }
+        self.keys.name_seen.put(family, count)
+        let found? = self.keys.name_index.get().get("${family}\t${spelled}") else { return null }
+        if spell(found) == spelled { found } else { [i for i in 0..count if spell(i) == spelled].first() }
+    }
+
+    fn settle_arg(spelled: string) -> int? {
+        let ws = self
+        self
+            .spelled_ask("settle", self.settle_asks.get().length, (i: int) -> ws.spelled_settle(i), spelled)
+    }
+
+    /// A lifted unit's name: its file, its declaration and its symbol; an expression unit, the
+    /// declaration holding it, its offset there, its type arguments and its seats.
+    fn spelled_spec(arg: int) -> string? {
+        if arg < 0 || arg >= self.asks.get().length { return null }
+        let w = self.asks.get()[arg]
+        let path = self.decls.file(w.file).path
+        let root? = w.root else { return "${path}|${self.decl_ref(w.decl)}|${w.name}" }
+        let owner? = self.root_owner(w.file, root) else { return null }
+        "${path}|${self.decl_ref(owner)}+${root.index - self.decls.decl(owner).lo}|${self.sub_wire(w.sub)}|${joined([x.fp for x in w.seats], ",")}"
+    }
+
+    fn spec_arg(spelled: string) -> int? {
+        let ws = self
+        self.spelled_ask("spec", self.asks.get().length, (i: int) -> ws.spelled_spec(i), spelled)
+    }
+
+    /// A world read's name: its kind and key, a path spelled from the workspace root.
+    fn spelled_input(arg: int) -> string? {
+        if arg < 0 || arg >= self.input_names.get().length { return null }
+        let name = self.input_names.get()[arg]
+        let key = if name.key.starts_with(self.root) { "." + name.key.substring(self.root.length, name.key.length) } else { name.key }
+        "${kind_word(name.kind)} ${key}"
+    }
+
+    fn input_arg(spelled: string) -> int? {
+        let ws = self
+        self
+            .spelled_ask("input", self.input_names.get().length, (i: int) -> ws.spelled_input(i), spelled)
+    }
+
+    /// A package's manifest, spelled by the package's key.
+    fn spelled_package(arg: int) -> string? {
+        let all = self.packages()
+        if arg < 0 || arg >= all.length { return null }
+        all[arg].key
+    }
+
+    fn package_arg(spelled: string) -> int? {
+        let ws = self
+        self
+            .spelled_ask("package", self.packages().length, (i: int) -> ws.spelled_package(i), spelled)
+    }
+
+    /// A family whose answers are keyed by an ask this workspace spells.
+    fn named_by(name: string, fam: Family, spell: fn(int) -> string?, find: fn(string) -> int?) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: spell,
+            arg: find,
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
     }
 
     /// The answers of `fam`, keyed by file, spelled by the file's path.
@@ -176,6 +237,39 @@ impl Workspace {
         rdb.answer_known(self.named_sigs())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
+        let ws = self
+        rdb.answer_known(self.named_by_decl("Syntax", Family.Syntax))
+        rdb.answer_known(self.named_by_decl("Typed", Family.Typed))
+        rdb
+            .answer_known(
+                self
+                    .named_by(
+                        "LiftLowered",
+                        Family.LiftLowered,
+                        (a: int) -> ws.spelled_spec(a),
+                        (s: string) -> ws.spec_arg(s),
+                    ),
+            )
+        rdb
+            .answer_known(
+                self
+                    .named_by(
+                        "Input",
+                        Family.Input,
+                        (a: int) -> ws.spelled_input(a),
+                        (s: string) -> ws.input_arg(s),
+                    ),
+            )
+        rdb
+            .answer_known(
+                self
+                    .named_by(
+                        "Manifest",
+                        Family.Manifest,
+                        (a: int) -> ws.spelled_package(a),
+                        (s: string) -> ws.package_arg(s),
+                    ),
+            )
         rdb.answer_known(self.named_by_decl("Marks", Family.Marks))
         rdb.answer_known(self.named_by_decl("Methods", Family.Methods))
         rdb.answer_known(self.named_by_file("Parsed", Family.Parsed))
