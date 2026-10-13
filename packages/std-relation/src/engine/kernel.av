@@ -237,6 +237,8 @@ export type Kernel = {
     family_names: Cell<List<string>>,
     /// The fold a cell `settle_lazy` wrote unasked would answer, kept to be asked on demand.
     folds: Cell<Map<string, fn() -> int>>,
+    /// Whether `settle_lazy` keeps its fold; off unless a saved answer will ask for it.
+    folds_kept: Cell<bool>,
     audit: Audit,
     graph: Graph,
     /// Recorded reads, counted here for every kernel — the process tally shares this cell.
@@ -272,6 +274,7 @@ export fn new_kernel() -> Kernel {
         whole_families: list_cell(),
         family_names: list_cell(),
         folds: map_cell(),
+        folds_kept: Cell.new(false),
         audit: Audit {
             on: Cell.new(false),
             width: Cell.new(1),
@@ -663,6 +666,15 @@ impl Kernel {
         h
     }
 
+    /// Keep the folds lazy settles leave unasked, so `hash_forced` can ask them.
+    fn keep_folds() { self.folds_kept.set(true) }
+
+    /// The kept folds, let go: each captures its owner.
+    fn folds_forgotten() {
+        let none: Map<string, fn() -> int> = {}
+        self.folds.set(none)
+    }
+
     fn begin(key: Key) {
         let none: List<int> = []
         let no_restore: Cell<List<Restore>>? = null
@@ -717,7 +729,7 @@ impl Kernel {
         let deps = self.closed_frame()
         let prior? = self.cell(key) else {
             self.settled(key, deps, self.rev.get(), null, began)
-            self.folds.put("${edge_of(key)}", fingerprint)
+            if self.folds_kept.get() { self.folds.put("${edge_of(key)}", fingerprint) }
             return
         }
         let value_hash = fingerprint()

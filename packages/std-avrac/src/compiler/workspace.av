@@ -76,7 +76,7 @@ use features.{
     Instanced,
 }
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
-use core.{StmtId, ModulePath, watched_kernel}
+use core.{StmtId, ModulePath, watched_kernel, leaves_traced, db_verified}
 use diagnostics.{
     SourceFile,
     new_source_file,
@@ -143,7 +143,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Map<string, int>>>, seen_views: Cell<Map<string, SeenView>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, suspects: Cell<Suspects> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, seen_views: Cell<Map<string, SeenView>>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string>, suspects: Cell<Suspects> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -157,6 +157,8 @@ fn new_keys() -> Keys {
     let no_digests: Map<string, string> = {}
     let no_tokens: Map<string, Map<string, int>> = {}
     let no_views: Map<string, SeenView> = {}
+    let no_named: Map<string, int> = {}
+    let no_seen: Map<string, int> = {}
     let no_viewed: Map<string, List<ModulePath>> = {}
     let no_marks: Map<string, bool> = {}
     Keys {
@@ -173,6 +175,8 @@ fn new_keys() -> Keys {
         text_digests: Cell.new(no_digests),
         file_tokens: Cell.new(no_tokens),
         seen_views: Cell.new(no_views),
+        name_index: Cell.new(no_named),
+        name_seen: Cell.new(no_seen),
         viewed: Cell.new(no_viewed),
         view_marks: Cell.new(no_marks),
         store_root: Cell.new(""),
@@ -600,7 +604,7 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 fn reads_rows_whole(f: Family) -> bool {
     match f {
         .Lowered or .LiftLowered or .Lifted or .Settled -> true,
-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach -> false,
+        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach or .Writes -> false,
     }
 }
 
@@ -677,6 +681,10 @@ fn manifest_verified(ws: Workspace, arg: int) -> int {
 fn receivers_verified(ws: Workspace, arg: int) -> int {
     touch(ws.receivers())
     ws.db.changed_at(key(Family.Receivers, arg))
+}
+fn writes_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.writes_of(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Writes, arg))
 }
 fn expanded_verified(ws: Workspace, arg: int) -> int {
     touch(ws.expanded(file_at(arg)))
@@ -790,6 +798,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Marks -> marks_verified(ws, arg),
+        .Writes -> writes_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
         .ReadReach -> read_reach_verified(ws, arg),
@@ -963,7 +972,7 @@ fn built(
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
-    ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured(d))
     ws.decls.arm_consumed((d: DeclId) -> ws.consumed_ensured(d))
     ws.decls.arm_references(() -> ws.refs_ensured())
     ws.decls.arm_failures(() -> ws.failures_ensured())
@@ -984,7 +993,7 @@ fn built(
             Family.Named.ordinal,
             (f: FileId) -> ws.held_sig_dep(f),
         )
-    ws.answers_named()
+    if leaves_traced() || db_verified() { ws.answers_named() }
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.decls.arm_composers((f: FileId) -> ws.composers(f))
@@ -1032,6 +1041,7 @@ impl Workspace {
     fn ended(why: Stand) {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
+        self.db.kernel.folds_forgotten()
         self.decls.let_go(stand_voice(why))
         self.stand.set(why)
     }
@@ -1095,9 +1105,9 @@ impl Workspace {
 
     /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
     /// runs inside a resolve.
-    fn writes_ensured() -> bool {
+    fn writes_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
-        let _ = self.receivers()
+        if seated(self.decls.decl(d)) { let _ = self.writes_of(d) }
         true
     }
 
@@ -1733,10 +1743,11 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
+        let ids = self.decls.ids()
         visible_of(
             self
                 .relation(Family.Visible)
-                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r))),
+                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r), ids)),
         )
     }
 
@@ -1791,10 +1802,11 @@ impl Workspace {
         let out = resolved with { voices: Voices {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
+        let ids = self.decls.ids()
         resolved_of(
             self
                 .relation(Family.Resolved)
-                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r))),
+                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r), ids)),
         )
     }
 
@@ -2016,7 +2028,7 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
         let x = self.decls.decl(d)
-        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi)
+        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
         self.db.settle(k, h)
         h
     }
@@ -2137,10 +2149,11 @@ impl Workspace {
             self.db.abandon(key(Family.Typed, d.index))
             return out
         }
+        let ids = self.decls.ids()
         typed_of(
             self
                 .relation(Family.Typed)
-                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r))),
+                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r), ids, true)),
         )
     }
 
@@ -2333,6 +2346,7 @@ export fn family_code_hash(f: Family) -> string {
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Marks -> code_hash(marks_verified) ?? "",
+        .Writes -> code_hash(writes_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
         .ReadReach -> code_hash(read_reach_verified) ?? "",
