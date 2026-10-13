@@ -420,7 +420,11 @@ vd_fixture() {
   printf 'use y.{twice, g}\nexport const F: int = twice(g())\n' > $R/vdc/vd/src/x/fg.av
   printf 'use y.{E, unwrap}\nexport const G: int = unwrap(E.V(3))\n' > $R/vdc/vd/src/x/gg.av
   printf 'use y.{S}\nexport const H: int = S { s: 3 }.m()\n' > $R/vdc/vd/src/x/hh.av
-  printf 'use x.{J, F, G, H}\nexport const K: int = J * 2 + F + G + H\nexport fn shown() -> int { K }\n' > $R/vdc/vd/src/f/held.av
+  printf 'export type P = { p: int }\nexport trait Tl { fn tl() -> int }\nimpl Tl for P { fn tl() -> int { self.p + 1 } }\nimpl P { static fn z() -> int { 4 } }\nexport fn viatl() -> int {\n    let d: dyn Tl = P { p: 1 }\n    d.tl()\n}\nexport type Q = { n: int }\nimpl Q { fn bump() -> int { self.n } }\n' >> $R/vdc/vd/src/y/calc.av
+  printf 'use y.{P}\nexport const N: int = P.z()\n' > $R/vdc/vd/src/x/nn.av
+  printf 'use y.{viatl}\nexport const D: int = viatl()\n' > $R/vdc/vd/src/x/dd.av
+  printf 'use y.{Q}\nexport fn callq() -> int {\n    let q = Q { n: 1 }\n    q.bump()\n}\n' > $R/vdc/vd/src/x/cc.av
+  printf 'use x.{J, F, G, H, N, D}\nexport const K: int = J * 2 + F + G + H + N + D\nexport fn shown() -> int { K }\n' > $R/vdc/vd/src/f/held.av
   printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/vdc/vd/src/main.av
 }
 vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, edit, then that const's verdict
@@ -429,9 +433,10 @@ vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, e
   eval "$4"
   steps=$((steps+1))
   AVRA_QTRACE=1 ./avra check $R/vdc/vd > $R/vd.out 2>&1; st=$?
-  got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { v = $4 } END { print v }' $R/vd.out)
+  got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { if (v != "ran") v = $4 } END { print v }' $R/vd.out)
   if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"
   elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the $3 verdict was '$got', wanted '$2'"
+  elif [ -n "${5:-}" ] && [ "$(./avra run $R/vdc/vd 2>/dev/null | tail -1)" != "$5" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the program printed '$(./avra run $R/vdc/vd 2>/dev/null | tail -1)', wanted '$5'"
   else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
 }
 vd_case "a: a field of a type the const reads is added" ran mid 'ed $R/vdc/vd/src/y/calc.av "export type Cfg = { a: int, d: Deep }" "export type Cfg = { a: int, d: Deep, b: int = 0 }"'
@@ -448,6 +453,20 @@ vd_case "k: a method signature changes" ran mid 'ed $R/vdc/vd/src/y/calc.av "fn 
 NL='
 '
 vd_case "l: a method is added to an impl" ran mid 'ed $R/vdc/vd/src/y/calc.av "fn m() -> int { self.s }" "fn m() -> int { self.s }${NL}    fn n() -> int { self.s }"'
+vd_case "m: a method reached only through dyn dispatch changes its body" ran dd 'ed $R/vdc/vd/src/y/calc.av "fn tl() -> int { self.p + 1 }" "fn tl() -> int { self.p + 2 }"' 31
+vd_case "n: a static fn of an impl a const calls changes its body" ran nn 'ed $R/vdc/vd/src/y/calc.av "static fn z() -> int { 4 }" "static fn z() -> int { 5 }"' 31
+# o: a body edit flips an INFERRED fact (the method now writes through self) that a fn elsewhere reads without entering the body
+wb_case() {
+  vd_fixture
+  ./avra check $R/vdc/vd > $R/wb0.out 2>&1; ./avra check $R/vdc/vd > /dev/null 2>&1
+  steps=$((steps+1))
+  ed $R/vdc/vd/src/y/calc.av "fn bump() -> int { self.n }" "fn bump() -> int {${NL}        self.n = self.n + 1${NL}        self.n${NL}    }"
+  ./avra check $R/vdc/vd > $R/wb1.out 2>&1
+  if grep -q "bump" $R/wb0.out; then fails=$((fails+1)); echo "FAIL  vd: o: the fixture already speaks of bump before the edit"
+  elif ! grep -q "bump" $R/wb1.out; then fails=$((fails+1)); echo "FAIL  vd: o: a method starts writing through self and a caller's warning did not follow"
+  else [ -n "${VERBOSE:-}" ] && echo "ok    vd: o: the caller's warning followed the inferred write bit"; fi
+}
+wb_case
 fi
 
 # A HOST FN IS THE LINK'S, HELD OR FRESH. A module a build holds still defines its
