@@ -275,6 +275,29 @@ batch --n 18 --attacks-na "22=tools only" --suites-ran "22=ran" 22
 check "$?" "1" "draft: an absent gate refuses the draft"
 check "$(grep -c '#22 refused: its light gate check is ABSENT' "$scratch/err")" "1" "draft: names the absent gate"
 
+# ── 14. A light gate SKIPPED (compiler not published) needs evidence ───────
+pr_draft_json 23 "d23: gate skipped, evidence" h3 SKIPPED SUCCESS SKIPPED SKIPPED src/b.txt
+pr_draft_json 24 "d24: gate skipped, no suites" h3 SKIPPED SUCCESS SKIPPED SKIPPED src/b.txt
+pr_draft_json 25 "d25: gate skipped, no attacks" h3 SKIPPED SUCCESS SKIPPED SKIPPED src/b.txt
+pr_draft_json 26 "d26: gate failed" h3 FAILURE SUCCESS SKIPPED SKIPPED src/b.txt
+
+reset_clone
+batch --n 19 --attacks-na "23=tools only" --suites-ran "23=sprite: suites clean" 23
+check "$?" "0" "gate skipped: accepted with attacks and suites evidence"
+check "$(grep -c 'suites ran — sprite: suites clean' "$fx/gh.log")" "1" "gate skipped: the suites evidence is printed on the batch PR"
+reset_clone
+batch --n 20 --attacks-na "24=tools only" 24
+check "$?" "1" "gate skipped: refused without suites evidence"
+check "$(grep -c '#24 is a draft: its suites did not run' "$scratch/err")" "1" "gate skipped: names the missing suites evidence"
+reset_clone
+batch --n 21 --suites-ran "25=ran" 25
+check "$?" "1" "gate skipped: refused without attacks evidence"
+check "$(grep -c '#25: cache-attacks is SKIPPED' "$scratch/err")" "1" "gate skipped: names the missing attacks evidence"
+reset_clone
+batch --n 22 --attacks-na "26=tools only" --suites-ran "26=ran" 26
+check "$?" "1" "gate failed: refused even with evidence"
+check "$(grep -c '#26 refused: its light gate check is FAILURE' "$scratch/err")" "1" "gate failed: names the failed gate"
+
 echo
 echo "batch tests: $((total - failed))/$total passed"
 [ "$failed" = 0 ]
