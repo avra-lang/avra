@@ -2,7 +2,7 @@
 //! read by a name that outlives the process and the digest of the value read. A relation
 //! is named by its rows; a compiler family is named here, by the durable key of the
 //! declaration it answers for and its settled hash.
-use core.{DeclId, FileId, distinct}
+use core.{DeclId, FileId, distinct, joined}
 use @std.relation.db.{AnswerRef}
 use @std.relation.engine.{Key}
 use compiler.families.{Family}
@@ -21,6 +21,56 @@ impl Workspace {
         }
     }
 
+    /// The signatures, spelled by declaration. A signature settled by no query (a held
+    /// declaration's, a builtin's) is digested as the signature it is.
+    fn named_sigs() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Sig.ordinal
+        AnswerRef {
+            name: "Sig",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }) ?? ws
+                .sig_digest(arg),
+        }
+    }
+
+    fn sig_digest(arg: int) -> int? {
+        if arg < 0 || arg >= self.decls.sigs.get().length { return null }
+        sig_hash(self.decls.sigs.get()[arg])
+    }
+
+    /// The consts' types, spelled by the const's declaration and the seats it was asked
+    /// under. A settlement of an expression has no declaration to name it.
+    fn named_consts() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.ConstTyped.ordinal
+        AnswerRef {
+            name: "ConstTyped",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_settle(arg),
+            arg: (spelled: string) -> ws.settle_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    fn spelled_settle(arg: int) -> string? {
+        if arg < 0 || arg >= self.settle_asks.get().length { return null }
+        let ask = self.settle_asks.get()[arg]
+        match ask.root {
+            .Const(s) -> {
+                let d? = self.decls.decl_of(ask.file, s) else { return null }
+                "${self.decl_ref(d)}#${joined([x.fp for x in ask.seats], ",")}"
+            },
+            .Expr(_) -> null,
+        }
+    }
+
+    fn settle_arg(spelled: string) -> int? {
+        [i for i in 0..self.settle_asks.get().length if self.spelled_settle(i) == spelled].first()
+    }
+
     /// The answers of `fam`, keyed by file, spelled by the file's path.
     fn named_by_file(name: string, fam: Family) -> AnswerRef {
         let ws = self
@@ -37,7 +87,8 @@ impl Workspace {
     /// The families whose answers are named, registered with the declaration table's Db.
     fn answers_named() {
         let rdb = self.decls.rows_db.get()
-        rdb.answer_known(self.named_by_decl("Sig", Family.Sig))
+        rdb.answer_known(self.named_sigs())
+        rdb.answer_known(self.named_consts())
         rdb.answer_known(self.named_by_decl("Marks", Family.Marks))
         rdb.answer_known(self.named_by_decl("Methods", Family.Methods))
         rdb.answer_known(self.named_by_file("Parsed", Family.Parsed))
@@ -80,26 +131,29 @@ impl Workspace {
         d.index
     }
 
-    /// How many settled `Typed` answers stand on names alone, and for the rest the family
-    /// each unnamed read belonged to, once per answer.
-    fn leaves_report() -> string {
+    /// The meter for every family: how many settled answers of `fam`, of the `count` keys it
+    /// may have, stand on names alone, and for the rest the family each unnamed read belonged
+    /// to, once per answer. One call per family the report covers.
+    fn leaves_meter(fam: Family, count: int) -> string {
         let rdb = self.decls.rows_db.get()
         mut blocked: Map<string, int> = {}
         mut named = 0
-        mut typed = 0
-        for x in self.decls.all_decls() {
-            let k = key(Family.Typed, x.id.index)
-            let reads = self.db.kernel.deps_of(k)
+        mut settled = 0
+        for arg in 0..count {
+            let reads = self.db.kernel.deps_of(Key { family: fam.ordinal, arg: arg })
             if reads.is_empty() { continue }
-            typed = typed + 1
+            settled = settled + 1
             let unnamed = distinct(
                 [self.family_name(r.family) for r in reads if rdb.leaves_at(r) == null],
             )
             if unnamed.is_empty() { named = named + 1 }
             for n in unnamed { blocked.set(n, (blocked.get(n) ?? 0) + 1) }
         }
-        "leaves: ${named} of ${typed} Typed answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}"
+        "leaves ${fam.name}: ${named} of ${settled} answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}"
     }
+
+    /// Every family the meter covers.
+    fn leaves_report() -> string { self.leaves_meter(Family.Typed, self.decls.decl_count()) }
 
     fn family_name(ordinal: int) -> string {
         [f.name for f in Family.all() if f.ordinal == ordinal].first() ?? "family ${ordinal}"
