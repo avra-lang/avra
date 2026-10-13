@@ -1,0 +1,107 @@
+//! THE COMPILER'S ANSWERS, NAMED. A query's saved-answer rule stands on what it read, each
+//! read by a name that outlives the process and the digest of the value read. A relation
+//! is named by its rows; a compiler family is named here, by the durable key of the
+//! declaration it answers for and its settled hash.
+use core.{DeclId, FileId, distinct}
+use @std.relation.db.{AnswerRef}
+use @std.relation.engine.{Key}
+use compiler.families.{Family}
+
+impl Workspace {
+    /// The answers of `fam`, keyed by declaration, spelled by the declaration's wire.
+    fn named_by_decl(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    /// The answers of `fam`, keyed by file, spelled by the file's path.
+    fn named_by_file(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_file(arg),
+            arg: (spelled: string) -> ws.file_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    /// The families whose answers are named, registered with the declaration table's Db.
+    fn answers_named() {
+        let rdb = self.decls.rows_db.get()
+        rdb.answer_known(self.named_by_decl("Sig", Family.Sig))
+        rdb.answer_known(self.named_by_decl("Marks", Family.Marks))
+        rdb.answer_known(self.named_by_decl("Methods", Family.Methods))
+        rdb.answer_known(self.named_by_file("Parsed", Family.Parsed))
+        rdb.answer_known(self.named_by_file("Items", Family.Items))
+        rdb.answer_known(self.named_by_file("Visible", Family.Visible))
+        rdb.answer_known(self.named_by_file("Resolved", Family.Resolved))
+        rdb.answer_known(self.named_by_bucket())
+    }
+
+    /// The `Named` cells: a name's bucket of declarations, spelled by the name.
+    fn named_by_bucket() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Named.ordinal
+        AnswerRef {
+            name: "Named",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.decls.bucket_label(arg),
+            arg: (spelled: string) -> ws.decls.bucket_standing(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    fn spelled_file(arg: int) -> string? {
+        if arg < 0 || arg >= self.decls.file_count() { return null }
+        self.decls.file(FileId { index: arg }).path
+    }
+
+    fn file_arg(spelled: string) -> int? {
+        let f? = self.decls.known_file_id(spelled) else { return null }
+        f.index
+    }
+
+    fn spelled_decl(arg: int) -> string? {
+        if arg < 0 || arg >= self.decls.decl_count() { return null }
+        self.decl_ref(DeclId { index: arg })
+    }
+
+    fn decl_arg(spelled: string) -> int? {
+        let d? = self.decl_from_ref(spelled) else { return null }
+        d.index
+    }
+
+    /// How many settled `Typed` answers stand on names alone, and for the rest the family
+    /// each unnamed read belonged to, once per answer.
+    fn leaves_report() -> string {
+        let rdb = self.decls.rows_db.get()
+        mut blocked: Map<string, int> = {}
+        mut named = 0
+        mut typed = 0
+        for x in self.decls.all_decls() {
+            let k = key(Family.Typed, x.id.index)
+            let reads = self.db.kernel.deps_of(k)
+            if reads.is_empty() { continue }
+            typed = typed + 1
+            let unnamed = distinct(
+                [self.family_name(r.family) for r in reads if rdb.leaves_at(r) == null],
+            )
+            if unnamed.is_empty() { named = named + 1 }
+            for n in unnamed { blocked.set(n, (blocked.get(n) ?? 0) + 1) }
+        }
+        "leaves: ${named} of ${typed} Typed answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}"
+    }
+
+    fn family_name(ordinal: int) -> string {
+        [f.name for f in Family.all() if f.ordinal == ordinal].first() ?? "family ${ordinal}"
+    }
+}
