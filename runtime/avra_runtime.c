@@ -440,6 +440,40 @@ static void acc_buf(int64_t cap, int64_t bytes, int64_t count) {
 
 static int64_t g_mortal_live;
 
+// A WIDE LIST'S GROWTH, by the Avra fn that pushed it past the bar: the
+// pusher is the key, the box's own site (who made the list) the sample,
+// so the report names the writer and the holder of every buffer that
+// reached AVRA_MEM_WIDE (default 262144) cells.
+static size_t buf_bytes(int64_t cap);
+static Site g_wide[SITES];
+static int64_t g_wide_slots = 0;
+static int64_t g_wide_cells = 262144;
+// live bytes at which the report is printed and the process ends (3)
+static int64_t g_dump_at = 0;
+
+static void note_wide(AvraArray* a, int64_t cap, void* pusher) {
+    if (cap < g_wide_cells || pusher == NULL) return;
+    Site* w = site_in(g_wide, &g_wide_slots, pusher);
+    if (w == NULL) return;
+    w->live += (int64_t)buf_bytes(cap);
+    w->count++;
+    w->sample = a->site;
+}
+
+static void report_wide(intptr_t slide) {
+    for (int shown = 0; shown < 20; shown++) {
+        Site* top = NULL;
+        for (int i = 0; i < SITES; i++) {
+            if (g_wide[i].site && g_wide[i].live > 0 && (top == NULL || g_wide[i].live > top->live)) top = &g_wide[i];
+        }
+        if (top == NULL) return;
+        avra_say("mem:   wide grow by 0x%llx: %lld MB over %lld buffers, list made at 0x%llx\n",
+                (unsigned long long)((uintptr_t)top->site - (uintptr_t)slide), (long long)(top->live >> 20),
+                (long long)top->count, (unsigned long long)((uintptr_t)top->sample - (uintptr_t)slide));
+        top->live = -top->live;
+    }
+}
+
 static void acc_report(void) {
 #ifdef AVRA_CENSUS
     avra_say("rc: %lld retains, %lld releases, %lld reclaims\n",
@@ -510,6 +544,7 @@ static void acc_report(void) {
             replayed++;
         }
     }
+    report_wide(slide);
     for (int b = 0; b < CAP_BUCKETS; b++) {
         if (g_cap_peak[b] == 0) continue;
         avra_say("mem:     cap %-9lld peak %6lld MB, now %6lld MB in %lld buffers\n",
@@ -530,6 +565,10 @@ static void acc_settled(void) {
     g_acc_on = getenv("AVRA_MEM_STATS") != NULL;
 #endif
     if (g_acc_on) atexit(acc_report);
+    const char* dump = getenv("AVRA_MEM_DUMP_AT");
+    if (g_acc_on && dump && *dump) g_dump_at = (int64_t)avra_number(dump, 10) << 20;
+    const char* wide = getenv("AVRA_MEM_WIDE");
+    if (wide && *wide) g_wide_cells = (int64_t)avra_number(wide, 10);
 #if AVRA_MEASURES_MEMORY
     const char* ceiling = getenv("AVRA_MEM_CEILING_MB");
     if (ceiling && *ceiling) g_mem_ceiling = g_mem_next = (int64_t)avra_number(ceiling, 10) << 20;
@@ -630,6 +669,11 @@ static void acc_note(int k, int64_t bytes) {
     g_acc_total_live += bytes;
     if (g_acc_live[k] > g_acc_peak[k]) g_acc_peak[k] = g_acc_live[k];
     if (g_acc_total_live > g_acc_total_peak) g_acc_total_peak = g_acc_total_live;
+    if (__builtin_expect(g_dump_at > 0 && g_acc_total_live > g_dump_at, 0)) {
+        g_dump_at = 0;
+        avra_say("mem: AVRA_MEM_DUMP_AT crossed — the report follows and the process ends (3)\n");
+        exit(3);
+    }
 }
 
 static inline void acc_add(int k, int64_t bytes) {
@@ -1431,7 +1475,7 @@ static int laid_out(AvraArray* a) {
     return a->data == (int64_t*)(a + 1);
 }
 
-static void array_grow(AvraArray* a) {
+static void array_grow(AvraArray* a, void* pusher) {
     int64_t old_cap = a->cap;
     int64_t cap = old_cap < ARRAY_FIRST ? ARRAY_FIRST : old_cap * 2;
     int64_t* buf;
@@ -1454,6 +1498,7 @@ static void array_grow(AvraArray* a) {
     array_marks(a);
     memset(a->marks + a->len, 0, (size_t)(cap - a->len));
     if (a->site) acc_site(a->site, array_bytes(a) - before, 0);
+    if (g_acc_on > 0) note_wide(a, cap, pusher);
 }
 
 // A FULL LIST'S WRITE, whole and out of line, so the common write
@@ -1461,7 +1506,7 @@ static void array_grow(AvraArray* a) {
 __attribute__((noinline))
 static void push_grown(AvraArray* a, int64_t v) {
     if (a->cap >= CELL_CEILING || a->cap <= 0) avra_trap("a list grew past any possible size — a corrupted box");
-    array_grow(a);
+    array_grow(a, __builtin_return_address(0));
     a->data[a->len] = v;
     a->marks[a->len] = 0;
     a->len++;
@@ -1471,7 +1516,7 @@ void avra_array_reserve(void* arr, int64_t spare) {
     AvraArray* a = (AvraArray*)arr;
     while (a->cap - a->len < spare) {
         if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap("a list grew past any possible size — a corrupted box");
-        array_grow(a);
+        array_grow(a, __builtin_return_address(0));
     }
 }
 
