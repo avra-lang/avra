@@ -107,11 +107,12 @@ fn flag(v: bool) -> int {
 
 /// A record under construction, as octets. An IDENTITY: every holder
 /// of a writer writes the one record, so no seat needs `mut`.
-export type Writer = { out: Cell<List<int>> }
+export type Writer = { out: Cell<List<int>>, chunks: Cell<List<Bytes>> }
 
 export fn writer() -> Writer {
     let out: Cell<List<int>> = Cell.new([])
-    Writer { out: out }
+    let chunks: Cell<List<Bytes>> = Cell.new([])
+    Writer { out: out, chunks: chunks }
 }
 
 impl Writer {
@@ -138,16 +139,33 @@ impl Writer {
 
     fn text(s: string) { self.octets(s.bytes()) }
 
+    /// A run of octets, kept whole as one chunk after the loose ones before it.
     fn octets(b: Bytes) {
         self.count(b.length)
-        for i in 0..b.length { self.byte(b.at(i)) }
+        self.flush()
+        self.chunks.push(b)
     }
 
-    fn bytes() -> Bytes { self.out.get().bytes()! }
+    /// The loose octets written since the last flush, as one chunk.
+    fn flush() {
+        let loose = self.out.get()
+        if loose.length > 0 {
+            self.chunks.push(loose.bytes()!)
+            self.out.set([])
+        }
+    }
+
+    fn bytes() -> Bytes {
+        self.flush()
+        self.chunks.get().bytes()
+    }
 
     /// The octets as text no other octets spell: what a record is
     /// interned by.
-    fn spelled() -> string { ["${octet}" for octet in self.out.get()].join(".") }
+    fn spelled() -> string {
+        let all = self.bytes()
+        ["${all.at(i)}" for i in 0..all.length].join(".")
+    }
 }
 
 /// What `parts` write, in order, spelled out.
