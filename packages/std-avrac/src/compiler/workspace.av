@@ -52,7 +52,7 @@ use features.{
     Settlement,
     TypeCx,
     Decls,
-    new_decls,
+    new_decls_under,
     scalar_types,
     kind_word,
     Decl,
@@ -822,8 +822,8 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
 
 /// The declaration table with the language's own declarations in it, its reads
 /// recording into `kernel`.
-fn language_decls(lang: Language, kernel: Kernel) -> Decls {
-    let decls = new_decls() with { record_kernel: kernel, rows: lang.rows.types.concat(scalar_types()) }
+fn language_decls(lang: Language, kernel: Kernel, answers: Cell<Store?>) -> Decls {
+    let decls = new_decls_under(answer_hooks(answers)) with { record_kernel: kernel, rows: lang.rows.types.concat(scalar_types()) }
     decls.admit_builtins()
     decls
 }
@@ -876,6 +876,7 @@ fn built(
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
     let no_store: Store? = null
+    let attached: Cell<Store?> = Cell.new(no_store)
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -884,8 +885,8 @@ fn built(
         root: root,
         lang: lang,
         db: new_db(kernel),
-        decls: language_decls(lang, kernel),
-        store: Cell.new(no_store),
+        decls: language_decls(lang, kernel, attached),
+        store: attached,
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
