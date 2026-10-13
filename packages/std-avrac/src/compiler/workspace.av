@@ -76,7 +76,7 @@ use features.{
     Instanced,
 }
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
-use core.{StmtId, ModulePath, watched_kernel}
+use core.{StmtId, ModulePath, watched_kernel, leaves_traced, db_verified}
 use diagnostics.{
     SourceFile,
     new_source_file,
@@ -974,7 +974,7 @@ fn built(
             Family.Named.ordinal,
             (f: FileId) -> ws.held_sig_dep(f),
         )
-    ws.answers_named()
+    if leaves_traced() || db_verified() { ws.answers_named() }
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.decls.arm_composers((f: FileId) -> ws.composers(f))
@@ -1022,6 +1022,7 @@ impl Workspace {
     fn ended(why: Stand) {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
+        self.db.kernel.folds_forgotten()
         self.decls.let_go(stand_voice(why))
         self.stand.set(why)
     }
