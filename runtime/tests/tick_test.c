@@ -303,6 +303,54 @@ static void body_scope_arms_do(void) {
     avra_tick_stood_down();
 }
 
+// A LONE MAIN'S SCOPE BRINGS THE SOURCE UP: nothing was spawned, so no
+// task ever became ready and no source stands; the scope's own opening
+// must start one, or the spinner under it is never cut.
+static void body_lone_main_do(void) {
+    int64_t scope = avra_fiber_within(20);
+    struct timespec t0, t;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int64_t waited_ms = 0;
+    while (!__atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED) && waited_ms < 2000) {
+        for (int i = 0; i < 4096; i++) avra_tick_cold();
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        waited_ms = (t.tv_sec - t0.tv_sec) * 1000 + (t.tv_nsec - t0.tv_nsec) / 1000000;
+    }
+    CHECK(__atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED) != 0, "a scope opened by a lone main brings the source up and cuts its spinner");
+    avra_fiber_within_end(scope);
+}
+
+static volatile int g_cut;
+
+// Spins on the checked back-edge alone, for two seconds at most.
+static void* spins_until_cut(void* self) {
+    (void)self;
+    struct timespec t0, t;
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    int64_t waited_ms = 0;
+    while (!__atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED) && waited_ms < 2000) {
+        for (int i = 0; i < 4096; i++) avra_tick_cold();
+        clock_gettime(CLOCK_MONOTONIC, &t);
+        waited_ms = (t.tv_sec - t0.tv_sec) * 1000 + (t.tv_nsec - t0.tv_nsec) / 1000000;
+    }
+    g_cut = __atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED) != 0;
+    return NULL;
+}
+
+// A CANCEL STANDING ON THE TASK SWITCHED TO KEEPS THE SOURCE WANTED: the
+// asker parks on the join, nothing else is ready and no timer is filed,
+// so the cancelled spinner's own back-edge is the only place left to
+// hear the request.
+static void body_cancel_heard_do(void) {
+    g_cut = 0;
+    void* a = spawn1(spins_until_cut, 0);
+    avra_fiber_yield();
+    avra_task_cancel(a);
+    avra_task_settle(a);
+    CHECK(g_cut, "a spinner cancelled by a task that then only joins it is cut at its back-edge");
+    avra_rc_release(a);
+}
+
 // A COMPILED BACK-EDGE INSIDE AN EVALUATED RUN STANDS STILL: the
 // evaluator's own task counts the turns, so a compiled check reached
 // from a host fn beside it must not consume the guest's tick.
@@ -403,6 +451,8 @@ int main(void) {
     in_child("the evaluator's deadline cut", body_vdeadline_do);
     in_child("a due timer at a checked back-edge", body_tick_timer_do);
     in_child("a scope's own opening arms the source", body_scope_arms_do);
+    in_child("a lone main's scope brings the source up", body_lone_main_do);
+    in_child("a cancel heard by a spinner its asker joins", body_cancel_heard_do);
     in_child("a compiled back-edge inside an evaluated run", body_guest_do);
     printf("tick: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
