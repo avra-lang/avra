@@ -121,9 +121,8 @@ impl Read {
 
 /// A read read back from a row's list; absent for a line that is no pair.
 fn read_spelled(line: string) -> Read? {
-    let at = line.index_of(" ")
-    if at <= 0 { return null }
-    Read { name: line.substring(at + 1, line.length), digest: line.substring(0, at) }
+    let name? = read_name(line) else { return null }
+    Read { name: name, digest: line.substring(0, line.length - name.length - 1) }
 }
 
 /// A KEY OVER A PROJECTION — the one derivation every family shares, so no family can
@@ -260,6 +259,12 @@ impl Store {
         let lines? = self.reads_of(family, key) else { return false }
         let reads = [read_spelled(l) for l in lines]
         !reads.any(it == null || now(it!.name) != it!.digest)
+    }
+
+    /// THE SUSPECT SET: the record keys of the rows that read any of the inputs in `moved`, by
+    /// name. Ids only — no value is fetched, no row decoded. A row not in the set stands.
+    fn suspects(moved: List<string>) -> List<string> {
+        pack_suspects(self.pack, moved)
     }
 
     /// The lines a row was kept with.
