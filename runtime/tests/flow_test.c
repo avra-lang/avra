@@ -324,8 +324,8 @@ static void wait_park_sets_the_bit(void) {
     CHECK(ended(t) == 2 && g_byte_b == (int64_t)0xffffffff00000000LL && g_byte_a == 1, "a park a cancel claims answers -1:0 with the bit set");
     bytes_unseen();
     t = spawn1(parks_on_a_shut_gate, 5);
-    CHECK(ended(t) == 1, "a task whose park its deadline ended answers, as before this step");
-    CHECK(g_byte_b == (int64_t)0xffffffff00000001LL && g_byte_a == 0, "a deadline is no cancel point yet: -1:1, and the bit stays clear");
+    CHECK(ended(t) == 1, "a task whose scope landed the unwind its park began answers");
+    CHECK(g_byte_b == (int64_t)0xffffffff00000001LL && g_byte_a == 1, "a park its deadline claims answers -1:1 with the bit set");
     avra_rc_release(g_gate);
     avra_clock_run_ends();
 }
@@ -1362,15 +1362,14 @@ static void deadline_reach(void) {
         avra_fiber_sleep(2);
         CHECK(avra_gate_claim(g_gate) == 0, "the task under the deadline is claimed");
         avra_fiber_sleep(45);
-        CHECK(avra_task_ended(t) == 2, joins ? "a deadline filed by an earlier wait cuts a join short" : "a deadline filed by an earlier wait cuts a sleep short");
-        avra_rc_release(t);
+        CHECK(joined(t) < 39, joins ? "a deadline filed by an earlier wait cuts a join short" : "a deadline filed by an earlier wait cuts a sleep short");
     }
     CHECK(avra_sched_timers() == 0, "and leaves the heap with its scope");
 
     int64_t outer = avra_fiber_within(8);
     t = spawn1(waits_reports, 0);
     avra_fiber_within_end(outer);
-    CHECK(joined(t) == -99, "a task inherits its spawner's deadline: its wait answers -1:1 when that passes");
+    CHECK(ended(t) == 2, "a task inherits its spawner's deadline: its wait is cut when that passes");
     CHECK(!filed(g_gate), "and the wait the deadline cut short is retracted");
     avra_rc_release(g_gate);
 }
@@ -1442,15 +1441,16 @@ static void* parks_under_a_scope(void* self) {
     return answer(woken == 0 && avra_fiber_interrupted() == 1 && landed == 0);
 }
 
-// Interrupted once, then a park a passed deadline answers at once.
+// Interrupted once, then a park a passed deadline cuts at once: its
+// scope lands the unwind.
 static void* interrupted_then_late(void* self) {
     (void)self;
     avra_fiber_park_fd(g_pipe[0], 0, -1);
     int64_t first = avra_fiber_interrupted();
     int64_t scope = avra_fiber_within(0);
     int64_t woken = avra_fiber_park_fd(g_pipe[0], 0, -1);
-    avra_scope_end(scope);
-    return answer(first == 1 && woken == 0 && avra_fiber_interrupted() == 0);
+    int64_t landed = avra_fiber_within_end(scope);
+    return answer(first == 1 && woken == 0 && landed == 1 && avra_fiber_interrupted() == 0);
 }
 
 static void* waits_on_the_pipe(void* self) {
@@ -1471,7 +1471,7 @@ static void interrupt_is_its_own_claim(void) {
     int64_t scope = avra_fiber_within(5);
     t = spawn1(parks_and_tells, -1);
     avra_scope_end(scope);
-    CHECK(joined(t) == 10, "nor does one a deadline ended");
+    CHECK(ended(t) == 2, "one an inherited deadline ended is cut: its task ends cancelled");
     t = spawn1(parks_under_a_scope, 0);
     avra_fiber_sleep(2);
     avra_fiber_fd_interrupt(g_pipe[0]);
@@ -1489,6 +1489,7 @@ static void interrupt_is_its_own_claim(void) {
     CHECK(avra_vtask_park_fd(v, g_pipe[0], 0, -1) == 1, "a virtual task parks on the descriptor");
     avra_fiber_fd_interrupt(g_pipe[0]);
     CHECK(avra_vtask_timed_out(v) == 1 && avra_vtask_interrupted(v) == 1, "and is told its park was interrupted");
+    CHECK(avra_vtask_unwinding(v) == 0, "an interrupt is a value of the park: it raises no bit");
     avra_vtask_free(v);
 }
 
@@ -2906,18 +2907,81 @@ static void virtual_deadline_cuts(void) {
     avra_clock_run_ends();
 }
 
-// A DESCRIPTOR PARK'S DEADLINE IS A VALUE: the park answers that its time
-// ran out, and no bit is raised — after a sleep on the same task too.
-static void virtual_fd_park_deadline_is_a_value(void) {
+// A DESCRIPTOR PARK IS CUT BY ITS TASK'S DEADLINE: the park answers that
+// its time ran out with the bit raised, parked or under a limit passed
+// already, and its own timeout stays a value.
+static void virtual_deadline_cuts_fd_park(void) {
     int64_t vt = avra_vtask_new_at(11, 79);
     avra_vtask_sleep(vt, 1);
     CHECK(avra_vtask_next() == vt && avra_vtask_unwinding(vt) == 0, "a virtual sleep wakes at its time, the bit clear");
     int64_t scope = avra_vtask_within(vt, 5);
     CHECK(avra_vtask_park_fd(vt, g_pipe[0], 0, -1) == 1, "a virtual task parks on the descriptor under its limit");
     CHECK(avra_vtask_next() == vt && avra_vtask_timed_out(vt) == 1, "its deadline ends the park as time run out");
-    CHECK(avra_vtask_unwinding(vt) == 0, "and raises no bit");
-    avra_vtask_within_end(vt, scope);
+    CHECK(avra_vtask_unwinding(vt) == 1 && avra_vtask_interrupted(vt) == 0, "and raises its bit: a cut, no interrupt");
+    avra_vtask_set_unwinding(vt, 0);
+    CHECK(avra_vtask_park_fd(vt, g_pipe[0], 0, -1) == 0 && avra_vtask_timed_out(vt) == 1, "a park under the request that stands parks nothing");
+    CHECK(avra_vtask_unwinding(vt) == 1 && avra_unwinding == 0, "and raises the task's own bit, never the running one");
+    CHECK(avra_vtask_within_end(vt, scope) == 1 && avra_vtask_unwinding(vt) == 0, "the scope's landing ends the unwind and clears the bit");
+    CHECK(avra_vtask_park_fd(vt, g_pipe[0], 0, 3) == 1, "the task parks on the descriptor for its own three ms");
+    CHECK(avra_vtask_next() == vt && avra_vtask_timed_out(vt) == 1 && avra_vtask_unwinding(vt) == 0, "a park's own time is a value: no bit");
     avra_vtask_free(vt);
+}
+
+// ── a `within`'s landing ────────────────────────────────────────
+
+// A gate park under `cap` ms of limit, then the landing.
+static void* lands_its_own(void* self) {
+    int64_t scope = avra_fiber_within(cap(self));
+    avra_wait_gate(g_silent, 0, 0);
+    avra_wait_park();
+    g_byte_a = avra_unwinding;
+    g_byte_b = avra_fiber_within_end(scope);
+    g_byte_c = avra_unwinding;
+    return answer(0);
+}
+
+// The outer limit passes under an inner scope: the inner's landing
+// passes the unwind on, and the outer's ends it.
+static void* lands_the_outer(void* self) {
+    (void)self;
+    int64_t outer = avra_fiber_within(5);
+    int64_t inner = avra_fiber_within(5000);
+    avra_fiber_sleep(40);
+    g_byte_a = avra_fiber_within_end(inner) == 0 && avra_unwinding == 1;
+    g_byte_b = avra_fiber_within_end(outer) == 1 && avra_unwinding == 0;
+    return answer(0);
+}
+
+// The limit passes while the block waits at no cancel point: it answers.
+static void* lands_nothing(void* self) {
+    (void)self;
+    int64_t scope = avra_fiber_within(5);
+    avra_fiber_sleep(1);
+    unheeding(40);
+    g_byte_a = avra_task_request(g_me) == scope;
+    g_byte_b = avra_fiber_within_end(scope);
+    g_byte_c = avra_unwinding;
+    return answer(0);
+}
+
+static void a_landing_ends_its_own_unwind(void) {
+    avra_clock_run_begins();
+    avra_clock_virtual(1);
+    g_silent = avra_gate_new();
+    bytes_unseen();
+    CHECK(ended(spawn1(lands_its_own, 5)) == 1, "a task whose scope landed its own unwind answers");
+    CHECK(g_byte_a == 1 && g_byte_b == 1 && g_byte_c == 0, "the landing answers 1 for the unwind its scope asked for, and clears the bit");
+    bytes_unseen();
+    CHECK(ended(spawn1(lands_the_outer, 0)) == 1, "a task whose outer scope landed answers");
+    CHECK(g_byte_a == 1, "an inner scope's landing passes an outer's unwind on, the bit still set");
+    CHECK(g_byte_b == 1, "and the outer's own landing ends it");
+    bytes_unseen();
+    g_me = spawn1(lands_nothing, 0);
+    CHECK(ended(g_me) == 1, "a task whose block outlived its limit at no cancel point answers");
+    CHECK(g_byte_a == 1, "the limit's request stood");
+    CHECK(g_byte_b == 0 && g_byte_c == 0, "and the landing answers 0: nothing was cut, the block answered");
+    avra_rc_release(g_silent);
+    avra_clock_run_ends();
 }
 
 // Without a `within` written in the defer, the wait cuts at once.
@@ -3071,7 +3135,7 @@ int main(int argc, char** argv) {
     on_virtual_clock("a scope's end cancels what it owns, then joins it", a_scopes_end_cancels_what_it_owns);
     in_child_within("a cut yield still switches", a_cut_yield_still_switches, 5);
     in_child_within("a cancel cuts a descriptor park", cancel_cuts_fd_park, 5);
-    on_virtual_clock("a park a cancel claims sets the bit, a deadline does not yet", wait_park_sets_the_bit);
+    on_virtual_clock("a park a cancel or a deadline claims sets the bit", wait_park_sets_the_bit);
     in_child_within("a yield is a cancel point", a_yield_is_a_cancel_point, 5);
     on_virtual_clock("a claim made before a cancel is taken first", claim_first_then_cancel);
     on_virtual_clock("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs);
@@ -3142,7 +3206,8 @@ int main(int argc, char** argv) {
     on_virtual_clock("a deadline cuts a join", deadline_cuts_join);
     on_virtual_clock("a deadline does not cut a scope's end", a_deadline_does_not_cut_a_scopes_end);
     on_virtual_clock("a virtual task's deadline cuts its sleep and its join", virtual_deadline_cuts);
-    in_child_within("a virtual descriptor park's deadline is a value", virtual_fd_park_deadline_is_a_value, 5);
+    in_child_within("a virtual task's deadline cuts its descriptor park", virtual_deadline_cuts_fd_park, 5);
+    on_virtual_clock("a landing ends its own unwind", a_landing_ends_its_own_unwind);
     as_virtual();
     trace_names_virtual_tasks(argv[0]);
     trace_names_sites(argv[0]);

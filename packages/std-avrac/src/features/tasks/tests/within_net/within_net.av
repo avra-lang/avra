@@ -1,0 +1,21 @@
+// proves: a socket read parked past its `within` limit is cut — the
+// block answers `Err(TimedOut)`, never the read's own error
+use @std.net.{listen, connect, NetError}
+use @std.time.{ms, secs}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let s = l.accept()?
+    let said = match within ms(10) { s.read(64) } {
+        .Ok(.Ok(_)) -> "read",
+        .Ok(.Err(_)) -> "failed",
+        .Err(t) -> "late ${t.after.ms}",
+    }
+    let _ = s.close()
+    let _ = c.close()
+    let _ = l.close()
+    .Ok(said)
+}
+
+run() catch _ -> "refused"

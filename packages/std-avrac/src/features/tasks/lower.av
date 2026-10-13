@@ -2,7 +2,7 @@
 //! closure over `e`'s TASK lift, which answers `e`'s value in a
 //! one-cell list — one box for every shape, so the runtime makes one
 //! call; `.await` joins and reads that cell.
-use core.{ExprId, Reg, Type, TypeId, RtFlag}
+use core.{ExprId, Reg, Type, TypeId, RtFlag, BinOp, ResSides}
 use features.{LowerCx, MethodCall}
 
 fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -18,8 +18,9 @@ fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 /// landing: the scope opens inside the turn and ends through the
 /// frame, so a `return` or a `?` out of the body runs it, as a
 /// `defer` there would, and an unwind jumps here rather than leaving
-/// the fn. The epilogue answers the body as written.
+/// the fn. The epilogue answers the body, or the deadline.
 fn within_reg(mut cx: LowerCx, e: ExprId, limit: ExprId, body: ExprId) -> Reg {
+    let sides? = cx.view.types.res_parts(cx.type_at(e)) else { return cx.lower_defect(e, "a `within` without its Result survived typing") }
     let body_ty = cx.type_at(body)
     let limit_reg = cx.reg_of(limit)
     // The body's answer and the scope end's landing, each written on
@@ -37,21 +38,47 @@ fn within_reg(mut cx: LowerCx, e: ExprId, limit: ExprId, body: ExprId) -> Reg {
     cx.close_landing()
     cx.jumped(at, false)
     cx.loop_end()
-    within_epilogue(cx, e, body_ty, answer)
+    let landed = cx.bin(Type.Bool, BinOp.Ne, cx.loaded_as(cx.type(int), landing), cx.const_int(0))
+    let whole = cx.type_at(e)
+    cx
+        .region(landed, e) { cx ->
+            cx.failed(whole, timed_out(cx, e, sides, limit_reg))
+        } else { cx ->
+            passed_or_answered(cx, whole, body_ty, answer)
+        }
 }
 
-/// The Ok/Err region the landing leaves: set, the fn is unwinding, so
-/// the frames above have run and it leaves; clear, the body's own
-/// answer stands.
-fn within_epilogue(mut cx: LowerCx, e: ExprId, body_ty: TypeId, answer: Reg) -> Reg {
-    let unwinding = cx.flag_read(RtFlag.Unwinding)
+/// The landing was another's, or none: still unwinding, the frames
+/// above have run and the fn leaves; else the body's own answer stands.
+fn passed_or_answered(mut cx: LowerCx, whole: TypeId, body_ty: TypeId, answer: Reg) -> Reg {
     cx
-        .region(unwinding, e) { cx ->
+        .region_as(cx.flag_read(RtFlag.Unwinding), whole) { cx ->
             cx.unwinds()
-            cx.hollow_of(body_ty)
+            cx.hollow_of(whole)
         } else { cx ->
-            cx.loaded_as(body_ty, answer)
+            cx.okayed(whole, cx.loaded_as(body_ty, answer))
         }
+}
+
+/// The `TimedOut` the scope that asked answers: the span it was given
+/// — a `Duration` is its `ms` — and the frames its unwind left.
+fn timed_out(mut cx: LowerCx, e: ExprId, sides: ResSides, limit: Reg) -> Reg {
+    let fields? = cx.view.decls.fields_of_type(sides.err) else { return cx.lower_defect(e, "a `TimedOut` that is no record survived typing") }
+    let frames? = fields.types.last() else { return cx.lower_defect(e, "a `TimedOut` without its frames survived typing") }
+    cx.packed_struct(sides.err, [limit, frames_left(cx, frames)])
+}
+
+/// The unwind's frame list, read back as the `List<Frame>` it is.
+fn frames_left(mut cx: LowerCx, frames: TypeId) -> Reg {
+    let sh = cx.view.types.shape_of(frames)
+    let frame = match sh { .List(of) -> cx.view.types.shape_of(of), _ -> Type.Ptr }
+    let n = cx.unwind_count(Type.Int)
+    let out = cx.array_sized(sh, n)
+    let w = cx.counted_to(n)
+    let here = cx.turn_open(w)
+    cx.push_slot(out, cx.unwind_at(frame, here))
+    cx.loop_end()
+    out
 }
 
 /// The closure the task runs: `body`'s captures, and its task lift.

@@ -139,6 +139,8 @@ int64_t avra_fiber_within(int64_t ms);
 // The innermost scope, `id`, ends (any other traps by name): 1 when the
 // request that stands is this scope's, which then stands no longer.
 int64_t avra_scope_end(int64_t id);
+// The same end as a `within`'s LANDING: 1 when an unwind this scope
+// asked for ends here — the unwind bit is cleared — else 0.
 int64_t avra_fiber_within_end(int64_t id);
 
 // A `defer` runs whole under a shield: the frame's cold exit brackets

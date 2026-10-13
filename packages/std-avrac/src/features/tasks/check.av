@@ -9,18 +9,32 @@ fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) { .Spawn(body) -> spawned(cx, body), rest -> cx.error_type }
 }
 
-/// `within limit { body }` answers what the body answers. The limit is
-/// a field read (`Duration.ms`), typed with the body so a limit that is
-/// no span refuses in the member law's own words.
+/// `within limit { body }` answers `Result<T, TimedOut>`: what the body
+/// answers, or the deadline it ran past. The limit is a field read
+/// (`Duration.ms`), typed with the body so a limit that is no span
+/// refuses in the member law's own words.
 fn within_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .Within(limit, body) -> {
             let _ = cx.walk_type(limit)
             if cx.errored(limit) { return cx.error_type }
-            cx.walk_type(body)
+            let answer = cx.walk_type(body)
+            if cx.errored_ty(answer) { return cx.error_type }
+            if cx.view.types.shape_of(answer) is .Void { return answers_nothing(cx, body) }
+            let late? = timed_out_type(cx) else { return no_timed_out(cx, e) }
+            cx.view.types.intern(Type.Res(answer, late))
         },
         rest -> cx.error_type,
     }
+}
+
+/// The `TimedOut` record `@std/time` declares — the span a block was
+/// given and the frames its unwind left. Absent when the program loads
+/// no `@std/time`.
+fn timed_out_type(cx: TypeCx) -> TypeId? {
+    let decl? = cx.view.decls.package_decl("@std.time", "TimedOut") else { return null }
+    let _ = cx.view.decls.sig(decl)
+    cx.view.types.intern(Type.Struct(decl, "TimedOut"))
 }
 
 /// The body is hidden from the walk — its lambda lowers only as the
@@ -80,6 +94,32 @@ fn check_push(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 }
 
 // ── The voices ──
+
+fn answers_nothing(mut cx: TypeCx, body: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.within",
+                cx.loc_of(body),
+                "a `within` answers what its block did or the deadline it ran past, and this block answers nothing",
+                "answers nothing",
+                "answer what the block did — end it on a value",
+            ),
+        )
+}
+
+fn no_timed_out(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.within",
+                cx.loc_of(e),
+                "a `within` answers `Result<T, TimedOut>`, and `TimedOut` is `@std/time`'s",
+                "no `@std/time` here",
+                "give the limit as `@std/time`'s span — `use @std.time.{ms}`",
+            ),
+        )
+}
 
 fn not_a_task(mut cx: TypeCx, t: ExprId) -> TypeId {
     let n = cx.name_at(t)

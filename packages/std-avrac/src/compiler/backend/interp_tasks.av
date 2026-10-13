@@ -379,8 +379,11 @@ impl Machine {
     fn fiber_park_fd_val(vals: List<Val>) -> Val {
         self.rooted()
         let vt = self.tasks[self.running].vt
-        if self.woke() { return Val.I(1 - avra_vtask_timed_out(vt)) }
-        if avra_vtask_park_fd(vt, self.whole(vals[0]), self.whole(vals[1]), self.whole(vals[2])) == 0 { return Val.I(1 - avra_vtask_timed_out(vt)) }
+        if self.woke() ||
+            avra_vtask_park_fd(vt, self.whole(vals[0]), self.whole(vals[1]), self.whole(vals[2])) == 0 {
+            self.unwind_met(vt)
+            return Val.I(1 - avra_vtask_timed_out(vt))
+        }
         self.policy_parked()
         Val.I(0)
     }
@@ -396,9 +399,14 @@ impl Machine {
         Val.I(avra_vtask_within(self.tasks[self.running].vt, self.whole(vals[0])))
     }
 
+    /// A `within`'s landing: an unwind the scope asked for ends here,
+    /// and the task's own record of its bit follows.
     fn fiber_within_end_val(vals: List<Val>) -> Val {
         self.rooted()
-        Val.I(avra_vtask_within_end(self.tasks[self.running].vt, self.whole(vals[0])))
+        let vt = self.tasks[self.running].vt
+        let landed = avra_vtask_within_end(vt, self.whole(vals[0]))
+        self.unwind_met(vt)
+        Val.I(landed)
     }
 
     /// A cold exit's deferred calls begin: the running task's bit is saved
@@ -613,6 +621,7 @@ impl Machine {
         let vt = self.running_vt()
         if self.woke() || avra_vtask_park(vt) == 0 {
             self.tasks[self.running].arming = false
+            self.unwind_met(vt)
             return Val.I(avra_vtask_claim(vt))
         }
         self.policy_parked()
@@ -772,7 +781,8 @@ impl Machine {
     /// A cancel point: the first read of a set unwind bit begins an
     /// unwind, whose list is exactly the frames from here on. The
     /// runtime raises a virtual task's bit; a row that may be cut — the
-    /// checked back-edge, a sleep, a join — reads it here as it resumes.
+    /// checked back-edge, a sleep, a join, a park — reads it here as it
+    /// resumes, and a `within`'s landing where it clears.
     fn unwind_met(vt: int) {
         let bit = avra_vtask_unwinding(vt) != 0
         if bit && !self.tasks[self.running].unwound_bit {
