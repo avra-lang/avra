@@ -416,6 +416,24 @@ printf 'use a.{one}\nprintln("${one()}")\n' > $R/um/src/main.av
 HR "cold um" check um 0
 um_trace=$(AVRA_DB_VERIFY=1 AVRA_QTRACE=1 ./avra check $R/um 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && ($2 == "attempt" || $2 == "parse" || $2 == "verify" || $2 == "mint") { n++ } END { print n + 0 }')
 steps=$((steps+1)); [ "$um_trace" = 0 ] || { fails=$((fails+1)); echo "FAIL  um: an unchanged check entered a derivation ($um_trace attempt/parse/verify/mint events)"; }
+if section lz; then
+# A HELD MODULE THAT IS NEVER READ IS NEVER MINTED, AND A BUCKET READ STILL FINDS ITS ROWS. `m/mem.av`
+# is held throughout and carries the one `@seq` member; the collector beside it is edited to be read.
+# What the collector gathers must still be that member, found through the mark's bucket alone.
+mkdir -p $R/lz/src/m $R/lz/src/c
+printf '[package]\nname = "rt-lz"\nversion = "0.1.0"\n' > $R/lz/avra.toml
+printf 'use @std.meta.{Named}\nexport fn seq(_t: Named, _rank: int) {}\n' > $R/lz/src/k.av
+printf 'use k.{seq}\n/// one\n@seq(5)\nexport fn uno() -> int { 1 }\n' > $R/lz/src/m/mem.av
+printf 'use k.{seq}\ntype Entry = { name: string, module: string, call: fn() -> int }\ncollect xs: List<Entry> = @seq in package as Entry { name: it.name, module: it.module, call: it } by it.mark.args[0]\nexport fn shown() -> string { "${xs.length} ${xs[0].name} ${xs[0].call()}" }\n' > $R/lz/src/c/col.av
+printf 'use c.{shown}\nprintln(shown())\n' > $R/lz/src/main.av
+lz_n=0
+lz_touch() { lz_n=$((lz_n+1)); printf '// moved %s\n' "$lz_n" >> $R/lz/src/c/col.av; }
+S "cold lz" lz
+lz_touch; lz_touch
+S "lz: the collector read, the member held" lz
+steps=$((steps+1)); [ "$($R/lz/src/main 2>&1)" = "1 uno 1" ] || { fails=$((fails+1)); echo "FAIL  lz: the collector gathered '$($R/lz/src/main 2>&1)', wanted '1 uno 1'"; }
+lz_touch
+HR "lz: the member's module stays held" check lz 0 m/mem.av held
 
 fi
 

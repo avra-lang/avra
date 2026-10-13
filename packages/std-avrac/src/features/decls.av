@@ -1417,13 +1417,19 @@ impl Decls {
 
     /// Every declaration `collect` gathers under `word` — a declared instance
     /// of that component — in id order.
-    fn indexed(word: string) -> List<Decl> { self.filed(word_index, word) }
+    fn indexed(word: string) -> List<Decl> {
+        self.held_ensured()
+        self.filed(word_index, word)
+    }
 
     /// Every `collect enum` declared, in id order.
     fn collect_enums() -> List<Decl> { self.indexed(collect_enum_word) }
 
     /// Every declaration wearing `@name`, in id order.
-    fn indexed_by_mark(name: string) -> List<Decl> { self.filed(marks_index, name) }
+    fn indexed_by_mark(name: string) -> List<Decl> {
+        self.held_ensured()
+        self.filed(marks_index, name)
+    }
 
     /// The rows filed under `v` in `Decl`'s index `i`: the bucket read
     /// unrecorded, each row read through `decl`, which records it.
@@ -2124,13 +2130,11 @@ impl Decls {
         // A HELD FILE'S SETTLED BITS ARE THE INTERFACE'S, not this pass's to clear:
         // the receivers pass never surveys a held body, so wiping them loses the
         // writer a caller's retain decision reads. The pass clears what it owns.
-        for x in self.all_decls() {
+        for x in self.unheld_decls() {
             let j = x.id.index
-            if self.held.get().get(self.file(x.file).path) == null {
-                self
-                    .written_seats
-                    .set_at(j, Cell.new(filled(self.written_seats.get()[j].get().length, false)))
-            }
+            self
+                .written_seats
+                .set_at(j, Cell.new(filled(self.written_seats.get()[j].get().length, false)))
         }
     }
 
@@ -2178,11 +2182,9 @@ impl Decls {
     /// reason `clear_written` exempts them: a held fn's union rode its
     /// interface, never this pass.
     fn clear_inferred() {
-        for x in self.all_decls() {
-            if self.held.get().get(self.file(x.file).path) == null {
-                self.inferred_errs.keep(x.id.index, [])
-                self.inferred_unresolved.keep(x.id.index, false)
-            }
+        for x in self.unheld_decls() {
+            self.inferred_errs.keep(x.id.index, [])
+            self.inferred_unresolved.keep(x.id.index, false)
         }
     }
 
@@ -2491,6 +2493,7 @@ impl Decls {
     /// Every `extern fn`, in id order, off the externs' bucket.
     @bracket("decls")
     fn externs() -> List<Decl> {
+        self.held_ensured()
         let rs = self.decl_row_rows.get()
         [x for x in rs.members(rs.bucket_of(external_index, bool_key(true))) if self.is_extern(x.id)]
     }
