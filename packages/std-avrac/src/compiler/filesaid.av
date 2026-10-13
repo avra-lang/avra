@@ -6,8 +6,9 @@
 //! which files hold.
 use @std.text.{parse_int}
 use core.{digest_of, joined, qtrace, traced, ModulePath}
+use core.debug.{db_fast, db_verified}
 use compiler.{Want}
-use compiler.store.{Store, Stored, Read, node_key}
+use compiler.store.{Store, Stored, Read, node_key, read_name, record_key}
 use compiler.record.{KeyParts}
 use compiler.findings.{findings_read}
 
@@ -22,30 +23,32 @@ enum FileRead {
 }
 
 impl FileRead {
-    /// The read as its row names it.
-    fn name() -> string {
+    /// The read as its row names it: an input by the path it belongs to, an interface by its module.
+    fn name(path: string) -> string {
         match self {
-            .Text -> "text",
-            .Run(j) -> "run ${j}",
-            .Runs -> "runs",
-            .Gathered -> "gathered",
+            .Text -> "text ${path}",
+            .Run(j) -> "run ${path} ${j}",
+            .Runs -> "runs ${path}",
+            .Gathered -> "gathered ${path}",
             .Seen(m) -> "seen ${m}",
-            .SeenSet -> "seen-set",
+            .SeenSet -> "seen-set ${path}",
         }
     }
 }
 
-/// A read read back from its name; null for one this compiler never wrote.
-fn file_read_of(name: string) -> FileRead? {
-    let word = name.split(" ").first() ?? ""
-    let rest = name.substring(word.length + 1, name.length)
+/// A read of `path`'s row read back from its name; null for one this compiler never wrote.
+fn file_read_of(name: string, path: string) -> FileRead? {
+    let run = "run ${path} "
     when {
-        name == "text" -> FileRead.Text
-        name == "runs" -> FileRead.Runs
-        name == "gathered" -> FileRead.Gathered
-        name == "seen-set" -> FileRead.SeenSet
-        word == "run" -> if parse_int(rest) != null { FileRead.Run(parse_int(rest)!) } else { null }
-        name.starts_with("seen ") -> FileRead.Seen(rest)
+        name == FileRead.Text.name(path) -> FileRead.Text
+        name == FileRead.Runs.name(path) -> FileRead.Runs
+        name == FileRead.Gathered.name(path) -> FileRead.Gathered
+        name == FileRead.SeenSet.name(path) -> FileRead.SeenSet
+        name.starts_with(run) -> match parse_int(name.substring(run.length, name.length)) {
+            j? -> FileRead.Run(j)
+            null -> null
+        }
+        name.starts_with("seen ") -> FileRead.Seen(name.substring(5, name.length))
         _ -> null
     }
 }
@@ -73,7 +76,7 @@ fn reads_of_parts(k: KeyParts) -> List<Read> {
     let reads = [FileRead.Text, FileRead.Runs, FileRead.Gathered, FileRead.SeenSet]
         .concat([FileRead.Run(j) for j in 0..k.runs.length])
         .concat([FileRead.Seen(s.module) for s in k.seen])
-    [Read { name: r.name(), digest: answer_in(k, r) ?? "" } for r in reads]
+    [Read { name: r.name(k.path), digest: answer_in(k, r) ?? "" } for r in reads]
 }
 
 impl Workspace {
@@ -90,15 +93,27 @@ impl Workspace {
         store.get_valid(family, key, (name) -> self.stood_on(k, name))
     }
 
-    /// Whether a file's kept answer is there and still stands.
+    /// Whether a file's kept answer is there and still stands: unsuspected rows stand with
+    /// nothing derived, the rest are judged by their reads.
     fn file_kept(store: Store, path: string, family: Stored, key: string) -> bool {
+        let unsuspected = store.unsuspected(family, key, self.suspect_rows(store))
+        let stands = db_fast() && unsuspected
+        if stands && !db_verified() { return true }
+        let kept = self.file_judged(store, path, family, key)
+        if unsuspected && !kept { qtrace(
+                "Q\tsuspect-missed\t${path}\t${family.name()}\t${self.first_moved(store, path)}\n",
+            ) }
+        kept || stands
+    }
+
+    fn file_judged(store: Store, path: string, family: Stored, key: string) -> bool {
         let k = self.key_parts_cached(store, self.module_path_of(path), path)
         store.holds(family, key, (name) -> self.stood_on(k, name))
     }
 
     /// The digest a named answer has in these parts now.
     fn stood_on(k: KeyParts, name: string) -> string? {
-        let r? = file_read_of(name) else { return null }
+        let r? = file_read_of(name, k.path) else { return null }
         answer_in(k, r)
     }
 
@@ -134,5 +149,48 @@ impl Workspace {
         let at = line.index_of(" ")
         if at <= 0 { return true }
         self.stood_on(k, line.substring(at + 1, line.length)) != line.substring(0, at)
+    }
+
+    /// THE ROWS THAT READ AN INPUT THAT MOVED, once per record write and per file admitted: the files whose text
+    /// differs from what their row was kept on, then every file seeing a module those sit in,
+    /// to a fixpoint. A row outside the set read nothing that moved.
+    fn suspect_rows(store: Store) -> Map<string, bool> {
+        let paths = [fi.path for fi in self.decls.all_files()]
+        if self.keys.suspects.get().files == paths.length { return self.keys.suspects.get().rows }
+        mut row_of: Map<string, string> = {}
+        for p in paths { row_of.set(record_key(Stored.Warn.name(), said_row(p)), p) }
+        let edited = [p for p in paths if self.text_moved(store, p)]
+        mut moved = [FileRead.Text.name(p) for p in edited]
+            .concat([self.seen_name(p) for p in edited])
+        mut rows: Map<string, bool> = {}
+        mut grown = true
+        while grown {
+            grown = false
+            for r in store.suspects(moved) {
+                if rows.get(r) != null { continue }
+                rows.set(r, true)
+                grown = true
+                let p? = row_of.get(r) else { continue }
+                moved.push(self.seen_name(p))
+            }
+        }
+        if traced() {
+            qtrace(
+                "Q\tsuspects\t${edited.length} edited\t${rows.keys().length} rows\t${paths.length} files\n",
+            )
+        }
+        self.keys.suspects.set(Suspects { files: paths.length, rows: rows })
+        rows
+    }
+
+    /// The read a file's module is seen through.
+    fn seen_name(path: string) -> string { FileRead.Seen(self.module_of(path)).name(path) }
+
+    /// Whether a file's text differs from what its kept row stood on; a file never kept has moved.
+    fn text_moved(store: Store, path: string) -> bool {
+        let lines? = store.reads_of(Stored.Warn, said_row(path)) else { return true }
+        let read = FileRead.Text.name(path)
+        let line? = lines.find(read_name(it) == read) else { return true }
+        line.substring(0, line.index_of(" ")) != digest_of(self.text_digest(path))
     }
 }
