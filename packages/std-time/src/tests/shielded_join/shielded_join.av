@@ -1,0 +1,22 @@
+// proves: under a cancel a `defer` runs whole, so a bare await there of
+// a task that ended cancelled has no answer to go on with — it traps
+use @std.time.{ms, secs, sleep}
+
+let t = spawn {
+    defer {
+        let slow = spawn {
+            sleep(secs(60))
+            1
+        }
+        sleep(ms(0))
+        slow.cancel()
+        let v = slow.await
+        println("unreached ${v}")
+    }
+    sleep(secs(60))
+    0
+}
+sleep(ms(1))
+t.cancel()
+sleep(ms(5))
+println("unreached ${t.done}")

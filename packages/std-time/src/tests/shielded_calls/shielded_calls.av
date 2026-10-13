@@ -1,0 +1,28 @@
+// proves: under a cancel a `defer` runs whole — both of its calls, and
+// each fn they call past the point where it lets others run
+use @std.time.{ms, secs, sleep}
+
+fn step(seen: Cell<int>) {
+    seen.set(seen.get() + 1)
+    sleep(ms(0))
+    seen.set(seen.get() + 10)
+}
+
+fn outer(seen: Cell<int>) {
+    step(seen)
+    seen.set(seen.get() + 100)
+}
+
+let seen = Cell.new(0)
+let t = spawn {
+    defer {
+        outer(seen)
+        outer(seen)
+    }
+    sleep(secs(60))
+    0
+}
+sleep(ms(1))
+t.cancel()
+sleep(ms(1))
+"${t.done} ${seen.get()}"

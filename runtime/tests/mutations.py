@@ -80,6 +80,8 @@ MUTATIONS = [
     ("a join of a cancelled task sets no bit", "        cancel_passed(g_current, cells[TASK_BY]);\n        cancel_met();", "        cancel_passed(g_current, cells[TASK_BY]);"),
     ("a passed cancel displaces a standing request", "    if (f->cancel_by == 0) fiber_cancelled(f, by);", "    fiber_cancelled(f, by);"),
     ("the program's own run forgets who asked", "    if (f == &g_main) avra_main_asker = f->cancel_by;\n", ""),
+    ("a shielded virtual task reads as unshielded", "int64_t avra_vtask_shielded(int64_t t) { return virtual_at(t)->shield_depth != 0; }", "int64_t avra_vtask_shielded(int64_t t) { (void)t; return 0; }"),
+    ("an unshielded virtual task reads as shielded", "int64_t avra_vtask_shielded(int64_t t) { return virtual_at(t)->shield_depth != 0; }", "int64_t avra_vtask_shielded(int64_t t) { (void)t; return 1; }"),
     ("a virtual task's passed cancel sets no bit", "    cancel_passed(f, by);\n    f->unwinding = 1;", "    cancel_passed(f, by);"),
     ("a virtual task's passed cancel is nobody's", "    cancel_passed(f, by);\n    f->unwinding = 1;", "    f->unwinding = 1;"),
     ("an asker is named one off", "return f->cancel_by ? f->cancel_by - 1 : f->scope_by; }", "return f->cancel_by ? f->cancel_by : f->scope_by; }"),
