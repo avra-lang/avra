@@ -352,7 +352,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
+.PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -588,6 +588,10 @@ compile-slots: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # kind a hold must survive, each binary held to the evaluator — and a kept binary held
 # to the archive and objects it linked. It CLEARS the store, so it runs last, and it
 # refuses a run in which no step held.
+# THE EDIT CORPUS: one scripted edit at a time, the warm answers held to a cold copy's.
+db-corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/db_corpus.sh
+
 cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
 	@sh tools/link_cache_attack.sh

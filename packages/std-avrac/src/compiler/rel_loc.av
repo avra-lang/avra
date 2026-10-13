@@ -1,0 +1,100 @@
+//! A PLACE KEPT BY DECLARATION. An absolute offset is a fact about one parse; a kept
+//! place is (the declaration holding it, the offset within that declaration), so a
+//! line inserted above a declaration moves nothing a row says about it. The anchor is
+//! the declaration's durable wire — the identity a unit row is filed under.
+use core.{DeclId, Span, flatten, some_list}
+use @std.errors.{Loc}
+
+/// A place within a declaration: the declaration's wire, the file text it was spelled
+/// as, and the offsets from the declaration's first byte.
+export type RelLoc = { anchor: string, file: string?, lo: int, hi: int }
+
+/// What a place becomes to be kept. `Unplaceable` is a place no declaration holds whole
+/// (between declarations, half in one, or no file): an offset nothing anchors does not
+/// survive an edit above it, so whatever carries one is not servable from a row.
+export enum Anchoring {
+    Within(RelLoc)
+    Unplaceable
+}
+
+/// A kept place read back against the current parse: where it stands now, or that the
+/// declaration that held it is gone.
+export enum Whereabouts {
+    At(Loc)
+    Gone
+}
+
+/// A declaration and its bytes.
+type DeclSpan = { id: DeclId, span: Span }
+
+impl Workspace {
+    /// The kept form of `at`: relative to the innermost declaration holding it whole.
+    fn anchoring(at: Loc) -> Anchoring {
+        let path? = at.file else { return .Unplaceable }
+        let f? = self.decls.known_file_id(path) else { return .Unplaceable }
+        let spans = flatten([self.spanned(d) for d in self.decls.decls_of_file(f)])
+        let whole = spans.filter(it.span.lo <= at.lo && at.hi <= it.span.hi)
+        if whole.is_empty() { return .Unplaceable }
+        let inner = whole
+            .fold(whole[0], (best, x) -> if x.span.len() < best.span.len() { x } else { best })
+        .Within(
+            RelLoc {
+                anchor: self.decl_ref(inner.id),
+                file: at.file,
+                lo: at.lo - inner.span.lo,
+                hi: at.hi - inner.span.lo,
+            },
+        )
+    }
+
+    /// `kept` against the current parse.
+    fn whereabouts(kept: Anchoring) -> Whereabouts {
+        match kept { .Within(r) -> self.whereabouts_within(r), .Unplaceable -> .Gone }
+    }
+
+    fn whereabouts_within(r: RelLoc) -> Whereabouts {
+        let d? = self.decl_from_ref(r.anchor) else { return .Gone }
+        let s? = self.decl_span(d) else { return .Gone }
+        .At(Loc { file: r.file, lo: s.lo + r.lo, hi: s.lo + r.hi })
+    }
+
+    /// A declaration's own bytes in the current parse, when it has a span.
+    fn decl_span(d: DeclId) -> Span? {
+        let x = self.decls.decl(d)
+        self.decls.store_of(x.file).stmt_span(x.stmt)
+    }
+
+    /// `d` and its bytes when a place may be filed under it: a declaration of its own,
+    /// not one nested in a body, with a span.
+    fn spanned(d: DeclId) -> List<DeclSpan> {
+        if self.decls.decl(d).nested() { return [] }
+        some_list(self.decl_span(d)).map(DeclSpan { id: d, span: it })
+    }
+}
+
+/// A kept place as text. Every field behind its length, so no spelling moves a boundary.
+export fn anchoring_wire(a: Anchoring) -> string {
+    match a {
+        .Within(r) -> "A1w" +
+            wire_field(r.anchor) +
+            wire_field(r.file ?? "") +
+            wire_field(if r.file == null { "0" } else { "1" }) +
+            wire_field("${r.lo}") +
+            wire_field("${r.hi}"),
+        .Unplaceable -> "A1u",
+    }
+}
+
+/// A kept place read back from its text — none for text no `anchoring_wire` wrote.
+export fn anchoring_of_wire(raw: string) -> Anchoring? {
+    if raw == "A1u" { return .Unplaceable }
+    if !raw.starts_with("A1w") { return null }
+    mut r = WireReader { raw: raw, pos: 3 }
+    let anchor? = r.field() else { return null }
+    let file? = r.field() else { return null }
+    let named? = r.field() else { return null }
+    let lo? = r.number() else { return null }
+    let hi? = r.number() else { return null }
+    if r.pos != raw.length { return null }
+    .Within(RelLoc { anchor: anchor, file: if named == "1" { file } else { null }, lo: lo, hi: hi })
+}
