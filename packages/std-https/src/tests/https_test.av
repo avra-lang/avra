@@ -6,14 +6,14 @@
 // promptly, and a client that does not trust the server refuses it.
 // Closure alerts both ways (RFC 9112 §9.8), and a target's scheme
 // judged against the secured connection (RFC 9110 §7.4).
-use @std.net.{Conn, Listener, NetError, listen, connect}
+use @std.net.{Conn, Listener, NetError, listen, connect, timely}
 use @std.time.{Duration, ms, secs}
 use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, text, stream_of}
 use @std.http.ws.{Socket, Message, ws_limits, accepted}
 use @std.http.route.{get}
 use @std.http.server.{Server, server, served, timing}
-use @std.http.client.{Client, ClientError, request, netted}
+use @std.http.client.{Client, ClientError, request, netted, in_stage}
 use @std.https.{over_tls, secured, tls_carried, wss}
 use @std.tls.{TlsConn, TlsError, client_config, dial, handshake, wired}
 use @std.http.wire.{Secure}
@@ -142,7 +142,7 @@ fn heard_after(port: int, sent: Bytes) -> Result<Bytes, NetError> {
     c.write(sent)?
     mut got = "".bytes()
     while true {
-        match within secs(2) { c.read(65536) } {
+        match timely(within secs(2) { c.read(65536) }) {
             .Ok(b) -> {
                 let more? = b else { break }
                 got = got.concat(more)
@@ -159,7 +159,7 @@ fn silent_client_dropped() -> Result<bool, ClientError> {
     spawn s.run(1)
     defer s.stop()
     let quiet = netted(connect("127.0.0.1", s.listener.port, secs(2)))?
-    let closed = within secs(2) { quiet.read(64) }
+    let closed = timely(within secs(2) { quiet.read(64) })
     let _ = quiet.close()
     let after = fetched_secure(s.listener.port, "/after")
     .Ok(match closed { .Ok(b) -> b == null, .Err(_) -> false } && after == "200 /after")
@@ -188,10 +188,10 @@ fn https_at_a_plain_port() -> Result<bool, ClientError> {
     let s = served(l, () -> Quiet {}, limits(), timing()) { _q, q -> text(200, "plain") }
     spawn s.run(1)
     defer s.stop()
-    let words = within secs(3) { fetch_secure(l.port, "/") }
+    let words = in_stage(.Total, within secs(3) { fetch_secure(l.port, "/") })
     .Ok(
         match words {
-            .Err(.Secure(_)) or .Err(.Net(_)) or .Err(.Closed) -> true,
+            .Err(.Secure(_)) or .Err(.Net(_)) or .Err(.Closed) or .Err(.TimedOut(_)) -> true,
             .Err(_) or .Ok(_) -> false,
         },
     )
