@@ -225,21 +225,18 @@ impl Workspace {
         if value == null { return }
         let ran = match r { .Ok(v) -> v.ran, .Err(_) -> [] }
         let embedded = match r { .Ok(v) -> v.embeds, .Err(_) -> [] }
-        let modules = self.viewed_modules(distinct([k.path for k in frame if k.unit]))
+        let view = self.seen_view(self.viewed_modules(distinct([k.path for k in frame if k.unit])))
         let lines = distinct([finished_line(k, ran) for k in frame])
-            .concat([self.module_line(m) for m in modules])
-            .concat([joined(["n", self.names_digest(modules)], "\t")])
-            .concat(
-                [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
-            )
             .concat(
                 [
+                    joined(["v", view.id], "\t"),
                     budget_line(self.budgets()),
                     layout,
                     joined(["r"].concat([read_wire(r) for r in read]), "\t"),
                 ],
             )
             .concat([joined(["e", path, self.embed_said(path)], "\t") for path in distinct(embedded)])
+        self.view_kept(store, view)
         let _ = store.keep(Stored.Unit, key, value!, [])
         let _ = store.keep(Stored.Unit, "${key}#lines", joined(lines, "\n"), [])
     }
@@ -258,9 +255,8 @@ impl Workspace {
         let said = lines.split("\n")
         if !said.contains(layout) { return null }
         let rows = [l.split("\t") for l in said if !l.is_empty() && l != layout]
-        if !rows.all((r: List<string>) -> self.kept_row_stands(r)) { return null }
-        let mods = [module_path(r[1].split(".")) for r in rows if r[0] == "m"]
-        if !rows.all((r: List<string>) -> r[0] != "n" || r[1] == self.names_digest(mods)) { return null }
+        if !rows.all((r: List<string>) -> r[0] != "v" || self.view_stands(store, r)) { return null }
+        if !self.rows_stand([r for r in rows if r[0] != "v"]) { return null }
         let reads? = rows.find(it[0] == "r") else { return null }
         let decoded = [read_of_wire(w) for w in reads.slice(1, reads.length)]
         if decoded.any(it == null) { return null }
@@ -345,7 +341,55 @@ impl Workspace {
     /// closure of its imports — a read file's from its parse, a held one's
     /// from its kept record.
     fn viewed_modules(paths: List<string>) -> List<ModulePath> {
-        [module_path(m.split(".")) for m in sorted_texts(self.import_closure(distinct([self.module_of(p) for p in paths])))]
+        let at = "${self.db.revision()}\t${joined(paths, "\n")}"
+        let known: List<ModulePath>? = self.keys.viewed.get().get(at)
+        if known != null { return known! }
+        let made = [module_path(m.split(".")) for m in sorted_texts(self.import_closure(distinct([self.module_of(p) for p in paths])))]
+        self.keys.viewed.put(at, made)
+        made
+    }
+
+    /// What a module set shows its units, built once per revision.
+    fn seen_view(modules: List<ModulePath>) -> SeenView {
+        let at = "${self.db.revision()}\t${joined([m.text() for m in modules], ",")}"
+        let known: SeenView? = self.keys.seen_views.get().get(at)
+        if known != null { return known! }
+        let lines = [self.module_line(m) for m in modules]
+            .concat([joined(["n", self.names_digest(modules)], "\t")])
+            .concat(
+                [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
+            )
+        let made = SeenView { id: digest_of(joined(lines, "\n")), lines: lines }
+        self.keys.seen_views.put(at, made)
+        made
+    }
+
+    /// A view's lines, kept under its digest once per process.
+    fn view_kept(store: Store, view: SeenView) {
+        let at = "kept\t${view.id}"
+        if self.keys.view_marks.get().has(at) { return }
+        let _ = store.keep(Stored.Unit, view_key(view.id), joined(view.lines, "\n"), [])
+        self.keys.view_marks.put(at, true)
+    }
+
+    /// Whether a `v` row's view is kept and every line of it stands.
+    fn view_stands(store: Store, r: List<string>) -> bool {
+        if r.length != 2 { return false }
+        let said? = store.get(Stored.Unit, view_key(r[1])) else { return false }
+        self.rows_stand(rows_of(said))
+    }
+
+    /// Whether kept rows all stand, and the names digest agrees with the modules they list.
+    fn rows_stand(rows: List<List<string>>) -> bool {
+        if !rows.all((r: List<string>) -> self.kept_row_stands(r)) { return false }
+        let mods = [module_path(r[1].split(".")) for r in rows if r[0] == "m"]
+        rows.all((r: List<string>) -> r[0] != "n" || r[1] == self.names_digest(mods))
+    }
+
+    /// Whether a kept row that needs no analysis refuses: a view by its lines, any other by its own.
+    fn row_refuses(store: Store, r: List<string>) -> bool {
+        if r[0] == "v" { return !self.view_stands(store, r) }
+        judged_by_files(r) && !self.kept_row_stands(r)
     }
 
     /// `seen` and every module it imports, to a fixed point.
@@ -465,6 +509,15 @@ impl Workspace {
         "${verdict_fp(self.settled(f, SettleRoot.Const(self.decls.decl(d).stmt), []))}" == r[3]
     }
 }
+
+/// What a verdict's units see — module lines, names, file lines — named by the digest of its text.
+type SeenView = { id: string, lines: List<string> }
+
+/// Where a view's lines are kept.
+fn view_key(id: string) -> string { node_key(Stored.Unit, ["kept-view", id]) }
+
+/// A kept text's rows, split into fields.
+fn rows_of(said: string) -> List<List<string>> { [l.split("\t") for l in said.split("\n") if !l.is_empty()] }
 
 /// Where a const's verdict is kept, and the layout it was kept under.
 type KeptAt = { key: string, layout: string }

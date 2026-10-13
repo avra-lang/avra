@@ -15,9 +15,33 @@ use compiler.lower.{Lowered, program_symbol}
 extern fn avra_sched_runs_wanted() -> int
 extern fn avra_sched_schedule_at(i: int) -> int
 
-/// One `.refuses` program: a trap IS its proof, so it is never called
-/// in-process — `voice` is the text its trap's stderr must carry.
-export type RefusesCall = { path: string, voice: string }
+/// HOW A PROGRAM RUN AS A CHILD MUST END — the marker beside it says
+/// which: a trap, or a verdict (the program's own run cancelled). Each
+/// ends its process, so neither is ever called in a suite's own.
+export enum ChildEnd {
+    Trap
+    Verdict
+}
+
+impl ChildEnd {
+    /// The marker's extension beside the program.
+    fn marker() -> string {
+        match self { .Trap -> "refuses", .Verdict -> "verdict" }
+    }
+
+    /// The exit its child owes.
+    fn code() -> int {
+        match self { .Trap -> 2, .Verdict -> 1 }
+    }
+}
+
+/// Every end a marker names — the ONE list discovery and `is_program`
+/// both read.
+fn child_ends() -> List<ChildEnd> { [ChildEnd.Trap, ChildEnd.Verdict] }
+
+/// One child-run program: `voice` is the text its stderr must carry,
+/// `end` how it must end.
+export type RefusesCall = { path: string, voice: string, end: ChildEnd }
 
 /// What the evaluator made of a held derivation: agreed with it, or quarrelled
 /// under a hold — the derivation let go, the sources to be asked.
@@ -123,19 +147,26 @@ impl Workspace {
         results
     }
 
-    /// The package's REFUSAL program tests, marked `.refuses` instead
-    /// of `.expected`: a program whose trap is the proof. Never among
-    /// `program_tests()` — a suite runs every case in one process, and
-    /// calling one of these there would end it at the first one.
+    /// The package's CHILD-RUN program tests, marked `.refuses` or
+    /// `.verdict` instead of `.expected`: a program whose own end is the
+    /// proof. Never among `program_tests()` — a suite runs every case in
+    /// one process, and calling one of these there would end it at the
+    /// first one.
     fn refuses_tests() -> List<RefusesCall> {
-        [self.refuses_call(p) for p in sorted_texts([f for f in self.root_files() if self.expects_trap(f)])]
+        flatten([self.child_calls(p) for p in sorted_texts(self.root_files())])
     }
 
-    fn refuses_call(path: string) -> RefusesCall {
-        let text = self.listed_text(beside(path, "refuses"))
+    /// One call per marker beside `path`.
+    fn child_calls(path: string) -> List<RefusesCall> {
+        [self.refuses_call(path, e) for e in child_ends() if self.marked(path, e)]
+    }
+
+    fn refuses_call(path: string, end: ChildEnd) -> RefusesCall {
+        let text = self.listed_text(beside(path, end.marker()))
         RefusesCall {
             path: path,
             voice: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
+            end: end,
         }
     }
 
@@ -200,13 +231,15 @@ impl Workspace {
     /// The text a program must print stands beside it.
     fn expects_text(path: string) -> bool { self.there(beside(path, "expected")) }
 
-    /// The voice a program's trap must speak stands beside it.
-    fn expects_trap(path: string) -> bool { self.there(beside(path, "refuses")) }
+    /// The voice a program's `end` must speak stands beside it.
+    fn marked(path: string, end: ChildEnd) -> bool { self.there(beside(path, end.marker())) }
 
     /// WHETHER A FILE IS A PROGRAM, not a module: a proof stands beside it, so its
-    /// top-level statements are its own to run. Discovery reads the same two
+    /// top-level statements are its own to run. Discovery reads the same
     /// markers, each for its own kind of proof.
-    fn is_program(path: string) -> bool { self.expects_text(path) || self.expects_trap(path) }
+    fn is_program(path: string) -> bool {
+        self.expects_text(path) || child_ends().any((e) -> self.marked(path, e))
+    }
 
     /// `is_program`, asked of a file the analysis holds.
     fn is_program_file(f: FileId) -> bool { self.is_program(self.decls.file(f).path) }
