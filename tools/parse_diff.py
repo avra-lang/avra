@@ -54,8 +54,8 @@ def clear_store(*dirs):
         shutil.rmtree(os.path.join(d, ".avra-cache"), ignore_errors=True)
 
 
-def tree_files():
-    found = glob.glob(os.path.join(ROOT, "packages", "**", "*.av"), recursive=True)
+def tree_files(corpus):
+    found = glob.glob(os.path.join(ROOT, corpus, "**", "*.av"), recursive=True)
     return sorted(os.path.relpath(p, ROOT) for p in found)
 
 
@@ -75,9 +75,9 @@ def units(args, work):
     With --walk, the tree is one unit: `fmt --check packages`, one process over every file.
     """
     out = []
-    files = tree_files()
+    files = tree_files(args.corpus)
     if args.walk:
-        out.append(("walk", "packages", None))
+        out.append(("walk", args.corpus, None))
     else:
         for f in files:
             out.append(("fmt", f, None))
@@ -190,7 +190,7 @@ def self_test():
         os.chmod(f, 0o755)
     ns = argparse.Namespace(a=same, b=same, shard="0/1", mutant_stride=400, mutant_every=50,
                             check_every=10**9, work=os.path.join(tmp, "work"), report=None, show=5,
-                            walk=False, mutants=False)
+                            walk=False, mutants=False, corpus="packages")
     equal = run_shard(ns, same, same)
     ns.shard = "0/1"
     unequal = run_shard(ns, same, other)
@@ -211,6 +211,7 @@ def main(argv):
     p.add_argument("--work", default=os.path.join(ROOT, "build", "pdiff"))
     p.add_argument("--report")
     p.add_argument("--show", type=int, default=10)
+    p.add_argument("--corpus", default="packages", help="the directory under the tree the corpus is read from")
     p.add_argument("--walk", action="store_true", help="the tree as one fmt --check walk, not per file")
     p.add_argument("--mutants", action="store_true", help="with --walk, also the mutants")
     p.add_argument("--self-test", action="store_true")
