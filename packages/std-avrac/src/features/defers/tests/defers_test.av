@@ -3,13 +3,19 @@
 // frame; `errdefer` waits on the failure channel; and the laws
 // refuse what would fail unheard or never run.
 
-use @std.avrac.testing.{shown, refused_with, ir_of}
+use @std.avrac.testing.{shown, refused_with, ir_of, refusals}
 use compiler.backend.{render_ir}
 
 /// The one observer a deferred body has: the runtime's puts, which
 /// the evaluator collects line by line.
 fn puts() -> string {
     "extern fn avra_puts(s: string)\n"
+}
+
+/// A fn with a `defer` and a call that may reach a cancel point — one
+/// through a fn value — so its cold exit carries deferred work.
+fn settled_parts() -> string {
+    "fn inc(n: int) -> int { n + 1 }\nfn noted() { }\nfn f(n: int) -> int {\n    defer noted()\n    let g = inc\n    g(n)\n}\n"
 }
 
 /// A fallible fixture: `g` fails, `ok` answers.
@@ -194,6 +200,16 @@ spec "features/defers" {
                 ir_of("${puts()}fn f() -> int {\n    let u = spawn 1\n    u.await\n}\nf()"),
             )
             ir.contains("flag unwinding") && !ir.contains("avra_fiber_shield")
+        }
+        then "a const settles through a fn whose cold exit the program's own lowering shields" {
+            let src = "${settled_parts()}const X: int = f(3)\nlet t = spawn f(X)\nt.await"
+            refusals(src) == 0 &&
+                shown(src) == "5" &&
+                render_ir(ir_of(src)).contains("call avra_fiber_shield_enter")
+        }
+        then "an annotation's call runs such a fn too" {
+            let src = "${settled_parts()}@f(3)\nfn answer() -> int { 1 }\nlet t = spawn f(answer())\nt.await"
+            refusals(src) == 0 && shown(src) == "2"
         }
         then "a method call on a captured receiver needs no closure box — called directly, never through a pointer" {
             let ir = render_ir(
