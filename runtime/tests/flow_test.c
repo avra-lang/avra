@@ -1197,6 +1197,35 @@ static void overflow_list(void) {
     CHECK(avra_mem_live() == live, "and nothing of the set is kept");
 }
 
+// ── overflow waiters come from one list, and go back to it ──────
+
+// Files `n` waiters on gates nobody opens and one on an open gate, and
+// parks: the open one claims, and the rest are retracted.
+static void files_and_parks(void** gates, int n, void* open) {
+    for (int i = 0; i < n; i++) avra_wait_gate(gates[i], 0, i);
+    avra_wait_gate(open, 1, 0);
+    avra_wait_park();
+}
+
+static void overflow_waiters_are_kept_and_trimmed(void) {
+    enum { MANY = 200 };
+    void* gates[MANY];
+    for (int i = 0; i < MANY; i++) gates[i] = avra_gate_new();
+    void* open = avra_gate_new();
+    avra_vgate_open(open);
+    CHECK(avra_sched_waiters_kept() == 0, "none is kept before any is filed");
+    files_and_parks(gates, 6, open);
+    CHECK(avra_sched_waiters_kept() == 2, "a set of six gives its two past the fiber's four back to the list");
+    files_and_parks(gates, 6, open);
+    CHECK(avra_sched_waiters_kept() == 2, "the next set of six takes those two and gives them back: nothing more is made");
+    files_and_parks(gates, MANY, open);
+    CHECK(avra_sched_waiters_kept() == MANY - 4, "the list grows to the widest set filed at once");
+    avra_fiber_sleep(2);
+    CHECK(avra_sched_waiters_kept() == 64, "where the world idles it is cut back to its floor");
+    for (int i = 0; i < MANY; i++) avra_rc_release(gates[i]);
+    avra_rc_release(open);
+}
+
 // ── a gate opened for ever ──────────────────────────────────────
 
 static void opened_gate(void) {
@@ -3183,6 +3212,7 @@ int main(int argc, char** argv) {
     in_child_within("a cancelled member is passed over", a_cancelled_member_is_passed_over, 10);
     on_virtual_clock("a limit wins its instant", a_limit_wins_its_instant);
     in_child_within("a counted site is kept", a_counted_site_is_kept, 10);
+    in_child_within("overflow waiters are kept and trimmed", overflow_waiters_are_kept_and_trimmed, 10);
     trapped("a park with no arm filed", rests_on_nothing, "a `select` had no open arm");
     trapped("a scan begun inside a set", scans_inside_a_set, "a task waited inside a wait it had not parked");
     on_virtual_clock("a claim made before a cancel is taken first", claim_first_then_cancel);

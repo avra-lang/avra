@@ -353,6 +353,9 @@ int64_t avra_sched_timer_turns(void);
 // links of the queue the seeded pick has walked.
 int64_t avra_sched_timers(void);
 int64_t avra_sched_fd_waiters(void);
+// The waiters past a fiber's own four that stand ready for the next
+// task to file.
+int64_t avra_sched_waiters_kept(void);
 int64_t avra_sched_polls(void);
 int64_t avra_sched_pick_links(void);
 // How many switches left the fast path to ask the world.
