@@ -1,4 +1,4 @@
-//! A FILE'S KEPT ANSWER, AS A SAVED ANSWER: the file's `Said` stands while the answers it
+//! A FILE'S KEPT ANSWERS, AS SAVED ANSWERS: the file's `Said` stands while the answers it
 //! was kept on still have the digests they had — its text, each recorded compile-time
 //! read's token, what its collects gathered, each module it sees by its interface, and
 //! the SETS of those, so a read added or dropped moves the answer. Kept beside the hold's
@@ -9,6 +9,7 @@ use core.{digest_of, joined, qtrace, traced, db_verified, ModulePath}
 use compiler.{Want}
 use compiler.store.{Store, Stored, Read, node_key}
 use compiler.record.{KeyParts}
+use compiler.findings.{findings_read}
 
 /// What a file's kept answer stood on: one named answer each.
 enum FileRead {
@@ -79,46 +80,70 @@ fn reads_of_parts(k: KeyParts) -> List<Read> {
 }
 
 impl Workspace {
-    /// A file's kept answer filed with what it stands on, beside its parts.
-    fn keep_filesaid(store: Store, path: string, k: KeyParts) {
-        let _ = store
-            .keep_reading(Stored.Unit, filesaid_key(path), self.held_okey(store, path), reads_of_parts(k))
+    /// A file's kept answer filed under its path with what it stood on.
+    fn keep_file_row(store: Store, path: string, family: Stored, key: string, bytes: string) {
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        if store.get(family, key) == bytes && self.file_kept(store, path, family, key) { return }
+        let _ = store.keep_reading(family, key, bytes, reads_of_parts(k))
     }
 
-    /// The first answer a file's kept answer stood on that has moved, or null when none
-    /// has; "no row" for a file never kept so.
-    fn filesaid_moved(store: Store, path: string, k: KeyParts) -> string? {
-        let lines? = store.reads_of(Stored.Unit, filesaid_key(path)) else { return "no row" }
-        let moved = [name! for line in lines for name in [self.moved_name(line, k)] if name != null]
-        moved.first()
+    /// A file's kept answer, while every answer it stood on has its digest.
+    fn file_row(store: Store, path: string, family: Stored, key: string) -> string? {
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        store.get_valid(family, key, (name) -> self.stood_on(k, name))
     }
 
-    /// The read a row line names, when its answer is not the one the parts have.
-    fn moved_name(line: string, k: KeyParts) -> string? {
-        let at = line.index_of(" ")
-        if at <= 0 { return line }
-        let name = line.substring(at + 1, line.length)
-        let r? = file_read_of(name) else { return name }
-        if answer_in(k, r) == line.substring(0, at) { null } else { name }
+    /// Whether a file's kept answer is there and still stands.
+    fn file_kept(store: Store, path: string, family: Stored, key: string) -> bool {
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        store.holds(family, key, (name) -> self.stood_on(k, name))
     }
 
-    /// JUDGED BESIDE THE HOLD: the file's kept answer under the saved-answer rule against
-    /// `held`, the hold's own verdict. Said under `AVRA_QTRACE` when the two disagree,
-    /// with the first answer that moved.
-    fn filesaid_judged(
-        store: Store,
-        m: ModulePath,
-        path: string,
-        okey: string,
-        held: bool,
-        want: Want,
-    ) {
+    /// The digest a named answer has in these parts now.
+    fn stood_on(k: KeyParts, name: string) -> string? {
+        let r? = file_read_of(name) else { return null }
+        answer_in(k, r)
+    }
+
+    /// Whether a file's rule findings were kept, rendered and as rows, and still stand.
+    fn file_ruled(store: Store, path: string) -> bool {
+        self.file_kept(store, path, Stored.Warn, rules_row(path)) &&
+            self.file_kept(store, path, Stored.Warn, findings_row(path))
+    }
+
+    /// A held file's `Said` under `want`: a diagnostics want reads its rule
+    /// findings beside it, and `stands_in` held it only where they were kept.
+    fn held_said(store: Store, path: string, said: Said, want: Want) -> Said? {
+        match want {
+            .Diagnostics -> {
+                let rules? = self.file_row(store, path, Stored.Warn, rules_row(path)) else { return null }
+                let rows? = self.file_row(store, path, Stored.Warn, findings_row(path)) else { return null }
+                said with { warnings: spoken([said.warnings, rules]), findings: findings_read(rows) }
+            },
+            .Binary -> said,
+        }
+    }
+
+    /// JUDGED BESIDE THE CONTENT KEY'S ROWS, which are still written: the two must agree
+    /// on which files hold. Said under `AVRA_QTRACE` for every file, with both verdicts.
+    fn filesaid_judged(store: Store, path: string, okey: string, held: bool, want: Want) {
         if !db_verified() { return }
-        let k = self.key_parts_cached(store, m, path)
-        let moved = self.filesaid_moved(store, path, k)
-        let recorded = store.get(Stored.Unit, filesaid_key(path))
-        let stands = moved == null && recorded != null && self.stands_in(store, recorded!, want)
-        let why = moved ?? if recorded == null { "no value" } else if !stands { "rows gone" } else if recorded! != okey { "key memo" } else { "" }
-        if traced() { qtrace("Q\tverify\t${path}\thold ${held}\tsaved ${stands}\t${why}\n") }
+        let saved = self.stands_in(store, path, want)
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        let why = if saved == held { "" } else { self.moved_read(store, path, k) }
+        if traced() { qtrace("Q\tverify\t${path}\thold ${held}\tsaved ${saved}\t${why}\n") }
+    }
+
+    /// The first answer a file's said-row stood on that has moved, for the words of a disagreement.
+    fn moved_read(store: Store, path: string, k: KeyParts) -> string {
+        let lines? = store.reads_of(Stored.Warn, said_row(path)) else { return "no row" }
+        let moved = [line for line in lines if self.line_moved(line, k)]
+        moved.first() ?? "rows"
+    }
+
+    fn line_moved(line: string, k: KeyParts) -> bool {
+        let at = line.index_of(" ")
+        if at <= 0 { return true }
+        self.stood_on(k, line.substring(at + 1, line.length)) != line.substring(0, at)
     }
 }

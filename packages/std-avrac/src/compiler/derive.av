@@ -238,16 +238,23 @@ fn spoken(texts: List<string>) -> string { joined([text for text in texts if !te
 /// Where what a file said lives: beside its object, under the object's key.
 fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", okey]) }
 
+/// Where what a file said lives, under its path: it stands while the answers it was kept on do.
+fn said_row(path: string) -> string { node_key(Stored.Warn, ["said-row", path]) }
+
 /// Where a file's rule findings live, beside what it said — kept only by
 /// a derivation that wants diagnostics, since nothing a build makes reads
 /// them.
 fn rules_key(okey: string) -> string { node_key(Stored.Warn, ["rules", okey]) }
 
+fn rules_row(path: string) -> string { node_key(Stored.Warn, ["rules-row", path]) }
+
 /// Where a file's findings rows live, beside its rendered rule findings.
 fn findings_key(okey: string) -> string { node_key(Stored.Warn, ["findings", okey]) }
 
-/// Whether a file's rule findings were kept, rendered and as rows.
-fn ruled(store: Store, okey: string) -> bool {
+fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", path]) }
+
+/// Whether a file's rule findings were kept, rendered and as rows, in the content key's spelling.
+fn ruled_old(store: Store, okey: string) -> bool {
     store.has(Stored.Warn, rules_key(okey)) && store.has(Stored.Warn, findings_key(okey))
 }
 
@@ -477,7 +484,17 @@ impl Workspace {
     fn from_sources(entry: string?, want: Want) -> Result<Derived, string> { self.again(Attempt { entry: entry, want: want, hold: false }) }
 
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
-    fn stands_in(s: Store, okey: string, want: Want) -> bool {
+    fn stands_in(s: Store, path: string, want: Want) -> bool {
+        if !self.file_kept(s, path, Stored.Warn, said_row(path)) ||
+            !self.file_kept(s, path, Stored.Unit, self.asks_row(path)) ||
+            !self.file_kept(s, path, Stored.Unit, self.codes_row(path)) {
+            return false
+        }
+        want is .Diagnostics || s.has(Stored.Obj, self.held_okey(s, path))
+    }
+
+    /// The same question the way the content key asks it — judged beside `stands_in`.
+    fn stands_old(s: Store, okey: string, want: Want) -> bool {
         if !s.has(Stored.Warn, said_key(okey)) ||
             !s.has(Stored.Unit, self.asks_key(okey)) ||
             !s.has(Stored.Unit, self.codes_key(okey)) {
@@ -501,7 +518,7 @@ impl Workspace {
         if self.is_held(f) { return FileHold { path: path, held: true, why: null, missing: [], moved: [] } }
         let why: Reads? = d.read.find(it.path == path)?.why
         let unkept = why != null && why! is .Unkept
-        let missing = if unkept { self.missing_rows(d.store, self.held_okey(d.store, path), d.want) } else { [] }
+        let missing = if unkept { self.missing_rows(d.store, path, d.want) } else { [] }
         FileHold {
             path: path,
             held: false,
@@ -521,20 +538,26 @@ impl Workspace {
 
     /// The rows standing in for a file under `want` that the store lacks, by
     /// what each keeps.
-    fn missing_rows(store: Store, okey: string, want: Want) -> List<string> {
+    fn missing_rows(store: Store, path: string, want: Want) -> List<string> {
         let rows = [
-            StoreRow { says: "what it said", kept: store.has(Stored.Warn, said_key(okey)) },
+            StoreRow {
+                says: "what it said",
+                kept: self.file_kept(store, path, Stored.Warn, said_row(path)),
+            },
             StoreRow {
                 says: "what its bodies ask",
-                kept: store.has(Stored.Unit, self.asks_key(okey)),
+                kept: self.file_kept(store, path, Stored.Unit, self.asks_row(path)),
             },
             StoreRow {
                 says: "what its code is",
-                kept: store.has(Stored.Unit, self.codes_key(okey)),
+                kept: self.file_kept(store, path, Stored.Unit, self.codes_row(path)),
             },
             match want {
-                .Diagnostics -> StoreRow { says: "its rule findings", kept: ruled(store, okey) },
-                .Binary -> StoreRow { says: "its object", kept: store.has(Stored.Obj, okey) },
+                .Diagnostics -> StoreRow { says: "its rule findings", kept: self.file_ruled(store, path) },
+                .Binary -> StoreRow {
+                    says: "its object",
+                    kept: store.has(Stored.Obj, self.held_okey(store, path)),
+                },
             },
         ]
         [r.says for r in rows if !r.kept]
@@ -554,7 +577,7 @@ impl Workspace {
                 let held = held_paths(self)
                 for path in held { let _ = self.held_okey(store, path) }
                 let _ = self.resolve_pending_reads(store)
-                [ReadFile { path: path, why: Reads.Unruled } for path in held if !ruled(store, self.held_okey(store, path))]
+                [ReadFile { path: path, why: Reads.Unruled } for path in held if !self.file_ruled(store, path)]
             },
             .Binary -> [],
         }
@@ -711,7 +734,7 @@ impl Workspace {
         let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
         keep_interfaces(self, store, moved)
         let _ = self.keep_const_units(store, moved)
-        let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), at.want)]
+        let adrift = [path for path in held_paths(self) if !self.stands_in(store, path, at.want)]
         if !adrift.is_empty() { fail at.adrift(adrift) }
         let bodies = filed(lo.unmanaged, (b) -> b.file)
         let statics = filed(lo.statics, (s) -> s.file)
@@ -729,12 +752,11 @@ impl Workspace {
     /// What one read file's bodies ask, kept under the file's key.
     fn keep_asks(store: Store, lo: Lowered, a: Analysis) {
         let asks = [k.want for k in lo.asks if same_file(k.by, a.view.file)]
+        let path = a.view.source.file
         let _ = store
-            .keep_once(
-                Stored.Unit,
-                self.asks_key(self.held_okey(store, a.view.source.file)),
-                self.wanted_list_wire(asks),
-            )
+            .keep_once(Stored.Unit, self.asks_key(self.held_okey(store, path)), self.wanted_list_wire(asks))
+        self
+            .keep_file_row(store, path, Stored.Unit, self.asks_row(path), self.wanted_list_wire(asks))
     }
 
     /// Each fresh instantiation's code, kept under its own key — what a held
@@ -774,12 +796,10 @@ impl Workspace {
             fresh,
             [s.facts for s in self.hold.served.get() if same_file(s.file, f)],
         )
+        let path = a.view.source.file
         let _ = store
-            .keep_once(
-                Stored.Unit,
-                self.codes_key(self.held_okey(store, a.view.source.file)),
-                code_facts_wire(facts),
-            )
+            .keep_once(Stored.Unit, self.codes_key(self.held_okey(store, path)), code_facts_wire(facts))
+        self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), code_facts_wire(facts))
     }
 
     /// THE ATTEMPT THAT STOOD, as the program derived. The instantiations a held
@@ -932,8 +952,7 @@ impl Workspace {
     /// (a whole file's text) may have moved the key past everything kept.
     fn read_unkept(store: Store, readers: List<string>, want: Want) {
         for reader in readers {
-            if self.hold.forced.get().get(reader) == null &&
-                !self.stands_in(store, self.held_okey(store, reader), want) {
+            if self.hold.forced.get().get(reader) == null && !self.stands_in(store, reader, want) {
                 self.force_read(reader, Reads.Unkept)
             }
         }
@@ -1068,7 +1087,6 @@ impl Workspace {
                 parts_wire(own),
                 if was == null { [] } else { parts_moved(store, self.record_bodies(), was!, own) },
             )
-        self.keep_filesaid(store, path, now)
         let seen = store.get(Stored.Unit, seen_key(now.module))
         let seen_was = seen_of(seen ?? "")
         self
@@ -1101,15 +1119,18 @@ impl Workspace {
         }
         let okey = self.held_okey(store, path)
         let told? = fresh else {
-            let kept? = store.get(Stored.Warn, said_key(okey)) else { return null }
+            let kept? = self.file_row(store, path, Stored.Warn, said_row(path)) else { return null }
             let said? = said_of(path, kept) else { return null }
-            return held_said(store, okey, said, want)
+            return self.held_said(store, path, said, want)
         }
         let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
         self.keep_parts(store, path)
+        self.keep_file_row(store, path, Stored.Warn, said_row(path), said_wire(told.said))
         let rules = told.rules
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
         let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
+        self.keep_file_row(store, path, Stored.Warn, rules_row(path), rules.rendered)
+        self.keep_file_row(store, path, Stored.Warn, findings_row(path), findings_text(rules.rows))
         match want {
             .Diagnostics -> told.said with { warnings: spoken([told.said.warnings, rules.rendered]), findings: rules.rows },
             .Binary -> told.said,
@@ -1126,19 +1147,6 @@ fn ruled_now(p: Program, a: Analysis, found: List<Diag>) -> Ruled {
 fn boxed_name(parts: List<string>, path: string) -> string? {
     let row? = read_row(parts) else { return null }
     if row.shape is .Boxed && row.path == path { row.name } else { null }
-}
-
-/// A held file's `Said` under `want`: a diagnostics want reads its rule
-/// findings beside it, and `stands_in` held it only where they were kept.
-fn held_said(store: Store, okey: string, said: Said, want: Want) -> Said? {
-    match want {
-        .Diagnostics -> {
-            let rules? = store.get(Stored.Warn, rules_key(okey)) else { return null }
-            let rows? = store.get(Stored.Warn, findings_key(okey)) else { return null }
-            said with { warnings: spoken([said.warnings, rules]), findings: findings_read(rows) }
-        },
-        .Binary -> said,
-    }
 }
 
 // ── The voices ──
