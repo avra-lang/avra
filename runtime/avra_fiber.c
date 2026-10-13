@@ -1770,28 +1770,6 @@ static void cut_claims(Fiber* f, int32_t member, int64_t by) {
     set_claimed(f, -1, member, by);
 }
 
-// A PARK THAT ANSWERS THE TASK'S OWN CLAIM SWITCHES TO NOBODY, AND IS
-// STILL A TURN FOR THE WORLD: every FAIR_TURNS of them, while a timer
-// or a descriptor waiter is filed, due timers fire and the poller is
-// asked — or a task whose every wait finds an arm ready would never
-// see its own limit pass, and nobody it could wake would wake. The
-// count is the task's, so one schedule gives one order whatever ran
-// before it.
-__attribute__((noinline, cold))
-static void world_asked(Fiber* f) {
-    f->own_turns = 0;
-    if (g_timers_len > 0) fire_due_timers(now_ns());
-    if (g_parked_fds > 0) poller_wait(0);
-}
-
-// A cut — a cancel, a passed limit — answers in place of the arm a
-// task claimed for itself.
-__attribute__((noinline, cold))
-static void cut_claims(Fiber* f, int32_t member, int64_t by) {
-    f->claimed = 0;
-    set_claimed(f, -1, member, by);
-}
-
 // The set is about to be waited on: whether the task must switch out.
 // ANOTHER PARTY'S CLAIM COMES FIRST — a value handed while the set was
 // arming is taken before anything else is heard — then a cancel that
