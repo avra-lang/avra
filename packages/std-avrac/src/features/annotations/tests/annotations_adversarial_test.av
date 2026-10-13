@@ -733,4 +733,12 @@ spec "features/annotations — the compile-time call's laws" {
                 p.report().starts_with("error[@acme/audit:E2]: a quiet fn\n")
         }
     }
+    given "a method's parameters" {
+        then "cross with their own kinds, the receiver apart" {
+            refused(
+                "use @std.meta.{Trait, Kind, Diagnostic, refuse}\ntype Ctx = { n: int }\nfn spell(k: Kind) -> string {\n    match k {\n        .Var(w) -> \"Var \${w}\",\n        .Named(w, _) -> \"Named \${w}\",\n        .Int -> \"Int\",\n        rest -> \"other\",\n    }\n}\nfn probe(tr: Trait) -> List<Diagnostic> {\n    [refuse(\"kinds \${[spell(p.kind) for p in f.params].join(\",\")}\") for f in tr.fns]\n}\n@probe\ntrait T {\n    fn a(cx: Ctx, o: Self, n: int) -> Self\n}\n1",
+                "kinds Named Ctx,Var Self,Int",
+            )
+        }
+    }
 }
