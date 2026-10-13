@@ -164,6 +164,17 @@ so no PR run publishes a binary.
 | `codecs` | a PR whose diff reaches the compiler source or the reader |
 | `test` | the aggregate required check, every run |
 
+**A draft runs the light gate.** A draft PR's run builds the compiler when
+its diff owes one, and runs only the compiler-free keepers, the changed-file
+`gate` and the codecs scan. The heavy legs (`keepers-a`, `keepers-b`,
+`runtime-keep`, `seed-check`, `flow-gate`, `cache-attacks`, `suites`) are
+gated on `needs.prepare.outputs.full`, which is `0` for a draft without the
+`full-ci` label. `test` refuses a light run by name (`NOT A VERDICT`), so a
+draft never shows a green required check it did not earn, and the watcher
+and the batcher, which read `test` for SUCCESS, refuse it. Readying the PR,
+or labelling it `full-ci`, is what starts the whole run; the `ready_for_review`
+and `labeled` events are in the trigger list for that reason.
+
 A run that touches no `.av`, no package and no compiler source **builds
 nothing and owes nothing**. The compiler source paths are
 `sh tools/compiler_paths.sh` (the `cli` package plus every `@std`
