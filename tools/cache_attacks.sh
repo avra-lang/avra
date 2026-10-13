@@ -406,6 +406,33 @@ ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
 steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
 fi
 
+if section bk; then
+# THE PROGRAM'S OWN BODIES ARE COMPILED IN BUCKETS, each keyed by its bytes: a build that moves one
+# generic's instantiations compiles the buckets they fall in and places the rest from the store, and
+# the program still prints what the edited source says. `Q objects` names, per build, the objects
+# owed and the program buckets among them (owed, linked, buckets owed, buckets linked).
+mkdir -p $R/bk/src/g
+printf '[package]\nname = "rt-bk"\nversion = "0.1.0"\n' > $R/bk/avra.toml
+{ printf 'export fn gid<T>(x: T) -> T { x }\nexport fn gtwo<T>(a: T, b: T) -> List<T> { [a, b] }\n'
+  for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do printf 'export type R%s = { v%s: int }\nexport fn mk%s() -> R%s { R%s { v%s: %s } }\n' $n $n $n $n $n $n $n; done; } > $R/bk/src/g/gen.av
+{ printf 'use g.{gid, gtwo'; for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do printf ', mk%s' $n; done; printf '}\n'
+  printf 'mut total = 0\n'
+  for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do printf 'total = total + gid(mk%s()).v%s + gtwo(mk%s(), mk%s()).length\n' $n $n $n $n; done
+  printf 'println("${total}")\n'; } > $R/bk/src/main.av
+bk_objects() { AVRA_QTRACE=1 ./avra build --time $R/bk 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "objects" { print $3, $4, $5, $6 }' | tail -1; }
+S "cold bk" bk
+printf '// moved\n' >> $R/bk/src/main.av
+bk_cold=$(bk_objects)
+steps=$((steps+1)); set -- $bk_cold; bk_linked=${4:-0}
+[ "${bk_linked:-0}" -gt 3 ] || { fails=$((fails+1)); echo "FAIL  bk: the program's bodies fell in $bk_linked bucket(s) only, so the fixture splits nothing ('$bk_cold')"; }
+ed $R/bk/src/g/gen.av "-> List<T> { [a, b] }" "-> List<T> { [a, b, a] }"
+bk_after=$(bk_objects); set -- $bk_after
+steps=$((steps+1)); [ "${3:-99}" -ge 1 ] && [ "${3:-99}" -lt "${4:-0}" ] || { fails=$((fails+1)); echo "FAIL  bk: one generic's body moved and the build compiled $3 of $4 program buckets (owed/linked/buckets/of: '$bk_after')"; }
+S "bk: and the program follows" bk
+steps=$((steps+1)); bk_out=$($R/bk/src/main 2>&1)
+[ "$bk_out" = "270" ] || { fails=$((fails+1)); echo "FAIL  bk: the program printed '$bk_out' after gtwo grew, wanted 270"; }
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
