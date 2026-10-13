@@ -228,7 +228,14 @@ impl Workspace {
         let modules = self.viewed_modules(distinct([k.path for k in frame if k.unit]))
         let lines = distinct([finished_line(k, ran) for k in frame])
             .concat([self.module_line(m) for m in modules])
-            .concat([joined(["n", self.names_digest(modules)], "\t")])
+            .concat(
+                [
+                    joined(
+                        ["n", self.names_digest(modules), self.narrow_names_digest(modules)],
+                        "\t",
+                    ),
+                ],
+            )
             .concat(
                 [self.file_line(path) for path in distinct(flatten([self.module_files(m) for m in modules]))],
             )
@@ -260,7 +267,7 @@ impl Workspace {
         let rows = [l.split("\t") for l in said if !l.is_empty() && l != layout]
         if !rows.all((r: List<string>) -> self.kept_row_stands(r)) { return null }
         let mods = [module_path(r[1].split(".")) for r in rows if r[0] == "m"]
-        if !rows.all((r: List<string>) -> r[0] != "n" || r[1] == self.names_digest(mods)) { return null }
+        if !rows.all((r: List<string>) -> r[0] != "n" || self.names_stand(r, mods)) { return null }
         let reads? = rows.find(it[0] == "r") else { return null }
         let decoded = [read_of_wire(w) for w in reads.slice(1, reads.length)]
         if decoded.any(it == null) { return null }
@@ -420,15 +427,82 @@ impl Workspace {
         digest_of(joined(sorted_texts(flatten([self.module_decl_names(m) for m in mods])), "\n"))
     }
 
-    /// A module's declaration names, over the files it holds.
-    fn module_decl_names(m: ModulePath) -> List<string> {
-        flatten([self.file_decl_names(path) for path in self.module_files(m)])
+    /// A names line stands when the names are the ones it was kept with, or, for a plain free fn
+    /// nothing spells, the narrowed names are.
+    fn names_stand(r: List<string>, mods: List<ModulePath>) -> bool {
+        r[1] == self.names_digest(mods) || r.length > 2 && r[2] == self.narrow_names_digest(mods)
     }
 
-    /// A file's declaration names, when the file is known.
-    fn file_decl_names(path: string) -> List<string> {
+    /// The same names with each plain free fn counted only where a file that can see its
+    /// module spells it besides its own declaration, and every name when such a file holds
+    /// generated code, which spells names its text does not.
+    fn narrow_names_digest(mods: List<ModulePath>) -> string {
+        let files = distinct(flatten([self.module_files(m) for m in mods]))
+        digest_of(
+            joined(sorted_texts(flatten([self.narrow_module_names(m, files) for m in mods])), "\n"),
+        )
+    }
+
+    /// A module's names for the narrowed digest: its files, and the viewed files that spell
+    /// the module's last segment, are the ones its fns can reach.
+    fn narrow_module_names(m: ModulePath, files: List<string>) -> List<string> {
+        let own = self.module_files(m)
+        let stem = m.text().split(".").last() ?? ""
+        let sees = distinct(own.concat([p for p in files if self.tokens_of(p).has(stem)]))
+        let narrow = !sees.any((p: string) -> self.has_generated(p))
+        flatten([self.file_decl_names(path, sees, narrow) for path in own])
+    }
+
+    /// A module's declaration names, over the files it holds.
+    fn module_decl_names(m: ModulePath) -> List<string> {
+        flatten([self.file_decl_names(path, [], false) for path in self.module_files(m)])
+    }
+
+    /// Whether any declaration of a file was written by an annotation: its code spells names
+    /// its text does not.
+    fn has_generated(path: string) -> bool {
+        let f? = self.decls.known_file_id(path) else { return false }
+        self.decls.decls_of_file(f).any((d: DeclId) -> !self.decls.decl(d).maker.is_empty())
+    }
+
+    /// A file's declaration names, when the file is known; a plain free fn's only when `files`
+    /// spell it beyond its own declaration, or `narrow` is off.
+    fn file_decl_names(path: string, files: List<string>, narrow: bool) -> List<string> {
         let f? = self.decls.known_file_id(path) else { return [] }
-        [self.decls.decl(d).name for d in self.decls.decls_of_file(f) if binds_name(self.decls.decl(d).kind)]
+        [self.decls.decl(d).name for d in self.decls.decls_of_file(f) if binds_name(self.decls.decl(d).kind) &&
+            (!narrow ||
+                !self.plain_free(d) ||
+                self.spelled_beside(path, self.decls.decl(d).name, files))]
+    }
+
+    /// Whether a declaration is a free fn nothing generated and no annotation touches.
+    fn plain_free(d: DeclId) -> bool {
+        let x = self.decls.decl(d)
+        x.kind is .Fn &&
+            x.owner.is_empty() &&
+            x.maker.is_empty() &&
+            x.enclosing.is_empty() &&
+            x.word == null &&
+            x.marks.is_empty()
+    }
+
+    /// Whether a name is spelled twice in its own file, or once in another of `files`.
+    fn spelled_beside(path: string, name: string, files: List<string>) -> bool {
+        self.occurrences(path, name) > 1 ||
+            files.any((p: string) -> p != path && self.tokens_of(p).has(name))
+    }
+
+    /// How many times a file's text spells a name.
+    fn occurrences(path: string, name: string) -> int { self.tokens_of(path).get(name) ?? 0 }
+
+    /// A file's tokens with their counts, remembered per text.
+    fn tokens_of(path: string) -> Map<string, int> {
+        let at = "${self.octets_word(path)}\t${path}"
+        let known: Map<string, int>? = self.keys.file_tokens.get().get(at)
+        if known != null { return known! }
+        let made = token_counts(self.listed_text(path))
+        self.keys.file_tokens.put(at, made)
+        made
     }
 
     /// What a file says to a body it does not hold: every declaration but a

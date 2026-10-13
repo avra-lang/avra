@@ -114,5 +114,15 @@ add w/members 'fn zz_beside_members() -> int { 1 }'; chk
 not_read "an unrelated fn beside a collect's members" n/count.av w/table.av; no_discard "an unrelated fn beside a collect's members"
 back; chk
 
+# 11. a const settled from a fn: an fn added beside it that nothing spells leaves its verdict standing; one it spells re-runs it
+printf 'export fn gt() -> int { 3 }\nexport const k3: int = gt() * 2\nexport fn gk() -> int { k3 }\n' > $P/src/n/third.av
+verdict() { AVRA_QTRACE=1 ./avra check $P 2>&1 | grep "const_verdict" | awk '{print $NF}' | sort -u | tr '\n' ' '; }
+chk; steps=$((steps + 1))
+add n/third 'fn zz_beside_const() -> int { 1 }'
+[ "$(verdict)" = "stood " ] || fail "an unspelled fn added beside a const re-ran its verdict"
+printf 'export fn gt() -> int { 3 }\nexport const k3: int = gt() * 2\nexport fn gk() -> int { k3 }\nfn zz_beside_const() -> int { 1 }\nexport fn gz() -> int { zz_beside_const() }\n' > $P/src/n/third.av
+case "$(verdict)" in *ran*) ;; *) fail "a fn the file now spells did not re-run the const verdict" ;; esac
+back; chk
+
 echo "fn-add-attack: $steps checks, $fails failed"
 [ "$fails" = 0 ]
