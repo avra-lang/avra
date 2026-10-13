@@ -486,6 +486,50 @@ steps=$((steps+1)); [ "$($R/sl/src/main 2>&1)" = "13" ] || { fails=$((fails+1));
 
 fi
 
+if section bk; then
+# THE PROGRAM'S OWN BODIES ARE COMPILED IN BUCKETS, each keyed by its bytes: a build that moves one
+# generic's instantiations compiles the buckets they fall in and places the rest from the store, and
+# the program still prints what the edited source says. `Q objects` names, per build, the objects
+# owed and the program buckets among them (owed, linked, buckets owed, buckets linked).
+mkdir -p $R/bk/src/g
+printf '[package]\nname = "rt-bk"\nversion = "0.1.0"\n' > $R/bk/avra.toml
+{ printf 'export fn gid<T>(x: T) -> T { x }\nexport fn gtwo<T>(a: T, b: T) -> List<T> { [a, b] }\n'
+  for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do printf 'export type R%s = { v%s: int }\nexport fn mk%s() -> R%s { R%s { v%s: %s } }\n' $n $n $n $n $n $n $n; done; } > $R/bk/src/g/gen.av
+{ printf 'use g.{gid, gtwo'; for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do printf ', mk%s' $n; done; printf '}\n'
+  printf 'mut total = 0\n'
+  for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do printf 'total = total + gid(mk%s()).v%s + gtwo(mk%s(), mk%s()).length\n' $n $n $n $n; done
+  printf 'println("${total}")\n'; } > $R/bk/src/main.av
+bk_run() { AVRA_QTRACE=1 ./avra build --time $R/bk 2>$R/bk.q >/dev/null; }
+bk_objects() { awk -F'\t' '$1 == "Q" && $2 == "objects" { print $3, $4, $5, $6 }' $R/bk.q | tail -1; }
+bk_keys() { awk -F'\t' '$1 == "Q" && $2 == "bucket" { print $3, $4 }' $R/bk.q | sort -n; }
+bk_changed() { awk 'NR == FNR { a[$1] = $2; next } a[$1] != $2 { print $1 }' $R/bk.prev - | sort -n | tr '\n' ' '; }
+bk_placed() { awk -F'\t' -v pat="$1" '$1 == "Q" && $2 == "placed" && index($3, pat) { print $4 }' $R/bk.q | sort -un | tr '\n' ' '; }
+S "cold bk" bk
+# the baseline keys come from a build that lowers the whole program (a held build lists no keys)
+rm -rf .avra-cache; bk_run; bk_keys > $R/bk.prev
+set -- $(bk_objects); bk_linked=${4:-0}
+steps=$((steps+1)); [ "${bk_linked:-0}" -gt 3 ] || { fails=$((fails+1)); echo "FAIL  bk: the program's bodies fell in $bk_linked bucket(s) only, so the fixture splits nothing"; }
+# MOVING ONE GENERIC compiles the buckets ITS instantiations fall in, exactly: the expected set is read from where
+# the build placed every gtwo instantiation, the observed one from which bucket keys moved.
+ed $R/bk/src/g/gen.av "-> List<T> { [a, b] }" "-> List<T> { [a, b, a] }"
+bk_run; want=$(bk_placed 'gtwo$'); got=$(bk_keys | bk_changed); set -- $(bk_objects)
+steps=$((steps+1)); [ -n "$want" ] && [ "$got" = "$want" ] && [ "$3" = "$(printf '%s' "$want" | wc -w | tr -d ' ')" ] || { fails=$((fails+1)); echo "FAIL  bk: gtwo moved: buckets whose key moved '$got', its instantiations fall in '$want', compiled $3 (owed/linked/buckets/of '$*')"; }
+bk_keys > $R/bk.prev
+S "bk: and the program follows" bk
+steps=$((steps+1)); bk_out=$($R/bk/src/main 2>&1)
+[ "$bk_out" = "270" ] || { fails=$((fails+1)); echo "FAIL  bk: the program printed '$bk_out' after gtwo grew, wanted 270"; }
+# ONE NEW INSTANTIATION DIRTIES ITS BUCKET AND NO OTHER: a bucket is a function of its own members' names, not of
+# their order or number, so adding gid<R21> moves exactly the bucket the new body falls in.
+printf 'export type R21 = { v21: int }\nexport fn mk21() -> R21 { R21 { v21: 21 } }\n' >> $R/bk/src/g/gen.av
+ed $R/bk/src/main.av 'use g.{gid, gtwo' 'use g.{gid, gtwo, mk21'
+printf 'println("${gid(mk21()).v21}")\n' >> $R/bk/src/main.av
+bk_run; want=$(bk_placed 'R21'); got=$(bk_keys | bk_changed); set -- $(bk_objects)
+steps=$((steps+1)); [ -n "$want" ] && [ "$got" = "$want" ] && [ "$3" = 1 ] || { fails=$((fails+1)); echo "FAIL  bk: one new instantiation: buckets whose key moved '$got', the new bodies fall in '$want', compiled $3 (owed/linked/buckets/of '$*')"; }
+# TWO COLD BUILDS OF ONE TREE KEY EVERY BUCKET ALIKE: a bucket's bytes are a function of its source alone.
+rm -rf .avra-cache; bk_run; bk_keys > $R/bk.k1; rm -rf .avra-cache; bk_run; bk_keys > $R/bk.k2
+steps=$((steps+1)); [ -s $R/bk.k1 ] && cmp -s $R/bk.k1 $R/bk.k2 || { fails=$((fails+1)); echo "FAIL  bk: two cold builds of one tree keyed their buckets differently ($(wc -l < $R/bk.k1 | tr -d ' ') vs $(wc -l < $R/bk.k2 | tr -d ' ') buckets, first difference: $(diff $R/bk.k1 $R/bk.k2 | head -2 | tr '\n' ' '))"; }
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
