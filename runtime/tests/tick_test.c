@@ -351,6 +351,36 @@ static void body_cancel_heard_do(void) {
     avra_rc_release(a);
 }
 
+static volatile int g_seeded_cut;
+
+// Spins on the checked back-edge alone, a bounded count of turns.
+static void* spins_seeded(void* self) {
+    (void)self;
+    for (int i = 0; i < 2000000 && !__atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED); i++) avra_tick_cold();
+    g_seeded_cut = __atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED) != 0;
+    return NULL;
+}
+
+// UNDER A SCHEDULE THE COLD SIDE STILL HEARS A CANCEL: the drawn turn
+// decides who runs next, never whether a request is heard. A compiled
+// spinner and the evaluator's own task alike.
+static void body_seeded_cancel_do(void) {
+    avra_sched_seed(3);
+    g_seeded_cut = 0;
+    void* a = spawn1(spins_seeded, 0);
+    avra_fiber_yield();
+    avra_task_cancel(a);
+    avra_task_settle(a);
+    CHECK(g_seeded_cut, "a compiled spinner under a schedule is cut at its back-edge by a cancel");
+    avra_rc_release(a);
+    int64_t vt = avra_vtask_new();
+    avra_vtask_cancel(vt, 1);
+    for (int i = 0; i < 100000 && avra_vtask_unwinding(vt) == 0; i++) avra_vtask_tick_cold(vt);
+    CHECK(avra_vtask_unwinding(vt) != 0, "the evaluator's cold side under a schedule hears a cancel");
+    avra_vtask_free(vt);
+    avra_sched_settle();
+}
+
 // A COMPILED BACK-EDGE INSIDE AN EVALUATED RUN STANDS STILL: the
 // evaluator's own task counts the turns, so a compiled check reached
 // from a host fn beside it must not consume the guest's tick.
@@ -453,6 +483,7 @@ int main(void) {
     in_child("a scope's own opening arms the source", body_scope_arms_do);
     in_child("a lone main's scope brings the source up", body_lone_main_do);
     in_child("a cancel heard by a spinner its asker joins", body_cancel_heard_do);
+    in_child("a cancel heard under a schedule", body_seeded_cancel_do);
     in_child("a compiled back-edge inside an evaluated run", body_guest_do);
     printf("tick: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
