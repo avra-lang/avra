@@ -421,9 +421,11 @@ LK() { # LK <label> <want: hit|built> -- the env is the caller's
     case "$out" in *"cache hit"*) got=hit ;; esac
     if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [lk] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [lk] wanted $2, got $got"; fi
 }
+# a file written in the last two seconds has no stamp (two writes can wear one time), so a tool is aged first
+sleep 3
 export CC=$R/cc1
 LK "cold lk" built; LK "nothing touched" hit
-printf '# a new revision of the C compiler\n' >> $R/cc1
+printf '# a new revision of the C compiler\n' >> $R/cc1; sleep 3
 LK "the C compiler's bytes moved" built; LK "and again nothing touched" hit
 export CC=$R/cc2
 LK "CC names another C compiler" built; LK "and that one again" hit
