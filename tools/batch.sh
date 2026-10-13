@@ -27,16 +27,31 @@ die() { echo "batch: $*" >&2; exit 1; }
 
 # One member's facts, tab-separated: number, state, draft, title, head branch,
 # the `test` check, the `cache-attacks` check, its before/after line, and the
-# light gate's checks (`gate`, `keepers-static`, `codecs`).
+# light gate's checks (`gate`, `keepers-static`, `codecs`). A check is the NEWEST
+# run of its name on the PR's CURRENT head: a run on an older head is no verdict
+# on what the batch would land.
 member_facts() {
-    $gh_ pr view "$1" --json number,title,headRefName,isDraft,state,body,statusCheckRollup |
-        python3 -c '
-import json, sys
+    $gh_ pr view "$1" --json number,title,headRefName,headRefOid,isDraft,state,body,statusCheckRollup |
+        GH_BIN=$gh_ python3 -c '
+import json, os, re, subprocess, sys
 pr = json.load(sys.stdin)
-checks = {}
+head = pr.get("headRefOid") or ""
+def run_head(rid):
+    out = subprocess.run([os.environ["GH_BIN"], "api", "repos/:owner/:repo/actions/runs/" + rid,
+                          "--jq", ".head_sha"], capture_output=True, text=True)
+    return out.stdout.strip()
+newest = {}
 for c in pr.get("statusCheckRollup") or []:
     name = c.get("name") or c.get("context") or ""
-    checks[name] = (c.get("conclusion") or c.get("state") or c.get("status") or "").upper()
+    m = re.search(r"/runs/([0-9]+)", c.get("detailsUrl") or c.get("targetUrl") or "")
+    if m and head:
+        on = run_head(m.group(1))
+        if on and on != head:
+            continue
+    started = c.get("startedAt") or c.get("completedAt") or ""
+    if name not in newest or started >= newest[name][0]:
+        newest[name] = (started, (c.get("conclusion") or c.get("state") or c.get("status") or "").upper())
+checks = {name: verdict for name, (_, verdict) in newest.items()}
 before = ""
 for line in (pr.get("body") or "").splitlines():
     if line.strip().lower().lstrip("-* ").startswith(("before/after", "before:", "after:", "before →", "before ->")):
@@ -49,9 +64,10 @@ row = [str(pr["number"]), pr["state"], "draft" if pr.get("isDraft") else "ready"
 print("\t".join(x.replace("\t", " ").replace("\n", " ") for x in row))'
 }
 
-# A title without its own "DO NOT MERGE" lead, for the retitle.
+# A title without its own "DO NOT MERGE" lead, nor any "(lands via batch #N) —"
+# an earlier batch already put there, for the retitle.
 strip_dnm() {
-    printf '%s' "$1" | sed -e 's/^DO NOT MERGE[:—-]* *//'
+    printf '%s' "$1" | sed -E 's/^(DO NOT MERGE[:—-]* *|\(lands via batch #[0-9]+\) *— *)+//'
 }
 
 # The evidence given for member $1 by a list of N=TEXT lines ($2).
@@ -110,22 +126,52 @@ plan_merges() {
     echo "plan: buildable — nothing was pushed, opened, merged or retitled"
 }
 
+# The files of member $1 whose content on main (BATCH_MAIN_REF, origin/main) is not
+# its content on its head $2. Printed, one per line; none when the member is on main.
+off_main() {
+    main_ref=${BATCH_MAIN_REF:-origin/main}
+    $gh_ pr view "$1" --json files | python3 -c 'import json,sys
+for f in json.load(sys.stdin)["files"]: print(f["path"])' | while IFS= read -r f; do
+        a=$(git rev-parse --verify -q "$main_ref:$f" || echo gone)
+        b=$(git rev-parse --verify -q "origin/$2:$f" || echo gone)
+        [ "$a" = "$b" ] || echo "$f"
+    done
+}
+
 batch_close() {
-    [ "$#" -eq 1 ] || die "usage: batch close <N>"
-    n=$1
-    listing=$($gh_ pr list --head "batch-$n" --state all --json number,state,body,statusCheckRollup) ||
-        die "could not list PRs for batch-$n"
-    bn=$(printf '%s' "$listing" | python3 -c 'import json,sys
+    [ "$#" -eq 1 ] || [ "$#" -eq 2 ] || die "usage: batch close <N> | batch close --pr <batch PR>"
+    if [ "$1" = --pr ]; then
+        listing=$($gh_ pr view "$2" --json number,state,body,statusCheckRollup,headRefName) ||
+            die "could not read PR #$2"
+        bn=$2
+        listing="[$listing]"
+        n=$(printf '%s' "$listing" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["headRefName"].rsplit("-",1)[-1])')
+    else
+        n=$1
+        listing=$($gh_ pr list --head "batch-$n" --state all --json number,state,body,statusCheckRollup) ||
+            die "could not list PRs for batch-$n"
+        bn=$(printf '%s' "$listing" | python3 -c 'import json,sys
 prs = json.load(sys.stdin)
 print(prs[0]["number"] if prs else "")')
-    [ -n "$bn" ] || die "no PR for batch-$n"
+        [ -n "$bn" ] || die "no PR for batch-$n"
+    fi
     bstate=$(printf '%s' "$listing" | python3 -c 'import json,sys; print(json.load(sys.stdin)[0]["state"])')
     members=$(printf '%s' "$listing" | members_in)
     case "$bstate" in
         MERGED)
+            sha=$(git rev-parse --short "${BATCH_MAIN_REF:-origin/main}" 2>/dev/null || echo "?")
             for m in $members; do
-                $gh_ pr close "$m" --comment "Landed via batch #$n (PR #$bn)." >/dev/null
-                echo "batch: closed #$m — landed via batch #$n"
+                head=$(member_facts "$m" | cut -f5)
+                git fetch -q origin "+refs/heads/$head:refs/remotes/origin/$head" 2>/dev/null ||
+                    { echo "batch: #$m left open — its head $head could not be fetched" >&2; continue; }
+                differing=$(off_main "$m" "$head" | tr '\n' ' ')
+                if [ -n "$differing" ]; then
+                    echo "batch: #$m left open — not fully on main; its files that differ: $differing" >&2
+                    continue
+                fi
+                $gh_ pr comment "$m" --body "landed via #$bn (main $sha)" >/dev/null
+                $gh_ pr close "$m" >/dev/null
+                echo "batch: closed #$m — landed via #$bn (main $sha)"
             done
             return 0 ;;
     esac
