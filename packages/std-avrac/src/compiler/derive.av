@@ -235,28 +235,15 @@ export fn analysed(a: Analysis) -> Analysed {
 /// What was said, the silent dropped.
 fn spoken(texts: List<string>) -> string { joined([text for text in texts if !text.is_empty()], "\n\n") }
 
-/// Where what a file said lives: beside its object, under the object's key.
-fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", okey]) }
-
 /// Where what a file said lives, under its path: it stands while the answers it was kept on do.
 fn said_row(path: string) -> string { node_key(Stored.Warn, ["said-row", path]) }
 
-/// Where a file's rule findings live, beside what it said — kept only by
-/// a derivation that wants diagnostics, since nothing a build makes reads
-/// them.
-fn rules_key(okey: string) -> string { node_key(Stored.Warn, ["rules", okey]) }
-
+/// Where a file's rule findings live, beside what it said — kept only by a derivation that
+/// wants diagnostics, since nothing a build makes reads them.
 fn rules_row(path: string) -> string { node_key(Stored.Warn, ["rules-row", path]) }
 
 /// Where a file's findings rows live, beside its rendered rule findings.
-fn findings_key(okey: string) -> string { node_key(Stored.Warn, ["findings", okey]) }
-
 fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", path]) }
-
-/// Whether a file's rule findings were kept, rendered and as rows, in the content key's spelling.
-fn ruled_old(store: Store, okey: string) -> bool {
-    store.has(Stored.Warn, rules_key(okey)) && store.has(Stored.Warn, findings_key(okey))
-}
 
 /// What a parsed file says now: its `Said`, and its rule findings.
 type Spoken = { said: Said, rules: Ruled }
@@ -488,19 +475,10 @@ impl Workspace {
         if !self.file_kept(s, path, Stored.Warn, said_row(path)) ||
             !self.file_kept(s, path, Stored.Unit, self.asks_row(path)) ||
             !self.file_kept(s, path, Stored.Unit, self.codes_row(path)) {
+            if traced() { qtrace("Q\tunkept\t${path}\t${self.first_moved(s, path)}\n") }
             return false
         }
         want is .Diagnostics || s.has(Stored.Obj, self.held_okey(s, path))
-    }
-
-    /// The same question the way the content key asks it — judged beside `stands_in`.
-    fn stands_old(s: Store, okey: string, want: Want) -> bool {
-        if !s.has(Stored.Warn, said_key(okey)) ||
-            !s.has(Stored.Unit, self.asks_key(okey)) ||
-            !s.has(Stored.Unit, self.codes_key(okey)) {
-            return false
-        }
-        want is .Diagnostics || s.has(Stored.Obj, okey)
     }
 
     /// ONE FILE'S HOLD, as this package's derivation under `want` decided it:
@@ -753,8 +731,6 @@ impl Workspace {
     fn keep_asks(store: Store, lo: Lowered, a: Analysis) {
         let asks = [k.want for k in lo.asks if same_file(k.by, a.view.file)]
         let path = a.view.source.file
-        let _ = store
-            .keep_once(Stored.Unit, self.asks_key(self.held_okey(store, path)), self.wanted_list_wire(asks))
         self
             .keep_file_row(store, path, Stored.Unit, self.asks_row(path), self.wanted_list_wire(asks))
     }
@@ -797,8 +773,6 @@ impl Workspace {
             [s.facts for s in self.hold.served.get() if same_file(s.file, f)],
         )
         let path = a.view.source.file
-        let _ = store
-            .keep_once(Stored.Unit, self.codes_key(self.held_okey(store, path)), code_facts_wire(facts))
         self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), code_facts_wire(facts))
     }
 
@@ -1123,12 +1097,9 @@ impl Workspace {
             let said? = said_of(path, kept) else { return null }
             return self.held_said(store, path, said, want)
         }
-        let _ = store.keep_once(Stored.Warn, said_key(okey), said_wire(told.said))
         self.keep_parts(store, path)
         self.keep_file_row(store, path, Stored.Warn, said_row(path), said_wire(told.said))
         let rules = told.rules
-        let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
-        let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
         self.keep_file_row(store, path, Stored.Warn, rules_row(path), rules.rendered)
         self.keep_file_row(store, path, Stored.Warn, findings_row(path), findings_text(rules.rows))
         match want {

@@ -851,7 +851,9 @@ MH "mh: host's signature moves — show.av names it, and re-reads" show.av read
 ed $R/mhl/src/lib.av "export fn host(n: int = 0) -> int" "export fn host() -> int"
 MH "mh: and back" show.av held
 ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
-MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read show.av held
+# a file's kept answers are filed under its path and stand on what it read when last kept: show.av was last kept at the
+# host-signature step, so after that excursion (and a program-level hit back) the next edit re-reads it
+MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read
 ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
 MH "mh: and back, cold no more" lib.av held
 ed $R/mhl/src/pt_say.av "self.v + base() }" "self.v + base() + 1 }"

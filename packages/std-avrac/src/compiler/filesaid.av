@@ -5,7 +5,7 @@
 //! hand-folded key and judged beside it under `AVRA_DB_VERIFY`: the two must agree on
 //! which files hold.
 use @std.text.{parse_int}
-use core.{digest_of, joined, qtrace, traced, db_verified, ModulePath}
+use core.{digest_of, joined, qtrace, traced, ModulePath}
 use compiler.{Want}
 use compiler.store.{Store, Stored, Read, node_key}
 use compiler.record.{KeyParts}
@@ -50,25 +50,22 @@ fn file_read_of(name: string) -> FileRead? {
     }
 }
 
-/// Where a file's kept answer is filed.
-fn filesaid_key(path: string) -> string { node_key(Stored.Unit, ["filesaid", path]) }
-
 /// The digest a read has in these parts; null for a read the parts no longer carry.
 fn answer_in(k: KeyParts, r: FileRead) -> string? {
     match r {
         .Text -> digest_of(k.text),
         .Run(j) -> if j < k.runs.length { digest_of(k.runs[j]) } else { null },
-        .Runs -> digest_of("${k.runs.length}"),
-        .Gathered -> digest_of(joined(k.gathered, "\n")),
+        .Runs -> digest_of(fields_wire(k.runs)),
+        .Gathered -> digest_of(fields_wire(k.gathered)),
         .Seen(m) -> seen_answer(k, m),
-        .SeenSet -> digest_of(joined([s.module for s in k.seen], "\n")),
+        .SeenSet -> digest_of(seen_digest(k.seen)),
     }
 }
 
 /// What the module `m` is seen as in these parts; null for one not seen.
 fn seen_answer(k: KeyParts, m: string) -> string? {
     let s? = k.seen.find(it.module == m) else { return null }
-    digest_of("${s.bytes_key} ${s.files}")
+    digest_of(s.bytes_key)
 }
 
 /// Every answer these parts stand on, named.
@@ -124,21 +121,13 @@ impl Workspace {
         }
     }
 
-    /// JUDGED BESIDE THE CONTENT KEY'S ROWS, which are still written: the two must agree
-    /// on which files hold. Said under `AVRA_QTRACE` for every file, with both verdicts.
-    fn filesaid_judged(store: Store, path: string, okey: string, held: bool, want: Want) {
-        if !db_verified() { return }
-        let saved = self.stands_in(store, path, want)
+    /// The first answer a file's kept answer stood on that has moved, in the words of its row;
+    /// "no row" for a file never kept.
+    fn first_moved(store: Store, path: string) -> string {
         let k = self.key_parts_cached(store, self.module_path_of(path), path)
-        let why = if saved == held { "" } else { self.moved_read(store, path, k) }
-        if traced() { qtrace("Q\tverify\t${path}\thold ${held}\tsaved ${saved}\t${why}\n") }
-    }
-
-    /// The first answer a file's said-row stood on that has moved, for the words of a disagreement.
-    fn moved_read(store: Store, path: string, k: KeyParts) -> string {
         let lines? = store.reads_of(Stored.Warn, said_row(path)) else { return "no row" }
         let moved = [line for line in lines if self.line_moved(line, k)]
-        moved.first() ?? "rows"
+        moved.first() ?? "none"
     }
 
     fn line_moved(line: string, k: KeyParts) -> bool {
