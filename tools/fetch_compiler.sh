@@ -48,9 +48,11 @@ STUB
     expect "install names the key and the bytes" "fetch_compiler: installed $scratch/ok/avra" "$out"
     out=$(cd "$scratch" && FETCH_RELEASE_TOOL="$scratch/stub-ok.sh" FETCH_BUILD="$scratch/keyed" sh "$here/tools/fetch_compiler.sh" --key abc123 2>&1) || true
     expect "a given key installs with no git" "key abc123" "$out"
+    out=$(cd "$here" && GH_TOKEN= GITHUB_TOKEN= FETCH_GH=/nonexistent/gh FETCH_RELEASE_TOOL="$scratch/stub-ok.sh" FETCH_BUILD="$scratch/token" sh tools/fetch_compiler.sh HEAD 2>&1) || true
+    expect "no token refuses in one line" "no GitHub token on this machine" "$out"
     [ "$(cat "$scratch/ok/avra.pre" 2>/dev/null)" = standing ] || { fails=$((fails + 1)); echo "FAIL  standing compiler moves to avra.pre"; }
     [ "$(cat "$scratch/ok/avra" 2>/dev/null)" = "$(printf '#!/bin/sh\necho stub-avra')" ] || { fails=$((fails + 1)); echo "FAIL  fetched compiler is installed as avra"; }
-    if [ "$fails" = 0 ]; then echo "fetch_compiler: self-test clean — 7 case(s)"; exit 0; fi
+    if [ "$fails" = 0 ]; then echo "fetch_compiler: self-test clean — 8 case(s)"; exit 0; fi
     echo "fetch_compiler: self-test FAILED — $fails case(s)"
     exit 1
 fi
@@ -82,9 +84,11 @@ else
 fi
 
 if [ -z "${GH_TOKEN:-}" ]; then
-    GH_TOKEN=$(gh auth token 2>/dev/null || true)
+    GH_TOKEN=$("${FETCH_GH:-gh}" auth token 2>/dev/null || true)
     export GH_TOKEN
 fi
+[ -n "${GH_TOKEN:-}" ] || [ -n "${GITHUB_TOKEN:-}" ] ||
+    refuse "no GitHub token on this machine; the release asset is private, so set GH_TOKEN (gh auth login) and run again"
 fetched="$build/avra.fetch"
 reason=$("$tool" fetch "$key" "$fetched" 2>&1) ||
     refuse "no published compiler for $sha (key $key): $reason"
