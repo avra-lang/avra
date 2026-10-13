@@ -386,6 +386,26 @@ steps=$((steps+1)); rb_out=$($R/rb/src/main 2>&1)
 
 fi
 
+if section hc; then
+# A PLAIN UNIT'S ROW KEEPS THE CONSTS IT READ. fn.av reads a const of another module; the const is
+# edited beside an edit that reads fn.av again, and the unit is lowered afresh rather than served from
+# a row that baked the old value. (A cold derivation keeps no rows: the first warm one does.)
+mkdir -p $R/hc/src/ga $R/hc/src/gb
+printf '[package]\nname = "rt-hc"\nversion = "0.1.0"\n' > $R/hc/avra.toml
+printf 'export const K: int = 7\nexport fn quiet() -> int { 1 }\n' > $R/hc/src/gb/k.av
+printf 'use gb.{K, quiet}\nexport fn reads_k() -> int { K + 1 }\nexport fn plain() -> int { quiet() + 2 }\n' > $R/hc/src/ga/fn.av
+printf 'use ga.{reads_k, plain}\nprintln("${reads_k()} ${plain()}")\n' > $R/hc/src/main.av
+hc_run() { AVRA_QTRACE=1 ./avra check $R/hc 2>&1 >/dev/null | awk -F'\t' '$1 == "Q" && $2 == "unit" && $3 == "lowered" { print $4 }' | sort -u > $R/hc.lowered; }
+hc_count() { grep -c "$1" $R/hc.lowered | tr -d ' '; }
+HR "cold hc" check hc 0
+ed $R/hc/src/ga/fn.av "K + 1" "K + 2"; hc_run
+ed $R/hc/src/ga/fn.av "K + 2" "K + 3"; hc_run
+steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] && [ "$(hc_count plain)" = 0 ] || { fails=$((fails+1)); echo "FAIL  hc: after editing reads_k's own body, lowered afresh reads_k=$(hc_count reads_k) plain=$(hc_count plain), wanted 1/0"; }
+ed $R/hc/src/gb/k.av "K: int = 7" "K: int = 8"
+ed $R/hc/src/ga/fn.av "quiet() + 2" "quiet() + 3"; hc_run
+steps=$((steps+1)); [ "$(hc_count reads_k)" = 1 ] || { fails=$((fails+1)); echo "FAIL  hc: a const a plain fn reads moved and the fn's unit was served from a row that baked the old value (lowered afresh: $(hc_count reads_k))"; }
+fi
+
 if section vd; then
 # THE VERDICT KEY, STALENESS. A kept const verdict recomputes when what it reads moves: a
 # named type its expressions carry, or one its reached fns' bodies carry, a fn it reaches,
