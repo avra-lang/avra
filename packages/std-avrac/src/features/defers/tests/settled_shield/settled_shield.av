@@ -1,0 +1,26 @@
+// proves: a fn whose cold exit the program shields still runs at compile
+// time — an annotation calls it, and a const settles through it
+use @std.meta.{Fn, Diagnostic}
+
+fn inc(n: int) -> int { n + 1 }
+
+fn noted() { }
+
+fn f(n: int) -> int {
+    defer noted()
+    let g = inc
+    g(n)
+}
+
+fn checked(_target: Fn) -> List<Diagnostic> {
+    let _ = f(3)
+    []
+}
+
+const SETTLED: int = f(40)
+
+@checked
+fn answer() -> int { 1 }
+
+let t = spawn f(answer())
+"${t.await} ${SETTLED}"
