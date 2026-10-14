@@ -1146,7 +1146,17 @@ fn lower_lambda(
     if body == null {
         lo.defect("a lift without a lambda survived typing")
     }
+    // a PRODUCER's sink rides the env past every capture: the reader's
+    // channel handed the spawn, read back here for the body's `yield`s.
+    if lj.sink != null {
+        let held = lo.names.capture(lj.lam)
+        let n = if held == null { 0 } else { held!.names.length }
+        lo.producer_sink = lo.env_read(n, lj.sink!)
+    }
     let value = lo.reg_of(body ?? lj.lam)
+    // the producer's block END closes the sink: the channel ends when
+    // its writer does, and nobody closes a `produce` by hand.
+    if lj.sink != null { lo.close_produced(lj.sink!) }
     let r = if lj.kind is .Task { lo.one_cell(value, rt) } else { value }
     let answers = lo.out.type_of_reg(r)
     lo.seats_exit(r)
