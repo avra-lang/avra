@@ -3,8 +3,7 @@
 //! one-cell list — one box for every shape, so the runtime makes one
 //! call; `.await` joins and reads that cell.
 use core.{ExprId, Reg, Type, TypeId, RtFlag, BinOp, ResSides}
-use features.{LowerCx, MethodCall}
-use diagnostics.{refusal}
+use features.{LowerCx, MethodCall, Sub}
 
 fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -128,33 +127,128 @@ fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.hollow_of(cx.type_at(mc.e))
 }
 
-// ── `produce` and `yield`: typed, not yet lowered ──
+// ── `produce` and `yield`: the producer's one meaning ──
 
-/// `yield`'s send is TYPED and not yet lowered: the producer's task
-/// ownership arrives with FLOW 05 S2, its lowering with S3.
+/// `yield x` is the producer's sink taking `x`: a call of the sink the
+/// enclosing `produce` read into `producer_sink`. The send parks when
+/// the channel is full, so `yield` IS the backpressure point.
 fn emit_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    unlowered(cx, e, "a `yield`")
-    cx.result(e)
+    match cx.view.store.expr(e) {
+        .Emit(value) -> {
+            let sink? = cx.producer_sink else {
+                return cx.lower_defect(e, "a `yield` outside a producer survived typing")
+            }
+            let sink_ty = cx.out.type_of_reg(sink)
+            let sig? = cx.fields_of(sink_ty) else { return cx.hollow_of(cx.type_at(e)) }
+            let slot? = sig.slot_of("send") else { return cx.hollow_of(cx.type_at(e)) }
+            let send = cx.field_named(sink, sink_ty, "send", sig.types[slot])
+            let v = cx.reg_of(value)
+            let code = cx.slot_read(send, 0, null)
+            let _ = cx.call_ptr(cx.type(bool), code, [send, v])
+            cx.hollow_of(cx.type_at(e))
+        },
+        rest -> cx.lower_defect(e, "a foreign node reached the emit lowering"),
+    }
 }
 
-/// `produce` is TYPED and not yet lowered — see `emit_reg`.
+/// `produce<T>(cap) { … }`: build the channel with `@std/task`'s
+/// `open_channel`, SPAWN the block HERE (the reader's frame), bind the
+/// task into the `Source`'s `work`, and answer the source. The spawn
+/// stands where the reader does, never inside a library fn whose own
+/// frame would join it.
 fn produce_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    unlowered(cx, e, "a `produce`")
-    cx.result(e)
+    match cx.view.store.expr(e) {
+        .Produce(_, cap, body) -> {
+            let elem? = source_elem(cx, e) else {
+                return cx.lower_defect(e, "a `produce` without its element survived typing")
+            }
+            let chan_ty? = task_app(cx, "Channel", elem) else {
+                return cx.lower_defect(e, "`@std.task.Channel` vanished under this lowering")
+            }
+            let sink_ty? = task_app(cx, "Sink", elem) else {
+                return cx.lower_defect(e, "`@std.task.Sink` vanished under this lowering")
+            }
+            let source_ty? = task_app(cx, "Source", elem) else {
+                return cx.lower_defect(e, "`@std.task.Source` vanished under this lowering")
+            }
+            let cap_reg = if cap == null { cx.const_int(0) } else { cx.reg_of(cap!) }
+            let d? = cx.view.decls.package_decl("@std.task", "open_channel") else {
+                return cx.lower_defect(e, "`@std.task.open_channel` vanished under this lowering")
+            }
+            let chan = cx
+                .call_decl(chan_ty, cx.wanted(d, Sub { target: d, args: [elem], consts: [] }), [cap_reg])
+            let sink = cx.field_named(chan, chan_ty, "sink", sink_ty)
+            let task_ty = cx.view.types.intern(Type.Task(cx.type(bool)))
+            let task = cx
+                .task_spawn(cx.view.types.shape_of(task_ty), produce_box(cx, body, sink, sink_ty))
+            produce_source(cx, chan, chan_ty, source_ty, task, task_ty)
+        },
+        rest -> cx.lower_defect(e, "a foreign node reached the produce lowering"),
+    }
 }
 
-/// A shape that types and has no lowering yet, named by `what`.
-fn unlowered(mut cx: LowerCx, at: ExprId, what: string) {
+/// The block as a task's closure: its captures in lane order, then the
+/// sink the reader's channel handed the spawn — the one lane no source
+/// name supplies, appended last so every capture keeps its lane.
+fn produce_box(mut cx: LowerCx, lam: ExprId, sink: Reg, sink_ty: TypeId) -> Reg {
+    let caps = cx.capture_regs(lam)
     cx
-        .out
-        .voices
-        .speak(
-            refusal(
-                "flow.produce",
-                cx.view.loc_of(at),
-                "`produce` and `yield` are typed and not yet lowered",
-                "${what} stands here",
-                "the carrier's `open_channel` waits until the producer's ownership lands (FLOW 05 S2/S3)",
-            ),
+        .fn_box(
+            cx.shape_at(lam),
+            cx.box_size(2 + caps.length),
+            cx.lift_produced(lam, sink_ty),
+            caps.concat([sink]),
         )
+}
+
+/// The `Source` the producer answers, its `work` field holding the task
+/// the reader's frame spawned: a copy of the channel's source with that
+/// one slot written, so the receiver's settle cancels and joins it.
+fn produce_source(
+    mut cx: LowerCx,
+    chan: Reg,
+    chan_ty: TypeId,
+    source_ty: TypeId,
+    task: Reg,
+    task_ty: TypeId,
+) -> Reg {
+    let source = cx.field_named(chan, chan_ty, "source", source_ty)
+    // LICENSED compiler.interned_opt: the inner is a computed TypeId — no literal spelling to hand `cx.type(T?)`
+    let work = cx.adopted(cx.view.types.intern(Type.Opt(task_ty)), false, task)
+    let sig? = cx.fields_of(source_ty) else { return source }
+    let slot? = sig.slot_of("work") else { return source }
+    let lo = cx.const_int(0)
+    let hi = cx.const_int(cx.field_offset(source_ty, sig.names.length))
+    let dst = cx.array_slice(cx.view.types.shape_of(source_ty), source, lo, hi)
+    cx.field_written(dst, source_ty, slot, work)
+    dst
+}
+
+/// The element a `produce` pins — the type argument of the `Source` it
+/// answers.
+fn source_elem(cx: LowerCx, e: ExprId) -> TypeId? {
+    match cx.view.types.seen_shape(cx.type_at(e)) {
+        .App(_, "Source", args) -> if args.length == 1 { args[0] } else { null },
+        rest -> null,
+    }
+}
+
+/// A `@std/task` generic record instantiated at `t`.
+fn task_app(cx: LowerCx, name: string, t: TypeId) -> TypeId? {
+    let decl = cx.view.decls.package_decl("@std.task", name)?
+    let _ = cx.view.decls.sig(decl)
+    cx.view.types.intern(Type.App(decl, name, [t]))
+}
+
+impl LowerCx {
+    /// The producer's block ended: close its sink, so the reader's
+    /// `next` sees the channel end. Nobody closes a `produce` by hand.
+    mut fn close_produced(sink_ty: TypeId) {
+        let sink? = self.producer_sink else { return }
+        let sig? = self.fields_of(sink_ty) else { return }
+        let slot? = sig.slot_of("close") else { return }
+        let close = self.field_named(sink, sink_ty, "close", sig.types[slot])
+        let code = self.slot_read(close, 0, null)
+        let _ = self.call_ptr(self.type(void), code, [close])
+    }
 }

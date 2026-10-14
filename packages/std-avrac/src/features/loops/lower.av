@@ -3,9 +3,8 @@
 //! scope per turn. A step runs as the turn BEGINS, never after the
 //! body, so a turn ends at its back edge — which is all `continue`
 //! is. A `break` or `continue` ends a turn early (`Ins.LoopJump`).
-use core.{StmtId, ExprId, Ins, TypeId}
+use core.{StmtId, ExprId, Ins, Type, TypeId}
 use features.{LowerCx, LoopMark}
-use diagnostics.{refusal}
 
 export fn lower_while(mut cx: LowerCx, s: StmtId, cond: ExprId, stmts: List<StmtId>) {
     cx.loop_start()
@@ -47,7 +46,7 @@ export fn lower_for(
 /// through — stored fresh each turn, read wherever the body says the
 /// name.
 export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
-    if is_source(cx, subject) { return source_unlowered(cx, subject) }
+    if is_source(cx, subject) { return lower_source_each(cx, s, subject, stmts) }
     match cx.seen_at(subject) {
         .Map(_, v) -> lower_map_each(cx, s, subject, stmts, v),
         _ -> lower_list_each(cx, s, subject, stmts),
@@ -62,21 +61,43 @@ fn is_source(cx: LowerCx, subject: ExprId) -> bool {
     }
 }
 
-/// A `for` over a `Source` is TYPED and not yet lowered: draining it
-/// arrives with FLOW 05 S3.
-fn source_unlowered(mut cx: LowerCx, subject: ExprId) {
-    cx
-        .out
-        .voices
-        .speak(
-            refusal(
-                "flow.source_loop",
-                cx.view.loc_of(subject),
-                "a `for` over a `Source` is typed and not yet lowered",
-                "this walks a running supply",
-                "drain it with `next()` until it answers null — the loop arrives with FLOW 05 S3",
-            ),
-        )
+/// `for x in <Source>`: pull the next item each turn, ending when the
+/// source does. The element is bound through a cell, as a list walk's
+/// is; absence ends the loop, and the binder reads what the nullable
+/// carried.
+fn lower_source_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
+    let elem? = source_elem(cx, subject) else {
+        return cx.defect("a `for` over a `Source` without its element survived typing")
+    }
+    // LICENSED compiler.interned_opt: the inner is a computed TypeId — no literal spelling to hand `cx.type(T?)`
+    let nullable = cx.view.types.intern(Type.Opt(elem))
+    let src_ty = cx.type_at(subject)
+    let src = cx.reg_of(subject)
+    let sig? = cx.fields_of(src_ty) else { return cx.defect("a `Source` with no fields survived typing") }
+    let slot? = sig.slot_of("next") else { return cx.defect("a `Source` with no `next` survived typing") }
+    let next = cx.field_named(src, src_ty, "next", sig.types[slot])
+    // The pull's answer is OWNED; it is settled into a cell in the
+    // condition and read back in the body, because a value minted in
+    // the condition is released at `LoopCond` — before a body that
+    // stored it would retain it.
+    let held = cx.seeded_cell(nullable, cx.hollow_of(nullable))
+    let cell = cx.seeded_cell(elem, cx.hollow_of(elem))
+    cx.bind_slot(s, cell)
+    cx.loop_start()
+    let code = cx.slot_read(next, 0, null)
+    cx.stored(held, cx.call_ptr(nullable, code, [next]))
+    cx.loop_cond(cx.presence_of(cx.loaded_as(nullable, held), nullable))
+    cx.stored(cell, cx.carried_of(cx.loaded_as(nullable, held), nullable))
+    cx.lower_stmts(stmts)
+    cx.loop_end()
+}
+
+/// The element a `Source` supplies — its one type argument.
+fn source_elem(cx: LowerCx, subject: ExprId) -> TypeId? {
+    match cx.view.types.seen_shape(cx.type_at(subject)) {
+        .App(_, _, args) -> if args.length == 1 { args[0] } else { null },
+        rest -> null,
+    }
 }
 
 fn lower_list_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
