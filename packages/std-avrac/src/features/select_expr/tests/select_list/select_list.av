@@ -1,0 +1,27 @@
+// proves: a list arm fires for the member that ANSWERED FIRST — the
+// last index here — binds its answer and its index, passes over a
+// member that ended cancelled, and rests while none has answered — in
+// both engines
+use @std.time.{ms, secs, sleep}
+
+fn after(wait: int, n: int) -> int {
+    sleep(ms(wait))
+    n
+}
+
+fn never() -> int {
+    sleep(secs(60))
+    0
+}
+
+let race = [spawn after(40, 1), spawn after(2, 2)]
+let first = select {
+    i, r in race -> r * 10 + i
+}
+let cut = [spawn never(), spawn after(2, 7)]
+sleep(ms(1))
+cut[0].cancel()
+let kept = select {
+    i, r in cut -> r * 10 + i
+}
+"${first} ${kept}"

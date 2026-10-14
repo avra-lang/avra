@@ -565,6 +565,7 @@ impl Command {
     fn outcome() -> Result<Outcome, ProcessError> {
         let began = now_ms()
         let s = launched(self, 0 - 1)?
+        errdefer abandoned([s])
         let done = pumped(s, self.drain_grace.ms)
         let word = avra_proc_reap(done.h)
         let _ = avra_proc_close(done.h)
@@ -684,6 +685,7 @@ impl Command {
     fn start(ready: Ready, limit: Duration) -> Result<Child, ProcessError> {
         let s = launched(self, 0 - 1)?
         mut child = Child { stage: s, command: self }
+        errdefer stopped(child)
         child.until_ready(ready, limit)?
         child
     }
@@ -796,6 +798,7 @@ impl Child {
     /// with what it said so far. The handle is released either way.
     fn wait(limit: Duration?) -> Result<Outcome, ProcessError> {
         if self.ended != null { return self.ended! }
+        errdefer stopped(self)
         let began = now_ms()
         let deadline = timeout_ms(limit)
         mut gone = self.pump(0)
@@ -1263,6 +1266,7 @@ impl Pipeline {
                 },
             }
         }
+        errdefer abandoned(live)
         mut failure: ProcessError? = null
         mut pending = live.length
         while pending > 0 {
@@ -1308,18 +1312,14 @@ export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, Proce
     mut owners: List<int> = []
     mut next = 0
     mut done = 0
+    let begun: Cell<List<Stage>> = Cell.new([])
+    errdefer abandoned(begun.get())
     while done < cs.length {
         while live.length < width && next < cs.length {
-            match launched(cs[next], 0 - 1) {
-                .Err(e) -> {
-                    abandoned(live)
-                    fail e
-                },
-                .Ok(s) -> {
-                    live.push(s)
-                    owners.push(next)
-                },
-            }
+            let s = launched(cs[next], 0 - 1)?
+            begun.push(s)
+            live.push(s)
+            owners.push(next)
             next = next + 1
         }
         mut still: List<Stage> = []
@@ -1328,11 +1328,7 @@ export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, Proce
         for i, s in live {
             let t = graced(s, waited, cs[owners[i]].drain_grace.ms)
             waited = waited || !t.timed
-            if overdue(t) || capped(t) {
-                let why = broken(cs[owners[i]], t)
-                abandoned(live)
-                fail why
-            }
+            if overdue(t) || capped(t) { fail broken(cs[owners[i]], t) }
             if t.stopped {
                 outs.set(owners[i], collected(t, began))
                 done = done + 1
@@ -1357,6 +1353,8 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
     mut owners: List<int> = []
     mut next = 0
     mut next_at = began
+    let begun: Cell<List<Stage>> = Cell.new([])
+    errdefer abandoned(begun.get())
     while true {
         // EVERY COMMAND THAT IS DUE, not one per pass. A pass costs a
         // turn per live stage, so launching one at a time made the
@@ -1364,16 +1362,10 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
         // others — quadratic in the field, and `stagger: ms(0)`,
         // which asks for all of them AT ONCE, paid the most.
         while next < cs.length && now_ms() >= next_at {
-            match launched(cs[next], 0 - 1) {
-                .Err(e) -> {
-                    abandoned(live)
-                    fail e
-                },
-                .Ok(s) -> {
-                    live.push(s)
-                    owners.push(next)
-                },
-            }
+            let s = launched(cs[next], 0 - 1)?
+            begun.push(s)
+            live.push(s)
+            owners.push(next)
             next = next + 1
             next_at = now_ms() + stagger.ms
         }
@@ -1383,11 +1375,7 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
         for i, s in live {
             let t = graced(s, waited, cs[owners[i]].drain_grace.ms)
             waited = waited || !t.timed
-            if overdue(t) || capped(t) {
-                let why = broken(cs[owners[i]], t)
-                abandoned(live)
-                fail why
-            }
+            if overdue(t) || capped(t) { fail broken(cs[owners[i]], t) }
             if t.stopped && winner == null { winner = collected(t, began) }
             grown.push(t)
         }

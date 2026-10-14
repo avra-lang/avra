@@ -1,0 +1,65 @@
+//! proves: a task unwound while a driver sees its child out stops the
+//! child with its tree — `outcome`, `wait`, a pipeline and `parallel`
+//! alike — the child runs no more
+use @std.process.{Tool, Command, Child, Ready, ProcessError, tool, cmd, parallel}
+use @std.time.{ms, secs, sleep, now_ns}
+use @std.io.{exists}
+
+extern fn avra_sched_seed(schedule: int)
+extern fn avra_sched_settle() -> int
+
+/// What a child does: its number left at `mark`, then half a minute
+/// of nothing.
+fn marking(mark: string) -> string { "echo \$\$ > ${mark}; exec sleep 30" }
+
+/// Whether the child whose number is at `mark` still runs; the mark is
+/// removed. A child ended and not yet reaped runs no more.
+fn runs(s: Tool, mark: string) -> Result<bool, ProcessError> {
+    let asked = "s=\$(ps -o state= -p \$(cat ${mark}) 2>/dev/null); rm -f ${mark}; case \$s in ''|Z*) exit 1;; esac"
+    (cmd(s, ["-c", asked]).outcome()?).exit is .Clean
+}
+
+fn seen_out(c: Command) -> bool { c.outcome() is .Ok }
+
+fn waited_out(c: Command) -> bool {
+    match c.start(Ready.Started, secs(2)) { .Ok(child) -> held_wait(child), .Err(_) -> false }
+}
+
+fn held_wait(child: Child) -> bool {
+    mut held = Child { stage: child.stage, command: child.command }
+    held.wait(secs(20)) is .Ok
+}
+
+fn piped_out(c: Command) -> bool { c.pipe(c with { args: ["-c", "cat"] }).outcome() is .Ok }
+
+fn run_beside(c: Command) -> bool { parallel([c, c with { args: ["-c", "sleep 2"] }], 2) is .Ok }
+
+/// One driver's task cancelled once its child has left its number —
+/// so the driver stands in its loop — and waited to its end.
+fn cut(drive: fn(Command) -> bool, s: Tool, mark: string) {
+    let t = spawn drive(cmd(s, ["-c", marking(mark)]))
+    while !exists(mark) { sleep(ms(0)) }
+    t.cancel()
+    while !t.done { sleep(ms(0)) }
+}
+
+/// Four drivers, each cut while it sees out a child of its own: which
+/// children run no more.
+fn run() -> Result<string, ProcessError> {
+    let s = tool("sh")?
+    let base = "/tmp/avra-unwound-${now_ns()}"
+    cut(seen_out, s, "${base}-out")
+    cut(waited_out, s, "${base}-wait")
+    cut(piped_out, s, "${base}-pipe")
+    cut(run_beside, s, "${base}-par")
+    let out = !runs(s, "${base}-out")?
+    let wait = !runs(s, "${base}-wait")?
+    let pipe = !runs(s, "${base}-pipe")?
+    let beside = !runs(s, "${base}-par")?
+    "outcome ${out} | wait ${wait} | pipeline ${pipe} | parallel ${beside}"
+}
+
+avra_sched_seed(1)
+let said = run() catch e -> "failed"
+let _ = avra_sched_settle()
+said

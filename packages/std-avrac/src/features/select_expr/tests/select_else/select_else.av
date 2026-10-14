@@ -1,0 +1,22 @@
+// proves: `else` runs when nothing is ready and lets the world run
+// first; once the task has ended the arm above it is taken, and a
+// `select` answering nothing stands as a statement — in both engines
+use @std.time.{ms, sleep}
+
+fn after(wait: int, n: int) -> int {
+    sleep(ms(wait))
+    n
+}
+
+let seen = Cell.new(0)
+let job = spawn after(2, 5)
+let early = select {
+    r in job -> r
+    else -> 0 - 1
+}
+sleep(ms(20))
+select {
+    r in job -> seen.set(r)
+    else -> seen.set(99)
+}
+"${early} ${seen.get()}"

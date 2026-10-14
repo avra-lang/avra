@@ -193,7 +193,37 @@ fn witnesses() -> List<CodeWitness> {
         CodeWitness { code: "type.identity_field", witness: Witness.Beyond(identity_golden) },
         CodeWitness { code: "shape.identity_clash", witness: Witness.Beyond(identity_clash_golden) },
         CodeWitness { code: "flow.broken", witness: Witness.Beyond(unbroken_golden) },
-        CodeWitness { code: "flow.select", witness: Witness.Source("select {\n    1 -> 2\n}") },
+        CodeWitness {
+            code: "flow.select",
+            witness: Witness
+                .Source(
+                    "fn one() -> int {\n    1\n}\nfn hush() {\n}\nlet job = spawn one()\n@fair select {\n    r in job -> hush()\n}",
+                ),
+        },
+        CodeWitness { code: "flow.arm", witness: Witness.Source("select {\n    1 -> 2\n}") },
+        CodeWitness {
+            code: "flow.arm_binder",
+            witness: Witness
+                .Source(
+                    "fn one() -> int {\n    1\n}\nlet job = spawn one()\nselect {\n    i, r in job -> r\n}",
+                ),
+        },
+        CodeWitness {
+            code: "flow.spent_arm",
+            witness: Witness
+                .Source(
+                    "fn one() -> int {\n    1\n}\nlet jobs = [spawn one()]\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in jobs -> r\n    }\n}",
+                ),
+        },
+        CodeWitness {
+            code: "flow.guard_binder",
+            witness: Witness
+                .Source(
+                    "fn one() -> int {\n    1\n}\nlet job = spawn one()\nselect {\n    r in job if r > 0 -> r\n}",
+                ),
+        },
+        CodeWitness { code: "flow.quiet_never", witness: Witness.Beyond(quiet_never_golden) },
+        CodeWitness { code: "flow.fresh_deadline", witness: Witness.Beyond(quiet_never_golden) },
         CodeWitness {
             code: "flow.unbounded_cleanup",
             witness: Witness
@@ -528,3 +558,5 @@ const identity_clash_golden: string = "two variant names fold to one 64-bit iden
 const identity_golden: string = "`@identity` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/structs/tests/identity_test.av"
 const unbroken_golden: string = "`@unbroken` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is compiler/tests/unbroken_test.av"
 const lacks_golden: string = "`@lacks` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/structs/tests/lacks_test.av"
+
+const quiet_never_golden: string = "a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av"

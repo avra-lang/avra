@@ -110,6 +110,41 @@ static void* spins(void* self) {
     return NULL;
 }
 
+static void* rests_in_a_scan(void* self) {
+    if (avra_wait_enter("pkg/main.av:12") != 0) return NULL;
+    avra_wait_gate(cap(self), 0, 0);
+    avra_wait_until(avra_now_ns() + 90000LL * 1000000, 1, 0);
+    avra_wait_rest();
+    return NULL;
+}
+static void* rests_then_sleeps(void* self) {
+    if (avra_wait_enter("pkg/main.av:20") != 0) return NULL;
+    avra_wait_gate(cap(self), 0, 0);
+    avra_wait_rest();
+    avra_fiber_sleep(60000);
+    return NULL;
+}
+static void* parks_on_nothing(void* self) {
+    (void)self;
+    avra_wait_park();
+    return NULL;
+}
+
+// A task resting in a scan, one that rested, was claimed and now
+// sleeps, and one parked on nothing, listed by a direct call.
+static int rested_scene(void) {
+    void* rung = avra_gate_new();
+    spawn1(rests_in_a_scan, avra_gate_new());
+    spawn1(rests_then_sleeps, rung);
+    spawn1(parks_on_nothing, NULL);
+    avra_fiber_yield();
+    avra_gate_claim(rung);
+    avra_fiber_yield();
+    avra_tasks_listed(stdout);
+    fflush(stdout);
+    _exit(0);
+}
+
 // A task in every state, listed by a direct call.
 static int listed_scene(void) {
     int p[2];
@@ -393,23 +428,45 @@ static int unswitched_by(const char* buf, const char* said, pid_t pid) {
     return strstr(buf, want) != NULL;
 }
 
-static void listing(const char* self) {
+// What `scene` listed, run alone in a child; its status, and its pid.
+static int scene_listed(const char* self, const char* scene, char* buf, size_t cap, pid_t* who) {
     int p[2];
     if (pipe(p) != 0) { perror("pipe"); exit(1); }
     pid_t pid = fork();
     if (pid == 0) {
         dup2(p[1], 1);
         close(p[0]);
-        execl(self, self, "listed", "-1", (char*)NULL);
+        execl(self, self, scene, "-1", (char*)NULL);
         _exit(9);
     }
     close(p[1]);
-    char buf[4096] = {0};
+    memset(buf, 0, cap);
     size_t got = 0;
-    for (ssize_t n; got < sizeof buf - 1 && (n = read(p[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
+    for (ssize_t n; got < cap - 1 && (n = read(p[0], buf + got, cap - 1 - got)) > 0;) got += (size_t)n;
     close(p[0]);
     int status = 0;
     waitpid(pid, &status, 0);
+    *who = pid;
+    return status;
+}
+
+static void rested_listing(const char* self) {
+    char buf[4096];
+    pid_t pid;
+    int status = scene_listed(self, "rested", buf, sizeof buf, &pid);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the rested scene runs");
+    CHECK(every_line_traced(buf), "every line of it is a trace's line");
+    CHECK(strstr(buf, " park id=1 src=gate:0x") != NULL && strstr(buf, " park id=1 src=at arm=1:0 due_in=89") != NULL, "a task resting in a scan lists each arm it filed, a time with how long until it is due");
+    CHECK(strstr(buf, " select id=1 site=pkg/main.av:12 for=0\n") != NULL, "and where its wait was written, and how long it has rested");
+    CHECK(strstr(buf, " select id=2 ") == NULL && strstr(buf, " park id=2 src=at arm=0:0 due_in=59") != NULL, "a task that rested, was claimed and now sleeps rests in no scan");
+    CHECK(strstr(buf, " park id=3 src=none arm=0:0\n") != NULL, "a task parked on nothing says so");
+    CHECK(strstr(buf, " park id=1 src=none") == NULL && strstr(buf, " park id=2 src=none") == NULL, "and no task that waits on something does");
+}
+
+static void listing(const char* self) {
+    char buf[4096];
+    pid_t pid;
+    int status = scene_listed(self, "listed", buf, sizeof buf, &pid);
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the listed scene runs");
     CHECK(every_line_traced(buf), "every line of the listing is a trace's line");
     char whose[64];
@@ -419,7 +476,8 @@ static void listing(const char* self) {
     CHECK(strstr(buf, " spawn id=1\n") != NULL && strstr(buf, " site id=1 0x") != NULL, "a task's spawn and its code, where it carries no line");
     CHECK(strstr(buf, " park id=1 src=gate:0x") != NULL, "a task on a gate");
     CHECK(strstr(buf, " park id=2 src=fd:r:") != NULL, "a task on a descriptor, read");
-    CHECK(strstr(buf, " park id=3 src=at arm=0:0\n") != NULL, "a task asleep");
+    CHECK(strstr(buf, " park id=3 src=at arm=0:0 due_in=59") != NULL, "a task asleep, and how long until its time");
+    CHECK(strstr(buf, " select id=") == NULL && strstr(buf, "src=none") == NULL, "no task of these rests in a scan or parks on nothing");
     CHECK(strstr(buf, " join id=4 on=1\n") != NULL && strstr(buf, " park id=4 ") == NULL, "a join names the task it waits for, and its gate is the join's");
     CHECK(strstr(buf, " spawn id=5\n") != NULL && strstr(buf, " park id=5 ") == NULL, "a task that has not run waits on nothing");
     CHECK(strstr(buf, " age id=1 ms=") != NULL, "a task says how long ago it was spawned, at most");
@@ -682,6 +740,7 @@ int main(int argc, char** argv) {
     if (argc > 2) {
         g_ready_fd = atoi(argv[2]);
         if (strcmp(argv[1], "listed") == 0) return listed_scene();
+        if (strcmp(argv[1], "rested") == 0) return rested_scene();
         if (strcmp(argv[1], "yielding") == 0) return yielding_scene();
         if (strcmp(argv[1], "polled") == 0) return polled_scene();
         if (strcmp(argv[1], "spinning") == 0) return spinning_scene();
@@ -699,6 +758,7 @@ int main(int argc, char** argv) {
     if (!mkdtemp(g_root)) { perror("mkdtemp"); return 1; }
     door_at("door", 0700);
     listing(argv[0]);
+    rested_listing(argv[0]);
     door(argv[0]);
     char link[200];
     snprintf(link, sizeof link, "%s/link", g_root);
