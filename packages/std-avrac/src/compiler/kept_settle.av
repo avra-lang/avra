@@ -36,14 +36,7 @@ use core.{
     joined,
     sorted_texts,
 }
-use features.{
-    Unsettled,
-    Settled,
-    Wanted,
-    SettleRoot,
-    SeatValue,
-    Budgets,
-}
+use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets}
 use compiler.backend.{reaches_world}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Unit, type_shape_key}
@@ -398,11 +391,23 @@ impl Workspace {
         self.keys.view_marks.put(at, true)
     }
 
-    /// Whether a `v` row's view is kept and every line of it stands.
+    /// Whether a `v` row's view is kept and every line of it stands, memoized
+    /// per view for the attempt: the judgment reads the module and file facts a
+    /// build is still building, so it is reused only while the file count and
+    /// the body-ask count stand as they did when it was made.
     fn view_stands(store: Store, r: List<string>) -> bool {
         if r.length != 2 { return false }
-        let said? = store.get(Stored.Unit, view_key(r[1])) else { return false }
-        self.rows_stand(rows_of(said))
+        let files = self.decls.file_names.get().length
+        let asks = self.hold.body_asks.get().length
+        let known = self.hold.view_standing.get().get(r[1])
+        if known != null && known!.files == files && known!.asks == asks { return known!.stands }
+        let said? = store.get(Stored.Unit, view_key(r[1])) else {
+            self.hold.view_standing.put(r[1], ViewStand { files: files, asks: asks, stands: false })
+            return false
+        }
+        let stands = self.rows_stand(rows_of(said))
+        self.hold.view_standing.put(r[1], ViewStand { files: files, asks: asks, stands: stands })
+        stands
     }
 
     /// Whether kept rows all stand, and the names digest agrees with the modules they list.
