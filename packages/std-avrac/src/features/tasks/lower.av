@@ -4,6 +4,7 @@
 //! call; `.await` joins and reads that cell.
 use core.{ExprId, Reg, Type, TypeId, RtFlag, BinOp, ResSides}
 use features.{LowerCx, MethodCall}
+use diagnostics.{refusal}
 
 fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -125,4 +126,35 @@ fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let first? = mc.args.first() else { return cx.lower_defect(mc.e, "a push without its task survived typing") }
     cx.tasks_push(cx.reg_of(mc.subject), cx.reg_of(first))
     cx.hollow_of(cx.type_at(mc.e))
+}
+
+// ── `produce` and `yield`: typed, not yet lowered ──
+
+/// `yield`'s send is TYPED and not yet lowered: the producer's task
+/// ownership arrives with FLOW 05 S2, its lowering with S3.
+fn emit_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    unlowered(cx, e, "a `yield`")
+    cx.result(e)
+}
+
+/// `produce` is TYPED and not yet lowered — see `emit_reg`.
+fn produce_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    unlowered(cx, e, "a `produce`")
+    cx.result(e)
+}
+
+/// A shape that types and has no lowering yet, named by `what`.
+fn unlowered(mut cx: LowerCx, at: ExprId, what: string) {
+    cx
+        .out
+        .voices
+        .speak(
+            refusal(
+                "flow.produce",
+                cx.view.loc_of(at),
+                "`produce` and `yield` are typed and not yet lowered",
+                "${what} stands here",
+                "the carrier's `open_channel` waits until the producer's ownership lands (FLOW 05 S2/S3)",
+            ),
+        )
 }

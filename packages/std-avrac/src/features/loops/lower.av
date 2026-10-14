@@ -5,6 +5,7 @@
 //! is. A `break` or `continue` ends a turn early (`Ins.LoopJump`).
 use core.{StmtId, ExprId, Ins, TypeId}
 use features.{LowerCx, LoopMark}
+use diagnostics.{refusal}
 
 export fn lower_while(mut cx: LowerCx, s: StmtId, cond: ExprId, stmts: List<StmtId>) {
     cx.loop_start()
@@ -46,10 +47,36 @@ export fn lower_for(
 /// through — stored fresh each turn, read wherever the body says the
 /// name.
 export fn lower_for_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {
+    if is_source(cx, subject) { return source_unlowered(cx, subject) }
     match cx.seen_at(subject) {
         .Map(_, v) -> lower_map_each(cx, s, subject, stmts, v),
         _ -> lower_list_each(cx, s, subject, stmts),
     }
+}
+
+/// Whether the subject is a running supply — a `@std/task.Source`.
+fn is_source(cx: LowerCx, subject: ExprId) -> bool {
+    match cx.view.types.seen_shape(cx.type_at(subject)) {
+        .App(d, "Source", _) -> cx.view.decls.package_of(d) == "@std.task",
+        rest -> false,
+    }
+}
+
+/// A `for` over a `Source` is TYPED and not yet lowered: draining it
+/// arrives with FLOW 05 S3.
+fn source_unlowered(mut cx: LowerCx, subject: ExprId) {
+    cx
+        .out
+        .voices
+        .speak(
+            refusal(
+                "flow.source_loop",
+                cx.view.loc_of(subject),
+                "a `for` over a `Source` is typed and not yet lowered",
+                "this walks a running supply",
+                "drain it with `next()` until it answers null — the loop arrives with FLOW 05 S3",
+            ),
+        )
 }
 
 fn lower_list_each(mut cx: LowerCx, s: StmtId, subject: ExprId, stmts: List<StmtId>) {

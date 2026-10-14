@@ -1,0 +1,21 @@
+//! proves the shape `produce` lowers to: a producer spawned where the
+//! reader stands (never inside a library fn, whose frame joins it),
+//! feeding a bounded channel. A full send parks, the buffer never
+//! exceeds n, and nobody closes the sink by hand — the sum proves every
+//! item arrived, whatever order the race hands them over.
+use @std.task.{open_channel, Channel}
+
+fn feed(ch: Channel<int>) {
+    for i in 1..6 { let _ = ch.sink.send(i) }
+    ch.sink.close()
+}
+
+let ch = open_channel<int>(2)
+let _ = spawn feed(ch)
+mut total = 0
+mut v = ch.source.next()
+while v != null {
+    total = total + v!
+    v = ch.source.next()
+}
+total

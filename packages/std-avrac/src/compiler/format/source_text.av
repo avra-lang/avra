@@ -1428,6 +1428,8 @@ impl SourceText {
             ),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
             .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
+            .Emit(value) -> grouped("yield ${self.expression(value, loosest_tier, depth, c)}", atom_tier, parent),
+            .Produce(elem, cap, body) -> grouped(self.produce_group(elem, cap, body, id, depth), atom_tier, parent),
             .Select(fair, arms) -> grouped(
                 self.select_expr(fair, arms, end_of(self.store.expr_span(id)), depth),
                 atom_tier,
@@ -1898,6 +1900,13 @@ impl SourceText {
     /// `within limit { … }` — a head keeping its brace, the limit
     /// spelled back as the span the writer wrote rather than the `ms`
     /// field the builder read off it.
+    mut fn produce_group(elem: TypeRef, cap: ExprId?, body: ExprId, id: ExprId, depth: int) -> string {
+        let one = self.span_flat(self.store.expr_span(id))
+        let pinned = "produce${self.pins([elem])}"
+        let head: string = if cap == null { pinned } else { "${pinned}(${self.expression(cap!, loosest_tier, depth)})" }
+        "${head} ${self.block(body, one, depth)}"
+    }
+
     mut fn within_group(limit: ExprId, body: ExprId, id: ExprId, depth: int, col: int) -> string {
         let one = self.span_flat(self.store.expr_span(id))
         let shown = self.span_written(limit)
