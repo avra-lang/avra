@@ -233,11 +233,13 @@ struct Fiber {
     uint32_t owner;         // the armed scope whose limit is `deadline`
     uint32_t deeper_cap;
     uint32_t tick_turns;    // the seeded back-edge's countdown to its next yield
+    uint32_t rested;        // resting in a scan: RESTING, and the low bits of the fiber count when it parked; else 0
     Scope scope[SCOPES];
     Scope* deeper;          // the scopes past the inline ones
     Waiter held[HELD];
     Waiter due;             // the deadline's own waiter
     Over* more;
+    const char* scan_site;  // where the scan it last began was written: text the record keeps
     Fiber* all_next;        // every live fiber, for a fork and for a dump
     Fiber* all_prev;
     char* base;             // the stack's lowest byte; NULL for main, a virtual task, or one not yet run
@@ -334,11 +336,25 @@ static void fiber_unlisted(Fiber* f) {
 static void fiber_freed(Fiber* f) {
     fiber_unlisted(f);
     free(f->deeper);
+    avra_rc_release((void*)f->scan_site);
+    if (f->virtual) avra_rc_release((void*)f->site);
     f->next = g_fiber_pool;
     g_fiber_pool = f;
 }
 
 static int64_t id_of(const Fiber* f) { return f->local->id; }
+
+// A SITE IS TEXT THE RECORD KEEPS: it takes its own reference and gives
+// up the one it held, so text that is counted outlives whoever wrote it
+// for as long as a listing may say it. The binary's own text and C's
+// are not counted, and a wait that names the same site again costs a
+// compare.
+static void site_kept(const char** held, const char* site) {
+    if (*held == site) return;
+    avra_rc_retain((void*)site);
+    avra_rc_release((void*)*held);
+    *held = site;
+}
 
 // THE TICK: the source's nudge that time passed while tasks were ready.
 // The scheduler reads it — the switch, and a checked back-edge through
@@ -553,10 +569,19 @@ static void timer_placed(size_t i) {
     else task_cells(t->who)[TASK_AT] = (int64_t)(i + 1);
 }
 
+// Whether the entry is a scope's limit.
+static int limits(const Timer* t) { return t->kind == T_WAITER && ((const Waiter*)t->who)->kind == W_DEADLINE; }
+
 static int timer_before(size_t a, size_t b) {
     const Timer* x = &g_timers[a];
     const Timer* y = &g_timers[b];
-    return x->at < y->at || (x->at == y->at && x->seq < y->seq);
+    if (x->at != y->at) return x->at < y->at;
+    // ON ONE INSTANT THE SCOPE WINS: a limit sorts before an arm's time
+    // and a timer's task, whichever was filed first — so who answers a
+    // tie never depends on whether the task had waited before.
+    int limit_x = limits(x), limit_y = limits(y);
+    if (limit_x != limit_y) return limit_x;
+    return x->seq < y->seq;
 }
 
 static void timer_swap(size_t a, size_t b) {
@@ -1812,6 +1837,7 @@ static inline int park_begun(Fiber* f) {
 // The claim, read by its task: `arm << 32 | member`, the set empty after.
 static int64_t claim_taken(Fiber* f) {
     int64_t claim = (int64_t)(((uint64_t)(uint32_t)f->arm << 32) | (uint32_t)f->member);
+    f->rested = 0;
     f->claimed = 0;
     retract(f);
     return claim;
@@ -1855,9 +1881,10 @@ static inline int scan_begun(Fiber* f) {
 }
 
 // 0, or the claim a park would have answered: `-1:0` a cancel, `-1:1`
-// a limit.
-int64_t avra_wait_enter(void) {
+// a limit. `site` is where the wait was written, for a listing to say.
+int64_t avra_wait_enter(const char* site) {
     Fiber* self = g_current;
+    site_kept(&self->scan_site, site);
     if (__builtin_expect(!scan_begun(self), 1)) return 0;
     if (claimed_by_cancel(self)) cancel_met();
     return claim_taken(self);
@@ -1881,11 +1908,17 @@ static int set_open(const Fiber* f) { return f->held_n != 0 || f->claimed; }
 __attribute__((noinline, cold, noreturn))
 static void no_open_arm(void) { avra_trap("a `select` had no open arm"); }
 
+// The task is about to rest in its scan: the fiber count as it stands
+// is a time the park came after, as a task's id is for its spawn.
+enum { RESTING = 1u << 31 };
+static void rests(Fiber* f) { f->rested = RESTING | (uint32_t)g_fiber_seq; }
+
 // THE SCAN FOUND NOTHING READY AND EVERY LIVE ARM IS FILED: the task
 // parks. With nothing filed nothing can wake it, and that is said by
 // name, never waited out.
 int64_t avra_wait_rest(void) {
     if (!set_open(g_current)) no_open_arm();
+    rests(g_current);
     return avra_wait_park();
 }
 
@@ -2571,7 +2604,7 @@ void avra_vtask_end(int64_t t) {
 }
 
 void avra_vtask_sited(int64_t t, const char* site) {
-    virtual_at(t)->site = site;
+    site_kept(&virtual_at(t)->site, site);
     if (TRACING) traced_site(virtual_at(t), site, NULL);
 }
 
@@ -2673,8 +2706,9 @@ int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
 
 // `avra_wait_enter` for the task `t`: its own unwind bit is the one a
 // cancel raises.
-int64_t avra_vtask_enter(int64_t t) {
+int64_t avra_vtask_enter(int64_t t, const char* site) {
     Fiber* f = virtual_at(t);
+    site_kept(&f->scan_site, site);
     return scan_begun(f) ? claim_taken(f) : 0;
 }
 
@@ -2683,6 +2717,7 @@ int64_t avra_vtask_enter(int64_t t) {
 int64_t avra_vtask_rest(int64_t t) {
     Fiber* f = virtual_at(t);
     if (!set_open(f)) return -1;
+    rests(f);
     return host_waited(park_begun(f));
 }
 
@@ -3370,12 +3405,15 @@ static int64_t spawned_after(uint64_t id) {
 // process alike (`avra trace`, `avra tasks`). The program's own run is
 // task 0 and needs no spawn.
 
+// Whole milliseconds from `now` to `at`; none for a time that has come.
+static int64_t ms_until(int64_t at, int64_t now) { return at > now ? (at - now) / 1000000 : 0; }
+
 // What a waiter waits on, as a trace's `park` line; nothing for a
 // deadline, which is no wait of its own, or a join's gate, which the
 // `join` line says.
-static void waiter_listed(FILE* out, int64_t now, const Fiber* f, const Waiter* w) {
-    if (!w->filed || w->kind == W_DEADLINE) return;
-    if (w->kind == W_GATE && w->on.gate == f->joining) return;
+static int waiter_listed(FILE* out, int64_t now, const Fiber* f, const Waiter* w) {
+    if (!w->filed || w->kind == W_DEADLINE) return 0;
+    if (w->kind == W_GATE && w->on.gate == f->joining) return 0;
     fprintf(out, "ts=%lld park id=%lld src=", (long long)now, (long long)id_of(f));
     switch (w->kind) {
         case W_FD_READ: fprintf(out, "fd:r:%d", w->on.fd); break;
@@ -3384,7 +3422,19 @@ static void waiter_listed(FILE* out, int64_t now, const Fiber* f, const Waiter* 
         case W_AT: fputs("at", out); break;
         case W_DEADLINE: break;
     }
-    fprintf(out, " arm=%d:%d\n", w->arm, w->member);
+    fprintf(out, " arm=%d:%d", w->arm, w->member);
+    if (w->kind == W_AT) fprintf(out, " due_in=%lld", (long long)ms_until(g_timers[w->on.timer - 1].at, now));
+    fputc('\n', out);
+    return 1;
+}
+
+// A time the task's rest in its scan came after: the latest reading
+// taken before the fiber count stood where the park found it.
+static int64_t rested_after(const Fiber* f) {
+    uint64_t low = f->rested & ~(uint32_t)RESTING;
+    uint64_t seq = (g_fiber_seq & ~(uint64_t)(RESTING - 1)) | low;
+    if (seq > g_fiber_seq) seq -= RESTING;
+    return spawned_after(seq);
 }
 
 static void task_listed(FILE* out, const Fiber* f, int64_t now) {
@@ -3398,8 +3448,13 @@ static void task_listed(FILE* out, const Fiber* f, int64_t now) {
         if (on) fprintf(out, "ts=%lld join id=%lld on=%lld\n", (long long)now, id, (long long)id_of(on));
         else fprintf(out, "ts=%lld join id=%lld on=unrun\n", (long long)now, id);
     }
-    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);
-    for (const Over* o = f->more; o; o = o->next) waiter_listed(out, now, f, &o->w);
+    int filed = 0;
+    for (uint32_t i = 0; i < f->held_n; i++) filed += waiter_listed(out, now, f, &f->held[i]);
+    for (const Over* o = f->more; o; o = o->next) filed += waiter_listed(out, now, f, &o->w);
+    // A TASK PARKED ON NOTHING SAYS SO: only a cancel or its limit ends
+    // that wait, and a listing that left it out would read as running.
+    if (!filed && !f->virtual && f->state == FIBER_PARKED && !f->joining) fprintf(out, "ts=%lld park id=%lld src=none arm=0:0\n", (long long)now, id);
+    if (f->rested) fprintf(out, "ts=%lld select id=%lld site=%s for=%lld\n", (long long)now, id, f->scan_site ? f->scan_site : "?", (long long)((now - rested_after(f)) / 1000000));
     if (!f->virtual && f != &g_main) fprintf(out, "ts=%lld age id=%lld ms=%lld\n", (long long)now, id, (long long)((now - spawned_after((uint64_t)id_of(f))) / 1000000));
 }
 

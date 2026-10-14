@@ -785,7 +785,7 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_task(AVRA_RT_PT
     "avra_wait_task: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_park()), int64_t),
     "avra_wait_park: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_enter()), int64_t),
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_enter(AVRA_RT_PTR)), int64_t),
     "avra_wait_enter: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_since(AVRA_RT_PTR)), int64_t),
     "avra_task_since: its row answers i64, so its C body answers int64_t");
