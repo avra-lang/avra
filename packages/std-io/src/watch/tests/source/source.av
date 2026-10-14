@@ -1,0 +1,45 @@
+// proves: `w.changes()` is a source whose `arm` files the host
+// descriptor, so a task that arms it and parks wakes on a real write;
+// `taken` hands the change over, and a `within` around `next` answers
+// its own `TimedOut`, never `.Quiet`.
+use @std.io.{write_text, append_bytes, make_dirs, env_or}
+use @std.io.watch.{watch, Seen}
+use @std.time.{ms, sleep}
+
+extern fn avra_wait_park() -> int
+
+fn appends_later(path: string, after: int) {
+    sleep(ms(after))
+    let _ = append_bytes(path, "more".bytes())
+}
+
+fn item(s: Seen?) -> string {
+    match s {
+        seen? -> match seen {
+            .Changes(cs) -> "changed ${cs.length}",
+            .Everything -> "everything",
+            .Quiet -> "quiet",
+        }
+        null -> "none"
+    }
+}
+
+fn run() -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/avra-watch-source"
+    let f = "${dir}/f"
+    let _ = make_dirs(dir)
+    let _ = write_text(f, "a")
+    let w = match watch() { .Ok(w) -> w, .Err(e) -> { return e.describe().message } }
+    let _ = w.add(f)
+    let s = w.changes()
+    let writer = spawn appends_later(f, 40)
+    s.arm(1)
+    let _ = avra_wait_park()
+    let got = s.taken()
+    writer.await
+    let timed = within ms(60) { w.next() } is .Err
+    w.close()
+    "${item(got)} ${timed} ${s.ended()}"
+}
+
+run()

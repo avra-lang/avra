@@ -44,6 +44,7 @@ extern fn avra_vtask_next() -> int
 extern fn avra_vtask_wait_fd(t: int, fd: int, writable: int, arm: int, member: int)
 extern fn avra_vtask_wait_until(t: int, at_ns: int, arm: int, member: int)
 extern fn avra_vtask_wait_gate(t: int, gate: ptr, arm: int, member: int)
+extern fn avra_vtask_wait_sig(t: int, sig: int, arm: int, member: int)
 extern fn avra_vtask_join(t: int, task: ptr) -> int
 extern fn avra_sched_run_begins()
 extern fn avra_sched_run_ends()
@@ -619,6 +620,20 @@ impl Machine {
         let vt = self.arming_vt()
         let own? = self.gate_of(vals[0]) else { return self.wait_on_task(vt, vals) }
         avra_vtask_wait_gate(vt, own, self.whole(vals[1]), self.whole(vals[2]))
+        Val.I(0)
+    }
+
+    /// A signal files through the same scheduler a descriptor does: the
+    /// interpreter's task is a virtual task on the runtime's policy, so
+    /// a signal that arrives while it waits claims it exactly as a
+    /// compiled fiber's wait is claimed.
+    fn wait_sig_val(vals: List<Val>) -> Val {
+        avra_vtask_wait_sig(
+            self.arming_vt(),
+            self.whole(vals[0]),
+            self.whole(vals[1]),
+            self.whole(vals[2]),
+        )
         Val.I(0)
     }
 

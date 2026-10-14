@@ -1,0 +1,33 @@
+// proves: `listener.accepts()` is a source whose `arm` files the
+// listener's descriptor, so a task that arms it and parks wakes on a
+// real connection and takes it; closing the listener ends it.
+use @std.net.{listen, connect, Conn, NetError}
+use @std.time.{ms, secs, sleep}
+use @std.task.{Source}
+
+extern fn avra_wait_park() -> int
+
+fn dials_later(port: int) -> int {
+    sleep(ms(30))
+    match connect("127.0.0.1", port, secs(2)) {
+        .Ok(c) -> {
+            let _ = c.close()
+            1
+        },
+        .Err(_) -> 0,
+    }
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let s: Source<Conn> = l.accepts()
+    let dialer = spawn dials_later(l.port)
+    s.arm(1)
+    let _ = avra_wait_park()
+    let got = s.taken()
+    let n = dialer.await
+    l.close()
+    .Ok("${got != null} ${n} ${s.ended()}")
+}
+
+run() catch e -> "failed: ${e.verb}"
