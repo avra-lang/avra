@@ -245,6 +245,7 @@ impl Workspace {
         rdb.answer_known(self.named_by_decl("Placed", Family.Placed))
         rdb.answer_known(self.named_typed())
         rdb.answer_known(self.named_units())
+        rdb.answer_known(self.named_lifts())
         rdb
             .answer_known(
                 self
@@ -301,6 +302,36 @@ impl Workspace {
             .Present(r) -> unit_fp_in(lowered_of(r), self.decls.ids()),
             .Missing -> null,
         }
+    }
+
+    /// The annotation answers, spelled by the declaration they cross and the call's
+    /// place inside it, so another process spells the same answer wherever the file
+    /// sits. The digest is the crossed value's own, positions and all: a lift that
+    /// moves reads as moved.
+    fn named_lifts() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Lifted.ordinal
+        AnswerRef {
+            name: "Lifted",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_lift(arg),
+            arg: (spelled: string) -> ws.lift_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+        }
+    }
+
+    fn spelled_lift(arg: int) -> string? {
+        if arg < 0 || arg >= self.lift_asks.get().length { return null }
+        let ask = self.lift_asks.get()[arg]
+        let x = self.decls.decl(ask.decl)
+        let anchor = if x.stmt_lo < 0 { x.lo } else { x.stmt_lo }
+        "${self.decl_ref(ask.decl)}|${x.name}|${ask.call.index - anchor}"
+    }
+
+    fn lift_arg(spelled: string) -> int? {
+        let ws = self
+        self
+            .spelled_ask("lift", self.lift_asks.get().length, (i: int) -> ws.spelled_lift(i), spelled)
     }
 
     /// A declaration's slice of its file's names, spelled by the declaration and digested with
@@ -434,6 +465,7 @@ impl Workspace {
             self.decls.file_count(),
             self.settle_asks.get().length,
             self.asks.get().length,
+            self.lift_asks.get().length,
             self.input_names.get().length,
             self.packages().length,
             self.decls.name_bucket_count(),
