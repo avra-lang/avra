@@ -639,7 +639,50 @@ impl Workspace {
         self
             .hold
             .runs
-            .put(reader, distinct_reads((self.hold.runs.get().get(reader) ?? []).concat(reads)))
+            .put(
+                reader,
+                (self.hold.runs.get().get(reader) ?? []).concat(self.unseen_reads(reader, reads)),
+            )
+    }
+
+    /// The reads of `reads` the reader's list does not hold yet, in order, each
+    /// now held: a read's wire is built once, under the list's generation.
+    fn unseen_reads(reader: string, reads: List<RunRead>) -> List<RunRead> {
+        let gen = self.hold.read_gen.get().get(reader) ?? 0
+        [r for r in reads if self.seen_first(reader, gen, r)]
+    }
+
+    /// Whether `r` is new to `reader`'s list of generation `gen`; it is held
+    /// after. The reader is part of the key because a generation is not unique
+    /// across readers: every reader opens its first list at generation zero, and
+    /// two readers that read one file would otherwise hide each other's read.
+    fn seen_first(reader: string, gen: int, r: RunRead) -> bool {
+        let key = "${reader}|${gen}|${read_wire(r)}"
+        if self.hold.read_seen.get().get(key) != null { return false }
+        self.hold.read_seen.put(key, true)
+        true
+    }
+
+    /// A reader's list opened empty: what it held and under which generation,
+    /// to be joined with what the scope read when `closed_reads` ends it.
+    fn opened_reads(reader: string) -> ReadScope {
+        let scope = ReadScope {
+            before: self.hold.runs.get().get(reader) ?? [],
+            gen: self.hold.read_gen.get().get(reader) ?? 0,
+        }
+        self.hold.read_gens.set(self.hold.read_gens.get() + 1)
+        self.hold.read_gen.put(reader, self.hold.read_gens.get())
+        self.hold.runs.put(reader, no_read_list())
+        scope
+    }
+
+    /// The scope's own reads, the reader's list restored to what it held and
+    /// then these.
+    fn closed_reads(reader: string, scope: ReadScope) -> List<RunRead> {
+        let read = self.hold.runs.get().get(reader) ?? []
+        self.hold.read_gen.put(reader, scope.gen)
+        self.hold.runs.put(reader, scope.before.concat(self.unseen_reads(reader, read)))
+        read
     }
 
     /// A read of `path` with no declaration riding it: judged by the file's text.

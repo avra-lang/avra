@@ -36,12 +36,23 @@ use core.{
     joined,
     sorted_texts,
 }
-use features.{Unsettled, Settled, Wanted, SettleRoot, SeatValue, Budgets}
+use features.{
+    Unsettled,
+    Settled,
+    Wanted,
+    SettleRoot,
+    SeatValue,
+    Budgets,
+}
 use compiler.backend.{reaches_world}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Unit, type_shape_key}
 use core.{Type}
 use @std.relation.engine.{list_cell}
+
+/// The reader a build's kept-read expansions dedupe under: a read reached by many
+/// consts is expanded once, never once per const.
+const ASK_READS_READER: string = "kept-ask-reads"
 
 impl Workspace {
     /// A read file's const, settled: its kept verdict when everything it is a
@@ -53,7 +64,7 @@ impl Workspace {
         if traced() { qtrace("Q\tconst_verdict\t${ask.name}\t${if kept != null { "stood" } else { "ran" }}\n") }
         if kept != null { return kept! }
         let asked = self.hold.body_asks.get().length
-        self.ask_kept_reads(at.key)
+        self.ask_kept_reads(id, at.key)
         self.settle_run(ask, s, id, asked, at)
     }
 
@@ -76,16 +87,14 @@ impl Workspace {
         self.hold.settle_frames.push(fresh)
         // this settlement's reads alone, then joined to what its file's runs read before
         let reader = self.decls.file(ask.file).path
-        let before = self.hold.runs.get().get(reader) ?? []
-        self.hold.runs.put(reader, no_read_list())
+        let scope = self.opened_reads(reader)
         let touched_from = self.decls.touched_types.get().length
         let r = self
             .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
         self.note_const_types(ask.file, s)
         self.note_touched(touched_from)
         let frame = self.popped_settle_frame()
-        let read = self.hold.runs.get().get(reader) ?? []
-        self.hold.runs.put(reader, distinct_reads(before.concat(read)))
+        let read = self.closed_reads(reader, scope)
         self.hold.settle_reads.put(id, read)
         let kept? = at else { return r }
         if self.hold.body_asks.get().length == asked { self.keep_verdict(kept.key, r, frame, kept.layout, read) }
@@ -113,22 +122,39 @@ impl Workspace {
         let kept = [kept_reads(store, kept_key_for(path, n)) for n in consts]
         if consts.is_empty() || kept.any(it == null) { return [r.path for r in runs] }
         let read = flatten([r ?? [] for r in kept])
-        let answered = distinct_reads(
-            read.concat(flatten([self.ran_by(store, p.path) for p in read])),
+        // A run's membership is a question about PATHS: the union is deduped as
+        // paths, so no read's wire is hexed to answer it.
+        let asked = distinct(
+            [p.path for p in read.concat(flatten([self.ran_by(store, p.path) for p in read]))],
         )
-        if runs.all((r) -> answered.any(it.path == r.path)) { [] } else { [r.path for r in runs] }
+        if runs.all((r) -> asked.contains(r.path)) { [] } else { [r.path for r in runs] }
     }
 
     /// A KEPT VERDICT THAT DID NOT STAND ASKS ALL IT READ AT ONCE: the run
     /// about to replace it reads the bodies the verdict's run read, so every
     /// held one among them — and what their own runs read — is asked now, and
     /// the attempt turns once, never once per level the run would reach.
-    fn ask_kept_reads(key: string) {
+    /// A read MANY CONSTS REACH is expanded once, under the open ask generation,
+    /// so the whole file's consts ask one read, never one read per const. The
+    /// reads already decoded by `kept_verdict` are read back, not decoded twice.
+    fn ask_kept_reads(id: string, key: string) {
         let store? = self.store.get() else { return }
-        let read = kept_reads(store, key) ?? []
-        let all = distinct_reads(read.concat(flatten([self.ran_by(store, p.path) for p in read])))
-        let held = [p.path for p in all if self.held_path(p.path)]
+        let read = self.hold.settle_reads.get().get(id) ?? kept_reads(store, key) ?? []
+        if read.is_empty() { return }
+        self.ask_reads_scope()
+        let fresh = self.unseen_reads(ASK_READS_READER, read)
+        if fresh.is_empty() { return }
+        let reached = flatten([self.ran_by(store, p.path) for p in fresh])
+        let held = [p.path for p in fresh.concat(reached) if self.held_path(p.path)]
         if !held.is_empty() { self.hold.body_asks.set(self.hold.body_asks.get().concat(held)) }
+    }
+
+    /// The ask generation, opened on first use: a unique one, so its reads are
+    /// deduped apart from every file's own run scope.
+    fn ask_reads_scope() {
+        if self.hold.read_gen.get().get(ASK_READS_READER) == null {
+            let _ = self.opened_reads(ASK_READS_READER)
+        }
     }
 
     /// Whether `path` is a file this attempt holds.
