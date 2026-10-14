@@ -227,7 +227,7 @@ spec "commands/explain" {
             let rows = table_rows(
                 Asked { target: "", from: edited_lib("stats_table"), stats: true },
             )
-            rows.first() ?? "" == "family cells edges p50 p99 longest" &&
+            rows.first() ?? "" == "family cells served computed edges p50 p99 longest" &&
                 (rows.last() ?? "").starts_with("total ") &&
                 !rows
                     .any(
@@ -253,7 +253,27 @@ spec "commands/explain" {
             let rows = table_rows(
                 Asked { target: "", from: lib_probe("stats_source"), stats: true },
             )
-            rows.find(it.starts_with("Source ")) ?? "" == "Source 2 2 1 1 1"
+            let cols = (rows.find(it.starts_with("Source ")) ?? "").split(" ")
+            cols.length == 8 &&
+                cols[1] == "2" &&
+                cols[4] == "2" &&
+                cols[5] == "1" &&
+                cols[6] == "1" &&
+                cols[7] == "1"
+        }
+        then "each family says how many of its asks were served and how many computed" {
+            let rows = table_rows(
+                Asked { target: "", from: lib_probe("stats_served"), stats: true },
+            )
+            let typed = (rows.find(it.starts_with("Typed ")) ?? "").split(" ")
+            typed.length == 8 && parse_int(typed[3]) ?? 0 >= parse_int(typed[1]) ?? 1
+        }
+        then "`--time` adds each family's own milliseconds to the table, and each phase's mints and settles to the time row" {
+            let lines = explain_lines(
+                Asked { target: "", from: lib_probe("stats_ms"), stats: true, time: true },
+            )
+            (lines.first() ?? "").ends_with("ms") &&
+                (lines.find(it.starts_with("time")) ?? "").contains(" mints ")
         }
         then "the total row sums the families above it" {
             table_rows(Asked { target: "", from: lib_probe("stats_total"), stats: true })
@@ -313,10 +333,8 @@ spec "commands/explain" {
             )
                 .join("")
             said.starts_with("{\"families\":[{\"family\":\"") &&
-                said
-                    .contains(
-                        "{\"family\":\"Source\",\"cells\":2,\"edges\":2,\"p50\":1,\"p99\":1,\"longest\":1",
-                    )
+                said.contains("{\"family\":\"Source\",\"cells\":2,\"served\":") &&
+                said.contains(",\"edges\":2,\"p50\":1,\"p99\":1,\"longest\":1")
         }
         then "and closes with its totals, nothing of the hold after them" {
             let said = explain_lines(
