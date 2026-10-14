@@ -194,6 +194,20 @@ impl Ch<T> {
         v
     }
 
+    /// Claim the oldest parked giver and move its value straight into
+    /// the buffer. A take that leaves the value pending would let a
+    /// later send overtake it through `handed`, so the move is part of
+    /// the claim, not a waking the giver owes.
+    fn refill() {
+        let g = avra_gate_claim(self.writers)
+        if g >= 0 {
+            let x = self.pending_take(g)
+            if x != null {
+                self.push_buf(x!)
+            }
+        }
+    }
+
     fn pending_has(m: int) -> bool {
         self.held.get().get(member_key(m)) ?? false
     }
@@ -300,7 +314,7 @@ impl Ch<T> {
             if self.len.get() > 0 {
                 let v = self.pop_buf()
                 if self.room() {
-                    let _ = avra_gate_claim(self.writers)
+                    self.refill()
                 }
                 return v
             }
@@ -331,7 +345,7 @@ impl Ch<T> {
         if self.len.get() > 0 {
             let v = self.pop_buf()
             if self.room() {
-                let _ = avra_gate_claim(self.writers)
+                self.refill()
             }
             return v
         }
