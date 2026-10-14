@@ -1,8 +1,8 @@
 //! The client under attack by a peer that speaks raw bytes: a reply
 //! torn across reads, one the framer refuses, one cut short, one
 //! read to the close, one chunked, one that never comes.
-use @std.net.{Listener, Conn, listen, poller}
-use @std.time.{Duration, ms, secs}
+use @std.net.{Listener, Conn, listen, poller, timely}
+use @std.time.{Duration, TimedOut, ms, secs}
 use @std.http.frame.{framed, limits, Limits}
 use @std.http.http.{Header}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
@@ -17,7 +17,7 @@ fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), lim)?
     c.sent(request("GET", "/", "a", [], "".bytes())!)?
-    let peer = lifted(within verdict_bound() { l.accept() })?
+    let peer = lifted(timely(within verdict_bound() { l.accept() }))?
     if !arrived(peer)? { return .Err(.TimedOut(.Total)) }
     .Ok(Wire { c: c, peer: peer, l: l })
 }
@@ -39,7 +39,7 @@ fn arrived(peer: Conn) -> Result<bool, ClientError> {
 /// never a reset.
 fn wired() -> Result<Wire, ClientError> {
     let w = wiring(limits())?
-    let _ = lifted(within verdict_bound() { w.peer.read(4096) })?
+    let _ = lifted(timely(within verdict_bound() { w.peer.read(4096) }))?
     .Ok(w)
 }
 
@@ -69,8 +69,11 @@ fn awaited(mut w: Wire) -> Result<Answer?, ClientError> {
 }
 
 /// A read the deadline cut short is a client still waiting.
-fn waiting_is_null(r: Result<Answer?, ClientError>) -> Result<Answer?, ClientError> {
-    match r { .Err(.Net(e)) if e.timed_out() -> .Ok(null), .Err(e) -> .Err(e), .Ok(a) -> .Ok(a) }
+fn waiting_is_null(r: Result<Result<Answer?, ClientError>, TimedOut>) -> Result<
+    Answer?,
+    ClientError,
+> {
+    match r { .Ok(inner) -> inner, .Err(_) -> .Ok(null) }
 }
 
 fn outcome(r: Result<Answer?, ClientError>) -> string {
@@ -252,8 +255,8 @@ fn after_our_close() -> Result<string, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), limits())?
     c.sent(request("GET", "/", "a", [Header { name: "connection", value: "close" }], "".bytes())!)?
-    let peer = lifted(within ms(500) { l.accept() })?
-    let _ = lifted(within ms(500) { peer.read(4096) })?
+    let peer = lifted(timely(within ms(500) { l.accept() }))?
+    let _ = lifted(timely(within ms(500) { peer.read(4096) }))?
     mut w = Wire { c: c, peer: peer, l: l }
     let one = outcome(settled(w, "HTTP/1.1 200 OK\r\ncontent-length: 1\r\n\r\na"))
     .Ok("${one} ${next_on(w, evil_reply)}")

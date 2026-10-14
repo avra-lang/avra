@@ -14,7 +14,7 @@ use @std.time.{Duration, ms, now_ms}
 use @std.http.frame.{Limits, no_bytes}
 use @std.http.h2.{Arrived, Exchange, Frame, H2Conn, frames_in, h2_client, value_named}
 use @std.http.hpack.{HeaderField, header_field}
-use @std.http.wire.{Transport}
+use @std.http.wire.{Transport, wire_timely}
 
 /// One request as a client sends it: its head fields — pseudo-fields
 /// first — and the body owed as DATA.
@@ -172,7 +172,7 @@ impl H2Client {
     /// back reaches the peer before this parks.
     mut fn advance(max: int, wait: Duration) -> Result<List<Frame>?, string> {
         let _ = self.flush()?
-        let heard = within wait { self.link.wire_read(max) }
+        let heard = wire_timely(within wait { self.link.wire_read(max) })
         let seen = match heard { .Ok(b) -> b, .Err(_) -> { return .Ok(null) } }
         let got? = seen else { return .Ok(null) }
         let from = self.at

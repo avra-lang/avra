@@ -12,7 +12,7 @@
 use @std.errors.{Error, ErrorInfo, info}
 use @std.url.{UrlError}
 use @std.net.{Address, NetError, connect}
-use @std.time.{Duration}
+use @std.time.{Duration, TimedOut}
 use frame.{
     Head,
     Method,
@@ -297,7 +297,7 @@ impl Client {
 
     /// The request sent and the reply received, all within `deadline`.
     mut fn fetched(req: Bytes, deadline: Duration) -> Result<Answer, ClientError> {
-        staged(.Total, within deadline { self.exchanged(req) })
+        in_stage(.Total, within deadline { self.exchanged(req) })
     }
 
     mut fn exchanged(req: Bytes) -> Result<Answer, ClientError> {
@@ -433,4 +433,13 @@ export fn staged<T>(stage: Stage, r: Result<T, ClientError>) -> Result<T, Client
         .Err(e) -> .Err(e),
         .Ok(a) -> .Ok(a),
     }
+}
+
+/// A `within` over a stage's verb, as that verb's own answer: a deadline
+/// the block ran past is the stage's time-out.
+export fn in_stage<T>(stage: Stage, r: Result<Result<T, ClientError>, TimedOut>) -> Result<
+    T,
+    ClientError,
+> {
+    match r { .Ok(inner) -> staged(stage, inner), .Err(_) -> .Err(.TimedOut(stage)) }
 }

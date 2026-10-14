@@ -3,9 +3,9 @@
 // that never speaks, a stream cut without close_notify, a transfer
 // larger than the socket holds, and a close repeated. Each server
 // runs as its own task, so every verb parks as it would in service.
-use @std.net.{Listener, Conn, NetError, listen, connect}
+use @std.net.{Listener, Conn, NetError, listen, connect, timely}
 use @std.time.{Duration, secs, ms}
-use @std.tls.{TlsConn, TlsError, dial, handshake, wired}
+use @std.tls.{TlsConn, TlsError, dial, handshake, wired, tls_timely}
 use @std.tls.testing.{trusting_localhost, serving_localhost}
 
 fn bound() -> Result<Listener, TlsError> { wired(listen("127.0.0.1", 0)) }
@@ -27,7 +27,7 @@ fn accepted_tls(l: Listener) -> Result<TlsConn, TlsError> {
 }
 
 fn accepted_tls_within(l: Listener, d: Duration) -> string {
-    match within d { accepted_tls(l) } {
+    match tls_timely(within d { accepted_tls(l) }) {
         .Ok(c) -> {
             let _ = c.close()
             "<ok>"
@@ -50,7 +50,7 @@ fn plain_http_at_a_tls_port() -> Result<bool, TlsError> {
     let c = wired(connect("127.0.0.1", l.port, secs(2)))?
     wired(c.write("GET / HTTP/1.1\r\nhost: localhost\r\n\r\n".bytes()))?
     let refused = server.await
-    let answer = within secs(2) { c.read(4096) }
+    let answer = timely(within secs(2) { c.read(4096) })
     wired(c.close())?
     refused.starts_with("handshake ") && !(answer is .Err)
 }
@@ -144,6 +144,17 @@ fn a_copy_of_a_closed_tls_conn_is_closed() -> Result<bool, TlsError> {
     )
 }
 
+/// A REFUSAL UNDER A `within` IS THE VERB'S OWN: `tls_timely` answers the
+/// read's failure, never an answer that only happens to hold one.
+fn a_refusal_under_a_within_is_a_refusal() -> Result<bool, TlsError> {
+    let l = bound()?
+    let server = spawn served_words(l)
+    let c = dial("localhost", l.port, secs(5), trusting_localhost()?)?
+    c.close()?
+    let _ = server.await
+    .Ok(tls_timely(within ms(200) { c.read(8) }) is .Err)
+}
+
 fn wrong_host_refused_by_the_client() -> Result<bool, TlsError> {
     let l = bound()?
     let server = spawn served_words(l)
@@ -165,6 +176,7 @@ spec "std.tls TlsConn" {
         then "a megabyte crosses in records, every write parked until taken" { passes(large_transfer()) }
         then "a close is answered once, and a second never reaches the socket" { passes(closed_twice()) }
         then "a copy of a closed connection is refused as closed by every verb" { passes(a_copy_of_a_closed_tls_conn_is_closed()) }
+        then "under a `within`, a refused read is `.Err`" { passes(a_refusal_under_a_within_is_a_refusal()) }
         then "a dial to a closed port fails in the net's words" { passes(nobody_listening()) }
         then "a client naming a host the certificate does not carry refuses it" {
             passes(wrong_host_refused_by_the_client())

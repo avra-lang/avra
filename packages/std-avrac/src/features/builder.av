@@ -100,6 +100,26 @@ impl Slots for Builder {
         .Ok(expr_id_at(self.args, self.slot_of(label)?))
     }
 
+    /// The repeated text the payload `label` carries.
+    fn texts_of(label: string) -> Result<List<string>, string> {
+        .Ok([t.text for t in self.tokens(self.slot_of(label)?)?])
+    }
+
+    /// The optional name the payload `label` carries, if any.
+    fn scoped_opt_of(label: string) -> Result<Scoped?, string> {
+        .Ok(scoped_at((self.tokens(self.slot_of(label)?)?).first()))
+    }
+
+    /// Whether the word the payload `label` names was written.
+    fn present_of(label: string) -> Result<bool, string> {
+        .Ok(!(self.tokens(self.slot_of(label)?)?).is_empty())
+    }
+
+    /// The seats the payload `label` carries.
+    fn params_of(label: string) -> Result<List<Param>, string> {
+        .Ok(params_at(self.args, self.slot_of(label)?))
+    }
+
     /// The statements the payload `label` carries.
     fn stmts_of(label: string) -> Result<List<StmtId>, string> {
         self.stmts(self.slot_of(label)?)
@@ -174,11 +194,6 @@ impl Builder {
     fn slot_of(n: string) -> Result<int, string> {
         let at? = found_at([p.name for p in self.payloads], n) else { return .Err(unknown_payload(self.payloads, n)) }
         .Ok(at)
-    }
-
-    /// The repeated text the payload `n` carries.
-    fn texts_of(n: string) -> Result<List<string>, string> {
-        .Ok([t.text for t in self.tokens(self.slot_of(n)?)?])
     }
 
     /// The written-type argument at `i`.
@@ -363,6 +378,16 @@ fn mark_of(args: List<Captured<Token, LangNode>>, i: int) -> Mark? {
     match args[i] { .Node(.NMark(m)) -> m, _ -> null }
 }
 
+/// The repeated seat capture at `args[i]`, as parameters.
+export fn params_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Param> {
+    let items = list_at(args, i)
+    flatten([some_list(param_of(items, j)) for j in 0..items.length])
+}
+
+fn param_of(args: List<Captured<Token, LangNode>>, i: int) -> Param? {
+    match args[i] { .Node(.NParam(p)) -> p, _ -> null }
+}
+
 /// The repeated arm capture at `args[i]`, as arms.
 export fn arms_at(args: List<Captured<Token, LangNode>>, i: int) -> List<Arm> {
     let items = list_at(args, i)
@@ -526,12 +551,6 @@ impl Builder {
         )
     }
 
-    /// Seats with the defaults some carry — a default finds its seat
-    /// by POSITION, as a field's does.
-    fn defaulted(ps: List<Token>, seats: List<Param>, pds: List<ExprId>) -> List<Param> {
-        [p with { default: self.default_before(ps, pds, j) } for j, p in seats]
-    }
-
     /// The default whose position falls between field `j`'s name and
     /// the next field's — null when none does.
     fn default_before(fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
@@ -609,13 +628,6 @@ fn state_before(fs: List<Token>, states: List<Token>, j: int, from: int) -> bool
     states.any((s) -> between(s.span.lo, lo, fs[j].span.lo))
 }
 
-/// Parameter seats from two parallel captures — the names and the
-/// types they aligned to — with no defaults: what every fn-shaped
-/// declaration zips.
-export fn seats(store: SyntaxArena, ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
-    marked_seats(store, ps, tys, [], [], 0)
-}
-
 /// Seats with their marks: a `mut` or `const` token between the
 /// previous name (or `from`, before the first) and a name marks that
 /// seat. ONE window law, so every param list — a fn's, a method's, a
@@ -635,27 +647,6 @@ export fn marked_seats(
         promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo),
         id: store.alloc_param_id(p.span),
     } for j, p in ps]
-}
-
-/// Seats marked `isolated` by the tokens in their windows — the same
-/// window law `marked_seats` reads.
-export fn isolating(seats: List<Param>, ps: List<Token>, isos: List<Token>, from: int) -> List<
-    Param,
-> {
-    [s with { promises: s.promises with { unshared: isos.any(mark_within(it, seat_since(ps, j, from), ps[j].span.lo)) } } for j, s in seats]
-}
-
-/// Seats marked `state` by the tokens in their windows — the same
-/// window law `marked_seats` reads. A `state` seat is a PLACE the
-/// caller owns, so it is written through like a `mut` seat.
-export fn stating(seats: List<Param>, ps: List<Token>, states: List<Token>, from: int) -> List<
-    Param,
-> {
-    [if states.any(mark_within(it, seat_since(ps, j, from), ps[j].span.lo)) {
-        s with { promises: s.promises with { state: true } }
-    } else {
-        s
-    } for j, s in seats]
 }
 
 /// One seat's contract: the `mut` and `const` tokens written in its
