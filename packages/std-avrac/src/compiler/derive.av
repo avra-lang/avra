@@ -637,7 +637,28 @@ impl Workspace {
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
         if at.hold {
-            for m in held_modules(self, store, built_entry(at)) { load_interface(self, store, m, at.entry, at.want) }
+            let roots = held_modules(self, store, built_entry(at))
+            // ON-DEMAND: the records are read for their NAMES alone — every file is
+            // registered and every module's impl/trait names indexed — and only the
+            // modules a file whose rows no longer stand sits in are loaded for real.
+            for m in roots { bare_interface(self, store, m, at.entry, at.want) }
+            let must_read = self
+                .hold
+                .forced
+                .get()
+                .keys()
+                .concat(if at.entry != null { [at.entry!] } else { [] })
+            let loading = distinct(
+                [self.module_path_of(fi.path).text() for fi in self.decls.all_files() if !self.file_rows_stand(store, fi.path, at.want) || must_read.contains(fi.path)],
+            )
+            for name in loading { load_interface(self, store, module_path(segments_of(name)), at.entry, at.want) }
+            // every file a module did not load stands in the store's own rows
+            for fi in self.decls.all_files() {
+                if loading.contains(self.module_path_of(fi.path).text()) { continue }
+                if self.hold.read_files.get().any(it.path == fi.path) { continue }
+                if self.hold.forced.get().get(fi.path) != null { continue }
+                self.hold_only(fi.path)
+            }
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
             self.settle_holds(store, at.want)
