@@ -1,0 +1,71 @@
+// A channel: the bound it never exceeds, the verbs that answer without
+// parking, and the end of a drained source.
+use @std.task.{open_channel, unbounded_channel, Posted, any, Pick}
+
+/// The value a nullable holds, or zero: the non-parking verbs answer
+/// `T?`, and a test compares a present value.
+fn or_zero(x: int?) -> int {
+    x ?? 0
+}
+
+spec "std/task" {
+    given "a channel" {
+        then "buffers until its bound and then says Full" {
+            let ch = open_channel<int>(2)
+            ch.sink.post(1) == Posted.Taken &&
+                ch.sink.post(2) == Posted.Taken &&
+                ch.sink.post(3) == Posted.Full
+        }
+        then "post never parks and leaves what is buffered" {
+            let ch = open_channel<int>(1)
+            let _ = ch.sink.post(1)
+            ch.sink.post(2) == Posted.Full && or_zero(ch.source.taken()) == 1
+        }
+        then "next answers a buffered value without parking" {
+            let ch = open_channel<int>(1)
+            let _ = ch.sink.send(7)
+            ch.source.ready() && or_zero(ch.source.next()) == 7
+        }
+        then "close ends a drained channel" {
+            let ch = open_channel<int>(1)
+            ch.sink.close()
+            ch.source.ended() && ch.source.next() == null
+        }
+        then "close keeps what was buffered" {
+            let ch = open_channel<int>(1)
+            let _ = ch.sink.post(3)
+            ch.sink.close()
+            !ch.source.ended() && or_zero(ch.source.next()) == 3 && ch.source.ended()
+        }
+        then "an unbounded channel never says Full" {
+            let ch = unbounded_channel<int>()
+            let _ = ch.sink.post(1)
+            let _ = ch.sink.post(2)
+            ch.sink.post(3) == Posted.Taken
+        }
+        then "a lossless channel drops nothing" {
+            let ch = open_channel<int>(1)
+            let _ = ch.sink.post(1)
+            ch.source.lost() == 0
+        }
+    }
+    given "many sources" {
+        then "taken scans the members in order" {
+            let a = open_channel<int>(1)
+            let b = open_channel<int>(1)
+            let _ = a.sink.post(5)
+            let _ = b.sink.post(9)
+            let both = any<int>([a.source, b.source])
+            match both.taken() {
+                p? -> { p.at == 0 && p.item == 5 }
+                null -> { false }
+            }
+        }
+        then "ended is true once every member has" {
+            let a = open_channel<int>(1)
+            let b = open_channel<int>(1)
+            a.sink.close()
+            !any<int>([a.source, b.source]).ended()
+        }
+    }
+}
