@@ -32,3 +32,40 @@ void* avra_sqlite_transient(void) { return (void*)SQLITE_TRANSIENT; }
  * where the length is not already a call away.
  */
 int64_t avra_sqlite_cstr_len(const void* p) { return p ? (int64_t)strlen((const char*)p) : 0; }
+
+/* EVERY SLEEP SQLITE TAKES HOLDS THE WORLD.
+ *
+ * SQLite sleeps through one door, its VFS's `xSleep`: a busy handler's
+ * backoff, WAL's read retry and `sqlite3_sleep` alike. The default VFS
+ * is therefore the platform's own with that one method wrapped in a
+ * hold on the clock, so a virtual clock flows across the wait and stands
+ * still everywhere else — a step that never sleeps pays nothing.
+ *
+ * A CONNECTION KEEPS THE VFS IT WAS OPENED UNDER, so this stands before
+ * the first open. The copy keeps the platform's name: its methods read
+ * the name and the data they are handed, never the address.
+ */
+void avra_clock_hold(int64_t by);
+void avra_trap(const char* message) __attribute__((noreturn));
+
+static sqlite3_vfs* g_platform = NULL;
+static sqlite3_vfs g_held;
+
+static int held_sleep(sqlite3_vfs* vfs, int micros) {
+    (void)vfs;
+    avra_clock_hold(1);
+    int slept = g_platform->xSleep(g_platform, micros);
+    avra_clock_hold(-1);
+    return slept;
+}
+
+void avra_sqlite_sleeps_held(void) {
+    if (g_platform) return;
+    sqlite3_vfs* platform = sqlite3_vfs_find(NULL);
+    if (!platform) avra_trap("SQLite names no file system to hold its sleeps under");
+    g_held = *platform;
+    g_held.pNext = NULL;
+    g_held.xSleep = held_sleep;
+    g_platform = platform;
+    if (sqlite3_vfs_register(&g_held, 1) != SQLITE_OK) avra_trap("SQLite refused the file system that holds its sleeps");
+}
