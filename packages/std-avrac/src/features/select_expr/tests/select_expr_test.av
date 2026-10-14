@@ -1,12 +1,47 @@
 // The front end, vertically: every arm form parses and prints back as
 // written, the laws a builder holds are spoken in its words, and a
-// `select` that parses is refused by name where it is typed.
-use @std.avrac.testing.{projected, refused_with}
+// `select` that types is refused by name where it is lowered.
+use @std.avrac.testing.{
+    projected,
+    refused_with,
+    refused_at_run,
+    refused_in,
+    floored_beside,
+    answered,
+}
+use compiler.{Program}
 
 /// Whether `source` is its own canonical form — it parsed, and the
 /// printer said it back unchanged.
 fn stands(source: string) -> bool {
     projected(source) == source
+}
+
+/// One task answering an `int`, one answering nothing, and a list of
+/// two — what the typing cases wait on.
+fn tasks() -> string {
+    "fn one() -> int {\n    1\n}\nfn hush() {\n}\nlet job = spawn one()\nlet mute = spawn hush()\nlet jobs = [spawn one(), spawn one()]\n"
+}
+
+/// Whether a `select` over those tasks types clean — it is refused by
+/// name where it is lowered, and nowhere before.
+fn types(body: string) -> bool {
+    refused_at_run("${tasks()}${body}", "`select` is typed and not yet lowered")
+}
+
+/// Whether a `select` over those tasks is refused in typing's words.
+fn refuses(body: string, phrase: string) -> bool {
+    refused_with("${tasks()}${body}", phrase)
+}
+
+/// A stand-in `@std/time`: the three timers by name, and a maker each.
+fn timers() -> string {
+    "export type Deadline = { at: int }\nexport type Quiet = { span: int }\nexport type Every = { period: int }\nexport fn after(n: int) -> Deadline {\n    Deadline { at: n }\n}\nexport fn quiet(n: int) -> Quiet {\n    Quiet { span: n }\n}\nexport fn every(n: int) -> Every {\n    Every { period: n }\n}\n"
+}
+
+/// A program over the stand-in timers.
+fn timed(body: string) -> Program {
+    floored_beside("use @std.time.{after, quiet, every}\n${body}", "time", timers())
 }
 
 spec "features/select_expr" {
@@ -74,15 +109,188 @@ spec "features/select_expr" {
             )
         }
     }
-    given "typing" {
-        then "a parsed `select` is refused by name, once" {
-            refused_with("select {\n    stop -> 1\n}", "`select` is parsed and not yet lowered")
+    given "what an arm binds" {
+        then "a task arm binds the task's answer" { types("let v: int = select {\n    r in job -> r + 1\n}\nv") }
+        then "a bare head binds nothing" { types("let v = select {\n    job -> 1\n}\nv") }
+        then "`_` binds nothing, over a task that answers nothing too" {
+            types("let v = select {\n    _ in mute -> 1\n}\nv")
         }
-        then "nothing inside it is read — an undefined name there says nothing more" {
-            refused_with(
-                "select {\n    r in nowhere -> lost(r)\n}",
-                "`select` is parsed and not yet lowered",
+        then "a list arm binds the member's answer" {
+            types("let v: int = select {\n    r in jobs -> r + 1\n}\nv")
+        }
+        then "a list arm's index is an int, bound before the answer" {
+            types("let v: int = select {\n    i, r in jobs -> i + r\n}\nv")
+        }
+        then "an index beside `_` is still bound" { types("let v: int = select {\n    i, _ in jobs -> i\n}\nv") }
+        then "an index on one task is refused" {
+            refuses(
+                "select {\n    i, r in job -> r\n}",
+                "`i` counts a list's members, and this arm waits on one task",
             )
+        }
+        then "a name over a task that answers nothing is refused" {
+            refuses("select {\n    r in mute -> 1\n}", "a task answering nothing binds nothing")
+        }
+        then "an index over a list written in the head is refused" {
+            refuses(
+                "select {\n    i, r in [spawn one()] -> r\n}",
+                "`i` counts the members of a list written in the head",
+            )
+        }
+        then "a list written in the head without an index types" {
+            types("let v: int = select {\n    r in [spawn one()] -> r\n}\nv")
+        }
+    }
+    given "what an arm waits on" {
+        then "a head that is no task, list of tasks or timer is refused" {
+            refuses(
+                "select {\n    1 -> 2\n}",
+                "a `select` arm waits on a task, a list of tasks or a timer, and this is `int`",
+            )
+        }
+        then "an awaited head is refused as the value it already is" {
+            refuses(
+                "select {\n    job.await -> 2\n}",
+                "a head ending `.await` has already waited: drop it",
+            )
+        }
+        then "a list arm inside a loop is refused" {
+            refuses(
+                "mut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in jobs -> r\n    }\n}",
+                "a list arm is taken once",
+            )
+        }
+        then "a list arm inside a loop is refused under a guard too" {
+            refuses(
+                "mut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in jobs if n == 0 -> r\n    }\n}",
+                "a list arm is taken once",
+            )
+        }
+        then "a list arm inside a comprehension is refused — it runs once an element" {
+            refuses(
+                "let all = [select {\n    r in jobs -> r + x\n} for x in [1, 2]]",
+                "a list arm is taken once",
+            )
+        }
+        then "a list arm inside a lambda written in a loop types — the lambda's body is its own" {
+            types(
+                "mut n = 0\nwhile n < 1 {\n    let pick = () -> {\n        let mine = [spawn one()]\n        select {\n            r in mine -> r\n        }\n    }\n    n = n + pick()\n}\nn",
+            )
+        }
+        then "a task arm inside a loop types" {
+            types(
+                "mut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in job -> r\n    }\n}\nn",
+            )
+        }
+    }
+    given "a guard" {
+        then "a bool read from outside the arm types" {
+            types("let open = true\nlet v = select {\n    r in job if open -> r\n}\nv")
+        }
+        then "one that is no bool is refused" {
+            refuses("select {\n    r in job if 1 -> r\n}", "a `select` arm's guard")
+        }
+        then "one that reads its own arm's binder is refused" {
+            refuses(
+                "select {\n    r in job if r > 0 -> r\n}",
+                "a guard is read before its arm's head, so it reads no name the arm binds",
+            )
+        }
+    }
+    given "the answer" {
+        then "arms that agree give the `select` their type" {
+            types("let v: int = select {\n    r in job -> r\n    else -> 0\n}\nv")
+        }
+        then "arms that disagree are refused" {
+            refuses(
+                "let v = select {\n    r in job -> r\n    else -> \"none\"\n}",
+                "a `select`'s arms disagree",
+            )
+        }
+        then "a name the arm binds is not read by a later arm" {
+            refuses("select {\n    r in job -> r\n    else -> r\n}", "`r` is not defined")
+        }
+    }
+    given "the timers of `@std/time`" {
+        then "a `Deadline` head is an arm, binding nothing" {
+            answered(
+                timed(
+                    "let limit = after(5)\nlet v = select {\n    limit -> 1\n}\nprintln(\"\${v}\")\n",
+                ),
+            )
+                .contains("`select` is typed and not yet lowered")
+        }
+        then "a binder on a timer arm is refused" {
+            refused_in(
+                timed("let limit = after(5)\nselect {\n    r in limit -> 1\n}\n"),
+                "a timer arm binds nothing",
+            )
+        }
+        then "a `Quiet` beside `else` is refused — it is never taken" {
+            refused_in(
+                timed("let calm = quiet(5)\nselect {\n    calm -> 1\n    else -> 2\n}\n"),
+                "a `Quiet` beside `else` is never taken",
+            )
+        }
+        then "an `Every` beside `else` types" {
+            answered(
+                timed(
+                    "let tick = every(5)\nlet v = select {\n    tick -> 1\n    else -> 2\n}\nprintln(\"\${v}\")\n",
+                ),
+            )
+                .contains("`select` is typed and not yet lowered")
+        }
+    }
+    given "a timer made inside a loop" {
+        then "a `Deadline` made in the head beside an arm that fires again is refused" {
+            refused_in(
+                timed(
+                    "let calm = quiet(5)\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        after(5) -> 1\n        calm -> 2\n    }\n}\n",
+                ),
+                "a timer made inside a loop starts over each turn",
+            )
+        }
+        then "a `Deadline` bound by the loop's own body is refused the same way" {
+            refused_in(
+                timed(
+                    "let calm = quiet(5)\nmut n = 0\nwhile n < 1 {\n    let limit = after(5)\n    n = n + select {\n        limit -> 1\n        calm -> 2\n    }\n}\n",
+                ),
+                "a timer made inside a loop starts over each turn",
+            )
+        }
+        then "a `Deadline` bound before the loop types" {
+            answered(
+                timed(
+                    "let calm = quiet(5)\nlet limit = after(5)\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        limit -> 1\n        calm -> 2\n    }\n}\nprintln(\"\${n}\")\n",
+                ),
+            )
+                .contains("`select` is typed and not yet lowered")
+        }
+        then "a `Deadline` made each turn beside arms taken once is a limit on each attempt, and types" {
+            answered(
+                timed(
+                    "fn one() -> int {\n    1\n}\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in spawn one() -> r\n        after(5) -> 1\n    }\n}\nprintln(\"\${n}\")\n",
+                ),
+            )
+                .contains("`select` is typed and not yet lowered")
+        }
+        then "an `Every` made inside a loop is refused, whatever stands beside it" {
+            refused_in(
+                timed(
+                    "mut n = 0\nwhile n < 1 {\n    n = n + select {\n        every(5) -> 1\n    }\n}\n",
+                ),
+                "a timer made inside a loop starts over each turn",
+            )
+        }
+    }
+    given "a program that loads no `@std/time`" {
+        then "a head no arm waits on is told the timers are that package's" {
+            refuses("select {\n    1 -> 2\n}", "this program loads no `@std/time`")
+        }
+    }
+    given "lowering" {
+        then "a `select` that types is refused by name, where it is lowered" {
+            types("select {\n    job -> 1\n}")
         }
     }
 }
