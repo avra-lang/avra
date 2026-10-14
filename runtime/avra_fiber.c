@@ -2576,6 +2576,17 @@ int64_t avra_vtask_asker(int64_t t) { return asker_of(virtual_at(t)); }
 
 int64_t avra_vtask_shielded(int64_t t) { return virtual_at(t)->shield_depth != 0; }
 
+// Whether a cancel stands on the task: what an owner's scope end asks
+// before it waits out what it owns, as `avra_task_settle` does.
+int64_t avra_vtask_asked(int64_t t) { return virtual_at(t)->cancel_by != 0; }
+
+// A yield's cancel point, as `avra_fiber_yield` meets it: a cancel that
+// stands raises the task's own bit, unless a deferred call runs shielded.
+void avra_vtask_yield_met(int64_t t) {
+    Fiber* f = virtual_at(t);
+    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;
+}
+
 void avra_vtask_passed(int64_t t, int64_t by) {
     Fiber* f = virtual_at(t);
     cancel_passed(f, by);
