@@ -33,13 +33,18 @@ use core.{
 }
 use features.{NameFacts, Decls, Decl, bound_decl_of, nothing, property_row}
 use @std.meta.{bracket}
-use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
+use @std.relation.engine.{Table, new_table, FixpointRefusal, spoken as fixpoint_spoken}
 use compiler.families.{Family}
 
 /// One fn's own evidence: which of its seats the body writes
 /// directly, and the flows from its seats into other fns' seats —
 /// the fixpoint's edges.
 type Summary = { own: List<bool>, edges: List<Flow> }
+
+/// One solve's member set with each unsettled member's summary already
+/// walked, so the fixpoint's own contribution reads the SAME summary the
+/// member walk built — a body is walked once, never once per turn.
+type Closure = { members: List<DeclId>, sums: Table<Summary> }
 
 /// A place rooted in seat `from` fills seat `to` of `callee`.
 type Flow = { from: int, callee: DeclId, to: int }
@@ -80,12 +85,13 @@ impl Workspace {
         if self.db.family_active(Family.Writes.ordinal) { return 0 }
         let k = key(Family.Writes, d.index)
         if self.db.ask(k) is .Compute {
-            let members = self.writes_members(d)
+            let closure = self.writes_members(d)
+            let members = closure.members
             let solved = self
                 .writes_fixpoint
                 .solve(
                     [m.index for m in members],
-                    (arg: int) -> self.writes_contribution(DeclId { index: arg }),
+                    (arg: int) -> self.writes_contribution(closure.sums, DeclId { index: arg }),
                 )
             self.settle_written_bits(members)
             let refusal? = refusal_of(solved) else { return members.length }
@@ -109,40 +115,57 @@ impl Workspace {
     /// a LEAF input and its edges are not walked — the closure is the unsettled frontier
     /// alone, never every ancestor's whole graph. A held body is a constant member too — its
     /// bits rode its interface, never this pass.
-    fn writes_members(d: DeclId) -> List<DeclId> {
+    fn writes_members(d: DeclId) -> Closure {
         mut members: List<DeclId> = [d]
+        let sums: Table<Summary> = new_table<Summary>()
         mut at = 0
         while at < members.length {
             let m = members[at]
             at = at + 1
-            if !(self.db.ask(key(Family.Writes, m.index)) is .Compute) { continue }
             if self.is_held(self.decls.decl(m).file) { continue }
+            if !(self.db.ask(key(Family.Writes, m.index)) is .Compute) { continue }
             let s = self.summary(m)
+            sums.keep(m.index, s)
             for f in s.edges {
                 if seated(self.decls.decl(f.callee)) && !members.any(same_decl(it, f.callee)) {
                     members = members.concat([f.callee])
                 }
             }
         }
-        members
+        Closure { members: members, sums: sums }
     }
 
-    /// One member's raw contribution: the seats its own body writes, the `mut` its
-    /// declaration claims, and the seats a callee's settled bits flow into.
-    fn writes_contribution(d: DeclId) -> List<bool> {
+    /// One member's raw contribution: the seats its own body writes and the seats a
+    /// callee's settled bits flow into. It is the INFERRED answer alone — a declared `mut`
+    /// receiver is the contract beside it (`seat_writes_so_far`), never a bit this pass
+    /// records, or a `mut fn` whose body never writes would lose its never-writes warning.
+    /// The body is never walked here — the summary was walked once by `writes_members`; a
+    /// member with no summary is one that already settled (a LEAF whose answer stands) or a
+    /// held body whose bits rode its interface.
+    fn writes_contribution(sums: Table<Summary>, d: DeclId) -> List<bool> {
         let n = self.decls.seat_count(d)
-        mut bits = filled(n, false)
-        if n > 0 && self.decls.declares_writing(d) { bits.set(0, true) }
         if self.is_held(self.decls.decl(d).file) {
-            for i in 0..n { if self.decls.seat_written_so_far(d, i) { bits.set(i, true) } }
-            return bits
+            return self.held_written_bits(d, n)
         }
-        let s = self.summary(d)
+        let s? = sums.at(d.index) else { return self.writes_fixpoint.value_at(d.index) }
+        mut bits = filled(n, false)
         for i, own in s.own { if own { bits.set(i, true) } }
         for f in s.edges {
+            // A callee's seat writes when its body does (the fixpoint's answer) OR when its
+            // receiver is declared `mut fn` — the contract `seat_writes_so_far` folds in.
             let callee = self.writes_fixpoint.value_at(f.callee.index)
-            if f.from < n && f.to < callee.length && callee[f.to] { bits.set(f.from, true) }
+            let declared = f.to == 0 && self.decls.declares_writing(f.callee)
+            if f.from < n && (declared || f.to < callee.length && callee[f.to]) { bits.set(f.from, true) }
         }
+        bits
+    }
+
+    /// A held body's inferred bits, as its interface carried them: the seat marks replayed
+    /// at mint, the declared receiver left to `seat_writes_so_far`. Its body is not here to
+    /// walk.
+    fn held_written_bits(d: DeclId, n: int) -> List<bool> {
+        mut bits = filled(n, false)
+        for i in 0..n { if self.decls.seat_written_so_far(d, i) { bits.set(i, true) } }
         bits
     }
 
