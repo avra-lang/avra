@@ -41,7 +41,7 @@ fn grain_seen(ws: Workspace) -> GrainSeen {
         frontier: grain_frontier(ws),
         whole: grain_whole_reads(ws),
         report: main.report(),
-        facts: type_facts_fp(ws.typed(decl_in_file(ws, grain_main(), "caller"))),
+        facts: type_facts_fp(ws.typed(decl_in_file(ws, grain_main(), "caller")), ws.decls.ids(), true),
         clean: main.clean(),
     }
 }
@@ -137,6 +137,24 @@ fn grain_kept(before: GrainSeen, after: GrainSeen) -> bool {
     !before.frontier.any(grain_unknown) && before.frontier.join(";") == after.frontier.join(";")
 }
 
+/// The frontier entries that moved between two runs — `label=hash` strings present on
+/// one side only, each side's own spelling once.
+fn grain_moved(before: GrainSeen, after: GrainSeen) -> List<string> {
+    distinct(
+        [x for x in before.frontier if !after.frontier.contains(x)]
+            .concat([x for x in after.frontier if !before.frontier.contains(x)]),
+    )
+}
+
+/// Whether a moved entry belongs to the edited file's OWN answers: its `Items` (the
+/// file's declaration rows) or the `Named` of a declaration the edit added or renamed.
+/// The edit owns these two and nothing else — a declaration added or renamed is no
+/// OTHER declaration's byte.
+fn grain_edit_owns(entry: string, names: List<string>) -> bool {
+    entry.starts_with("Items(src/lib/a.av)") ||
+        names.any((n: string) -> entry.starts_with("Named(${n})"))
+}
+
 /// What main answers, its diagnostics and `caller`'s typed facts, alike in both.
 fn grain_same_answer(before: GrainSeen, after: GrainSeen) -> bool {
     before.report == after.report && before.facts == after.facts
@@ -180,15 +198,19 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
         }
     }
     given "the other file's declarations added or renamed where the caller does not read" {
-        then "a declaration added keeps every query of main's, answering alike" {
+        then "a declaration added moves only that file's own answers, and main alike" {
             let before = grain_checked(grain_base())
             let after = grain_checked(grain_grown("export fn three() -> int {\n    3\n}\n"))
-            grain_kept(before, after) && grain_same_answer(before, after)
+            !before.frontier.any(grain_unknown) &&
+                grain_moved(before, after).all((m: string) -> grain_edit_owns(m, ["three"])) &&
+                grain_same_answer(before, after)
         }
-        then "`two`, which the caller never names, renamed keeps them" {
+        then "`two`, which the caller never names, renamed moves only that file's own answers" {
             let before = grain_checked(grain_base())
             let after = grain_checked(grain_renamed("two", "deux"))
-            grain_kept(before, after) && grain_same_answer(before, after)
+            !before.frontier.any(grain_unknown) &&
+                grain_moved(before, after).all((m: string) -> grain_edit_owns(m, ["two", "deux"])) &&
+                grain_same_answer(before, after)
         }
     }
     given "the other file's declarations added or renamed where the caller reads" {
