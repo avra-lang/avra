@@ -111,6 +111,25 @@ void avra_wait_task(void* task, int64_t arm, int64_t member);
 // is answered without a switch; then a cancel that stands; then a
 // deadline that has passed.
 int64_t avra_wait_park(void);
+// A WAIT OVER SEVERAL ARMS SCANS BEFORE IT PARKS. `enter` begins a
+// scan: 0, or the claim a park would have answered — `-1:0` under a
+// cancel that stands, `-1:1` past a limit. An arm's readiness is a
+// stamp: 0 not ready, else when it became so, least first.
+// `avra_task_since` is a task's — 0 while it lives and when it ended
+// cancelled; `avra_time_since` a time's — due, it is below zero: before
+// every task, the earlier instant first. `avra_stamp_next` draws the
+// next stamp for a thing found ready that no task's end here stamped: a
+// period found due, and a virtual task's end, which the evaluator stamps
+// from this one count.
+// `rest` parks on the arms filed and answers the claim, which is a hint:
+// the caller scans again. With nothing filed it traps. `site` is where
+// the wait was written: the task's record keeps the text, and a listing
+// of the tasks says it beside how long the task has rested.
+int64_t avra_wait_enter(const char* site);
+int64_t avra_task_since(void* task);
+int64_t avra_time_since(int64_t at_ns);
+int64_t avra_stamp_next(void);
+int64_t avra_wait_rest(void);
 
 // A gate: a queue of waiters in memory, owned.
 void* avra_gate_new(void);
@@ -262,6 +281,10 @@ int64_t avra_vtask_join(int64_t t, void* task);
 int64_t avra_vtask_settle(int64_t t, void* task);
 int64_t avra_vtask_park(int64_t t);
 int64_t avra_vtask_claim(int64_t t);
+// `avra_wait_enter` and `avra_wait_rest` for the task `t`. `rest`
+// answers 1 parked, 0 claimed already, -1 with nothing filed.
+int64_t avra_vtask_enter(int64_t t, const char* site);
+int64_t avra_vtask_rest(int64_t t);
 // A cancel on `t`, asked by the task whose id is `by`.
 void avra_vtask_cancel(int64_t t, int64_t by);
 // The gate stands open for ever: every waiter is claimed, and a later
@@ -344,6 +367,9 @@ int64_t avra_sched_timer_turns(void);
 // links of the queue the seeded pick has walked.
 int64_t avra_sched_timers(void);
 int64_t avra_sched_fd_waiters(void);
+// The waiters past a fiber's own four that stand ready for the next
+// task to file.
+int64_t avra_sched_waiters_kept(void);
 int64_t avra_sched_polls(void);
 int64_t avra_sched_pick_links(void);
 // How many switches left the fast path to ask the world.

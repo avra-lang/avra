@@ -88,10 +88,7 @@ fn task_box(mut cx: LowerCx, body: ExprId) -> Reg {
 }
 
 fn lower_await(mut cx: LowerCx, _e: ExprId, task: Reg, ty: TypeId) -> Reg {
-    let answer = cx.view.types.task_answer(ty) ?? ty
-    let cell = cx.task_join(Type.List(one_cell_elem(cx, answer)), task)
-    if cx.view.types.shape_of(answer) is .Void { return cx.hollow_of(answer) }
-    cx.slot_read(cell, 0, answer)
+    cx.awaited(task, ty)
 }
 
 /// The caught `.await`: a join that passes no cancel on and answers how
@@ -109,12 +106,6 @@ fn caught_await(
     let ended = cx.type(List<int>?)
     cx
         .presence(cx.task_join_caught(cx.view.types.shape_of(ended), task), ended, e) { cx, cells -> failed(cx, cx.unboxed_at(cells, 0, cancelled)) } else { cx -> lower_await(cx, e, task, ty) }
-}
-
-/// The element a task's one-cell list is typed at: its answer — an int
-/// for a task answering nothing, whose list stays empty.
-fn one_cell_elem(cx: LowerCx, answer: TypeId) -> TypeId {
-    if cx.view.types.shape_of(answer) is .Void { cx.type(int) } else { answer }
 }
 
 fn lower_done(mut cx: LowerCx, e: ExprId, task: Reg, _ty: TypeId) -> Reg {

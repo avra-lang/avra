@@ -351,20 +351,133 @@ No witness here: `@unbroken` resolves to `@std/meta`'s own declaration, which a 
 a `select` waits on its arms, top to bottom
 
 ```avra
+fn one() -> int {
+    1
+}
+fn hush() {
+}
+let job = spawn one()
+@fair select {
+    r in job -> hush()
+}
+```
+
+```
+error[flow.select]: `select` is typed and not yet lowered
+  ╭─[witness.av:7:1]
+7 │ @fair select {
+  · ┬
+  · ╰── `@fair` stands here
+──╯
+help: wait on one task with `t.await`
+```
+
+## flow.arm
+
+an arm waits on a task, a list of tasks or a timer
+
+```avra
 select {
     1 -> 2
 }
 ```
 
 ```
-error[flow.select]: `select` is parsed and not yet lowered
-  ╭─[witness.av:1:1]
-1 │ select {
-  · ┬
-  · ╰── this `select`
+error[flow.arm]: a `select` arm waits on a task, a list of tasks or a timer, and this is `int`
+  ╭─[witness.av:2:5]
+2 │     1 -> 2
+  ·     ┬
+  ·     ╰── this is `int`
 ──╯
-help: wait on one task with `t.await`
+help: wait on what `spawn` answers — a head ending `.await` has already waited: drop it; the timers are `@std/time`'s, and this program loads no `@std/time`
 ```
+
+## flow.arm_binder
+
+an arm binds what its head hands over
+
+```avra
+fn one() -> int {
+    1
+}
+let job = spawn one()
+select {
+    i, r in job -> r
+}
+```
+
+```
+error[flow.arm_binder]: `i` counts a list's members, and this arm waits on one task
+  ╭─[witness.av:6:5]
+6 │     i, r in job -> r
+  ·     ┬
+  ·     ╰── one task here
+──╯
+help: drop the index — `r in …`
+```
+
+## flow.spent_arm
+
+a list arm is taken once, so no loop holds it
+
+```avra
+fn one() -> int {
+    1
+}
+let jobs = [spawn one()]
+mut n = 0
+while n < 1 {
+    n = n + select {
+        r in jobs -> r
+    }
+}
+```
+
+```
+error[flow.spent_arm]: a list arm is taken once — a member that answered stays ready, so a loop would take it every turn
+  ╭─[witness.av:8:9]
+8 │         r in jobs -> r
+  ·         ┬
+  ·         ╰── waits on a list, inside a loop
+──╯
+help: wait on the list once, outside the loop
+```
+
+## flow.guard_binder
+
+a guard is read before its arm's head
+
+```avra
+fn one() -> int {
+    1
+}
+let job = spawn one()
+select {
+    r in job if r > 0 -> r
+}
+```
+
+```
+error[flow.guard_binder]: a guard is read before its arm's head, so it reads no name the arm binds
+  ╭─[witness.av:6:17]
+6 │     r in job if r > 0 -> r
+  ·                 ┬
+  ·                 ╰── bound by this arm
+──╯
+help: test the value in the arm's body
+```
+
+## flow.quiet_never
+
+a `Quiet` beside `else` is never taken
+
+No witness here: a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av.
+
+## flow.fresh_deadline
+
+a timer made inside a loop starts over each turn
+
+No witness here: a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av.
 
 ## type.component_expand
 

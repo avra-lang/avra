@@ -261,6 +261,63 @@ static void ready_arm_hears_cancel(void) {
     avra_vtask_free(t);
 }
 
+// A VIRTUAL TASK SCANS AS A COMPILED ONE DOES: its scan hears a cancel
+// on its own bit, and its rest says when nothing is filed.
+static void a_virtual_scan(void) {
+    void* shut = avra_gate_new();
+    int64_t t = avra_vtask_new();
+    CHECK(avra_vtask_enter(t, "pkg/main.av:7") == 0, "a virtual scan begins with nothing standing");
+    CHECK(avra_vtask_rest(t) == -1, "its rest with nothing filed answers -1");
+    avra_vtask_wait_gate(t, shut, 0, 0);
+    CHECK(avra_vtask_rest(t) == 1, "and parks on what is filed");
+    CHECK(avra_vgate_claim(t, shut) == 0 && avra_vtask_next() == t, "a claim readies it");
+    avra_vtask_claim(t);
+    avra_vtask_cancel(t, 0);
+    CHECK(avra_vtask_enter(t, "pkg/main.av:7") == (int64_t)0xffffffff00000000LL, "under a cancel its next scan answers -1:0");
+    CHECK(avra_vtask_unwinding(t) == 1, "with its own unwind bit set");
+    avra_rc_release(shut);
+    avra_vtask_free(t);
+}
+
+// Counted text, as a program's own would be.
+const char* avra_int_text(int64_t v);
+
+// A virtual task's sites are kept as a compiled one's: the text it was
+// spawned at and the text its scan began at, both let go as it goes.
+static void a_virtual_tasks_sites_are_kept(void) {
+    int64_t t = avra_vtask_new();
+    int64_t before = avra_mem_live();
+    const char* spawned = avra_int_text(1717);
+    const char* scanned = avra_int_text(2828);
+    int64_t held = avra_mem_live();
+    avra_vtask_sited(t, spawned);
+    avra_vtask_enter(t, scanned);
+    avra_rc_release((void*)spawned);
+    avra_rc_release((void*)scanned);
+    CHECK(avra_mem_live() == held, "a virtual task's record holds both texts after their writer let go");
+    avra_vtask_free(t);
+    CHECK(avra_mem_live() == before, "and lets both go as it goes");
+}
+
+// A VIRTUAL TASK'S END AND A COMPILED ONE'S SHARE ONE ORDER: the
+// evaluator stamps its own task's end from the count a compiled end
+// draws from, so the three stand in the order they ended.
+static void ends_of_both_kinds_share_one_order(void) {
+    void* unit = avra_array_sized(1);
+    avra_array_push(unit, 0);
+    void* first = avra_task_pending();
+    avra_task_answer(first, unit);
+    int64_t t = avra_vtask_new();
+    int64_t virtual_end = avra_stamp_next();
+    avra_vtask_end(t);
+    void* last = avra_task_pending();
+    avra_task_answer(last, unit);
+    CHECK(avra_task_since(first) < virtual_end && virtual_end < avra_task_since(last), "a virtual task's end stands between the compiled ends before and after it");
+    avra_rc_release(unit);
+    avra_rc_release(first);
+    avra_rc_release(last);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -292,6 +349,9 @@ int main(void) {
     end_wakes_in_order();
     ready_arm_hears_cancel();
     a_standing_cancel_at_a_park();
+    a_virtual_scan();
+    a_virtual_tasks_sites_are_kept();
+    ends_of_both_kinds_share_one_order();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);
