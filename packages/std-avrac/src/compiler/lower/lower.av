@@ -1075,20 +1075,34 @@ fn lower_fn(
     for pt in ptypes { let _ = lo.mint_ty(pt) }
     lo.seeded()
     lo.seats_enter()
-    let r = if a.view.store.is_once(x.stmt) { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
     // A `then` case is a body like any fn's, but a FAILURE shows its
     // two sides when its answer is one equality — the driver knows
     // the case kind, as typing's `case_body` does, and the rule lives
-    // with the feature.
-    if x.kind is .Case { show_case_failure(lo, root, r) }
-    lo.seats_exit(r)
-    lo.emit(Ins.RetVal(r))
+    // with the feature. The body's block scope stays OPEN across that
+    // report: the operands it reads belong to the frame, so closing
+    // the frame first would drop them before the failure arm read.
+    let cached = a.view.store.is_once(x.stmt)
+    let open = if x.kind is .Case && !cached {
+        match a.view.store.expr(root) {
+            .Block(stmts, value) -> lo.lower_block_open(stmts, value, rt),
+            rest -> OpenBlock { reg: lo.reg_of(root), opened: false },
+        }
+    } else {
+        OpenBlock {
+            reg: if cached { lo.once_body(fname, root, rt) } else { lo.reg_of(root) },
+            opened: false,
+        }
+    }
+    if x.kind is .Case { show_case_failure(lo, root, open.reg) }
+    lo.lower_block_close(open)
+    lo.seats_exit(open.reg)
+    lo.emit(Ins.RetVal(open.reg))
     LoweredBody {
         body: Body {
             name: fname,
             params: ptypes,
             ret: rt,
-            gives: r,
+            gives: open.reg,
             ins: lo.out.ins,
             reg_types: lo.out.reg_types,
             file: a.view.file,

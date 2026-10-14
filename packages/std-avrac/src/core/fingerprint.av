@@ -31,6 +31,7 @@
 use @std.meta.{
     Type as MetaType,
     Variant as MetaVariant,
+    Field,
     Kind,
     Code,
     Arms,
@@ -42,6 +43,9 @@ use @std.meta.{
 }
 
 export trait Fingerprint {
+    /// `@local` fields are not part of what a value IS.
+    static fn marks(t: MetaType) -> List<string> { [local_word] }
+
     static fn derive(t: MetaType) -> List<MetaDirective> {
         [
             MetaDirective {
@@ -58,24 +62,36 @@ export trait Fingerprint {
 /// variant's payload. A type that is neither has nothing to fold and
 /// answers its name alone, which is still an identity.
 fn body_of(t: MetaType) -> MetaDecls {
-    if !t.variants.is_empty() { return quote { fn fingerprint() -> int { match self { ${arms_of(t)} } } } }
-    quote { fn fingerprint() -> int { ${record_fold(t)} } }
+    quote { fn fingerprint() -> int { ${folding(t, own_fingerprint)} } }
+}
+
+/// What a method folding `self` answers: the variant chosen, or the
+/// record's fields, each named payload folded by `leaf`.
+fn folding(t: MetaType, leaf: fn(Code) -> Code) -> Code {
+    if !t.variants.is_empty() { return quote { match self { ${arms_of(t, leaf)} } } }
+    record_fold(t, leaf)
 }
 
 /// `fp(tag, [name, f1, f2, …])` over `self.<field>`.
-fn record_fold(t: MetaType) -> Code {
-    parted(t.name, [folded(f.kind, quote { self.${f.name} }) for f in t.fields])
+fn record_fold(t: MetaType, leaf: fn(Code) -> Code) -> Code {
+    parted(t.name, [folded(f.kind, quote { self.${f.name} }, leaf) for f in t.fields if !local(f)])
 }
+
+/// The mark on a field that is not part of what its node IS: a span, a
+/// process-local id. A field with no mark folds.
+export const local_word: string = "local"
+
+fn local(f: Field) -> bool { f.marks.any(it.name == local_word) }
 
 /// One arm per variant: its INDEX pins the arity, so two variants of
 /// one type cannot fold alike however their payloads line up.
-fn arms_of(t: MetaType) -> List<Arms> {
-    [variant_arm(t.name, v, j) for j, v in t.variants]
+fn arms_of(t: MetaType, leaf: fn(Code) -> Code) -> List<Arms> {
+    [variant_arm(t.name, v, j, leaf) for j, v in t.variants]
 }
 
-fn variant_arm(owner: string, v: MetaVariant, at: int) -> Arms {
+fn variant_arm(owner: string, v: MetaVariant, at: int, leaf: fn(Code) -> Code) -> Arms {
     if v.fields.is_empty() { return quote { .${v} -> ${parted_at(owner, at, [])} } }
-    quote { .${v}(${binders(v)}) -> ${parted_at(owner, at, payload_folds(v))} }
+    quote { .${v}(${binders(v)}) -> ${parted_at(owner, at, payload_folds(v, leaf))} }
 }
 
 /// A payload's own FIELD NAMES are the binders — the names the
@@ -85,8 +101,8 @@ fn binders(v: MetaVariant) -> List<string> {
     [f.name for f in v.fields]
 }
 
-fn payload_folds(v: MetaVariant) -> List<Code> {
-    [folded(f.kind, name(f.name)) for f in v.fields]
+fn payload_folds(v: MetaVariant, leaf: fn(Code) -> Code) -> List<Code> {
+    [folded(f.kind, name(f.name), leaf) for f in v.fields]
 }
 
 /// The type's NAME folded first, then its parts. THE NAME IS FOLDED
@@ -137,19 +153,22 @@ fn listed(head: Code, rest: List<Code>) -> Code {
     acc
 }
 
-/// ONE FOLD PER SHAPE, every variant answering. A shape this does
-/// not spell structurally defers to the value's own `fingerprint()`,
-/// which the compiler refuses when the type has none — naming the
-/// type and the method, which is the honest refusal.
-fn folded(k: Kind, e: Code) -> Code {
+/// A named value folds by its own `fingerprint()`.
+fn own_fingerprint(e: Code) -> Code { quote { ${e}.fingerprint() } }
+
+/// ONE FOLD PER SHAPE, every variant answering. A shape this does not
+/// spell structurally defers to `leaf`, which names a method of the
+/// value; the compiler refuses a type that has none — naming the type
+/// and the method, which is the honest refusal.
+fn folded(k: Kind, e: Code, leaf: fn(Code) -> Code) -> Code {
     match k {
         .Int -> e,
         .Bool -> quote { (if ${e} { 1 } else { 0 }) },
         .Str -> quote { fp_str(${e}) },
-        .List(elem) -> quote { fp_list([${folded(elem, quote { each })} for each in ${e}]) },
-        .Opt(inner) -> optional(inner, e),
-        .Result(ok, err) -> answered(ok, err, e),
-        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> quote { ${e}.fingerprint() },
+        .List(elem) -> quote { fp_list([${folded(elem, quote { each }, leaf)} for each in ${e}]) },
+        .Opt(inner) -> optional(inner, e, leaf),
+        .Result(ok, err) -> answered(ok, err, e, leaf),
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> leaf(e),
     }
 }
 
@@ -157,14 +176,14 @@ fn folded(k: Kind, e: Code) -> Code {
 /// folds one part, presence folds two. An additive offset would be
 /// the renumbering that separates nothing — a present value whose own
 /// fold is -1 reads as null.
-fn optional(inner: Kind, e: Code) -> Code {
-    quote { (if ${e} == null { ${mixed(int_lit(0), [])} } else { ${mixed(int_lit(1), [folded(inner, quote { ${e}! })])} }) }
+fn optional(inner: Kind, e: Code, leaf: fn(Code) -> Code) -> Code {
+    quote { (if ${e} == null { ${mixed(int_lit(0), [])} } else { ${mixed(int_lit(1), [folded(inner, quote { ${e}! }, leaf)])} }) }
 }
 
 /// The SIDE is a part, not a tag: two tags under a multiplicative
 /// fold would separate the sides, and one tag with the side as the
 /// first part separates them the same way every other choice here
 /// does — so the file claims ONE number and the keeper sees it.
-fn answered(ok: Kind, err: Kind, e: Code) -> Code {
-    quote { (match ${e} { .Ok(held) -> ${mixed(int_lit(0), [folded(ok, name("held"))])}, .Err(held) -> ${mixed(int_lit(1), [folded(err, name("held"))])} }) }
+fn answered(ok: Kind, err: Kind, e: Code, leaf: fn(Code) -> Code) -> Code {
+    quote { (match ${e} { .Ok(held) -> ${mixed(int_lit(0), [folded(ok, name("held"), leaf)])}, .Err(held) -> ${mixed(int_lit(1), [folded(err, name("held"), leaf)])} }) }
 }
