@@ -3,16 +3,11 @@
 //! when the body assigns to a place rooted in it, calls a mutating
 //! vocabulary method on one, hands one to a written seat of another
 //! fn, or calls a writing method on one — the last two make this a
-//! growing-set FIXPOINT over per-fn summaries. A reader of a fn's
-//! bits solves it over that fn's CALL-GRAPH CLOSURE alone
-//! (`writes_of`), never the whole program, so a bystander's edit
-//! moves nothing; `receivers()` is the whole-program witness the
-//! `Receivers` family still owns, read by no write-bit reader.
-//! A summary reads the RESOLVED body and the DECLARATIONS alone:
-//! every seat-rooted place has a declared type along its whole path,
-//! so no body is typed to learn it. Asked through the declaration
-//! table's hook, remembered by the kernel (ROADMAP: the inout
-//! receiver).
+//! WHOLE-PROGRAM FIXPOINT over per-fn summaries. A summary reads the
+//! RESOLVED body and the DECLARATIONS alone: every seat-rooted place
+//! has a declared type along its whole path, so no body is typed to
+//! learn it. Asked through the declaration table's hook, remembered
+//! by the kernel (ROADMAP: the inout receiver).
 use core.{
     DeclId,
     Expr,
@@ -33,7 +28,6 @@ use core.{
 }
 use features.{NameFacts, Decls, Decl, bound_decl_of, nothing, property_row}
 use @std.meta.{bracket}
-use @std.relation.engine.{FixpointRefusal, spoken as fixpoint_spoken}
 use compiler.families.{Family}
 
 /// One fn's own evidence: which of its seats the body writes
@@ -70,80 +64,17 @@ impl Workspace {
         fns.length
     }
 
-    /// One declaration's written seats, as the fixpoint settled them: the closure of `d`
-    /// through its call graph and never the whole program, so a reader of the fn's write
-    /// bit stands on that fn alone and a bystander's edit moves nothing.
+    /// One declaration's written seats, as the pass settled them: the cell a reader of the
+    /// fn's write bit stands on, so a fn whose bits did not move leaves its readers standing
+    /// however the survey moved.
     fn writes_of(d: DeclId) -> int {
-        // A fixpoint must not run inside a resolve or inside another member's turn: the
-        // declared bits answer until it closes, never a half-view member kept.
         if self.db.family_active(Family.Resolved.ordinal) { return 0 }
-        if self.db.family_active(Family.Writes.ordinal) { return 0 }
         let k = key(Family.Writes, d.index)
-        if self.db.ask(k) is .Compute {
-            let members = self.writes_members(d)
-            let solved = self
-                .writes_fixpoint
-                .solve(
-                    [m.index for m in members],
-                    (arg: int) -> self.writes_contribution(DeclId { index: arg }),
-                )
-            self.settle_written_bits(members)
-            let refusal? = refusal_of(solved) else { return members.length }
-            self.defect("defect: ${fixpoint_spoken(refusal)}")
-            return members.length
-        }
-        self.decls.record_written_bits(d, self.writes_fixpoint.settled_value(d.index))
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let _ = self.receivers()
+        self.db.settle(k, fp(18, [fp_list(self.decls.written_bits(d))]))
         0
-    }
-
-    /// The fixpoint's answer for each member, written where the declaration table's own
-    /// readers read it.
-    fn settle_written_bits(members: List<DeclId>) {
-        for m in members {
-            self.decls.record_written_bits(m, self.writes_fixpoint.settled_value(m.index))
-        }
-    }
-
-    /// `d`'s call graph, itself included: every fn whose seats could carry a write into one
-    /// of `d`'s. A member whose own answer already stands accounts for its callees, so it is
-    /// a LEAF input and its edges are not walked — the closure is the unsettled frontier
-    /// alone, never every ancestor's whole graph. A held body is a constant member too — its
-    /// bits rode its interface, never this pass.
-    fn writes_members(d: DeclId) -> List<DeclId> {
-        mut members: List<DeclId> = [d]
-        mut at = 0
-        while at < members.length {
-            let m = members[at]
-            at = at + 1
-            if !(self.db.ask(key(Family.Writes, m.index)) is .Compute) { continue }
-            if self.is_held(self.decls.decl(m).file) { continue }
-            let s = self.summary(m)
-            for f in s.edges {
-                if seated(self.decls.decl(f.callee)) && !members.any(same_decl(it, f.callee)) {
-                    members = members.concat([f.callee])
-                }
-            }
-        }
-        members
-    }
-
-    /// One member's raw contribution: the seats its own body writes, the `mut` its
-    /// declaration claims, and the seats a callee's settled bits flow into.
-    fn writes_contribution(d: DeclId) -> List<bool> {
-        let n = self.decls.seat_count(d)
-        mut bits = filled(n, false)
-        if n > 0 && self.decls.declares_writing(d) { bits.set(0, true) }
-        if self.is_held(self.decls.decl(d).file) {
-            for i in 0..n { if self.decls.seat_written_so_far(d, i) { bits.set(i, true) } }
-            return bits
-        }
-        let s = self.summary(d)
-        for i, own in s.own { if own { bits.set(i, true) } }
-        for f in s.edges {
-            let callee = self.writes_fixpoint.value_at(f.callee.index)
-            if f.from < n && f.to < callee.length && callee[f.to] { bits.set(f.from, true) }
-        }
-        bits
     }
 
     /// The pass's answer as a reader can tell it, order-free: each WRITER's bits under
@@ -170,25 +101,6 @@ impl Workspace {
 fn seated(x: Decl) -> bool {
     x.kind is .Fn || x.kind is .Method
 }
-
-/// `Fixpoint`'s join for written seats: a seat is written when EITHER side writes it, padded
-/// to whichever side reaches further — a callee with more seats than its caller can only
-/// widen the caller's list.
-fn written_join(a: List<bool>, b: List<bool>) -> List<bool> {
-    let n = if a.length > b.length { a.length } else { b.length }
-    let pa = bit_pad(a, n)
-    let pb = bit_pad(b, n)
-    [pa[i] || pb[i] for i in 0..n]
-}
-
-/// A bit list widened to `n`, the absent tail read as a false seat.
-fn bit_pad(xs: List<bool>, n: int) -> List<bool> {
-    [if i < xs.length { xs[i] } else { false } for i in 0..n]
-}
-
-/// A fn's written seats as a `Fixpoint` hash: one digit per seat, so no two states share a
-/// word and an empty list is not the all-false one.
-fn written_fp(v: List<bool>) -> int { fp_list([if b { 1 } else { 0 } for b in v]) }
 
 impl Decls {
     /// A fn's written seats for the fingerprint — one digit per seat,
