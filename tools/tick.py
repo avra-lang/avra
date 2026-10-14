@@ -40,6 +40,8 @@ ALLOWED = {
     "close": "dropping a forked parent's pipe",
     "pthread_create": "starting the thread, on the scheduler's own thread",
     "pthread_atfork": "registering the child handler that clears the owner, on the scheduler's thread",
+    "pthread_sigmask": "the source thread's own mask, set once as it starts",
+    "sigfillset": "every signal blocked in the source thread, so none spends its default action there",
     "getpid": "telling a forked child from its parent, once per cold arm",
     "avra_tick": "the byte the source sets",
     "avra_tick_wanted": "what the scheduler stores for the source to read",
