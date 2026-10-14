@@ -612,6 +612,7 @@ cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
 	@sh tools/cancel_cache_attack.sh
+	@sh tools/writes_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It
@@ -751,6 +752,12 @@ dogfooding-rules:
 # by its NAME, so declaration order is free and no ordinal is durable.
 families-left:
 	@python3 tools/families.py
+
+# THE SAVED-ANSWER METER MAY ONLY IMPROVE. A settled answer can be saved only if every
+# read it made has a name that outlives the process; tools/leaves.sh counts, per blocking
+# family, the answers a read of which cannot be named, and the baseline only falls.
+leaves:
+	@sh tools/leaves.sh --check
 
 # THE LAYERING IS ONE-WAY: no `use` names a layer above its own, and
 # `@std/relation` — the engine below them all — never names the compiler.
