@@ -32,6 +32,7 @@ use core.{
     TypeRef,
     TypeRegistry,
     Reg,
+    same_reg,
     joined,
     DeclId,
     found_at,
@@ -294,6 +295,9 @@ export type TypeCx = {
     // alias-copy law has spoken for it — the first writing call through
     // it is the tell, later ones on the same local repeat nothing new.
     aliased_warned: List<int>,
+    // the element each enclosing `produce` hands its `yield`, innermost
+    // last — what a `yield` sends into, and why one outside has none
+    sinks: List<TypeId> = [],
 }
 
 /// What a written type stands in: a declaration's signature, or a type
@@ -392,6 +396,10 @@ export type LowerCx = {
     // COMPILE-TIME RUN emits none (it links no source), and so does a
     // program the cancel pass says links no scheduler.
     checks: bool = true,
+    // THE PRODUCER'S SINK: inside a `produce` body's lift, the register
+    // its channel's `Sink<T>` was read into — what a `yield` sends
+    // into. Null outside a producer.
+    producer_sink: Reg? = null,
 }
 
 /// A lambda literal lowered where it is CALLED rather than lifted:
@@ -435,6 +443,12 @@ impl Deferral {
     /// shields. A settle and a landing are the frame's own rows.
     fn calls() -> bool {
         match self { .Call(_) or .Direct(_) -> true, .Settle(_, _) or .Landing(_, _) -> false }
+    }
+
+    /// Whether this is the settle of the very value the frame ANSWERS:
+    /// an owner a fn answers is settled by its receiver, never here.
+    fn settles(r: Reg) -> bool {
+        match self { .Settle(owner, _) -> same_reg(owner, r), rest -> false }
     }
 }
 
