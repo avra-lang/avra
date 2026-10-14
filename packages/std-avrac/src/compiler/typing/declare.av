@@ -447,17 +447,18 @@ impl TypeCx {
     }
 
     /// A field's type. The grammar always writes one, so absence is
-    /// unreachable.
+    /// unreachable. A field of a MARKED owner is a producer handle:
+    /// the task law that refuses a task in a plain record field does
+    /// not apply, because the record itself is settled where its block
+    /// ends.
     fn field_type(s: StmtId, f: Param) -> TypeId {
         if f.ty == null { return self.error_type }
-        self
-            .held_slot(
-                s,
-                "type.struct_scalar",
-                "a struct field cannot hold nothing",
-                "field `${f.name}` is `${spelled(f.ty!)}`",
-                f.ty!,
-            )
+        let label = "field `${f.name}` is `${spelled(f.ty!)}`"
+        let held = self
+            .slot_law(s, "type.struct_scalar", "a struct field cannot hold nothing", label, f.ty!)
+        if self.view.decls.is_owned(self.decl_of(s)) { return held }
+        if self.escapes_with_task(self.stmt_loc(s), label, held) { return self.error_type }
+        held
     }
 
     /// The type a field's SLOT holds: a plain field's declared type, a
@@ -489,14 +490,9 @@ impl TypeCx {
         self.error_type
     }
 
-    /// A slot inside a record or a payload — which outlives the block,
-    /// so a task never rides in one.
-    fn held_slot(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
-        self
-            .held_verdict(self.stmt_loc(s), kind, message, label, self.full_type(self.stmt_loc(s), ty))
-    }
-
-    /// `held_slot`'s verdict on a type already read.
+    /// The held-slot law's verdict on a type already read: the slot
+    /// seats that outlive their block refuse a task, unless the
+    /// enclosing record is a MARKED owner (its field law's own door).
     fn held_verdict(at: Loc?, kind: string, message: string, label: string, named: TypeId) -> TypeId {
         let held = self.slot_verdict(at, kind, message, label, named)
         if self.escapes_with_task(at, label, held) { return self.error_type }
@@ -1155,6 +1151,9 @@ impl TypeCx {
                     )
                 return true
             }
+            // a MARKED owner's slots are its producer handles: the task
+            // law that refuses a task slot does not reach them
+            if self.view.decls.is_owned(decl) { continue }
             if self
                 .escapes_with_task(at, "`${name}<...>` makes a slot `${self.view.types.name_of(landed)}`", landed) {
                 return true
