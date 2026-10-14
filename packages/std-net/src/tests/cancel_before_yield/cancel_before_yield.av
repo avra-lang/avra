@@ -1,0 +1,21 @@
+//! proves: a cancel that stands when a task yields is met there —
+//! nothing after the yield runs
+use @std.net.{Bell}
+use @std.time.{ms, secs, sleep}
+
+/// Woken by the bell, then a yield; `seen` reads 1 once it comes back.
+fn yields(b: Bell, seen: Cell<int>) -> int {
+    let _ = b.waited(secs(5))
+    sleep(ms(0))
+    seen.set(1)
+    0
+}
+
+let b = Bell {}
+let seen = Cell.new(0)
+let t = spawn yields(b, seen)
+sleep(ms(20))
+b.ring()
+t.cancel()
+sleep(ms(20))
+"${seen.get()}"
