@@ -30,7 +30,6 @@ use features.{
     MetaHeap,
     new_meta_heap,
     Decls,
-    Clash,
     Wanted,
     nothing,
     Lifted,
@@ -113,8 +112,8 @@ export fn inst_key_of(home_key: string, shapes: string, symbol: string) -> strin
 
 impl Workspace {
     /// The method-table clashes spoken in a file, asked as `Family.MethodDiags`
-    /// so the file's `Analysis` depends on every type's method table
-    /// whichever file ran the scan first.
+    /// so the file's `Analysis` depends on the method tables its own methods
+    /// belong to — never the whole table.
     fn method_diagnostics(f: FileId) -> List<Diag> {
         // A LIFTED CALL RUNS INSIDE A RESOLVE: computing the provider's
         // analysis must not force ANOTHER file's resolve (a re-entrant
@@ -124,65 +123,43 @@ impl Workspace {
         let k = key(Family.MethodDiags, f.index)
         if !(self.db.ask(k) is .Compute) { return self.method_diag_rows.at(f.index) ?? [] }
         self.db.begin(k)
-        self.touch_method_tables()
-        let out = self.method_clash_index(f).by_file[f.index]
+        let out = self.file_method_clashes(f)
         self.method_diag_rows.keep(f.index, out)
         self.db.settle(k, diags_fingerprint(out))
         out
     }
 
-    /// Every type's method table asked, so the open cell depends on all of
-    /// them: the scan below asks them only the first time in a revision.
-    fn touch_method_tables() {
-        mut at = 0
-        while at < self.decls.decl_count() {
-            let held = self.decls.row_at(at)
-            at = at + 1
-            let x? = held else { continue }
-            if is_type_decl(x) { touch(self.methods(x.id)) }
+    /// The clashes spoken in file `f`. A clash is recorded at the LATER
+    /// method of a type's namespace, so `f`'s clashes are exactly those
+    /// recorded at methods `f` declares — and the types to ask are those
+    /// methods' targets alone, never the whole type table.
+    fn file_method_clashes(f: FileId) -> List<Diag> {
+        mut out: List<Diag> = []
+        mut asked: List<int> = []
+        for d in self.decls.decls_of_file(f) {
+            let target? = self.method_target(d) else { continue }
+            if asked.any(it == target.index) { continue }
+            asked.push(target.index)
+            touch(self.methods(target))
+            for c in self.method_clashes.at(target.index) ?? [] {
+                if c.file == f { out.push(c.diag) }
+            }
         }
+        out
     }
 
-    /// The whole type table's clashes by file. Built once a revision:
-    /// scanning every type for every file made this a whole-program
-    /// pass repeated for each file.
-    fn method_clash_index(f: FileId) -> MethodDiagIndex {
-        let previous: MethodDiagIndex? = self.method_diags.get().first()
-        if previous != null {
-            let held = previous!
-            if held.revision == self.db.revision() &&
-                held.decl_count == self.decls.decl_count() &&
-                f.index < held.by_file.length {
-                return held
-            }
+    /// The type whose method table holds `d`, for a method: the target of
+    /// its impl, or the record it is declared in — null for every other
+    /// declaration.
+    fn method_target(d: DeclId) -> DeclId? {
+        let x = self.decls.decl(d)
+        if !(x.kind is .Method) { return null }
+        let parent? = x.parent else { return null }
+        match self.decls.decl(parent).kind {
+            .Impl -> self.decls.target_of(parent),
+            .Record -> parent,
+            .Builtin or .Fn or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Main or .Case or .Const or .Collect or .CollectEnum or .State -> null,
         }
-        mut by_file: List<List<Diag>> = []
-        mut at = 0
-        // Signing an impl may admit another declaration, so walk the
-        // growing table until every type has had its method query.
-        while at < self.decls.decl_count() {
-            let row = self.decls.row_at(at)
-            at = at + 1
-            let x? = row else { continue }
-            if is_type_decl(x) {
-                touch(self.methods(x.id))
-                let held: List<Clash> = self.method_clashes.at(x.id.index) ?? []
-                for c in held {
-                    while by_file.length <= c.file.index { by_file.push([]) }
-                    mut row = by_file[c.file.index]
-                    row.push(c.diag)
-                    by_file.set(c.file.index, row)
-                }
-            }
-        }
-        while by_file.length < self.decls.file_count() { by_file.push([]) }
-        let current = MethodDiagIndex {
-            revision: self.db.revision(),
-            decl_count: self.decls.decl_count(),
-            by_file: by_file,
-        }
-        if self.method_diags.get().is_empty() { self.method_diags.push(current) } else { self.method_diags.set_at(0, current) }
-        current
     }
 
     /// One file's analysis: the snapshot every facade reads.
