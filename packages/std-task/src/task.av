@@ -10,6 +10,7 @@ use @std.meta.{owns}
 
 extern fn avra_wait_park() -> int
 extern fn avra_wait_gate(gate: ptr, arm: int, member: int)
+extern fn avra_wait_sig(sig: int, arm: int, member: int)
 extern fn avra_gate_new() -> ptr
 extern fn avra_gate_claim(gate: ptr) -> int
 
@@ -57,6 +58,35 @@ export type AnyOf<T> = {
     taken: fn() -> Pick<T>?,
     ended: fn() -> bool,
     lost: fn() -> int,
+}
+
+/// A signal a program waits on: the set a service needs and nothing
+/// more. Widening it is a decision, never a convenience.
+export enum Sig {
+    Hup
+    Int
+    Quit
+    Term
+    Usr1
+    Usr2
+    Pipe
+    Alrm
+    Chld
+}
+
+/// The signal's number, the same on Darwin and Linux for this set.
+fn number(s: Sig) -> int {
+    match s {
+        .Hup -> 1,
+        .Int -> 2,
+        .Quit -> 3,
+        .Usr1 -> 10,
+        .Usr2 -> 12,
+        .Pipe -> 13,
+        .Alrm -> 14,
+        .Term -> 15,
+        .Chld -> 17,
+    }
 }
 
 /// A source whose last item is the error that ended it. An owner, as
@@ -138,6 +168,46 @@ export fn any<T>(sources: List<Source<T>>) -> AnyOf<T> {
         lost: () -> sources.fold(0, (a: int, s: Source<T>) -> a + s.lost()),
     }
 }
+
+/// A source of the signals in `sigs`: a task parked on it wakes with
+/// the signal that arrived. Every signal in the list is its own MEMBER
+/// of the ONE source, so several are waited on together and no
+/// aggregate crosses the row's seats. A process-directed delivery of
+/// an armed signal is spent on the wait — never the process's default
+/// action — and one the runtime cannot watch wakes the waiter at once.
+///
+/// A signal is not buffered: `next` parks for one, `taken` reads
+/// nothing without that park, and a `select` arm knows which arrived
+/// from the member its claim names.
+export fn signals(sigs: List<Sig>) -> Source<Sig> {
+    Source {
+        ready: () -> false,
+        next: () -> awaited(sigs),
+        taken: no_signal,
+        arm: (a: int) -> filed(sigs, a),
+        ended: () -> false,
+        lost: () -> 0,
+        work: null,
+    }
+}
+
+/// Every signal filed as its own member of arm `a`: the row call that
+/// wakes the parked task, with the member naming the signal.
+fn filed(sigs: List<Sig>, a: int) {
+    for i, s in sigs { avra_wait_sig(number(s), a, i) }
+}
+
+/// The signal that arrived: file every member for the task's own arm,
+/// park, and read which member the claim named.
+fn awaited(sigs: List<Sig>) -> Sig? {
+    filed(sigs, 0)
+    let claim = avra_wait_park()
+    if claim < 0 { return null }
+    sigs[claim]
+}
+
+/// A signal is delivered by the park, never buffered.
+fn no_signal() -> Sig? { null }
 
 /// A source of `Result`s read as a `TrySource`: the `Err` is the last
 /// item, and `null` from `next` says the source is done.
