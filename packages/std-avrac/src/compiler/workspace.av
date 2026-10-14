@@ -214,6 +214,12 @@ fn new_keys() -> Keys {
 /// as a whole file, so the run generation — not a "seen" mark — invalidates it.
 type Followed = { reads: List<RunRead>, gen: int }
 
+/// A view's standing, memoized for the attempt: the file count and body-ask
+/// count it was judged under. `view_stands` judges the module and file facts a
+/// build is building, so a file minted or a body asked while the attempt runs
+/// makes the standing stale.
+type ViewStand = { files: int, asks: int, stands: bool }
+
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -226,6 +232,7 @@ type Hold = {
     read_gens: Cell<int>,
     ran_followed: Cell<Map<string, Followed>>,
     runs_gen: Cell<Map<string, int>>,
+    view_standing: Cell<Map<string, ViewStand>>,
     settle_reads: Cell<Map<string, List<RunRead>>>,
     pending_reads: Cell<List<PendingRead>>,
     pending_resolved: Cell<Map<string, string>>,
@@ -304,6 +311,7 @@ fn new_hold() -> Hold {
         read_gens: Cell.new(0),
         ran_followed: map_cell(),
         runs_gen: map_cell(),
+        view_standing: map_cell(),
         settle_reads: map_cell(),
         pending_reads: Cell.new(no_pending()),
         pending_resolved: map_cell(),
