@@ -1,0 +1,22 @@
+//! proves a `produce`d `Source` answered by a fn is owned by its
+//! receiver: leaving the block that bound it cancels then joins the
+//! producer, so the producer block's `defer` runs.
+use @std.task.{Source}
+
+fn feed(ended: Cell<bool>) -> Source<int> {
+    produce<int>(0) {
+        defer { ended.set(true) }
+        mut i = 0
+        while true {
+            yield i
+            i = i + 1
+        }
+    }
+}
+
+let ended = Cell.new(false)
+if true {
+    let pages = feed(ended)
+    let _ = pages.next()
+}
+ended.get()
