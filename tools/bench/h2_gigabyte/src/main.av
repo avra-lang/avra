@@ -2,7 +2,7 @@
 //! flow control: the program test `h2_stream` at the size where a body
 //! that gathered would show. Run it with `AVRA_MEM_STATS=1` and read the
 //! peak — a window and a piece, never the body.
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{secs}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{Request, Unrouted, Response, Stream, Pulled, text}
@@ -90,7 +90,7 @@ type Heard = { buf: Bytes, frames: List<Frame> }
 
 /// One read's frames, framed after what was left.
 fn heard(c: Conn, buf: Bytes) -> Result<Heard, NetError> {
-    let got? = within secs(20) { c.read(1048576) }? else { return .Ok(Heard { buf: buf, frames: [] }) }
+    let got? = timely(within secs(20) { c.read(1048576) })? else { return .Ok(Heard { buf: buf, frames: [] }) }
     mut rest = buf.concat(got)
     mut out: List<Frame> = []
     mut more = true

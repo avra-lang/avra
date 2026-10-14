@@ -4,7 +4,7 @@
 //! sent at the stop is read to its end and answered; a head that never
 //! finishes is cut at the drain's end; and `run` answers within the
 //! drain, never the idle deadline
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{Duration, ms, secs, sleep, now_ms}
 use @std.http.frame.{limits}
 use @std.http.http.{text}
@@ -16,7 +16,7 @@ type App = {}
 fn drained(c: Conn, quiet: Duration) -> string {
     mut got = "".bytes()
     while true {
-        match within quiet { c.read(65536) } {
+        match timely(within quiet { c.read(65536) }) {
             .Ok(b) -> {
                 let more? = b else { break }
                 got = got.concat(more)
@@ -44,7 +44,10 @@ fn shown() -> Result<string, NetError> {
     let idle = connect("127.0.0.1", l.port, secs(2))?
     defer { let _ = idle.close() }
     let _ = idle.write("GET /first HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?
-    let first = match within secs(2) { idle.read(65536) } { .Ok(b) -> b != null, .Err(_) -> false }
+    let first = match timely(within secs(2) { idle.read(65536) }) {
+        .Ok(b) -> b != null,
+        .Err(_) -> false,
+    }
     let slow = connect("127.0.0.1", l.port, secs(2))?
     defer { let _ = slow.close() }
     let _ = slow.write("GET /slow HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?

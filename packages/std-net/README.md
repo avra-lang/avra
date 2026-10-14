@@ -65,7 +65,8 @@ Methods:
 | `Poller.watch(fd, interest)` | Sets interest in `fd`; `.None` stops watching. |
 | `Poller.wait(timeout)` | The descriptors ready now; a null timeout waits until one is. |
 | `Poller.close()` | Closes the queue. |
-| `Bell.waited(timeout)` | Parks until a ring, the task's `within` or `timeout` (null: none); either deadline fails it `timed_out()`. |
+| `Bell.waited(timeout)` | Parks until a ring or `timeout` (null: none), which fails it `timed_out()`; the task's `within` cuts the wait. |
+| `timely(r)` | A `within` over a verb of this package, as that verb's own answer: a deadline the block ran past is its `timed_out()` failure. |
 | `Bell.ring()` | Wakes every parked task, and counts the ring. |
 | `Bell.rouse()` | Wakes every parked task, uncounted. |
 | `Bell.rings()` | How many times it has rung. |
@@ -78,8 +79,9 @@ Methods:
 
 - **Parking verbs park the task, not the process.** `accept`, `read`,
   `write` and `connect` park the calling task; other tasks run meanwhile.
-  Inside a `within`, a park that outlasts it fails the verb with
-  `timed_out()` true. The `try_` twins never wait.
+  Inside a `within`, a park that outlasts it is cut and the `within`
+  answers `Err(TimedOut)`; `timely` folds that into the verb's own
+  `timed_out()` failure. The `try_` twins never wait.
 - **A budget is never a sentinel.** A negative `timeout` is refused, never
   read as "forever". Forever is a null `Poller.wait` timeout. A zero
   `connect` budget looks once.

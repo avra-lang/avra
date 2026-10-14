@@ -14,6 +14,9 @@
 //! the file that declares it, and a file that also walked the nodes
 //! would be typed while the annotated file's own impls are still
 //! registering (CLAUDE.md).
+//!
+//! A plain RECORD gets one row, owned by `Record` and named for the
+//! record: `-> Record.ParamSyntax` builds a record that is no node.
 use @std.meta.{
     Type as MetaType,
     Variant as MetaVariant,
@@ -41,7 +44,7 @@ export trait Grammar {
                 at: t.at,
                 source: quote {
             export fn ${"grammar_payloads_${t.name}"}() -> List<PayloadRow> {
-                ${as_list_expr([row_of(t, v) for v in t.variants])}
+                ${as_list_expr(rows_of(t))}
             }
         },
             },
@@ -49,14 +52,21 @@ export trait Grammar {
     }
 }
 
-/// One variant's row: its payloads in DECLARATION ORDER, which is the
-/// order a build's arguments are filled in.
-fn row_of(t: MetaType, v: MetaVariant) -> Code {
+/// The rows a declaration answers: one per variant of an enum, or the
+/// one a record is.
+fn rows_of(t: MetaType) -> List<Code> {
+    if t.variants.is_empty() { return [row_code("Record", t.name, t.fields)] }
+    [row_code(t.name, v.name, v.fields) for v in t.variants]
+}
+
+/// One row: its payloads in DECLARATION ORDER, which is the order a
+/// build's arguments are filled in.
+fn row_code(owner: string, variant: string, fields: List<Field>) -> Code {
     quote {
         PayloadRow {
-            owner: ${literal(t.name)},
-            variant: ${literal(v.name)},
-            payloads: ${as_list_expr([field_of(f) for f in v.fields])},
+            owner: ${literal(owner)},
+            variant: ${literal(variant)},
+            payloads: ${as_list_expr([field_of(f) for f in fields])},
         }
     }
 }
@@ -72,6 +82,7 @@ fn field_of(f: Field) -> Code {
             at: ${loc_code(f.at)},
             kind: ${kind_code(f.kind)},
             marks: ${marks_code(f.marks)},
+            defaulted: ${as_code(bool_node(f.defaulted))},
         }
     }
 }
