@@ -497,7 +497,10 @@ int64_t avra_net_local_reach(int64_t fd) {
 // lookups is the main thread's alone. Whoever lets go LAST frees the
 // lookup, so a caller that times out and closes costs nothing: the
 // thread finishes into a pipe nobody reads (SIGPIPE is ignored by
-// the first socket verb) and frees what it held.
+// the first socket verb) and frees what it held. AND THE WAKE END GOES
+// WITH THE CALLER: a lookup cancelled before its thread answers closes
+// that end at the close, so a resolver still inside getaddrinfo holds
+// no descriptor the program can see.
 //
 // A NUMERIC HOST NEVER STARTS A THREAD: an address literal is read
 // in place with AI_NUMERICHOST and the lookup is born answered.
@@ -509,6 +512,9 @@ enum { NET_UNRESOLVED_NONE = 0, NET_NO_SUCH_NAME = 1, NET_NO_ADDRESS = 2, NET_TR
 typedef struct NetLookup {
     _Atomic int holders;
     _Atomic int done;
+    // Who closes the wake end: 0 unclaimed, 1 claimed. Exactly one of the
+    // caller and the thread wins it, so the descriptor crosses safely.
+    _Atomic int wake_owner;
     char* host;
     int wake;
     int64_t status;
@@ -571,13 +577,25 @@ static void lookup_fill(NetLookup* l, int flags) {
     }
 }
 
+// The wake end closed ONCE, by whoever claims it first: the thread when
+// it answers, or the caller when it lets the lookup go before the thread
+// finished. A cancelled lookup then holds no descriptor for as long as
+// getaddrinfo takes — the wait it was waking is over either way.
+static int wake_claimed(NetLookup* l) {
+    int free_ = 0;
+    return atomic_compare_exchange_strong(&l->wake_owner, &free_, 1);
+}
+
 // The answer published, the caller woken, the thread's hold let go.
 static void lookup_answered(NetLookup* l) {
     atomic_store_explicit(&l->done, 1, memory_order_release);
-    char one = 1;
-    ssize_t w;
-    do { w = write(l->wake, &one, 1); } while (w < 0 && errno == EINTR);
-    close(l->wake);
+    if (wake_claimed(l)) {
+        char one = 1;
+        ssize_t w;
+        do { w = write(l->wake, &one, 1); } while (w < 0 && errno == EINTR);
+        close(l->wake);
+        l->wake = -1;
+    }
     lookup_let_go(l);
 }
 
@@ -614,7 +632,12 @@ static void lookups_forked(void) {
     for (int64_t h = 0; h < g_lookups_cap; h++) {
         NetLookup* l = g_lookups[h];
         if (!l || atomic_load_explicit(&l->done, memory_order_acquire)) continue;
-        close(l->wake);
+        // No claim: the child holds one thread, and the parent's thread
+        // holds no descriptor of this process.
+        int w = l->wake;
+        l->wake = -1;
+        atomic_store(&l->wake_owner, 1);
+        if (w >= 0) close(w);
         l->status = -EAGAIN;
         l->failure = NET_TRY_AGAIN;
         atomic_store_explicit(&l->done, 1, memory_order_release);
@@ -729,6 +752,8 @@ int64_t avra_net_lookup_close(int64_t h) {
     g_lookups[h] = NULL;
     avra_fiber_fd_closing(h);
     close((int)h);
+    // the caller is gone: its wake end goes with it, answered or not
+    if (wake_claimed(l)) { close(l->wake); l->wake = -1; }
     lookup_let_go(l);
     return 0;
 }

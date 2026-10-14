@@ -217,6 +217,11 @@ extern const char avra_rt_held_avra_wait_until __asm__(AVRA_RT_LABEL(avra_wait_u
 extern const char avra_rt_held_avra_wait_gate __asm__(AVRA_RT_LABEL(avra_wait_gate));
 extern const char avra_rt_held_avra_wait_task __asm__(AVRA_RT_LABEL(avra_wait_task));
 extern const char avra_rt_held_avra_wait_park __asm__(AVRA_RT_LABEL(avra_wait_park));
+extern const char avra_rt_held_avra_wait_enter __asm__(AVRA_RT_LABEL(avra_wait_enter));
+extern const char avra_rt_held_avra_task_since __asm__(AVRA_RT_LABEL(avra_task_since));
+extern const char avra_rt_held_avra_time_since __asm__(AVRA_RT_LABEL(avra_time_since));
+extern const char avra_rt_held_avra_stamp_next __asm__(AVRA_RT_LABEL(avra_stamp_next));
+extern const char avra_rt_held_avra_wait_rest __asm__(AVRA_RT_LABEL(avra_wait_rest));
 extern const char avra_rt_held_avra_gate_new __asm__(AVRA_RT_LABEL(avra_gate_new));
 extern const char avra_rt_held_avra_gate_claim __asm__(AVRA_RT_LABEL(avra_gate_claim));
 extern const char avra_rt_held_avra_task_pending __asm__(AVRA_RT_LABEL(avra_task_pending));
@@ -419,6 +424,11 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_wait_gate,
     &avra_rt_held_avra_wait_task,
     &avra_rt_held_avra_wait_park,
+    &avra_rt_held_avra_wait_enter,
+    &avra_rt_held_avra_task_since,
+    &avra_rt_held_avra_time_since,
+    &avra_rt_held_avra_stamp_next,
+    &avra_rt_held_avra_wait_rest,
     &avra_rt_held_avra_gate_new,
     &avra_rt_held_avra_gate_claim,
     &avra_rt_held_avra_task_pending,
@@ -777,6 +787,16 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_task(AVRA_RT_PT
     "avra_wait_task: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_park()), int64_t),
     "avra_wait_park: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_enter(AVRA_RT_PTR)), int64_t),
+    "avra_wait_enter: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_since(AVRA_RT_PTR)), int64_t),
+    "avra_task_since: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_time_since(AVRA_RT_I64)), int64_t),
+    "avra_time_since: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_stamp_next()), int64_t),
+    "avra_stamp_next: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_rest()), int64_t),
+    "avra_wait_rest: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_gate_new()) == AVRA_RT_POINTER,
     "avra_gate_new: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_gate_claim(AVRA_RT_PTR)), int64_t),

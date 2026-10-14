@@ -19,7 +19,7 @@
 //! names how long a quiet peer lives.
 use @std.errors.{Error}
 use @std.net.{NetError, connect, entropy32}
-use wire.{Transport, WireError, plainly}
+use wire.{Transport, WireError, plainly, wire_timely}
 use @std.time.{Duration, secs}
 use frame.{Limits, Method, Reply, framed_reply, limits}
 use http.{Request, Response, Header, Upgrade, text, read_size, lists_token}
@@ -259,7 +259,10 @@ impl Socket {
         if self.state.get().sent_close { return .Err(.Closed) }
         if !sendable_code(code) || reason.bytes().length > 123 { return .Err(.Protocol(protocol_error())) }
         let _ = self.said_close(code, reason)
-        let answer = within patience { self.awaited_close() }
+        let answer: Result<int, WsError> = match within patience { self.awaited_close() } {
+            .Ok(r) -> r,
+            .Err(_) -> .Err(.TimedOut),
+        }
         self.ended()
         answer
     }
@@ -520,11 +523,14 @@ export fn opened_over(
         (mask_key()?).concat(mask_key()?).concat(mask_key()?).concat(mask_key()?).bytes()!,
     )
     let asked? = request("GET", target, authority, opening_fields(key), "".bytes()) else { return .Err(.Unsendable) }
-    match within timeout { w.wire_write(asked) } {
+    match wire_timely(within timeout { w.wire_write(asked) }) {
         .Ok(_) -> {},
         .Err(e) -> { return .Err(socket_error(e)) },
     }
-    let early = within timeout { upgraded_reply(w, key) }?
+    let early = match within timeout { upgraded_reply(w, key) } {
+        .Ok(r) -> r?,
+        .Err(_) -> { return .Err(.TimedOut) },
+    }
     .Ok(socket_on(w, early, Side.Client, lim))
 }
 

@@ -4,7 +4,7 @@
 //! stream ended once; a producer that fails after the head ends the
 //! stream with no second status; a producer parked on a quiet source is
 //! cut; a body gone silent is answered 408
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{ms, secs, sleep}
 use @std.http.frame.{limits}
 use @std.http.http.{Request, Unrouted, Response, Stream, Pulled, text}
@@ -65,7 +65,7 @@ fn read_out(c: Conn, sent: string) -> Result<string, NetError> {
     c.write(sent.bytes())?
     mut got = "".bytes()
     while true {
-        match within secs(3) { c.read(65536) } {
+        match timely(within secs(3) { c.read(65536) }) {
             .Ok(b) -> {
                 let more? = b else { return .Ok(got.text() ?? "<not text>") }
                 got = got.concat(more)

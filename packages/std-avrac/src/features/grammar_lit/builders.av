@@ -17,18 +17,29 @@ use @std.grammar.{
     Expect,
     Recover,
     Diagnostic,
+    Cause,
 }
 use grammar.{parse_grammar}
 
 fn build_grammar_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let gp = parse_grammar(t.text)
-    if gp.built == null {
-        return .Err("the grammar does not parse: ${first_defect(gp.diagnostics)}")
+    // A PARTIAL PARSE IS A TREE WITH TOKENS LEFT. `built` is non-null
+    // whenever the start rule hit, so keeping it silently drops every
+    // parse diagnostic with it. Coherence defects (`Cause.Defect`, no
+    // source anchor) are gated where the assembled grammar validates;
+    // everything else here means the text was not read whole.
+    if gp.built == null || gp.diagnostics.any(it.cause != Cause.Defect) {
+        return .Err(unparsed(gp.diagnostics))
     }
     let e = b.expr_node(b.store.expr(grammar_expr(b, gp.built!, t.span)))
     b.store.mark_grammar_lit(e, t.text)
     b.wrap_expr(e)
+}
+
+/// The one word a grammar the DSL could not read whole speaks.
+fn unparsed(ds: List<Diagnostic>) -> string {
+    "the grammar does not parse: ${first_defect(ds)}"
 }
 
 /// The first thing wrong with the text, for the builder's one word.

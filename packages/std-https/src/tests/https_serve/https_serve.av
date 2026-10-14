@@ -5,7 +5,7 @@
 //! the count is this process's), and plain HTTP
 //! sent to the same port is answered 400 in the clear and closed,
 //! never held.
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.frame.{limits}
 use @std.http.http.{text}
@@ -29,7 +29,7 @@ fn plain_at(port: int) -> Result<string, NetError> {
     c.write("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n".bytes())?
     mut got = "".bytes()
     while true {
-        match within ms(2000) { c.read(65536) } {
+        match timely(within ms(2000) { c.read(65536) }) {
             .Ok(b) -> {
                 let more? = b else { break }
                 got = got.concat(more)

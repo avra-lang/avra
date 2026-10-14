@@ -6,7 +6,7 @@
 //! shows the native peak stays under a megabyte at either size.
 use @std.io.{env_or}
 use @std.text.{parse_int}
-use @std.net.{NetError, listen, connect}
+use @std.net.{NetError, listen, connect, timely}
 use @std.time.{secs}
 use @std.http.frame.{limits}
 use @std.http.http.{Response, Stream, Pulled}
@@ -40,7 +40,7 @@ fn downloaded(port: int, n: int) -> Result<int, NetError> {
     mut body = -1
     mut total = 0
     while body < 0 || total < body {
-        let got? = within secs(20) { c.read(1048576) }? else { return .Ok(total) }
+        let got? = timely(within secs(20) { c.read(1048576) })? else { return .Ok(total) }
         if body < 0 {
             head = head.concat(got)
             let end = head.index_of("\r\n\r\n".bytes(), 0)

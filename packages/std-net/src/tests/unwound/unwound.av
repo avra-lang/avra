@@ -33,11 +33,15 @@ fn connect_cut(port: int) -> int {
     0
 }
 
-/// Whether `n` cuts left the table where it was; a resolver thread may
-/// hold its wake end for a moment, hence the slack.
-fn kept(before: int) -> Result<bool, NetError> {
+/// Whether the cuts left the table where it was. A resolver thread
+/// holds its wake end until its lookup answers, so the table is asked
+/// again, up to `tries` times: a thread's end comes back, a leak never
+/// does.
+fn kept(before: int, tries: int) -> Result<bool, NetError> {
     sleep(ms(200))
-    .Ok(reach()? < before + 4)
+    if reach()? < before + 4 { return .Ok(true) }
+    if tries < 2 { return .Ok(false) }
+    kept(before, tries - 1)
 }
 
 fn run() -> Result<string, NetError> {
@@ -45,10 +49,10 @@ fn run() -> Result<string, NetError> {
     resolve("127.0.0.1", secs(2))?
     let b0 = reach()?
     let _ = [lookup_cut(i) for i in 0..20]
-    let lookups = kept(b0)?
+    let lookups = kept(b0, 25)?
     let b1 = reach()?
     let _ = [connect_cut(l.port) for i in 0..20]
-    let connects = kept(b1)?
+    let connects = kept(b1, 25)?
     l.close()?
     .Ok("lookups kept: ${lookups} | connects kept: ${connects}")
 }

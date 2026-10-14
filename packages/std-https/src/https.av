@@ -19,7 +19,17 @@
 //! that seam for a caller's own config, in any `Options`.
 use @std.net.{Conn}
 use @std.time.{Duration}
-use @std.tls.{Config, TlsConn, TlsError, client_config, dial, handshake, handshake_after, wired}
+use @std.tls.{
+    Config,
+    TlsConn,
+    TlsError,
+    client_config,
+    dial,
+    handshake,
+    handshake_after,
+    wired,
+    tls_timely,
+}
 use @std.http.frame.{Limits}
 use @std.http.http.{Response, text, wire, read_size}
 use @std.http.wire.{Transport, WireError, Secure, Securing, silent}
@@ -52,7 +62,9 @@ fn client_opened(c: Conn, config: Config, host: string, d: Duration) -> Result<
     dyn Transport,
     WireError,
 > {
-    let t: dyn Transport = Secured { t: as_wire(within d { handshake(c, config, host) })? }
+    let t: dyn Transport = Secured {
+        t: as_wire(tls_timely(within d { handshake(c, config, host) }))?,
+    }
     .Ok(t)
 }
 
@@ -139,7 +151,14 @@ impl Transport for Secured {
 }
 
 fn opened_within(c: Conn, config: Config, d: Duration) -> dyn Transport? {
-    match within d { tls_opened(c, config) } { .Ok(t) -> t, .Err(_) -> null }
+    match within d { tls_opened(c, config) } {
+        .Ok(.Ok(t)) -> t,
+        .Ok(.Err(_)) -> null,
+        .Err(_) -> {
+            let _ = c.close()
+            null
+        },
+    }
 }
 
 /// A connection to a TLS port opened: its first bytes read, a plain
