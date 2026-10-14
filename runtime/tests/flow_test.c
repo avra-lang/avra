@@ -1540,6 +1540,161 @@ static void a_ready_arm_hears_a_limit(void) {
     avra_rc_release(done);
 }
 
+// ── the scan chooses, the park only wakes ───────────────────────
+
+// Every end that answered draws the next stamp, whoever ended it; a
+// live task and one that ended cancelled read 0.
+static void stamps_follow_the_ends(void) {
+    void* live = avra_task_pending();
+    void* first = ended_task();
+    void* ran = spawn1(answers_cap, 3);
+    avra_fiber_yield();
+    void* timed = avra_task_at(1);
+    avra_fiber_sleep(2);
+    void* last = ended_task();
+    void* cut = avra_task_pending();
+    avra_task_cancel(cut);
+    void* cut_running = spawn1(sleeper, 10000);
+    avra_fiber_yield();
+    avra_task_cancel(cut_running);
+    avra_task_settle(cut_running);
+    CHECK(avra_task_since(live) == 0, "a live task is not ready");
+    CHECK(avra_task_since(first) > 1, "an answered task's stamp is after every due time's");
+    CHECK(avra_task_since(first) < avra_task_since(ran) && avra_task_since(ran) < avra_task_since(timed) && avra_task_since(timed) < avra_task_since(last),
+        "each end that answered — another's answer, a body's own, a timer's — draws the next stamp");
+    CHECK(avra_task_done(cut) == 1 && avra_task_since(cut) == 0, "a task nothing ran that ended cancelled is done and never ready");
+    CHECK(avra_task_ended(cut_running) == 2 && avra_task_since(cut_running) == 0, "and so is one whose body was cut");
+    avra_task_cancel(live);
+    void* all[] = { live, first, ran, timed, last, cut, cut_running };
+    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) avra_rc_release(all[i]);
+}
+
+// A time is ready once it has come, before every task; one scan reads
+// the clock once, and the next reads it afresh.
+static void a_due_time_is_ready_first(void) {
+    int64_t soon = avra_now_ns() + 20 * 1000000;
+    CHECK(avra_wait_enter() == 0, "a scan begins with nothing standing");
+    CHECK(avra_time_since(avra_now_ns() - 1) == 1, "a time that has come is ready, under every task's stamp");
+    CHECK(avra_time_since(soon) == 0, "a time to come is not");
+    avra_fiber_sleep(30);
+    CHECK(avra_time_since(soon) == 0, "one scan reads the clock once: a time that came since is not seen by it");
+    CHECK(avra_wait_enter() == 0 && avra_time_since(soon) == 1, "and the next scan sees it");
+}
+
+static void* scans_for_ever(void* self) {
+    (void)self;
+    void* done = ended_task();
+    avra_fiber_yield();
+    for (g_busy_turns = 0; g_busy_turns < BUSY_TURNS; g_busy_turns++) {
+        g_byte_b = avra_wait_enter();
+        if (g_byte_b != 0 || !avra_task_since(done)) break;
+    }
+    g_byte_a = avra_unwinding;
+    avra_rc_release(done);
+    return answer(0);
+}
+
+static void a_scan_hears_a_cancel(void) {
+    bytes_unseen();
+    void* t = spawn1(scans_for_ever, 0);
+    avra_fiber_yield();
+    avra_task_cancel(t);
+    CHECK(ended(t) == 2, "a task cancelled while every scan finds an arm ready ends cancelled");
+    CHECK(g_busy_turns == 0 && g_byte_b == (int64_t)0xffffffff00000000LL && g_byte_a == 1, "its next scan answers the cancel before any arm: -1:0, the bit set");
+}
+
+// The program's own task, alone, scanning an arm that is always ready
+// under a limit that passes: no park, no switch, no back-edge.
+static void a_scan_hears_a_limit(void) {
+    void* done = ended_task();
+    int64_t t0 = avra_now_ns();
+    int64_t scope = avra_fiber_within(50);
+    int64_t word = 0, turns = 0;
+    while (turns < (int64_t)1 << 40) {
+        word = avra_wait_enter();
+        turns++;
+        if (word != 0 || !avra_task_since(done) || ((turns & 0xffff) == 0 && ms_since(t0) > 2000)) break;
+    }
+    int64_t spent = ms_since(t0);
+    CHECK(word == (int64_t)0xffffffff00000001LL, "a limit that passes while every scan finds an arm ready is heard: -1:1");
+    CHECK(turns > 1 && spent >= 45 && spent < 1000, "where it passes");
+    CHECK(avra_unwinding == 0, "a limit is no cancel point yet: the bit stays clear");
+    avra_fiber_within_end(scope);
+    avra_rc_release(done);
+}
+
+static void* answers_low_then_high(void* self) {
+    (void)self;
+    void* unit = answer(0);
+    avra_task_answer(g_pending, unit);
+    avra_task_answer(g_task, unit);
+    avra_rc_release(unit);
+    return answer(0);
+}
+
+// PRIORITY HOLDS AT THE WAKE: parked on an upper and a lower arm, the
+// lower ends first and claims the set, the upper ends before the task
+// runs again — the claim names the lower, and the scan finds the upper.
+static void the_scan_outranks_the_claim(void) {
+    g_task = avra_task_pending();
+    g_pending = avra_task_pending();
+    void* ender = spawn1(answers_low_then_high, 0);
+    CHECK(avra_wait_enter() == 0 && avra_task_since(g_task) == 0 && avra_task_since(g_pending) == 0, "the first scan finds neither arm ready");
+    avra_wait_task(g_task, 0, 0);
+    avra_wait_task(g_pending, 1, 0);
+    int64_t claim = avra_wait_rest();
+    CHECK(arm_of(claim) == 1, "the arm that ended first claims the park: the lower");
+    CHECK(avra_wait_enter() == 0 && avra_task_since(g_task) != 0, "and the scan from the top finds the upper ready");
+    CHECK(avra_task_since(g_pending) < avra_task_since(g_task), "the stamps keep the order the two ended in");
+    joined(ender);
+    avra_rc_release(g_task);
+    avra_rc_release(g_pending);
+}
+
+static void* cancels_then_answers(void* self) {
+    (void)self;
+    avra_task_cancel(g_task);
+    avra_fiber_sleep(2);
+    void* unit = answer(0);
+    avra_task_answer(g_pending, unit);
+    avra_rc_release(unit);
+    return answer(0);
+}
+
+// A member cancelled while the task is parked on it wakes the park
+// once and is passed over: it is never ready, and no longer live to be
+// filed on. Armed all the same, an ended task claims at once, every turn.
+static void a_cancelled_member_is_passed_over(void) {
+    g_task = avra_task_pending();
+    g_pending = avra_task_pending();
+    void* members[] = { g_task, g_pending };
+    void* other = spawn1(cancels_then_answers, 0);
+    int taken = -1, parks = 0;
+    while (taken < 0 && parks < 10 && avra_wait_enter() == 0) {
+        for (int i = 0; i < 2 && taken < 0; i++) if (avra_task_since(members[i])) taken = i;
+        if (taken >= 0) break;
+        for (int i = 0; i < 2; i++) if (!avra_task_done(members[i])) avra_wait_task(members[i], 0, i);
+        avra_wait_rest();
+        parks++;
+    }
+    CHECK(taken == 1 && parks == 2, "the member that answered is taken after two parks: the cancelled one's end woke the first");
+    avra_wait_task(g_task, 0, 0);
+    CHECK(avra_wait_park() == 0, "armed all the same, a cancelled member claims at once");
+    joined(other);
+    avra_rc_release(g_task);
+    avra_rc_release(g_pending);
+}
+
+static void rests_on_nothing(void) {
+    if (avra_wait_enter() == 0) avra_wait_rest();
+}
+
+static void scans_inside_a_set(void) {
+    g_gate = avra_gate_new();
+    avra_wait_gate(g_gate, 0, 0);
+    avra_wait_enter();
+}
+
 // ── an interrupt reads as time, not readiness ───────────────────
 
 static void* parks_on_pipe(void* self) { (void)self; return answer(avra_fiber_park_fd(g_pipe[0], 0, -1)); }
@@ -3271,6 +3426,14 @@ int main(int argc, char** argv) {
     in_child_within("a ready arm hears a cancel", a_ready_arm_hears_a_cancel, 10);
     in_child_within("a ready arm hears a limit", a_ready_arm_hears_a_limit, 10);
     in_child_within("a ready arm's turns ask the poller", a_ready_arms_turns_ask_the_poller, 10);
+    in_child_within("every answered end draws the next stamp", stamps_follow_the_ends, 10);
+    in_child_within("a due time is ready first", a_due_time_is_ready_first, 10);
+    in_child_within("a scan hears a cancel", a_scan_hears_a_cancel, 10);
+    in_child_within("a scan hears a limit", a_scan_hears_a_limit, 10);
+    in_child_within("the scan outranks the claim", the_scan_outranks_the_claim, 10);
+    in_child_within("a cancelled member is passed over", a_cancelled_member_is_passed_over, 10);
+    trapped("a park with no arm filed", rests_on_nothing, "a `select` had no open arm");
+    trapped("a scan begun inside a set", scans_inside_a_set, "a task waited inside a wait it had not parked");
     on_virtual_clock("a claim made before a cancel is taken first", claim_first_then_cancel);
     on_virtual_clock("a task cancelled before it runs meets the cancel at its first point", cancelled_before_it_runs);
     on_virtual_clock("the unwind bit is the running task's", the_bit_is_the_running_tasks);

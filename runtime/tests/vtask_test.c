@@ -223,6 +223,24 @@ static void ready_arm_hears_cancel(void) {
     avra_vtask_free(t);
 }
 
+// A VIRTUAL TASK SCANS AS A COMPILED ONE DOES: its scan hears a cancel
+// on its own bit, and its rest says when nothing is filed.
+static void a_virtual_scan(void) {
+    void* shut = avra_gate_new();
+    int64_t t = avra_vtask_new();
+    CHECK(avra_vtask_enter(t) == 0, "a virtual scan begins with nothing standing");
+    CHECK(avra_vtask_rest(t) == -1, "its rest with nothing filed answers -1");
+    avra_vtask_wait_gate(t, shut, 0, 0);
+    CHECK(avra_vtask_rest(t) == 1, "and parks on what is filed");
+    CHECK(avra_vgate_claim(t, shut) == 0 && avra_vtask_next() == t, "a claim readies it");
+    avra_vtask_claim(t);
+    avra_vtask_cancel(t, 0);
+    CHECK(avra_vtask_enter(t) == (int64_t)0xffffffff00000000LL, "under a cancel its next scan answers -1:0");
+    CHECK(avra_vtask_unwinding(t) == 1, "with its own unwind bit set");
+    avra_rc_release(shut);
+    avra_vtask_free(t);
+}
+
 static void deadlocked(void) {
     int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
     (void)t;
@@ -253,6 +271,7 @@ int main(void) {
     end_wakes_in_order();
     ready_arm_hears_cancel();
     a_standing_cancel_at_a_park();
+    a_virtual_scan();
     // one scenario, both engines, one interleaving
     g_log_len = 0; as_fibers();
     char fibers[128]; strcpy(fibers, g_log);

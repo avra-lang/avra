@@ -161,12 +161,17 @@ fn wait_arm_type(mut cx: TypeCx, s: ArmSeats, guard: ExprId?, value: ExprId) -> 
 
 /// What a head's type lets its arm wait on.
 fn waited(cx: TypeCx, head: ExprId) -> Waited {
-    let ty = cx.type_at(head)
-    let one: TypeId? = cx.view.types.task_answer(ty)
+    waited_of(cx.view, cx.type_at(head))
+}
+
+/// What a head of type `ty` lets its arm wait on — the one reading
+/// typing and lowering share.
+fn waited_of(view: FileView, ty: TypeId) -> Waited {
+    let one: TypeId? = view.types.task_answer(ty)
     if one != null { return Waited.Task(one!) }
-    let each: TypeId? = member_answer(cx, ty)
+    let each: TypeId? = member_answer(view, ty)
     if each != null { return Waited.Tasks(each!) }
-    let t? = timers_of(cx.view) else { return Waited.Nothing }
+    let t? = timers_of(view) else { return Waited.Nothing }
     if same_type(ty, t.deadline) { return Waited.Deadline }
     if same_type(ty, t.quiet) { return Waited.Quiet }
     if same_type(ty, t.every) { return Waited.Every }
@@ -174,8 +179,8 @@ fn waited(cx: TypeCx, head: ExprId) -> Waited {
 }
 
 /// What each member of a list of tasks answers.
-fn member_answer(cx: TypeCx, ty: TypeId) -> TypeId? {
-    cx.view.types.task_answer(cx.view.types.element(ty)?)
+fn member_answer(view: FileView, ty: TypeId) -> TypeId? {
+    view.types.task_answer(view.types.element(ty)?)
 }
 
 /// The three timers; null when the program loads no `@std/time`.

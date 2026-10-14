@@ -111,6 +111,18 @@ void avra_wait_task(void* task, int64_t arm, int64_t member);
 // is answered without a switch; then a cancel that stands; then a
 // deadline that has passed.
 int64_t avra_wait_park(void);
+// A WAIT OVER SEVERAL ARMS SCANS BEFORE IT PARKS. `enter` begins a
+// scan: 0, or the claim a park would have answered — `-1:0` under a
+// cancel that stands, `-1:1` past a limit. An arm's readiness is a
+// stamp: 0 not ready, else when it became so, least first.
+// `avra_task_since` is a task's — 0 while it lives and when it ended
+// cancelled; `avra_time_since` a time's — due, it is before every task.
+// `rest` parks on the arms filed and answers the claim, which is a hint:
+// the caller scans again. With nothing filed it traps.
+int64_t avra_wait_enter(void);
+int64_t avra_task_since(void* task);
+int64_t avra_time_since(int64_t at_ns);
+int64_t avra_wait_rest(void);
 
 // A gate: a queue of waiters in memory, owned.
 void* avra_gate_new(void);
@@ -260,6 +272,10 @@ int64_t avra_vtask_join(int64_t t, void* task);
 int64_t avra_vtask_settle(int64_t t, void* task);
 int64_t avra_vtask_park(int64_t t);
 int64_t avra_vtask_claim(int64_t t);
+// `avra_wait_enter` and `avra_wait_rest` for the task `t`. `rest`
+// answers 1 parked, 0 claimed already, -1 with nothing filed.
+int64_t avra_vtask_enter(int64_t t);
+int64_t avra_vtask_rest(int64_t t);
 // A cancel on `t`, asked by the task whose id is `by`.
 void avra_vtask_cancel(int64_t t, int64_t by);
 // The gate stands open for ever: every waiter is claimed, and a later

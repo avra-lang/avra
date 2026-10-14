@@ -354,18 +354,20 @@ a `select` waits on its arms, top to bottom
 fn one() -> int {
     1
 }
+fn hush() {
+}
 let job = spawn one()
-select {
-    r in job -> r
+@fair select {
+    r in job -> hush()
 }
 ```
 
 ```
 error[flow.select]: `select` is typed and not yet lowered
-  ╭─[witness.av:5:1]
-5 │ select {
+  ╭─[witness.av:7:1]
+7 │ @fair select {
   · ┬
-  · ╰── this `select`
+  · ╰── `@fair` stands here
 ──╯
 help: wait on one task with `t.await`
 ```

@@ -5,16 +5,31 @@ use @std.avrac.testing.{
     projected,
     refused_with,
     refused_at_run,
+    refusals,
     refused_in,
     floored_beside,
     answered,
+    shown,
+    ir_of,
 }
 use compiler.{Program}
+use compiler.backend.{render_ir}
 
 /// Whether `source` is its own canonical form — it parsed, and the
 /// printer said it back unchanged.
 fn stands(source: string) -> bool {
     projected(source) == source
+}
+
+/// Whether each of `marks` stands in `text` past the one before it.
+fn in_order(text: string, marks: List<string>) -> bool {
+    mut rest = text
+    for m in marks {
+        let at = rest.index_of(m)
+        if at < 0 { return false }
+        rest = rest.substring(at + m.length, rest.length)
+    }
+    true
 }
 
 /// One task answering an `int`, one answering nothing, and a list of
@@ -23,10 +38,9 @@ fn tasks() -> string {
     "fn one() -> int {\n    1\n}\nfn hush() {\n}\nlet job = spawn one()\nlet mute = spawn hush()\nlet jobs = [spawn one(), spawn one()]\n"
 }
 
-/// Whether a `select` over those tasks types clean — it is refused by
-/// name where it is lowered, and nowhere before.
+/// Whether a `select` over those tasks types clean.
 fn types(body: string) -> bool {
-    refused_at_run("${tasks()}${body}", "`select` is typed and not yet lowered")
+    refusals("${tasks()}${body}") == 0
 }
 
 /// Whether a `select` over those tasks is refused in typing's words.
@@ -288,9 +302,74 @@ spec "features/select_expr" {
             refuses("select {\n    1 -> 2\n}", "this program loads no `@std/time`")
         }
     }
-    given "lowering" {
-        then "a `select` that types is refused by name, where it is lowered" {
-            types("select {\n    job -> 1\n}")
+    given "lowering — the scan chooses" {
+        then "a task arm binds the answer and its body answers" {
+            shown(
+                "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r + 1\n}\n\"\${v}\"",
+            ) == "42"
+        }
+        then "a bare head waits and binds nothing" {
+            shown(
+                "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    job -> 7\n}\n\"\${v}\"",
+            ) == "7"
+        }
+        then "`else` answers when nothing is ready" {
+            shown(
+                "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    else -> 0 - 1\n}\n\"\${v}\"",
+            ) == "-1"
+        }
+        then "a `select` answering nothing stands as a statement" {
+            shown(
+                "fn one() -> int {\n    41\n}\nlet seen = Cell.new(0)\nlet job = spawn one()\nselect {\n    r in job -> seen.set(r)\n}\nseen.get()",
+            ) == "41"
+        }
+        then "the loop: a scan begins, the arm is asked, taken and left, or filed and rested on" {
+            let text = render_ir(
+                ir_of(
+                    "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n}\nv",
+                ),
+            )
+            in_order(
+                text,
+                [
+                    "loop {",
+                    "call avra_wait_enter(",
+                    "flag unwinding",
+                    "call avra_task_done(",
+                    "call avra_task_join(",
+                    "break 0",
+                    "call avra_wait_task(",
+                    "call avra_wait_rest(",
+                ],
+            )
+        }
+        then "an `else` lets the world run instead of resting" {
+            let text = render_ir(
+                ir_of(
+                    "fn one() -> int {\n    41\n}\nlet job = spawn one()\nlet v = select {\n    r in job -> r\n    else -> 0\n}\nv",
+                ),
+            )
+            in_order(
+                    text,
+                    ["call avra_wait_enter(", "call avra_task_done(", "call avra_fiber_yield("],
+                ) &&
+                !text.contains("call avra_wait_rest(")
+        }
+        then "a false guard leaves its arm dead, and reads no head" {
+            shown(
+                "fn one() -> int {\n    41\n}\nlet a = spawn one()\nlet b = spawn one()\nlet both = a.await + b.await\nlet v = select {\n    x in a if both > 100 -> 1\n    y in b -> 2\n}\n\"\${v}\"",
+            ) == "2"
+        }
+        then "a list arm binds the member that answered, and its index when asked" {
+            shown(
+                "fn n(k: int) -> int {\n    k\n}\nlet ts = [spawn n(4), spawn n(5)]\nlet both = ts[0].await + ts[1].await\nlet v = select {\n    i, r in ts -> r * 10 + i\n}\n\"\${both} \${v}\"",
+            ) == "9 40"
+        }
+        then "a shape with no lowering yet is refused by name, once" {
+            refused_at_run(
+                "${tasks()}@fair select {\n    r in job -> r\n}",
+                "`select` is typed and not yet lowered",
+            )
         }
     }
 }
