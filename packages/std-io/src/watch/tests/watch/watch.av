@@ -3,7 +3,7 @@
 // a new entry in a watched directory seen in one look, a removal, a
 // wait that a `within` ends, and the set replaced whole.
 use @std.io.{IoError, write_text, append_bytes, make_dirs, remove, env_or}
-use @std.io.watch.{Seen, Moved, Change, watch}
+use @std.io.watch.{Seen, Moved, Change, watch, or_quiet}
 use @std.time.{ms, sleep}
 
 fn word(m: Moved) -> string {
@@ -47,13 +47,13 @@ fn shown() -> string {
     let _ = w.add(f)
     let _ = w.add(dir)
     let writer = spawn appends_later(f, 50)
-    println("woken: ${said(within ms(5000) { w.next() }, [f, dir])}")
+    println("woken: ${said(or_quiet(within ms(5000) { w.next() }), [f, dir])}")
     writer.await
     let _ = write_text(f, "two")
     println("saved: ${said(w.taken(), [f])}")
     let _ = write_text(fresh, "new")
     println("arrived: ${said(w.taken(), [f, dir])}")
-    println("waited: ${said(within ms(60) { w.next() }, [f, dir])}")
+    println("waited: ${said(or_quiet(within ms(60) { w.next() }), [f, dir])}")
     println("refused: ${w.only([dir, fresh]).length}")
     let _ = append_bytes(f, "unwatched".bytes())
     let _ = remove(fresh)

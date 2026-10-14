@@ -1,0 +1,46 @@
+// proves: only the scope that asked answers — an inner `within … catch`
+// under an outer deadline is passed untouched, its arm never runs — and
+// a child under an inherited limit unwinds to its top, its own `within`
+// passed, its `defer` run
+use @std.time.{ms, secs, sleep, TimedOut}
+
+fn told(r: Result<int, TimedOut>) -> string {
+    match r { .Ok(v) -> "ok ${v}", .Err(t) -> "late ${t.after.ms}" }
+}
+
+let seen = Cell.new(0)
+let outer = within ms(10) {
+    let x = within secs(5) {
+        sleep(secs(60))
+        1
+    } catch _ -> {
+        seen.set(seen.get() + 1)
+        2
+    }
+    seen.set(seen.get() + 10)
+    x
+}
+
+let kid = Cell.new(0)
+let spawner = within ms(10) {
+    let _t = spawn {
+        defer kid.set(kid.get() + 1)
+        let v = within secs(5) {
+            sleep(secs(60))
+            1
+        } catch _ -> 9
+        kid.set(kid.get() + 10)
+        v
+    }
+    sleep(secs(60))
+    0
+}
+
+let inner = within secs(5) {
+    let y = within ms(10) {
+        sleep(secs(60))
+        1
+    } catch t -> 0 - t.after.ms
+    y + 1
+}
+"${told(outer)} ${seen.get()} | ${told(spawner)} ${kid.get()} | ${told(inner)}"

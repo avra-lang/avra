@@ -49,9 +49,14 @@ export fn fns() -> LanguageFeature {
     }
     LanguageFeature fns {
         gram: grammar {
-            stmt = "extern" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type )* ","? )? ")" ( "->" r:type )? ( b:block )? END @recover(sync_to: "END") -> extern_fn(n, ck, mk, ps, pt, r, b)
-            stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:type )? ( "," tp:NAME ( ":" tb:type )? )* ","? ">" )? "(" ( ( ( ck:"const" )? ( mk:"mut" )? ( sk:STATE )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? | sp:".." ps:HOLE ) ( "," ( ( ck:"const" )? ( mk:"mut" )? ( sk:STATE )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? | sp:".." ps:HOLE ) )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, ck, mk, sk, ps, pt, pd, r, b, ik, sp)
-            stmt = "once" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> once_fn(n, ck, mk, ps, pt, r, b)
+            stmt = "extern" "fn" n:NAME "(" ( ps:extern_seat ( "," ps:extern_seat )* ","? )? ")" ( "->" r:type )? ( b:block )? END @recover(sync_to: "END") -> extern_fn(n, ps, r, b)
+            stmt = "fn" n:NAME ( "<" tp:tparam ( "," tp:tparam )* ","? ">" )? "(" ( ps:param ( "," ps:param )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, ps, r, b)
+            param = ( constant:"const" )? ( mutable:"mut" )? ( state:STATE )? ( unshared:"isolated" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
+            tparam = name:NAME ( ":" ty:type )? -> Record.ParamSyntax
+            once_seat = ( "const" )? ( "mut" )? name:NAME ( ":" ty:type )? -> Record.ParamSyntax
+            seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ( ":" ty:type )? -> Record.ParamSyntax
+            extern_seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ":" ty:type -> Record.ParamSyntax
+            stmt = "once" "fn" n:NAME "(" ( ps:once_seat ( "," ps:once_seat )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> once_fn(n, ps, r, b)
             stmt = "return" ( value:expression )? END @recover(sync_to: "END") -> Stmt.Return
             primary = callee:NAME "<" pins:type ( "," pins:type )* ","? ">" "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.Call
             primary = callee:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> Expr.Call

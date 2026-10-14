@@ -1,4 +1,4 @@
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{ms, secs}
 use @std.http.frame.{limits}
 use @std.http.http.{text}
@@ -12,7 +12,7 @@ fn exchanged(c: Conn, sent: string, expected: int) -> Result<string, NetError> {
     c.write(sent.bytes())?
     mut got = "".bytes()
     while got.length < expected {
-        match within ms(300) { c.read(65536) } {
+        match timely(within ms(300) { c.read(65536) }) {
             .Ok(b) -> {
                 let more? = b else { break }
                 got = got.concat(more)

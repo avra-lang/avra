@@ -5,7 +5,7 @@
 // dressed as a secured h2 link whose second read fails as TLS would;
 // the client reads what the server said before it closed. Both engines.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{Duration, ms, secs}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{text}
@@ -57,7 +57,7 @@ fn refusing(c: Conn, _d: Duration) -> dyn Transport? {
 fn heard(c: Conn) -> Bytes {
     mut got = no_bytes
     while true {
-        match within ms(500) { c.read(65536) } {
+        match timely(within ms(500) { c.read(65536) }) {
             .Ok(b) -> {
                 got = got.concat(b ?? no_bytes)
                 if b == null { break }
