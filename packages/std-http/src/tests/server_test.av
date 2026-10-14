@@ -1,7 +1,7 @@
 //! The server on its own task beside the test: a client on the
 //! loopback writes a request and reads the response, each side parked
 //! while the other runs. Every exchange is exact bytes.
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{Duration, ms, secs, sleep}
 use @std.http.frame.{limits, Limits, Method}
 use @std.http.http.{Request, Unrouted, Response, text}
@@ -81,7 +81,7 @@ fn exchanged_bytes(c: Conn, sent: Bytes, expected: int) -> Result<Bytes, NetErro
     mut got = "".bytes()
     mut open = true
     while open && got.length < expected {
-        match within patience() { c.read(65536) } {
+        match timely(within patience() { c.read(65536) }) {
             .Ok(b) -> {
                 open = b != null
                 got = got.concat(b ?? "".bytes())
@@ -103,7 +103,7 @@ fn exchanged(c: Conn, sent: string, expected: int) -> Result<Bytes, NetError> {
 /// came back.
 fn unanswered(c: Conn, sent: Bytes) -> Result<bool, NetError> {
     c.write(sent)?
-    match within quiet() { c.read(65536) } {
+    match timely(within quiet() { c.read(65536) }) {
         .Ok(_) -> .Ok(false),
         .Err(e) -> if e.timed_out() { .Ok(true) } else { .Err(e) },
     }

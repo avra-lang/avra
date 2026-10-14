@@ -3,7 +3,7 @@
 //! is far off, and loses nothing: the socket stays open, and what the
 //! peer sends next is the next read's; an interrupt with no reader
 //! parked leaves the next read to its own deadline
-use @std.net.{listen, connect, Conn, NetError}
+use @std.net.{listen, connect, Conn, NetError, timely}
 use @std.time.{ms, secs, sleep, now_ms}
 
 /// How a failed read failed.
@@ -16,7 +16,7 @@ fn told(e: NetError) -> string {
 /// answered within one.
 fn parked_read(s: Conn) -> string {
     let from = now_ms()
-    let got = match within secs(10) { s.read(64) } {
+    let got = match timely(within secs(10) { s.read(64) }) {
         .Ok(b) -> if b == null { "end" } else { "more" },
         .Err(e) -> told(e),
     }
@@ -32,12 +32,12 @@ fn run() -> Result<string, NetError> {
     s.interrupt()
     let woke = reader.await
     let _ = c.write("after".bytes())?
-    let next = match within secs(1) { s.read(64) } {
+    let next = match timely(within secs(1) { s.read(64) }) {
         .Ok(b) -> b?.text() ?? "end",
         .Err(_) -> "failed",
     }
     s.interrupt()
-    let idle = match within ms(50) { s.read(64) } { .Ok(_) -> "read", .Err(e) -> told(e) }
+    let idle = match timely(within ms(50) { s.read(64) }) { .Ok(_) -> "read", .Err(e) -> told(e) }
     let _ = s.close()
     let _ = c.close()
     let _ = l.close()

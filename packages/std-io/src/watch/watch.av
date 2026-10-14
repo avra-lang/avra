@@ -68,6 +68,12 @@ export enum Seen {
 /// Every copy is the same watch; `close` ends it for all of them.
 export type Watch = { handle: int, fd: int, open: Cell<bool>, names: Cell<List<string>> }
 
+/// A `within` over `next`, as `next`'s own answer: a deadline the wait
+/// ran past is `.Quiet`.
+export fn or_quiet<E>(r: Result<Result<Seen, IoError>, E>) -> Result<Seen, IoError> {
+    match r { .Ok(inner) -> inner, .Err(_) -> .Ok(.Quiet) }
+}
+
 /// A watch over nothing yet — or why the host gave none.
 export fn watch() -> Result<Watch, IoError> {
     let handle = done(a_watch, avra_io_watch_open())?
@@ -126,9 +132,10 @@ impl Watch {
             )
     }
 
-    /// THE CALLING TASK PARKED UNTIL SOMETHING MOVES: what moved, or
-    /// `.Quiet` when a `within` around the call ran out first. Other
-    /// tasks run meanwhile, and a program with none simply waits.
+    /// THE CALLING TASK PARKED UNTIL SOMETHING MOVES: what moved. A
+    /// `within` around the call bounds the wait, and `or_quiet` reads
+    /// its running out as `.Quiet`. Other tasks run meanwhile, and a
+    /// program with none simply waits.
     fn next() -> Result<Seen, IoError> {
         while true {
             let seen = self.taken()?

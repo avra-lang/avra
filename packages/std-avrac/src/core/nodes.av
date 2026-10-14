@@ -333,7 +333,10 @@ export fn comp_clause_reach(c: CompClause) -> List<ExprId> {
 /// module can call what it made — so the union is written beside the
 /// enums it unions.
 export fn node_payload_rows() -> List<PayloadRow> {
-    grammar_payloads_Expr().concat(grammar_payloads_Pat()).concat(grammar_payloads_Stmt())
+    grammar_payloads_Expr()
+        .concat(grammar_payloads_Pat())
+        .concat(grammar_payloads_Stmt())
+        .concat(grammar_payloads_ParamSyntax())
 }
 
 /// Every flat expression variant's maker, read off `Expr` by
@@ -626,6 +629,13 @@ export enum Unheard {
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
 export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null }
+
+/// What a parameter seat WRITES, as a grammar rule labels it: the
+/// marks are words (`mut`, `const`, `state`, and `isolated` as `unshared`)
+/// present or absent, the rest are the seat's own parts. A rule ending
+/// `-> Record.ParamSyntax` fills this, and the seat's builder reads it.
+@derive(Grammar)
+export type ParamSyntax = { constant: bool = false, mutable: bool = false, state: bool = false, unshared: bool = false, spread: bool = false, name: Scoped, ty: TypeRef?, default: ExprId? }
 
 /// A seat's identity in the store's span table — a fn's param, a
 /// lambda's, a struct's field, an enum variant's payload. Minted
@@ -1016,4 +1026,3 @@ fn exact_format_part(a: FormatPart, b: FormatPart) -> bool {
 fn exact_format_parts(a: List<FormatPart>, b: List<FormatPart>) -> bool {
     a.length == b.length && [i for i in 0..a.length].all(exact_format_part(a[it], b[it]))
 }
-

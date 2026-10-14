@@ -18,7 +18,7 @@
 use @std.errors.{Error}
 use @std.net.{NetError}
 use @std.time.{Duration}
-use wire.{Transport, WireError}
+use wire.{Transport, WireError, wire_timely}
 use frame.{Chunker, Limits, Refusal, Decoded, chunker, unchunked, limits}
 
 /// Why a body could not be read on: it holds more than the reader may
@@ -319,13 +319,13 @@ fn refill(f: Inflow) -> Inflow {
 /// One read, given `patience` — or the caller's own deadline when absent.
 fn listened(c: dyn Transport, patience: Duration?) -> Result<Bytes?, WireError> {
     let d? = patience else { return c.wire_read(read_size()) }
-    within d { c.wire_read(read_size()) }
+    wire_timely(within d { c.wire_read(read_size()) })
 }
 
 /// `b` written whole, given `patience` — or the caller's own deadline.
 fn wrote(c: dyn Transport, b: Bytes, patience: Duration?) -> Result<int, WireError> {
     let d? = patience else { return c.wire_write(b) }
-    within d { c.wire_write(b) }
+    wire_timely(within d { c.wire_write(b) })
 }
 
 /// What reaches the peer's end: a body read to the close is done, any
