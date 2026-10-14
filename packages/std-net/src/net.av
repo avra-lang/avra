@@ -1,7 +1,6 @@
 //! @std.net — stream sockets and readiness, as values.
 //!
-//! A `Listener` is a bound port, a `Conn` a stream, a `Poller` a
-//! readiness queue (kqueue on darwin, epoll on linux), and every verb
+//! A `Listener` is a bound port, a `Conn` a stream, and every verb
 //! answers a `Result` whose failure names the verb, its subject and
 //! the platform's errno. `accept`, `read`, `write` and `connect` PARK
 //! the calling task until the socket is ready — the other tasks run
@@ -15,12 +14,12 @@
 //! `within` answers the deadline. A `Listener` and a `Conn` are also
 //! SOURCES: `accepts()` and `reads()` hand the same descriptor to a
 //! `select` arm, so one task waits on them beside a channel, a watch or
-//! a signal. Their `try_` twins never wait: a read that finds nothing answers `.Pending`, a
-//! write that takes nothing answers 0, and a poller loop decides.
+//! a signal. Their `try_` twins never wait: a read that finds nothing
+//! answers `.Pending`, and a write that takes nothing answers 0.
 use @std.errors.{Error, ErrorInfo, info}
 use @std.meta.{unbroken}
 use @std.task.{Source}
-use @std.time.{Duration, TimedOut, ms, now_ms, now_ns}
+use @std.time.{Duration, TimedOut, after, ms, now_ms, now_ns}
 
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
 extern fn avra_net_listen_all(port: int, backlog: int) -> int
@@ -45,11 +44,6 @@ extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 extern fn avra_net_close(fd: int) -> int
 extern fn avra_net_shutdown(fd: int, how: int) -> int
 extern fn avra_net_interrupt(fd: int) -> int
-extern fn avra_net_poll_new() -> int
-extern fn avra_net_watch(pfd: int, fd: int, interest: int) -> int
-extern fn avra_net_wait(pfd: int, timeout_ms: int) -> int
-extern fn avra_net_event_fd(i: int) -> int
-extern fn avra_net_event_flags(i: int) -> int
 extern fn avra_net_peer_family(fd: int) -> int
 extern fn avra_net_peer_port(fd: int) -> int
 extern fn avra_net_peer_word(fd: int, i: int) -> int
@@ -151,17 +145,6 @@ export type Listener = { fd: int, port: int, open: Cell<bool> = Cell.new(true) }
 /// a closed descriptor's number is the next connection's. Every verb
 /// asks the cell before the number reaches the kernel.
 export type Conn = { fd: int, open: Cell<bool> = Cell.new(true) }
-
-/// A readiness queue over descriptors. `open` is held in a cell every
-/// copy shares, as `Conn`'s is.
-export type Poller = { fd: int, open: Cell<bool> = Cell.new(true) }
-
-/// One readiness report: what the descriptor is ready for, and
-/// whether its peer hung up or the socket holds an error.
-export type Event = { fd: int, readable: bool, writable: bool, hangup: bool, failed: bool }
-
-/// What a poller is asked to report for a descriptor.
-export enum Interest { Read, Write, Both, None }
 
 /// What a read found.
 export enum Read {
@@ -284,17 +267,6 @@ fn no_budget_for<T>(verb: string, subject: string, timeout: Duration) -> Result<
 /// — it is the wait that carries no budget at all, and forever is
 /// what it means.
 fn spent(ms: int?) -> bool { ms ?? 0 < 0 }
-
-fn no_budget(ms: int) -> Result<List<Event>, NetError> {
-    failed("wait", "poller within ${ms} ms", 0 - avra_errno_invalid())
-}
-
-/// A readiness queue.
-export fn poller() -> Result<Poller, NetError> {
-    let fd = avra_net_poll_new()
-    if fd < 0 { return failed("poller", "", fd) }
-    .Ok(Poller { fd: fd })
-}
 
 impl Listener {
     /// The next connection, the calling task parked until one arrives.
@@ -496,62 +468,6 @@ impl Conn {
         let family = avra_net_peer_family(fd)
         if family != 4 && family != 6 { return null }
         addressed(family, (i: int) -> avra_net_peer_word(fd, i))
-    }
-}
-
-impl Poller {
-    /// Interest in `fd`; `.None` stops watching it. Answers the
-    /// descriptor.
-    fn watch(fd: int, interest: Interest) -> Result<int, NetError> {
-        let r = avra_net_watch(self.live("watch")?, fd, bits_of(interest))
-        if r < 0 { return failed("watch", "fd ${fd}", r) }
-        .Ok(fd)
-    }
-
-    /// The descriptors ready now, waiting up to `timeout` for the
-    /// first — null waits until one is. The budget is never a
-    /// sentinel here either: a negative one is refused rather than
-    /// read as forever, which absence already spells. An interrupted
-    /// wait answers none.
-    fn wait(timeout: Duration?) -> Result<List<Event>, NetError> {
-        let budget = timeout?.ms
-        if spent(budget) { return no_budget(budget!) }
-        let n = avra_net_wait(self.live("wait")?, budget ?? -1)
-        if n < 0 { return failed("wait", "poller", n) }
-        .Ok([event_at(i) for i in 0..n])
-    }
-
-    /// Closed in every copy; answers the descriptor it held. The cell
-    /// empties before the descriptor goes.
-    fn close() -> Result<int, NetError> {
-        let fd = self.live("close")?
-        self.open.set(false)
-        let r = avra_net_close(fd)
-        if r < 0 { return failed("close", "poller", r) }
-        .Ok(fd)
-    }
-
-    /// The descriptor while the queue is open — the one door every verb
-    /// reaches the kernel through; refused as closed, naming `verb`,
-    /// once any copy has closed it.
-    fn live(verb: string) -> Result<int, NetError> {
-        if !self.open.get() { return gone_where(verb, "poller") }
-        .Ok(self.fd)
-    }
-}
-
-fn bits_of(interest: Interest) -> int {
-    match interest { .Read -> 1, .Write -> 2, .Both -> 3, .None -> 0 }
-}
-
-fn event_at(i: int) -> Event {
-    let flags = avra_net_event_flags(i)
-    Event {
-        fd: avra_net_event_fd(i),
-        readable: flags & 1 == 1,
-        writable: flags & 2 == 2,
-        hangup: flags & 4 == 4,
-        failed: flags & 8 == 8,
     }
 }
 
@@ -841,108 +757,153 @@ export fn interleaved(xs: List<Address>) -> List<Address> {
 /// §5's Connection Attempt Delay).
 fn attempt_delay() -> int { 250 }
 
+/// One attempt still connecting: its descriptor, whether a `select` has
+/// filed its wake, and what the connect settled — `1` while it has not.
+/// The scheduler arms a descriptor optimistically, so a look is not the
+/// connect's own answer until `avra_net_dialed` or the peer's address
+/// says it is (`dial_ready`).
+type Dial = { fd: int, armed: Cell<bool> = Cell.new(false), state: Cell<int> = Cell.new(1) }
+
+/// Whether the connect settled: the peer answers once it has, and a
+/// socket the kernel refused answers its error. A still-pending connect
+/// answers neither, whatever the scheduler's optimistic arm says.
+fn dial_ready(d: Dial) -> bool {
+    if !d.armed.get() { return false }
+    if d.state.get() != 1 { return true }
+    if avra_net_peer_family(d.fd) >= 0 { d.state.set(0); return true }
+    if avra_fiber_fd_ready(d.fd, 1) == 0 { return false }
+    let err = avra_net_dialed(d.fd)
+    if err == 0 { return false }
+    d.state.set(err)
+    true
+}
+
+/// A connecting descriptor as a supply of the one thing it will hand
+/// over — itself — so a race can wait on several of them beside a timer.
+fn dial_source(d: Dial) -> Source<int> {
+    Source {
+        ready: () -> dial_ready(d),
+        next: () -> if parked(d.fd, true) { d.fd } else { null },
+        taken: () -> if d.state.get() == 1 { null } else { d.fd },
+        arm: (a: int) -> {
+            d.armed.set(true)
+            avra_wait_fd(d.fd, 1, a, 0)
+        },
+        ended: () -> false,
+        lost: () -> 0,
+        work: null,
+    }
+}
+
+/// The first dial ready now, or the one a park answers — the blocking
+/// half of the many-dials source; a `select` arm uses `ready`/`taken`.
+fn first_dial(each: List<Source<int>>) -> int? {
+    let at = each.find_index((s: Source<int>) -> s.ready())
+    if at != null { return each[at!].taken() }
+    for s in each { s.arm(0) }
+    let _ = avra_wait_park()
+    first_dial(each)
+}
+
+/// MANY DIALS AS ONE SUPPLY: ready when any is, taking the first that
+/// is, and arming every member's wake under the arm index — `any(dials)`
+/// as the one source a `select` arm waits beside its timers.
+fn dials_source(live: List<Dial>) -> Source<int> {
+    let each = [dial_source(d) for d in live]
+    Source {
+        ready: () -> each.any((s: Source<int>) -> s.ready()),
+        next: () -> first_dial(each),
+        taken: () -> {
+            let at = each.find_index((s: Source<int>) -> s.ready())
+            if at == null { null } else { each[at!].taken() }
+        },
+        arm: (a: int) -> { for s in each { s.arm(a) } },
+        ended: () -> each.all((s: Source<int>) -> s.ended()),
+        lost: () -> each.fold(0, (a: int, s: Source<int>) -> a + s.lost()),
+        work: null,
+    }
+}
+
+/// The attempts a race has in flight. A record so a cancel unwinds
+/// through one `defer` that closes them, whatever path leaves.
+type Attempts = { live: Cell<List<Dial>> = Cell.new([]) }
+
+impl Attempts {
+    /// One more attempt in flight.
+    fn keep(fd: int) { self.live.set(self.live.get().concat([Dial { fd: fd }])) }
+
+    /// The attempt that settled, gone from the flight.
+    fn drop(fd: int) { self.live.set([d for d in self.live.get() if d.fd != fd]) }
+
+    /// The attempts still in flight, as one list.
+    fn standing() -> List<Dial> { self.live.get() }
+
+    /// Every attempt still in flight, closed.
+    fn abandoned() {
+        for d in self.live.get() { let _ = avra_net_close(d.fd) }
+    }
+}
+
 /// A connection raced across `addresses`, HAPPY EYEBALLS (RFC 8305):
 /// one attempt starts, the next joins after the attempt delay or at
 /// once when one fails, the first to connect wins and every other is
 /// closed. Its descriptor, or the last attempt's -errno.
 fn raced(addresses: List<Address>, port: int, deadline: int) -> int {
-    let p = avra_net_poll_new()
-    if p < 0 { return p }
-    defer avra_net_close(p)
-    mut race = Race {
-        poller: p,
-        order: interleaved(addresses),
-        port: port,
-        next: 0,
-        last: 0 - avra_errno_invalid(),
-        due: now_ms(),
-        deadline: deadline,
-    }
-    defer race.abandoned()
-    race.run()
-}
-
-/// A race in flight: the poller its attempts are watched on, the next
-/// address to try and when, the attempts still connecting, and the
-/// last refusal.
-type Race = {
-    poller: int,
-    order: List<Address>,
-    port: int,
-    next: int,
-    live: Cell<List<int>> = Cell.new([]),
-    last: int,
-    due: int,
-    deadline: int,
-}
-
-impl Race {
-    /// Turns until one answers; each parks or starts an attempt, so
-    /// the turns are bounded by the addresses and the deadline.
-    mut fn run() -> int {
-        let answer? = self.turn() else { return self.run() }
-        answer
-    }
-
-    /// Every attempt still in flight, closed.
-    fn abandoned() {
-        for fd in self.live.get() { let _ = avra_net_close(fd) }
-    }
-
-    /// One turn: an attempt started if one is due, the task parked
-    /// until an attempt settles, the next is due or the deadline, and
-    /// what settled read. An answer ends the race.
-    mut fn turn() -> int? {
-        let now = now_ms()
-        if now >= self.deadline { return 0 - avra_errno_timed_out() }
-        if self.waiting() && now >= self.due { self.start(now) }
-        if self.live.get().is_empty() { return if self.waiting() { null } else { self.last } }
-        let until = if self.waiting() && self.due < self.deadline { self.due } else { self.deadline }
-        if avra_fiber_park_fd(self.poller, 0, until - now) == 0 && now_ms() < until {
-            return 0 - avra_errno_timed_out()
+    let order = interleaved(addresses)
+    let left = deadline - now_ms()
+    let limit = after(Duration { ms: if left < 0 { 0 } else { left } })
+    mut due = after(ms(0))
+    mut next = 0
+    mut last = 0 - avra_errno_invalid()
+    mut attempt = Attempts {}
+    mut answer = 0 - avra_errno_timed_out()
+    defer attempt.abandoned()
+    while true {
+        while next < order.length && due.due() {
+            let fd = avra_net_dial_address(order[next].text, port)
+            next = next + 1
+            if fd >= 0 {
+                attempt.keep(fd)
+                due = after(ms(attempt_delay()))
+            } else {
+                last = fd
+                due = after(ms(0))
+            }
         }
-        self.settled()
-    }
-
-    fn waiting() -> bool { self.next < self.order.length }
-
-    /// The next address dialed and watched; one refused at once lets
-    /// the one after start without waiting.
-    mut fn start(now: int) {
-        let fd = avra_net_dial_address(self.order[self.next].text, self.port)
-        self.next = self.next + 1
-        if fd >= 0 && avra_net_watch(self.poller, fd, bits_of(.Write)) >= 0 {
-            self.live.push(fd)
-            self.due = now + attempt_delay()
-        } else {
-            if fd >= 0 { let _ = avra_net_close(fd) }
-            self.last = fd
-            self.due = now
+        if attempt.standing().is_empty() && next >= order.length {
+            answer = last
+            break
         }
-    }
-
-    /// The attempts that settled: the first connected one wins; a
-    /// failed one is closed and the next address is due at once.
-    /// Each outcome is read ONCE: reading a socket's error clears it.
-    mut fn settled() -> int? {
-        let n = avra_net_wait(self.poller, 0)
-        let fds = [avra_net_event_fd(i) for i in 0..if n < 0 { 0 } else { n }]
-        let errs = [avra_net_dialed(fd) for fd in fds]
-        let won = errs.index_of(0)
-        if won >= 0 {
-            self.live.set([f for f in self.live.get() if f != fds[won]])
-            return fds[won]
+        // The winning descriptor when one is >= 0, -1 when another
+        // attempt is due, and -2 when the whole race's deadline passed.
+        let outcome = select {
+            got in dials_source(attempt.standing()) -> {
+                let d = attempt.standing().find((x: Dial) -> x.fd == got)
+                let state = match d {
+                    null -> 0 - avra_net_errno_closed()
+                    x? -> x.state.get()
+                }
+                if state == 0 {
+                    got
+                } else {
+                    last = state
+                    let _ = avra_net_close(got)
+                    attempt.drop(got)
+                    due = after(ms(0))
+                    0 - 1
+                }
+            }
+            due if next < order.length -> 0 - 1
+            limit -> 0 - 2
         }
-        for i, fd in fds { self.dropped(fd, errs[i]) }
-        null
+        if outcome >= 0 {
+            attempt.drop(outcome)
+            answer = outcome
+            break
+        }
+        if outcome != 0 - 1 { break }
     }
-
-    mut fn dropped(fd: int, err: int) {
-        self.last = err
-        self.live.set([f for f in self.live.get() if f != fd])
-        let _ = avra_net_close(fd)
-        self.due = now_ms()
-    }
+    answer
 }
 
 // ── Admission ───────────────────────────────────────────────────

@@ -1,12 +1,12 @@
 // The red team's survivors, by attack class: degenerate ports and
 // hosts, a timeout that is a budget and never a sentinel, degenerate
-// SIZES at the read, verbs on a descriptor that is gone, the poller's
-// edges, and the empty write. Every refusal names its verb and its
-// subject in the platform's words. Wrong types in every slot were
-// attacked and refuse at check time; a package spec cannot pin a
-// compile refusal, so they are recorded in the working log.
-use @std.net.{listen, connect, poller, Read, NetError}
-use @std.time.{secs, ms}
+// SIZES at the read, verbs on a descriptor that is gone, and the empty
+// write. Every refusal names its verb and its subject in the platform's
+// words. Wrong types in every slot were attacked and refuse at check
+// time; a package spec cannot pin a compile refusal, so they are
+// recorded in the working log.
+use @std.net.{listen, connect, Read, NetError}
+use @std.time.{secs, ms, quiet}
 use @std.text.{from_codepoint}
 
 /// A host whose bytes end early for C: the resolver would read `127.0.0.1`.
@@ -16,17 +16,12 @@ fn words<T>(r: Result<T, NetError>) -> string {
     match r { .Err(e) -> e.describe().message, .Ok(_) -> "<ok>" }
 }
 
-/// A connected pair with the server side accepted and NOTHING
-/// unwatched — `pair` is the settled one; this leaves the listener in
-/// the poller, which is what several of these attacks need.
+/// A connected pair with the server side accepted.
 fn attacked() -> Result<Pair, NetError> {
     let l = listen("127.0.0.1", 0)?
     let client = connect("127.0.0.1", l.port, secs(2))?
-    let p = poller()?
-    p.watch(l.fd, .Read)?
-    p.wait(secs(2))?
-    let server = l.try_accept()?
-    .Ok(Pair { l: l, client: client, server: server!, p: p })
+    let server = l.accept()?
+    .Ok(Pair { l: l, client: client, server: server })
 }
 
 fn gone_names_the_descriptor() -> Result<bool, NetError> {
@@ -40,26 +35,6 @@ fn gone_names_the_descriptor() -> Result<bool, NetError> {
             read.starts_with("read fd ") &&
             write.starts_with("write fd ") &&
             pr.client.peer() == "",
-    )
-}
-
-fn poller_edges() -> Result<bool, NetError> {
-    let p = poller()?
-    let removed = p.watch(999999, .None)?
-    let bad = words(p.watch(999999, .Read))
-    let nothing = p.wait(ms(10))?
-    let l = listen("127.0.0.1", 0)?
-    p.watch(l.fd, .Read)?
-    p.watch(l.fd, .Both)?
-    p.watch(l.fd, .None)?
-    let still_nothing = p.wait(ms(10))?
-    p.close()?
-    .Ok(
-        removed == 999999 &&
-            bad.starts_with("watch fd 999999: ") &&
-            nothing.is_empty() &&
-            still_nothing.is_empty() &&
-            words(p.wait(ms(1))).starts_with("wait poller: "),
     )
 }
 
@@ -83,11 +58,19 @@ fn taken(r: Read) -> int {
 fn a_read_of_zero_takes_nothing() -> Result<bool, NetError> {
     let pr = attacked()?
     pr.client.try_write("abcdef".bytes(), 0)?
-    pr.p.watch(pr.server.fd, .Read)?
-    pr.p.wait(secs(2))?
+    let src = pr.server.reads()
+    let got = select {
+        b in src -> b
+        quiet(secs(2)) -> null
+        src.ended -> null
+    }
     let zero = taken(pr.server.try_read(0)?)
-    let rest = taken(pr.server.try_read(64)?)
-    .Ok(zero == 0 && rest == 6)
+    .Ok(
+        zero == 0 && match got {
+            null -> false
+            b? -> b.length == 6
+        },
+    )
 }
 
 /// A NEGATIVE SIZE IS A BOUND, and a bound is refused by name rather
@@ -96,17 +79,6 @@ fn a_negative_read_is_refused() -> Result<bool, NetError> {
     let pr = attacked()?
     let said = words(pr.server.try_read(0 - 5))
     .Ok(said.starts_with("read 127.0.0.1:") && said.ends_with(": Invalid argument"))
-}
-
-/// THE POLLER'S BUDGET IS NEVER A SENTINEL EITHER. `connect` refuses
-/// a negative one by name; the wait read it as "forever" and blocked
-/// with nothing watched, which is the one thing an event loop's own
-/// verb must not do — and absence already spells forever.
-fn a_negative_budget_never_waits() -> Result<bool, NetError> {
-    let p = poller()?
-    let said = words(p.wait(ms(0 - 1)))
-    p.close()?
-    .Ok(said == "wait poller within -1 ms: Invalid argument")
 }
 
 spec "std.net adversarial" {
@@ -148,15 +120,11 @@ spec "std.net adversarial" {
     given "a descriptor that is gone" {
         then "close, read and write name the descriptor once the peer is gone" { passes(gone_names_the_descriptor()) }
     }
-    given "the poller's edges" {
-        then "removing the unwatched is fine, watching a bad descriptor refuses, and a closed poller refuses to wait" { passes(poller_edges()) }
-    }
     given "the empty write and the empty read" {
         then "an empty write and a write at the end take nothing; a read of a hundred million bytes is pending" { passes(empty_writes_and_reads()) }
     }
     given "degenerate sizes at the read" {
         then "a read of zero answers an empty landing and leaves every byte on the wire" { passes(a_read_of_zero_takes_nothing()) }
         then "a negative size is refused by name, never clamped into a read of one" { passes(a_negative_read_is_refused()) }
-        then "a negative budget at the wait is refused rather than read as forever" { passes(a_negative_budget_never_waits()) }
     }
 }

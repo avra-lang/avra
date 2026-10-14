@@ -1,8 +1,8 @@
 //! The client under attack by a peer that speaks raw bytes: a reply
 //! torn across reads, one the framer refuses, one cut short, one
 //! read to the close, one chunked, one that never comes.
-use @std.net.{Listener, Conn, listen, poller, timely}
-use @std.time.{Duration, TimedOut, ms, secs}
+use @std.net.{Listener, Conn, listen, timely}
+use @std.time.{Duration, TimedOut, ms, secs, now_ns}
 use @std.http.frame.{framed, limits, Limits}
 use @std.http.http.{Header}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
@@ -22,17 +22,19 @@ fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     .Ok(Wire { c: c, peer: peer, l: l })
 }
 
+extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_park() -> int
+
 /// Whether the peer's receive buffer holds bytes, UNREAD — the reset
 /// law's precondition. A write returning and an accept succeeding do
 /// not by themselves mean delivery has landed; under load it has not.
-/// The poller blocks on the kernel's own readiness signal instead of a
-/// guessed budget.
+/// The task parks on the descriptor itself (arm 1) beside a bound
+/// (arm 0), so the look consumes nothing: the bytes stay for the reset.
 fn arrived(peer: Conn) -> Result<bool, ClientError> {
-    let p = lifted(poller())?
-    let _ = lifted(p.watch(peer.fd, .Read))?
-    let events = lifted(p.wait(verdict_bound()))?
-    let _ = lifted(p.close())?
-    .Ok(events.any(it.fd == peer.fd && it.readable))
+    avra_wait_fd(peer.fd, 0, 1, 0)
+    avra_wait_until(now_ns() + verdict_bound().ms * 1000000, 0, 0)
+    .Ok((avra_wait_park() >> 32) == 1)
 }
 
 /// The same, with the request READ, so a later close is a FIN and

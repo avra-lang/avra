@@ -9,8 +9,8 @@
 //! request unread is the network's verdict, `net.read` — asked
 //! SOAK_LOOPS times, each on a fresh connection, counting what came
 //! back instead.
-use @std.net.{Conn, Listener, NetError, listen, poller, timely}
-use @std.time.{TimedOut, ms, secs, sleep}
+use @std.net.{Conn, Listener, NetError, listen, timely}
+use @std.time.{TimedOut, ms, secs, sleep, now_ns}
 use @std.io.{env_or}
 use @std.text.{parse_int}
 use @std.http.frame.{limits}
@@ -76,13 +76,17 @@ fn reset_on(l: Listener) -> Result<string, ClientError> {
     .Ok(kind_of(waiting_is_null(within ms(100) { awaited(c) })))
 }
 
+extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
+extern fn avra_wait_until(at_ns: int, arm: int, member: int)
+extern fn avra_wait_park() -> int
+
 /// Whether the peer holds the request unread — the law's precondition.
+/// The task parks on the descriptor itself (arm 1) beside a bound (arm
+/// 0), so the look consumes nothing: the bytes stay for the reset.
 fn arrived(peer: Conn) -> Result<bool, ClientError> {
-    let p = lifted(poller())?
-    let _ = lifted(p.watch(peer.fd, .Read))?
-    let events = lifted(p.wait(secs(2)))?
-    let _ = lifted(p.close())?
-    .Ok(events.any(it.fd == peer.fd && it.readable))
+    avra_wait_fd(peer.fd, 0, 1, 0)
+    avra_wait_until(now_ns() + secs(2).ms * 1000000, 0, 0)
+    .Ok((avra_wait_park() >> 32) == 1)
 }
 
 /// Reads until the reply is whole.
