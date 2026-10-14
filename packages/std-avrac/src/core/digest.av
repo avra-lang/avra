@@ -146,3 +146,24 @@ export fn hex(b: Bytes) -> string { [hex_pair(b.at(i)) for i in 0..b.length].joi
 fn hex_pair(v: int) -> string { "${hex_digit(v >> 4)}${hex_digit(v & 15)}" }
 
 export fn hex_digit(v: int) -> string { hex_digits.substring(v, v + 1) }
+
+/// A whole int as sixteen lowercase hex digits, its high digit first.
+export fn hex_word(v: int) -> string { [hex_digit((v >> 60 - 4 * i) & 15) for i in 0..16].join("") }
+
+/// One hex digit's value from its octet, -1 for any other octet.
+fn hex_nibble(c: int) -> int {
+    when {
+        c >= 48 && c <= 57 -> c - 48
+        c >= 97 && c <= 102 -> c - 87
+        _ -> -1
+    }
+}
+
+/// `hex` read back; absent for text that is not whole pairs of digits.
+export fn unhex(s: string) -> Bytes? {
+    if s.length % 2 != 0 { return null }
+    let octets = s.bytes()
+    let nibbles = [hex_nibble(octets.at(i)) for i in 0..s.length]
+    if nibbles.any(it < 0) { return null }
+    [nibbles[2 * i] * 16 + nibbles[2 * i + 1] for i in 0..s.length / 2].bytes()
+}
