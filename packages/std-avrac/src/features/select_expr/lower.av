@@ -54,14 +54,22 @@ fn scanned_reg(mut cx: LowerCx, e: ExprId, arms: List<ExprId>) -> Reg {
     // an arm that is neither was refused by name
     if waits.length + some_list(other).length != arms.length { return cx.result(e) }
     let answer: Reg? = if cx.view.types.shape_of(ty) is .Void { null } else { cx.seeded_cell(ty, cx.hollow_of(ty)) }
+    let site = cx.const_str(written_at(cx, e))
     cx.loop_start()
     let s = Scan { waits: waits, other: other, answer: answer, turn: cx.loops.length - 1 }
     cx.loop_cond(cx.const_bool(true))
-    let _ = cx.wait_enter(Type.Int)
+    let _ = cx.wait_enter(Type.Int, site)
     asked(cx, s, 0)
     cx.loop_end()
     let kept? = answer else { return cx.hollow_of(ty) }
     cx.loaded(e, kept)
+}
+
+/// Where the `select` was written, `file:line`: the task's record keeps
+/// this text, so a listing says where a task rests.
+fn written_at(cx: LowerCx, e: ExprId) -> string {
+    let at? = cx.view.store.expr_span(e) else { return "" }
+    "${cx.view.decls.file_named(cx.view.file)}:${cx.view.source.linecol(at.lo).line}"
 }
 
 /// A waiting arm read for the scan: its guard and its head lowered
