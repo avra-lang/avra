@@ -24,6 +24,7 @@ use @std.io.{
     env,
     open_beneath,
     Opened,
+    AppendFile,
 }
 use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
@@ -137,6 +138,9 @@ export type Pack = {
     /// The value file, open once for the revision it was opened at (none or one handle).
     val_open: Cell<List<Opened>>,
     val_open_rev: Cell<int>,
+    /// This writer's own segment, open once for the path it was opened at (none or one handle).
+    seg_open: Cell<List<AppendFile>>,
+    seg_path: Cell<string>,
 }
 
 /// One store's pack, empty — nothing read from disk until the first ask.
@@ -167,6 +171,8 @@ export fn pack_at(root: string, print: string) -> Pack {
         order: list_cell(),
         val_open: list_cell(),
         val_open_rev: Cell.new(0 - 1),
+        seg_open: list_cell(),
+        seg_path: Cell.new(""),
     }
 }
 
@@ -627,9 +633,24 @@ fn writer_segment(pack: Pack) -> string {
     joined_path(pack.dir, name)
 }
 
+/// This writer's own segment, held open across frames so a frame is a write and never
+/// an open. A path that moved closes the old handle first; the same path keeps the one.
+fn segment_file(pack: Pack, path: string) -> AppendFile? {
+    if pack.seg_path.get() == path {
+        let held = pack.seg_open.get().first()
+        if held != null { return held }
+    }
+    for old in pack.seg_open.get() { let _ = old.closed() }
+    // LICENSED input.store_io: the store's own segment, opened once under the writer's print
+    let o = match opened_for_append(path) { .Ok(f) -> f, .Err(_) -> { return null } }
+    pack.seg_open.set([o])
+    pack.seg_path.set(path)
+    o
+}
+
 fn append(pack: Pack, body: Bytes) {
     let _ = make_dirs(pack.dir)
-    let af? = match opened_for_append(writer_segment(pack)) { .Ok(f) -> f, .Err(_) -> null } else { return }
+    let af? = segment_file(pack, writer_segment(pack)) else { return }
     if !pack.headed.get() {
         let _ = af.write(head_bytes(pack.print))
         pack.headed.set(true)
@@ -637,7 +658,6 @@ fn append(pack: Pack, body: Bytes) {
     let _ = af.write(octets_only(body))
     kill_at_commit()
     let _ = af.write(marker_of(body))
-    let _ = af.closed()
     pack.frames.set(pack.frames.get() + 1)
 }
 
