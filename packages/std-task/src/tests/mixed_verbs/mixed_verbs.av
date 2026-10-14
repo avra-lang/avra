@@ -1,0 +1,22 @@
+//! proves `next` and the non-parking `taken` read the same channel in
+//! one order: after each parked wait the reader drains the buffer
+//! without parking, and a detached producer's 1,2,3,4,5 stay in order.
+use @std.task.{open_channel, Channel}
+
+fn feed(ch: Channel<int>) {
+    for i in 1..6 { let _ = ch.sink.send(i) }
+    ch.sink.close()
+}
+
+let ch = open_channel<int>(2)
+let _ = spawn feed(ch)
+mut v = ch.source.next()
+while v != null {
+    println("${v!}")
+    mut t = ch.source.taken()
+    while t != null {
+        println("${t!}")
+        t = ch.source.taken()
+    }
+    v = ch.source.next()
+}
