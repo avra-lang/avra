@@ -496,6 +496,28 @@ fn unembedded(_path: string) -> Result<string, string> {
     .Err("`embed` reads a file at compile time, into a const — this run reached it outside one")
 }
 
+/// A scalar literal's settlement without running a body: the machine's own
+/// fingerprint and crossing of the value `shown` spells, null for any other.
+export fn settled_literal(l: Lowered, shown: MetaVal) -> Settled? {
+    let v: Val? = match shown {
+        .Int(n) -> Val.I(n),
+        .Bool(b) -> Val.B(b),
+        .Text(s) -> Val.S(s),
+        rest -> null,
+    }
+    let word? = v else { return null }
+    let m = fresh_machine(l)
+    mut heap = new_meta_heap()
+    let crossed = m.meta_of(word, heap)
+    Settled {
+        answer: crossed,
+        heap: heap,
+        embeds: [],
+        fingerprint: m.value_hash(word),
+        ran: [l.entry.name],
+    }
+}
+
 /// A const's initializer run to its compiler-owned value tree.
 /// Refused BEFORE running when any body reaches the world, DURING
 /// it when the budget runs out or a body traps, and AFTER it when

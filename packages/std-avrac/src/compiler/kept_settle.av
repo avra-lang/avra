@@ -23,6 +23,7 @@ use core.{
     digest_of,
     qtrace,
     traced,
+    settle_diff,
     FileId,
     DeclId,
     DeclKind,
@@ -43,10 +44,13 @@ use features.{
     SettleRoot,
     SeatValue,
     Budgets,
+    MetaVal,
+    scalar_literal,
+    spelled_type,
 }
-use compiler.backend.{reaches_world}
+use compiler.backend.{reaches_world, settled_literal}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Unit, type_shape_key}
+use compiler.lower.{Unit, Lowered, type_shape_key}
 use core.{Type}
 use @std.relation.engine.{list_cell}
 
@@ -89,8 +93,7 @@ impl Workspace {
         let reader = self.decls.file(ask.file).path
         let scope = self.opened_reads(reader)
         let touched_from = self.decls.touched_types.get().length
-        let r = self
-            .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
+        let r = self.settlement_or_literal(ask, s)
         self.note_const_types(ask.file, s)
         self.note_touched(touched_from)
         let frame = self.popped_settle_frame()
@@ -99,6 +102,67 @@ impl Workspace {
         let kept? = at else { return r }
         if self.hold.body_asks.get().length == asked { self.keep_verdict(kept.key, r, frame, kept.layout, read) }
         r
+    }
+
+    /// The const's settlement: its literal's own when it spells one the machine
+    /// would answer as itself, else a run. `AVRA_SETTLE_DIFF` runs both and says
+    /// where they differ.
+    fn settlement_or_literal(ask: SettleAsk, s: StmtId) -> Result<Settled, Unsettled> {
+        let literal? = self.literal_settlement(ask, s) else { return self.settlement_run(ask, s) }
+        if !settle_diff() { return .Ok(literal) }
+        let ran = self.settlement_run(ask, s)
+        let same = match ran {
+            .Ok(v) -> settled_wire(v) == settled_wire(literal),
+            .Err(_) -> false,
+        }
+        qtrace("Q\tsettle_diff\t${ask.name}\t${if same { "same" } else { "DIFFER" }}\n")
+        ran
+    }
+
+    /// The const's initializer run.
+    fn settlement_run(ask: SettleAsk, s: StmtId) -> Result<Settled, Unsettled> {
+        self
+            .settlement_of(ask.file, self.analysis(ask.file).view.store.const_value(s)!, ask.name, ask.seats)
+    }
+
+    /// A seat-less const whose value is an int, bool or text literal, declared
+    /// as that type or not at all: settled from its node, its unit logged so the
+    /// kept verdict stands on the const's own declaration.
+    fn literal_settlement(ask: SettleAsk, s: StmtId) -> Settled? {
+        if !ask.seats.is_empty() { return null }
+        let view = self.analysis(ask.file).view
+        let e? = view.store.const_value(s) else { return null }
+        let shown? = scalar_literal(view.store, e) else { return null }
+        let held? = self.literal_type(shown) else { return null }
+        let declared = view.store.binding_ty(s)
+        if declared != null && spelled_type(self.decls.types, declared) != held { return null }
+        let reader = self.decls.file(ask.file).path
+        self.hold.settling.set(self.hold.settling.get().concat([reader]))
+        let u = self.logged_unit(entry_wanted(ask.file, e, "settling\$${ask.name}", ask.seats))
+        let open = self.hold.settling.get()
+        self.hold.settling.set(open.slice(0, open.length - 1))
+        let entry? = u.bodies.first() else { return null }
+        settled_literal(
+            Lowered {
+                fns: [],
+                entry: entry,
+                types: self.decls.types,
+                diagnostics: [],
+                externs: [],
+                statics: [],
+            },
+            shown,
+        )
+    }
+
+    /// The type a scalar literal wears.
+    fn literal_type(shown: MetaVal) -> TypeId? {
+        match shown {
+            .Int(_) -> self.decls.types.type(int),
+            .Bool(_) -> self.decls.types.type(bool),
+            .Text(_) -> self.decls.types.type(string),
+            rest -> null,
+        }
     }
 
     /// A const's kept layout line: every declared type its answer reaches, as

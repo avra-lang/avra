@@ -39,6 +39,20 @@ use @std.meta.{Node}
 // every part is spelled. That form IS the crossing tree, built here
 // once for typing (does it settle?) and lowering (what is it?).
 
+/// The scalar a literal at `e` spells; null for any other expression.
+export fn scalar_literal(store: SyntaxArena, e: ExprId) -> MetaVal? {
+    let raw: Expr = store.expr(e)
+    let n: int? = raw.int_of()
+    if n != null { return MetaVal.Int(n!) }
+    let bits: int? = raw.bits_of()
+    if bits != null { return MetaVal.Float(bits!) }
+    let t: string? = raw.text_of()
+    if t != null { return MetaVal.Text(t!) }
+    let b: bool? = raw.bool_of()
+    if b != null { return MetaVal.Bool(b!) }
+    null
+}
+
 /// The value the source alone spells at `e`, as the crossing tree
 /// every compile-time value already travels as. Null the moment a
 /// part needs the evaluator — an omitted default, a call, a name.
@@ -49,15 +63,9 @@ export fn literal_meta(
     e: ExprId,
     mut heap: MetaHeap,
 ) -> MetaVal? {
+    let spelled = scalar_literal(store, e)
+    if spelled != null { return spelled }
     let raw: Expr = store.expr(e)
-    let n: int? = raw.int_of()
-    if n != null { return MetaVal.Int(n!) }
-    let bits: int? = raw.bits_of()
-    if bits != null { return MetaVal.Float(bits!) }
-    let t: string? = raw.text_of()
-    if t != null { return MetaVal.Text(t!) }
-    let b: bool? = raw.bool_of()
-    if b != null { return MetaVal.Bool(b!) }
     match raw {
         .NullLit -> MetaVal.Absent,
         .ListLit(elems) -> {

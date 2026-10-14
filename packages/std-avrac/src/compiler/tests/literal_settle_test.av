@@ -1,0 +1,57 @@
+// A SCALAR LITERAL CONST SETTLES FROM ITS NODE, AND THE ANSWER IS THE RUN'S: for each
+// const the literal path answers, its wire (fingerprint, crossing, bodies run) equals
+// the wire of the settlement run; every const it must not answer, it declines.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace, settled_wire}
+use compiler.host.{memory_host}
+use features.{SettleRoot}
+
+const LITERAL_PATH: string = "/w/src/main.av"
+
+fn literal_workspace() -> Workspace {
+    let text = "const N: int = 5\nconst T: string = \"hi\"\nconst B: bool = true\nconst U = 7\nconst Z: int = 0\nconst E: string = \"\"\nconst O: int? = 5\nconst L: List<int> = [1]\nconst S: int = 1 + 2\nconst Q: float = 1.5\nexport fn go() -> int { N }\n"
+    test_workspace(
+        memory_host(
+            {"/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n", LITERAL_PATH: text},
+            ["/w/avra.toml", LITERAL_PATH],
+        ),
+        "/w",
+    )
+}
+
+/// What the literal path and the run say of the const `name`: null when the literal
+/// path declines, else whether the two wires agree.
+fn literal_says(ws: Workspace, name: string) -> bool? {
+    let _ = ws.analyze_file(LITERAL_PATH)
+    let f = ws.file_id(LITERAL_PATH)
+    let d? = ws.decls.decls_of_file(f).find((x) -> ws.decls.decl(x).name == name) else { return null }
+    let s = ws.decls.decl(d).stmt
+    let id = ws.settle_id(f, SettleRoot.Const(s), [])
+    let ask = ws.settle_asks.get()[id]
+    let literal? = ws.literal_settlement(ask, s) else { return null }
+    match ws.settlement_run(ask, s) {
+        .Ok(ran) -> settled_wire(ran) == settled_wire(literal),
+        .Err(_) -> false,
+    }
+}
+
+spec "compiler/settle — a scalar literal const settles from its node" {
+    then "an int, a text, a bool and an unannotated literal each answer as the run does" {
+        let ws = literal_workspace()
+        literal_says(ws, "N") == true &&
+            literal_says(ws, "T") == true &&
+            literal_says(ws, "B") == true &&
+            literal_says(ws, "U") == true
+    }
+    then "zero and the empty text answer as the run does" {
+        let ws = literal_workspace()
+        literal_says(ws, "Z") == true && literal_says(ws, "E") == true
+    }
+    then "a nullable seat, a list, an expression and a float are left to the run" {
+        let ws = literal_workspace()
+        literal_says(ws, "O") == null &&
+            literal_says(ws, "L") == null &&
+            literal_says(ws, "S") == null &&
+            literal_says(ws, "Q") == null
+    }
+}
