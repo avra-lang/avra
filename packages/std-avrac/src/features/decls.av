@@ -2827,8 +2827,54 @@ impl Decls {
     }
 
     /// THE symbol a LIFTED body lowers to. A lambda has no name of
-    /// its own, so it takes its file's and the node that wrote it.
-    fn lifted_symbol(f: FileId, e: ExprId) -> string { self.file_symbol(f, "l${e.index}") }
+    /// its own, so it takes its file's and the node that wrote it. A
+    /// WRITTEN lambda is content-addressed — the file's module and stem,
+    /// its content, and its turn among the lambdas written alike — so a
+    /// line added above it moves nothing. A lambda a TEMPLATE copied here
+    /// or a derivation minted wears its arena index instead: its offsets
+    /// are another file's, so two copies of one template are alike by
+    /// content and a raw index is the one name that keeps them apart.
+    fn lifted_symbol(f: FileId, e: ExprId) -> string {
+        let local = if self.written_here(f, e) {
+            "${self.site_of(f, self.store_of(f).expr_fingerprint(e), self.written_turn(f, e))}"
+        } else {
+            "g${e.index}"
+        }
+        self.file_symbol(f, "l${local}")
+    }
+
+    /// Whether a file's node is one its OWN SOURCE wrote, never one a
+    /// template copied here or a derivation minted.
+    fn written_here(f: FileId, e: ExprId) -> bool {
+        let store = self.store_of(f)
+        self.generation_of(f, e) == null &&
+            !store.spanned_elsewhere(e) &&
+            store.expr_span(e) != null
+    }
+
+    /// A written node's TURN among the nodes written ALIKE in its file,
+    /// ordered by where they stand — an unrelated line added above moves
+    /// nothing. Two written at one offset (a sugar and its expansion) are
+    /// told apart by their arena order.
+    fn written_turn(f: FileId, e: ExprId) -> int {
+        let store = self.store_of(f)
+        let at? = store.expr_span(e)?.lo else { return 0 }
+        let own = store.expr_fingerprint(e)
+        let like = store.exprs_by_kind(0, store.expr_count(), store.tag_expr(store.expr(e)))
+        let before = [1 for x in like if store.expr_fingerprint(x) == own && self.written_here(f, x) for px in some_list(store.expr_span(x)) if px.lo < at || px.lo == at && x.index < e.index]
+        before.length
+    }
+
+    /// THE symbol a static literal lays its data under — its content and
+    /// the type that decides the layout, folded, so two literals spelled
+    /// alike share one static and a line added above moves neither. A
+    /// literal is its own value, so no turn is owed.
+    fn literal_symbol(f: FileId, e: ExprId, ty: TypeId) -> string {
+        let content = fp_list(
+            [self.store_of(f).expr_fingerprint(e), fp_str(self.types.name_of(ty))],
+        )
+        self.file_symbol(f, "lit${self.site_of(f, content, 0)}")
+    }
 
     /// The unit a const's initializer lowers as, named for its statement.
     fn const_symbol(f: FileId, s: StmtId) -> string { self.file_symbol(f, "const${s.index}") }
