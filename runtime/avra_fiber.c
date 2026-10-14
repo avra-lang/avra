@@ -745,6 +745,28 @@ static int fd_arm(int fd) {
     return ok;
 }
 
+// A LEVEL WAIT ASKS WHETHER A DESCRIPTOR IS READY NOW, and the watch
+// is edge-triggered: a direction that has stayed ready since the last
+// wait reports no new edge, so the edge it holds is re-armed and the
+// poller reports the level again — a writable descriptor claims every
+// arm, not only the one that took the first edge.
+static void fd_refresh(int fd, int64_t writable) {
+    FdWaits* w = fd_waits(fd);
+    int bit = writable ? ARMED_WRITE : ARMED_READ;
+    if (!(w->armed & bit)) return;
+#if AVRA_KQUEUE
+    struct kevent ev;
+    EV_SET(&ev, fd, writable ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    // the clock: not a wait on time — a change list, no event asked for
+    kevent(g_poller, &ev, 1, NULL, 0, NULL);
+#else
+    // epoll watches both directions with one registration, so MOD is
+    // what re-arms the edge and reports the level it holds now
+    struct epoll_event ev = { .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.fd = fd };
+    epoll_ctl(g_poller, EPOLL_CTL_MOD, fd, &ev);
+#endif
+}
+
 // ── Filing, claiming, retracting ────────────────────────────────
 
 // The two ends of the list a waiter is filed in.
@@ -1664,7 +1686,7 @@ static void guard_handler_install(void) {
 
 // ── Waiting ─────────────────────────────────────────────────────
 
-static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_t member) {
+static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_t member, int level) {
     if (f->claimed) return;
     if (fd < 0 || fd > INT32_MAX) { set_claimed(f, (int32_t)arm, (int32_t)member, BY_POLLER); return; }
     poller_open();
@@ -1676,6 +1698,9 @@ static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_
     w->on.fd = (int)fd;
     waiter_filed(w);
     parked_unready((int)fd, writable);
+    // A LEVEL WAIT'S DIRECTION HAS NO CONSUMED EDGE, so an
+    // already-watched one is re-armed before the poller is asked.
+    if (level) fd_refresh((int)fd, writable);
     // A descriptor the poller refuses is ready now: the read or write
     // the caller retries reports its own error.
     if (!fd_arm((int)fd)) waiter_claims(w, BY_POLLER);
@@ -1798,7 +1823,7 @@ static int64_t claim_taken(Fiber* f) {
     return claim;
 }
 
-void avra_wait_fd(int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(g_current, fd, writable, arm, member); }
+void avra_wait_fd(int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(g_current, fd, writable, arm, member, 1); }
 
 void avra_wait_until(int64_t at_ns, int64_t arm, int64_t member) { waits_until(g_current, at_ns, arm, member); }
 
@@ -2330,7 +2355,7 @@ static int park_fd_filed(Fiber* f, int64_t fd, int64_t writable, int64_t timeout
     alone(f);
     f->legacy = 1;
     f->heeds = 1;
-    waits_fd(f, fd, writable, 0, 0);
+    waits_fd(f, fd, writable, 0, 0, 0);
     if (!f->legacy) return 0;
     if (timeout_ms >= 0) waits_until(f, deadline_after(timeout_ms), 1, 0);
     f->parked = 1;
@@ -2561,7 +2586,7 @@ int64_t avra_vtask_deadline(int64_t t) { return virtual_at(t)->deadline; }
 
 void avra_vtask_inherits(int64_t t, int64_t from) { scope_inherited(virtual_at(t), virtual_at(from)); }
 
-void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(virtual_at(t), fd, writable, arm, member); }
+void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(virtual_at(t), fd, writable, arm, member, 1); }
 
 void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member) { waits_until(virtual_at(t), at_ns, arm, member); }
 

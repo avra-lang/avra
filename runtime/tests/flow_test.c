@@ -147,6 +147,33 @@ static void three_sources_as_fibers(void) {
     avra_rc_release(g_gate);
 }
 
+// A DESCRIPTOR THAT STAYS WRITABLE CLAIMS EVERY WAIT, NOT ONLY THE
+// FIRST: the poller's watch is edge-triggered, so a second wait on a
+// descriptor the first consumed the edge for must restore the
+// readiness it found — else the wait parks until its own deadline.
+static void* waits_writable_fd_twice(void* self) {
+    (void)self;
+    int p[2];
+    if (pipe(p) != 0) { note(-1); return answer(0); }
+    avra_wait_fd(p[1], 1, 3, 7);
+    int64_t first = avra_wait_park();
+    note(arm_of(first) * 100 + member_of(first));
+    avra_wait_fd(p[1], 1, 3, 7);
+    avra_wait_until(in_ms(30), 2, 9);
+    int64_t second = avra_wait_park();
+    note(arm_of(second) * 100 + member_of(second));
+    closed(p[0]);
+    closed(p[1]);
+    return answer(0);
+}
+
+static void writable_fd_waits_twice(void) {
+    g_log_len = 0;
+    joined(spawn1(waits_writable_fd_twice, 0));
+    int64_t want[] = { 307, 307 };
+    CHECK(logged(want, 2), "a continuously writable descriptor claims every wait that asks for it, not only the first");
+}
+
 // ── a cancel never displaces a claim ────────────────────────────
 
 static void* taker(void* self) {
@@ -3255,6 +3282,7 @@ int main(int argc, char** argv) {
 
     int64_t live = avra_mem_live();
     three_sources_as_fibers();
+    writable_fd_waits_twice();
     claim_then_cancel();
     // ON THE VIRTUAL CLOCK, each in a child: a clock that never moves is
     // a hang, which the short alarm turns into a failing check, and the
