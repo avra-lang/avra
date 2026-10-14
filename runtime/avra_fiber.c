@@ -829,6 +829,42 @@ static void waiter_out(Waiter* w) {
     else g_parked_fds--;
 }
 
+// A WAITER PAST THE FOUR A FIBER HOLDS COMES FROM ONE LIST FOR THE
+// PROCESS, and goes back to it: a task that waits on many things every
+// turn allocates nothing once the list has grown to its widest set, and
+// what the list keeps is bounded by the most waiters ever filed at
+// once, never by how many tasks once waited on many. Where the world
+// idles it is cut back to OVERS_KEPT.
+enum { OVERS_KEPT = 64 };
+static Over* g_overs = NULL;
+static int64_t g_overs_n = 0;
+
+static Over* over_taken(void) {
+    Over* o = g_overs;
+    if (!o) {
+        if (!(o = malloc(sizeof(Over)))) avra_trap("the scheduler ran out of memory for a waiter");
+        return o;
+    }
+    g_overs = o->next;
+    g_overs_n--;
+    return o;
+}
+
+static void over_given(Over* o) {
+    o->next = g_overs;
+    g_overs = o;
+    g_overs_n++;
+}
+
+static void overs_trimmed(void) {
+    while (g_overs_n > OVERS_KEPT) {
+        Over* o = g_overs;
+        g_overs = o->next;
+        g_overs_n--;
+        free(o);
+    }
+}
+
 // THE LOSERS LEAVE AT THE RESUME: every waiter of the set still filed
 // is taken out, and the set is empty again.
 static void retract(Fiber* f) {
@@ -838,7 +874,7 @@ static void retract(Fiber* f) {
         Over* after = o->next;
         n += o->w.filed;
         waiter_out(&o->w);
-        free(o);
+        over_given(o);
         o = after;
     }
     f->held_n = 0;
@@ -888,8 +924,7 @@ static Waiter* waiter_new(Fiber* f, uint32_t kind, int64_t arm, int64_t member) 
     Waiter* w;
     if (f->held_n < HELD) w = &f->held[f->held_n++];
     else {
-        Over* o = malloc(sizeof(Over));
-        if (!o) avra_trap("the scheduler ran out of memory for a waiter");
+        Over* o = over_taken();
         o->next = f->more;
         f->more = o;
         w = &o->w;
@@ -1362,6 +1397,7 @@ static void pool_trimmed(Pool* p) {
 static void pool_trim(void) {
     pool_trimmed(&g_guarded);
     pool_trimmed(&g_shared);
+    overs_trimmed();
 }
 
 __attribute__((noinline, cold))
@@ -3331,6 +3367,8 @@ int64_t avra_sched_tasks(void) {
 int64_t avra_sched_timers(void) { return (int64_t)g_timers_len; }
 
 int64_t avra_sched_fd_waiters(void) { return g_parked_fds; }
+
+int64_t avra_sched_waiters_kept(void) { return g_overs_n; }
 
 int64_t avra_sched_polls(void) { return g_polls; }
 
