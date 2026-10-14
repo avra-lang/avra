@@ -180,21 +180,19 @@ spec "compiler/workspace — a use reads the declaration, never its file" {
         }
     }
     given "the other file's declarations added or renamed where the caller does not read" {
-        // A ROW-SET EDIT MOVES THE FILE'S WHOLE-FILE EDGE: `caller`
-        // resolves the names it reads in `a.av`, so its own `Names`
-        // slice reads that file's `Items`, and a declaration gained or
-        // renamed moves that hash — the caller's ANSWER is kept (the
-        // cutoff folds its slice alike), and `grain_same_answer` is
-        // what red-green-correctness asks there.
-        then "a declaration added keeps main's answers, alike" {
+        // THE SLICE READS THE NAMES IT USES, NEVER THE FILE: a caller's
+        // `Names` slice resolves the declarations it names, so a
+        // declaration gained or renamed elsewhere in the callee file
+        // moves neither the slice nor the frontier.
+        then "a declaration added keeps every query of main's, answering alike" {
             let before = grain_checked(grain_base())
             let after = grain_checked(grain_grown("export fn three() -> int {\n    3\n}\n"))
-            grain_same_answer(before, after)
+            grain_kept(before, after) && grain_same_answer(before, after)
         }
-        then "`two`, which the caller never names, renamed keeps main's answers" {
+        then "`two`, which the caller never names, renamed keeps them" {
             let before = grain_checked(grain_base())
             let after = grain_checked(grain_renamed("two", "deux"))
-            grain_same_answer(before, after)
+            grain_kept(before, after) && grain_same_answer(before, after)
         }
     }
     given "the other file's declarations added or renamed where the caller reads" {
