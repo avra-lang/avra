@@ -46,9 +46,25 @@ impl TypeCx {
     fn yielded(st: TypeId) -> TypeId? {
         match self.view.types.seen_shape(st) {
             .Bytes -> self.type(int),
-            _ -> self.view.types.element(st),
+            rest -> self.source_item(st) ?? self.view.types.element(st),
         }
     }
+
+    /// A `@std/task.Source<T>`'s element — a running supply is a walk
+    /// source as a list is, so `for x in src` binds `T`.
+    fn source_item(st: TypeId) -> TypeId? {
+        match self.view.types.seen_shape(st) {
+            .App(d, "Source", args) -> if self.view.decls.package_of(d) == "@std.task" { args.first() } else { null },
+            rest -> null,
+        }
+    }
+
+    /// The producer's element opens a `yield` scope for the block about
+    /// to be typed; the innermost is the one a `yield` sends into.
+    mut fn sink_enter(t: TypeId) { self.sinks.push(t) }
+
+    /// The `produce` block is typed; its sink scope closes.
+    mut fn sink_exit() { let _ = self.sinks.pop() }
 
     /// Speak and ABSORB: the diagnostic lands and the answer is the
     /// interned Error — the standard refusal tail of a typing law.
