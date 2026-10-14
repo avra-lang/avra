@@ -236,6 +236,8 @@ MUTATIONS = [
     ("a deadlock inside a case ends the process", "            if (case_deadlocked()) continue;\n", ""),
     ("a case that leaks passes", "    g_case_answer = left == 0 && !g_case_spoiled ? answer : 0;", "    g_case_answer = answer;"),
     ("a task that outlives its case is named and left alive", "    for (int64_t i = 0; i < n; i++) abandoned(alive[i]);\n", ""),
+    ("an abandoned task keeps what its slots held", "        avra_rc_release(f->own.slot[i]);\n        f->own.slot[i] = NULL;", "        f->own.slot[i] = NULL;"),
+    ("an abandoned task is never released", "    avra_vgate_open(task);\n    avra_rc_release(task);\n}", "    avra_vgate_open(task);\n}"),
     ("an abandoned task stays where it is filed", "    cells[TASK_END] = END_CANCELLED;\n    gone(f);", "    cells[TASK_END] = END_CANCELLED;"),
     ("an abandoned task reads as alive to whoever holds it", "    gone(f);\n    avra_vgate_open(task);", "    gone(f);"),
     ("a task's number counts from the process's first spawn", "(uint64_t)id_of(f) - g_case_first - 1);", "(uint64_t)id_of(f) - 1);"),
