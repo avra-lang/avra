@@ -33,7 +33,7 @@ the parse needed a token that is not there
 ```
 
 ```
-error[parse.expected]: expected PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `select`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
+error[parse.expected]: expected `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `produce`, `select`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
   ╭─[witness.av:1:1]
 1 │ }
   · ┬
@@ -345,6 +345,18 @@ No witness yet.
 an `@unbroken` fn lets no other task run
 
 No witness here: `@unbroken` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is compiler/tests/unbroken_test.av.
+
+## flow.yield
+
+`yield` sends into the producer it stands in
+
+No witness yet.
+
+## flow.produce
+
+`produce` answers `@std/task.Source`
+
+No witness yet.
 
 ## flow.select
 
@@ -1639,6 +1651,12 @@ error[loop.label]: `break` names a loop by what its `for` binds, and `y` is no e
 ──╯
 help: a `while` has no name — `break` alone ends the innermost loop
 ```
+
+## flow.source_loop
+
+a `for` over a `Source` walks a running supply
+
+No witness yet.
 
 ## type.quote_hole
 
