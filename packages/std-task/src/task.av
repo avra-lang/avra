@@ -25,15 +25,19 @@ export type Sink<T> = {
     close: fn() -> void,
 }
 
-/// A running supply. `ready` never consumes, `taken` never parks, and
-/// `next` parks until a value arrives or the channel ends. An owner:
-/// the block that binds it settles it, cancelling `work` then joining
-/// it, so a source a fn answers ends with its receiver.
+/// A running supply. `ready` never consumes, `taken` never parks,
+/// `next` parks until a value arrives or the channel ends, and `arm`
+/// files this source's own wake for a `select` arm — the row call
+/// that wakes the parked task, with the arm index and this wake's own
+/// member. An owner: the block that binds it settles it, cancelling
+/// `work` then joining it, so a source a fn answers ends with its
+/// receiver.
 @owns
 export type Source<T> = {
     ready: fn() -> bool,
     next: fn() -> T?,
     taken: fn() -> T?,
+    arm: fn(int) -> void,
     ended: fn() -> bool,
     lost: fn() -> int,
     work: Task<bool>? = null,
@@ -98,6 +102,7 @@ export fn open_channel<T>(cap: int) -> Channel<T> {
         ready: () -> st.ready(),
         next: () -> st.next(),
         taken: () -> st.taken(),
+        arm: (a: int) -> st.arm(a),
         ended: () -> st.ended(),
         lost: () -> st.lost(),
         work: null,
@@ -354,8 +359,13 @@ impl Ch<T> {
         null
     }
 
-    /// Take a buffered value now, or answer `null` without parking.
+    /// Take a buffered or handed value now, or answer `null` without
+    /// parking. A sender that claimed a parked reader left its value in
+    /// `handed`, so a scan after the park reads it there.
     fn taken() -> T? {
+        if self.hlen.get() > 0 {
+            return self.pop_handed()
+        }
         if self.len.get() > 0 {
             let v = self.pop_buf()
             if self.room() {
@@ -366,8 +376,18 @@ impl Ch<T> {
         null
     }
 
+    /// Whether a value can be taken now: one buffered, or one a sender
+    /// handed to a claimed reader.
     fn ready() -> bool {
-        self.len.get() > 0
+        self.len.get() > 0 || self.hlen.get() > 0
+    }
+
+    /// File this channel's wake for arm `a`: a sender claims the reader
+    /// and hands its value over. A channel has one wake, so the member
+    /// is the channel's own and the scan's `ready`/`taken` read what the
+    /// claim left.
+    fn arm(a: int) {
+        avra_wait_gate(self.readers, a, 0)
     }
 
     fn ended() -> bool {
