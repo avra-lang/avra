@@ -691,6 +691,21 @@ impl Workspace {
     fn admit_code(f: FileId, code: Node, maker: string, ann: string, at: Span?, vis: Namespace) -> List<
         DeclId,
     > {
+        let key = "${f.index}\n${maker}\n${code.text()}"
+        let kept? = self.decls.spliced_before(key) else { return self.spliced_anew(f, code, maker, ann, at, vis, key) }
+        kept
+    }
+
+    /// `admit_code`'s first splice of a code: copied into the store, minted, and remembered under `key`.
+    fn spliced_anew(
+        f: FileId,
+        code: Node,
+        maker: string,
+        ann: string,
+        at: Span?,
+        vis: Namespace,
+        key: string,
+    ) -> List<DeclId> {
         let store = self.decls.store_of(f)
         let before = store.marks()
         let stmts = self.spliced_stmts(f, code)
@@ -708,6 +723,7 @@ impl Workspace {
         self.decls.note_generation(f, Generation { runs: took, at: at })
         let made = self.decls.mint_generated_code(f, store, stmts, before.exprs, maker, ann, at)
         for d in made { self.decls.note_template(d, template_site(code)) }
+        self.decls.splice_kept(key, made)
         made
     }
 

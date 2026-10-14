@@ -6,7 +6,7 @@
 //! interface — names another key, and the query runs again.
 use @std.relation.db.{Durable}
 use compiler.store.{Store}
-use core.digest.{hex, hex_digit, hex_digits}
+use core.digest.{hex, unhex}
 
 impl Db {
     /// The durable doors of a `@query` Db checking the file `parts` names.
@@ -28,14 +28,3 @@ impl Db {
 
 /// An answer's row name: the file's key, the query, its arguments' hash.
 fn answer_name(file: string, query: string, args: int) -> string { "${file}\t${query}\t${args}" }
-
-/// A whole int as sixteen lowercase hex digits, its high digit first.
-export fn hex_word(v: int) -> string { [hex_digit((v >> 60 - 4 * i) & 15) for i in 0..16].join("") }
-
-/// `hex` read back; absent for text that is not whole pairs of digits.
-fn unhex(s: string) -> Bytes? {
-    if s.length % 2 != 0 { return null }
-    let nibbles = [hex_digits.index_of(s.substring(i, i + 1)) for i in 0..s.length]
-    if nibbles.any(it < 0) { return null }
-    [nibbles[2 * i] * 16 + nibbles[2 * i + 1] for i in 0..s.length / 2].bytes()
-}

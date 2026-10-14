@@ -36,7 +36,6 @@ export fn components() -> LanguageFeature {
         "component_blockless"  | build_component_blockless
         "component_named"      | build_component_named
         "component_named_bare" | build_component_named_bare
-        "setting"              | build_setting
         "on_handler"           | build_on_handler
         "on_value"             | build_on_value
         "instance_body"        | build_instance_body
@@ -57,7 +56,7 @@ export fn components() -> LanguageFeature {
         gram: grammar {
             stmt = "component" n:NAME ( "(" ( ( hm:mark )* hs:NAME ":" ht:type ( "," ( hm:mark )* hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( ( fm:mark )* ( ( st:STATE )? fs:NAME ":" ft:type ( "=" fd:expression )? | ON en:NAME ( "(" ( ep:NAME ":" et:type ( "," ep:NAME ":" et:type )* ","? )? ")" )? ) | rs:".." ( dd:"." )? rt:type | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m, rs, rt, dd, hm, fm, en, ep, et, st)
             stmt = w:COMPONENT n:NAME b:named_inst_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
-            setting = k:NAME ":" v:expression END -> setting(k, v) | w:ON kw:NAME "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:stmt | BREAK )* "}" -> on_handler(w, kw, ip, s) | w:ON kw:NAME ":" v:expression END -> on_value(w, kw, v)
+            setting = name:NAME ":" value:expression END -> Stmt.Setting | w:ON kw:NAME "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:stmt | BREAK )* "}" -> on_handler(w, kw, ip, s) | w:ON kw:NAME ":" v:expression END -> on_value(w, kw, v)
             named_inst_body = "{" BREAK* hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
                 | b:instance_body -> b
             instance_body = "{" BREAK* ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
