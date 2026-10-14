@@ -554,20 +554,34 @@ export enum Origin {
 }
 
 /// One timed phase, in nanoseconds of the workspace's clock.
-export type Phase = { name: string, ns: int }
+export type Phase = { name: string, ns: int, mints: int = 0, settles: int = 0 }
 
 impl Phase {
     fn shown() -> string { "${self.name} ${self.ns / 1000000}ms" }
+
+    /// The same, with what the phase minted and settled.
+    fn counted() -> string { "${self.shown()} ${self.mints} mints ${self.settles} settles" }
 }
 
 /// A PHASE CLOCK: each mark closes the span since the last one.
-export type Marks = { now: fn() -> int, last: int, spans: List<Phase> }
+export type Marks = { now: fn() -> int, counts: fn() -> List<int>, last: int, seen: List<int>, spans: List<Phase> }
 
 impl Marks {
     mut fn mark(name: string) {
         let at = self.now()
-        self.spans.push(Phase { name: name, ns: at - self.last })
+        let c = self.counts()
+        self
+            .spans
+            .push(
+                Phase {
+                    name: name,
+                    ns: at - self.last,
+                    mints: c[0] - self.seen[0],
+                    settles: c[1] - self.seen[1],
+                },
+            )
         self.last = at
+        self.seen = c
     }
 
     /// Closes the span since the last mark under the next of `names` — the phase
@@ -582,7 +596,18 @@ impl Marks {
 /// pushed hundreds of times folds to its total instead of flooding
 /// the line with one entry per file.
 export fn grouped_phases(phases: List<Phase>) -> List<Phase> {
-    [Phase { name: n, ns: phase_total(phases, n) } for n in distinct([p.name for p in phases])]
+    [Phase {
+        name: n,
+        ns: phase_total(phases, n),
+        mints: phase_sum([p.mints for p in phases if p.name == n]),
+        settles: phase_sum([p.settles for p in phases if p.name == n]),
+    } for n in distinct([p.name for p in phases])]
+}
+
+fn phase_sum(counts: List<int>) -> int {
+    mut sum = 0
+    for c in counts { sum = sum + c }
+    sum
 }
 
 export fn phase_total(phases: List<Phase>, name: string) -> int {
@@ -1188,7 +1213,17 @@ impl Workspace {
     }
 
     /// A clock started now.
-    fn marking() -> Marks { Marks { now: self.clock, last: self.clock(), spans: [] } }
+    fn marking() -> Marks {
+        let decls = self.decls
+        let kernel = self.db.kernel
+        Marks {
+            now: self.clock,
+            counts: () -> [decls.decl_count(), kernel.settles_total()],
+            last: self.clock(),
+            seen: [decls.decl_count(), kernel.settles_total()],
+            spans: [],
+        }
+    }
 
     fn timed(name: string, ns: int) {
         self.phases.push(Phase { name: name, ns: ns })
