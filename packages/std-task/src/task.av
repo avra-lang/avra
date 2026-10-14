@@ -6,6 +6,7 @@
 //! behaviour the waiting rows already state — no row and no
 //! instruction is added.
 use @std.errors.{Traced}
+use @std.meta.{owns}
 
 extern fn avra_wait_park() -> int
 extern fn avra_wait_gate(gate: ptr, arm: int, member: int)
@@ -25,13 +26,17 @@ export type Sink<T> = {
 }
 
 /// A running supply. `ready` never consumes, `taken` never parks, and
-/// `next` parks until a value arrives or the channel ends.
+/// `next` parks until a value arrives or the channel ends. An owner:
+/// the block that binds it settles it, cancelling `work` then joining
+/// it, so a source a fn answers ends with its receiver.
+@owns
 export type Source<T> = {
     ready: fn() -> bool,
     next: fn() -> T?,
     taken: fn() -> T?,
     ended: fn() -> bool,
     lost: fn() -> int,
+    work: Task<bool>? = null,
 }
 
 /// Both ends of one in-memory channel.
@@ -50,12 +55,15 @@ export type AnyOf<T> = {
     lost: fn() -> int,
 }
 
-/// A source whose last item is the error that ended it.
+/// A source whose last item is the error that ended it. An owner, as
+/// `Source` is: its `work` is the producer handle its receiver settles.
+@owns
 export type TrySource<T, E> = {
     next: fn() -> Result<T, Traced<E>>?,
     taken: fn() -> Result<T, Traced<E>>?,
     ended: fn() -> bool,
     lost: fn() -> int,
+    work: Task<bool>? = null,
 }
 
 /// One in-memory channel. Every field a verb writes is a `Cell`, so
@@ -92,6 +100,7 @@ export fn open_channel<T>(cap: int) -> Channel<T> {
         taken: () -> st.taken(),
         ended: () -> st.ended(),
         lost: () -> st.lost(),
+        work: null,
     }
     Channel { sink: sink, source: source }
 }
@@ -100,6 +109,10 @@ export fn open_channel<T>(cap: int) -> Channel<T> {
 export fn unbounded_channel<T>() -> Channel<T> {
     open_channel<T>(0 - 1)
 }
+
+/// The capacity of a channel bounded only by memory — the value
+/// `produce<T>(unbounded)` reads.
+export const unbounded: int = 0 - 1
 
 /// Every member of `sources`, waited on together. The list is copied
 /// in; membership is fixed when `any` is called.
@@ -129,6 +142,7 @@ export fn tried<T, E>(s: Source<Result<T, Traced<E>>>) -> TrySource<T, E> {
         taken: () -> s.taken(),
         ended: () -> s.ended(),
         lost: () -> s.lost(),
+        work: null,
     }
 }
 

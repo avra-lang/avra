@@ -1,0 +1,36 @@
+//! THE OWNER LAW: a type a package marks `@owns` may hold a task — a
+//! producer handle — and a fn may answer it; the receiver settles it.
+//! The narrowing is by MARK alone: an unmarked record still refuses the
+//! very same field, and a bare `Task` is still no answer.
+use @std.avrac.testing.{provided, refused_with, answered}
+use compiler.{Program}
+use compiler.backend.{render_ir}
+
+fn packaged(main: string) -> Program { provided(main, "") }
+
+const TASK_ESCAPE: string = "a task cannot outlive the block that spawned it"
+
+const OWNED_FEED: string = "use @std.meta.{owns}\n@owns\ntype Feed = { work: Task<bool>? }\nfn feed(t: Task<bool>) -> Feed { Feed { work: t } }\nlet t = spawn true\nlet f = feed(t)\n\"\${f.work == null}\""
+
+spec "features/tasks (owner)" {
+    given "a marked owner" {
+        then "a `@owns` record holds a task field and a fn answers it" {
+            answered(packaged(OWNED_FEED)) == "false"
+        }
+        then "settling one cancels its producer before joining it" {
+            let text = render_ir(packaged(OWNED_FEED).lowered())
+            text.contains("call avra_task_cancel(") && text.contains("call avra_task_settle(")
+        }
+    }
+    given "the mark is the whole narrowing" {
+        then "an unmarked record refuses the very same nullable task field" {
+            refused_with("type Plain = { work: Task<bool>? }\n1", TASK_ESCAPE)
+        }
+        then "an unmarked record refuses a bare task field" {
+            refused_with("type Plain = { work: Task<bool> }\n1", TASK_ESCAPE)
+        }
+        then "a bare task is still no answer" {
+            refused_with("fn start() -> Task<int> {\n    spawn 1\n}\n1", TASK_ESCAPE)
+        }
+    }
+}

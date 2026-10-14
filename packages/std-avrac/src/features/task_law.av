@@ -9,8 +9,11 @@ use @std.errors.{Loc}
 
 impl TypeCx {
     /// Whether `ty` carries a task past its block — spoken when it does.
+    /// A MARKED owner is exempt: a `Source`, or any record a package
+    /// marked `@owns`, may be answered and is settled by its receiver.
     mut fn escapes_with_task(at: Loc?, label: string, ty: TypeId) -> bool {
         if !self.view.types.holds_tasks(ty) { return false }
+        if self.view.decls.owns_by_mark(ty) { return false }
         self.task_escapes(at, label)
         true
     }
@@ -20,7 +23,7 @@ impl TypeCx {
     mut fn unowned_tasks(s: StmtId) {
         let v? = self.view.store.owned_value(s) else { return }
         let ty = self.facts.declared_binding(s) ?? self.type_at(v)
-        if !self.view.types.holds_tasks(ty) || self.view.types.owns_tasks(ty) { return }
+        if !self.view.types.holds_tasks(ty) || self.view.decls.owns_tasks(ty) { return }
         self.task_unowned(self.loc_of(v), ty)
     }
 
