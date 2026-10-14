@@ -111,6 +111,25 @@ void avra_wait_task(void* task, int64_t arm, int64_t member);
 // is answered without a switch; then a cancel that stands; then a
 // deadline that has passed.
 int64_t avra_wait_park(void);
+// A WAIT OVER SEVERAL ARMS SCANS BEFORE IT PARKS. `enter` begins a
+// scan: 0, or the claim a park would have answered — `-1:0` under a
+// cancel that stands, `-1:1` past a limit. An arm's readiness is a
+// stamp: 0 not ready, else when it became so, least first.
+// `avra_task_since` is a task's — 0 while it lives and when it ended
+// cancelled; `avra_time_since` a time's — due, it is below zero: before
+// every task, the earlier instant first. `avra_stamp_next` draws the
+// next stamp for a thing found ready that no task's end here stamped: a
+// period found due, and a virtual task's end, which the evaluator stamps
+// from this one count.
+// `rest` parks on the arms filed and answers the claim, which is a hint:
+// the caller scans again. With nothing filed it traps. `site` is where
+// the wait was written: the task's record keeps the text, and a listing
+// of the tasks says it beside how long the task has rested.
+int64_t avra_wait_enter(const char* site);
+int64_t avra_task_since(void* task);
+int64_t avra_time_since(int64_t at_ns);
+int64_t avra_stamp_next(void);
+int64_t avra_wait_rest(void);
 
 // A gate: a queue of waiters in memory, owned.
 void* avra_gate_new(void);
@@ -139,6 +158,8 @@ int64_t avra_fiber_within(int64_t ms);
 // The innermost scope, `id`, ends (any other traps by name): 1 when the
 // request that stands is this scope's, which then stands no longer.
 int64_t avra_scope_end(int64_t id);
+// The same end as a `within`'s LANDING: 1 when an unwind this scope
+// asked for ends here — the unwind bit is cleared — else 0.
 int64_t avra_fiber_within_end(int64_t id);
 
 // A `defer` runs whole under a shield: the frame's cold exit brackets
@@ -197,10 +218,13 @@ void avra_vtask_ready(int64_t t);
 // through the signal door; a target with no signals calls it directly.
 void avra_tasks_listed(FILE* out);
 // A join in the evaluator's own files, said to the trace as a compiled
-// one is: `joins` when the task is about to wait for the task `on`
-// (negative: one nothing runs), `joined` when `by`'s end readies it.
+// one is: the task is about to wait for the task `on` (negative: one
+// nothing runs).
 void avra_vtask_joins(int64_t t, int64_t on);
-void avra_vtask_joined(int64_t t, int64_t by);
+// 1 when a request stands on the task about to sleep or join — a cancel,
+// a scope's own, a limit found passed: its bit is raised and it must not
+// wait. A sleep asks for itself.
+int64_t avra_vtask_cut(int64_t t);
 void avra_vtask_sleep(int64_t t, int64_t ms);
 // 1 when parked; 0 when it did not wait: the descriptor cannot be
 // watched (ready at once, so its read or write reports the error), or
@@ -234,6 +258,8 @@ void avra_vtask_shield_enter(int64_t t);
 void avra_vtask_shield_leave(int64_t t);
 // 1 while the task runs under a shield, else 0.
 int64_t avra_vtask_shielded(int64_t t);
+int64_t avra_vtask_asked(int64_t t);
+void avra_vtask_yield_met(int64_t t);
 // The task's deadline, in ns; 0 when none.
 int64_t avra_vtask_deadline(int64_t t);
 // The new task `t` takes the limit `from` stands under, as a compiled
@@ -251,8 +277,14 @@ void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member);
 // by the timer heap, for a task its time ends. 1 parked; 0 when the task
 // has ended already.
 int64_t avra_vtask_join(int64_t t, void* task);
+// The same park for a scope's end: no cancel and no deadline claims it.
+int64_t avra_vtask_settle(int64_t t, void* task);
 int64_t avra_vtask_park(int64_t t);
 int64_t avra_vtask_claim(int64_t t);
+// `avra_wait_enter` and `avra_wait_rest` for the task `t`. `rest`
+// answers 1 parked, 0 claimed already, -1 with nothing filed.
+int64_t avra_vtask_enter(int64_t t, const char* site);
+int64_t avra_vtask_rest(int64_t t);
 // A cancel on `t`, asked by the task whose id is `by`.
 void avra_vtask_cancel(int64_t t, int64_t by);
 // The gate stands open for ever: every waiter is claimed, and a later
@@ -335,6 +367,9 @@ int64_t avra_sched_timer_turns(void);
 // links of the queue the seeded pick has walked.
 int64_t avra_sched_timers(void);
 int64_t avra_sched_fd_waiters(void);
+// The waiters past a fiber's own four that stand ready for the next
+// task to file.
+int64_t avra_sched_waiters_kept(void);
 int64_t avra_sched_polls(void);
 int64_t avra_sched_pick_links(void);
 // How many switches left the fast path to ask the world.

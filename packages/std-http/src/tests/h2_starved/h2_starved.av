@@ -3,7 +3,7 @@
 // sending. The answer's owed octets never move, so once the idle
 // deadline passes the server ends the link with GOAWAY — the PINGs buy
 // it nothing. Both engines.
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{ms, secs, now_ms, sleep}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{text}
@@ -58,7 +58,7 @@ fn starved(c: Conn) -> string {
 /// What one short read brought: absent once the peer closed, empty when
 /// nothing came in time.
 fn heard_from(c: Conn) -> Bytes? {
-    match within ms(50) { c.read(65536) } { .Ok(b) -> b, .Err(_) -> no_bytes }
+    match timely(within ms(50) { c.read(65536) }) { .Ok(b) -> b, .Err(_) -> no_bytes }
 }
 
 fn goaway_code(b: Bytes) -> int {

@@ -1,0 +1,33 @@
+//! proves: a task cancelled while it holds tasks of its own cancels
+//! them as its scope ends — each unwinds, and its deferred call runs —
+//! whether it owns one by a binding or several through `Tasks`
+use @std.time.{ms, secs, sleep}
+
+fn child(left: Cell<int>) -> int {
+    defer left.set(left.get() + 1)
+    sleep(secs(5))
+    0
+}
+
+fn owns_one(left: Cell<int>) -> int {
+    let held = spawn child(left)
+    sleep(secs(5))
+    0
+}
+
+fn owns_many(left: Cell<int>) -> int {
+    let held = Tasks.new()
+    held.push(spawn child(left))
+    held.push(spawn child(left))
+    sleep(secs(5))
+    0
+}
+
+let left = Cell.new(0)
+let one = spawn owns_one(left)
+let many = spawn owns_many(left)
+sleep(ms(20))
+one.cancel()
+many.cancel()
+sleep(ms(20))
+"${left.get()}"

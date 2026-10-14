@@ -15,7 +15,16 @@
 use @std.avrac.compiler.{RefusesCall, ChildEnd, Toolchain}
 use @std.avrac.core.{counted}
 use @std.path.{joined_path, relative_path}
-use @std.process.{cmd, Exit, Outcome as ChildOutcome, ProcessError, exit_text}
+use @std.process.{
+    cmd,
+    Env,
+    Exit,
+    Outcome as ChildOutcome,
+    ProcessError,
+    exit_text,
+    inherited,
+    minimal,
+}
 use @std.time.{secs, Duration}
 use stage.{refuse_eval_words}
 
@@ -45,19 +54,19 @@ fn hang_bound() -> Duration { secs(600) }
 /// One leg run as a child and judged against the voice — a program
 /// under test, never a workload, so a leg that outlives its window is
 /// refused rather than hung on.
-fn leg(program: string, args: List<string>, name: string, call: RefusesCall) -> Result<
+fn leg(program: string, args: List<string>, env: Env, name: string, call: RefusesCall) -> Result<
     string?,
     ProcessError,
 > {
     // LICENSED input.live_process: a program test's leg runs as a child, and no compile answer reads it
-    let o = (cmd(tool(program)?, args) with { timeout: hang_bound() }).outcome()?
+    let o = (cmd(tool(program)?, args) with { env: env, timeout: hang_bound() }).outcome()?
     leg_wrong(name, call, o)
 }
 
 /// One leg, a host refusal folded into the same voice a wrong end
 /// would carry.
-fn leg_or_host(program: string, args: List<string>, name: string, call: RefusesCall) -> string? {
-    match leg(program, args, name, call) {
+fn leg_or_host(program: string, args: List<string>, env: Env, name: string, call: RefusesCall) -> string? {
+    match leg(program, args, env, name, call) {
         .Ok(w) -> w,
         .Err(e) -> "${name} could not run: ${e.describe().message}",
     }
@@ -71,11 +80,26 @@ fn refuses_binary(root: string, path: string) -> string {
     joined_path(joined_path(root, "build"), "refuses-${safe}")
 }
 
+/// What a built program under test runs in: the minimal environment.
+fn tested_env() -> Env {
+    // LICENSED input.live_process: a program test's leg runs as a child, and no compile answer reads it
+    minimal()
+}
+
+/// What the eval leg runs in: the compiler's own environment, whole.
+fn compiler_env() -> Env {
+    // LICENSED input.live_process: a program test's leg runs as a child, and no compile answer reads it
+    inherited()
+}
+
 /// One child-run test, both engines: the built program first (its own
 /// binary, cached like any other build), then the evaluator over the
 /// same scoped derivation, run through the light phase's own
 /// `@refuse-eval` hand-off — ending exactly as a native binary does,
-/// so one voice serves both.
+/// so one voice serves both. THE EVAL LEG IS THE COMPILER, so it runs in
+/// the compiler's own environment: a manifest's `[link]` hole is filled
+/// from it, and a leg without it derives nothing. The built program is
+/// a program under test and keeps the minimal one.
 fn one_refuses(self_binary: string, tools: Toolchain, call: RefusesCall) -> string? {
     let ws = file_workspace(call.path)
     let binary = refuses_binary(ws.root, call.path)
@@ -83,9 +107,15 @@ fn one_refuses(self_binary: string, tools: Toolchain, call: RefusesCall) -> stri
         .Ok(b) -> b.binary,
         .Err(e) -> { return "${call.path}: native build failed — ${e.describe().message}" },
     }
-    let by_native = leg_or_host(native, [], "native", call)
+    let by_native = leg_or_host(native, [], tested_env(), "native", call)
     if by_native != null { return "${call.path}: ${by_native!}" }
-    let by_eval = leg_or_host(self_binary, refuse_eval_words(ws.root, call.path), "eval", call)
+    let by_eval = leg_or_host(
+        self_binary,
+        refuse_eval_words(ws.root, call.path),
+        compiler_env(),
+        "eval",
+        call,
+    )
     if by_eval != null { return "${call.path}: ${by_eval!}" }
     null
 }

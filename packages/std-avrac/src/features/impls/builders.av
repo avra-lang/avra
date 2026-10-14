@@ -12,7 +12,6 @@ use core.{
     Span,
     ExprId,
     SyntaxArena,
-    plain_mark,
     Nominal,
     Scoped,
     Plain,
@@ -21,12 +20,11 @@ use core.{
 use features.{
     LangNode,
     Builder,
-    spread_named,
+    params_at,
     window_end,
     aligned_param_types,
     void_ref,
     marked_seats,
-    isolating,
     between,
     ref_within,
 }
@@ -43,47 +41,18 @@ use grammar.{Token}
 /// the method before a bound could matter.
 fn marked_fn(b: Builder) -> Result<StmtId, string> {
     let n = b.token(0)?
-    let tparams = [Param {
-        name: Scoped(t.text),
-        ty: null,
-        default: null,
-        promises: plain_mark,
-        id: b.store.alloc_param_id(t.span),
-    } for t in b.tokens(1)?]
-    let consts = b.tokens(2)?
-    let muts = b.tokens(3)?
-    let ps = b.tokens(4)?
-    let r = b.answer(7)
-    let body = b.expr(8)?
-    let ends? = b.span_end() else {
-        return .Err(
-            "defect: a fn declaration without a span — the arena and the grammar disagree",
-        )
-    }
-    let params = b
-        .defaulted(
-            ps,
-            isolating(
-                marked_seats(
-                    b.store,
-                    ps,
-                    aligned_param_types(ps, b.type_refs(5)?, ends),
-                    muts,
-                    consts,
-                    n.span.lo,
-                ),
-                ps,
-                b.tokens(9)?,
-                n.span.lo,
-            ),
-            b.exprs(6)?,
-        )
     .Ok(
         b
             .store
             .alloc_stmt(
                 Stmt
-                    .FnDecl(Scoped(n.text), tparams, spread_named(params, ps, b.tokens(10)?), r, body),
+                    .FnDecl(
+                        Scoped(n.text),
+                        params_at(b.args, 1),
+                        params_at(b.args, 2),
+                        b.answer(3),
+                        b.expr(4)?,
+                    ),
                 b.span,
             ),
     )

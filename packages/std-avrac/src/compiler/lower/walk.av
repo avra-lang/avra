@@ -7,6 +7,10 @@ use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed
 use diagnostics.{Diag, refusal}
 use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark, semantics_of, stmt_semantics_of}
 
+/// A block scope left open for its caller to close: `opened` says
+/// whether `lower_block_open` entered a scope at all.
+export type OpenBlock = { reg: Reg, opened: bool }
+
 impl LowerCx {
     /// One subtree's register, lowered at first request and
     /// memoized. The recursion IS the walk: an impl asking for a
@@ -288,16 +292,30 @@ impl LowerCx {
     /// promise for a block that departed, void for one that merely
     /// ended. Every merge it feeds is typed by that same answer.
     mut fn lower_block(stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
+        let open = self.lower_block_open(stmts, value, ty)
+        self.lower_block_close(open)
+        open.reg
+    }
+
+    /// A block whose scope is LEFT OPEN for the caller to close, so a
+    /// read of a value it binds can be emitted while the frame that
+    /// owns it still stands — a `then` case's failure report reads the
+    /// operands of its own comparison, and closing the frame first
+    /// would release them before the failure arm ran.
+    mut fn lower_block_open(stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> OpenBlock {
         // A SCOPE THAT HOLDS ONLY ITS VALUE IS ITS VALUE. No statements
         // means no bindings and no `defer`s to frame, so an explicit
         // `{ 7 }` lowers as `7`: the block node is the author's FORM
         // (the printer keeps its braces) and the IR owes it no scope.
-        if stmts.is_empty() && value != null { return self.reg_of(value!) }
+        if stmts.is_empty() && value != null { return OpenBlock { reg: self.reg_of(value!), opened: false } }
         self.scope_enter()
         let vreg = self.lower_stmts(stmts, value)
-        let r = if value == null { self.hollow_of(ty) } else { vreg! }
-        self.scope_exit(r)
-        r
+        OpenBlock { reg: if value == null { self.hollow_of(ty) } else { vreg! }, opened: true }
+    }
+
+    /// Closes the scope `lower_block_open` left open, if it opened one.
+    mut fn lower_block_close(open: OpenBlock) {
+        if open.opened { self.scope_exit(open.reg) }
     }
 
     // ── The `defer` frames. Every STATEMENT LIST runs in a frame:
@@ -470,8 +488,8 @@ impl LowerCx {
         self.deferring = was
     }
 
-    /// The `within` scope's end: the scope ends, and whether the cancel
-    /// it met was its own lands in the cell its epilogue reads.
+    /// The `within` scope's end: the scope ends, and whether an unwind
+    /// it asked for ended there lands in the cell its epilogue reads.
     mut fn landed_scope(scope: Reg, cell: Reg) {
         let landed = self.fiber_within_end(Type.Int, scope)
         self.stored(cell, landed)

@@ -1,0 +1,24 @@
+// proves: a `within` whose limit passes answers `Err(TimedOut)` — over
+// a sleep and over a join — with the span it was given and the frames
+// its unwind left; one that does not time out answers its block; the
+// code after each runs
+use @std.time.{ms, secs, sleep, TimedOut}
+
+fn nap() -> int {
+    sleep(secs(60))
+    1
+}
+
+fn told(r: Result<int, TimedOut>) -> string {
+    match r {
+        .Ok(v) -> "ok ${v}",
+        .Err(t) -> "late ${t.after.ms} ${[f.label ?? "?" for f in t.at].join(">")}",
+    }
+}
+
+let slow = spawn nap()
+let slept = told(within ms(5) { nap() })
+let joined = told(within ms(7) { slow.await })
+let fine = told(within secs(5) { 3 })
+slow.cancel()
+"${slept} | ${joined} | ${fine}"

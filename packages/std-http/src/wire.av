@@ -6,8 +6,8 @@
 //! A plain socket is `Conn`'s own. TLS lives in `@std/https`, a package
 //! of its own, so a program that never imports it links no TLS.
 use @std.errors.{Error}
-use @std.net.{Conn, NetError}
-use @std.time.{Duration}
+use @std.net.{Conn, NetError, outran}
+use @std.time.{Duration, TimedOut}
 
 /// Why a transport verb failed: the socket's own failure — a deadline
 /// passing among them — the secure layer's, carried whole, or the
@@ -64,6 +64,12 @@ export trait Transport {
 /// A net result as the wire's.
 fn plain<T>(r: Result<T, NetError>) -> Result<T, WireError> {
     match r { .Ok(v) -> .Ok(v), .Err(e) -> .Err(.Net(e)) }
+}
+
+/// A `within` over a transport's verb, as that verb's own answer: a
+/// deadline the block ran past is the wire's timed-out failure.
+export fn wire_timely<T>(r: Result<Result<T, WireError>, TimedOut>) -> Result<T, WireError> {
+    match r { .Ok(inner) -> inner, .Err(_) -> plain(outran<T>("wait", "a deadline")) }
 }
 
 impl Transport for Conn {
