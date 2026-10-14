@@ -2693,6 +2693,33 @@ impl Decls {
         a.args.length == 2 && self.is_meta_annotation(a, file, "lacks")
     }
 
+    /// Whether a declaration carries `@std/meta`'s `@owns` — a record
+    /// whose tasks are PRODUCERS: a binding of it is settled by
+    /// cancelling each task it holds, then joining it.
+    fn is_owned(d: DeclId) -> bool {
+        let file = self.annotation_home(d)
+        self.annotations_of(d).any((a: AnnotationFact) -> self.is_meta_annotation(a, file, "owns"))
+    }
+
+    /// A type a package MARKED `@owns`, or a nullable of one. Read by
+    /// the task law: a marked owner is the one answer a `Task` field
+    /// may ride in, and the one a fn may answer.
+    fn owns_by_mark(id: TypeId) -> bool {
+        match self.types.shape_of(self.types.seen_through(id)) {
+            .Struct(d, _) or .App(d, _, _) -> self.is_owned(d),
+            .Opt(t) -> self.owns_by_mark(t),
+            rest -> false,
+        }
+    }
+
+    /// The owners a block can settle: every structural task owner, plus
+    /// a MARKED record. A bare `Task` is one; a plain record holding
+    /// one is not — only a package's `@owns` makes it so.
+    fn owns_tasks(id: TypeId) -> bool { self.types.owns_tasks(id) || self.owns_by_mark(id) }
+
+    /// `owns_tasks` one task at a time, with the mark read.
+    fn owns_one_task(id: TypeId) -> bool { self.types.owns_one_task(id) || self.owns_by_mark(id) }
+
     /// Each written seat's default body, in seat order — null where
     /// the seat has none.
     fn seat_defaults(d: DeclId) -> List<DeclId?> {

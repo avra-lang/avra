@@ -31,6 +31,9 @@ export fn tasks() -> LanguageFeature {
         name          | build
         "spawn"       | build_spawn
         "within_expr" | build_within
+        "yield_stmt"  | build_yield
+        "produce"     | build_produce
+        "produce_cap" | build_produce_cap
     }
     let properties = table<PropertyRow> {
         name    | takes   | check       | lower       | waits | view       | caught
@@ -42,6 +45,8 @@ export fn tasks() -> LanguageFeature {
         "type.task_escape" | "a task is joined by the block that spawned it"
         "type.within"      | "`within` answers its block or the deadline it ran past"
         "flow.broken"      | "an `@unbroken` fn lets no other task run"
+        "flow.yield"       | "`yield` sends into the producer it stands in"
+        "flow.produce"     | "`produce` answers `@std/task.Source`"
     }
     let methods = table<MethodRow> {
         name     | takes         | check        | lower        | effect                | answers
@@ -58,6 +63,9 @@ export fn tasks() -> LanguageFeature {
         gram: grammar {
             primary = "spawn" v:expression -> spawn(v)
             primary = "within" l:expression b:block -> within_expr(l, b) @head(l)
+            stmt = "yield" v:expression END -> yield_stmt(v) @recover(sync_to: "END")
+            primary = "produce" "<" t:type ","? ">" "(" c:expression ")" b:block -> produce_cap(t, c, b)
+            primary = "produce" "<" t:type ","? ">" b:block -> produce(t, b)
         }
         builders: rows
         properties: properties
