@@ -209,6 +209,11 @@ fn new_keys() -> Keys {
 /// name (`owners`), whether kept units may stand in for lowering
 /// (`serving`), the units that did (`served`), each file's surface (`surfaces`), its kept rows (`rows`), the rows of
 /// this derivation (`rows_live`) and the files that made one (`rows_fresh`).
+/// A read's expansion, memoized for the attempt: the reads it inherits and the
+/// run generation of the path it walked. A read expands differently as a fn than
+/// as a whole file, so the run generation — not a "seen" mark — invalidates it.
+type Followed = { reads: List<RunRead>, gen: int }
+
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -219,6 +224,8 @@ type Hold = {
     read_gen: Cell<Map<string, int>>,
     read_seen: Cell<Map<string, bool>>,
     read_gens: Cell<int>,
+    ran_followed: Cell<Map<string, Followed>>,
+    runs_gen: Cell<Map<string, int>>,
     settle_reads: Cell<Map<string, List<RunRead>>>,
     pending_reads: Cell<List<PendingRead>>,
     pending_resolved: Cell<Map<string, string>>,
@@ -295,6 +302,8 @@ fn new_hold() -> Hold {
         read_gen: map_cell(),
         read_seen: map_cell(),
         read_gens: Cell.new(0),
+        ran_followed: map_cell(),
+        runs_gen: map_cell(),
         settle_reads: map_cell(),
         pending_reads: Cell.new(no_pending()),
         pending_resolved: map_cell(),
