@@ -12,10 +12,14 @@
 //! `Admission` judges each before it is dialed, so `.Public` refuses
 //! the loopback, private and metadata addresses however a name spelled
 //! them. Inside a `within` a park that outlasts it is cut, and the
-//! `within` answers the deadline. Their `try_` twins never wait: a read that finds nothing answers `.Pending`, a
+//! `within` answers the deadline. A `Listener` and a `Conn` are also
+//! SOURCES: `accepts()` and `reads()` hand the same descriptor to a
+//! `select` arm, so one task waits on them beside a channel, a watch or
+//! a signal. Their `try_` twins never wait: a read that finds nothing answers `.Pending`, a
 //! write that takes nothing answers 0, and a poller loop decides.
 use @std.errors.{Error, ErrorInfo, info}
 use @std.meta.{unbroken}
+use @std.task.{Source}
 use @std.time.{Duration, TimedOut, ms, now_ms, now_ns}
 
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
@@ -34,6 +38,7 @@ extern fn avra_net_dialed(fd: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 extern fn avra_fiber_interrupted() -> int
 extern fn avra_fiber_fd_ready(fd: int, writing: int) -> int
+extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
@@ -309,6 +314,26 @@ impl Listener {
         .Ok(c)
     }
 
+    /// THE ACCEPT SOURCE: connections as a running supply, so a `select`
+    /// arm waits on the port beside others. `arm` files the listener's
+    /// descriptor; a connection already accepted waits in the source, so
+    /// nothing is lost between a look and a take, and a closed listener
+    /// ends it.
+    fn accepts() -> Source<Conn> {
+        let held: Cell<Conn?> = Cell.new(null)
+        Source {
+            ready: () -> offered_conn(held, self),
+            next: () -> next_conn(held, self),
+            taken: () -> take_conn(held, self),
+            arm: (a: int) -> {
+                if self.open.get() { avra_wait_fd(self.fd, 0, a, 0) }
+            },
+            ended: () -> !self.open.get(),
+            lost: () -> 0,
+            work: null,
+        }
+    }
+
     /// Closed in every copy; answers the port it held. The cell empties
     /// before the descriptor goes, so no copy reaches the number after
     /// the kernel may have handed it on.
@@ -379,6 +404,26 @@ impl Conn {
         if would_block(n) { return .Ok(0) }
         if n < 0 { return failed("write", self.named(), n) }
         .Ok(n)
+    }
+
+    /// THE READABLE VIEW: this connection as a supply of chunks, so a
+    /// `select` arm waits on it beside others. `arm` files the socket; a
+    /// chunk already read waits in the source, and the peer's end answers
+    /// `null` once drained.
+    fn reads() -> Source<Bytes> {
+        let held: Cell<Bytes?> = Cell.new(null)
+        let done: Cell<bool> = Cell.new(false)
+        Source {
+            ready: () -> offered_bytes(held, done, self),
+            next: () -> next_bytes(held, done, self),
+            taken: () -> take_bytes(held, done, self),
+            arm: (a: int) -> {
+                if self.open.get() { avra_wait_fd(self.fd, 0, a, 0) }
+            },
+            ended: () -> done.get() || !self.open.get(),
+            lost: () -> 0,
+            work: null,
+        }
     }
 
     /// The write side closed: the peer reads EOF after what was sent.
@@ -507,6 +552,104 @@ fn event_at(i: int) -> Event {
         writable: flags & 2 == 2,
         hangup: flags & 4 == 4,
         failed: flags & 8 == 8,
+    }
+}
+
+/// How much one read of a `Conn` source asks for.
+const read_chunk: int = 65536
+
+/// Whether a connection waits, accepted from the listener if none did;
+/// the value stays in `held` for `taken`.
+fn offered_conn(held: Cell<Conn?>, l: Listener) -> bool {
+    if held.get() != null { return true }
+    let got = fresh_conn(l)
+    if got == null { return false }
+    held.set(got)
+    true
+}
+
+/// One connection now, or null when none waits.
+fn fresh_conn(l: Listener) -> Conn? {
+    match l.try_accept() { .Ok(c) -> c, .Err(_) -> null }
+}
+
+fn take_conn(held: Cell<Conn?>, l: Listener) -> Conn? {
+    match held.get() {
+        c? -> {
+            held.set(null)
+            c
+        }
+        null -> fresh_conn(l)
+    }
+}
+
+fn next_conn(held: Cell<Conn?>, l: Listener) -> Conn? {
+    match held.get() {
+        c? -> {
+            held.set(null)
+            c
+        }
+        null -> { match l.accept() { .Ok(c) -> c, .Err(_) -> null } }
+    }
+}
+
+/// Whether a chunk waits, read from the socket if none did; the value
+/// stays in `held` for `taken`, and the peer's end is remembered.
+fn offered_bytes(held: Cell<Bytes?>, done: Cell<bool>, c: Conn) -> bool {
+    if held.get() != null { return true }
+    if done.get() { return false }
+    let _ = tried_bytes(held, done, c)
+    held.get() != null
+}
+
+/// One non-parking read into the source: a chunk held, the peer's end
+/// marked, or nothing.
+fn tried_bytes(held: Cell<Bytes?>, done: Cell<bool>, c: Conn) -> bool {
+    match c.try_read(read_chunk) {
+        .Ok(.Data(b)) -> {
+            held.set(b)
+            true
+        },
+        .Ok(.Eof) -> {
+            done.set(true)
+            false
+        },
+        .Ok(.Pending) or .Err(_) -> false,
+    }
+}
+
+fn take_bytes(held: Cell<Bytes?>, done: Cell<bool>, c: Conn) -> Bytes? {
+    match held.get() {
+        b? -> {
+            held.set(null)
+            b
+        }
+        null -> {
+            if done.get() { return null }
+            let _ = tried_bytes(held, done, c)
+            let got = held.get()
+            held.set(null)
+            got
+        }
+    }
+}
+
+fn next_bytes(held: Cell<Bytes?>, done: Cell<bool>, c: Conn) -> Bytes? {
+    match held.get() {
+        b? -> {
+            held.set(null)
+            b
+        }
+        null -> {
+            if done.get() { return null }
+            match c.read(read_chunk) {
+                .Ok(b) -> {
+                    if b == null { done.set(true) }
+                    b
+                },
+                .Err(_) -> null,
+            }
+        }
     }
 }
 

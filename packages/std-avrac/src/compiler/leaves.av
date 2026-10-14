@@ -1,0 +1,660 @@
+//! THE COMPILER'S ANSWERS, NAMED. A query's saved-answer rule stands on what it read, each
+//! read by a name that outlives the process and the digest of the value read. A relation
+//! is named by its rows; a compiler family is named here, by the durable key of the
+//! declaration it answers for and its settled hash.
+use core.{
+    TypeId,
+    sorted_texts,
+    fp_str,
+    traced,
+    DeclId,
+    ExprId,
+    ModuleId,
+    FileId,
+    distinct,
+    joined,
+    flatten,
+    wreck,
+    some_list,
+}
+use diagnostics.{Diag, Voices}
+use @std.errors.{Loc, Frame, Edit}
+use compiler.rel_loc.{anchoring_wire}
+use compiler.store.{Store, Stored, Read, node_key}
+use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
+use features.{SettleRoot, SeatValue}
+use compiler.lower.{code_facts, code_facts_wire}
+use @std.relation.db.{AnswerRef, Leaf}
+use @std.relation.engine.{Key}
+use compiler.families.{Family}
+
+impl Workspace {
+    /// The answers of `fam`, keyed by declaration, spelled by the declaration's wire.
+    fn named_by_decl(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+        }
+    }
+
+    /// The signatures, spelled by declaration. A signature settled by no query (a held
+    /// declaration's, a builtin's) is digested as the signature it is.
+    fn named_sigs() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Sig.ordinal
+        AnswerRef {
+            name: "Sig",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.sig_digest(arg),
+        }
+    }
+
+    /// A type's digest is its spelling, which another process spells alike.
+    fn type_digest(t: TypeId) -> int { fp_str(self.type_ref(t)) }
+
+    /// A signature's digest is its wire: types by their spelling, never by the interner's index.
+    fn sig_digest(arg: int) -> int? {
+        if arg < 0 || arg >= self.decls.sigs.get().length { return null }
+        let s? = self.decls.sigs.get()[arg] else { return fp_str("refused") }
+        fp_str(self.decl_sig_wire(s))
+    }
+
+    /// The consts' types, spelled by the const's declaration and the seats it was asked
+    /// under — the name `Settled` wears too.
+    fn named_consts(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_settle(arg),
+            arg: (spelled: string) -> ws.settle_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+        }
+    }
+
+    /// A const's settlement name: its declaration's wire and the fingerprints of the seats it was
+    /// asked under. Nothing in it is a position.
+    fn settle_name(d: DeclId, seats: List<SeatValue>) -> string {
+        "${self.decl_ref(d)}#${joined([x.fp for x in seats], ",")}"
+    }
+
+    /// An expression root's name: the declaration whose range holds it, the offset inside that
+    /// range, and the seats.
+    fn expr_settle_name(owner: DeclId, e: ExprId, seats: List<SeatValue>) -> string {
+        // LICENSED compiler.hand_sized_index: the offset IS the durable name — a place counted from its declaration, never a table window.
+        "${self.decl_ref(owner)}+${e.index - self.decls.decl(owner).lo}#${joined([x.fp for x in seats], ",")}"
+    }
+
+    fn spelled_settle(arg: int) -> string? {
+        if arg < 0 || arg >= self.settle_asks.get().length { return null }
+        let ask = self.settle_asks.get()[arg]
+        match ask.root {
+            .Const(s) -> {
+                let d? = self.decls.decl_of(ask.file, s) else { return null }
+                self.settle_name(d, ask.seats)
+            },
+            .Expr(e) -> {
+                let owner? = self.root_owner(ask.file, e) else { return null }
+                self.expr_settle_name(owner, e, ask.seats)
+            },
+        }
+    }
+
+    /// The innermost declaration of `f` whose range holds `e`.
+    fn root_owner(f: FileId, e: ExprId) -> DeclId? {
+        [d for d in self.decls.decls_of_file(f) if self.decls.decl(d).lo <= e.index && e.index < self.decls.decl(d).hi]
+            .last()
+    }
+
+    /// The ask a name spells, through the process-local index over the names `count` asks
+    /// spell so far; a found name is checked against what its ask spells now.
+    fn spelled_ask(family: string, count: int, spell: fn(int) -> string?, spelled: string) -> int? {
+        mut at = self.keys.name_seen.get().get(family) ?? 0
+        while at < count {
+            let name? = spell(at) else {
+                at = at + 1
+                continue
+            }
+            self.keys.name_index.put("${family}\t${name}", at)
+            at = at + 1
+        }
+        self.keys.name_seen.put(family, count)
+        let found? = self.keys.name_index.get().get("${family}\t${spelled}") else { return null }
+        if spell(found) == spelled { found } else { [i for i in 0..count if spell(i) == spelled].first() }
+    }
+
+    fn settle_arg(spelled: string) -> int? {
+        let ws = self
+        self
+            .spelled_ask("settle", self.settle_asks.get().length, (i: int) -> ws.spelled_settle(i), spelled)
+    }
+
+    /// A lifted unit's name: its file, its declaration and its symbol; an expression unit, the
+    /// declaration holding it, its offset there, its type arguments and its seats.
+    fn spelled_spec(arg: int) -> string? {
+        if arg < 0 || arg >= self.asks.get().length { return null }
+        let w = self.asks.get()[arg]
+        let path = self.decls.file(w.file).path
+        let root? = w.root else { return "${path}|${self.decl_ref(w.decl)}|${w.name}" }
+        let owner? = self.root_owner(w.file, root) else { return null }
+        // LICENSED compiler.hand_sized_index: the offset IS the durable name — a place counted from its declaration, never a table window.
+        "${path}|${self.decl_ref(owner)}+${root.index - self.decls.decl(owner).lo}|${self.sub_wire(w.sub)}|${joined([x.fp for x in w.seats], ",")}"
+    }
+
+    fn spec_arg(spelled: string) -> int? {
+        let ws = self
+        self.spelled_ask("spec", self.asks.get().length, (i: int) -> ws.spelled_spec(i), spelled)
+    }
+
+    /// A world read's name: its kind and key, a path spelled from the workspace root.
+    fn spelled_input(arg: int) -> string? {
+        if arg < 0 || arg >= self.input_names.get().length { return null }
+        let name = self.input_names.get()[arg]
+        let key = if name.key.starts_with(self.root) { "." + name.key.substring(self.root.length, name.key.length) } else { name.key }
+        "${kind_word(name.kind)} ${key}"
+    }
+
+    fn input_arg(spelled: string) -> int? {
+        let ws = self
+        self
+            .spelled_ask("input", self.input_names.get().length, (i: int) -> ws.spelled_input(i), spelled)
+    }
+
+    /// A package's manifest, spelled by the package's key.
+    fn spelled_package(arg: int) -> string? {
+        let all = self.packages()
+        if arg < 0 || arg >= all.length { return null }
+        all[arg].key
+    }
+
+    fn package_arg(spelled: string) -> int? {
+        let ws = self
+        self
+            .spelled_ask("package", self.packages().length, (i: int) -> ws.spelled_package(i), spelled)
+    }
+
+    /// A family whose answers are keyed by an ask this workspace spells.
+    fn named_by(name: string, fam: Family, spell: fn(int) -> string?, find: fn(string) -> int?) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: spell,
+            arg: find,
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+        }
+    }
+
+    /// The answers of `fam`, keyed by file, spelled by the file's path.
+    fn named_by_file(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_file(arg),
+            arg: (spelled: string) -> ws.file_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+        }
+    }
+
+    /// The answers of `fam`, keyed by module, spelled by the module's dotted name.
+    fn named_by_module(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_module(arg),
+            arg: (spelled: string) -> ws.module_arg(spelled),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+        }
+    }
+
+    /// The one answer of a whole-program family, spelled by the family's name.
+    fn named_once(name: string, fam: Family) -> AnswerRef {
+        let ws = self
+        let ordinal = fam.ordinal
+        AnswerRef {
+            name: name,
+            family: () -> ordinal,
+            spelled: (arg: int) -> if arg == 0 { name } else { null },
+            arg: (spelled: string) -> if spelled == name { 0 } else { null },
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
+        }
+    }
+
+    /// The families whose answers are named, registered with the declaration table's Db.
+    fn answers_named() {
+        let rdb = self.decls.rows_db.get()
+        self.db.kernel.keep_folds()
+        rdb.answer_known(self.named_sigs())
+        rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
+        rdb.answer_known(self.named_consts("Settled", Family.Settled))
+        let ws = self
+        rdb.answer_known(self.named_by_decl("Syntax", Family.Syntax))
+        rdb.answer_known(self.named_typed())
+        rdb.answer_known(self.named_units())
+        rdb
+            .answer_known(
+                self
+                    .named_by(
+                        "Input",
+                        Family.Input,
+                        (a: int) -> ws.spelled_input(a),
+                        (s: string) -> ws.input_arg(s),
+                    ),
+            )
+        rdb
+            .answer_known(
+                self
+                    .named_by(
+                        "Manifest",
+                        Family.Manifest,
+                        (a: int) -> ws.spelled_package(a),
+                        (s: string) -> ws.package_arg(s),
+                    ),
+            )
+        rdb.answer_known(self.named_by_decl("Marks", Family.Marks))
+        rdb.answer_known(self.named_by_decl("Writes", Family.Writes))
+        rdb.answer_known(self.named_by_decl("Methods", Family.Methods))
+        rdb.answer_known(self.named_by_file("Parsed", Family.Parsed))
+        rdb.answer_known(self.named_by_file("Items", Family.Items))
+        rdb.answer_known(self.named_by_file("Visible", Family.Visible))
+        rdb.answer_known(self.named_by_file("Resolved", Family.Resolved))
+        rdb.answer_known(self.named_by_file("Analysis", Family.Analysis))
+        rdb.answer_known(self.named_names())
+        rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
+        rdb.answer_known(self.named_once("References", Family.References))
+        rdb.answer_known(self.named_by_bucket())
+    }
+
+    /// The lifted units, spelled by their wanted and digested with arena ids folded by durable
+    /// name, so another process folds the same unit alike.
+    fn named_units() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.LiftLowered.ordinal
+        AnswerRef {
+            name: "LiftLowered",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_spec(arg),
+            arg: (spelled: string) -> ws.spec_arg(spelled),
+            hash: (arg: int) -> ws.durable_unit(arg),
+        }
+    }
+
+    fn durable_unit(arg: int) -> int? {
+        match self.relation(Family.LiftLowered).values.entry(arg) {
+            .Present(r) -> unit_fp_in(lowered_of(r), self.decls.ids()),
+            .Missing -> null,
+        }
+    }
+
+    /// A declaration's slice of its file's names, spelled by the declaration and digested with
+    /// its positions counted from its own start, so another process spells it alike wherever
+    /// the declaration sits. The kernel's own cell keeps the placed slice.
+    fn named_names() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Names.ordinal
+        AnswerRef {
+            name: "Names",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.durable_slice(arg),
+        }
+    }
+
+    fn durable_slice(arg: int) -> int? {
+        if arg < 0 || arg >= self.decls.decl_count() { return null }
+        if self.db.value_hash_of(key(Family.Names, arg)) == null { return null }
+        let x = self.decls.decl(DeclId { index: arg })
+        match self.relation(Family.Resolved).values.entry(x.file.index) {
+            .Present(r) -> name_slice_fp(
+                resolved_of(r),
+                x.lo,
+                x.hi,
+                self.decls.ids().windowed(x.lo, if x.stmt_lo < 0 { 0 } else { x.stmt_lo }),
+            ),
+            .Missing -> null,
+        }
+    }
+
+    /// The `Named` cells: a name's bucket of declarations, spelled by the name.
+    fn named_by_bucket() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Named.ordinal
+        AnswerRef {
+            name: "Named",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.decls.bucket_label(arg),
+            arg: (spelled: string) -> ws.decls.bucket_standing(spelled),
+            hash: (arg: int) -> ws.bucket_digest(arg),
+        }
+    }
+
+    /// A bucket's digest is its members' identities, which another process names alike.
+    fn bucket_digest(b: int) -> int? {
+        let name? = self.decls.bucket_label(b) else { return null }
+        fp_str(
+            joined(sorted_texts([self.decl_ref(x.id) for x in self.decls.named_rows(name)]), "\n"),
+        )
+    }
+
+    fn spelled_file(arg: int) -> string? {
+        if arg < 0 || arg >= self.decls.file_count() { return null }
+        self.decls.file(FileId { index: arg }).path
+    }
+
+    fn file_arg(spelled: string) -> int? {
+        let f? = self.decls.known_file_id(spelled) else { return null }
+        f.index
+    }
+
+    fn spelled_module(arg: int) -> string? {
+        if arg < 0 || arg >= self.decls.module_rows.get().count() { return null }
+        self.decls.module_name(ModuleId { index: arg })
+    }
+
+    fn module_arg(spelled: string) -> int? {
+        let m? = self.decls.known_module_id(spelled) else { return null }
+        m.index
+    }
+
+    fn spelled_decl(arg: int) -> string? {
+        if arg < 0 || arg >= self.decls.decl_count() { return null }
+        self.decl_ref(DeclId { index: arg })
+    }
+
+    fn decl_arg(spelled: string) -> int? {
+        let d? = self.decl_from_ref(spelled) else { return null }
+        d.index
+    }
+
+    /// The meter for every family: how many settled answers of `fam`, of the `count` keys it
+    /// may have, stand on names alone, and for the rest the family each unnamed read belonged
+    /// to, once per answer. One call per family the report covers.
+    fn leaves_meter(fam: Family, count: int) -> string {
+        let rdb = self.decls.rows_db.get()
+        mut blocked: Map<string, int> = {}
+        mut named = 0
+        mut settled = 0
+        for arg in 0..count {
+            let reads = self.db.kernel.deps_of(key_at(fam.ordinal, arg))
+            if reads.is_empty() { continue }
+            settled = settled + 1
+            let unnamed = distinct(
+                [self.family_name(r.family) for r in reads if rdb.leaves_at(r) == null],
+            )
+            if unnamed.is_empty() { named = named + 1 }
+            for n in unnamed { blocked.set(n, (blocked.get(n) ?? 0) + 1) }
+        }
+        "leaves ${fam.name}: ${named} of ${settled} answers stand on names; unnamed reads by family: ${blocked.entries().map("${it.key} ${it.value}").join(", ")}"
+    }
+
+    /// One settled answer as a line: its family, its name and its digest; nothing for an
+    /// answer that is unnamed or unsettled.
+    fn digest_line(r: AnswerRef, arg: int) -> string? {
+        let name? = r.spelled(arg) else { return null }
+        let digest? = r.hash(arg) else { return null }
+        "leaves-digest\t${r.name}\t${name}\t${digest}"
+    }
+
+    /// A read as `identity=digest`, or `?` when it has no name.
+    fn read_word(k: Key) -> string {
+        let found? = self.decls.rows_db.get().leaves_at(k) else { return "?" }
+        found.map(leaf_word).join(",")
+    }
+
+    /// A typed declaration's reads: its name and each read's identity and digest.
+    fn reads_line(arg: int) -> string? {
+        let name? = self.spelled_decl(arg) else { return null }
+        let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
+        if reads.is_empty() { return null }
+        "leaves-reads\t${name}\t${[self.read_word(k) for k in reads].join(";")}"
+    }
+
+    /// Every named answer's digest, one line each, so two processes' digests can be compared.
+    fn leaves_digests() -> List<string> {
+        let top = [
+            self.decls.decl_count(),
+            self.decls.file_count(),
+            self.settle_asks.get().length,
+            self.asks.get().length,
+            self.input_names.get().length,
+            self.packages().length,
+            self.decls.name_bucket_count(),
+        ]
+            .fold(0, (a: int, b: int) -> if a > b { a } else { b })
+        let lines = flatten(
+            [[self.digest_line(r, a) for a in 0..top] for r in self.decls.rows_db.get().answer_refs.get()],
+        )
+        [l! for l in lines if l != null]
+    }
+
+    /// Every typed declaration's reads, one line each.
+    fn leaves_reads() -> List<string> {
+        let lines = [self.reads_line(a) for a in 0..self.decls.decl_count()]
+        [l! for l in lines if l != null]
+    }
+
+    /// Every family the meter covers.
+    fn leaves_report() -> string {
+        [
+            self.leaves_meter(Family.Typed, self.decls.decl_count()),
+            self.leaves_meter(Family.Lowered, self.asks.get().length),
+            self.leaves_meter(Family.Settled, self.settle_asks.get().length),
+        ]
+            .concat(self.leaves_digests())
+            .concat(self.leaves_reads())
+            .join("\n")
+    }
+
+    fn family_name(ordinal: int) -> string {
+        [f.name for f in Family.all() if f.ordinal == ordinal].first() ?? "family ${ordinal}"
+    }
+
+    /// The typed bodies, spelled by declaration; a body's digest is what its typing says, wherever
+    /// it sits.
+    fn named_typed() -> AnswerRef {
+        let ws = self
+        let ordinal = Family.Typed.ordinal
+        AnswerRef {
+            name: "Typed",
+            family: () -> ordinal,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.typed_digest(arg),
+        }
+    }
+
+    /// A settled body's digest; absent for one not settled here or unplaceable.
+    fn typed_digest(arg: int) -> int? {
+        if self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg)).is_empty() { return null }
+        let says? = self.typed_says(DeclId { index: arg }) else { return null }
+        fp_str(says)
+    }
+
+    /// What a body's typing says, placed by declaration: the facts' fold, then each voice with
+    /// its places kept relative to the declaration holding them. Absent when a voice speaks at
+    /// a place no declaration holds.
+    fn typed_says(d: DeclId) -> string? {
+        let facts = self.typed(d)
+        let placed = [self.voice_says(v) for v in facts.voices.list]
+        if placed.any(it == null) { return null }
+        joined(
+            [
+                "${type_facts_fp(facts with { voices: Voices { list: [] } }, self.decls.ids().rebased(facts.of_expr.lo), false)}",
+            ]
+                .concat([p! for p in placed]),
+            "\n",
+        )
+    }
+
+    fn voice_says(v: Diag) -> string? {
+        let frames = [v.primary].concat(v.secondary)
+        let locs = flatten([some_list(f.loc) for f in frames])
+            .concat(flatten([[e.loc for e in s.edits] for s in v.suggestions]))
+        let wires = [anchoring_wire(self.anchoring(l)) for l in locs]
+        if wires.any(it == anchoring_wire(.Unplaceable)) { return null }
+        "${diag_fp(unplaced(v))}\t${joined(wires, ",")}"
+    }
+
+    /// Typed answers standing on names, kept as saved answers and judged against what a
+    /// fresh typing says: a kept answer still valid must equal it, or a read is missing.
+    fn typed_said_pass(store: Store) {
+        let rdb = self.decls.rows_db.get()
+        mut settled = 0
+        mut stood = 0
+        mut why: Map<string, int> = {}
+        mut valid = 0
+        mut recomputed = 0
+        mut unplaceable = 0
+        mut mismatched = 0
+        for arg in 0..self.decls.decl_count() {
+            let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
+            if reads.is_empty() { continue }
+            settled = settled + 1
+            let leaves? = rdb.leaves_of(reads) else { continue }
+            let d = DeclId { index: arg }
+            stood = stood + 1
+            let says? = self.typed_says(d) else {
+                unplaceable = unplaceable + 1
+                continue
+            }
+            let row = node_key(Stored.Unit, ["typedsaid", self.decl_ref(d)])
+            let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
+            if kept == null {
+                recomputed = recomputed + 1
+                let cause = self.first_moved(store, row, (n) -> rdb.leaf_digest(n))
+                why.set(cause, (why.get(cause) ?? 0) + 1)
+            } else {
+                valid = valid + 1
+                if kept != says {
+                    mismatched = mismatched + 1
+                    eprintln("Q typedsaid mismatch ${self.decl_ref(d)}")
+                }
+            }
+            let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))
+        }
+        eprintln(
+            "typedsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, unplaceable ${unplaceable}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
+        )
+        if mismatched > 0 { wreck("a valid TypedSaid differs from a fresh typing: a read is missing") }
+    }
+}
+
+impl Workspace {
+    /// What a unit's lowering says: the instantiations it asks for and the code it hashed. Absent
+    /// for a unit that spoke, which is never kept.
+    fn lowered_says(id: int) -> string? {
+        let u = self.lowered(id)
+        if !u.voices.list.is_empty() { return null }
+        joined(
+            [
+                self.wanted_list_wire(u.wants),
+                code_facts_wire(code_facts(self.decls, u.bodies, u.statics, u.hashes)),
+            ],
+            "\n",
+        )
+    }
+
+    /// Lowered answers standing on names, kept as saved answers and judged against what a fresh
+    /// lowering says: a kept answer still valid must equal it, or a read is missing.
+    fn lowered_said_pass(store: Store) {
+        let rdb = self.decls.rows_db.get()
+        mut settled = 0
+        mut stood = 0
+        mut why: Map<string, int> = {}
+        mut valid = 0
+        mut recomputed = 0
+        mut spoke = 0
+        mut mismatched = 0
+        for id in 0..self.asks.get().length {
+            let reads = self.db.kernel.deps_of(key_at(Family.Lowered.ordinal, id))
+            if reads.is_empty() { continue }
+            settled = settled + 1
+            let leaves? = rdb.leaves_of(reads) else { continue }
+            stood = stood + 1
+            let says? = self.lowered_says(id) else {
+                spoke = spoke + 1
+                continue
+            }
+            let row = node_key(
+                Stored.Unit,
+                ["loweredsaid", self.wanted_list_wire([self.asks.get()[id]])],
+            )
+            let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
+            if kept == null {
+                recomputed = recomputed + 1
+                let cause = self.first_moved(store, row, (n) -> rdb.leaf_digest(n))
+                why.set(cause, (why.get(cause) ?? 0) + 1)
+            } else {
+                valid = valid + 1
+                if kept != says {
+                    mismatched = mismatched + 1
+                    eprintln("Q loweredsaid mismatch ${self.asks.get()[id].name}")
+                }
+            }
+            let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))
+        }
+        eprintln(
+            "loweredsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, spoke ${spoke}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
+        )
+        if mismatched > 0 { wreck("a valid LoweredSaid differs from a fresh lowering: a read is missing") }
+    }
+}
+
+/// Why a kept row does not hold: the first read it was kept with that moved or cannot be
+/// read now, by the family it names; "new" for a row never kept.
+impl Workspace {
+    fn first_moved(store: Store, row: string, now_of: fn(string) -> string?) -> string {
+        let lines? = store.reads_of(Stored.Unit, row) else { return "new" }
+        let gone? = lines.find(now_of(read_name(it)) != read_digest(it)) else { return "unknown" }
+        let id = read_name(gone)
+        let now = now_of(id)
+        if traced() { eprintln("Q typedsaid moved ${id} was ${read_digest(gone)} now ${now ?? "-"}") }
+        "${id.split("\t")[1]} ${if now == null { "unreadable" } else { "moved" }}"
+    }
+}
+
+fn read_digest(line: string) -> string { line.substring(0, line.index_of(" ")) }
+
+fn read_name(line: string) -> string { line.substring(line.index_of(" ") + 1, line.length) }
+
+/// A family-numbered key at `arg` — the one spelling a saved answer's key wears.
+fn key_at(family: int, arg: int) -> Key { Key { family: family, arg: arg } }
+
+/// A run of leaves as the reads a saved answer keeps.
+fn saved_reads(leaves: List<Leaf>) -> List<Read> {
+    [Read { name: l.id(), digest: l.digest_text() } for l in leaves]
+}
+
+/// A place that points nowhere, which a voice with no position says instead.
+fn no_place() -> Loc { Loc { file: null, lo: 0, hi: 0 } }
+
+/// A voice with its places zeroed, which the kept places say instead.
+fn unplaced(v: Diag) -> Diag {
+    v with { primary: unplaced_frame(v.primary), secondary: [unplaced_frame(f) for f in v.secondary], suggestions: [s with { edits: [Edit { loc: no_place(), replacement: e.replacement } for e in s.edits] } for s in v.suggestions] }
+}
+
+fn unplaced_frame(f: Frame) -> Frame {
+    Frame { label: f.label, loc: if f.loc == null { null } else { no_place() } }
+}
+
+/// A leaf as `identity=digest`: a relation by its name, an answer by its family and name.
+fn leaf_word(l: Leaf) -> string {
+    match l {
+        .Rows(name, digest) -> "rows|${name}=${digest}",
+        .Input(name, spelled, digest) -> "${name}|${spelled}=${digest}",
+    }
+}
