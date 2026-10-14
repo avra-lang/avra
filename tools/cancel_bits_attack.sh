@@ -12,7 +12,7 @@ R=build/cancel-bits-attack; fails=0; steps=0
 T=build/aside/cba.$$; mkdir -p "$T"
 [ -e "$R" ] && mv "$R" "$T/cba"
 P=$R/cb
-for d in lib byst mid idle cyc; do mkdir -p "$P/src/$d"; done
+for d in lib byst mid idle cyc link uselink; do mkdir -p "$P/src/$d"; done
 printf '[package]\nname = "cb"\nversion = "0.1.0"\n' > "$P/avra.toml"
 printf 'export fn work() -> int { 1 }\n' > "$P/src/lib/a.av"
 printf 'export fn quiet() -> int { 9 }\n' > "$P/src/byst/a.av"
@@ -59,6 +59,21 @@ says "a cycle's caller names its spinning callee" "  spins — calls \`cyc_b\`" 
 b=$(inspected @cyc_b)
 says "a cycle's spinner settles to may-reach" "\`cyc_b\` may reach a cancel point" "$b"
 says "a cycle's spinner spins of its own" "  spins — a \`while\` here" "$b"
+
+# the #705 links bit rides along: an edit that moves ONLY `links` must recompute the
+# reader. `relay` calls through a value — it PARKS and SPINS but links nothing — and
+# `calls_it` calls it by name; the edit adds a spawn of a named fn while KEEPING the
+# value call, so parks and spins stand while the links bit turns on. A digest over the
+# 2-bit word would not move and the reader would keep a stale answer; only the 3-bit
+# word moves it.
+printf 'fn helper() -> int { 1 }\nexport fn relay(f: fn() -> int) -> int { f() }\n' > "$P/src/link/a.av"
+printf 'use link.{relay}\nexport fn calls_it() -> int { relay(() -> 1) }\n' > "$P/src/uselink/a.av"
+kept
+says "the value-caller parks and spins" "  parks — calls through a value" "$(inspected @relay)"
+says "the links-standstill leaves the reader held" "src/uselink/a.av — held" "$(inspected src/uselink/a.av --why)"
+printf 'fn helper() -> int { 1 }\nexport fn relay(f: fn() -> int) -> int {\n    let t = spawn helper()\n    t.await\n    f()\n}\n' > "$P/src/link/a.av"
+says "a links-only move recomputes the reader" "src/uselink/a.av — read" "$(inspected src/uselink/a.av --why)"
+says "a links-only move leaves a bystander held" "src/idle/a.av — held" "$(inspected src/idle/a.av --why)"
 
 files=$(sort -u "$R/.inspected" 2>/dev/null | grep -c .)
 echo "cancel-bits attack: $steps step(s), $fails failed, $files file(s) inspected"
