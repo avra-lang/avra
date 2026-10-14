@@ -38,7 +38,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_decl(arg),
             arg: (spelled: string) -> ws.decl_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
     }
 
@@ -76,7 +76,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_settle(arg),
             arg: (spelled: string) -> ws.settle_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
     }
 
@@ -89,6 +89,7 @@ impl Workspace {
     /// An expression root's name: the declaration whose range holds it, the offset inside that
     /// range, and the seats.
     fn expr_settle_name(owner: DeclId, e: ExprId, seats: List<SeatValue>) -> string {
+        // LICENSED compiler.hand_sized_index: the offset IS the durable name — a place counted from its declaration, never a table window.
         "${self.decl_ref(owner)}+${e.index - self.decls.decl(owner).lo}#${joined([x.fp for x in seats], ",")}"
     }
 
@@ -144,6 +145,7 @@ impl Workspace {
         let path = self.decls.file(w.file).path
         let root? = w.root else { return "${path}|${self.decl_ref(w.decl)}|${w.name}" }
         let owner? = self.root_owner(w.file, root) else { return null }
+        // LICENSED compiler.hand_sized_index: the offset IS the durable name — a place counted from its declaration, never a table window.
         "${path}|${self.decl_ref(owner)}+${root.index - self.decls.decl(owner).lo}|${self.sub_wire(w.sub)}|${joined([x.fp for x in w.seats], ",")}"
     }
 
@@ -188,7 +190,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: spell,
             arg: find,
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
     }
 
@@ -201,7 +203,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_file(arg),
             arg: (spelled: string) -> ws.file_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
     }
 
@@ -214,7 +216,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_module(arg),
             arg: (spelled: string) -> ws.module_arg(spelled),
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
     }
 
@@ -227,7 +229,7 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> if arg == 0 { name } else { null },
             arg: (spelled: string) -> if spelled == name { 0 } else { null },
-            hash: (arg: int) -> ws.db.kernel.hash_forced(Key { family: ordinal, arg: arg }),
+            hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
     }
 
@@ -387,7 +389,7 @@ impl Workspace {
         mut named = 0
         mut settled = 0
         for arg in 0..count {
-            let reads = self.db.kernel.deps_of(Key { family: fam.ordinal, arg: arg })
+            let reads = self.db.kernel.deps_of(key_at(fam.ordinal, arg))
             if reads.is_empty() { continue }
             settled = settled + 1
             let unnamed = distinct(
@@ -416,7 +418,7 @@ impl Workspace {
     /// A typed declaration's reads: its name and each read's identity and digest.
     fn reads_line(arg: int) -> string? {
         let name? = self.spelled_decl(arg) else { return null }
-        let reads = self.db.kernel.deps_of(Key { family: Family.Typed.ordinal, arg: arg })
+        let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
         if reads.is_empty() { return null }
         "leaves-reads\t${name}\t${[self.read_word(k) for k in reads].join(";")}"
     }
@@ -477,7 +479,7 @@ impl Workspace {
 
     /// A settled body's digest; absent for one not settled here or unplaceable.
     fn typed_digest(arg: int) -> int? {
-        if self.db.kernel.deps_of(Key { family: Family.Typed.ordinal, arg: arg }).is_empty() { return null }
+        if self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg)).is_empty() { return null }
         let says? = self.typed_says(DeclId { index: arg }) else { return null }
         fp_str(says)
     }
@@ -519,7 +521,7 @@ impl Workspace {
         mut unplaceable = 0
         mut mismatched = 0
         for arg in 0..self.decls.decl_count() {
-            let reads = self.db.kernel.deps_of(Key { family: Family.Typed.ordinal, arg: arg })
+            let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
             if reads.is_empty() { continue }
             settled = settled + 1
             let leaves? = rdb.leaves_of(reads) else { continue }
@@ -542,13 +544,7 @@ impl Workspace {
                     eprintln("Q typedsaid mismatch ${self.decl_ref(d)}")
                 }
             }
-            let _ = store
-                .keep_reading(
-                    Stored.Unit,
-                    row,
-                    says,
-                    [Read { name: l.id(), digest: l.digest_text() } for l in leaves],
-                )
+            let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))
         }
         eprintln(
             "typedsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, unplaceable ${unplaceable}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
@@ -584,7 +580,7 @@ impl Workspace {
         mut spoke = 0
         mut mismatched = 0
         for id in 0..self.asks.get().length {
-            let reads = self.db.kernel.deps_of(Key { family: Family.Lowered.ordinal, arg: id })
+            let reads = self.db.kernel.deps_of(key_at(Family.Lowered.ordinal, id))
             if reads.is_empty() { continue }
             settled = settled + 1
             let leaves? = rdb.leaves_of(reads) else { continue }
@@ -609,13 +605,7 @@ impl Workspace {
                     eprintln("Q loweredsaid mismatch ${self.asks.get()[id].name}")
                 }
             }
-            let _ = store
-                .keep_reading(
-                    Stored.Unit,
-                    row,
-                    says,
-                    [Read { name: l.id(), digest: l.digest_text() } for l in leaves],
-                )
+            let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))
         }
         eprintln(
             "loweredsaid: ${settled} settled, ${stood} stand on names; valid ${valid}, recomputed ${recomputed}, spoke ${spoke}, mismatched ${mismatched}; recomputed because: ${why.entries().map("${it.key} ${it.value}").join(", ")}",
@@ -629,11 +619,10 @@ impl Workspace {
 impl Workspace {
     fn first_moved(store: Store, row: string, now_of: fn(string) -> string?) -> string {
         let lines? = store.reads_of(Stored.Unit, row) else { return "new" }
-        let gone = lines.find(now_of(read_name(it)) != read_digest(it))
-        if gone == null { return "unknown" }
-        let id = read_name(gone!)
+        let gone? = lines.find(now_of(read_name(it)) != read_digest(it)) else { return "unknown" }
+        let id = read_name(gone)
         let now = now_of(id)
-        if traced() { eprintln("Q typedsaid moved ${id} was ${read_digest(gone!)} now ${now ?? "-"}") }
+        if traced() { eprintln("Q typedsaid moved ${id} was ${read_digest(gone)} now ${now ?? "-"}") }
         "${id.split("\t")[1]} ${if now == null { "unreadable" } else { "moved" }}"
     }
 }
@@ -642,17 +631,24 @@ fn read_digest(line: string) -> string { line.substring(0, line.index_of(" ")) }
 
 fn read_name(line: string) -> string { line.substring(line.index_of(" ") + 1, line.length) }
 
+/// A family-numbered key at `arg` — the one spelling a saved answer's key wears.
+fn key_at(family: int, arg: int) -> Key { Key { family: family, arg: arg } }
+
+/// A run of leaves as the reads a saved answer keeps.
+fn saved_reads(leaves: List<Leaf>) -> List<Read> {
+    [Read { name: l.id(), digest: l.digest_text() } for l in leaves]
+}
+
+/// A place that points nowhere, which a voice with no position says instead.
+fn no_place() -> Loc { Loc { file: null, lo: 0, hi: 0 } }
+
 /// A voice with its places zeroed, which the kept places say instead.
 fn unplaced(v: Diag) -> Diag {
-    let blank = Loc { file: null, lo: 0, hi: 0 }
-    v with { primary: unplaced_frame(v.primary), secondary: [unplaced_frame(f) for f in v.secondary], suggestions: [s with { edits: [Edit { loc: blank, replacement: e.replacement } for e in s.edits] } for s in v.suggestions] }
+    v with { primary: unplaced_frame(v.primary), secondary: [unplaced_frame(f) for f in v.secondary], suggestions: [s with { edits: [Edit { loc: no_place(), replacement: e.replacement } for e in s.edits] } for s in v.suggestions] }
 }
 
 fn unplaced_frame(f: Frame) -> Frame {
-    Frame {
-        label: f.label,
-        loc: if f.loc == null { null } else { Loc { file: null, lo: 0, hi: 0 } },
-    }
+    Frame { label: f.label, loc: if f.loc == null { null } else { no_place() } }
 }
 
 /// A leaf as `identity=digest`: a relation by its name, an answer by its family and name.
