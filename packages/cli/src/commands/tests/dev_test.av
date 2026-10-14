@@ -6,7 +6,7 @@
 //! `avra_bin`, `scratch_dir` and `hang_bound` are the neighbouring tests'
 //! own.
 use @std.io.{make_dirs, write_text}
-use @std.process.{tool, cmd, inherited, Ready, Exit, ProcessError}
+use @std.process.{tool, cmd, inherited, exit_text, Ready, Exit, ProcessError}
 use @std.time.{ms, stamp}
 use @std.http.frame.{framed, limits}
 use @std.http.http.{Request, Unrouted, Response, Pulled}
@@ -143,6 +143,33 @@ spec "avra dev — as its help and its flags say" {
                 .Ok(said) -> said == "200 this machine alone",
                 .Err(_) -> false,
             }
+        }
+    }
+}
+
+/// A running `dev` sent SIGTERM: whether it left cleanly, and whether the
+/// port it held is free to be served on again.
+fn ended_by_signal() -> Result<string, ProcessError> {
+    let root = plain_dir()
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", root]) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
+    let port = (child.out.split(" at http://127.0.0.1:").last() ?? "").split("/").first() ?? ""
+    let exit = child.stop()
+    let again = cmd(tool(avra_bin())?, ["dev", "--port", port, root]) with { env: inherited(), timeout: hang_bound() }
+    let released = match again.start(Ready.Line(" at http://127.0.0.1:"), ms(30000)) {
+        .Ok(next) -> {
+            let _ = next.stop()
+            true
+        },
+        .Err(_) -> false,
+    }
+    "${exit_text(exit)} ${released}"
+}
+
+spec "avra dev — stopped the way a service is" {
+    given "a running server sent SIGTERM" {
+        then "it leaves cleanly and its port is free again" {
+            match ended_by_signal() { .Ok(said) -> said == "clean true", .Err(_) -> false }
         }
     }
 }
