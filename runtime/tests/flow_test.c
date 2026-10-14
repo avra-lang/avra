@@ -1647,7 +1647,7 @@ static void a_scan_hears_a_limit(void) {
     int64_t spent = ms_since(t0);
     CHECK(word == (int64_t)0xffffffff00000001LL, "a limit that passes while every scan finds an arm ready is heard: -1:1");
     CHECK(turns > 1 && spent >= 45 && spent < 1000, "where it passes");
-    CHECK(avra_unwinding == 0, "a limit is no cancel point yet: the bit stays clear");
+    CHECK(avra_unwinding == 1, "a limit met at a scan is a cut: the bit is raised");
     avra_fiber_within_end(scope);
     avra_rc_release(done);
 }
