@@ -1,8 +1,11 @@
 #!/bin/sh
-# A FN'S "TAKEN AS A VALUE" BIT MOVES EXACTLY ITS READERS. Taking a fn as a value for the first
-# time is heard by the units that read that fn's bit and by no other; an edit to another fn's
-# signature in another file leaves them standing. A reader stands on the one fn's answer, never
-# on the whole relation of uses.
+# AN ENTRY'S OWN BODY MOVES ITS OWN UNIT. A program's entry has no declaration whose
+# `Syntax` answers, so its reads carry the FILE's own `Parsed` beside `Analysis`: a value
+# use added to the entry's body (here a fn first taken as a value) re-lowers the entry's
+# one unit and no other file's, and an edit to another fn's signature in another file
+# leaves the entry standing. The entry stands on its own body, never on the whole-program
+# references relation; the fn's read bit reaches its consumers through `Consumed`, not
+# through a Lowered unit's own reads.
 set -u
 cd "$(dirname "$0")/.."
 A=${AVRA_BIN:-build/avra}
@@ -24,13 +27,15 @@ printf 'use lib.{c1, c2, c3}\nuse lib.m3.{f3}\nlet taken = f3\nprintln("${c1("a"
 first=$(judged)
 n=$(recomputed_of "$first")
 printf '%s' "$first" | grep -q "mismatched 0" || fail "a valid kept unit differs from a fresh lowering after the first value use: $first"
-printf '%s' "$first" | grep -q "ReadFound moved" || fail "the first value use of f3 moved no ReadFound answer: $first"
+printf '%s' "$first" | grep -q "Parsed moved" || fail "the entry's own body edit moved no read of its own unit: $first"
+printf '%s' "$first" | grep -q "References moved" && fail "the entry re-lowered on the whole-program references relation: $first"
 [ "${n:-99}" -le 4 ] || fail "the first value use of one fn re-lowered $n units: $first"
 sed 's/export fn f2(s: string) -> string { s }/export fn f2(s: string, n: int = 0) -> string { s }/' $P/src/lib/m2.av > $T/m2 && cp $T/m2 $P/src/lib/m2.av
 second=$(judged)
 n=$(recomputed_of "$second")
 printf '%s' "$second" | grep -q "mismatched 0" || fail "a valid kept unit differs from a fresh lowering after a signature edit: $second"
 printf '%s' "$second" | grep -q "ReadFound" && fail "an unrelated signature edit moved a ReadFound answer: $second"
-[ "${n:-99}" -le 4 ] || fail "a signature edit in one file re-lowered $n units: $second"
-echo "readfound-attack: one fn first taken as a value, then another's signature edited, $fails failed"
+printf '%s' "$second" | grep -q "References moved" && fail "a signature edit re-lowered on the whole-program references relation: $second"
+[ "${n:-99}" -le 5 ] || fail "a signature edit in one file re-lowered $n units: $second"
+echo "readfound-attack: an entry's own body edit re-lowers it, another file's signature edit leaves it standing, $fails failed"
 [ "$fails" = 0 ]
