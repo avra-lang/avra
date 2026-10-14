@@ -645,6 +645,9 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
     ensure_writes: Cell<fn(DeclId) -> bool>,
+    // the workspace's cancel hook: a record-carrying declaration's reach
+    // read by name, so a reader stands on that decl's answer alone
+    ensure_cancels: Cell<fn(DeclId) -> bool>,
     // WHICH SEATS THE BODY CONSUMES (R3) — computed on first ask
     // through `ensure_consumed`, the same shape as `marks` (null =
     // unasked). No fixpoint: unlike `written_seats`, a seat's
@@ -868,6 +871,7 @@ export fn new_decls() -> Decls {
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
         ensure_writes: Cell.new(no_answer),
+        ensure_cancels: Cell.new(no_answer),
         inferred_errs: new_table(),
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
@@ -2193,9 +2197,22 @@ impl Decls {
         self.cancels.keep(d.index, r)
     }
 
-    /// The recorded answer — null where nothing has said.
+    /// The recorded answer — null where nothing has said. A reader asks through the
+    /// workspace's hook, so it stands on the declaration's own `CancelBits` answer;
+    /// the pass's own reads go to `cancels_so_far`.
     fn cancel_bits(d: DeclId) -> CancelReach? {
+        (self.ensure_cancels.get())(d)
         self.cancels.at(d.index)
+    }
+
+    /// The pass's own read, hook-free — the table as it stands.
+    fn cancels_so_far(d: DeclId) -> CancelReach? {
+        self.cancels.at(d.index)
+    }
+
+    /// The workspace arms the cancel hook once.
+    fn arm_cancels(ensure: fn(DeclId) -> bool) {
+        self.ensure_cancels.set(ensure)
     }
 
     /// The program-wide bit the cancel pass settled.
