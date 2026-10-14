@@ -1,0 +1,25 @@
+// `@local` takes a field out of what a derived fold is; every other field folds.
+use @std.avrac.core.{Fingerprint}
+use @std.meta.{derive}
+
+@derive(Fingerprint)
+type Probe = { kept: int, @local at: int }
+
+@derive(Fingerprint)
+type Grown = { kept: int, extra: int, @local at: int }
+
+spec "core/fingerprint — a field's mark" {
+    given "a `@local` field" {
+        then "does not move the fold" {
+            Probe { kept: 1, at: 5 }.fingerprint() == Probe { kept: 1, at: 900 }.fingerprint()
+        }
+        then "leaves the unmarked field in it" {
+            Probe { kept: 1, at: 5 }.fingerprint() != Probe { kept: 2, at: 5 }.fingerprint()
+        }
+    }
+    given "a field with no mark" {
+        then "folds, whatever else the record holds" {
+            Grown { kept: 1, extra: 1, at: 5 }.fingerprint() != Grown { kept: 1, extra: 2, at: 5 }.fingerprint()
+        }
+    }
+}
