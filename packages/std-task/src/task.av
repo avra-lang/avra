@@ -1,0 +1,377 @@
+//! @std.task — streams: a source is a running supply, a sink is its
+//! handle. FLOW 05 S0 lands the in-memory channel carrier over the
+//! gate rows: a full sink parks its sender, a reader's claim hands a
+//! value to one parked giver, and a cancel answers `false` (the
+//! send-to-a-departed-reader cancel point). A channel is data and
+//! behaviour the waiting rows already state — no row and no
+//! instruction is added.
+use @std.errors.{Traced}
+
+extern fn avra_wait_park() -> int
+extern fn avra_wait_gate(gate: ptr, arm: int, member: int)
+extern fn avra_gate_new() -> ptr
+extern fn avra_gate_claim(gate: ptr) -> int
+
+/// What a non-parking send found. `Full` says the buffer is at its
+/// bound; `Ended` says the reader has left or the sink was closed.
+export enum Posted { Taken, Full, Ended }
+
+/// A running demand. Held by copy: every copy feeds the same channel.
+export type Sink<T> = {
+    send: fn(T) -> bool,
+    post: fn(T) -> Posted,
+    offer: fn(T) -> Posted,
+    close: fn() -> void,
+}
+
+/// A running supply. `ready` never consumes, `taken` never parks, and
+/// `next` parks until a value arrives or the channel ends.
+export type Source<T> = {
+    ready: fn() -> bool,
+    next: fn() -> T?,
+    taken: fn() -> T?,
+    ended: fn() -> bool,
+    lost: fn() -> int,
+}
+
+/// Both ends of one in-memory channel.
+export type Channel<T> = { sink: Sink<T>, source: Source<T> }
+
+/// Which member of an `AnyOf` handed an item over.
+export type Pick<T> = { at: int, item: T }
+
+/// A view of many sources: `taken` scans the members in order and
+/// answers the first that is ready, and `ended` is true once every
+/// member has.
+export type AnyOf<T> = {
+    ready: fn() -> bool,
+    taken: fn() -> Pick<T>?,
+    ended: fn() -> bool,
+    lost: fn() -> int,
+}
+
+/// A source whose last item is the error that ended it.
+export type TrySource<T, E> = {
+    next: fn() -> Result<T, Traced<E>>?,
+    taken: fn() -> Result<T, Traced<E>>?,
+    ended: fn() -> bool,
+    lost: fn() -> int,
+}
+
+/// One in-memory channel. Every field a verb writes is a `Cell`, so
+/// the sink and the source of one channel share it through a copy of
+/// the record.
+type Ch<T> = {
+    cap: int,
+    buf: Cell<List<T>>,
+    len: Cell<int>,
+    handed: Cell<List<T>>,
+    hlen: Cell<int>,
+    pending: Cell<Map<string, T>>,
+    held: Cell<Map<string, bool>>,
+    readers: ptr,
+    writers: ptr,
+    closed: Cell<bool>,
+    next_member: Cell<int>,
+    lost_count: Cell<int>,
+}
+
+/// Both ends of a channel that may hold `cap` items; a capacity below
+/// zero is unbounded.
+export fn open_channel<T>(cap: int) -> Channel<T> {
+    let st: Ch<T> = fresh<T>(cap)
+    let sink = Sink {
+        send: (v: T) -> st.send(v),
+        post: (v: T) -> st.post(v),
+        offer: (v: T) -> st.post(v),
+        close: () -> st.close(),
+    }
+    let source = Source {
+        ready: () -> st.ready(),
+        next: () -> st.next(),
+        taken: () -> st.taken(),
+        ended: () -> st.ended(),
+        lost: () -> st.lost(),
+    }
+    Channel { sink: sink, source: source }
+}
+
+/// A channel bounded only by memory.
+export fn unbounded_channel<T>() -> Channel<T> {
+    open_channel<T>(0 - 1)
+}
+
+/// Every member of `sources`, waited on together. The list is copied
+/// in; membership is fixed when `any` is called.
+export fn any<T>(sources: List<Source<T>>) -> AnyOf<T> {
+    AnyOf {
+        ready: () -> sources.any((s: Source<T>) -> s.ready()),
+        taken: () -> {
+            let at = sources.find_index((s: Source<T>) -> s.ready())
+            if at == null {
+                null
+            } else {
+                let i = at!
+                let v = sources[i].taken()
+                if v == null { null } else { Pick { at: i, item: v! } }
+            }
+        },
+        ended: () -> sources.all((s: Source<T>) -> s.ended()),
+        lost: () -> sources.fold(0, (a: int, s: Source<T>) -> a + s.lost()),
+    }
+}
+
+/// A source of `Result`s read as a `TrySource`: the `Err` is the last
+/// item, and `null` from `next` says the source is done.
+export fn tried<T, E>(s: Source<Result<T, Traced<E>>>) -> TrySource<T, E> {
+    TrySource {
+        next: () -> s.next(),
+        taken: () -> s.taken(),
+        ended: () -> s.ended(),
+        lost: () -> s.lost(),
+    }
+}
+
+fn fresh<T>(cap: int) -> Ch<T> {
+    let buf: Cell<List<T>> = Cell.new([])
+    let handed: Cell<List<T>> = Cell.new([])
+    let pending: Cell<Map<string, T>> = Cell.new({})
+    let held: Cell<Map<string, bool>> = Cell.new({})
+    Ch {
+        cap: cap,
+        buf: buf,
+        len: Cell.new(0),
+        handed: handed,
+        hlen: Cell.new(0),
+        pending: pending,
+        held: held,
+        readers: avra_gate_new(),
+        writers: avra_gate_new(),
+        closed: Cell.new(false),
+        next_member: Cell.new(0),
+        lost_count: Cell.new(0),
+    }
+}
+
+// ── The channel's vocabulary ──
+
+impl Ch<T> {
+    /// Whether the buffer has room for one more item.
+    fn room() -> bool {
+        self.cap < 0 || self.len.get() < self.cap
+    }
+
+    /// A member no other waiter of this channel holds.
+    fn mint() -> int {
+        let n = self.next_member.get()
+        self.next_member.set(n + 1)
+        n
+    }
+
+    fn push_buf(v: T) {
+        self.buf.push(v)
+        self.len.set(self.len.get() + 1)
+    }
+
+    fn pop_buf() -> T? {
+        let xs = self.buf.get()
+        let v = xs.first()
+        self.buf.set(xs.removed_at(0))
+        self.len.set(self.len.get() - 1)
+        v
+    }
+
+    fn push_handed(v: T) {
+        self.handed.push(v)
+        self.hlen.set(self.hlen.get() + 1)
+    }
+
+    fn pop_handed() -> T? {
+        let xs = self.handed.get()
+        let v = xs.first()
+        self.handed.set(xs.removed_at(0))
+        self.hlen.set(self.hlen.get() - 1)
+        v
+    }
+
+    /// Claim the oldest parked giver and move its value straight into
+    /// the buffer. A take that leaves the value pending would let a
+    /// later send overtake it through `handed`, so the move is part of
+    /// the claim, not a waking the giver owes.
+    fn refill() {
+        let g = avra_gate_claim(self.writers)
+        if g >= 0 {
+            let x = self.pending_take(g)
+            if x != null {
+                self.push_buf(x!)
+            }
+        }
+    }
+
+    fn pending_has(m: int) -> bool {
+        self.held.get().get(member_key(m)) ?? false
+    }
+
+    fn pending_put(m: int, v: T) {
+        let k = member_key(m)
+        self.pending.put(k, v)
+        self.held.put(k, true)
+    }
+
+    fn pending_drop(m: int) {
+        self.held.put(member_key(m), false)
+    }
+
+    fn pending_take(m: int) -> T? {
+        let k = member_key(m)
+        let v = self.pending.get().get(k)
+        self.held.put(k, false)
+        v
+    }
+
+    /// Hand `v` to a claimed reader, buffer it, or park until either
+    /// is possible. A park asked to give up answers `false`.
+    fn send(v: T) -> bool {
+        mut parked = false
+        mut m = -1
+        while true {
+            if self.closed.get() {
+                if parked {
+                    self.pending_drop(m)
+                }
+                return false
+            }
+            if !parked {
+                let r = avra_gate_claim(self.readers)
+                if r >= 0 {
+                    self.push_handed(v)
+                    return true
+                }
+                if self.room() {
+                    self.push_buf(v)
+                    return true
+                }
+                m = self.mint()
+                self.pending_put(m, v)
+                parked = true
+                avra_wait_gate(self.writers, 0, m)
+            } else if !self.pending_has(m) {
+                return true
+            } else if self.room() {
+                let x = self.pending_take(m)
+                if x == null {
+                    return false
+                }
+                self.push_buf(x!)
+                return true
+            } else {
+                avra_wait_gate(self.writers, 0, m)
+            }
+            let claim = avra_wait_park()
+            if claim < 0 {
+                self.pending_drop(m)
+                return false
+            }
+        }
+        false
+    }
+
+    /// Hand `v` to a waiting reader or buffer it; never park.
+    fn post(v: T) -> Posted {
+        if self.closed.get() {
+            return Posted.Ended
+        }
+        let r = avra_gate_claim(self.readers)
+        if r >= 0 {
+            self.push_handed(v)
+            return Posted.Taken
+        }
+        if self.room() {
+            self.push_buf(v)
+            return Posted.Taken
+        }
+        Posted.Full
+    }
+
+    /// Close the channel and wake everyone waiting on it. Idempotent.
+    fn close() {
+        self.closed.set(true)
+        wake_all(self.readers)
+        wake_all(self.writers)
+    }
+
+    /// Park until a value arrives, the channel ends, or the wait is
+    /// cancelled (which answers `null`).
+    fn next() -> T? {
+        mut was_claimed = false
+        while true {
+            if was_claimed {
+                if self.hlen.get() > 0 {
+                    return self.pop_handed()
+                }
+                was_claimed = false
+            }
+            if self.len.get() > 0 {
+                let v = self.pop_buf()
+                if self.room() {
+                    self.refill()
+                }
+                return v
+            }
+            if self.closed.get() {
+                return null
+            }
+            let ws = avra_gate_claim(self.writers)
+            if ws >= 0 {
+                let x = self.pending_take(ws)
+                if x != null {
+                    return x!
+                }
+            } else {
+                let m = self.mint()
+                avra_wait_gate(self.readers, 0, m)
+                let claim = avra_wait_park()
+                if claim < 0 {
+                    return null
+                }
+                was_claimed = true
+            }
+        }
+        null
+    }
+
+    /// Take a buffered value now, or answer `null` without parking.
+    fn taken() -> T? {
+        if self.len.get() > 0 {
+            let v = self.pop_buf()
+            if self.room() {
+                self.refill()
+            }
+            return v
+        }
+        null
+    }
+
+    fn ready() -> bool {
+        self.len.get() > 0
+    }
+
+    fn ended() -> bool {
+        self.closed.get() && self.len.get() == 0 && self.hlen.get() == 0
+    }
+
+    fn lost() -> int {
+        self.lost_count.get()
+    }
+}
+
+fn member_key(m: int) -> string {
+    "${m}"
+}
+
+fn wake_all(gate: ptr) {
+    mut m = avra_gate_claim(gate)
+    while m >= 0 {
+        m = avra_gate_claim(gate)
+    }
+}
