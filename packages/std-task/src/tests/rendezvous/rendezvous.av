@@ -1,0 +1,17 @@
+//! proves a capacity-0 (rendezvous) channel is FIFO: the producer hands
+//! a value over only when the reader waits, later sends park, and the
+//! reader reads 1,2,3,4,5 in order.
+use @std.task.{open_channel, Channel}
+
+fn feed(ch: Channel<int>) {
+    for i in 1..6 { let _ = ch.sink.send(i) }
+    ch.sink.close()
+}
+
+let ch = open_channel<int>(0)
+let _ = spawn feed(ch)
+mut v = ch.source.next()
+while v != null {
+    println("${v!}")
+    v = ch.source.next()
+}
