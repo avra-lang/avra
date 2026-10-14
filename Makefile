@@ -608,6 +608,7 @@ cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
 	@sh tools/held_runs_attack.sh
+	@sh tools/expanded_attack.sh
 	@sh tools/store_quiet_attack.sh
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
