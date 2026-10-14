@@ -1923,7 +1923,7 @@ int64_t avra_wait_enter(const char* site) {
     Fiber* self = g_current;
     site_kept(&self->scan_site, site);
     if (__builtin_expect(!scan_begun(self), 1)) return 0;
-    if (claimed_by_cancel(self)) cancel_met();
+    if (claimed_by_cut(self)) cancel_met();
     return claim_taken(self);
 }
 
