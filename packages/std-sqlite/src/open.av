@@ -372,6 +372,10 @@ impl Db {
     }
 }
 
+/// SQLite's sleeps hold the clock from here on: a connection keeps the
+/// file system it was opened under, so this stands before every open.
+extern fn avra_sqlite_sleeps_held()
+
 /// THE CALL, and the only place the handle is nullable.
 ///
 /// THE HANDLE IS CLOSED ON EVERY PATH. SQLite may allocate a connection
@@ -379,6 +383,7 @@ impl Db {
 /// that closes only on success leaks one per failure, and the leak is
 /// invisible because the caller has an error in hand.
 fn opened(path: string, flags: int) -> Result<Db, SqlError> {
+    avra_sqlite_sleeps_held()
     mut handle: ptr? = null
     let rc = sqlite3_open_v2(path, handle, flags, null)
     if rc != 0 { fail closing(handle, rc) }

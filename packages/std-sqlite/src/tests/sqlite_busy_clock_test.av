@@ -1,0 +1,40 @@
+//! A BUSY WAIT HOLDS THE WORLD. SQLite sleeps while a lock it wants is
+//! held, and a clock that moves only when every task waits must flow
+//! across that sleep — or every deadline read around a busy statement
+//! stands still.
+use @std.io.{make_dirs}
+use @std.sqlite.open.{Db}
+use @std.sqlite.error.{SqlError}
+use @std.sqlite.c.{sqlite3_busy_timeout}
+use @std.time.{now_ms, now_ns}
+
+/// One directory per run, so no earlier run's files answer for this one.
+once fn busy_clock_base() -> string {
+    let d = "/tmp/avra-sqlite-busy-clock-test/${now_ns()}"
+    let _ = make_dirs(d)
+    d
+}
+
+/// How far the clock moved while a second connection waited up to `wait`
+/// ms for the write lock the first holds — -1 when its write was let in.
+fn moved_while_locked(wait: int) -> Result<int, SqlError> {
+    let path = "${busy_clock_base()}/locked-${wait}.db"
+    let holder = Db.open(path)?
+    holder.exec("create table t (n integer)")?
+    let waiter = Db.open(path)?
+    holder.begin()?
+    let _ = sqlite3_busy_timeout(waiter.raw.get(), wait)
+    let from = now_ms()
+    let refused = waiter.exec("insert into t values (1)") is .Err
+    let moved = now_ms() - from
+    holder.rollback()?
+    let _ = waiter.close()
+    let _ = holder.close()
+    .Ok(if refused { moved } else { -1 })
+}
+
+spec "std/sqlite busy waits and the clock" {
+    given "a writer waiting on another connection's lock" {
+        then "the clock moves by the wait at least" { (moved_while_locked(80) catch -2) >= 80 }
+    }
+}
