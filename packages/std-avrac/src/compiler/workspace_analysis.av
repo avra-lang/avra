@@ -637,12 +637,17 @@ impl Workspace {
     /// `reads` joined to what `reader`'s compile-time runs read.
     fn read_by(reader: string, reads: List<RunRead>) {
         self
-            .hold
-            .runs
-            .put(
+            .record_runs(
                 reader,
                 (self.hold.runs.get().get(reader) ?? []).concat(self.unseen_reads(reader, reads)),
             )
+    }
+
+    /// A reader's runs written, its generation one further: a read expansion that
+    /// consulted them is stale from here.
+    fn record_runs(reader: string, runs: List<RunRead>) {
+        self.hold.runs.put(reader, runs)
+        self.hold.runs_gen.put(reader, (self.hold.runs_gen.get().get(reader) ?? 0) + 1)
     }
 
     /// The reads of `reads` the reader's list does not hold yet, in order, each
@@ -672,7 +677,7 @@ impl Workspace {
         }
         self.hold.read_gens.set(self.hold.read_gens.get() + 1)
         self.hold.read_gen.put(reader, self.hold.read_gens.get())
-        self.hold.runs.put(reader, no_read_list())
+        self.record_runs(reader, no_read_list())
         scope
     }
 
@@ -681,7 +686,7 @@ impl Workspace {
     fn closed_reads(reader: string, scope: ReadScope) -> List<RunRead> {
         let read = self.hold.runs.get().get(reader) ?? []
         self.hold.read_gen.put(reader, scope.gen)
-        self.hold.runs.put(reader, scope.before.concat(self.unseen_reads(reader, read)))
+        self.record_runs(reader, scope.before.concat(self.unseen_reads(reader, read)))
         read
     }
 
