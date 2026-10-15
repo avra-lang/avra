@@ -43,9 +43,12 @@ def margin_for(spec, row, default):
     return float(gate.get("rows", {}).get(row, gate.get("margin", default)))
 
 
-def accept(measured, machine, default=DEFAULT_MARGIN, path=BASELINE):
+def accept(measured, machine, margins=None, default=DEFAULT_MARGIN, path=BASELINE):
     """Accept every fresh row this machine measured. `measured` is the
-    list of stored JSON rows."""
+    list of stored JSON rows; `margins` maps `(benchmark, row)` to the
+    margin the spec gives it, so a row that is noisier than a fixed cost
+    carries its own."""
+    margins = margins or {}
     data = load(path)
     wrote = 0
     for row in measured:
@@ -55,7 +58,7 @@ def accept(measured, machine, default=DEFAULT_MARGIN, path=BASELINE):
             data["rows"][key(machine, row["language"], row["benchmark"], rname)] = {
                 "value": cell["value"],
                 "unit": cell["unit"],
-                "margin": default,
+                "margin": float(margins.get((row["benchmark"], rname), default)),
             }
             wrote += 1
     save(data, path)

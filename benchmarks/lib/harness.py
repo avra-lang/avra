@@ -57,6 +57,19 @@ def save_store(store, path=RESULTS):
             f.write(json.dumps(store[where], sort_keys=True, separators=(",", ":")) + "\n")
 
 
+def spec_margins(reg, benches):
+    """(benchmark, row) -> the margin its spec asks for, so a row that is
+    noisier than a fixed cost (a scaling ratio) carries its own gate."""
+    default = float(reg["gate"].get("margin", gatemod.DEFAULT_MARGIN))
+    out = {}
+    for key, bdir in benches:
+        spec = spec_of(bdir)
+        gate = spec.get("gate", {})
+        for rname in spec.get("rows", {}):
+            out[(key, rname)] = float(gate.get("rows", {}).get(rname, gate.get("margin", default)))
+    return out
+
+
 def run_suite(reg, benches, requested, when):
     """Run every selected (benchmark, language). Answers (rows, failures):
     a Skip is a row that says SKIPPED and why; a Fail is a loud defect."""
@@ -137,7 +150,10 @@ def main():
         for row in rows:
             store[(row["benchmark"], row["language"], row["machine"])] = row
         save_store(store)
-        wrote = gatemod.accept(rows, machine_id(), reg["gate"].get("margin", gatemod.DEFAULT_MARGIN))
+        wrote = gatemod.accept(
+            rows, machine_id(), spec_margins(reg, benches),
+            reg["gate"].get("margin", gatemod.DEFAULT_MARGIN),
+        )
         reportmod.write()
         if not args.quiet:
             print(f"record: {len(rows)} row(s) stored, {wrote} accepted into baseline.json, report regenerated")
