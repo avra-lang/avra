@@ -1,7 +1,7 @@
 //! The literal's typing law: the name resolved to a declaration
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
-use core.{ExprId, Type, TypeId, DeclId}
+use core.{ExprId, Type, TypeId, DeclId, TypeRef}
 use features.{
     no_pins,
     Pins,
@@ -36,11 +36,13 @@ fn lit_type(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>, value
     cx.view.decls.note_type(ty)
     let sig? = cx.fields_of(ty) else { return not_a_record(cx, e, name) }
     let _ = cx.seals(cx.loc_of(e), ty, "built here")
-    if !cx.tparams(target).is_empty() {
-        return generic_lit(cx, e, name, fields, values, target, sig)
+    let targs = cx.view.store.struct_targs_of(e)
+    if cx.tparams(target).is_empty() {
+        if !targs.is_empty() { return not_generic(cx, e, name, targs.length) }
+        check_fields(cx, e, name, fields, values, sig)
+        return ty
     }
-    check_fields(cx, e, name, fields, values, sig)
-    ty
+    generic_lit(cx, e, name, fields, values, target, sig, targs)
 }
 
 /// A GENERIC record's literal INSTANTIATES: the declared field
@@ -55,10 +57,19 @@ fn generic_lit(
     values: List<ExprId>,
     decl: DeclId,
     sig: StructSig,
+    targs: List<TypeRef>,
 ) -> TypeId {
     let tp = cx.tparams(decl)
     if tparams_refused(tp) { return cx.error_type }
+    if !targs.is_empty() && targs.length != tp.length {
+        return lit_arg_count(cx, e, name, tp, targs.length)
+    }
     mut bound = no_pins(tp.length)
+    for j, t in targs {
+        let written = cx.full_type(cx.loc_of(e), t)
+        if cx.errored_ty(written) { return cx.error_type }
+        bound.pin(j, written)
+    }
     mut spoke = false
     for j, f in fields {
         if !generic_field(cx, name, sig, f, values[j], written_at(fields, j), decl, bound) {
@@ -303,6 +314,40 @@ fn unpinned_by_fields(mut cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
                 "give `${tparam}`'s field a value of a concrete type",
             ),
         )
+}
+
+/// A generic literal writes exactly its record's type parameters.
+fn lit_arg_count(mut cx: TypeCx, e: ExprId, name: string, tp: List<string>, found: int) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.struct_targs",
+                cx.loc_of(e),
+                "`${name}` takes ${counted(tp.length)}, and this literal writes ${found}",
+                "written here",
+                "write `${name}<${tp.join(", ")}> { … }`",
+            ),
+        )
+}
+
+/// A literal writing type arguments on a record that takes none.
+fn not_generic(mut cx: TypeCx, e: ExprId, name: string, found: int) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.struct_targs",
+                cx.loc_of(e),
+                "`${name}` takes no type arguments, and this literal writes ${found}",
+                "written here",
+                "drop them — a literal pins a record's parameters through its fields",
+            ),
+        )
+}
+
+/// A count of type arguments, singular or plural.
+fn counted(n: int) -> string {
+    if n == 1 { return "1 type argument" }
+    "${n} type arguments"
 }
 
 /// A literal under a name that declares no fields — an enum's.

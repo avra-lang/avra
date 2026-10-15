@@ -1604,15 +1604,6 @@ Syntax the grammar lacks:
   `for` head — pairs as values arrive with tuples". The head IS the
   `for` statement's: `[f(i, x) for i, x in xs]` pairs, `[f(i) for i
   in lo..hi]` counts.
-- A GENERIC STRUCT LITERAL WITH EXPLICIT TYPE ARGUMENTS (`Box<float>
-  { held: 1.25 }`): F0100 "expected BREAK while parsing `stmt`", at
-  the `>`. A TYPED LET carries it instead — `let b: Box<float> = Box
-  { held: 1.25 }` — and INFERENCE IS FINE without any pin: a generic
-  fn over a generic struct resolves from its argument
-  (`unwrap(bf)` where `bf: Box<float>`, probed at 5575a2e, both
-  engines). Worth stating because the literal's refusal cascades into
-  a "write the type explicitly" further down, and the pin that
-  silences it is not the thing that was wrong.
 - A DOUBLE `?` on a type (`int??`): F0100 at the FIRST `?`, wording
   by position ("expected `)`" in a parameter seat, "expected `=`"
   under a `let`, "expected BREAK" under a `type` alias) — the type

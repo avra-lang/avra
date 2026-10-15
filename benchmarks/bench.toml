@@ -1,0 +1,70 @@
+# THE BENCHMARK SUITE'S REGISTRY. A FAMILY directory holds benchmark
+# directories; a benchmark holds a `spec.toml` and one directory per
+# language. A language is added by a `[languages.X]` block here plus a
+# `<bench>/X/` directory whose program prints the row contract
+# (`benchmarks/README.md`). Nothing else in the tree names a language.
+#
+# The gate's floor: `run.sh --gate` with no `--lang` runs this language
+# alone, so the regression seam works with no compiler and no other
+# toolchain installed.
+schema = 1
+
+[suite]
+name = "avra-benchmarks"
+version = "0.0.1"
+description = "A multi-language concurrency and tasks benchmark suite with a generated report"
+
+[gate]
+# A row is refused past this ratio of its accepted baseline. A spec may
+# override a row or the whole benchmark.
+margin = 2.0
+floor = "c"
+
+# ── languages ────────────────────────────────────────────────────────
+#
+# `version` prints the toolchain's version (first line is kept).
+# `present` is an argv whose success means the toolchain is installed; a
+# language it refuses is SKIPPED with the reason, never silently dropped.
+# `source` names the program file inside the language's directory when it
+# is not `main.<ext>`; `build` when present compiles it; `run` runs it.
+# `cwd` overrides the working directory (default: the language dir).
+# Placeholders: {src} {out} {dir} {avra}.
+# A program prints one row per line: `<name>\t<value>\t<unit>\t<samples>`.
+
+[languages.c]
+title = "C (the floor)"
+version = ["cc", "--version"]
+present = ["cc", "--version"]
+source = "main.c"
+build = ["cc", "-O2", "-pthread", "-o", "{out}", "{src}"]
+run = ["{out}"]
+
+[languages.rust]
+title = "Rust"
+version = ["rustc", "--version"]
+present = ["rustc", "--version"]
+source = "main.rs"
+build = ["rustc", "-O", "-o", "{out}", "{src}"]
+run = ["{out}"]
+
+[languages.go]
+title = "Go"
+version = ["go", "version"]
+present = ["go", "version"]
+source = "main.go"
+build = ["go", "build", "-o", "{out}", "{src}"]
+run = ["{out}"]
+
+[languages.python]
+title = "Python (threads, GIL-bound)"
+version = ["python3", "--version"]
+present = ["python3", "--version"]
+source = "main.py"
+run = ["python3", "{src}"]
+
+[languages.avra]
+title = "Avra"
+version = ["{avra}", "--version"]
+present = ["test", "-x", "{avra}"]
+build = ["{avra}", "build", "{dir}"]
+run = ["{dir}/src/main"]

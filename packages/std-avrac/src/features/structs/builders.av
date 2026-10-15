@@ -48,15 +48,18 @@ fn build_type_decl(b: Builder) -> Result<LangNode, string> {
 /// one lexical class (ROADMAP: the bs2 debt ledger).
 fn build_struct_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
-    let vn = b.tokens(1)?
-    let ve = b.exprs(2)?
-    let spreads = b.tokens(3)?
+    let targs = b.type_refs(1)?
+    let vn = b.tokens(2)?
+    let ve = b.exprs(3)?
+    let spreads = b.tokens(4)?
     let written = [b.value_after(vn, ve, j) for j, k in vn]
     if [v for v in written if v != null].length != ve.length { return .Err(zip_defect) }
     let values = [v ?? b.expr_node(Expr.Ident(Scoped(vn[j].text))) for j, v in written]
-    b
-        .make_expr(
+    let lit = b
+        .expr_node(
             Expr
                 .StructLit(Nominal(t.text), [Plain(spread_name(k, spreads, vn)) for k in vn], values),
         )
+    b.store.mark_struct_targs(lit, targs)
+    b.wrap_expr(lit)
 }
