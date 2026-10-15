@@ -1171,10 +1171,13 @@ impl Workspace {
     }
 
     /// Runs the cancel pass and says so, or says it cannot: a whole-program pass never
-    /// runs inside a resolve. Only a kind a call can enter is asked, so a record or a
-    /// type pulls nothing.
+    /// runs inside a resolve, while a marks query is computing, or while a compile-time
+    /// body is lowering — it surveys every member's typed facts, and a lift that reads
+    /// a mark would otherwise re-enter it. Only a kind a call can enter is asked, so a
+    /// record or a type pulls nothing.
     fn cancel_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.comptime_active() || self.db.family_active(Family.Marks.ordinal) { return false }
         if calls_kind(self.decls.decl(d).kind) { let _ = self.cancel_bits_of(d) }
         true
     }
