@@ -550,13 +550,22 @@ fn declared_shape(decls: Decls, t: TypeId, inner: List<int>) -> Keyed {
     )
 }
 
-/// A static as a node: its boxes, each code slot replaced by its place.
+/// A static as a node: its boxes, each code slot replaced by its place. A DEBUG
+/// static — a body's frame, a label and a declaration's span — is data the
+/// program reads and no part of what its code does, so a line written above
+/// the body moves its offsets without moving the hash: the node stands, made
+/// of nothing, so the body's reference to it resolves rather than leaving the
+/// hash uncomputable.
 fn static_node(s: Static) -> CodeNode {
     let refs = distinct_targets(static_code_syms(s.boxes))
+    if s.debug { return CodeNode { own: debug_node_own(), refs: refs } }
     mut d = digest_int(new_digest(), s.boxes.length)
     for b in s.boxes { d = box_digest(d, b, refs) }
     CodeNode { own: digest_key(d), refs: refs }
 }
+
+/// What a debug static is made of: nothing.
+fn debug_node_own() -> string { digest_of_name("debug static") }
 
 fn box_digest(d: Digest, b: StaticBox, refs: List<string>) -> Digest {
     match b {
