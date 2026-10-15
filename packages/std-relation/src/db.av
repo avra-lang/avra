@@ -40,6 +40,8 @@ use stable.{
 
 extern fn avra_trap(message: string)
 
+extern fn avra_qtrace(message: string)
+
 /// A Db: its dense id, whether it is closed, each relation it has reached
 /// (its hash, its close, its sweep), the KERNEL its cells live in — its
 /// own, or one it was given — and how that kernel is told of a write;
@@ -542,7 +544,7 @@ impl Db {
         match l {
             .Rows(name, digest) -> self.rows_digest(name) == digest,
             .Input(name, spelled, digest) -> {
-                let now? = self.input_digest(name, spelled) else { return false }
+                let now? = self.input_digest(name, spelled) else { return self.unstaged(name) }
                 now == digest
             },
         }
@@ -558,6 +560,13 @@ impl Db {
         if at < 0 { return null }
         let now? = self.input_digest(rest.substring(0, at), rest.substring(at + 1, rest.length)) else { return null }
         "${now}"
+    }
+
+    /// An input the record names that this process never set or asked: a miss, never a
+    /// lazy load, and counted in the trace.
+    fn unstaged(name: string) -> bool {
+        if self.kernel.get()?.tracing.get() ?? false { avra_qtrace("Q\tleaf\tunstaged\t${name}\n") }
+        false
     }
 
     /// A relation's rows' hash here; an unreached relation holds none.
