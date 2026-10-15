@@ -297,6 +297,12 @@ jobs:
           s=$(date +%s)
           # The status names the cause: 124 is the bound, 137 a kill (the memory cap or the bound's -k), anything else a failure.
           said() { case $1 in 124) echo "::error::$2 ran past its 1500 s bound" ;; 137) echo "::error::$2 was killed (exit 137: the memory cap or a kill; see the watch: peak line)" ;; *) echo "::error::$2 failed (exit $1)" ;; esac; }
+          # A RELEASED COMPILER OLDER THAN THIS TREE CANNOT READ IT: `gen` prints
+          # the branch's new syntax as parse errors and `said` names a failed
+          # generation. That is the expected shape here, not a broken tree — the
+          # seed recovery is the answer, and it is a FULL build (gen-1 by the seed,
+          # gen-2 by gen-1), so a source broken for real still dies there. The
+          # fallback forgives a compiler too old, never a source wrong.
           gen() { timeout -k 10 1500 make -s avra; rc=$?; [ "$rc" = 0 ] || { said "$rc" "a compiler generation"; return 1; }; }
           if [ -x build/avra ] && gen && gen; then :; else
             timeout -k 10 1500 make -s bootstrap; rc=$?; [ "$rc" = 0 ] || { said "$rc" "the bootstrap"; exit 1; }
