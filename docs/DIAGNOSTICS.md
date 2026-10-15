@@ -386,7 +386,7 @@ help: wait on one task with `t.await`
 
 ## flow.arm
 
-an arm waits on a task, a list of tasks or a timer
+an arm waits on a task, a list of tasks, a source or a timer
 
 ```avra
 select {
@@ -395,7 +395,7 @@ select {
 ```
 
 ```
-error[flow.arm]: a `select` arm waits on a task, a list of tasks or a timer, and this is `int`
+error[flow.arm]: a `select` arm waits on a task, a list of tasks, a source or a timer, and this is `int`
   ╭─[witness.av:2:5]
 2 │     1 -> 2
   ·     ┬
@@ -490,6 +490,12 @@ No witness here: a timer is `@std/time`'s own declaration, which a lone source c
 a timer made inside a loop starts over each turn
 
 No witness here: a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av.
+
+## flow.end_arm
+
+a source that can end says what happens when it does
+
+No witness yet.
 
 ## type.component_expand
 
