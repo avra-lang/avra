@@ -22,7 +22,12 @@ use ast.{
     Expect,
     Recover,
     BranchStart,
+    Operators,
+    Assoc,
+    Tier,
+    Suffix,
 }
+use operators.{operators_of}
 use executor.{Captured, RunOutcome}
 use lexeme.{Lexeme}
 use seed.{item, cap, seq, seq_to, alt, rule_def, rule_ref, lit, named, group}
@@ -39,6 +44,10 @@ export enum GrammarNode {
     NBuild(b: Build)
     NAnnot(an: PendingAnnot)
     NArg(a: BuildArg)
+    NAssoc(a: Assoc)
+    /// One operator: its tokens, adjacent.
+    NWord(w: List<string>)
+    NTier(l: Tier)
 }
 
 /// A parsed-but-unattached annotation. Exists only between a branch's
@@ -50,6 +59,8 @@ export enum PendingAnnot {
     AHead(label: string)
     /// `@trailer(label)` — the labeled item never matches inside a head.
     ATrailer(label: string)
+    /// `@operators { … }` — the branch's tiers, loosest first.
+    AOperators(tiers: List<Tier>)
 }
 
 /// All-caps-and-underscores: the convention marking a lexer terminal
@@ -87,6 +98,9 @@ impl GrammarNode {
     fn as_build() -> Build? { match self { .NBuild(b) -> b, _ -> null } }
     fn as_annot() -> PendingAnnot? { match self { .NAnnot(an) -> an, _ -> null } }
     fn as_arg() -> BuildArg? { match self { .NArg(a) -> a, _ -> null } }
+    fn as_assoc() -> Assoc? { match self { .NAssoc(a) -> a, _ -> null } }
+    fn as_word() -> List<string>? { match self { .NWord(w) -> w, _ -> null } }
+    fn as_tier() -> Tier? { match self { .NTier(l) -> l, _ -> null } }
 }
 
 /// List delivery for a repeated capture. A label repeated across a
@@ -116,6 +130,32 @@ fn as_rules<T>(v: Captured<T, GrammarNode>) -> Result<List<Rule>, string> {
 
 fn as_annots<T>(v: Captured<T, GrammarNode>) -> Result<List<PendingAnnot>, string> {
     .Ok([want(node_of(x)?.as_annot(), "an annotation")? for x in as_list(v)?])
+}
+
+fn as_tiers<T>(v: Captured<T, GrammarNode>) -> Result<List<Tier>, string> {
+    .Ok([want(node_of(x)?.as_tier(), "a tier")? for x in as_list(v)?])
+}
+
+fn as_words<T>(v: Captured<T, GrammarNode>) -> Result<List<List<string>>, string> {
+    .Ok([want(node_of(x)?.as_word(), "an operator")? for x in as_list(v)?])
+}
+
+/// Each captured token's text, in order.
+fn token_texts<T>(lex: Lexeme<T>, v: Captured<T, GrammarNode>) -> Result<List<string>, string> {
+    .Ok([lex.text(want(tok_of(x), "a quoted operator")?) for x in as_list(v)?])
+}
+
+fn suffixes_of(words: List<string>, rules: List<string>) -> List<Suffix> {
+    [Suffix { word: words[i], rule: rules[i] } for i in 0..words.length]
+}
+
+/// A tier's own build, when it writes one.
+fn tier_build<T>(v: Captured<T, GrammarNode>) -> Result<Build?, string> {
+    match v {
+        .Absent -> .Ok(null),
+        .Node(n) -> .Ok(want(n.as_build(), "a build directive")?),
+        .Terminal(_) or .Many(_) -> .Err(build_directive_expected()),
+    }
 }
 
 /// The repetition a notation suffix names — the inverse of `Rep.suffix`.
@@ -189,12 +229,32 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
                 if rec != null { return .Err("duplicate @recover on one branch") }
                 rec = Recover { sync_to: sync_to }
             },
+            .AOperators(_) -> nothing_attached(),
             .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? },
             .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? },
         }
     }
-    .Ok(Seq { items: out, build: null, recover: rec })
+    let blocks = [t for an in annots for t in operator_blocks(an)]
+    if blocks.length > 1 { return .Err("duplicate @operators on one branch") }
+    .Ok(Seq { items: out, build: null, recover: rec, operators: written_operators(blocks) })
 }
+
+/// The tiers an `@operators` annotation writes; none for any other.
+fn operator_blocks(an: PendingAnnot) -> List<List<Tier>> {
+    match an {
+        .AOperators(tiers) -> [tiers],
+        .AExpect(_, _) or .ARecover(_) or .AHead(_) or .ATrailer(_) -> [],
+    }
+}
+
+fn written_operators(blocks: List<List<Tier>>) -> Operators? {
+    let tiers? = blocks.first() else { return null }
+    operators_of(tiers)
+}
+
+fn nothing_attached() {}
+
+fn build_directive_expected() -> string { "expected a build directive" }
 
 /// The items with every one carrying `label` marked as a head or a
 /// trailer, groups opened — a label is captured at any depth. One
@@ -277,7 +337,7 @@ export fn grammar_build<T>(
                     let b = want(node_of(args[1])?.as_build(), "a build directive")?
                     ok<T>(GrammarNode.NSeq(sq with { build: b }))
                 },
-                .Terminal(_) or .Many(_) -> .Err("expected a build directive"),
+                .Terminal(_) or .Many(_) -> .Err(build_directive_expected()),
             }
         },
         "build_labeled" -> {
@@ -344,6 +404,20 @@ export fn grammar_build<T>(
             let label = tok_text(lex, args[0], "the trailer's label")?
             ok<T>(GrammarNode.NAnnot(PendingAnnot.ATrailer(label)))
         },
+        "build_operators" -> ok<T>(GrammarNode.NAnnot(PendingAnnot.AOperators(as_tiers(args[0])?))),
+        "build_tier" -> {
+            let a = want(node_of(args[0])?.as_assoc(), "an associativity")?
+            let sufs = suffixes_of(token_texts(lex, args[2])?, token_texts(lex, args[3])?)
+            let b = tier_build(args[4])?
+            ok<T>(
+                GrammarNode
+                    .NTier(Tier { assoc: a, words: as_words(args[1])?, suffixes: sufs, build: b }),
+            )
+        },
+        "build_assoc_left" -> ok<T>(GrammarNode.NAssoc(Assoc.Left)),
+        "build_assoc_single" -> ok<T>(GrammarNode.NAssoc(Assoc.Single)),
+        "build_assoc_unmixed" -> ok<T>(GrammarNode.NAssoc(Assoc.Unmixed(tok_text(lex, args[0], "a refusal builder")?))),
+        "build_word" -> ok<T>(GrammarNode.NWord(token_texts(lex, args[0])?)),
         _ -> .Err("unknown builder `${name}`"),
     }
 }

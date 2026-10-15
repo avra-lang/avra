@@ -205,10 +205,19 @@ export fn in_symbol_order(l: Lowered) -> Lowered {
 /// The caller has asked `program_closed`, a whole-program scan with one answer.
 export fn emit_closed(l: Lowered, path: string, which: Owned, target: string) -> string? { emit_mode(l, path, which, Written.Bitcode, target) }
 
-/// How many objects are made at once: a worker is a thread of this process and
-/// holds one module, and the machine is shared — four buys the wall without
-/// saturating it.
-const EMIT_WIDTH: int = 4
+extern fn avra_cores_online() -> int
+
+/// How many objects are made at once: a worker is a thread of this process and holds one
+/// module, so the width is the machine's cores, at most sixteen.
+fn emit_width() -> int {
+    // LICENSED input.machine_width: the core count sets how many objects are made at once, never what they hold
+    let cores = avra_cores_online()
+    when {
+        cores < 1 -> 1
+        cores > 16 -> 16
+        _ -> cores
+    }
+}
 
 /// The same module as an OBJECT, optimized and generated in this process at
 /// clang's level — BY A WORKER: the module is built here and handed over, and
@@ -305,7 +314,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     let written = match form {
         .Text -> avra_llvm_print_module_to_file(m, path),
         .Bitcode -> avra_llvm_write_bitcode_to_file(m, path),
-        .Object(opt) -> avra_llvm_emit_object_later_targeted(m, lc, path, opt, EMIT_WIDTH, target),
+        .Object(opt) -> avra_llvm_emit_object_later_targeted(m, lc, path, opt, emit_width(), target),
     }
     // a handed module's context is its worker's
     if !(form is .Object) { avra_llvm_context_dispose(lc) }

@@ -549,6 +549,9 @@ LK() { # LK <label> <want: hit|built> -- the env is the caller's
 sleep 3
 export CC=$R/cc1
 LK "cold lk" built; LK "nothing touched" hit
+# A HIT LEAVES THE BINARY WHERE IT STANDS: the file keeps its inode (a replacement would not).
+lk_bin=$R/lk/src/main; lk_i1=$(ls -i $lk_bin | awk '{print $1}'); LK "and again" hit; lk_i2=$(ls -i $lk_bin | awk '{print $1}')
+steps=$((steps+1)); [ -n "$lk_i1" ] && [ "$lk_i1" = "$lk_i2" ] || { fails=$((fails+1)); echo "FAIL  lk: a cache hit replaced the binary it answered with (inode $lk_i1 -> $lk_i2)"; }
 printf '# a new revision of the C compiler\n' >> $R/cc1; sleep 3
 LK "the C compiler's bytes moved" built; LK "and again nothing touched" hit
 export CC=$R/cc2
@@ -566,6 +569,61 @@ steps=$((steps+1)); out=$(./avra build --time $R/lk 2>&1)
 mv $R/lk.rt.away $lk_rt
 case "$out" in *"cache hit"*) fails=$((fails+1)); echo "FAIL  lk: the runtime archive was gone and the kept binary was served" ;; esac
 LK "and back again" hit
+fi
+
+if section dp; then
+# A KEPT VERDICT NEVER READS A FILE THAT IS GONE. held.av's const read z/add.av's body; the file is deleted and
+# held.av no longer uses it. The next build is clean and says nothing of the deleted path, and so is the one after.
+mkdir -p $R/dp/src/f $R/dp/src/z
+printf '[package]\nname = "rt-dp"\nversion = "0.1.0"\n' > $R/dp/avra.toml
+printf 'export fn plus(n: int) -> int { n + 1 }\n' > $R/dp/src/z/add.av
+printf 'use z.{plus}\nexport const K: int = plus(1)\nexport fn shown() -> int { K }\n' > $R/dp/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/dp/src/main.av
+S "cold dp" dp
+rm $R/dp/src/z/add.av; rmdir $R/dp/src/z
+printf 'export const K: int = 2\nexport fn shown() -> int { K }\n' > $R/dp/src/f/held.av
+S "dp: the file a kept verdict read is deleted" dp
+steps=$((steps+1)); [ "$($R/dp/src/main 2>&1)" = "2" ] || { fails=$((fails+1)); echo "FAIL  dp: the program printed '$($R/dp/src/main 2>&1)', wanted '2'"; }
+printf '// moved\n' >> $R/dp/src/main.av
+S "dp: and the build after it" dp
+
+fi
+
+if section gg; then
+# A GUESS ONLY PRE-ADMITS. Editing held.av's const to need calc.av's body turns the attempt once (calc.av
+# is held and a compile-time run asks for its body); the same edit again starts with calc.av read and
+# stands on its first attempt. Whatever the guess holds — a file the next edit no longer needs — the
+# answer is the one a store with no guess gives: the same exit, the same binary output.
+mkdir -p $R/gg/src/f $R/gg/src/y
+printf '[package]\nname = "rt-gg"\nversion = "0.1.0"\n' > $R/gg/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/gg/src/y/calc.av
+printf 'use y.{twice}\nexport const K: int = twice(3)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/gg/src/main.av
+gg_attempts() { AVRA_QTRACE=1 ./avra check $R/gg 2>&1 >/dev/null | grep -ac -P '^Q\tattempt'; }
+S "cold gg" gg
+printf 'use y.{twice}\nexport const K: int = twice(4)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+gg_first=$(gg_attempts)
+S "gg: the const needs calc.av's body" gg
+steps=$((steps+1)); [ "$gg_first" = 2 ] || { fails=$((fails+1)); echo "FAIL  gg: a const that needs a held body turned $gg_first attempts, wanted 2 (the turn that reads calc.av)"; }
+printf 'use y.{twice}\nexport const K: int = twice(5)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+gg_again=$(gg_attempts)
+steps=$((steps+1)); [ "$gg_again" = 1 ] || { fails=$((fails+1)); echo "FAIL  gg: the same edit again turned $gg_again attempts, wanted 1 (calc.av is remembered)"; }
+S "gg: the remembered read stands" gg
+steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "10" ] || { fails=$((fails+1)); echo "FAIL  gg: the program printed '$($R/gg/src/main 2>&1)', wanted '10'"; }
+printf 'export const K: int = 7\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+S "gg: the guess names a file the edit no longer needs" gg
+steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "7" ] || { fails=$((fails+1)); echo "FAIL  gg: with an unneeded remembered read the program printed '$($R/gg/src/main 2>&1)', wanted '7'"; }
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/gg/src/main.av
+rm $R/gg/src/y/calc.av; rmdir $R/gg/src/y
+printf 'export const K: int = 8\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+S "gg: the remembered file is gone" gg
+steps=$((steps+1)); [ "$($R/gg/src/main 2>&1)" = "8" ] || { fails=$((fails+1)); echo "FAIL  gg: with the remembered file deleted the program printed '$($R/gg/src/main 2>&1)', wanted '8'"; }
+printf 'export const K: int = 9\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
+gg_third=$(gg_attempts)
+steps=$((steps+1)); [ "$gg_third" = 1 ] || { fails=$((fails+1)); echo "FAIL  gg: a body edit after another edit of the same file turned $gg_third attempts, wanted 1"; }
+gg_warm=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
+rm -rf .avra-cache; gg_cold=$(./avra check $R/gg 2>&1 | grep -v '^watch:' | grep -ac -e 'warning' -e 'error')
+steps=$((steps+1)); [ "$gg_warm" = "$gg_cold" ] || { fails=$((fails+1)); echo "FAIL  gg: a guess changed what a check says: $gg_warm lines warm, $gg_cold with no store"; }
 fi
 
 if section dp; then
@@ -976,9 +1034,10 @@ K "d, by the compiler itself" hit
 cp build/avra build/avra.twin;                 W "the same bytes from another path" build/avra.twin hit
 strip -x build/avra -o build/avra.other 2>/dev/null && { codesign -f -s - build/avra.other 2>/dev/null || true; }
 W "a compiler of other bytes" build/avra.other built
-# ONE STORE FOR EVERY COMPILER: S2 keeps a second compiler's rows out of the first's
-# by the print in each pack's header, never by a directory of its own. The behaviour
-# below — each compiler reading its own rows and not the other's — is the claim.
+# ONE STORE FOR EVERY COMPILER: a row's family carries the stamp it stands under — the
+# writing compiler's print, or a shared producer's hash — so a second compiler's rows
+# neither hide nor displace the first's, and no directory of its own is needed. The
+# behaviour below — each compiler reading its own rows — is the claim.
 W "and its own store serves it" build/avra.other hit
 K "while the first compiler's still serves the first" hit
 rm -f build/avra.twin build/avra.other
@@ -1675,9 +1734,10 @@ S "drm: the callee's body moves — decl()'s file edge must still force a fresh 
 got_drm2=$($R/drm/src/main 2>&1)
 [ "$got_drm2" = "drm 22" ] || { fails=$((fails+1)); echo "FAIL  warm drm printed '$got_drm2', wanted 'drm 22' — decl()'s pinned-handle read lost the file-grain edge"; }
 
-# A DECLARATION ADDED, INSERTED OR REMOVED MOVES ITS MODULE'S INTERFACE, AND THE
-# HOLD TAKES IT: `b` names `a` and a collect in `coll`, so an interface move in
-# `a` re-reads `b` while `coll` stays held — and `b` types `entries.length`
+# A TYPE ADDED, INSERTED OR REMOVED MOVES ITS MODULE'S INTERFACE, AND THE
+# HOLD TAKES IT, while a fn `b` never names moves nothing (both pinned): `b` names
+# `a` and a collect in `coll`, so an interface move in `a` re-reads `b` while `coll`
+# stays held — and `b` types `entries.length`
 # against the held collect's recorded type. ND judges one warm check (held,
 # never refused, `coll` held and `b` read) and holds its words to a cold one.
 mkdir -p $R/nd/src/a $R/nd/src/b $R/nd/src/coll
@@ -1688,7 +1748,8 @@ printf 'export widget one { n -> n + 1 }\nexport widget two { n -> n + 2 }\n' > 
 printf 'type Entry = { name: string, ran: fn(int) -> int }\nexport collect entries: List<Entry> = widget in closure as Entry { name: it.name, ran: it.run } by it.name\n' > $R/nd/src/coll/table.av
 printf 'use a.{fa}\nuse coll.{entries}\nexport fn fb() -> int { entries.length + fa() }\n' > $R/nd/src/b/mod.av
 printf 'use b.{fb}\nprintln("nd ${fb()}")\n' > $R/nd/src/main.av
-ND() { # ND <label>
+ND() { # ND <label> [read|held]: whether b re-reads (default read)
+    want_b=${2:-read}
     steps=$((steps+1))
     rm -rf $R/nd.warm; cp -R .avra-cache $R/nd.warm
     out=$(./avra check --time $R/nd 2>&1); st=$?
@@ -1699,7 +1760,10 @@ ND() { # ND <label>
         *) fails=$((fails+1)); echo "FAIL  $1: held nothing (exit $st)" ;;
     esac
     case "$read_list" in *coll/*) fails=$((fails+1)); echo "FAIL  $1: coll was read, wanted held: $(printf '%s' "$read_list" | tr '\n' ' ')" ;; esac
-    case "$read_list" in *b/mod.av*) ;; *) fails=$((fails+1)); echo "FAIL  $1: b was held, wanted read: $(printf '%s' "$read_list" | tr '\n' ' ')" ;; esac
+    case "$read_list" in
+        *b/mod.av*) [ "$want_b" = read ] || { fails=$((fails+1)); echo "FAIL  $1: b was read, wanted held: $(printf '%s' "$read_list" | tr '\n' ' ')"; } ;;
+        *) [ "$want_b" = held ] || { fails=$((fails+1)); echo "FAIL  $1: b was held, wanted read: $(printf '%s' "$read_list" | tr '\n' ' ')"; } ;;
+    esac
     rm -rf .avra-cache; cp -R $R/nd.warm .avra-cache
     held_says=$(./avra check $R/nd 2>&1 | unwatched)
     rm -rf .avra-cache; plain_says=$(./avra check $R/nd 2>&1 | unwatched)
@@ -1707,13 +1771,21 @@ ND() { # ND <label>
 }
 rm -rf .avra-cache; ./avra check $R/nd >/dev/null 2>&1
 printf 'export fn fnew() -> int { 3 }\n' >> $R/nd/src/a/mod.av
-ND "nd: a declaration appended to a"
+ND "nd: a fn nobody in b names, appended to a" held
 ed $R/nd/src/a/mod.av 'export fn fz()' 'fn fmid() -> int { 4 }
 export fn fz()'
-ND "nd: a declaration inserted between two in a"
+ND "nd: a fn nobody in b names, inserted between two in a" held
 ed $R/nd/src/a/mod.av 'export fn fnew() -> int { 3 }
 ' ''
-ND "nd: a declaration nobody uses removed from a"
+ND "nd: a fn nobody in b names, removed from a" held
+printf 'export type Fnew = { n: int }\n' >> $R/nd/src/a/mod.av
+ND "nd: a type appended to a" read
+ed $R/nd/src/a/mod.av 'export fn fz()' 'type Fmid = { n: int }
+export fn fz()'
+ND "nd: a type inserted between two in a" read
+ed $R/nd/src/a/mod.av 'export type Fnew = { n: int }
+' ''
+ND "nd: a type nobody uses removed from a" read
 vh_nd=$(./avra check $R/nd --verify-held 2>&1 | unwatched)
 steps=$((steps+1))
 case "$vh_nd" in

@@ -606,6 +606,8 @@ cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/turn_memory_attack.sh
 	@sh tools/gathered_cache_attack.sh
 	@sh tools/store_reads_attack.sh
+	@sh tools/stamp_attack.sh
+	@sh tools/docs_cache_attack.sh
 	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
 	@sh tools/held_runs_attack.sh
@@ -613,6 +615,7 @@ cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_quiet_attack.sh
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
+	@sh tools/fn_add_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
 	@sh tools/cancel_bits_attack.sh

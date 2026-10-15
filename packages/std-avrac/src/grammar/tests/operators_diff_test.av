@@ -1,0 +1,294 @@
+// The operator table against the ladder it replaces: the same
+// expression language spelled as one rule per precedence tier and as
+// one `@operators` rule, run over the same inputs, must answer the same
+// tree and the same diagnostics — message, place, expected words and
+// rule. A swapped ladder is the control: the comparison must name it.
+use @std.errors.{Loc}
+use @std.grammar.{Grammar, Captured, Ready, run_grammar, ready}
+use @std.avrac.grammar.{Token, lex_source, avra_known_terminals, avra_lexeme, parse_grammar}
+use @std.avrac.core.{joined}
+
+fn text_of(v: Captured<Token, string>) -> string {
+    match v {
+        .Terminal(t) -> t.text,
+        .Node(n) -> n,
+        .Many(items) -> joined([text_of(x) for x in items], ","),
+        .Absent -> "_",
+    }
+}
+
+fn parts(v: Captured<Token, string>) -> List<Captured<Token, string>> {
+    match v { .Many(items) -> items, .Absent -> [], .Terminal(_) or .Node(_) -> [v] }
+}
+
+fn made(s: string) -> Result<Captured<Token, string>, string> {
+    let n: Captured<Token, string> = Captured.Node(s)
+    Result.Ok(n)
+}
+
+fn folded(l: Captured<Token, string>, rights: List<Captured<Token, string>>, ops: List<string>) -> Result<
+    Captured<Token, string>,
+    string,
+> {
+    mut acc = text_of(l)
+    for i, r in rights { acc = "(${ops[i]} ${acc} ${text_of(r)})" }
+    made(acc)
+}
+
+fn mixed_words(first: string, second: string) -> string {
+    "`${first}` and `${second}` in one expression have no agreed order"
+}
+
+fn shift_word(op: string) -> string {
+    if op == ">" { ">>" } else { op }
+}
+
+/// `is` in either spelling, as one string.
+fn is_words(
+    iv: Captured<Token, string>,
+    ip: Captured<Token, string>,
+    an: Captured<Token, string>,
+    at: Captured<Token, string>,
+) -> string {
+    if text_of(iv) != "_" { return ".${text_of(iv)}(${text_of(ip)})" }
+    "${text_of(an)}:${text_of(at)}"
+}
+
+fn bitwise_ops(ops: List<Captured<Token, string>>) -> Result<List<string>, string> {
+    let words = [text_of(o) for o in ops]
+    let odd = words.find(it != words[0])
+    if odd != null { return Result.Err(mixed_words(words[0], odd!)) }
+    Result.Ok([shift_word(w) for w in words])
+}
+
+fn build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> Result<
+    Captured<Token, string>,
+    string,
+> {
+    match name {
+        "fold_binary" -> folded(args[0], parts(args[2]), [text_of(o) for o in parts(args[1])]),
+        "fold_coalesce" -> folded(args[0], parts(args[1]), repeated("??", parts(args[1]))),
+        "fold_pipe" -> folded(args[0], parts(args[1]), repeated("|>", parts(args[1]))),
+        "fold_bitwise" -> {
+            let ops = bitwise_ops(parts(args[1]))?
+            folded(args[0], parts(args[2]), ops)
+        },
+        "fold_cmp" -> {
+            if text_of(args[1]) != "_" { return made("(${text_of(args[1])} ${text_of(args[0])} ${text_of(args[2])})") }
+            if text_of(args[3]) == "_" && text_of(args[5]) == "_" { return made(text_of(args[0])) }
+            made("(is ${text_of(args[0])} ${is_words(args[3], args[4], args[5], args[6])})")
+        },
+        "is_test" -> made(is_words(args[0], args[1], args[2], args[3])),
+        "pair" -> made("(${text_of(args[1])} ${text_of(args[0])} ${text_of(args[2])})"),
+        "bitwise" -> made("(${shift_word(text_of(args[1]))} ${text_of(args[0])} ${text_of(args[2])})"),
+        "mixed" -> {
+            let first = text_of(args[0])
+            let second = text_of(args[1])
+            if first == second { return made("") }
+            Result.Err(mixed_words(first, second))
+        },
+        "not_" -> made("(! ${text_of(args[0])})"),
+        "neg" -> made("(neg ${text_of(args[0])})"),
+        "field" -> {
+            mut acc = text_of(args[0])
+            for p in parts(args[1]) { acc = "(. ${acc} ${text_of(p)})" }
+            made(acc)
+        },
+        "lit" or "id" -> made(text_of(args[0])),
+        _ -> Result.Err("unknown builder `${name}`"),
+    }
+}
+
+fn repeated(word: string, xs: List<Captured<Token, string>>) -> List<string> {
+    [word for x in xs]
+}
+
+/// The binary tiers, loosest first, each a rule line over its own name
+/// and the next tier's.
+fn tier_line(kind: string, me: string, next: string) -> string {
+    match kind {
+        "or" -> "${me} = l:${next} ( op:\"||\" r:${next} )* -> fold_binary(l, op, r)",
+        "and" -> "${me} = l:${next} ( op:\"&&\" r:${next} )* -> fold_binary(l, op, r)",
+        "cmp" -> "${me} = l:${next} ( op:( \"==\" | \"!=\" | \"<=\" | \">=\" | \"<\" | \">\" ) r:${next} | \"is\" ( \".\" iv:NAME ( \"(\" ( ip:NAME ( \",\" ip:NAME )* \",\"? )? \")\" )? | an:NAME \":\" at:NAME ) )? -> fold_cmp(l, op, r, iv, ip, an, at)",
+        "coalesce" -> "${me} = l:${next} ( \"??\" r:${next} )* -> fold_coalesce(l, r)",
+        "pipe" -> "${me} = l:${next} ( \"|>\" r:${next} )* -> fold_pipe(l, r)",
+        "bitwise" -> "${me} = l:${next} ( op:( \"|\" | \"^\" | \"&\" | \"<<\" ) r:${next} | op:\">\" \">\" r:${next} )* -> fold_bitwise(l, op, r)",
+        "add" -> "${me} = l:${next} ( op:( \"+\" | \"-\" ) r:${next} )* -> fold_binary(l, op, r)",
+        _ -> "${me} = l:${next} ( op:( \"*\" | \"/\" | \"%\" ) r:${next} )* -> fold_binary(l, op, r)",
+    }
+}
+
+const tier_kinds: List<string> = ["or", "and", "cmp", "coalesce", "pipe", "bitwise", "add", "mul"]
+
+/// The operand side both spellings share.
+fn operand_text() -> string {
+    "unary = \"!\" v:unary -> not_(v) | \"-\" v:unary -> neg(v) | postfix\npostfix = v:primary ( \".\" p:NAME )* -> field(v, p)\nprimary = v:NUMBER -> lit(v) | n:NAME -> id(n) | \"(\" e:expr \")\" @expect(\")\", \"expected `)` to close the group\") -> e\n"
+}
+
+/// The ladder, one rule per tier in `order`.
+fn ladder(order: List<string>) -> Grammar {
+    let names = ["t${i}" for i in 0..order.length]
+    let rules = [tier_line(k, names[i], if i + 1 < names.length { names[i + 1] } else { "unary" }) for i, k in order]
+    parse_grammar("expr = e:${names[0]} -> e\n${joined(rules, "\n")}\n${operand_text()}").built!
+}
+
+/// The same language as one operator table.
+fn tabled() -> Grammar {
+    parse_grammar(
+        "expr = e:climbed -> e\nclimbed = l:unary @operators { left \"||\" left \"&&\" none \"==\" \"!=\" \"<=\" \">=\" \"<\" \">\" suffix \"is\" is_test left \"??\" left \"|>\" unmixed(mixed) \"|\" \"^\" \"&\" \"<<\" (\">\" \">\") -> bitwise(l, op, r) left \"+\" \"-\" left \"*\" \"/\" \"%\" } -> pair(l, op, r)\nis_test = ( \".\" iv:NAME ( \"(\" ( ip:NAME ( \",\" ip:NAME )* \",\"? )? \")\" )? | an:NAME \":\" at:NAME ) -> is_test(iv, ip, an, at)\n${operand_text()}",
+    )
+        .built!
+}
+
+/// A tier rule and the table rule are one kind: the operator rule.
+fn rule_kind(name: string) -> string {
+    if name == "climbed" || name.length == 2 && name.starts_with("t") { "operators" } else { name }
+}
+
+/// What a run answered, whole: tree, then each diagnostic's message,
+/// place, expected words and rule.
+fn answer(rd: Ready, src: string) -> string {
+    let o = run_grammar<Token, string>(rd, lex_source(src).tokens, avra_lexeme(), build)
+    let tree = if o.result == null { "<none>" } else { text_of(o.result!) }
+    let said = ["${d.message} @${d.loc?.lo ?? 0 - 1}..${d.loc?.hi ?? 0 - 1} [${joined(d.expected, "|")}] in ${rule_kind(d.in_rule)}" for d in o.diagnostics]
+    "${tree} ;; ${joined(said, " ;; ")}"
+}
+
+/// Every input whose answer differs between two spellings, as
+/// `input => left <> right`.
+fn differing(a: Grammar, b: Grammar, inputs: List<string>) -> List<string> {
+    let ra = ready(a, avra_known_terminals())
+    let rb = ready(b, avra_known_terminals())
+    ["${src} => ${answer(ra, src)} <> ${answer(rb, src)}" for src in inputs if answer(ra, src) != answer(rb, src)]
+}
+
+const pool: List<string> = [
+    "a",
+    "b",
+    "1",
+    "2",
+    "+",
+    "-",
+    "*",
+    "/",
+    "||",
+    "&&",
+    "==",
+    "!=",
+    "<",
+    ">",
+    "<=",
+    "??",
+    "|",
+    "^",
+    "&",
+    "<<",
+    "|>",
+    "is",
+    ".",
+    ":",
+    "(",
+    ")",
+    "!",
+    "V",
+]
+
+/// `n` pseudo-random token strings of 1 to 9 tokens, the same every run.
+fn generated(n: int) -> List<string> {
+    mut state = 20260512
+    mut out: List<string> = []
+    for _i in 0..n {
+        state = (state * 1664525 + 1013904223) % 4294967296
+        let len = 1 + state / 65536 % 9
+        mut words: List<string> = []
+        for _j in 0..len {
+            state = (state * 1664525 + 1013904223) % 4294967296
+            words.push(pool[state / 65536 % pool.length])
+        }
+        out.push(joined(words, " "))
+    }
+    out
+}
+
+/// Each token-prefix of each input, the places a half-written line stops.
+fn truncations(inputs: List<string>) -> List<string> {
+    flatten_texts(
+        [[joined(words.slice(0, k), " ") for k in 1..words.length + 1] for words in [i.split(" ") for i in inputs]],
+    )
+}
+
+fn flatten_texts(xss: List<List<string>>) -> List<string> {
+    mut out: List<string> = []
+    for xs in xss { out = out.concat(xs) }
+    out
+}
+
+const written: List<string> = [
+    "a",
+    "a + b",
+    "a - b - c",
+    "a * b + c",
+    "a + b * c",
+    "- a * b",
+    "! a == b",
+    "a ?? b ?? c",
+    "a |> b |> c",
+    "a || b && c == d",
+    "a < b < c",
+    "a == b == c",
+    "a < b && c < d",
+    "a | b | c",
+    "a | b & c",
+    "a & b & c",
+    "a | b + c & d",
+    "a << b << c",
+    "a > > b",
+    "a > b",
+    "a > > b > c",
+    "a >= b",
+    "a is .V",
+    "a is .V(x, y)",
+    "a is .V(x,)",
+    "a is c: T",
+    "a is .V && b",
+    "a is .V is .W",
+    "a . b . c + d . e",
+    "(a + b) * c",
+    "(a + b",
+    "a +",
+    "a + + b",
+    "a ??",
+    "a is",
+    "a is .",
+    "| a",
+    "a > >",
+    "a > > >",
+    "a | b == c | d",
+    "a ?? b | c ?? d",
+    "x == a + b | c",
+    "a || b || c && d && e",
+    "a + b - c * d / e % f",
+    "a < b ?? c |> d | e + f * g",
+]
+
+fn swapped() -> Grammar {
+    ladder(["or", "and", "cmp", "coalesce", "pipe", "bitwise", "mul", "add"])
+}
+
+fn inputs() -> List<string> {
+    written.concat(truncations(written)).concat(generated(1500))
+}
+
+spec "grammar/operators — the table answers as the ladder does" {
+    given "a ladder with two tiers swapped" {
+        then "the comparison names the first input that tells them apart" {
+            let found = differing(ladder(tier_kinds), swapped(), inputs())
+            !found.is_empty() && found[0].starts_with("a * b + c =>")
+        }
+    }
+    given "the written inputs, their prefixes and 1500 generated ones" {
+        then "the ladder and the table answer alike on every one" {
+            joined(differing(ladder(tier_kinds), tabled(), inputs()).take(4), "\n") == ""
+        }
+    }
+}

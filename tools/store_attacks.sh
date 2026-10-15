@@ -15,7 +15,7 @@
 #   Q store open <path>      the store mapped — once per process
 #   Q store skipped <why>    a process that did not take the compaction lock
 #   Q store torn <offset>    a tail that failed its check, ignored from there
-#   Q store foreign          a segment whose plain header names another compiler
+#   Q store foreign          a segment written under another pack format
 #   Q store hit|miss <family>  a lookup of one row, by the family it asked
 #   Q db hit|miss <kind>       a durable DbRow recalled, by its kind
 # and two hooks: AVRA_STORE_KILL=commit kills the writer after a segment's
@@ -190,11 +190,22 @@ PY
 fi
 
 # ── §6.8 another compiler ──
-# A segment whose plain header names another compiler print is never read, and
-# the check recomputes. §6.8's SECOND half — a rebuild that changed one query
-# recomputes THAT query's answers only — is S2's per-query code hash, which
-# stage 1 does not carry (its foreign test is the store-wide print).
-say "§6.8 another compiler: a segment whose header names another print is never read, and the check recomputes"
+# Two cases. A compiler whose print differs while its module-record producer, its codec and
+# the toolchain do not (AVRA_INLINE_RUNTIME=0 moves the print alone) READS the first one's
+# module records and answers as a cold compute does. A segment written under another pack
+# FORMAT is never read, and the check recomputes. A producer, codec or toolchain part that
+# moved is pinned where the stamp is folded (compiler/tests/store_test.av).
+say "§6.8 another compiler, same producer: its module records are read, and the answer is the cold one"
+rm -rf .avra-cache
+checked share_seed
+export AVRA_INLINE_RUNTIME=0
+checked share
+unset AVRA_INLINE_RUNTIME
+agrees share "a second print with the same producer"
+[ "$(grep -c '^Q	store	hit	sig' $R/share.trace)" -ge 1 ] || fail "the second compiler read none of the first one's module records"
+[ "$(grep -c '^Q	store	hit	unit' $R/share.trace)" -le "$(grep -c '^Q	store	hit	unit' $R/share_seed.trace)" ] || fail "a compiler-keyed row crossed prints"
+
+say "§6.8 another compiler, another format: a segment written under another pack format is never read, and the check recomputes"
 rm -rf .avra-cache
 checked foreign_seed
 seg="$(segment)"
@@ -214,18 +225,17 @@ def varint(b, i):
 i = 0
 n, i = varint(b, i)
 magic = b[i:i + n]; i += n
-_v, i = varint(b, i)
-n, i = varint(b, i)
-print_ = b[i:i + n]
 assert magic == b"AVRAPACK", magic
-other = (b"9" if print_[:1] != b"9" else b"8") + print_[1:]
-open(p, "wb").write(b[:i] + other + b[i + n:])
+at = i
+v, i = varint(b, i)
+assert i == at + 1 and v < 63, (at, i, v)
+open(p, "wb").write(b[:at] + bytes([(v + 2) & 127]) + b[i:])
 PY
-[ $? = 0 ] || fail "the segment's header does not carry a compiler print to flip"
+[ $? = 0 ] || fail "the segment's header does not carry a format to flip"
 checked foreign
-agrees foreign "a foreign store"
-[ "$(heard foreign foreign)" -ge 1 ] || fail "a foreign header was not refused"
-[ "$(grep -c '^Q	attempt' $R/foreign.trace)" -gt 0 ] || fail "a foreign store was read as a hit"
+agrees foreign "a foreign format"
+[ "$(heard foreign foreign)" -ge 1 ] || fail "a segment of another format was not refused"
+[ "$(grep -c '^Q	attempt' $R/foreign.trace)" -gt 0 ] || fail "a store of another format was read as a hit"
 
 say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
 fail "stage 1 keys a segment by the compiler PRINT, so a rebuild that changed one query is a whole-store miss — the per-query recompute needs S2's query code hash"
