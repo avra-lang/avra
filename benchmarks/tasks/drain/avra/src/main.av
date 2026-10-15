@@ -1,7 +1,8 @@
-//! BOUNDED-CHANNEL DRAIN in Avra: a `produce<int>(cap)` producer yields
-//! n items into a bounded source while this task drains them with
-//! `for x in source`. Prints the per-item cost at two sizes, their
-//! ratio, the throughput, the bytes moved, and the sum of every item.
+//! CHANNEL DRAIN in Avra: a `produce<int>(cap)` producer yields n items
+//! into a source while this task drains them with `for x in source`.
+//! Prints the per-item cost at two sizes, their ratio, the throughput,
+//! the bytes moved, and the sum of every item — bounded at `cap`, and
+//! unbounded, whose ratio exposes a quadratic a fixed cap hides.
 use @std.io.{env_or}
 use @std.text.{parse_int}
 use @std.time.{now_ns}
@@ -58,9 +59,14 @@ let cap = env_int("BENCH_CAP", 64)
 let rounds = env_int("BENCH_ROUNDS", 5)
 let d1 = least(small, cap, rounds)
 let d2 = least(n, cap, rounds)
+let u1 = least(small, 0 - 1, rounds)
+let u2 = least(n, 0 - 1, rounds)
 println("drain_1k_ns_per_op\t${d1.spent / small}\tns\t${rounds}")
 println("drain_10k_ns_per_op\t${d2.spent / n}\tns\t${rounds}")
 println("drain_scale\t${ratio_text(d2.spent * small, d1.spent * n)}\tx\t${rounds}")
 println("drain_ops_per_s\t${n * 1000000000 / d2.spent}\tops\t${rounds}")
 println("drain_bytes\t${n * 8}\tbytes\t${rounds}")
 println("drain_sum\t${d2.sum}\tops\t${rounds}")
+println("drain_unbounded_1k_ns_per_op\t${u1.spent / small}\tns\t${rounds}")
+println("drain_unbounded_10k_ns_per_op\t${u2.spent / n}\tns\t${rounds}")
+println("drain_unbounded_scale\t${ratio_text(u2.spent * small, u1.spent * n)}\tx\t${rounds}")

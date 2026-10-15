@@ -24,11 +24,11 @@ to add a benchmark or a language.
 | Python (threads, GIL-bound) | `Python 3.13.7` |
 | Avra | `avra 0.0.1` |
 
-### `tasks/drain` — Bounded-channel drain
+### `tasks/drain` — Channel drain
 
-**Invariant.** a producer pushes n items into a bounded channel of capacity cap while one consumer drains it; every item arrives exactly once, in FIFO order, so the sum is n(n-1)/2 and none is dropped
+**Invariant.** a producer pushes n items into a channel of capacity cap while one consumer drains it; every item arrives exactly once, in FIFO order, so the sum is n(n-1)/2 and none is dropped. cap = 64 is the bounded row; cap = -1 is the unbounded row, and both must hold the same invariant
 
-**Row.** wall-clock nanoseconds per item for the drain, at two sizes, plus the ratio of the large per-item cost to the small one
+**Row.** wall-clock nanoseconds per item for the bounded and the unbounded drain, at two sizes, plus the ratio of the large per-item cost to the small one for each
 
 **Workload.** `small=1000`, `n=10000`, `cap=64`, `rounds=5`
 
@@ -36,14 +36,17 @@ to add a benchmark or a language.
 
 | row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
 |---|---|---|---|---|---|
-| `drain_1k_ns_per_op` (ns) | 267.3 ns (5) | 281.3 ns (5) | 50.6 ns (5) | 2.26 µs (5) | 407.0 ns (5) |
-| `drain_10k_ns_per_op` (ns) | 236.1 ns (5) | 230.2 ns (5) | 48.0 ns (5) | 2.33 µs (5) | 414.0 ns (5) |
-| `drain_scale` (x) | 0.8833 x (5) | 0.8184 x (5) | 0.9492 x (5) | 1.0304 x (5) | 1.017 x (5) |
-| `drain_ops_per_s` (ops) | 4,236,139 ops (5) | 4,344,256 ops (5) | 20,833,333 ops (5) | 429,099 ops (5) | 2,415,143 ops (5) |
+| `drain_1k_ns_per_op` (ns) | 279.9 ns (5) | 281.3 ns (5) | 50.6 ns (5) | 2.26 µs (5) | 59.0 ns (5) |
+| `drain_10k_ns_per_op` (ns) | 238.1 ns (5) | 230.2 ns (5) | 48.0 ns (5) | 2.33 µs (5) | 52.0 ns (5) |
+| `drain_scale` (x) | 0.8508 x (5) | 0.8184 x (5) | 0.9492 x (5) | 1.0304 x (5) | 0.885 x (5) |
+| `drain_unbounded_1k_ns_per_op` (ns) | — | — | — | — | 60.0 ns (5) |
+| `drain_unbounded_10k_ns_per_op` (ns) | — | — | — | — | 78.0 ns (5) |
+| `drain_unbounded_scale` (x) | — | — | — | — | 1.283 x (5) |
+| `drain_ops_per_s` (ops) | 4,199,757 ops (5) | 4,344,256 ops (5) | 20,833,333 ops (5) | 429,099 ops (5) | 18,931,505 ops (5) |
 | `drain_bytes` (bytes) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) |
 | `drain_sum` (ops) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) |
 
-_Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through a capacity-64 channel; `drain_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through a capacity-64 channel; `drain_scale` (x) — the large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); `drain_ops_per_s` (ops) — items drained per second at 10000 items — the throughput; `drain_bytes` (bytes) — payload bytes moved at 10000 items (8 per item); `drain_sum` (ops) — the sum of every drained item — a witness every item arrived exactly once.
+_Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through a capacity-64 channel; `drain_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through a capacity-64 channel; `drain_scale` (x) — the bounded large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); `drain_unbounded_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through an unbounded channel; `drain_unbounded_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through an unbounded channel; `drain_unbounded_scale` (x) — the unbounded large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); this is the row a small fixed cap cannot hide; `drain_ops_per_s` (ops) — items drained per second at 10000 items — the throughput; `drain_bytes` (bytes) — payload bytes moved at 10000 items (8 per item); `drain_sum` (ops) — the sum of every drained item — a witness every item arrived exactly once.
 
 ### `tasks/fanin` — Fan-in over N producers
 
