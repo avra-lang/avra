@@ -1430,6 +1430,7 @@ impl SourceText {
             .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
             .Emit(value) -> grouped("yield ${self.expression(value, loosest_tier, depth, c)}", atom_tier, parent),
             .Produce(elem, cap, body) -> grouped(self.produce_group(elem, cap, body, id, depth), atom_tier, parent),
+            .Channel(elem, cap) -> grouped(self.channel_group(elem, cap, depth), atom_tier, parent),
             .Select(fair, arms) -> grouped(
                 self.select_expr(fair, arms, end_of(self.store.expr_span(id)), depth),
                 atom_tier,
@@ -1908,6 +1909,14 @@ impl SourceText {
         // zero-seat lambda by the builder — spelled back as written
         let block = match self.store.expr(body) { .Lambda(_, inner) -> inner, rest -> body }
         "${head} ${self.block(block, one, depth)}"
+    }
+
+    /// `channel<T>(cap)` — the manual pair. Its argument list is ALWAYS
+    /// written: the no-capacity spelling is the empty list, and a bare
+    /// `channel<T>` does not parse, so an omitted list is no round trip.
+    mut fn channel_group(elem: TypeRef, cap: ExprId?, depth: int) -> string {
+        let pinned = "channel${self.pins([elem])}"
+        if cap == null { "${pinned}()" } else { "${pinned}(${self.expression(cap!, loosest_tier, depth)})" }
     }
 
     mut fn within_group(limit: ExprId, body: ExprId, id: ExprId, depth: int, col: int) -> string {

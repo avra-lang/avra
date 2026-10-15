@@ -34,6 +34,8 @@ export fn tasks() -> LanguageFeature {
         "yield_stmt"  | build_yield
         "produce"     | build_produce
         "produce_cap" | build_produce_cap
+        "channel"     | build_channel
+        "channel_cap" | build_channel_cap
     }
     let properties = table<PropertyRow> {
         name    | takes   | check       | lower       | waits | view       | caught
@@ -47,6 +49,8 @@ export fn tasks() -> LanguageFeature {
         "flow.broken"      | "an `@unbroken` fn lets no other task run"
         "flow.yield"       | "`yield` sends into the producer it stands in"
         "flow.produce"     | "`produce` answers `@std/task.Source`"
+        "flow.channel"     | "`channel` answers `@std/task.Channel`"
+        "flow.never_ends"  | "a bare `channel` ends only at `close()`"
     }
     let methods = table<MethodRow> {
         name     | takes         | check        | lower        | effect                | answers
@@ -66,6 +70,8 @@ export fn tasks() -> LanguageFeature {
             stmt = "yield" v:expression END -> yield_stmt(v) @recover(sync_to: "END")
             primary = "produce" "<" t:type ","? ">" "(" c:expression ")" b:block -> produce_cap(t, c, b)
             primary = "produce" "<" t:type ","? ">" b:block -> produce(t, b)
+            primary = "channel" "<" t:type ","? ">" "(" c:expression ")" -> channel_cap(t, c)
+            primary = "channel" "<" t:type ","? ">" "(" ")" -> channel(t)
         }
         builders: rows
         properties: properties

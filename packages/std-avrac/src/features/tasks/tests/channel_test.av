@@ -1,0 +1,84 @@
+//! `channel<T>(n)`: the manual pair's spelling, its default capacity,
+//! the type it answers, and the reader a block leaves hanging. Its
+//! lowering, the running channel and the order and bound laws are
+//! proved by `packages/std-task`'s program tests, which see the real
+//! `@std/task`.
+use @std.avrac.testing.{floored_beside, refused_in, refused_with, projected}
+
+/// A toolchain carrying `@std/task`'s pair — enough for the front end
+/// to type a `channel` against.
+const task_src: string = "export type Sink<T> = { send: fn(T) -> bool, close: fn() -> void }\nexport type Source<T> = { next: fn() -> T? }\nexport type Channel<T> = { sink: Sink<T>, source: Source<T> }\n"
+
+/// A task reading `ch.source` that the block never lets end: no close.
+const spawned_reader: string = "use @std.task.{Channel, Source}\n" +
+    "fn drain(src: Source<int>) -> int {\n" +
+    "    mut n = 0\n" +
+    "    for v in src {\n" +
+    "        n = n + 1\n" +
+    "    }\n" +
+    "    n\n" +
+    "}\n" +
+    "let ch = channel<int>(2)\n" +
+    "let t = spawn drain(ch.source)\n" +
+    "let _ = t.await\n" +
+    "0"
+
+/// The same reader, ended: the sink closes after the spawn.
+const closed_reader: string = "use @std.task.{Channel, Source}\n" +
+    "fn drain(src: Source<int>) -> int {\n" +
+    "    mut n = 0\n" +
+    "    for v in src {\n" +
+    "        n = n + 1\n" +
+    "    }\n" +
+    "    n\n" +
+    "}\n" +
+    "let ch = channel<int>(2)\n" +
+    "let t = spawn drain(ch.source)\n" +
+    "ch.sink.close()\n" +
+    "let _ = t.await\n" +
+    "0"
+
+spec "features/tasks.channel" {
+    given "the manual pair's spelling" {
+        then "`channel<T>(n)` parses with a capacity" {
+            projected("channel<int>(2)\n0") != "<parse refused>"
+        }
+        then "`channel<T>()` parses with none — the rendezvous `produce<T>` takes" {
+            projected("channel<int>()\n0") != "<parse refused>"
+        }
+        then "`channel<T>` with no argument list is no spelling — the pair needs its bound said" {
+            projected("channel<int>\n0") == "<parse refused>"
+        }
+    }
+    given "what it answers" {
+        then "it answers a `Channel<T>` and types clean" {
+            let p = floored_beside(
+                "use @std.task.{Channel}\nlet c: Channel<int> = channel<int>(2)\n0",
+                "task",
+                task_src,
+            )
+            p.files[0].diagnostics.is_empty()
+        }
+        then "a capacity that is no `int` is refused by name" {
+            refused_in(
+                floored_beside(
+                    "use @std.task.{Channel}\nlet c = channel<int>(\"x\")\n0",
+                    "task",
+                    task_src,
+                ),
+                "a `channel` capacity is a `int`, found `string`",
+            )
+        }
+        then "a program loading no `@std/task` is refused by name" {
+            refused_with("channel<int>(2)\n0", "loads no `@std/task`")
+        }
+    }
+    given "a spawned reader the block never lets end" {
+        then "no `close()` before the block ends is refused by name" {
+            refused_in(floored_beside(spawned_reader, "task", task_src), "flow.never_ends")
+        }
+        then "a `close()` after the spawn lets the reader end, so nothing is refused" {
+            floored_beside(closed_reader, "task", task_src).files[0].diagnostics.is_empty()
+        }
+    }
+}
