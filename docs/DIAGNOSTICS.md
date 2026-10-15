@@ -33,7 +33,7 @@ the parse needed a token that is not there
 ```
 
 ```
-error[parse.expected]: expected `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `produce`, `select`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
+error[parse.expected]: expected `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `produce`, `channel`, `select`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
   ╭─[witness.av:1:1]
 1 │ }
   · ┬
@@ -357,6 +357,31 @@ No witness yet.
 `produce` answers `@std/task.Source`
 
 No witness yet.
+
+## flow.channel
+
+`channel` answers `@std/task.Channel`
+
+```avra
+channel<int>(2)
+0
+```
+
+```
+error[flow.channel]: `channel` answers `@std.task.Channel`, and this program loads no `@std/task`
+  ╭─[witness.av:1:1]
+1 │ channel<int>(2)
+  · ┬
+  · ╰── no `@std/task` here
+──╯
+help: add `use @std.task`
+```
+
+## flow.never_ends
+
+a bare `channel` ends only at `close()`
+
+No witness here: a `channel` needs `@std/task`'s carrier, which a lone source cannot import — the golden is features/tasks/tests/channel_test.av.
 
 ## flow.select
 
@@ -1914,6 +1939,12 @@ error[type.struct_fields]: field `x` is `int`, this is `bool`
   ·                ╰── this is `bool`
 ──╯
 ```
+
+## type.struct_targs
+
+a literal's written type arguments pin the record's parameters
+
+No witness yet.
 
 ## type.with_struct
 

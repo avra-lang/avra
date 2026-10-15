@@ -51,3 +51,26 @@ fn folded_comprehension(src: Code) -> Fix {
             ),
         )
 }
+
+/// `xs.removed_at(0)` removes a list's head by copying the whole list —
+/// a slice and a concat, O(n) per call and O(n^2) to drain a queue
+/// with. A queue's head is a ring (`@std.task.ring(cap)`, `push`/`pop`),
+/// which advances a cursor in place; a list that truly needs its front
+/// gone copies, and this is where that is said.
+///
+/// NO REWRITE: the fast form is a different TYPE, never this expression
+/// rewritten — a site-local edit cannot move a buffer into a ring.
+@keeps("xs.removed_at(2)")
+export rule removed_at_front { quote { ${xs}.removed_at(0) } -> removed_at_front_found(xs) }
+
+fn removed_at_front_found(xs: Code) -> Fix {
+    Fix
+        .Say(
+            said(
+                xs.loc(),
+                "`removed_at(0)` copies the whole list — O(n) per call, and O(n^2) to drain; a queue's head is a ring (`@std.task.ring(cap)`, `push`/`pop`), never a read of the front then this",
+                "this list",
+                null,
+            ),
+        )
+}

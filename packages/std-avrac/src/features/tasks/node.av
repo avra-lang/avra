@@ -66,3 +66,19 @@ impl Meaning for Produce {
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { produce_type(cx, e, self.elem, self.cap, self.body) }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg { produce_reg(cx, e) }
 }
+
+/// `channel<T>(cap)` — both ends of one channel, as `@std/task`'s
+/// `Channel<T>`: the sink a writer holds and the source a reader
+/// drains. Unlike `produce`, no task is spawned and nobody closes it
+/// for you: the manual pair ends at `close()`.
+@expr_node
+@apart
+export type Channel = { elem: TypeRef, cap: ExprId? }
+
+impl Meaning for Channel {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        if self.cap != null { cx.walk(self.cap!) }
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { channel_type(cx, e, self.elem, self.cap) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { channel_reg(cx, e) }
+}

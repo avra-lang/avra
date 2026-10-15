@@ -1,0 +1,32 @@
+//! A generic record's literal writes its TYPE ARGUMENTS — `Box<float>
+//! { held: 1.25 }` pins the parameters from the written types, so
+//! seating `T` needs no annotated `let`. A wrong count and a record
+//! that takes none each get their own refusal by name.
+use @std.avrac.testing.{provided, answered, refused_in}
+use @std.avrac.compiler.{Program}
+
+fn over(main: string) -> Program { provided(main, "") }
+
+spec "features/structs — literal type arguments" {
+    given "a generic literal's written type arguments" {
+        then "pin each parameter in written order" {
+            answered(
+                over(
+                    "type Pair<K, V> = { left: K, right: V }\nlet p = Pair<int, string> { left: 1, right: \"x\" }\n\"\${p.left} \${p.right}\"",
+                ),
+            ) == "1 x"
+        }
+        then "a wrong count is refused by name" {
+            refused_in(
+                over("type Box<T> = { held: T }\nlet b = Box<int, int> { held: 1 }\nb.held"),
+                "error[type.struct_targs]",
+            )
+        }
+        then "a record that takes none is refused by name" {
+            refused_in(
+                over("type Plain = { held: int }\nlet b = Plain<int> { held: 1 }\nb.held"),
+                "error[type.struct_targs]",
+            )
+        }
+    }
+}

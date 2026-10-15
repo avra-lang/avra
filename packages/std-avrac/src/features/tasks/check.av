@@ -128,11 +128,7 @@ fn produce_type(mut cx: TypeCx, e: ExprId, elem: TypeRef, cap: ExprId?, body: Ex
     let t = cx.written(e, elem)
     if cx.errored_ty(t) { return cx.error_type }
     let source? = task_app(cx, "Source", t) else { return no_task(cx, e) }
-    if cap != null {
-        let _ = cx.walk_type(cap!)
-        if cx.errored(cap!) { return cx.error_type }
-        cx.require_int(cap!, "a `produce` capacity", "this bounds the channel")
-    }
+    if cap != null { capacity(cx, cap!, "a `produce` capacity") }
     cx.sink_enter(t)
     cx.task_bodies.push(body)
     let answered = cx.walk_type(body)
@@ -140,6 +136,25 @@ fn produce_type(mut cx: TypeCx, e: ExprId, elem: TypeRef, cap: ExprId?, body: Ex
     cx.sink_exit()
     if cx.errored_ty(answered) { return cx.error_type }
     source
+}
+
+/// `channel<T>(cap)` answers `Channel<T>`: the manual pair, its two
+/// ends read off the one record. No block and no task; `cap` bounds
+/// what it holds, and its absence is the rendezvous `produce<T>` takes.
+fn channel_type(mut cx: TypeCx, e: ExprId, elem: TypeRef, cap: ExprId?) -> TypeId {
+    let t = cx.written(e, elem)
+    if cx.errored_ty(t) { return cx.error_type }
+    let chan? = task_app(cx, "Channel", t) else { return no_task_chan(cx, e) }
+    if cap != null { capacity(cx, cap!, "a `channel` capacity") }
+    chan
+}
+
+/// A `produce` or `channel` capacity: the one walk and the one counting
+/// law both read, so the bound's help is said once.
+fn capacity(mut cx: TypeCx, e: ExprId, subject: string) {
+    let _ = cx.walk_type(e)
+    if cx.errored(e) { return }
+    cx.require_int(e, subject, "this bounds the channel")
 }
 
 /// A `@std/task` generic record instantiated at `t`, or absent when
@@ -172,6 +187,19 @@ fn no_task(mut cx: TypeCx, e: ExprId) -> TypeId {
                 "flow.produce",
                 cx.loc_of(e),
                 "`produce` answers `@std.task.Source`, and this program loads no `@std/task`",
+                "no `@std/task` here",
+                "add `use @std.task`",
+            ),
+        )
+}
+
+fn no_task_chan(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "flow.channel",
+                cx.loc_of(e),
+                "`channel` answers `@std.task.Channel`, and this program loads no `@std/task`",
                 "no `@std/task` here",
                 "add `use @std.task`",
             ),

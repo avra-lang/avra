@@ -90,7 +90,26 @@ fn rule_attacks(g: Grammar, r: Rule) -> List<Attack> {
 fn branch_attacks(g: Grammar, r: Rule, branch: int) -> List<Attack> {
     let s = r.body.branches[branch]
     let base = seq_sample(g, s, [r.name], null, [])
-    degenerate(g, r, s).concat(malformed(base)).concat(keyworded(g, base))
+    let minimal = seq_sample_min(g, s, [r.name], [])
+    degenerate(g, r, s)
+        .concat(malformed(base))
+        .concat(keyworded(g, base))
+        .concat(if minimal == base { [] } else { malformed(minimal) })
+}
+
+/// The sample with every OPTIONAL item omitted — the minimal surface a
+/// branch accepts. Its malformed class is proved too, so a `?` added to
+/// a rule grows the sample without removing a mutant the model had.
+fn seq_sample_min(g: Grammar, s: Seq, seen: List<string>, path: List<int>) -> string {
+    joined([min_item(g, m, seen, path.concat([j])) for j, m in s.items if !is_optional(m)], " ")
+}
+
+fn is_optional(m: Item) -> bool {
+    match m.rep { .Opt -> true, .One or .Star or .Plus -> false }
+}
+
+fn min_item(g: Grammar, m: Item, seen: List<string>, path: List<int>) -> string {
+    prim_sample(g, m.prim, seen, null, path)
 }
 
 /// The degenerate class: every repeated item in a branch, spelled

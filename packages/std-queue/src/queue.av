@@ -1,0 +1,217 @@
+//! @std.queue — the in-memory home of a declared queue. The items wait
+//! in the carrier's ring; an id set remembers each live item and a
+//! lease table remembers who holds it and under which epoch. Delivery
+//! is at-least-once: an item is acked, buried, or still held — never
+//! dropped. A hold past its lease is redelivered with `epoch + 1`, and
+//! the old ack answers `false`. Leases are timestamps compared here, so
+//! expiry is found by the next `take`; no timer row is needed.
+use @std.task.{Channel, Ring, Sink, open_channel, ring}
+use @std.time.{Duration, now_ms}
+
+/// An effect identity. In this home it is data: nothing dedupes.
+export type Key = { text: string }
+
+/// One hold on an item: the instant it ends and the epoch a stale ack
+/// is refused by.
+export type Lease = { at: int, epoch: int }
+
+/// One delivery's handle. `epoch` fences an ack from a hold that has
+/// since been redelivered; `attempt` counts handler starts.
+export type Delivery<T> = {
+    id: string,
+    item: T,
+    key: Key,
+    attempt: int,
+    epoch: int,
+}
+
+/// An item no handler could settle: the item, the error that failed
+/// it, and the queues it passed through.
+export type Dead<T, E> = { item: T, error: E, path: List<string> }
+
+/// What a queue promises: how much it holds, how long a hold lasts,
+/// how many attempts an item gets, and the dead letter it fails to.
+export type Terms = {
+    capacity: int,
+    lease: Duration,
+    retries: int,
+    dead: string,
+}
+
+/// Where a live item stands: waiting in the ring, held by a worker,
+/// awaiting redelivery, or settled and its id free to reuse.
+enum Stage { Pending, Held, Retry, Settled }
+
+/// A live item's bookkeeping.
+type Live<T> = { item: T, key: Key, attempt: int, stage: Stage }
+
+/// The in-memory home. Held by copy: every table sits behind a `Cell`,
+/// so two copies are one queue.
+export type Queue<T> = {
+    name: string,
+    terms: Terms,
+    ring: Channel<string>,
+    live: Cell<Map<string, Live<T>>>,
+    leases: Cell<Map<string, Lease>>,
+    free: Ring<string>,
+    seq: Cell<int>,
+    count: Cell<int>,
+}
+
+/// A queue that holds nothing but memory.
+export fn open_queue<T>(name: string, terms: Terms) -> Queue<T> {
+    let live: Cell<Map<string, Live<T>>> = Cell.new({})
+    let leases: Cell<Map<string, Lease>> = Cell.new({})
+    Queue {
+        name: name,
+        terms: terms,
+        ring: open_channel<string>(terms.capacity),
+        live: live,
+        leases: leases,
+        free: ring<string>(0 - 1),
+        seq: Cell.new(0),
+        count: Cell.new(0),
+    }
+}
+
+/// A key under no label.
+export fn key(text: string) -> Key {
+    Key { text: text }
+}
+
+impl Key {
+    /// A subkey: the same text on every attempt.
+    fn at(label: string) -> Key {
+        Key { text: "${self.text}/${label}" }
+    }
+}
+
+/// Put a failed delivery back for another attempt — or, once its
+/// attempts reach the terms, bury it. `false` once the hold was lost.
+export fn release<T, E>(q: Queue<T>, d: Delivery<T>, err: E, dead: Sink<Dead<T, E>>) -> bool {
+    let h? = q.held(d) else { return false }
+    if h.attempt >= q.terms.retries { return bury(q, d, err, dead) }
+    q.live.put(d.id, h with { stage: Stage.Retry })
+    true
+}
+
+/// Move a delivery to its dead letter in one step, so it is never in
+/// both or neither — and never dropped when the letter refuses it.
+/// `false` once the hold was lost.
+export fn bury<T, E>(q: Queue<T>, d: Delivery<T>, err: E, dead: Sink<Dead<T, E>>) -> bool {
+    let h? = q.held(d) else { return false }
+    if !dead.send(Dead { item: h.item, error: err, path: [q.name, q.terms.dead] }) { return false }
+    q.settled(d.id, h)
+    true
+}
+
+impl Queue<T> {
+    /// Send one item under `key`, answering its id once the ring holds
+    /// it — `null` once the ring is closed.
+    fn send(item: T, key: Key) -> string? {
+        let id = self.mint()
+        if !self.ring.sink.send(id) {
+            self.free.push(id)
+            return null
+        }
+        self.live.put(id, Live { item: item, key: key, attempt: 0, stage: Stage.Pending })
+        self.count.set(self.count.get() + 1)
+        id
+    }
+
+    /// Lease the oldest item free to deliver — one awaiting redelivery
+    /// first, else the ring's head. `null` when none is.
+    fn take() -> Delivery<T>? {
+        self.expire()
+        let back = self.waiting()
+        if back != null { return self.deliver(back!) }
+        let head = self.ring.source.taken()
+        if head == null { return null }
+        self.deliver(head!)
+    }
+
+    /// Count a handler's start against the delivery's attempt. `false`
+    /// once the hold was lost.
+    fn began(d: Delivery<T>) -> bool {
+        let h? = self.held(d) else { return false }
+        self.live.put(d.id, h with { attempt: h.attempt + 1, stage: Stage.Held })
+        true
+    }
+
+    /// Settle a delivery; its item is done. `false` once the hold was
+    /// lost.
+    fn ack(d: Delivery<T>) -> bool {
+        let h? = self.held(d) else { return false }
+        self.settled(d.id, h)
+        true
+    }
+
+    /// How many items the queue still owes a fate.
+    fn depth() -> int {
+        self.count.get()
+    }
+
+    // ── The tables ──
+
+    /// An id no live item holds: one freed by a settle, else the next
+    /// in the sequence.
+    fn mint() -> string {
+        let id = self.free.pop()
+        if id != null { return id! }
+        let n = self.seq.get()
+        self.seq.set(n + 1)
+        "${n}"
+    }
+
+    /// The live record a delivery may still act on, or absent once its
+    /// hold was lost — settled, redelivered to another worker, or past
+    /// its lease.
+    fn held(d: Delivery<T>) -> Live<T>? {
+        let h? = self.live.get().get(d.id) else { return null }
+        if h.stage != Stage.Held { return null }
+        let l? = self.leases.get().get(d.id) else { return null }
+        if l.epoch != d.epoch { return null }
+        h
+    }
+
+    /// Settle `id`: its item is done and its id may be reused.
+    fn settled(id: string, h: Live<T>) {
+        self.live.put(id, h with { stage: Stage.Settled })
+        self.free.push(id)
+        self.count.set(self.count.get() - 1)
+    }
+
+    /// Lease `id` again, one epoch on, and hand it out.
+    fn deliver(id: string) -> Delivery<T>? {
+        let h? = self.live.get().get(id) else { return null }
+        let epoch = (self.leases.get().get(id)?.epoch ?? 0) + 1
+        self.live.put(id, h with { stage: Stage.Held })
+        self.leases.put(id, Lease { at: now_ms() + self.terms.lease.ms, epoch: epoch })
+        Delivery { id: id, item: h.item, key: h.key, attempt: h.attempt, epoch: epoch }
+    }
+
+    /// The oldest item awaiting redelivery, or absent.
+    fn waiting() -> string? {
+        for id, h in self.live.get() {
+            if h.stage == Stage.Retry { return id }
+        }
+        null
+    }
+
+    /// A hold whose lease ran out is free to redeliver. Found here, on
+    /// the next `take`; there is no timer row.
+    fn expire() {
+        let now = now_ms()
+        mut due: List<string> = []
+        for id, h in self.live.get() {
+            if h.stage == Stage.Held {
+                let l = self.leases.get().get(id)
+                if l != null && l!.at <= now { due.push(id) }
+            }
+        }
+        for id in due {
+            let held = self.live.get().get(id)
+            if held != null { self.live.put(id, held! with { stage: Stage.Retry }) }
+        }
+    }
+}
