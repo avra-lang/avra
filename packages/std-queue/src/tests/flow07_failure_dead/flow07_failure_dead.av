@@ -1,0 +1,22 @@
+//! proves a handler that keeps failing is buried once its attempts
+//! reach the terms, and the dead letter carries the error and the path.
+use @std.queue.{open_queue, key, Terms, Dead, release}
+use @std.task.{unbounded_channel}
+use @std.time.{ms}
+
+let q = open_queue<string>(
+    "jobs",
+    Terms { capacity: 8, lease: ms(60000), retries: 2, dead: "failed" },
+)
+let dead = unbounded_channel<Dead<string, int>>()
+let _ = q.send("job", key("k"))
+mut last = false
+mut d = q.take()
+while d != null {
+    let _ = q.began(d!)
+    last = release(q, d!, 7, dead.sink)
+    d = q.take()
+}
+let gone = dead.source.taken()
+let g = gone!
+"${last} ${g.item} ${g.error} ${g.path[0]} ${g.path[1]} ${q.depth()}"
