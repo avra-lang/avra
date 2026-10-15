@@ -1,30 +1,49 @@
-//! A FILE'S KEPT QUERY ANSWERS — where a `@query` answer computed while a
-//! file is checked outlives the process: a Db `Answer` row under the
-//! file's KEY PARTS (record.av), the hold path's durable witness. A later
-//! process whose file stands names the same key and reads the record
-//! back; a moved part — the file's text, a run it read, a seen module's
-//! interface — names another key, and the query runs again.
-use @std.relation.db.{Durable}
-use compiler.store.{Store}
+//! THE WORKSPACE'S KEPT QUERY ANSWERS — where a `@query` answer asked of the
+//! workspace's relation Db outlives the process. The record carries what it
+//! stood on (std-relation's `Leaf`s), so nothing here judges validity: the hooks
+//! file and fetch bytes under the query's durable name — which already holds its
+//! code hash — and its arguments' hash, in the store the workspace attaches.
+//! A workspace with no store attached keeps nothing and finds nothing.
+use @std.relation.{input}
+use @std.relation.db.{Db as RelDb, Durable}
+use compiler.store.{Store, Stored, node_key}
 use core.digest.{hex, unhex}
 
-impl Db {
-    /// The durable doors of a `@query` Db checking the file `parts` names.
-    fn answers(store: Store, parts: KeyParts) -> Durable {
-        let file = key_of_parts(parts)
-        Durable {
-            answer: (query: string, args: int) -> self.answer_record(store, answer_name(file, query, args)),
-            keep: (query: string, args: int, record: Bytes) -> self
-                .insert(store, DbRow.Answer(answer_name(file, query, args), hex(record))),
-        }
-    }
+/// A source file's text as a query reads it. The workspace stages every text a
+/// query is asked about (`stage_text`) before asking, so a record names the text
+/// by its hash; a query asked an unstaged path is a defect, never an empty text.
+@input
+export fn file_text(_db: RelDb, _path: string) -> string {
+    avra_trap("defect: a source text was read before the workspace staged it")
+    ""
+}
 
-    /// A kept answer's record, when its row reads back.
-    fn answer_record(store: Store, name: string) -> Bytes? {
-        let row? = self.get(store, DbKind.Answer, name) else { return null }
-        match row { .Answer(_, text) -> unhex(text), rest -> null }
+impl Workspace {
+    /// A source's text staged as the relation Db's `file_text` input — what a query that
+    /// reads the file is asked of, so its record names the text by its hash.
+    fn stage_text(path: string) { set_file_text(self.decls.rows_db.get(), path, self.listed_text(path)) }
+}
+
+/// The door a workspace's relation Db keeps its answers through: `slot` is the
+/// store the workspace attaches when it opens one.
+// LICENSED compiler.free_state_verb: a CONSTRUCTOR — the store's slot in, the hooks out.
+export fn answer_hooks(slot: Cell<Store?>) -> Durable {
+    Durable {
+        answer: (query: string, args: int) -> kept_answer(slot, query, args),
+        keep: (query: string, args: int, record: Bytes) -> keep_answer(slot, query, args, record),
     }
 }
 
-/// An answer's row name: the file's key, the query, its arguments' hash.
-fn answer_name(file: string, query: string, args: int) -> string { "${file}\t${query}\t${args}" }
+/// The key an answer is filed under: the query's durable name and its arguments' hash.
+fn answer_key(query: string, args: int) -> string { node_key(Stored.Answer, [query, "${args}"]) }
+
+fn kept_answer(slot: Cell<Store?>, query: string, args: int) -> Bytes? {
+    let store? = slot.get() else { return null }
+    let text? = store.get(Stored.Answer, answer_key(query, args)) else { return null }
+    unhex(text)
+}
+
+fn keep_answer(slot: Cell<Store?>, query: string, args: int, record: Bytes) {
+    let store? = slot.get() else { return }
+    let _ = store.keep(Stored.Answer, answer_key(query, args), hex(record), [])
+}
