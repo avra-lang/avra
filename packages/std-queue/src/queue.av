@@ -6,7 +6,8 @@
 //! the old ack answers `false`. Leases are timestamps compared here, so
 //! expiry is found by the next `take`; no timer row is needed.
 use @std.task.{Channel, Sink, open_channel}
-use @std.time.{Duration, now_ms}
+use @std.time.{Duration, now_ms, secs}
+use @std.meta.{Diagnostic, refuse}
 
 /// An effect identity. In this home it is data: nothing dedupes.
 export type Key = { text: string }
@@ -219,4 +220,116 @@ impl Queue<T> {
             if held != null { self.live.put(id, held! with { stage: Stage.Retry }) }
         }
     }
+}
+
+/// What a queue promises about how often an item is delivered. FLOW 07
+/// implements the memory home, so the promise is the contract the loop
+/// keeps: an item is acked, buried, or held, never dropped.
+export enum Guarantee { at_most_once, at_least_once, exactly_once }
+
+/// A queue's declaration: the terms an instance states and the events
+/// its loop emits. `dead:` is the letter a failed item is buried in —
+/// typed, so the loop buries without a name to look up. The events
+/// fire SYNCHRONOUSLY: the loop calls the field where it stands, once,
+/// with the value it is handling, and installs no delivery contract of
+/// its own.
+export component queue<T> {
+    name: string = ""
+    capacity: int = 1000
+    lease: Duration = secs(30)
+    delivery: Guarantee = Guarantee.at_least_once
+    retries: int = 3
+    dead: Sink<Dead<T, string>>? = null
+    state opened: Cell<Queue<T>?> = Cell.new(null)
+    on took(d: Delivery<T>)
+    on acked(d: Delivery<T>)
+    on failed(d: Delivery<T>, e: string)
+    on buried(dead: Dead<T, string>)
+    fn check() -> List<Diagnostic> {
+        mut said: List<Diagnostic> = []
+        if self.capacity < 1 { said.push(refuse("a queue holds at least one item, and this holds ${self.capacity}")) }
+        if self.retries < 0 {
+            said
+                .push(
+                    refuse(
+                        "a queue attempts an item at least never, and this attempts ${self.retries}",
+                    ),
+                )
+        }
+        if self.delivery == Guarantee.exactly_once && self.dead == null {
+            said
+                .push(
+                    refuse(
+                        "a queue that delivers exactly once names a `dead:` letter, and this names none",
+                    ),
+                )
+        }
+        said
+    }
+    fn home() -> Queue<T> {
+        let already = self.opened.get()
+        if already != null { return already! }
+        let fresh = self.opening()
+        self.opened.set(fresh)
+        fresh
+    }
+    fn opening() -> Queue<T> {
+        open_queue(
+            self.name,
+            Terms {
+                capacity: self.capacity,
+                lease: self.lease,
+                retries: self.retries,
+                dead: "${self.name}/dead",
+            },
+        )
+    }
+}
+
+/// A worker's declaration: the queue it drains and the handler it runs
+/// for each delivery. `dead:` is the letter a failed item is buried
+/// in; `flow.no_fate` refuses a worker whose handler can fail and names
+/// none.
+export component worker<T, R> {
+    reads: queue<T>?
+    each: fn(Delivery<T>) -> Result<R, string>
+    dead: Sink<Dead<T, string>>? = null
+}
+
+/// Drain a worker's queue: take the oldest item, count the handler's
+/// start, run it, and settle the hold — `Ok` acks, `Err` releases for
+/// another attempt and buries once the attempts reach the terms. The
+/// declared events fire where the loop stands, synchronously. Answers
+/// how many items the handler settled.
+export fn drain<T, R>(w: worker<T, R>) -> Result<int, string> {
+    let qspec? = w.reads else { return .Err("a worker reads no queue") }
+    let each = w.each
+    let dead? = w.dead else { return .Err("a worker names no `dead:` letter") }
+    let q = qspec.home()
+    mut settled = 0
+    mut d = q.take()
+    while d != null {
+        let held = d!
+        if qspec.took != null { (qspec.took!)(held) }
+        let _ = q.began(held)
+        match each(held) {
+            .Ok(_) -> {
+                if q.ack(held) {
+                    settled = settled + 1
+                    if qspec.acked != null { (qspec.acked!)(held) }
+                }
+            },
+            .Err(e) -> {
+                if qspec.failed != null { (qspec.failed!)(held, e) }
+                if held.attempt + 1 >= qspec.retries {
+                    let letter = Dead { item: held.item, error: e, path: [q.name, q.terms.dead] }
+                    if bury(q, held, e, dead) && qspec.buried != null { (qspec.buried!)(letter) }
+                } else {
+                    let _ = release(q, held, e, dead)
+                }
+            },
+        }
+        d = q.take()
+    }
+    .Ok(settled)
 }

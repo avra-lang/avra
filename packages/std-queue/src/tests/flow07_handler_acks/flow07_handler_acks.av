@@ -1,18 +1,24 @@
-//! proves the handler shape drains a queue: every take is begun and
-//! acked, so nothing is left behind and the queue owes no fate.
-use @std.queue.{open_queue, key, Terms}
+//! proves the worker loop drains: the handler runs for each item, `Ok`
+//! acks it, and the queue owes no fate.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery}
+use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
-let q = open_queue<string>(
-    "jobs",
-    Terms { capacity: 8, lease: ms(60000), retries: 3, dead: "failed" },
-)
-for i in 1..4 { let _ = q.send("job${i}", key("k${i}")) }
-mut acked = 0
-mut d = q.take()
-while d != null {
-    let _ = q.began(d!)
-    if q.ack(d!) { acked = acked + 1 }
-    d = q.take()
+type Job = { n: int }
+type Receipt = { ok: bool }
+
+fn pay(d: Delivery<Job>) -> Result<Receipt, string> { .Ok(Receipt { ok: d.item.n > 0 }) }
+
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    capacity: 8
+    lease: ms(60000)
+    dead: letters.sink
 }
-"${acked} ${q.depth()}"
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters.sink
+}
+for i in 1..4 { let _ = jobs.home().send(Job { n: i }, key("k${i}")) }
+match drain(settle) { .Ok(n) -> "${n} ${jobs.home().depth()}", .Err(e) -> e }

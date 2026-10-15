@@ -560,6 +560,12 @@ the brace after an instance's head opens the instance's block
 
 No witness here: an instance's component is another file's, which a lone source cannot import — the golden is features/components/tests/components_head_test.av.
 
+## flow.no_fate
+
+a handler that can fail must name a fate for its failure
+
+No witness yet.
+
 ## type.applied
 
 a type applied to arguments it does not take
