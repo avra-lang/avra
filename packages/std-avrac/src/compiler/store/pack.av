@@ -23,12 +23,14 @@ use @std.io.{
     truncate_to,
     env,
     open_beneath,
+    Opened,
+    AppendFile,
 }
 use @std.path.{joined_path, dir_of}
 use @std.relation.stable.{writer, reader, Reader, Writer, CodecFault, written_list, read_list}
 use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
-use core.{digest_of_octets, sorted_by}
+use core.{digest_of_octets, distinct, sorted_by}
 use core.debug.{qtrace, traced}
 use @std.time.{now_ns}
 
@@ -129,6 +131,16 @@ export type Pack = {
     /// older view would drop the rows of whoever sealed since.
     seen_rev: Cell<int>,
     lock_fd: Cell<int>,
+    /// Input name -> the rows that read it, built on first ask and dropped by a write.
+    /// The newest body's reverse section as written, and its rows' record keys in body order.
+    table_reverse: Cell<Bytes>,
+    order: Cell<List<string>>,
+    /// The value file, open once for the revision it was opened at (none or one handle).
+    val_open: Cell<List<Opened>>,
+    val_open_rev: Cell<int>,
+    /// This writer's own segment, open once for the path it was opened at (none or one handle).
+    seg_open: Cell<List<AppendFile>>,
+    seg_path: Cell<string>,
     traffic: Cell<Traffic>,
 }
 
@@ -160,6 +172,12 @@ export fn pack_at(root: string, print: string) -> Pack {
         val_rev: Cell.new(0),
         seen_rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
+        table_reverse: Cell.new("".bytes()),
+        order: list_cell(),
+        val_open: list_cell(),
+        val_open_rev: Cell.new(0 - 1),
+        seg_open: list_cell(),
+        seg_path: Cell.new(""),
         traffic: Cell.new(Traffic { hits: 0, misses: 0, values: 0, bytes: 0 }),
     }
 }
@@ -172,6 +190,28 @@ export fn content_digest(value: string) -> string { digest_of_octets(value.bytes
 export fn check_of(body: Bytes) -> string { digest_of_octets(body).substring(0, 16) }
 
 export fn ok<T>(r: Result<T, CodecFault>) -> T? { match r { .Ok(v) -> v, .Err(_) -> null } }
+
+/// The input a read line names: the text after its digest. None for a line that is no pair.
+export fn read_name(line: string) -> string? {
+    let at = line.index_of(" ")
+    if at <= 0 { return null }
+    line.substring(at + 1, line.length)
+}
+
+/// THE SUSPECT SET: the record keys of the rows that read any input in `moved` — the sealed
+/// body's rows through its reverse section, the live segment rows by their own read lists.
+/// Ids only: no value is fetched and no row decoded.
+export fn pack_suspects(pack: Pack, moved: List<string>) -> List<string> {
+    opened_at(pack, true)
+    mut wanted: Map<string, bool> = {}
+    for m in moved { wanted.set(m, true) }
+    mut out = sealed_readers(pack, wanted)
+    for k, h in pack.records.get() {
+        if h.set >= 0 || withdrawn(pack, k) { continue }
+        if reads_of(pack, h).any((line) -> wanted.get(read_name(line) ?? "") != null) { out.push(k) }
+    }
+    distinct(out)
+}
 
 /// THE ACTION KEY — BLAKE3 over the family's name, its stamp (owed) and the
 /// key, so two families naming the same parts stay apart.
@@ -561,18 +601,29 @@ fn content_of(pack: Pack, digest: string) -> string? {
 fn spilled(pack: Pack, digest: string) -> string? {
     let slot? = pack.slots.get().get(digest) else { return null }
     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
-    // LICENSED input.store_io: the store's own value file, seeked for one value
-    let o = match open_beneath(pack.dir, val_name(pack.val_rev.get())) {
-        .Ok(o) -> o,
-        .Err(_) -> { return null },
-    }
+    let o? = value_file(pack) else { return null }
     let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-    o.close()
     let v? = raw.text() else { return null }
     if content_digest(v) != digest { return null }
     let t = pack.traffic.get()
     pack.traffic.set(t with { values: t.values + 1, bytes: t.bytes + slot.len })
     v
+}
+
+/// The value file for the open revision, opened once and kept: a value is a seek and a read,
+/// never an open. A revision that moved closes the old handle first.
+fn value_file(pack: Pack) -> Opened? {
+    let rev = pack.val_rev.get()
+    if pack.val_open_rev.get() == rev {
+        let held = pack.val_open.get().first()
+        if held != null { return held }
+    }
+    for old in pack.val_open.get() { old.close() }
+    // LICENSED input.store_io: the store's own value file, opened once to seek for its values
+    let o = match open_beneath(pack.dir, val_name(rev)) { .Ok(o) -> o, .Err(_) -> { return null } }
+    pack.val_open.set([o])
+    pack.val_open_rev.set(rev)
+    o
 }
 
 export fn pack_traffic(pack: Pack) -> Traffic { pack.traffic.get() }
@@ -596,9 +647,24 @@ fn writer_segment(pack: Pack) -> string {
     joined_path(pack.dir, name)
 }
 
+/// This writer's own segment, held open across frames so a frame is a write and never
+/// an open. A path that moved closes the old handle first; the same path keeps the one.
+fn segment_file(pack: Pack, path: string) -> AppendFile? {
+    if pack.seg_path.get() == path {
+        let held = pack.seg_open.get().first()
+        if held != null { return held }
+    }
+    for old in pack.seg_open.get() { let _ = old.closed() }
+    // LICENSED input.store_io: the store's own segment, opened once under the writer's print
+    let o = match opened_for_append(path) { .Ok(f) -> f, .Err(_) -> { return null } }
+    pack.seg_open.set([o])
+    pack.seg_path.set(path)
+    o
+}
+
 fn append(pack: Pack, body: Bytes) {
     let _ = make_dirs(pack.dir)
-    let af? = match opened_for_append(writer_segment(pack)) { .Ok(f) -> f, .Err(_) -> null } else { return }
+    let af? = segment_file(pack, writer_segment(pack)) else { return }
     if !pack.headed.get() {
         let _ = af.write(head_bytes(pack.print))
         pack.headed.set(true)
@@ -606,7 +672,6 @@ fn append(pack: Pack, body: Bytes) {
     let _ = af.write(octets_only(body))
     kill_at_commit()
     let _ = af.write(marker_of(body))
-    let _ = af.closed()
     pack.frames.set(pack.frames.get() + 1)
 }
 

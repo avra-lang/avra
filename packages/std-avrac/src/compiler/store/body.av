@@ -11,15 +11,15 @@
 //! keys' first byte, the keys sorted, and a parallel offset per key.
 use @std.io.{read_bytes, write_bytes, append_bytes, list_dir, open_beneath, remove}
 use @std.path.{joined_path}
-use @std.relation.stable.{writer, reader, Writer}
+use @std.relation.stable.{writer, reader, Writer, Reader}
 use @std.relation.engine.{list_cell, map_cell}
 use @std.text.{parse_int}
-use core.{sorted_by, text_before}
+use core.{flatten, sorted_by, text_before}
 use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
 const IDX_MAGIC: string = "AVRABIDX"
-const BODY_VERSION: int = 2
+const BODY_VERSION: int = 4
 
 /// §6.1's families, in one fixed order so a body's bytes are deterministic.
 const FAMILIES: List<string> = ["sig", "fp", "unit", "warn", "rows"]
@@ -224,16 +224,12 @@ fn wrote(at: string, bytes: Bytes) -> bool {
 
 /// The body's bytes: header · names · sets · content · per-family meta.
 fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: List<Placed>) -> Bytes {
+    let held = [record_of(pack, k)! for fam in FAMILIES for k in keys if record_of(pack, k)?.family == fam]
+    let reads = [reads_of(pack, h) for h in held]
     let n = names()
+    n.filled(flatten(reads))
     let s = sets()
-    for k in keys {
-        let h? = record_of(pack, k) else { continue }
-        for r in reads_of(pack, h) { let _ = n.intern(r) }
-    }
-    for k in keys {
-        let h? = record_of(pack, k) else { continue }
-        let _ = s.intern(named_ids(n, reads_of(pack, h)))
-    }
+    let set_ids = [s.intern(named_ids(n, r)) for r in reads]
     let w = writer()
     w.text(BODY_MAGIC)
     w.int(BODY_VERSION)
@@ -251,18 +247,83 @@ fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: 
     w.count(FAMILIES.length)
     for fam in FAMILIES {
         w.text(fam)
-        let mine = [k for k in keys if record_of(pack, k)?.family == fam]
+        let mine = [i for i in 0..held.length if held[i].family == fam]
         w.count(mine.length)
-        for k in mine {
-            let h? = record_of(pack, k) else { continue }
-            w.text(h.key)
-            w.text(h.digest)
-            w.int(s.intern(named_ids(n, reads_of(pack, h))))
+        for i in mine {
+            w.text(held[i].key)
+            w.text(held[i].digest)
+            w.int(set_ids[i])
             w.int(rev)
             w.int(rev)
         }
     }
+    w.octets(reverse_section(reads))
     w.bytes()
+}
+
+/// THE REVERSE INDEX, as the body spells it: each input name a row reads, with the ordinals
+/// (in the order the body lists its rows) of the rows that read it. A run is its own octets, so
+/// a lookup skips every name it was not asked for without decoding a row.
+fn reverse_section(reads: List<List<string>>) -> Bytes {
+    mut at_of: Map<string, int> = {}
+    mut runs: List<List<int>> = []
+    for ordinal, lines in reads {
+        for line in lines {
+            let name? = read_name(line) else { continue }
+            let at = at_of.get(name) ?? 0 - 1
+            if at < 0 {
+                at_of.set(name, runs.length)
+                runs.push([ordinal])
+            } else {
+                runs[at].push(ordinal)
+            }
+        }
+    }
+    let w = writer()
+    let names = sorted_by(at_of.keys(), text_before)
+    w.count(names.length)
+    for name in names {
+        w.text(name)
+        let run = writer()
+        let ords = runs[at_of.get(name) ?? 0]
+        run.count(ords.length)
+        for o in ords { run.int(o) }
+        w.octets(run.bytes())
+    }
+    w.bytes()
+}
+
+/// The record keys of the sealed rows that read any of `moved`, from the body's reverse
+/// section and its row order; a row since overwritten is left to the live scan.
+export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
+    let r = reader(pack.table_reverse.get())
+    let count = ok(r.count()) ?? 0
+    mut out: List<string> = []
+    for _i in 0..count {
+        let name = ok(r.text()) ?? ""
+        let run? = ok(r.octets()) else { return out }
+        if moved.get(name) == null { continue }
+        let order = pack.order.get()
+        for at in run_ordinals(run) {
+            if at < order.length && resident(pack, order[at]) { out.push(order[at]) }
+        }
+    }
+    out
+}
+
+/// The row ordinals one reverse run lists.
+fn run_ordinals(run: Bytes) -> List<int> {
+    let rr = reader(run)
+    let n = ok(rr.count()) ?? 0
+    mut at: List<int> = []
+    for _j in 0..n { at.push(ok(rr.int()) ?? 0) }
+    at
+}
+
+/// Whether a row still stands as the body wrote it: not overwritten, not withdrawn.
+fn resident(pack: Pack, key: string) -> bool {
+    let h? = record_of(pack, key) else { return false }
+    h.set >= 0 && !withdrawn(pack, key)
 }
 
 fn record_of(pack: Pack, at: string) -> Held? { pack.records.get().get(at) }
@@ -388,11 +449,14 @@ fn body_read(pack: Pack, payload: Bytes) -> bool {
             rows.push(Held { family: fam, key: key, digest: digest, read: [], set: sid, stamp: 0 })
         }
     }
+    let reverse_bytes? = ok(r.octets()) else { return false }
     if !r.done() { return false }
     for d, slot in placed { pack.slots.put(d, slot) }
     pack.table_names.set(names_bytes)
     pack.table_sets.set(sets_bytes)
     pack.tables.set([])
+    pack.table_reverse.set(reverse_bytes)
+    pack.order.set([record_key(h.family, h.key) for h in rows])
     for h in rows { pack.records.put(record_key(h.family, h.key), h) }
     pack.rev.set(rev)
     pack.val_rev.set(val_rev)
