@@ -59,36 +59,43 @@ use @std.path.{stem_of}
 
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let head = b.fields_zipped(b.tokens(1)?, b.type_refs(2)?, [], marks_at(b.args, 10))?
-    let fs = b.tokens(3)?
-    let en = b.tokens(12)?
+    let tp = b.tokens(1)?
+    if !(b.type_refs(2)?).is_empty() { return .Err(component_bound(b.type_refs(2)?)) }
+    let head = b.fields_zipped(b.tokens(3)?, b.type_refs(4)?, [], marks_at(b.args, 12))?
+    let fs = b.tokens(5)?
+    let en = b.tokens(14)?
     let written = sorted_by(fs.concat(en), (x: Token, y: Token) -> x.span.lo < y.span.lo)
     let marks = MarkWindows {
         anchors: [t.span.lo for t in written],
-        marks: marks_at(b.args, 11),
+        marks: marks_at(b.args, 13),
         from: b.span?.lo ?? 0,
     }
     let fields = b
         .fields_zipped(
             fs,
-            b.type_refs(4)?,
-            b.exprs(5)?,
+            b.type_refs(6)?,
+            b.exprs(7)?,
             [m for f in fs for m in marks.at(f.span.lo)],
-            b.tokens(15)?,
+            b.tokens(17)?,
         )?
-    let held = b.stmts(6)?
+    let held = b.stmts(8)?
     let made = [s for s in held if !holds_a_member(b.store, s)]
     if made.any((s) -> b.store.is_state_stmt(s)) { return .Err(untyped_state()) }
     if made.any((s) -> b.store.is_declaration(s)) { return .Err(foreign_member()) }
     let fns = b.with_body(held, made)
-    if !(b.tokens(9)?).is_empty() { return .Err(three_dots()) }
-    let events = b.events(en, b.tokens(13)?, b.type_refs(14)?, marks)?
-    let records = record_spreads(written, b.tokens(7)?, b.type_refs(8)?)?
+    if !(b.tokens(11)?).is_empty() { return .Err(three_dots()) }
+    let events = b.events(en, b.tokens(15)?, b.type_refs(16)?, marks)?
+    let records = record_spreads(written, b.tokens(9)?, b.type_refs(10)?)?
     let members = sorted_by(
         fields.concat(events),
         (x: Param, y: Param) -> b.written_at(x) < b.written_at(y),
     )
-    let s = b.store.alloc_stmt(Stmt.ComponentDecl(Scoped(n.text), head, members, fns), b.span)
+    let s = b
+        .store
+        .alloc_stmt(
+            Stmt.ComponentDecl(Scoped(n.text), [Plain(t.text) for t in tp], head, members, fns),
+            b.span,
+        )
     if !records.is_empty() { b.store.spread_fields(s, records) }
     .Ok(LangNode.NStmt(s))
 }
@@ -786,6 +793,13 @@ fn foreign_member() -> string {
 
 fn untyped_state() -> string {
     "a component's `state` is a field, and a field says its type — `state n: int = 0`"
+}
+
+/// A component's type parameters are names — no bound is landed on a
+/// declaration's parameters, so one written here is refused with the
+/// form that does take it.
+fn component_bound(bounds: List<TypeRef>) -> string {
+    "a component's type parameter takes no bound yet — `${bounds[0].name}` is written as one"
 }
 
 fn blockless(word: string) -> string {
