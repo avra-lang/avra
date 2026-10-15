@@ -172,11 +172,7 @@ fn produce_reg(mut cx: LowerCx, e: ExprId) -> Reg {
                 return cx.lower_defect(e, "`@std.task.Source` vanished under this lowering")
             }
             let cap_reg = if cap == null { cx.const_int(0) } else { cx.reg_of(cap!) }
-            let d? = cx.view.decls.package_decl("@std.task", "open_channel") else {
-                return cx.lower_defect(e, "`@std.task.open_channel` vanished under this lowering")
-            }
-            let chan = cx
-                .call_decl(chan_ty, cx.wanted(d, Sub { target: d, args: [elem], consts: [] }), [cap_reg])
+            let chan = open_chan(cx, e, chan_ty, elem, cap_reg)
             let sink = cx.field_named(chan, chan_ty, "sink", sink_ty)
             let task_ty = cx.view.types.intern(Type.Task(cx.type(bool)))
             let task = cx
@@ -247,11 +243,7 @@ fn channel_reg(mut cx: LowerCx, e: ExprId) -> Reg {
                 return cx.lower_defect(e, "`@std.task.Channel` vanished under this lowering")
             }
             let cap_reg = if cap == null { cx.const_int(0) } else { cx.reg_of(cap!) }
-            let d? = cx.view.decls.package_decl("@std.task", "open_channel") else {
-                return cx.lower_defect(e, "`@std.task.open_channel` vanished under this lowering")
-            }
-            cx
-                .call_decl(chan_ty, cx.wanted(d, Sub { target: d, args: [elem], consts: [] }), [cap_reg])
+            open_chan(cx, e, chan_ty, elem, cap_reg)
         },
         rest -> cx.lower_defect(e, "a foreign node reached the channel lowering"),
     }
@@ -271,6 +263,15 @@ fn task_app(cx: LowerCx, name: string, t: TypeId) -> TypeId? {
     let decl = cx.view.decls.package_decl("@std.task", name)?
     let _ = cx.view.decls.sig(decl)
     cx.view.types.intern(Type.App(decl, name, [t]))
+}
+
+/// The `Channel<T>` a `produce` or a `channel` is built on: one call of
+/// `@std/task`'s `open_channel<T>(cap)` — the one carrier both share.
+fn open_chan(cx: LowerCx, e: ExprId, chan_ty: TypeId, elem: TypeId, cap_reg: Reg) -> Reg {
+    let d? = cx.view.decls.package_decl("@std.task", "open_channel") else {
+        return cx.lower_defect(e, "`@std.task.open_channel` vanished under this lowering")
+    }
+    cx.call_decl(chan_ty, cx.wanted(d, Sub { target: d, args: [elem], consts: [] }), [cap_reg])
 }
 
 impl LowerCx {
