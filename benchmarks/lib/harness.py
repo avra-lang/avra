@@ -57,16 +57,22 @@ def save_store(store, path=RESULTS):
             f.write(json.dumps(store[where], sort_keys=True, separators=(",", ":")) + "\n")
 
 
-def spec_margins(reg, benches):
-    """(benchmark, row) -> the margin its spec asks for, so a row that is
-    noisier than a fixed cost (a scaling ratio) carries its own gate."""
+def spec_gates(reg, benches):
+    """(benchmark, row) -> the gate its spec asks for: a margin for a
+    cost, `exact` for a witness count that must not move."""
     default = float(reg["gate"].get("margin", gatemod.DEFAULT_MARGIN))
     out = {}
     for key, bdir in benches:
         spec = spec_of(bdir)
         gate = spec.get("gate", {})
-        for rname in spec.get("rows", {}):
-            out[(key, rname)] = float(gate.get("rows", {}).get(rname, gate.get("margin", default)))
+        for rname, rspec in spec.get("rows", {}).items():
+            if rspec.get("check") == "exact":
+                out[(key, rname)] = {"check": "exact"}
+            else:
+                out[(key, rname)] = {
+                    "check": "ratio",
+                    "margin": float(gate.get("rows", {}).get(rname, gate.get("margin", default))),
+                }
     return out
 
 
@@ -151,7 +157,7 @@ def main():
             store[(row["benchmark"], row["language"], row["machine"])] = row
         save_store(store)
         wrote = gatemod.accept(
-            rows, machine_id(), spec_margins(reg, benches),
+            rows, machine_id(), spec_gates(reg, benches),
             reg["gate"].get("margin", gatemod.DEFAULT_MARGIN),
         )
         reportmod.write()

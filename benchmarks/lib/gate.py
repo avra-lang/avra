@@ -43,22 +43,24 @@ def margin_for(spec, row, default):
     return float(gate.get("rows", {}).get(row, gate.get("margin", default)))
 
 
-def accept(measured, machine, margins=None, default=DEFAULT_MARGIN, path=BASELINE):
+def accept(measured, machine, gates=None, default=DEFAULT_MARGIN, path=BASELINE):
     """Accept every fresh row this machine measured. `measured` is the
-    list of stored JSON rows; `margins` maps `(benchmark, row)` to the
-    margin the spec gives it, so a row that is noisier than a fixed cost
-    carries its own."""
-    margins = margins or {}
+    list of stored JSON rows; `gates` maps `(benchmark, row)` to the gate
+    the spec gives it — a margin for a cost, `exact` for a witness count
+    that must not move at all."""
+    gates = gates or {}
     data = load(path)
     wrote = 0
     for row in measured:
         if not row["rows"]:
             continue
         for rname, cell in row["rows"].items():
+            g = gates.get((row["benchmark"], rname), {})
             data["rows"][key(machine, row["language"], row["benchmark"], rname)] = {
                 "value": cell["value"],
                 "unit": cell["unit"],
-                "margin": float(margins.get((row["benchmark"], rname), default)),
+                "check": g.get("check", "ratio"),
+                "margin": float(g.get("margin", default)),
             }
             wrote += 1
     save(data, path)
@@ -82,10 +84,17 @@ def check(measured, machine, default=DEFAULT_MARGIN, require=False, path=BASELIN
                 continue
             was = base["value"]
             margin = base.get("margin", default)
+            gated += 1
+            if base.get("check") == "exact":
+                ok = cell["value"] == was
+                print(f"gate: {'PASS' if ok else 'FAIL'}: {row['language']} {row['benchmark']} {rname}: "
+                      f"{cell['value']:.4g} {cell['unit']} vs baseline {was:.4g} {base['unit']} (exact)")
+                if not ok:
+                    refusals.append((where, f"FAIL: {cell['value']:.4g} != the exact baseline {was:.4g}"))
+                continue
             if not was:
                 refusals.append((where, "the baseline row is 0 — nothing to compare"))
                 continue
-            gated += 1
             got = cell["value"] / was
             verdict = "PASS" if got <= margin else "FAIL"
             print(f"gate: {verdict}: {row['language']} {row['benchmark']} {rname}: "

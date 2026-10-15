@@ -14,5 +14,100 @@ number is a claim, so every row carries its toolchain and machine.
 See `benchmarks/README.md` for the JSON schema, the row contract, and how
 to add a benchmark or a language.
 
+## Machine `linux-x86_64: AMD EPYC, 8 cores, Linux 6.12.105-fly`
 
-_Projected from 0 stored row(s)._
+| language | version |
+|---|---|
+| C (the floor) | `Ubuntu clang version 22.1.2 (1ubuntu1)` |
+| Rust | `rustc 1.90.0 (1159e78c4 2025-09-14)` |
+| Go | `go version go1.25.1 linux/amd64` |
+| Python (threads, GIL-bound) | `Python 3.13.7` |
+
+### `tasks/drain` — Bounded-channel drain
+
+**Invariant.** a producer pushes n items into a bounded channel of capacity cap while one consumer drains it; every item arrives exactly once, in FIFO order, so the sum is n(n-1)/2 and none is dropped
+
+**Row.** wall-clock nanoseconds per item for the drain, at two sizes, plus the ratio of the large per-item cost to the small one
+
+**Workload.** `small=1000`, `n=10000`, `cap=64`, `rounds=5`
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) |
+|---|---|---|---|---|
+| `drain_1k_ns_per_op` (ns) | 269.5 ns (5) | 289.5 ns (5) | 56.7 ns (5) | 2.65 µs (5) |
+| `drain_10k_ns_per_op` (ns) | 232.2 ns (5) | 235.8 ns (5) | 47.8 ns (5) | 2.56 µs (5) |
+| `drain_scale` (x) | 0.8617 x (5) | 0.8146 x (5) | 0.8438 x (5) | 0.966 x (5) |
+| `drain_ops_per_s` (ops) | 4,306,985 ops (5) | 4,240,918 ops (5) | 20,900,389 ops (5) | 390,447 ops (5) |
+| `drain_bytes` (bytes) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) |
+| `drain_sum` (ops) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) |
+
+_Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through a capacity-64 channel; `drain_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through a capacity-64 channel; `drain_scale` (x) — the large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); `drain_ops_per_s` (ops) — items drained per second at 10000 items — the throughput; `drain_bytes` (bytes) — payload bytes moved at 10000 items (8 per item); `drain_sum` (ops) — the sum of every drained item — a witness every item arrived exactly once.
+
+### `tasks/fanin` — Fan-in over N producers
+
+**Invariant.** each of n_producers tasks sends n_per values to one consumer; every value sent arrives exactly once, none is dropped or duplicated, so the received count is n_producers*n_per
+
+**Row.** wall-clock nanoseconds per value received
+
+**Workload.** `producers=8`, `per=6250`, `cap=64`, `rounds=5`
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) |
+|---|---|---|---|---|
+| `fanin_ns_per_op` (ns) | 1.52 µs (5) | 622.6 ns (5) | 74.9 ns (5) | 3.95 µs (5) |
+| `fanin_received` (ops) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) |
+| `fanin_dropped` (ops) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) |
+
+_Rows:_ `fanin_ns_per_op` (ns) — nanoseconds per value, from the first send to the last receive; `fanin_received` (ops) — values the consumer received — must equal n_producers*per; `fanin_dropped` (ops) — sent minus received — must be 0.
+
+### `tasks/parked` — Memory per parked task
+
+**Invariant.** n tasks are spawned and blocked on a channel, then released; every one runs and its answer is joined, so the sum is 0+1+...+(n-1)
+
+**Row.** resident bytes the process holds per parked task (read from the process's own status before and after)
+
+**Workload.** `n=10000`, `rounds=3`
+
+| row (unit) | C (the floor) | Rust | Go |
+|---|---|---|---|
+| `parked_bytes` (bytes) | 8.3 kB (1) | 10.0 kB (1) | 2.6 kB (1) |
+| `parked_n` (ops) | 10,000 ops (1) | 10,000 ops (1) | 10,000 ops (1) |
+
+_Rows:_ `parked_bytes` (bytes) — resident bytes per parked task, the process's growth over the parked run; `parked_n` (ops) — tasks parked — a witness the whole set was alive.
+
+### `tasks/pingpong` — Ping-pong latency
+
+**Invariant.** two tasks alternate n round trips over a rendezvous; every send is received exactly once and in order, so the exchange count is 2n at the end
+
+**Row.** wall-clock nanoseconds per round trip: one task signals, the other answers
+
+**Workload.** `n=100000`, `rounds=5`
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `pingpong_ns` (ns) | 15.84 µs (5) | 16.49 µs (5) | 309.4 ns (5) | 25.09 µs (5) | SKIPPED |
+| `pingpong_rounds` (ops) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) | SKIPPED |
+
+_Rows:_ `pingpong_ns` (ns) — nanoseconds per round trip, the least of `rounds` rallies; `pingpong_rounds` (ops) — the round trips run — a witness the rally was not cut short.
+
+Not measured here:
+- **Avra** — SKIPPED: no avra/ directory in tasks/pingpong
+
+### `tasks/spawn` — Spawn cost
+
+**Invariant.** every spawned task runs to completion and its answer is joined exactly once, so the sum of answers equals 0+1+...+(n-1) = n(n-1)/2
+
+**Row.** wall-clock nanoseconds per task to create and join; once one at a time, once all alive at once
+
+**Workload.** `n=10000`, `rounds=5`
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `spawn_one` (ns) | 38.43 µs (5) | 54.73 µs (5) | 507.6 ns (5) | 104.92 µs (5) | SKIPPED |
+| `spawn_alive` (ns) | 43.91 µs (5) | 58.94 µs (5) | 276.7 ns (5) | 151.94 µs (5) | SKIPPED |
+| `spawn_sum` (ops) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | SKIPPED |
+
+_Rows:_ `spawn_one` (ns) — create and join one task at a time, n times; `spawn_alive` (ns) — create n tasks alive at once, then join every one; `spawn_sum` (ops) — the sum of the joined answers — a witness the tasks all ran and were joined once.
+
+Not measured here:
+- **Avra** — SKIPPED: no avra/ directory in tasks/spawn
+
+_Projected from 25 stored row(s)._
