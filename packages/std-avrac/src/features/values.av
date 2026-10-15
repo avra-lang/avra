@@ -247,7 +247,7 @@ impl LowerCx {
         if !(slot is .Box) { return null }
         let r = self.mint_ty(ty)
         self
-            .static_read(r, self.view.decls.file_symbol(self.view.file, "lit${e.index}"), build.boxes)
+            .static_read(r, self.view.decls.literal_symbol(self.view.file, e, ty), build.boxes, false)
         r
     }
 
@@ -310,7 +310,7 @@ impl LowerCx {
             .Bool(b) -> self.emit(Ins.ConstBool(r, b)),
             .Text(s) -> self.emit(Ins.ConstStr(r, s)),
             .Null -> self.emit(Ins.ConstInt(r, 0)),
-            .Box(_) -> self.static_read(r, name, boxes),
+            .Box(_) -> self.static_read(r, name, boxes, false),
             // a whole nullable scalar is a pair, built by `meta_pair`
             .Absent -> self.defect("an absent scalar reached a register whole — `meta_pair` builds the pair"),
             // no crossing value is a fn — `static_fn_box` lays this slot out directly
@@ -791,7 +791,7 @@ impl LowerCx {
     /// varies, so a NAMED fn used as a value takes this path always.
     mut fn static_fn_box(sh: Type, sym: string) -> Reg {
         let r = self.mint_shape(sh)
-        self.static_read(r, "fn\$${sym}", [StaticBox.Slots([Slot.Code(sym)])])
+        self.static_read(r, "fn\$${sym}", [StaticBox.Slots([Slot.Code(sym)])], false)
         r
     }
 
