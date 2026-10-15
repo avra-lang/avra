@@ -460,13 +460,19 @@ supervise() {
             compiler="published (key ${route#published:})"
         elif [ "${route%%:*}" = mergebase ] && install_published "${route#mergebase:}"; then
             # The merge-base's compiler builds this tree once: one generation, never
-            # cached, so the stamp that names a cached compiler is emptied.
+            # cached, so the stamp that names a cached compiler is emptied. A
+            # merge-base compiler older than the tree's grammar cannot read it, and
+            # the seed is the floor — `make bootstrap` builds from the committed
+            # seed, whatever the standing compiler knows.
             s0=$(date +%s)
             if make -s avra >> "$rd/probe.log" 2>&1; then
                 : > build/.avra-compiler-hash
                 compiler="merge-base published, one generation ($(($(date +%s) - s0))s)"
+            elif make -s bootstrap >> "$rd/probe.log" 2>&1; then
+                : > build/.avra-compiler-hash
+                compiler="merge-base compiler cannot read the tree; bootstrapped from the seed ($(($(date +%s) - s0))s)"
             else
-                echo "sprite-run: the merge-base generation FAILED — see $rd/probe.log" >&2; exit 70
+                echo "sprite-run: the merge-base generation and the seed both FAILED — see $rd/probe.log" >&2; exit 70
             fi
         elif [ -x "$compilers/$chash/avra" ]; then
             for f in $(compiler_objs); do
