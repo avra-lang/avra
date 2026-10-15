@@ -1,5 +1,6 @@
-// SPAWN COST in Go: goroutines joined one at a time and all at once.
-// Prints `spawn_one`/`spawn_alive` ns per task and `spawn_sum`.
+// SPAWN COST in Go: goroutines joined one at a time and all at once —
+// user-space tasks the runtime schedules, never OS threads. Prints
+// `spawn_fiber`/`spawn_fiber_alive` ns per task and `spawn_sum`.
 package main
 
 import (
@@ -67,7 +68,7 @@ func main() {
 	rounds := envInt("BENCH_ROUNDS", 5)
 	one, sum1 := oneAtATime(n, rounds)
 	all, _ := allAtOnce(n, rounds)
-	fmt.Printf("spawn_one\t%.3f\tns\t%d\n", one/float64(n), rounds)
-	fmt.Printf("spawn_alive\t%.3f\tns\t%d\n", all/float64(n), rounds)
+	fmt.Printf("spawn_fiber\t%.3f\tns\t%d\n", one/float64(n), rounds)
+	fmt.Printf("spawn_fiber_alive\t%.3f\tns\t%d\n", all/float64(n), rounds)
 	fmt.Printf("spawn_sum\t%d\tops\t%d\n", sum1, rounds)
 }

@@ -1,6 +1,7 @@
-// SPAWN COST in Rust: std::thread::spawn and join, one task at a time and
-// every task alive at once. Prints `spawn_one`/`spawn_alive` ns per task
-// and `spawn_sum`.
+// SPAWN COST in Rust: std::thread::spawn and join — an OS thread per
+// task, once one at a time and once every task alive at once. Rust's std
+// has threads and no fiber runtime, so its analogue is the thread twin:
+// prints `spawn_thread`/`spawn_thread_alive` ns per task and `spawn_sum`.
 use std::env;
 use std::thread;
 use std::time::Instant;
@@ -59,7 +60,7 @@ fn main() {
     let rounds = env_int("BENCH_ROUNDS", 5);
     let (one, sum1) = one_at_a_time(n, rounds);
     let (all, _sum2) = all_at_once(n, rounds);
-    println!("spawn_one\t{:.3}\tns\t{}", one / n as f64, rounds);
-    println!("spawn_alive\t{:.3}\tns\t{}", all / n as f64, rounds);
+    println!("spawn_thread\t{:.3}\tns\t{}", one / n as f64, rounds);
+    println!("spawn_thread_alive\t{:.3}\tns\t{}", all / n as f64, rounds);
     println!("spawn_sum\t{}\tops\t{}", sum1, rounds);
 }

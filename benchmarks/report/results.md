@@ -22,6 +22,7 @@ to add a benchmark or a language.
 | Rust | `rustc 1.90.0 (1159e78c4 2025-09-14)` |
 | Go | `go version go1.25.1 linux/amd64` |
 | Python (threads, GIL-bound) | `Python 3.13.7` |
+| Avra | `avra 0.0.1` |
 
 ### `tasks/drain` — Bounded-channel drain
 
@@ -31,14 +32,16 @@ to add a benchmark or a language.
 
 **Workload.** `small=1000`, `n=10000`, `cap=64`, `rounds=5`
 
-| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) |
-|---|---|---|---|---|
-| `drain_1k_ns_per_op` (ns) | 269.5 ns (5) | 289.5 ns (5) | 56.7 ns (5) | 2.65 µs (5) |
-| `drain_10k_ns_per_op` (ns) | 232.2 ns (5) | 235.8 ns (5) | 47.8 ns (5) | 2.56 µs (5) |
-| `drain_scale` (x) | 0.8617 x (5) | 0.8146 x (5) | 0.8438 x (5) | 0.966 x (5) |
-| `drain_ops_per_s` (ops) | 4,306,985 ops (5) | 4,240,918 ops (5) | 20,900,389 ops (5) | 390,447 ops (5) |
-| `drain_bytes` (bytes) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) |
-| `drain_sum` (ops) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) |
+**Analogues.** **C (the floor)** — an OS thread producer (pthread) pushing into a ring buffer; **Rust** — an OS thread producer (std::thread) pushing into a sync_channel; **Python (threads, GIL-bound)** — an OS thread producer (threading.Thread) pushing into a queue.Queue; **Go** — a goroutine producer pushing into a buffered channel; **Avra** — a user-space task producer (`produce<T>(cap)`) drained with `for x in source`
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `drain_1k_ns_per_op` (ns) | 267.3 ns (5) | 281.3 ns (5) | 50.6 ns (5) | 2.26 µs (5) | 407.0 ns (5) |
+| `drain_10k_ns_per_op` (ns) | 236.1 ns (5) | 230.2 ns (5) | 48.0 ns (5) | 2.33 µs (5) | 414.0 ns (5) |
+| `drain_scale` (x) | 0.8833 x (5) | 0.8184 x (5) | 0.9492 x (5) | 1.0304 x (5) | 1.017 x (5) |
+| `drain_ops_per_s` (ops) | 4,236,139 ops (5) | 4,344,256 ops (5) | 20,833,333 ops (5) | 429,099 ops (5) | 2,415,143 ops (5) |
+| `drain_bytes` (bytes) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) | 78.1 kB (5) |
+| `drain_sum` (ops) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) | 49,995,000 ops (5) |
 
 _Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items through a capacity-64 channel; `drain_10k_ns_per_op` (ns) — nanoseconds per item draining 10000 items through a capacity-64 channel; `drain_scale` (x) — the large per-item cost over the small one — a linear drain reports about 1, an O(n^2) drain about (n/small); `drain_ops_per_s` (ops) — items drained per second at 10000 items — the throughput; `drain_bytes` (bytes) — payload bytes moved at 10000 items (8 per item); `drain_sum` (ops) — the sum of every drained item — a witness every item arrived exactly once.
 
@@ -50,11 +53,13 @@ _Rows:_ `drain_1k_ns_per_op` (ns) — nanoseconds per item draining 1000 items t
 
 **Workload.** `producers=8`, `per=6250`, `cap=64`, `rounds=5`
 
-| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) |
-|---|---|---|---|---|
-| `fanin_ns_per_op` (ns) | 1.52 µs (5) | 622.6 ns (5) | 74.9 ns (5) | 3.95 µs (5) |
-| `fanin_received` (ops) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) |
-| `fanin_dropped` (ops) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) |
+**Analogues.** **C (the floor)** — OS threads (one producer per pthread), one bounded channel; **Rust** — OS threads (one producer per std::thread), one bounded sync_channel; **Python (threads, GIL-bound)** — OS threads (one producer per threading.Thread), one bounded queue; **Go** — goroutines (one producer each), one buffered channel; **Avra** — user-space tasks (one channel each), a single `select` over 8 sources
+
+| row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
+|---|---|---|---|---|---|
+| `fanin_ns_per_op` (ns) | 936.9 ns (5) | 446.5 ns (5) | 64.2 ns (5) | 3.87 µs (5) | 475.0 ns (5) |
+| `fanin_received` (ops) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) | 50,000 ops (5) |
+| `fanin_dropped` (ops) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) | 0 ops (5) |
 
 _Rows:_ `fanin_ns_per_op` (ns) — nanoseconds per value, from the first send to the last receive; `fanin_received` (ops) — values the consumer received — must equal n_producers*per; `fanin_dropped` (ops) — sent minus received — must be 0.
 
@@ -66,10 +71,12 @@ _Rows:_ `fanin_ns_per_op` (ns) — nanoseconds per value, from the first send to
 
 **Workload.** `n=10000`, `rounds=3`
 
-| row (unit) | C (the floor) | Rust | Go |
-|---|---|---|---|
-| `parked_bytes` (bytes) | 8.3 kB (1) | 10.0 kB (1) | 2.6 kB (1) |
-| `parked_n` (ops) | 10,000 ops (1) | 10,000 ops (1) | 10,000 ops (1) |
+**Analogues.** **C (the floor)** — OS threads blocked on one condition variable; **Rust** — OS threads blocked on a rendezvous sync_channel; **Go** — goroutines blocked on one channel; **Avra** — user-space tasks blocked on a rendezvous channel
+
+| row (unit) | C (the floor) | Rust | Go | Avra |
+|---|---|---|---|---|
+| `parked_bytes` (bytes) | 8.3 kB (1) | 10.0 kB (1) | 2.6 kB (1) | 5.1 kB (1) |
+| `parked_n` (ops) | 10,000 ops (1) | 10,000 ops (1) | 10,000 ops (1) | 10,000 ops (1) |
 
 _Rows:_ `parked_bytes` (bytes) — resident bytes per parked task, the process's growth over the parked run; `parked_n` (ops) — tasks parked — a witness the whole set was alive.
 
@@ -81,33 +88,33 @@ _Rows:_ `parked_bytes` (bytes) — resident bytes per parked task, the process's
 
 **Workload.** `n=100000`, `rounds=5`
 
+**Analogues.** **C (the floor)** — OS threads, a mutex and condition variable rendezvous on both legs; **Rust** — OS threads, two rendezvous sync_channels; **Python (threads, GIL-bound)** — OS threads, two one-slot queues; **Go** — goroutines, two unbuffered channels; **Avra** — user-space tasks, two rendezvous channels (`open_channel<int>(0)`)
+
 | row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
 |---|---|---|---|---|---|
-| `pingpong_ns` (ns) | 15.84 µs (5) | 16.49 µs (5) | 309.4 ns (5) | 25.09 µs (5) | SKIPPED |
-| `pingpong_rounds` (ops) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) | SKIPPED |
+| `pingpong_ns` (ns) | 16.58 µs (5) | 17.32 µs (5) | 314.5 ns (5) | 22.74 µs (5) | 772.0 ns (5) |
+| `pingpong_rounds` (ops) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) | 100,000 ops (5) |
 
 _Rows:_ `pingpong_ns` (ns) — nanoseconds per round trip, the least of `rounds` rallies; `pingpong_rounds` (ops) — the round trips run — a witness the rally was not cut short.
 
-Not measured here:
-- **Avra** — SKIPPED: no avra/ directory in tasks/pingpong
-
 ### `tasks/spawn` — Spawn cost
 
-**Invariant.** every spawned task runs to completion and its answer is joined exactly once, so the sum of answers equals 0+1+...+(n-1) = n(n-1)/2
+**Invariant.** every spawned task runs to completion and its answer is joined exactly once, so the sum of answers equals 0^2+1^2+...+(n-1)^2
 
-**Row.** wall-clock nanoseconds per task to create and join; once one at a time, once all alive at once
+**Row.** wall-clock nanoseconds per task to create and join, for the thread analogue and the fiber analogue, one at a time and all alive at once
 
 **Workload.** `n=10000`, `rounds=5`
 
+**Analogues.** **C (the floor)** — both analogues: OS threads (pthread) and user-space fibers (ucontext/makecontext); **Rust** — OS threads (std::thread) — Rust's std has no fiber runtime; **Go** — user-space fibers (goroutines); **Python (threads, GIL-bound)** — OS threads (threading.Thread) — GIL-bound; **Avra** — user-space tasks (the scheduler's `spawn`)
+
 | row (unit) | C (the floor) | Rust | Go | Python (threads, GIL-bound) | Avra |
 |---|---|---|---|---|---|
-| `spawn_one` (ns) | 38.43 µs (5) | 54.73 µs (5) | 507.6 ns (5) | 104.92 µs (5) | SKIPPED |
-| `spawn_alive` (ns) | 43.91 µs (5) | 58.94 µs (5) | 276.7 ns (5) | 151.94 µs (5) | SKIPPED |
-| `spawn_sum` (ops) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | SKIPPED |
+| `spawn_thread` (ns) | 38.87 µs (5) | 54.68 µs (5) | — | 108.65 µs (5) | — |
+| `spawn_thread_alive` (ns) | 46.99 µs (5) | 54.66 µs (5) | — | 150.07 µs (5) | — |
+| `spawn_fiber` (ns) | 1.69 µs (5) | — | 489.8 ns (5) | — | 276.0 ns (5) |
+| `spawn_fiber_alive` (ns) | 5.11 µs (5) | — | 449.3 ns (5) | — | 272.0 ns (5) |
+| `spawn_sum` (ops) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) | 333,283,335,000 ops (5) |
 
-_Rows:_ `spawn_one` (ns) — create and join one task at a time, n times; `spawn_alive` (ns) — create n tasks alive at once, then join every one; `spawn_sum` (ops) — the sum of the joined answers — a witness the tasks all ran and were joined once.
-
-Not measured here:
-- **Avra** — SKIPPED: no avra/ directory in tasks/spawn
+_Rows:_ `spawn_thread` (ns) — create and join one OS thread at a time, n times (pthread / std::thread / threading.Thread); `spawn_thread_alive` (ns) — create n OS threads alive at once, then join every one; `spawn_fiber` (ns) — create and join one user-space task at a time, n times (ucontext / goroutine / Avra task); `spawn_fiber_alive` (ns) — create n user-space tasks alive at once, then join every one; `spawn_sum` (ops) — the sum of the joined answers — a witness every task ran and was joined once.
 
 _Projected from 25 stored row(s)._

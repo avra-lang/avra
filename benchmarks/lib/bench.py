@@ -104,13 +104,13 @@ def machine_desc():
 # ── one language run ─────────────────────────────────────────────────
 
 def _placeholders(text, *, d, src, out):
-    return {
-        "{dir}": d,
-        "{src}": src or "",
-        "{out}": out,
-        "{avra}": os.path.join(ROOT, "build", "avra"),
-        "{root}": ROOT,
-    }.get(text, text)
+    """Fill every placeholder a token contains, so a path may compose one
+    (`{dir}/src/main`) and not only stand alone."""
+    return (text.replace("{dir}", d)
+                .replace("{src}", src or "")
+                .replace("{out}", out)
+                .replace("{avra}", os.path.join(ROOT, "build", "avra"))
+                .replace("{root}", ROOT))
 
 
 def _sub(argv, ctx):

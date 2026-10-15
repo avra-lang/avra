@@ -1,5 +1,6 @@
-# SPAWN COST in Python: one threading.Thread per task, joined one at a time
-# and every task alive at once. Prints ns per task and the sum.
+# SPAWN COST in Python: one threading.Thread per task, joined one at a
+# time and every task alive at once. Python's analogue is the thread
+# twin: prints `spawn_thread`/`spawn_thread_alive` ns per task and the sum.
 import os
 import threading
 import time
@@ -68,8 +69,8 @@ def main():
     rounds = env_int("BENCH_ROUNDS", 5)
     one, sum1 = one_at_a_time(n, rounds)
     all_, _ = all_at_once(n, rounds)
-    print(f"spawn_one\t{one / n:.3f}\tns\t{rounds}")
-    print(f"spawn_alive\t{all_ / n:.3f}\tns\t{rounds}")
+    print(f"spawn_thread\t{one / n:.3f}\tns\t{rounds}")
+    print(f"spawn_thread_alive\t{all_ / n:.3f}\tns\t{rounds}")
     print(f"spawn_sum\t{sum1}\tops\t{rounds}")
 
 

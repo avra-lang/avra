@@ -152,18 +152,30 @@ not duplicates. (A later slice could move `tools/flow_bench` under
 ## What is measured, and what is not
 
 The **invariant** is what every twin must do identically, written in each
-`spec.toml`; the **row** is what is timed. `tasks/spawn` measures create
-and join; `tasks/pingpong` a round trip; `tasks/drain` a bounded-channel
-drain at two sizes with its **scaling ratio** — the shaped row a pure
-latency number cannot give, added because a drain in Avra's own carrier
-was found O(n²); `tasks/fanin` N producers to one consumer;
-`tasks/parked` resident bytes per parked task.
+`spec.toml`; the **row** is what is timed, and the **analogue** is the
+primitive a language uses for it. Each `spec.toml` carries an
+`[analogues]` table naming every language's primitive, and the report
+prints it, because two categories that look alike are not comparable:
 
-What is **not** measured here, deliberately: the Avra twin's rows (the
-language is registered, but no `<bench>/avra/` directory exists yet — the
-report says SKIPPED with that reason, and the tasks API reaches only
-spawn/`await` today, no channels); the memory-per-task row off Linux (RSS
-comes from `/proc`); and throughput under load, which is
+- `tasks/spawn` measures create and join in TWO categories that are not
+  interchangeable — an OS thread (`spawn_thread`) and a user-space task
+  (`spawn_fiber`). C carries both (pthreads and `ucontext`), Rust and
+  Python only the thread, Go and Avra only the fiber, so a table can
+  never read a `pthread_create` beside a goroutine as a speed
+  difference.
+- `tasks/pingpong` a round trip; `tasks/drain` a bounded-channel drain at
+  two sizes with its **scaling ratio** — the shaped row a pure latency
+  number cannot give, added so an O(n²) drain is visible; `tasks/fanin` N
+  producers to one consumer; `tasks/parked` resident bytes per parked
+  task.
+
+Avra is measured: `produce`/`yield`/`for x in Source`/`select`/`spawn`/
+`.await` and `@std/task`'s `open_channel` are its twins' vocabulary. The
+runner fills placeholders inside a token (`{dir}/src/main`), which the
+Avra twin's run command needs — an exact-token match never reached it.
+
+What is **not** measured here, deliberately: the memory-per-task row off
+Linux (RSS comes from `/proc`); and throughput under load, which is
 `tools/bench/public.sh`'s subject (the public harness against nginx and
 h2o, ticket `avra-8sb5.34.36`), alongside the methodology ticket
 `avra-8sb5.1.31.12`.

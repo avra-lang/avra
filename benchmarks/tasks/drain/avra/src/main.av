@@ -1,0 +1,66 @@
+//! BOUNDED-CHANNEL DRAIN in Avra: a `produce<int>(cap)` producer yields
+//! n items into a bounded source while this task drains them with
+//! `for x in source`. Prints the per-item cost at two sizes, their
+//! ratio, the throughput, the bytes moved, and the sum of every item.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{now_ns}
+use @std.task.{Source}
+
+/// The benchmark's environment value, or its default.
+fn env_int(name: string, fallback: int) -> int {
+    parse_int(env_or(name, "${fallback}")) ?? fallback
+}
+
+/// `num/den` as a decimal string with three places, e.g. `0.862`.
+fn ratio_text(num: int, den: int) -> string {
+    let milli = (num * 1000 + den / 2) / den
+    let whole = milli / 1000
+    let frac = milli % 1000
+    if frac < 10 { "${whole}.00${frac}" } else if frac < 100 { "${whole}.0${frac}" } else { "${whole}.${frac}" }
+}
+
+/// The best round's nanoseconds and the drained sum.
+type Drain = { spent: int, sum: int }
+
+/// Push n items through a bounded source and drain them.
+fn drain_once(n: int, cap: int) -> Drain {
+    let src: Source<int> = produce<int>(cap) {
+        mut i = 0
+        while i < n {
+            yield i
+            i = i + 1
+        }
+    }
+    let t0 = now_ns()
+    mut s = 0
+    for v in src { s = s + v }
+    Drain { spent: now_ns() - t0, sum: s }
+}
+
+/// The least of `rounds` drains.
+fn least(n: int, cap: int, rounds: int) -> Drain {
+    mut best = 0
+    mut sum = 0
+    mut r = 0
+    while r < rounds {
+        let d = drain_once(n, cap)
+        if r == 0 || d.spent < best { best = d.spent }
+        sum = d.sum
+        r = r + 1
+    }
+    Drain { spent: best, sum: sum }
+}
+
+let small = env_int("BENCH_SMALL", 1000)
+let n = env_int("BENCH_N", 10000)
+let cap = env_int("BENCH_CAP", 64)
+let rounds = env_int("BENCH_ROUNDS", 5)
+let d1 = least(small, cap, rounds)
+let d2 = least(n, cap, rounds)
+println("drain_1k_ns_per_op\t${d1.spent / small}\tns\t${rounds}")
+println("drain_10k_ns_per_op\t${d2.spent / n}\tns\t${rounds}")
+println("drain_scale\t${ratio_text(d2.spent * small, d1.spent * n)}\tx\t${rounds}")
+println("drain_ops_per_s\t${n * 1000000000 / d2.spent}\tops\t${rounds}")
+println("drain_bytes\t${n * 8}\tbytes\t${rounds}")
+println("drain_sum\t${d2.sum}\tops\t${rounds}")

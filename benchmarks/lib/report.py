@@ -128,6 +128,9 @@ def machine_sections(runs, reg, benches):
             if spec.get("workload"):
                 pairs = ", ".join(f"`{k}={v}`" for k, v in spec["workload"].items())
                 lines.append(f"**Workload.** {pairs}\n")
+            if spec.get("analogues"):
+                pairs = "; ".join(f"**{titles.get(l, l)}** — {a}" for l, a in spec["analogues"].items())
+                lines.append(f"**Analogues.** {pairs}\n")
             lines.append("| row (unit) | " + " | ".join(titles.get(l, l) for l in langs) + " |")
             lines.append("|---|" + "---|" * len(langs))
             for rname, rspec in spec.get("rows", {}).items():
@@ -202,6 +205,9 @@ def render_html(runs, reg, benches):
             if spec.get("workload"):
                 pairs = ", ".join(f"<code>{esc(k)}={esc(str(v))}</code>" for k, v in spec["workload"].items())
                 out.append(f"<p><b>Workload.</b> {pairs}</p>")
+            if spec.get("analogues"):
+                pairs = "; ".join(f"<b>{esc(titles.get(l, l))}</b> — {esc(a)}" for l, a in spec["analogues"].items())
+                out.append(f"<p><b>Analogues.</b> {pairs}</p>")
             out.append("<table><tr><th>row (unit)</th>" + "".join(f"<th>{esc(titles.get(l, l))}</th>" for l in langs) + "</tr>")
             for rname, rspec in spec.get("rows", {}).items():
                 cells = [fmt_cell(runs_by, key, l, machine, rname, rspec) for l in langs]
