@@ -1,0 +1,46 @@
+//! `channel<T>(n)`: the manual pair's spelling, its default capacity,
+//! and the type it answers. Its lowering, the running channel and the
+//! order and bound laws are proved by `packages/std-task`'s program
+//! tests, which see the real `@std/task`.
+use @std.avrac.testing.{floored_beside, refused_in, refused_with, projected}
+
+/// A toolchain carrying `@std/task`'s pair — enough for the front end
+/// to type a `channel` against.
+const task_src: string = "export type Sink<T> = { send: fn(T) -> bool, close: fn() -> void }\nexport type Source<T> = { next: fn() -> T? }\nexport type Channel<T> = { sink: Sink<T>, source: Source<T> }\n"
+
+spec "features/tasks.channel" {
+    given "the manual pair's spelling" {
+        then "`channel<T>(n)` parses with a capacity" {
+            projected("channel<int>(2)\n0") != "<parse refused>"
+        }
+        then "`channel<T>()` parses with none — the rendezvous `produce<T>` takes" {
+            projected("channel<int>()\n0") != "<parse refused>"
+        }
+        then "`channel<T>` with no argument list is no spelling — the pair needs its bound said" {
+            projected("channel<int>\n0") == "<parse refused>"
+        }
+    }
+    given "what it answers" {
+        then "it answers a `Channel<T>` and types clean" {
+            let p = floored_beside(
+                "use @std.task.{Channel}\nlet c: Channel<int> = channel<int>(2)\n0",
+                "task",
+                task_src,
+            )
+            p.files[0].diagnostics.is_empty()
+        }
+        then "a capacity that is no `int` is refused by name" {
+            refused_in(
+                floored_beside(
+                    "use @std.task.{Channel}\nlet c = channel<int>(\"x\")\n0",
+                    "task",
+                    task_src,
+                ),
+                "a `channel` capacity is a `int`, found `string`",
+            )
+        }
+        then "a program loading no `@std/task` is refused by name" {
+            refused_with("channel<int>(2)\n0", "loads no `@std/task`")
+        }
+    }
+}

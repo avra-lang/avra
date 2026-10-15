@@ -1,0 +1,18 @@
+//! `channel<T>(0)` hands each item straight to the reader: the sender
+//! parks on every send until the main block takes it. The ordered
+//! output is the handover, never a sum.
+use @std.task.{Channel}
+
+fn feed(ch: Channel<int>, n: int) {
+    for i in 1..n {
+        let _ = ch.sink.send(i)
+    }
+    ch.sink.close()
+}
+
+let ch = channel<int>(0)
+let t = spawn feed(ch, 4)
+mut out: List<int> = []
+for v in ch.source { out.push(v) }
+let _ = t.await
+out.map((n: int) -> "${n}").join(",")

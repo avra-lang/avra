@@ -233,6 +233,39 @@ fn source_elem(cx: LowerCx, e: ExprId) -> TypeId? {
     }
 }
 
+/// `channel<T>(cap)`: build the pair with `@std/task`'s `open_channel`
+/// and answer it. No task is spawned and nobody closes it — the manual
+/// pair ends at the sink's `close()`, and its absence is the rendezvous
+/// `produce<T>` takes, so the library's own default is not invented here.
+fn channel_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    match cx.view.store.expr(e) {
+        .Channel(_, cap) -> {
+            let elem? = channel_elem(cx, e) else {
+                return cx.lower_defect(e, "a `channel` without its element survived typing")
+            }
+            let chan_ty? = task_app(cx, "Channel", elem) else {
+                return cx.lower_defect(e, "`@std.task.Channel` vanished under this lowering")
+            }
+            let cap_reg = if cap == null { cx.const_int(0) } else { cx.reg_of(cap!) }
+            let d? = cx.view.decls.package_decl("@std.task", "open_channel") else {
+                return cx.lower_defect(e, "`@std.task.open_channel` vanished under this lowering")
+            }
+            cx
+                .call_decl(chan_ty, cx.wanted(d, Sub { target: d, args: [elem], consts: [] }), [cap_reg])
+        },
+        rest -> cx.lower_defect(e, "a foreign node reached the channel lowering"),
+    }
+}
+
+/// The element a `channel` pins — the type argument of the `Channel`
+/// it answers.
+fn channel_elem(cx: LowerCx, e: ExprId) -> TypeId? {
+    match cx.view.types.seen_shape(cx.type_at(e)) {
+        .App(_, "Channel", args) -> if args.length == 1 { args[0] } else { null },
+        rest -> null,
+    }
+}
+
 /// A `@std/task` generic record instantiated at `t`.
 fn task_app(cx: LowerCx, name: string, t: TypeId) -> TypeId? {
     let decl = cx.view.decls.package_decl("@std.task", name)?

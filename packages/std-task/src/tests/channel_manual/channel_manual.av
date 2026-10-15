@@ -1,0 +1,34 @@
+//! The manual pair: `channel<T>(n)` answers `{ sink, source }`, a task
+//! sends on the sink, the main block reads the source with `for` and
+//! with `next()`, and the sink's `close()` ends it. Nobody closes a
+//! `channel` for you — that is the whole difference from `produce`.
+use @std.task.{Channel}
+
+fn feed(ch: Channel<int>, n: int) {
+    for i in 1..n {
+        let _ = ch.sink.send(i)
+    }
+    ch.sink.close()
+}
+
+fn drain_next(ch: Channel<int>) -> List<int> {
+    mut out: List<int> = []
+    while true {
+        let v = ch.source.next()
+        if v == null { break }
+        out.push(v!)
+    }
+    out
+}
+
+let by_for_chan = channel<int>(8)
+let t1 = spawn feed(by_for_chan, 6)
+mut by_for: List<int> = []
+for v in by_for_chan.source { by_for.push(v) }
+let _ = t1.await
+
+let by_next_chan = channel<int>(8)
+let t2 = spawn feed(by_next_chan, 5)
+let by_next = drain_next(by_next_chan)
+let _ = t2.await
+"for=${by_for.map((n: int) -> "${n}").join(",")} next=${by_next.map((n: int) -> "${n}").join(",")}"
