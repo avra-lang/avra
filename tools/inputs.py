@@ -78,7 +78,10 @@ WORLD = {
     },
     "time": {
         "now_ms": "clock", "now_ns": "clock", "wall_secs": "clock", "sleep": E,
-        "ms": P, "secs": P, "mins": P, "duration_text": P, "Duration": T,
+        "ms": P, "secs": P, "mins": P, "quiet": P, "duration_text": P, "Duration": T,
+    },
+    "task": {
+        "signals": "pid", "Source": T, "Sig": T,
     },
     "cli": {
         "argv": "argv", "cli": "argv",
