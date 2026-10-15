@@ -105,3 +105,55 @@ releases, copies** — with the sites for whichever dominates:
 - dominated by **allocations** → reuse (§Part 3.4).
 
 **All three are wanted in the end; the census decides the ORDER, not the choice.**
+
+---
+
+## Part 5 — Performance by default, or: remove the foot guns
+A foot gun here is not a mistake an author makes; it is a **shape the language makes
+easy that costs more than it looks**. The census found one in its purest form:
+`removed_at(0)` reads like "take the first", and it rebuilds the whole list.
+
+**The six ways a foot gun gets in, and the answer to each.**
+
+1. **An innocuous NAME on an expensive verb.** `removed_at(0)` vs a ring's `pop`.
+   → The fast path takes the ordinary name; the expensive one is named for its cost.
+2. **A DEFAULT that is slow.** A buffer that shifts on every pop.
+   → **The type says its cost: a queue IS a ring.** If the carrier's buffer were a
+   `Ring<T>`, the shift could not be written. Type = contract = cost.
+3. **A LAW THAT IS PROSE, NOT A RULE.** *"A read-modify-write through `get` is a
+   copy"* was already written in this tree — and the carrier broke it anyway,
+   because prose is read by people and enforced by nobody. The campaign already owns
+   the cure: **`rule` declarations, found by `avra check`.** Every foot gun the
+   language can STATE becomes a rule (a rule that fires on every run, not a
+   baseline entry).
+4. **A SCALING PATH NOBODY MEASURES.** The benchmark's bounded drain hid the
+   quadratic for months: at cap 64 the rebuild is ≤64 cells and looks linear.
+   → **Every hot verb gets a SCALING row (1k/10k/20k) and the gate refuses a
+   ratio.** A foot gun that appears in a scaling row cannot ship.
+5. **A REPRESENTATION THE AUTHOR HAS TO CHOOSE.** Asking a person to pick a slab,
+   a ring or a handle is asking them to be a compiler.
+   → **The element type and the use decide the layout** (Part 2); plain code is fast
+   code because the compiler picked.
+6. **NO ESCAPE HATCH.** A rule with no exception gets routed around.
+   → The escape hatch is explicit (P8) — and *named*, so the slow shape is a
+   deliberate, visible choice.
+
+**The doctrine in one line:** *the default is the fast path; the slow path is named,
+measured, and refused where the language can state it.*
+
+**And the corollary that keeps it honest:** a foot gun removed at the TYPE or the
+VOCABULARY disappears for every caller; one removed in a document disappears for
+none. Prefer the type, then the verb, then the rule, then the measurement — and
+documentation last, because documentation is the only one of the four that nobody's
+tooling reads.
+
+## Part 3 addendum — where in the pipeline the family sits
+`parse → resolve → typing → lower → [the family] → memory → backend`
+- **`Ownership`** (facts) is computed over the LOWERED body, before memory places
+  counts.
+- **The cell read-modify-write** is a canonicalisation on the lowered body, before
+  memory — it changes WHICH instructions exist, so memory must see the result.
+- **`memory`** consumes `Ownership` and places counts.
+- **`reuse`** runs last, pairing a dying allocation with its replacement's shape.
+Each owns its fact table and its diagnostics; `analyze` is still the only place the
+ORDER exists, and iteration to a fixpoint is bounded and priced (Part 3).
