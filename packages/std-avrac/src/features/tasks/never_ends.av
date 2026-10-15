@@ -1,0 +1,128 @@
+//! THE NEVER-ENDS LAW: a bare `channel<T>(n)` ends only at `close()`.
+//! A block that spawns a task reading `ch.source` and never closes the
+//! sink joins that task with the channel open — the reader parks for a
+//! close nobody writes, and the block's end waits on it. The law reads
+//! the block's own nodes and never a callee's body: the spawned task
+//! must SPELL the `.source` read, so the shape it can see is the one it
+//! judges. `produce` closes its channel where the block ends, so it
+//! never earns this.
+use core.{ExprId, StmtId, Binding, Span}
+use features.{TypeCx, Decl, nothing}
+use diagnostics.{refusal}
+use @std.errors.{Loc}
+
+impl TypeCx {
+    mut fn never_ends_law(x: Decl) {
+        if self.decl_closes(x) { return }
+        for i in x.lo..x.hi {
+            let e = ExprId { index: i }
+            let sp = match self.view.store.expr(e) {
+                .Spawn(_) -> self.view.store.expr_span(e),
+                rest -> null,
+            }
+            if sp == null { continue }
+            let name = self.spawned_reader(x, sp!)
+            if name != null { self.never_ends(self.loc_of(e), name!) }
+        }
+    }
+
+    /// The name of the channel a spawn reads `.source` of, or absent
+    /// when the spawn reads none. The spawn's own byte span bounds the
+    /// search, so a `.source` read beside it in the same block is not
+    /// the task's.
+    fn spawned_reader(x: Decl, sp: Span) -> string? {
+        for i in x.lo..x.hi {
+            let e = ExprId { index: i }
+            let at? = self.view.store.expr_span(e) else { continue }
+            if at.lo >= sp.lo && at.hi <= sp.hi && self.source_read(e) { return self.reader_name(e) }
+        }
+        null
+    }
+
+    /// Whether this block closes a channel's sink anywhere in it.
+    fn decl_closes(x: Decl) -> bool {
+        for i in x.lo..x.hi {
+            let e = ExprId { index: i }
+            if self.close_call(e) { return true }
+        }
+        false
+    }
+
+    /// Whether an expression is a `.source` read of a local channel.
+    fn source_read(e: ExprId) -> bool {
+        match self.view.store.expr(e) {
+            .Prop(subj, name) -> name.of == "source" && self.channel_expr(subj),
+            rest -> false,
+        }
+    }
+
+    /// Whether an expression is `ch.sink.close()` on a local channel.
+    fn close_call(e: ExprId) -> bool {
+        match self.view.store.expr(e) {
+            .MethodCall(subject, name, _) -> name.of == "close" && self.channel_sink(subject),
+            rest -> false,
+        }
+    }
+
+    /// Whether an expression is a local `channel<T>(n)` — through a
+    /// capture chain to the binding that made it.
+    fn channel_expr(e: ExprId) -> bool {
+        let b? = self.names.binding(e) else { return false }
+        self.binds_channel(b)
+    }
+
+    fn binds_channel(b: Binding) -> bool {
+        match b {
+            .Def(s) -> self.channel_value(s),
+            .Capture(lam, lane) -> self.captured_channel(lam, lane),
+            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> false,
+        }
+    }
+
+    fn channel_value(s: StmtId) -> bool {
+        let v? = self.view.store.owned_value(s) else { return false }
+        match self.view.store.expr(v) { .Channel(_, _) -> true, rest -> false }
+    }
+
+    fn captured_channel(lam: ExprId, lane: int) -> bool {
+        let cap? = self.names.capture(lam) else { return false }
+        let src? = cap.sources.get(lane) else { return false }
+        self.binds_channel(src)
+    }
+
+    /// Whether a `close()`'s subject is a channel's `sink`.
+    fn channel_sink(subject: ExprId) -> bool {
+        match self.view.store.expr(subject) {
+            .Prop(inner, name) -> name.of == "sink" && self.channel_expr(inner),
+            rest -> false,
+        }
+    }
+
+    /// A `.source` read's own name, for the voice; `channel` when it is
+    /// any other spelling.
+    fn reader_name(e: ExprId) -> string {
+        match self.view.store.expr(e) {
+            .Prop(subj, _) -> self.reader_subject(subj),
+            rest -> "channel",
+        }
+    }
+
+    fn reader_subject(subj: ExprId) -> string {
+        match self.view.store.expr(subj) { .Ident(name) -> name.of, rest -> "channel" }
+    }
+
+    // ── The voice ──
+
+    mut fn never_ends(at: Loc?, name: string) {
+        self
+            .emit(
+                refusal(
+                    "flow.never_ends",
+                    at,
+                    "`${name}` is read to its end by a task this block spawns, and no `close()` ends it before the block does",
+                    "joined with `${name}` open",
+                    "close the sink first — `${name}.sink.close()` — or write `produce<T>(n) { … }`, which closes where the block ends",
+                ),
+            )
+    }
+}
