@@ -6,31 +6,35 @@
 //! must SPELL the `.source` read, so the shape it can see is the one it
 //! judges. `produce` closes its channel where the block ends, so it
 //! never earns this.
-use core.{ExprId, StmtId, Binding}
+use core.{ExprId, StmtId, Binding, Span}
 use features.{TypeCx, Decl, nothing}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
 
 impl TypeCx {
     mut fn never_ends_law(x: Decl) {
-        let closed = self.decl_closes(x)
+        if self.decl_closes(x) { return }
         for i in x.lo..x.hi {
             let e = ExprId { index: i }
-            let reading = match self.view.store.expr(e) {
-                .Spawn(body) -> self.reader_source(body),
+            let sp = match self.view.store.expr(e) {
+                .Spawn(_) -> self.view.store.expr_span(e),
                 rest -> null,
             }
-            if reading != null && !closed { self.never_ends(self.loc_of(e), reading!) }
+            if sp == null { continue }
+            let name = self.spawned_reader(x, sp!)
+            if name != null { self.never_ends(self.loc_of(e), name!) }
         }
     }
 
-    /// The name of a channel a spawned task reads `.source` of, or
-    /// absent when the task names none.
-    fn reader_source(body: ExprId) -> string? {
-        let span? = self.view.store.expr_span(body) else { return null }
-        for i in span!.lo..span!.hi {
+    /// The name of the channel a spawn reads `.source` of, or absent
+    /// when the spawn reads none. The spawn's own byte span bounds the
+    /// search, so a `.source` read beside it in the same block is not
+    /// the task's.
+    fn spawned_reader(x: Decl, sp: Span) -> string? {
+        for i in x.lo..x.hi {
             let e = ExprId { index: i }
-            if self.source_read(e) { return self.reader_name(e) }
+            let at? = self.view.store.expr_span(e) else { continue }
+            if at.lo >= sp.lo && at.hi <= sp.hi && self.source_read(e) { return self.reader_name(e) }
         }
         null
     }
@@ -64,7 +68,7 @@ impl TypeCx {
     /// capture chain to the binding that made it.
     fn channel_expr(e: ExprId) -> bool {
         let b? = self.names.binding(e) else { return false }
-        self.binds_channel(b!)
+        self.binds_channel(b)
     }
 
     fn binds_channel(b: Binding) -> bool {
@@ -77,13 +81,13 @@ impl TypeCx {
 
     fn channel_value(s: StmtId) -> bool {
         let v? = self.view.store.owned_value(s) else { return false }
-        match self.view.store.expr(v!) { .Channel(_, _) -> true, rest -> false }
+        match self.view.store.expr(v) { .Channel(_, _) -> true, rest -> false }
     }
 
     fn captured_channel(lam: ExprId, lane: int) -> bool {
         let cap? = self.names.capture(lam) else { return false }
-        let src? = cap!.sources.get(lane) else { return false }
-        self.binds_channel(src!)
+        let src? = cap.sources.get(lane) else { return false }
+        self.binds_channel(src)
     }
 
     /// Whether a `close()`'s subject is a channel's `sink`.
