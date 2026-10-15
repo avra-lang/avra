@@ -1,0 +1,46 @@
+//! proves: one `select` waits on a running channel, a timer and a file
+//! watch at once — a task writes a scratch path, a producer hands a
+//! value, and `quiet` fills the silence between them; the loop leaves
+//! only when all three have fired, and what it prints is the same in
+//! both engines whatever the order they arrived in.
+use @std.io.{append_bytes, make_dirs, env_or}
+use @std.io.watch.{watch, Seen}
+use @std.task.{Source}
+use @std.time.{ms, quiet, secs, sleep, stamp}
+
+/// The watched path written by another task, `after` ms from now.
+fn writes_later(path: string, after: int) {
+    sleep(ms(after))
+    let _ = append_bytes(path, "saved".bytes())
+}
+
+fn three() -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/avra-select-three-${stamp()}"
+    let f = "${dir}/f"
+    let _ = make_dirs(dir)
+    let w = match watch() { .Ok(w) -> w, .Err(e) -> { return "no watch: ${e.describe().message}" } }
+    let _ = w.add(f)
+    let saves: Source<Seen> = w.changes()
+    let ticks: Source<int> = produce<int>(1) {
+        yield 1
+        sleep(secs(30))
+    }
+    let writer = spawn writes_later(f, 40)
+    mut saved = false
+    mut ticked = false
+    mut quieted = false
+    while !(saved && ticked && quieted) {
+        select {
+            _ in saves -> { saved = true }
+            _ in ticks -> { ticked = true }
+            quiet(ms(50)) -> { quieted = true }
+            saves.ended -> { let _ = 0 }
+            ticks.ended -> { let _ = 0 }
+        }
+    }
+    writer.await
+    w.close()
+    "${saved} ${ticked} ${quieted}"
+}
+
+three()
