@@ -615,6 +615,7 @@ cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_quiet_attack.sh
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
+	@sh tools/fn_add_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
 	@sh tools/cancel_bits_attack.sh
