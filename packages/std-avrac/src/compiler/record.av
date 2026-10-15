@@ -627,6 +627,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
     ws.keys.object_keys.set(no_object)
     let no_parts: Map<string, KeyParts> = {}
     ws.keys.object_parts.set(no_parts)
+    ws.keys.suspects.set(Suspects { files: -1, rows: {} })
     if seen_moved {
         let no_bytes: Map<string, string> = {}
         let no_view: Map<string, List<SeenPart>> = {}
@@ -656,7 +657,15 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
 /// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
 /// rows are lies.
 export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
-    load_named(ws, store, m, ws.module_files(m), entry, want)
+    load_named(ws, store, m, ws.module_files(m), entry, want, true)
+}
+
+/// THE SAME WALK, NAMES ONLY: every file registered and every module's impl/trait names indexed,
+/// so a by-name ask can answer — but no interface loaded, no file met, nothing held. What an
+/// on-demand load reads the store for before it decides which modules to load for real.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
+export fn bare_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
+    load_named(ws, store, m, ws.module_files(m), entry, want, false)
 }
 
 /// THE FILES OF `m` A PATH NAMES, met under `m`'s record: the record is loaded once,
@@ -671,6 +680,7 @@ fn load_named(
     named: List<string>,
     entry: string?,
     want: Want,
+    meet: bool,
 ) {
     let key = ws.record_key(m)
     let first = ws.records.loaded_records.get().get(key) == null
@@ -714,7 +724,7 @@ fn load_named(
         ws.met_all(named)
         return
     }
-    if first { load_imports(ws, store, m, fields, entry, want) }
+    if first { load_imports(ws, store, m, fields, entry, want, meet) }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     let places = record_places(ws, store, m)
@@ -722,10 +732,15 @@ fn load_named(
     // directory registers them all, and a registered file never met is asked no hold —
     // it parses on every run, whatever moved.
     for f in named.concat([f for f in here if places.get(f) != null && !named.contains(f)]) {
-        if ws.records.met_files.get().get(f) == null {
-            ws.records.met_files.put(f, true)
-            meet_file(ws, store, m, f, places.get(f), entry, want)
+        if ws.records.met_files.get().get(f) != null { continue }
+        // ON-DEMAND: a names-only walk registers the file so the program is whole,
+        // and leaves its interface to the module a suspect asks for.
+        if !meet {
+            let _ = ws.file_id(f)
+            continue
         }
+        ws.records.met_files.put(f, true)
+        meet_file(ws, store, m, f, places.get(f), entry, want)
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
@@ -741,19 +756,20 @@ fn load_imports(
     fields: List<List<string>>,
     entry: string?,
     want: Want,
+    meet: bool,
 ) {
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
-    load_interface(ws, store, prelude_module(), entry, want)
+    load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
     for parts in fields {
         if parts[0] == "import" {
             // the ROOT module's name is empty, and `split` drops a trailing empty field
             let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
-            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want) }
+            for owner in ws.record_modules(imp) { load_named(ws, store, owner, ws.module_files(imp), entry, want, meet) }
         }
-        if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want) }
+        if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want, meet) }
     }
     // a method table wants EVERY impl of a name, and a held impl names its trait by
     // name: where those live is known before any module is minted
@@ -775,7 +791,14 @@ fn load_imports(
 /// beside the ones its imports reach. What the collector gathered is held to the set
 /// its record names, judged once the program is analysed (`gathered_moved`).
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a package in.
-fn load_gathered(ws: Workspace, store: Store, parts: List<string>, entry: string?, want: Want) {
+fn load_gathered(
+    ws: Workspace,
+    store: Store,
+    parts: List<string>,
+    entry: string?,
+    want: Want,
+    meet: bool,
+) {
     if parts.length < 3 {
         ws.defect(gathers_collectorless())
         return
@@ -785,7 +808,7 @@ fn load_gathered(ws: Workspace, store: Store, parts: List<string>, entry: string
         return
     }
     let files = gathered_files(ws, pkg.src)
-    for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want) }
+    for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
     let held? = held_gather(parts, relative_path(ws.root, pkg.src)) else {
         ws.hold.read_with.push(parts[2])
         ws.hold.read_seeds.push(ReadFile { path: parts[2], why: Reads.GathersUnread })
@@ -995,7 +1018,7 @@ fn read_why(
     if forced != null { return forced! }
     if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
     if ws.reads_pending(store, m, f) { return null }
-    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
+    if !ws.stands_in(store, f, want) { return Reads.Unkept }
     let rows = file_rows(record_fields(ws, store, m), at)
     if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
     if !holdable(rows) { return Reads.Unholdable }

@@ -604,7 +604,7 @@ S "cold gg" gg
 printf 'use y.{twice}\nexport const K: int = twice(4)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
 gg_first=$(gg_attempts)
 S "gg: the const needs calc.av's body" gg
-steps=$((steps+1)); [ "$gg_first" = 2 ] || { fails=$((fails+1)); echo "FAIL  gg: a const that needs a held body turned $gg_first attempts, wanted 2 (the turn that reads calc.av)"; }
+steps=$((steps+1)); [ "$gg_first" = 1 ] || { fails=$((fails+1)); echo "FAIL  gg: a const that needs a held body turned $gg_first attempts, wanted 1 (the verdict's owner is read in the first attempt)"; }
 printf 'use y.{twice}\nexport const K: int = twice(5)\nexport fn shown() -> int { K }\n' > $R/gg/src/f/held.av
 gg_again=$(gg_attempts)
 steps=$((steps+1)); [ "$gg_again" = 1 ] || { fails=$((fails+1)); echo "FAIL  gg: the same edit again turned $gg_again attempts, wanted 1 (calc.av is remembered)"; }
@@ -1159,7 +1159,8 @@ MH "mh: host's signature moves — show.av names it, and re-reads" show.av read
 ed $R/mhl/src/lib.av "export fn host(n: int = 0) -> int" "export fn host() -> int"
 MH "mh: and back" show.av held
 ed $R/mhl/src/pad.av "fn priv() -> int { 5 }" "fn priv(n: int = 0) -> int { 5 }"
-MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads" lib.av read show.av held
+# a file's rows are latest-only: after an edit and its undo, a reader re-derives to the same answer
+MH "mh: priv's NON-exported signature moves (reached with no use at all) — lib.av re-reads, and show.av whose rows the undo left latest-only" lib.av read show.av read
 ed $R/mhl/src/pad.av "fn priv(n: int = 0) -> int { 5 }" "fn priv() -> int { 5 }"
 MH "mh: and back, cold no more" lib.av held
 ed $R/mhl/src/pt_say.av "self.v + base() }" "self.v + base() + 1 }"
