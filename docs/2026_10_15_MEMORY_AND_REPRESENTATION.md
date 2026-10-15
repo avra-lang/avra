@@ -157,3 +157,251 @@ tooling reads.
 - **`reuse`** runs last, pairing a dying allocation with its replacement's shape.
 Each owns its fact table and its diagnostics; `analyze` is still the only place the
 ORDER exists, and iteration to a fixpoint is bounded and priced (Part 3).
+
+---
+
+# Part 6 — Events and contracts: the interface model
+(2026-10-15, from the CHANNELS campaign's review; the same primitives as Parts 1–5,
+seen from the CALLER's side)
+
+## There is no event system
+An `on` seat **is a fn field**: `on click(x: int)` ≡ `click: fn(int) -> void? = null`,
+and `button { on click { … } }` ≡ `button { click: (x) -> … }`. So `on` is a
+DECLARATION spelling for a seat the **user** fills — a button cannot know what a click
+means — and it is the host seam and may carry a replaceable default. A **method** is
+the component's OWN behaviour. **`on … { pattern -> … }` already gives match-style
+dispatch**, because a one-seat fn field takes a body of arms.
+
+## Two mechanisms, ONE spelling
+There are **UI events** (function calls) and **distributed events** (queues); the
+language unifies the SPELLING, never the mechanism. **The seat's TYPE says which:**
+a **fn seat** is a synchronous CALL the host or a peer makes; a **channel/queue seat**
+(`Sink<T>`, `worker { reads: q }`) is a SEND with that queue's contract.
+
+## Wiring: one operator
+A send is a call (`sink(x)`), so it is the same operation as piping: **`|>` and
+nothing else** — no second arrow, one direction. `x |> f` yields a value;
+`x |> charges.sink` yields a **verdict** (`Posted`/`Full`/`Ended`), so backpressure is
+readable at the pipe. **A connection is a NAMING** (a field), so it needs no operator:
+`worker settle { reads: charges each: pay }` IS the connection.
+
+## Contracts are TERMS (values), never annotations
+An annotation is for a **mark that is not a value** (`@sealed`, `@owns`, `@derive`).
+A contract is a **setting**, so it is an argument the author writes, the compiler can
+reason about, and `check` can judge:
+```avra
+let keys   = channel<string>(1, overflow: .latest)     // keep the newest (coalesce)
+let cmds   = channel<MotorCmd>(0)                      // 0 = rendezvous: handed over
+let frames = every(fps(60))                            // a clock is a SOURCE
+```
+TERMS to add: `overflow` (`.park`/`.latest`/`.drop_oldest`/`.drop_newest`/`.fail`),
+`order` (`.fifo`/`.by_key`), `priority`, `remote`, `trace`, `sample`.
+
+## Three tiers make a contract the LANGUAGE'S, not a doc's
+1. **Fields/terms** — the values above.
+2. **`check`** — value laws **written by the library author in Avra**, run by the
+   compiler at each instance, each diagnostic spoken there (`capacity >= 1`; "a fate is
+   named when `delivery` is `exactly_once`").
+3. **The typer** — laws needing TYPES/signatures (`flow.no_fate`: a failing handler
+   needs a `dead:`, which a `check` cannot see).
+A `rule` (`avra check`) is for cross-cutting SHAPES no single declaration owns
+(`lists.removed_at_front`). **The door refuses the NEW shape, the `check` judges the
+instance, the type refuses the wire** — the Lego fit, enforced.
+
+## Fan-out: two types, two honest semantics
+A **channel distributes** (two consumers compete, one item each — the WORK-QUEUE
+semantic). An **`on` seat BROADCASTS** once `heard_twice` is lifted, so N handlers
+attach in order (a logger, a counter, the app — the SIGNAL semantic). Cross-COMPONENT
+fan-out is **composed** (an owner forwards), never built in.
+
+## The six contracts every surface argues about
+`capacity/backpressure` · `delivery` · `ordering` · `priority` · `lifetime/restart` ·
+`observability bind`. A browser, an ISR, a motor loop and a remote queue differ almost
+entirely in WHICH VALUES of these six they need — not in the shape. So the six are the
+surface's contract, and they are terms.
+
+| surface | additionally needs |
+|---|---|
+| UI | `overflow: .latest`, `every(fps)` + paint-at-frame, cancel-the-stale, dynamic children |
+| systems/kernels | the **no-runtime path**: fn seats only, no task/channel/allocation (held by `make footprint`) |
+| robotics | `priority:`, a stated worst case (the terms ARE the bounds), `on fault`, `supervise`, `sample` |
+| distributed | `order: .by_key`, `remote:` (same type, one field), per-hop flow control, `trace:` riding the `Delivery` |
+| all | **`record(src)`/`replay(path)`** — one construct; makes every other guarantee testable |
+| all | **`supervise { restart:, budget: N within d, escalate: }`** — a declaration, not a try/catch |
+
+## Part 7 — The intermediate adaptor (a compiler-inserted queue)
+Where `a |> b` does not fit — the source's terms differ from the sink's — the compiler
+may **insert an adaptor between them**, visibly. It is the same shape as an implicit
+widening (`int` into a `float` seat inserts a conversion); here the inserted thing is a
+QUEUE.
+
+**Use cases:** a rate mismatch (a fast producer, a slow consumer → a buffer); a
+locality boundary (two cores or two machines → a crossing queue); a sync→async
+boundary (a sync caller into an async handler → a task + a ring); failure isolation
+(the consumer may die → a durable queue); batching (one-at-a-time into a batch
+consumer); lifetime decoupling (the producer must finish before the consumer starts).
+
+**THE LAW — the compiler may insert an adaptor ONLY where an adaptor can strengthen
+the fit, and must REFUSE where it cannot:**
+- **Adaptable axes** — capacity/rate (a buffer), locality (a bridge), sync/async (a
+  task). An inserted queue is TRANSPARENT here.
+- **Non-adaptable axes** — `delivery` (nothing invents at-least-once from
+  at-most-once) and `ordering` (nothing re-invents FIFO from unordered). These are
+  **refused by name**, never silently bridged.
+An inserted adaptor **changes what is observable** (a queue can buffer, reorder
+nothing, but it DOES add a hop and can drop where its terms allow), so it is spoken:
+`avra explain` names every inserted adaptor and its terms, and a program that would
+need one where the fit is unbridgeable is refused at the wire. **P7: the magic is
+visible; P8: the adaptor is the explicit form of what the compiler would insert.**
+
+---
+
+# Part 8 — The crossing: components on different machines, and production
+(2026-10-15 · the deployment half of Part 7)
+
+## A wire between machines has no queue in it
+An author writes a SOURCE into a SEAT, and that is all:
+```avra
+// machine A: the sensor site                 // machine B: the analysis site
+component feed { fn readings() -> Source<Reading> { … } }
+worker analyse { reads: feed_readings, each: classify }
+
+feed.readings |> analyse.ingest      // Source<Reading>  |>  a seat — one pipe, no queue named
+```
+**Locality forces the async.** A same-machine seat can be a direct call; across a machine
+(LATENCY, a separate failure domain) it CANNOT be — so the compiler **generates the
+crossing**: serialize, transport, de-serialize, deliver. That generated thing *is* a
+queue (a transport always buffers), and it is **visible** (`avra explain --topology`:
+the graph, the machine boundaries, every generated hop and its terms).
+
+**"Smart" has a precise meaning, and it is bounded.** The compiler derives the terms it
+can PROVE from the endpoints (locality, sync/async, the value's crossability, the sink's
+declared `delivery`/`order`) and **never invents what it cannot see**:
+- it never chooses a **buffer size** (a rate is dynamic — a buffer is the author's
+  decision);
+- it never fabricates a **guarantee** — `delivery` and `ordering` are NOT adaptable, so a
+  wire that needs them un-bridged is **refused by name**, not silently upgraded;
+- it never copies a value that **cannot cross** (`flow.crossing` — a `Sink`, a closure, a
+  fn value). **The refusal is the feature:** the adaptor is insertable only because the
+  compiler already knows what may cross.
+
+## The deployment terms
+Placement is a TERM, so topology is data:
+```avra
+queue<Reading> uplink { delivery: .exactly_once, order: .by_key, remote: "site-b",
+                        trace: .propagate, auth: .required("ingest") }
+component feed { on: .machine("site-a") }
+worker analyse { on: .cores, reads: uplink, each: classify }
+```
+Move a component and every wire to it re-derives its crossing. A remote sink asking for
+`.exactly_once` with **no durable home** (the store, FLOW 09) is REFUSED — main's
+in-memory queue cannot promise it across a failure domain.
+
+## Auth: identity is a VALUE that rides the crossing
+Like the trace context, the CALLER rides the work — never an ambient global:
+```avra
+fn classify(d: Delivery<Reading>, who: Caller) -> Result<Kind, string> {
+    if !who.may("ingest") { fail "not permitted to ingest" }
+    …
+}
+```
+- `auth:` on the wire is a TERM (`.required(scope)`, `.inherited`, `.none`), and the
+  callee's seat declares what it needs — so **the fit is checked**: a wire into a seat
+  requiring `"ingest"` from a caller that cannot present it is refused at the wire.
+- A `Caller` is a value (a principal + its claims + the trace context), minted where the
+  program's edge authenticates and carried by the `Delivery`. **Secrets are never in the
+  code**: they are read through the input door at the edge, like any world read.
+- The same shape serves a local call (a `Caller` for an in-process dispatch) — one
+  concept, no "this one is remote" branch in the handler.
+
+## Error handling: a remote call FAILS IN MORE WAYS
+A local call answers its own errors; a remote one adds a transport's:
+```avra
+enum CallError = Unreachable | Refused | TimedOut | Remote(E)
+```
+- **Every remote call carries a deadline.** A `within` is the default, not an option — a
+  call with no bound is a hang dressed as a call, and the terms say so.
+- **A retry needs an idempotency key or it is a double effect.** The `Delivery`'s key is
+  the dedupe handle (FLOW 08); a wire that retries into a handler with effects and no key
+  is REFUSED, not retried hopefully.
+- **The failure domain is a term.** `on_crash`/`supervise` (Part 6) is how a peer that
+  died comes back; a caller that must not wait forever pairs a deadline with a **circuit
+  breaker** (a term: after N failures, refuse at once rather than time out) — otherwise a
+  dead peer costs every caller its deadline.
+
+## The production checklist (every item is a term, a type, or a refusal)
+| concern | the answer |
+|---|---|
+| identity / permissions | `auth:` term + a `Caller` value; the fit is checked at the wire |
+| secrets | the input door at the edge; never a literal in source |
+| deadlines | a remote call carries `within` by default (`TimedOut`) |
+| retries / idempotency | a key on the `Delivery`; no key + effects ⇒ refused |
+| ordering | `order: .by_key` (per-partition FIFO); unordered is stated, never assumed |
+| delivery | the queue's `delivery:`; un-bridgeable ⇒ refused |
+| backpressure across the wire | the sink's `overflow:` (park / latest / drop) |
+| rate limits / quotas | terms on the wire (`rate:`, `quota:`) — a world read at the edge tells the current use |
+| circuit breaking | a term: after N failures, refuse at once |
+| service discovery | the `remote:` term resolves through the input door (never a hard-coded address) |
+| versioning | the crossing law: GROWTH (append fields) is safe, MOVING is breaking; the codec is derived, so a peer's older shape is a compile-time fact, not a runtime surprise |
+| observability | `trace: .propagate` + the state-read model (Part 6); `observe.av` is replaced |
+| health / readiness | a source (`every(secs(5)) -> Health`) — a service's health is data |
+| graceful shutdown | `supervise` + a `Cancelled` value to whoever watches (FLOW 03) |
+| audit | a queue whose `delivery: .exactly_once` and `dead:` record what was done |
+| tenancy | a key part / a `Caller` claim; every row and every wire names whose it is |
+| capacity planning | the generated crossings are COUNTED (`avra explain --topology`), so the fan-out is a number, not a hope |
+
+**One line:** everything a production system argues about is either a **term** (a value
+the author writes), a **law** (a `check`, the typer, or a `rule`), or a **refusal** (the
+wire that cannot be bridged). None of it is a convention, and none of it is a doc the
+compiler does not read.
+
+---
+
+# Part 9 — The boundary is the general case
+(2026-10-15 · Parts 6–8 are not "events"; they are the shape every crossing has)
+
+Events, queues, HTTP, RPC, a database round-trip and a socket are ONE thing wearing
+different transports. The thing is a **boundary**, and it has five parts:
+
+| part | what it is | where it is written |
+|---|---|---|
+| **locality** | same frame, another core, another machine | `on:` (the component) / `remote:` (the wire) |
+| **transport** | the call, the ring, the socket, the listen queue | derived from locality; overridable |
+| **codec** | what the value becomes on the far side | derived, or hand-written |
+| **contract** | the six terms (Part 6) | the terms themselves |
+| **failure domain** | what dies together | `supervise` / `on_crash` |
+
+**A value crosses in one of three DIRECTIONS, and that is the only distinction that
+matters:**
+
+1. **A CALL** — ask, then answer. HTTP *client*, RPC, a DB query, a remote `on` seat.
+   It answers a `Result`, it can fail in the transport's ways (Part 8), and it owes a
+   deadline.
+2. **A SEND** — one way, no answer (or an ack). A queue, a channel, an event, a metric, a
+   log line. It carries a *contract*: delivery, ordering, capacity, backpressure.
+3. **A ROLE** — the far side asks *us*. An HTTP **server**, a listener, a subscriber
+   callback. The program answers a `Source<Request>` and consumes a `Sink<Response>`; the
+   boundary runs the loop, and the six terms apply to the *arrival* (capacity = the
+   backlog, overflow = what a full listen queue does, auth = who may arrive).
+
+**So the "HTTP server" is not a new subsystem.** It is a boundary of the third direction
+whose transport is a socket and whose contract is the listen queue's — and its handler is
+an ordinary fn the compiler already checks, taking `(req, who: Caller)`. The HTTP client
+is the first direction. A queue is the second. **They share the six terms, the adaptor
+law, the error model and the trace.** What differs is a transport and two directions.
+
+**THE CONSEQUENCE, and the reason this reframing is load-bearing:** everywhere a value
+crosses, the compiler can do exactly the same three things, and those three things are
+the whole design:
+
+- **DERIVE** what it can prove (locality, direction, crossability, the declared terms);
+- **REFUSE by name** what cannot be bridged (a guarantee that does not survive the
+  transport; a value that cannot cross; a boundary with no stated failure domain);
+- **SHOW its work** (`avra explain --topology`: every hop, every term, every generated
+  adaptor).
+
+**A boundary the compiler cannot see is a boundary with no contract.** That is why this
+belongs in the language and not in a client library: a signature that crosses a machine
+must SAY so, or the six terms are folklore and the failure modes are discovered in
+production. Parts 6–8 are therefore not an event system — **they are what "across" means
+in Avra**, and events, queues, HTTP, RPC and the database are its instances.
