@@ -2941,15 +2941,25 @@ impl Decls {
         before.length
     }
 
-    /// THE symbol a static literal lays its data under — its content and
-    /// the type that decides the layout, folded, so two literals spelled
-    /// alike share one static and a line added above moves neither. A
-    /// literal is its own value, so no turn is owed.
+    /// THE symbol a static literal lays its data under. A WRITTEN literal is
+    /// content-addressed — its content and the type that decides the layout,
+    /// folded, with its TURN among the literals folded alike — so a line added
+    /// above moves no symbol. A literal a TEMPLATE copied here or a derivation
+    /// minted wears its arena index instead: its offsets are another file's, and
+    /// two shapes that fold alike would otherwise share one static and read each
+    /// other's bytes. THE TURN IS NOT OPTIONAL FOR A WRITTEN ONE: a fold is a
+    /// HASH (`["call","makes"]` and `["make","calls"]` fold alike), so without
+    /// it two different values would share one static.
     fn literal_symbol(f: FileId, e: ExprId, ty: TypeId) -> string {
         let content = fp_list(
             [self.store_of(f).expr_fingerprint(e), fp_str(self.types.name_of(ty))],
         )
-        self.file_symbol(f, "lit${self.site_of(f, content, 0)}")
+        let local = if self.written_here(f, e) {
+            "${self.site_of(f, content, self.written_turn(f, e))}"
+        } else {
+            "${e.index}"
+        }
+        self.file_symbol(f, "lit${local}")
     }
 
     /// The unit a const's initializer lowers as, named for its statement.
