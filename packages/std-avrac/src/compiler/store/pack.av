@@ -40,7 +40,7 @@ extern fn avra_process_exit(code: int)
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 
 const MAGIC: string = "AVRAPACK"
-const FORMAT_VERSION: int = 2
+const FORMAT_VERSION: int = 3
 
 const CONTENT_TAG: int = 1
 const ACTION_TAG: int = 2
@@ -58,14 +58,6 @@ fn hooked_frames() -> int? {
 }
 
 fn seal_frames() -> int { hooked_frames() ?? SEAL_FRAMES }
-
-/// OWED (db-inputs-h's `family_code_hash`): the family's own code hash and
-/// its codec shape fingerprint. Until that table lands, the key folds the
-/// family's name and the key alone, so a codec or family change is a miss
-/// the store cannot see. THE EMPTY STAMP IS A SEAM, NOT A VALUE: the fold is
-/// `BLAKE3(family · stamp · key)` and the first real stamp bytes are one
-/// whole-store miss, which the per-compiler print already allows.
-const FAMILY_STAMP: string = ""
 
 /// ONE ROW: the family and key it answers, the digest of its value and the
 /// keys it read — listed here, or, for a row a sealed body carries, the id of
@@ -213,10 +205,14 @@ export fn pack_suspects(pack: Pack, moved: List<string>) -> List<string> {
     distinct(out)
 }
 
-/// THE ACTION KEY — BLAKE3 over the family's name, its stamp (owed) and the
+/// The format a pack and its bodies are written in: a stamp folds it, so rows of another
+/// format are never addressed.
+export fn pack_format() -> string { "${FORMAT_VERSION}.${BODY_VERSION}" }
+
+/// THE ACTION KEY — BLAKE3 over the family's name, which carries its stamp, and the
 /// key, so two families naming the same parts stay apart.
 export fn action_key(family: string, key: string) -> string {
-    digest_of_octets("${family}\n${FAMILY_STAMP}\n${key}".bytes())
+    digest_of_octets("${family}\n${key}".bytes())
 }
 
 /// A row's place in the open index: the family and key as they stand. The
@@ -326,7 +322,7 @@ fn scan_segment(
         if !alive { trim(path, 0) }
         return false
     }
-    if magic != MAGIC || version != FORMAT_VERSION || print != pack.print {
+    if magic != MAGIC || version != FORMAT_VERSION {
         pack.foreign.set(true)
         if traced() { qtrace("Q\tstore\tforeign\n") }
         return false
@@ -529,10 +525,7 @@ fn keep_bodies(pack: Pack) {
     let raw = env("AVRA_STORE_REVISIONS")
     let n = if raw == null { KEPT_BODIES } else { parse_int(raw!) ?? KEPT_BODIES }
     if n < 1 { return }
-    let mine = sorted_by(
-        [name for name in all_body_names(pack.dir) if body_print_of(pack.dir, name) == pack.print],
-        rev_before,
-    )
+    let mine = sorted_by(all_body_names(pack.dir), rev_before)
     for name in mine.slice(0, if mine.length > n { mine.length - n } else { 0 }) {
         let _ = remove(joined_path(pack.dir, name))
         let _ = remove(joined_path(pack.dir, "${name.substring(0, name.length - 5)}.idx"))
@@ -556,8 +549,13 @@ export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = fa
     pack
         .traffic
         .set(if found == null { t with { misses: t.misses + 1 } } else { t with { hits: t.hits + 1 } })
-    if traced() { qtrace("Q\tstore\t${if found == null { "miss" } else { "hit" }}\t${family}\n") }
+    if traced() { qtrace(lookup_line(found != null, family)) }
     found
+}
+
+/// One lookup's trace line: whether it hit, and the family it asked, stamp left off.
+fn lookup_line(hit: bool, family: string) -> string {
+    "Q\tstore\t${if hit { "hit" } else { "miss" }}\t${family.split("@").first() ?? family}\n"
 }
 
 fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> string? {

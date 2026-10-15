@@ -694,7 +694,8 @@ impl Db {
     /// process after it.
     fn insert(store: Store, row: DbRow) {
         self.rows.put(index_key(row.kind(), row.key()), row)
-        let _ = store.keep(Stored.Rows, durable_key(row.kind(), row.key()), encoded(row), [])
+        let _ = store
+            .keep(durable_family(row.kind()), durable_key(row.kind(), row.key()), encoded(row), [])
     }
 
     fn recalled(store: Store, kind: DbKind, name: string) -> DbRow? {
@@ -704,7 +705,7 @@ impl Db {
     }
 
     fn recalled_row(store: Store, kind: DbKind, name: string) -> DbRow? {
-        let text? = store.get(Stored.Rows, durable_key(kind, name)) else { return null }
+        let text? = store.get(durable_family(kind), durable_key(kind, name)) else { return null }
         let row? = decoded(kind, name, text) else { return null }
         if !still_valid(row) { return null }
         row
@@ -800,7 +801,11 @@ impl Db {
     fn stats() -> string { self.kernel.stats() }
 }
 
-fn durable_key(kind: DbKind, name: string) -> string { node_key(Stored.Rows, [kind.tag(), name]) }
+fn durable_key(kind: DbKind, name: string) -> string { node_key(durable_family(kind), [kind.tag(), name]) }
+
+/// The family a durable row is filed in: a module's interface record has a producer of its
+/// own, every other kind the compiler's.
+fn durable_family(kind: DbKind) -> Stored { match kind { .Sig -> Stored.Sig, rest -> Stored.Rows } }
 
 /// Whether a recalled row's witnesses still hold. `Sig`/`Warn` carry
 /// their own validity in the caller's key (a module/program identity
