@@ -1,0 +1,84 @@
+// The in-memory home's laws, one given at a time.
+use @std.queue.{open_queue, key, Terms, Dead, release, bury}
+use @std.task.{unbounded_channel}
+use @std.time.{ms}
+
+fn terms(lease: int) -> Terms {
+    Terms { capacity: 4, lease: ms(lease), retries: 3, dead: "failed" }
+}
+
+spec "std/queue" {
+    given "a queue" {
+        then "is empty until something is sent" {
+            let q = open_queue<int>("jobs", terms(60000))
+            q.take() == null && q.depth() == 0
+        }
+        then "sends in order and counts what it holds" {
+            let q = open_queue<int>("jobs", terms(60000))
+            let _ = q.send(1, key("a"))
+            let _ = q.send(2, key("b"))
+            let d = q.take()
+            d!.item == 1 && q.depth() == 2
+        }
+        then "acks what a handler settled" {
+            let q = open_queue<int>("jobs", terms(60000))
+            let _ = q.send(1, key("a"))
+            let d = q.take()
+            let _ = q.began(d!)
+            q.ack(d!) && q.depth() == 0
+        }
+        then "counts handler starts across attempts" {
+            let q = open_queue<int>("jobs", terms(60000))
+            let dead = unbounded_channel<Dead<int, int>>()
+            let _ = q.send(1, key("a"))
+            let first = q.take()
+            let _ = q.began(first!)
+            let _ = release(q, first!, 9, dead.sink)
+            q.take()!.attempt == 1
+        }
+        then "refuses a begun from before a redelivery" {
+            let q = open_queue<int>("jobs", terms(0))
+            let _ = q.send(1, key("a"))
+            let first = q.take()
+            let _ = q.take()
+            !q.began(first!)
+        }
+        then "refuses an ack for a settled delivery" {
+            let q = open_queue<int>("jobs", terms(60000))
+            let _ = q.send(1, key("a"))
+            let d = q.take()
+            let _ = q.ack(d!)
+            !q.ack(d!)
+        }
+        then "refuses an ack from before a redelivery" {
+            let q = open_queue<int>("jobs", terms(0))
+            let _ = q.send(1, key("a"))
+            let first = q.take()
+            let second = q.take()
+            !q.ack(first!) && q.ack(second!)
+        }
+        then "redelivers a released item with a new epoch" {
+            let q = open_queue<int>("jobs", terms(60000))
+            let dead = unbounded_channel<Dead<int, int>>()
+            let _ = q.send(1, key("a"))
+            let first = q.take()
+            let _ = q.began(first!)
+            let _ = release(q, first!, 9, dead.sink)
+            let second = q.take()
+            second!.epoch == first!.epoch + 1 && q.depth() == 1
+        }
+        then "a bury leaves the queue and reaches the letter" {
+            let q = open_queue<int>("jobs", terms(60000))
+            let dead = unbounded_channel<Dead<int, int>>()
+            let _ = q.send(1, key("a"))
+            let d = q.take()
+            let _ = bury(q, d!, 9, dead.sink)
+            q.depth() == 0 && dead.source.taken()!.error == 9
+        }
+    }
+    given "a key" {
+        then "is data and takes a subkey" {
+            key("order").at("fee").text == "order/fee"
+        }
+    }
+}
