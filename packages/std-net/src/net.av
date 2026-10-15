@@ -757,25 +757,32 @@ export fn interleaved(xs: List<Address>) -> List<Address> {
 /// §5's Connection Attempt Delay).
 fn attempt_delay() -> int { 250 }
 
-/// One attempt still connecting: its descriptor, whether a `select` has
-/// filed its wake, and what the connect settled — `1` while it has not.
-/// The scheduler arms a descriptor optimistically, so a look is not the
-/// connect's own answer until `avra_net_dialed` or the peer's address
-/// says it is (`dial_ready`).
-type Dial = { fd: int, armed: Cell<bool> = Cell.new(false), state: Cell<int> = Cell.new(1) }
+/// One attempt still connecting: its descriptor and what the connect
+/// settled — `1` while the kernel has not said.
+type Dial = { fd: int, state: Cell<int> = Cell.new(1) }
 
-/// Whether the connect settled: the peer answers once it has, and a
-/// socket the kernel refused answers its error. A still-pending connect
-/// answers neither, whatever the scheduler's optimistic arm says.
+/// Whether the connect settled. The kernel alone answers: the peer
+/// exists once the connection stands, and `SO_ERROR` names the refusal
+/// once it has failed, so a still-pending connect answers neither —
+/// whatever bit the scheduler set when the dial's wake was filed.
 fn dial_ready(d: Dial) -> bool {
-    if !d.armed.get() { return false }
     if d.state.get() != 1 { return true }
-    if avra_net_peer_family(d.fd) >= 0 { d.state.set(0); return true }
-    if avra_fiber_fd_ready(d.fd, 1) == 0 { return false }
+    if avra_net_peer_family(d.fd) >= 0 {
+        d.state.set(0)
+        return true
+    }
     let err = avra_net_dialed(d.fd)
     if err == 0 { return false }
     d.state.set(err)
     true
+}
+
+/// Parks until the connect settles — false when another task cut the
+/// park. A wake is not the verdict: the kernel is asked again.
+fn dial_wait(d: Dial) -> bool {
+    if dial_ready(d) { return true }
+    if !parked(d.fd, true) { return false }
+    dial_wait(d)
 }
 
 /// A connecting descriptor as a supply of the one thing it will hand
@@ -783,12 +790,9 @@ fn dial_ready(d: Dial) -> bool {
 fn dial_source(d: Dial) -> Source<int> {
     Source {
         ready: () -> dial_ready(d),
-        next: () -> if parked(d.fd, true) { d.fd } else { null },
+        next: () -> if dial_wait(d) { d.fd } else { null },
         taken: () -> if d.state.get() == 1 { null } else { d.fd },
-        arm: (a: int) -> {
-            d.armed.set(true)
-            avra_wait_fd(d.fd, 1, a, 0)
-        },
+        arm: (a: int) -> { avra_wait_fd(d.fd, 1, a, 0) },
         ended: () -> false,
         lost: () -> 0,
         work: null,
@@ -855,7 +859,7 @@ fn raced(addresses: List<Address>, port: int, deadline: int) -> int {
     mut due = after(ms(0))
     mut next = 0
     mut last = 0 - avra_errno_invalid()
-    mut attempt = Attempts {}
+    let attempt = Attempts {}
     mut answer = 0 - avra_errno_timed_out()
     defer attempt.abandoned()
     while true {
@@ -880,8 +884,8 @@ fn raced(addresses: List<Address>, port: int, deadline: int) -> int {
             got in dials_source(attempt.standing()) -> {
                 let d = attempt.standing().find((x: Dial) -> x.fd == got)
                 let state = match d {
-                    null -> 0 - avra_net_errno_closed()
                     x? -> x.state.get()
+                    null -> 0 - avra_net_errno_closed()
                 }
                 if state == 0 {
                     got
