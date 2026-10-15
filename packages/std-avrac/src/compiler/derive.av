@@ -713,7 +713,9 @@ impl Workspace {
     fn guess_kept(store: Store, at: Attempt) {
         if at.edit.is_empty() || !at.hold { return }
         let wire = joined(
-            distinct([line for r in at.parse for line in [guess_line(r)] if !line.is_empty()]),
+            distinct(
+                [line for r in at.parse if guessable(r) for line in [guess_line(r)] if !line.is_empty()],
+            ),
             "\n",
         )
         let key = guess_key(self.known_as(at), at.edit)
@@ -1327,6 +1329,15 @@ fn sealed_layout_moved() -> string { "a sealed layout moved" }
 /// Whether a record row declares a fn.
 fn fn_shape(s: Shape) -> bool {
     match s { .Fn or .Extern -> true, rest -> false }
+}
+
+/// WHETHER A READ MAY JOIN A GUESS. A read the attempt took because a key moved
+/// under it may NOT: the key's movement is the edit's uncertain part, and the
+/// edit identity a guess is filed under is coarse enough to name the same files
+/// for an edit that moves the key and one that does not — so this read is left to
+/// the next edit's own hold, which judges the key it actually wears.
+fn guessable(r: ReadFile) -> bool {
+    match r.why { .Adrift -> false, rest -> true }
 }
 
 /// One read as a guess line: its path and its reason's words; none for a path a line cannot carry.
