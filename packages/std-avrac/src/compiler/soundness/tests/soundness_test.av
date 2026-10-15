@@ -3,7 +3,7 @@
 // never emits any of these shapes, so the witness is the only way to
 // reach them), plus a run of real programs whose lowered IR must stay
 // clean — the false positives this pass found and fixed, kept found.
-use @std.avrac.core.{Ins, Reg, Level, TypeId, new_type_registry}
+use @std.avrac.core.{Ins, Reg, Level, SeatMark, TypeId, new_type_registry}
 use @std.avrac.diagnostics.{Diag}
 use @std.avrac.testing.{ir_of}
 use compiler.lower.{Body, Lowered}
@@ -26,6 +26,14 @@ fn new_list(dst: Reg) -> Ins { Ins.CallRt(dst, "avra_array_new", []) }
 /// One body, `n` registers wide, no params — every witness below
 /// tests ONE body's own span, standing alone in its own `Lowered`.
 fn witness(name: string, ins: List<Ins>, n: int) -> List<Diag> {
+    witness_with(name, ins, n, {})
+}
+
+/// The same, with the callee marks map the memory pass builds over
+/// every body it lowers — stubs included — in the witness's hand.
+fn witness_with(name: string, ins: List<Ins>, n: int, by_name: Map<string, List<SeatMark>>) -> List<
+    Diag,
+> {
     let b = Body {
         name: name,
         params: [],
@@ -43,6 +51,7 @@ fn witness(name: string, ins: List<Ins>, n: int) -> List<Diag> {
             externs: [],
             statics: [],
         },
+        by_name,
         all_managed,
     )
 }
@@ -138,6 +147,40 @@ spec "compiler/soundness" {
             ds.length == 1 &&
                 words(ds).contains("r1") &&
                 words(ds).contains("a view with no reference of its own")
+        }
+    }
+    given "the callee marks map reaches the checker — a consuming seat spends, a borrowed one still leaks" {
+        then "a box moved into a callee's CONSUMING seat is spent, never leaked" {
+            let ds = witness_with(
+                "consumed",
+                [
+                    Ins.ScopeEnter(Level.Application),
+                    new_list(reg(0)),
+                    Ins.Call(reg(1), "taker", [reg(0)]),
+                    Ins.Release(reg(1)),
+                    Ins.ScopeExit(null),
+                    Ins.Ret(0),
+                ],
+                2,
+                {"taker": [SeatMark { mutable: false, settled: false, consumed: true }]},
+            )
+            ds.is_empty()
+        }
+        then "a box a callee only BORROWS is still a leak — the marks map is read, not assumed" {
+            let ds = witness_with(
+                "borrowed",
+                [
+                    Ins.ScopeEnter(Level.Application),
+                    new_list(reg(0)),
+                    Ins.Call(reg(1), "reader", [reg(0)]),
+                    Ins.Release(reg(1)),
+                    Ins.ScopeExit(null),
+                    Ins.Ret(0),
+                ],
+                2,
+                {"reader": [SeatMark { mutable: false, settled: false }]},
+            )
+            ds.length == 1 && words(ds).contains("r0")
         }
     }
     given "real programs whose lowered IR must stay clean — the false positives this pass found and fixed" {

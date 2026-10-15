@@ -781,7 +781,9 @@ jobs:
             [ -d "packages/$p/src" ] || continue
             echo "::group::$p"
             t=$(date +%s)
-            build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
+            # The memory pass's L2 proof rides the suite run: a use-after-free
+            # in the pass's own output fails the gate instead of hiding behind it.
+            AVRA_SOUND_CHECK=1 build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$p $(( $(date +%s) - t ))s" | tee -a speed.log
           done

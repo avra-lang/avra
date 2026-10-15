@@ -103,6 +103,10 @@ void avra_wait_until(int64_t at_ns, int64_t arm, int64_t member);
 // … for `gate` to claim it. The gate is kept while the waiter is filed.
 // An open gate claims at once.
 void avra_wait_gate(void* gate, int64_t arm, int64_t member);
+// … for `sig` to arrive. The signal is ignored (Darwin) or blocked
+// (Linux) while a task waits on it, so its default action is spent on
+// the wait. One signal per waiter; a source watching several files each.
+void avra_wait_sig(int64_t sig, int64_t arm, int64_t member);
 // … for `task` to end.
 void avra_wait_task(void* task, int64_t arm, int64_t member);
 // Parks the caller on what it registered and answers the claim:
@@ -272,6 +276,7 @@ void avra_vtask_inherits(int64_t t, int64_t from);
 void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member);
 void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member);
 void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member);
+void avra_vtask_wait_sig(int64_t t, int64_t sig, int64_t arm, int64_t member);
 // `t` joins `task`, parked as a compiled join parks: on the task's own
 // gate, heeding no cancel and no deadline, readied where the task ends —
 // by the timer heap, for a task its time ends. 1 parked; 0 when the task

@@ -592,6 +592,23 @@ impl Workspace {
     /// a whole file, a declaration that generates others, a const with no verdict
     /// kept — inherits all its file's runs.
     fn followed(store: Store, r: RunRead) -> List<RunRead> {
+        // A read's expansion is a function of the store (fixed this build) and the
+        // runs recorded for ITS OWN path, so it is memoized per read for the
+        // attempt and invalidated only when that path's runs move. A closure read
+        // is never marked seen: a fn read inherits nothing, and the same path
+        // expanded as a run walks its whole file.
+        let dep = self.hold.runs_gen.get().get(r.path) ?? 0
+        let hit = self.hold.ran_followed.get().get(read_id(r))
+        if hit != null && hit!.gen == dep {
+            return hit!.reads
+        }
+        let out = self.followed_uncached(store, r)
+        self.hold.ran_followed.put(read_id(r), Followed { reads: out, gen: dep })
+        out
+    }
+
+    /// `followed`'s one expansion, before the per-attempt memo.
+    fn followed_uncached(store: Store, r: RunRead) -> List<RunRead> {
         let words = r.ref.split("~")
         if r.ref.is_empty() || words.length < 4 { return self.ran_directly(store, r.path) }
         match words[1] {

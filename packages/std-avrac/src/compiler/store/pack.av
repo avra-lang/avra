@@ -129,7 +129,12 @@ export type Pack = {
     /// older view would drop the rows of whoever sealed since.
     seen_rev: Cell<int>,
     lock_fd: Cell<int>,
+    traffic: Cell<Traffic>,
 }
+
+/// What a process asked of a pack: lookups that found a row and that did not, values read out
+/// of the sealed body, and the bytes those reads covered.
+export type Traffic = { hits: int, misses: int, values: int, bytes: int }
 
 /// One store's pack, empty — nothing read from disk until the first ask.
 export fn pack_at(root: string, print: string) -> Pack {
@@ -155,6 +160,7 @@ export fn pack_at(root: string, print: string) -> Pack {
         val_rev: Cell.new(0),
         seen_rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
+        traffic: Cell.new(Traffic { hits: 0, misses: 0, values: 0, bytes: 0 }),
     }
 }
 
@@ -506,6 +512,10 @@ export fn pack_has(pack: Pack, family: string, key: string, read_only: bool = fa
 
 export fn pack_get(pack: Pack, family: string, key: string, read_only: bool = false) -> string? {
     let found = pack_found(pack, family, key, read_only)
+    let t = pack.traffic.get()
+    pack
+        .traffic
+        .set(if found == null { t with { misses: t.misses + 1 } } else { t with { hits: t.hits + 1 } })
     if traced() { qtrace("Q\tstore\t${if found == null { "miss" } else { "hit" }}\t${family}\n") }
     found
 }
@@ -560,8 +570,12 @@ fn spilled(pack: Pack, digest: string) -> string? {
     o.close()
     let v? = raw.text() else { return null }
     if content_digest(v) != digest { return null }
+    let t = pack.traffic.get()
+    pack.traffic.set(t with { values: t.values + 1, bytes: t.bytes + slot.len })
     v
 }
+
+export fn pack_traffic(pack: Pack) -> Traffic { pack.traffic.get() }
 
 /// Whether the open has withdrawn this action key since the index was built.
 fn withdrawn(pack: Pack, at: string) -> bool { pack.withdrawn.get().get(at) ?? false }
