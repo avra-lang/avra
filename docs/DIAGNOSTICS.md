@@ -377,6 +377,12 @@ error[flow.channel]: `channel` answers `@std.task.Channel`, and this program loa
 help: add `use @std.task`
 ```
 
+## flow.never_ends
+
+a bare `channel` ends only at `close()`
+
+No witness here: a `channel` needs `@std/task`'s carrier, which a lone source cannot import — the golden is features/tasks/tests/channel_test.av.
+
 ## flow.select
 
 a `select` waits on its arms, top to bottom
