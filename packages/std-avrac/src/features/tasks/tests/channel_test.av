@@ -1,12 +1,42 @@
 //! `channel<T>(n)`: the manual pair's spelling, its default capacity,
-//! and the type it answers. Its lowering, the running channel and the
-//! order and bound laws are proved by `packages/std-task`'s program
-//! tests, which see the real `@std/task`.
+//! the type it answers, and the reader a block leaves hanging. Its
+//! lowering, the running channel and the order and bound laws are
+//! proved by `packages/std-task`'s program tests, which see the real
+//! `@std/task`.
 use @std.avrac.testing.{floored_beside, refused_in, refused_with, projected}
 
 /// A toolchain carrying `@std/task`'s pair — enough for the front end
 /// to type a `channel` against.
 const task_src: string = "export type Sink<T> = { send: fn(T) -> bool, close: fn() -> void }\nexport type Source<T> = { next: fn() -> T? }\nexport type Channel<T> = { sink: Sink<T>, source: Source<T> }\n"
+
+/// A task reading `ch.source` that the block never lets end: no close.
+const spawned_reader: string = "use @std.task.{Channel, Source}\n" +
+    "fn drain(src: Source<int>) -> int {\n" +
+    "    mut n = 0\n" +
+    "    for v in src {\n" +
+    "        n = n + 1\n" +
+    "    }\n" +
+    "    n\n" +
+    "}\n" +
+    "let ch = channel<int>(2)\n" +
+    "let t = spawn drain(ch.source)\n" +
+    "let _ = t.await\n" +
+    "0"
+
+/// The same reader, ended: the sink closes after the spawn.
+const closed_reader: string = "use @std.task.{Channel, Source}\n" +
+    "fn drain(src: Source<int>) -> int {\n" +
+    "    mut n = 0\n" +
+    "    for v in src {\n" +
+    "        n = n + 1\n" +
+    "    }\n" +
+    "    n\n" +
+    "}\n" +
+    "let ch = channel<int>(2)\n" +
+    "let t = spawn drain(ch.source)\n" +
+    "ch.sink.close()\n" +
+    "let _ = t.await\n" +
+    "0"
 
 spec "features/tasks.channel" {
     given "the manual pair's spelling" {
@@ -41,6 +71,14 @@ spec "features/tasks.channel" {
         }
         then "a program loading no `@std/task` is refused by name" {
             refused_with("channel<int>(2)\n0", "loads no `@std/task`")
+        }
+    }
+    given "a spawned reader the block never lets end" {
+        then "no `close()` before the block ends is refused by name" {
+            refused_in(floored_beside(spawned_reader, "task", task_src), "flow.never_ends")
+        }
+        then "a `close()` after the spawn lets the reader end, so nothing is refused" {
+            floored_beside(closed_reader, "task", task_src).files[0].diagnostics.is_empty()
         }
     }
 }
