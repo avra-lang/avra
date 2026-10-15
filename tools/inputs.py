@@ -81,7 +81,7 @@ WORLD = {
         "ms": P, "secs": P, "mins": P, "quiet": P, "duration_text": P, "Duration": T,
     },
     "task": {
-        "signals": "pid", "Source": T, "Sig": T,
+        "signals": "pid", "Source": T, "Sig": T, "Signals": T,
     },
     "cli": {
         "argv": "argv", "cli": "argv",
