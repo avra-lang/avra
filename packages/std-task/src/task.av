@@ -191,11 +191,18 @@ enum Slot<T> { Gone, Here(T) }
 /// One in-memory channel. Every field a verb writes is a `Cell`, so
 /// the sink and the source of one channel share it through a copy of
 /// the record.
+///
+/// A parked giver's value rides a SLOT while it is the only one — the
+/// common rendezvous — and the member-keyed map only when a second
+/// giver parks. A keyed store costs a minted string and a rebuilt map
+/// per take, which the one-giver path never pays.
 type Ch<T> = {
     cap: int,
     buf: Ring<T>,
     handed: Ring<T>,
     pending: Cell<Map<string, Slot<T>>>,
+    one: Cell<int>,
+    one_val: Ring<Slot<T>>,
     readers: ptr,
     writers: ptr,
     closed: Cell<bool>,
@@ -303,11 +310,15 @@ export fn tried<T, E>(s: Source<Result<T, Traced<E>>>) -> TrySource<T, E> {
 
 fn fresh<T>(cap: int) -> Ch<T> {
     let pending: Cell<Map<string, Slot<T>>> = Cell.new({})
+    let one: Cell<int> = Cell.new(0 - 1)
+    let one_val: Ring<Slot<T>> = ring<Slot<T>>(0 - 1)
     Ch {
         cap: cap,
         buf: ring<T>(cap),
         handed: ring<T>(0 - 1),
         pending: pending,
+        one: one,
+        one_val: one_val,
         readers: avra_gate_new(),
         writers: avra_gate_new(),
         closed: Cell.new(false),
@@ -361,19 +372,36 @@ impl Ch<T> {
     }
 
     fn pending_has(m: int) -> bool {
+        if self.one.get() == m { return true }
+        if self.pending.get().is_empty() { return false }
         self.pending.get().has(member_key(m))
     }
 
     fn pending_put(m: int, v: T) {
+        if self.one.get() < 0 {
+            self.one.set(m)
+            self.one_val.push(Slot.Here(v))
+            return
+        }
         self.pending.put(member_key(m), Slot.Here(v))
     }
 
     fn pending_drop(m: int) {
+        if self.one.get() == m {
+            self.one.set(0 - 1)
+            let _ = self.one_val.pop()
+            return
+        }
         let k = member_key(m)
         self.pending.set(self.pending.get().filter(it.key != k))
     }
 
     fn pending_take(m: int) -> Slot<T> {
+        if self.one.get() == m {
+            let v = self.one_val.pop() ?? Slot.Gone
+            self.one.set(0 - 1)
+            return v
+        }
         let k = member_key(m)
         let all = self.pending.get()
         let v = all.get(k)
