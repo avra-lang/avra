@@ -74,18 +74,20 @@ export enum Sig {
     Chld
 }
 
-/// The signal's number, the same on Darwin and Linux for this set.
-fn number(s: Sig) -> int {
+/// A signal as the runtime names it: its own variant's index. The enum
+/// stays portable and the runtime maps the kind to the platform's own
+/// number, so one source is right on Darwin and on Linux.
+fn kind(s: Sig) -> int {
     match s {
-        .Hup -> 1,
-        .Int -> 2,
-        .Quit -> 3,
-        .Usr1 -> 10,
-        .Usr2 -> 12,
-        .Pipe -> 13,
-        .Alrm -> 14,
-        .Term -> 15,
-        .Chld -> 17,
+        .Hup -> 0,
+        .Int -> 1,
+        .Quit -> 2,
+        .Term -> 3,
+        .Usr1 -> 4,
+        .Usr2 -> 5,
+        .Pipe -> 6,
+        .Alrm -> 7,
+        .Chld -> 8,
     }
 }
 
@@ -181,6 +183,11 @@ impl Ring<T> {
     }
 }
 
+/// A pending value with its presence NAMED: a map of a nullable `T`
+/// reads a present null back as absence, so the slot is a tagged shape
+/// and never the value's own null.
+enum Slot<T> { Gone, Here(T) }
+
 /// One in-memory channel. Every field a verb writes is a `Cell`, so
 /// the sink and the source of one channel share it through a copy of
 /// the record.
@@ -188,13 +195,11 @@ type Ch<T> = {
     cap: int,
     buf: Ring<T>,
     handed: Ring<T>,
-    pending: Cell<Map<string, T>>,
-    held: Cell<Map<string, bool>>,
+    pending: Cell<Map<string, Slot<T>>>,
     readers: ptr,
     writers: ptr,
     closed: Cell<bool>,
     next_member: Cell<int>,
-    lost_count: Cell<int>,
 }
 
 /// Both ends of a channel that may hold `cap` items; a capacity below
@@ -250,30 +255,29 @@ export fn any<T>(sources: List<Source<T>>) -> AnyOf<T> {
 
 /// A source of the signals in `sigs`: a task parked on it wakes with
 /// the signal that arrived. Every signal in the list is its own MEMBER
-/// of the ONE source, so several are waited on together and no
-/// aggregate crosses the row's seats. A process-directed delivery of
-/// an armed signal is spent on the wait — never the process's default
-/// action — and one the runtime cannot watch wakes the waiter at once.
+/// of the ONE wait, so several are waited on together and no aggregate
+/// crosses the row's seats. A process-directed delivery of an armed
+/// signal is spent on the wait — never the process's default action —
+/// and one the runtime cannot watch wakes the waiter at once.
 ///
-/// A signal is not buffered: `next` parks for one, `taken` reads
-/// nothing without that park, and a `select` arm knows which arrived
-/// from the member its claim names.
-export fn signals(sigs: List<Sig>) -> Source<Sig> {
-    Source {
-        ready: () -> false,
-        next: () -> awaited(sigs),
-        taken: no_signal,
-        arm: (a: int) -> filed(sigs, a),
-        ended: () -> false,
-        lost: () -> 0,
-        work: null,
-    }
+/// A signal is delivered by the PARK and never held, so there is no
+/// non-parking question that can say one arrived: `Signals` is not a
+/// `@std/task.Source`, and a `select` arm refuses it by name rather
+/// than waiting forever. `next` is how a signal is waited on.
+export type Signals = {
+    next: fn() -> Sig?,
+    ended: fn() -> bool,
+}
+
+export fn signals(sigs: List<Sig>) -> Signals {
+    Signals { next: () -> awaited(sigs), ended: () -> false }
 }
 
 /// Every signal filed as its own member of arm `a`: the row call that
-/// wakes the parked task, with the member naming the signal.
+/// wakes the parked task, with the member naming the signal. The row
+/// takes the portable KIND; the runtime maps it to the platform's number.
 fn filed(sigs: List<Sig>, a: int) {
-    for i, s in sigs { avra_wait_sig(number(s), a, i) }
+    for i, s in sigs { avra_wait_sig(kind(s), a, i) }
 }
 
 /// The signal that arrived: file every member for the task's own arm,
@@ -284,9 +288,6 @@ fn awaited(sigs: List<Sig>) -> Sig? {
     if claim < 0 { return null }
     sigs[claim]
 }
-
-/// A signal is delivered by the park, never buffered.
-fn no_signal() -> Sig? { null }
 
 /// A source of `Result`s read as a `TrySource`: the `Err` is the last
 /// item, and `null` from `next` says the source is done.
@@ -301,19 +302,16 @@ export fn tried<T, E>(s: Source<Result<T, Traced<E>>>) -> TrySource<T, E> {
 }
 
 fn fresh<T>(cap: int) -> Ch<T> {
-    let pending: Cell<Map<string, T>> = Cell.new({})
-    let held: Cell<Map<string, bool>> = Cell.new({})
+    let pending: Cell<Map<string, Slot<T>>> = Cell.new({})
     Ch {
         cap: cap,
         buf: ring<T>(cap),
         handed: ring<T>(0 - 1),
         pending: pending,
-        held: held,
         readers: avra_gate_new(),
         writers: avra_gate_new(),
         closed: Cell.new(false),
         next_member: Cell.new(0),
-        lost_count: Cell.new(0),
     }
 }
 
@@ -356,31 +354,31 @@ impl Ch<T> {
         let g = avra_gate_claim(self.writers)
         if g >= 0 {
             let x = self.pending_take(g)
-            if x != null {
-                self.push_buf(x!)
+            if x is .Here(v) {
+                self.push_buf(v)
             }
         }
     }
 
     fn pending_has(m: int) -> bool {
-        self.held.get().get(member_key(m)) ?? false
+        self.pending.get().has(member_key(m))
     }
 
     fn pending_put(m: int, v: T) {
-        let k = member_key(m)
-        self.pending.put(k, v)
-        self.held.put(k, true)
+        self.pending.put(member_key(m), Slot.Here(v))
     }
 
     fn pending_drop(m: int) {
-        self.held.put(member_key(m), false)
+        let k = member_key(m)
+        self.pending.set(self.pending.get().filter(it.key != k))
     }
 
-    fn pending_take(m: int) -> T? {
+    fn pending_take(m: int) -> Slot<T> {
         let k = member_key(m)
-        let v = self.pending.get().get(k)
-        self.held.put(k, false)
-        v
+        let all = self.pending.get()
+        let v = all.get(k)
+        self.pending.set(all.filter(it.key != k))
+        v ?? Slot.Gone
     }
 
     /// Hand `v` to a claimed reader, buffer it, or park until either
@@ -413,11 +411,11 @@ impl Ch<T> {
                 return true
             } else if self.room() {
                 let x = self.pending_take(m)
-                if x == null {
-                    return false
+                if x is .Here(held) {
+                    self.push_buf(held)
+                    return true
                 }
-                self.push_buf(x!)
-                return true
+                return false
             } else {
                 avra_wait_gate(self.writers, 0, m)
             }
@@ -478,8 +476,8 @@ impl Ch<T> {
             let ws = avra_gate_claim(self.writers)
             if ws >= 0 {
                 let x = self.pending_take(ws)
-                if x != null {
-                    return x!
+                if x is .Here(held) {
+                    return held
                 }
             } else {
                 let m = self.mint()
@@ -529,8 +527,11 @@ impl Ch<T> {
         self.closed.get() && self.buf.length() == 0 && self.handed.length() == 0
     }
 
+    /// No item is dropped by a channel: a full `post` answers `Full`
+    /// with the item left with its sender, and a closed `send` answers
+    /// `false` the same way. The count this source must report is zero.
     fn lost() -> int {
-        self.lost_count.get()
+        0
     }
 }
 

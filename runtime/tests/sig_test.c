@@ -4,6 +4,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -47,8 +48,8 @@ static void* joined(void* task) {
 static int64_t g_claim = -99;
 static void* waits_for_sig(void* self) {
     (void)self;
-    avra_wait_sig(SIGINT, 0, 5);
-    avra_wait_sig(SIGTERM, 1, 6);
+    avra_wait_sig(1, 0, 5);
+    avra_wait_sig(3, 1, 6);
     avra_wait_until(in_ms(2000), 2, 9);
     g_claim = avra_wait_park();
     return answer(0);
@@ -72,14 +73,14 @@ static int64_t g_int_claim = -99;
 static int64_t g_term_claim = -99;
 static void* waits_int(void* self) {
     (void)self;
-    avra_wait_sig(SIGINT, 0, 5);
+    avra_wait_sig(1, 0, 5);
     avra_wait_until(in_ms(2000), 2, 9);
     g_int_claim = avra_wait_park();
     return answer(0);
 }
 static void* waits_term(void* self) {
     (void)self;
-    avra_wait_sig(SIGTERM, 1, 6);
+    avra_wait_sig(3, 1, 6);
     avra_wait_until(in_ms(2000), 2, 9);
     g_term_claim = avra_wait_park();
     return answer(0);
@@ -100,10 +101,51 @@ static void each_signal_is_its_own_member(void) {
     joined(b);
 }
 
+// A KIND IS THE PLATFORM'S NUMBER: `avra_sig_number` maps the portable
+// `Sig` index to the header's own value, so kind 4 is SIGUSR1 on Darwin
+// (30) and on Linux (10) alike. Before the mapping moved to the runtime
+// the Avra table hardcoded Linux's 10, which on Darwin is SIGBUS — this
+// check fails there, which is the point.
+static void a_kind_is_the_platforms_number(void) {
+    CHECK(avra_sig_number(0) == SIGHUP, "kind 0 is SIGHUP");
+    CHECK(avra_sig_number(1) == SIGINT, "kind 1 is SIGINT");
+    CHECK(avra_sig_number(2) == SIGQUIT, "kind 2 is SIGQUIT");
+    CHECK(avra_sig_number(3) == SIGTERM, "kind 3 is SIGTERM");
+    CHECK(avra_sig_number(4) == SIGUSR1, "kind 4 is SIGUSR1");
+    CHECK(avra_sig_number(5) == SIGUSR2, "kind 5 is SIGUSR2");
+    CHECK(avra_sig_number(6) == SIGPIPE, "kind 6 is SIGPIPE");
+    CHECK(avra_sig_number(7) == SIGALRM, "kind 7 is SIGALRM");
+    CHECK(avra_sig_number(8) == SIGCHLD, "kind 8 is SIGCHLD");
+}
+
+// THE DISPOSITION IS GIVEN BACK: once the last waiter leaves a signal,
+// its action is what it was before any wait — a child fork inherits none
+// of the ignore a wait spent. The prior action is remembered at entry,
+// because a runner may itself have handed this process an `SIG_IGN`.
+static struct sigaction g_prior_term;
+static void remember_dispositions(void) { sigaction(SIGTERM, NULL, &g_prior_term); }
+static void the_disposition_is_given_back(void) {
+    struct sigaction sa;
+    sigaction(SIGTERM, NULL, &sa);
+    CHECK(sa.sa_handler == g_prior_term.sa_handler, "SIGTERM's disposition is what it was before any wait");
+    if (g_prior_term.sa_handler != SIG_DFL) return;
+    pid_t child = fork();
+    if (child == 0) {
+        raise(SIGTERM);
+        _exit(0);
+    }
+    int status = 0;
+    waitpid(child, &status, 0);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM, "a forked child dies to SIGTERM");
+}
+
 int main(void) {
     alarm(120);
+    remember_dispositions();
+    a_kind_is_the_platforms_number();
     a_signal_wakes_the_member_that_answers_it();
     each_signal_is_its_own_member();
+    the_disposition_is_given_back();
     printf("sig: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

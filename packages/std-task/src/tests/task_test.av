@@ -1,6 +1,6 @@
 // A channel: the bound it never exceeds, the verbs that answer without
 // parking, and the end of a drained source.
-use @std.task.{open_channel, unbounded_channel, Posted, any, Pick}
+use @std.task.{open_channel, unbounded_channel, Posted, any, Pick, fresh, Ch}
 
 /// The value a nullable holds, or zero: the non-parking verbs answer
 /// `T?`, and a test compares a present value.
@@ -47,6 +47,18 @@ spec "std/task" {
             let ch = open_channel<int>(1)
             let _ = ch.sink.post(1)
             ch.source.lost() == 0
+        }
+        then "a taken pending value leaves the map, so a stalled send retains nothing" {
+            let st: Ch<int> = fresh<int>(0)
+            st.pending_put(1, 7)
+            st.pending_put(2, 8)
+            let _ = st.pending_take(1)
+            st.pending.get().length == 1 && st.pending_has(2) && !st.pending_has(1)
+        }
+        then "a present null is a value, not an absence" {
+            let st: Ch<int?> = fresh<int?>(0)
+            st.pending_put(1, null)
+            match st.pending_take(1) { .Here(v) -> v == null, .Gone -> false }
         }
     }
     given "many sources" {

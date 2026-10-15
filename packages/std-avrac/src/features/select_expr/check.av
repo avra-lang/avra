@@ -129,7 +129,10 @@ fn end_law(mut cx: TypeCx, arms: List<ExprId>) {
     let waits = flatten([some_list(source_wait(cx, a)) for a in arms])
     let ends = flatten([some_list(ended_key(cx, a)) for a in arms])
     for h in waits {
-        let k? = place_key(cx, h) else { continue }
+        let k? = place_key(cx, h) else {
+            cx.emit(unkeyed_source(cx, h))
+            continue
+        }
         if !ends.contains(k) { cx.emit(end_arm(cx, h)) }
     }
 }
@@ -142,8 +145,11 @@ fn source_wait(cx: TypeCx, arm: ExprId) -> ExprId? {
     if is_supply(cx.view, cx.type_at(h)) { h } else { null }
 }
 
-/// The supply an `.ended` arm names, as the place it is read from.
+/// The supply an `.ended` arm names, as the place it is read from. A
+/// GUARDED end arm answers for nothing: a guard false at run time leaves
+/// the end unhandled, so only an unguarded one satisfies the law.
 fn ended_key(cx: TypeCx, arm: ExprId) -> string? {
+    if arm_guard(cx, arm) != null { return null }
     let h? = arm_head(cx, arm) else { return null }
     if cx.errored(h) { return null }
     let subj? = ended_subject(cx.view, h) else { return null }
@@ -216,6 +222,12 @@ fn arm_value(cx: TypeCx, arm: ExprId) -> ExprId? {
 fn arm_head(cx: TypeCx, arm: ExprId) -> ExprId? {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(arm) { .WaitArm(_, _, head, _, _) -> head, rest -> null }
+}
+
+/// The guard an arm is written under, when one is.
+fn arm_guard(cx: TypeCx, arm: ExprId) -> ExprId? {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(arm) { .WaitArm(_, _, _, guard, _) -> guard, rest -> null }
 }
 
 /// THE ARM LAW: the head says what the arm binds; the guard and the
@@ -497,6 +509,19 @@ fn end_arm(cx: TypeCx, head: ExprId) -> Diag {
         "`${n}` can end and this `select` does not say what then",
         "no `.ended` arm for it",
         "add `${n}.ended -> …`",
+    )
+}
+
+/// A supply whose head is no place: a call has no name its `.ended` arm
+/// could be tied to, so the end law cannot be satisfied rather than
+/// silently skipped.
+fn unkeyed_source(cx: TypeCx, head: ExprId) -> Diag {
+    refusal(
+        "flow.end_arm",
+        cx.loc_of(head),
+        "a supply made by a call cannot be named, so no `.ended` arm can answer for it",
+        "a call here",
+        "bind the supply first — `let s = …` — then wait on `s` and `s.ended`",
     )
 }
 

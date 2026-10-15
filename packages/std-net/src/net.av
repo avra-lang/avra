@@ -878,10 +878,13 @@ fn raced(addresses: List<Address>, port: int, deadline: int) -> int {
             answer = last
             break
         }
-        // The winning descriptor when one is >= 0, -1 when another
-        // attempt is due, and -2 when the whole race's deadline passed.
+        // The winner when one is >= 0, -1 when another attempt is due,
+        // and -2 when the whole race's deadline passed. The source is a
+        // PLACE so its end can be named: `dial_source.ended` is false
+        // while a dial stands, so the end arm never fires.
+        let racing = dials_source(attempt.standing())
         let outcome = select {
-            got in dials_source(attempt.standing()) -> {
+            got in racing -> {
                 let d = attempt.standing().find((x: Dial) -> x.fd == got)
                 let state = match d {
                     x? -> x.state.get()
@@ -897,6 +900,7 @@ fn raced(addresses: List<Address>, port: int, deadline: int) -> int {
                     0 - 1
                 }
             }
+            racing.ended -> 0 - 1
             due if next < order.length -> 0 - 1
             limit -> 0 - 2
         }
