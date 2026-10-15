@@ -157,3 +157,99 @@ tooling reads.
 - **`reuse`** runs last, pairing a dying allocation with its replacement's shape.
 Each owns its fact table and its diagnostics; `analyze` is still the only place the
 ORDER exists, and iteration to a fixpoint is bounded and priced (Part 3).
+
+---
+
+# Part 6 — Events and contracts: the interface model
+(2026-10-15, from the CHANNELS campaign's review; the same primitives as Parts 1–5,
+seen from the CALLER's side)
+
+## There is no event system
+An `on` seat **is a fn field**: `on click(x: int)` ≡ `click: fn(int) -> void? = null`,
+and `button { on click { … } }` ≡ `button { click: (x) -> … }`. So `on` is a
+DECLARATION spelling for a seat the **user** fills — a button cannot know what a click
+means — and it is the host seam and may carry a replaceable default. A **method** is
+the component's OWN behaviour. **`on … { pattern -> … }` already gives match-style
+dispatch**, because a one-seat fn field takes a body of arms.
+
+## Two mechanisms, ONE spelling
+There are **UI events** (function calls) and **distributed events** (queues); the
+language unifies the SPELLING, never the mechanism. **The seat's TYPE says which:**
+a **fn seat** is a synchronous CALL the host or a peer makes; a **channel/queue seat**
+(`Sink<T>`, `worker { reads: q }`) is a SEND with that queue's contract.
+
+## Wiring: one operator
+A send is a call (`sink(x)`), so it is the same operation as piping: **`|>` and
+nothing else** — no second arrow, one direction. `x |> f` yields a value;
+`x |> charges.sink` yields a **verdict** (`Posted`/`Full`/`Ended`), so backpressure is
+readable at the pipe. **A connection is a NAMING** (a field), so it needs no operator:
+`worker settle { reads: charges each: pay }` IS the connection.
+
+## Contracts are TERMS (values), never annotations
+An annotation is for a **mark that is not a value** (`@sealed`, `@owns`, `@derive`).
+A contract is a **setting**, so it is an argument the author writes, the compiler can
+reason about, and `check` can judge:
+```avra
+let keys   = channel<string>(1, overflow: .latest)     // keep the newest (coalesce)
+let cmds   = channel<MotorCmd>(0)                      // 0 = rendezvous: handed over
+let frames = every(fps(60))                            // a clock is a SOURCE
+```
+TERMS to add: `overflow` (`.park`/`.latest`/`.drop_oldest`/`.drop_newest`/`.fail`),
+`order` (`.fifo`/`.by_key`), `priority`, `remote`, `trace`, `sample`.
+
+## Three tiers make a contract the LANGUAGE'S, not a doc's
+1. **Fields/terms** — the values above.
+2. **`check`** — value laws **written by the library author in Avra**, run by the
+   compiler at each instance, each diagnostic spoken there (`capacity >= 1`; "a fate is
+   named when `delivery` is `exactly_once`").
+3. **The typer** — laws needing TYPES/signatures (`flow.no_fate`: a failing handler
+   needs a `dead:`, which a `check` cannot see).
+A `rule` (`avra check`) is for cross-cutting SHAPES no single declaration owns
+(`lists.removed_at_front`). **The door refuses the NEW shape, the `check` judges the
+instance, the type refuses the wire** — the Lego fit, enforced.
+
+## Fan-out: two types, two honest semantics
+A **channel distributes** (two consumers compete, one item each — the WORK-QUEUE
+semantic). An **`on` seat BROADCASTS** once `heard_twice` is lifted, so N handlers
+attach in order (a logger, a counter, the app — the SIGNAL semantic). Cross-COMPONENT
+fan-out is **composed** (an owner forwards), never built in.
+
+## The six contracts every surface argues about
+`capacity/backpressure` · `delivery` · `ordering` · `priority` · `lifetime/restart` ·
+`observability bind`. A browser, an ISR, a motor loop and a remote queue differ almost
+entirely in WHICH VALUES of these six they need — not in the shape. So the six are the
+surface's contract, and they are terms.
+
+| surface | additionally needs |
+|---|---|
+| UI | `overflow: .latest`, `every(fps)` + paint-at-frame, cancel-the-stale, dynamic children |
+| systems/kernels | the **no-runtime path**: fn seats only, no task/channel/allocation (held by `make footprint`) |
+| robotics | `priority:`, a stated worst case (the terms ARE the bounds), `on fault`, `supervise`, `sample` |
+| distributed | `order: .by_key`, `remote:` (same type, one field), per-hop flow control, `trace:` riding the `Delivery` |
+| all | **`record(src)`/`replay(path)`** — one construct; makes every other guarantee testable |
+| all | **`supervise { restart:, budget: N within d, escalate: }`** — a declaration, not a try/catch |
+
+## Part 7 — The intermediate adaptor (a compiler-inserted queue)
+Where `a |> b` does not fit — the source's terms differ from the sink's — the compiler
+may **insert an adaptor between them**, visibly. It is the same shape as an implicit
+widening (`int` into a `float` seat inserts a conversion); here the inserted thing is a
+QUEUE.
+
+**Use cases:** a rate mismatch (a fast producer, a slow consumer → a buffer); a
+locality boundary (two cores or two machines → a crossing queue); a sync→async
+boundary (a sync caller into an async handler → a task + a ring); failure isolation
+(the consumer may die → a durable queue); batching (one-at-a-time into a batch
+consumer); lifetime decoupling (the producer must finish before the consumer starts).
+
+**THE LAW — the compiler may insert an adaptor ONLY where an adaptor can strengthen
+the fit, and must REFUSE where it cannot:**
+- **Adaptable axes** — capacity/rate (a buffer), locality (a bridge), sync/async (a
+  task). An inserted queue is TRANSPARENT here.
+- **Non-adaptable axes** — `delivery` (nothing invents at-least-once from
+  at-most-once) and `ordering` (nothing re-invents FIFO from unordered). These are
+  **refused by name**, never silently bridged.
+An inserted adaptor **changes what is observable** (a queue can buffer, reorder
+nothing, but it DOES add a hop and can drop where its terms allow), so it is spoken:
+`avra explain` names every inserted adaptor and its terms, and a program that would
+need one where the fit is unbridgeable is refused at the wire. **P7: the magic is
+visible; P8: the adaptor is the explicit form of what the compiler would insert.**
