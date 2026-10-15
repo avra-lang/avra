@@ -12,7 +12,6 @@ therefore knows nothing of JSON, versions or machines.
 """
 import os
 import platform
-import re
 import subprocess
 import tomllib
 

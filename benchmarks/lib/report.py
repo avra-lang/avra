@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-from bench import BENCH, ROOT, bench_dirs, load_toml, registry, spec_of
+from bench import BENCH, bench_dirs, registry, spec_of
 
 RESULTS = os.path.join(BENCH, "results", "runs.jsonl")
 REPORT = os.path.join(BENCH, "report")
