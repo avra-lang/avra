@@ -78,6 +78,17 @@ export component within(limit: Code) {           // a VALUE head
 - the head: none (`component cli`) → an instance NAME, `cli avra { }`;
   params (`component within(limit: Duration)`) → a VALUE, `within ms(5) { }`.
 - methods in the declaration are the record's `impl` — ordinary methods.
+- TYPE PARAMETERS: `component Queue<T>(head: T) { … }` — the spelling a
+  struct, enum and alias already take. Each parameter is its RECORD's,
+  pinned by what an instance writes: the head's value, or a field's
+  (`slot { held: 7 }`). One component at two pins is two records, each
+  built for its own. A parameter nothing pins refuses by name; a bound
+  (`<T: Trait>`) is refused, naming the bound, because a bound lands on a
+  free fn's parameters alone; a parameter names no value (`let x = T`
+  answers "`T` is not defined"). A TEMPLATE's parameter cannot reach its
+  copied code — a written `T` there is an unknown type, and a `T`-typed
+  head spliced into a hole refuses — so a type parameter that must be
+  seated wants a record component.
 
 ## 3. The instance — one grammar
 
