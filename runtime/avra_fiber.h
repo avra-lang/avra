@@ -103,10 +103,15 @@ void avra_wait_until(int64_t at_ns, int64_t arm, int64_t member);
 // … for `gate` to claim it. The gate is kept while the waiter is filed.
 // An open gate claims at once.
 void avra_wait_gate(void* gate, int64_t arm, int64_t member);
-// … for `sig` to arrive. The signal is ignored (Darwin) or blocked
-// (Linux) while a task waits on it, so its default action is spent on
-// the wait. One signal per waiter; a source watching several files each.
+// … for `sig` to arrive. `sig` is the portable signal KIND (the `Sig`
+// variant index), mapped to the platform's own number here. The signal
+// is ignored (Darwin) or blocked (Linux) while a task waits on it, so its
+// default action is spent on the wait. One signal per waiter; a source
+// watching several files each.
 void avra_wait_sig(int64_t sig, int64_t arm, int64_t member);
+// The platform's signal number for a portable signal KIND (the `Sig`
+// variant index): the one currency a portable Avra enum and the C share.
+int64_t avra_sig_number(int64_t kind);
 // … for `task` to end.
 void avra_wait_task(void* task, int64_t arm, int64_t member);
 // Parks the caller on what it registered and answers the claim:

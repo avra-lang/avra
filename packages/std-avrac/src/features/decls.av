@@ -659,6 +659,10 @@ export type Decls = {
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
     ensure_refs: Cell<fn() -> bool>,
+    /// Whether each declaration is read as a value anywhere, as the references pass found it,
+    /// by DeclId; a declaration past the end is read nowhere.
+    read_flags: Cell<List<bool>>,
+    ensure_read: Cell<fn(DeclId) -> bool>,
     /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
     /// write it, kept by `face` as every declaration's facts land, so it covers
     /// a module minted after the first ask as well as one parsed before it.
@@ -889,6 +893,8 @@ export fn new_decls_under(durable: Durable) -> Decls {
         composers_of: Cell.new(none_apart),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
+        read_flags: list_cell(),
+        ensure_read: Cell.new(no_answer),
         mut_seat_index: map_cell(),
     }
     // the registry cannot reach a declaration on its own — a struct or
@@ -1715,6 +1721,7 @@ impl Decls {
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_ensure)
         self.ensure_refs.set(no_refs_ensure)
+        self.ensure_read.set(no_answer)
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
@@ -2285,11 +2292,20 @@ impl Decls {
         self.consumed.set_at(d.index, bits)
     }
 
+    /// Whether the pass has recorded `d`'s bits.
+    fn consumed_known(d: DeclId) -> bool { self.consumed.get()[d.index] != null }
+
+    /// The bits recorded for `d`, none where unrecorded.
+    fn consumed_bits(d: DeclId) -> List<bool> {
+        let row: List<bool>? = self.consumed.get()[d.index]
+        row ?? []
+    }
+
     /// Whether the body infers seat `i` CONSUMED — asking runs the
     /// pass; a held (precompiled) declaration answers false, since
     /// nothing here re-infers from a body it never stored.
     fn consumed_seat(d: DeclId, i: int) -> bool {
-        if self.consumed.get()[d.index] == null { (self.ensure_consumed.get())(d) }
+        (self.ensure_consumed.get())(d)
         let row: List<bool>? = self.consumed.get()[d.index]
         row != null && i < row!.length && row![i]
     }
@@ -2319,8 +2335,22 @@ impl Decls {
     /// Whether a plain read names `d`, or null where the references do not
     /// stand: an absence of a finding is no finding of absence.
     fn read_found(d: DeclId) -> bool? {
-        if !self.refs_stand() { return null }
-        Ref.by_decl(self.rows_db.get(), d).any((r: Ref) -> r.kind is .Read)
+        if !(self.ensure_read.get())(d) { return null }
+        self.read_flag_of(d)
+    }
+
+    /// The finding as it stands for `d`: a declaration the pass never saw is read nowhere.
+    fn read_flag_of(d: DeclId) -> bool { d.index < self.read_flags.get().length && self.read_flags.get()[d.index] }
+
+    /// The pass's finding of which declarations are read, kept for `read_found`.
+    fn record_read_flags(rows: List<Ref>) {
+        self.read_flags.set([false for _i in 0..self.decl_count()])
+        for r in rows { if r.kind is .Read { self.read_flags.set_at(r.decl.index, true) } }
+    }
+
+    /// The workspace arms the read-found hook once.
+    fn arm_read_found(ensure: fn(DeclId) -> bool) {
+        self.ensure_read.set(ensure)
     }
 
     /// Every plain read of `d` — never a call, never a write.
@@ -2876,8 +2906,64 @@ impl Decls {
     }
 
     /// THE symbol a LIFTED body lowers to. A lambda has no name of
-    /// its own, so it takes its file's and the node that wrote it.
-    fn lifted_symbol(f: FileId, e: ExprId) -> string { self.file_symbol(f, "l${e.index}") }
+    /// its own, so it takes its file's and the node that wrote it. A
+    /// WRITTEN lambda is content-addressed — the file's module and stem,
+    /// its content, and its turn among the lambdas written alike — so a
+    /// line added above it moves nothing. A lambda a TEMPLATE copied here
+    /// or a derivation minted wears its arena index instead: its offsets
+    /// are another file's, so two copies of one template are alike by
+    /// content and a raw index is the one name that keeps them apart.
+    fn lifted_symbol(f: FileId, e: ExprId) -> string {
+        let local = if self.written_here(f, e) {
+            "${self.site_of(f, self.store_of(f).expr_fingerprint(e), self.written_turn(f, e))}"
+        } else {
+            "g${e.index}"
+        }
+        self.file_symbol(f, "l${local}")
+    }
+
+    /// Whether a file's node is one its OWN SOURCE wrote, never one a
+    /// template copied here or a derivation minted.
+    fn written_here(f: FileId, e: ExprId) -> bool {
+        let store = self.store_of(f)
+        self.generation_of(f, e) == null &&
+            !store.spanned_elsewhere(e) &&
+            store.expr_span(e) != null
+    }
+
+    /// A written node's TURN among the nodes written ALIKE in its file,
+    /// ordered by where they stand — an unrelated line added above moves
+    /// nothing. Two written at one offset (a sugar and its expansion) are
+    /// told apart by their arena order.
+    fn written_turn(f: FileId, e: ExprId) -> int {
+        let store = self.store_of(f)
+        let at? = store.expr_span(e)?.lo else { return 0 }
+        let own = store.expr_fingerprint(e)
+        let like = store.exprs_by_kind(0, store.expr_count(), store.tag_expr(store.expr(e)))
+        let before = [1 for x in like if store.expr_fingerprint(x) == own && self.written_here(f, x) for px in some_list(store.expr_span(x)) if px.lo < at || px.lo == at && x.index < e.index]
+        before.length
+    }
+
+    /// THE symbol a static literal lays its data under. A WRITTEN literal is
+    /// content-addressed — its content and the type that decides the layout,
+    /// folded, with its TURN among the literals folded alike — so a line added
+    /// above moves no symbol. A literal a TEMPLATE copied here or a derivation
+    /// minted wears its arena index instead: its offsets are another file's, and
+    /// two shapes that fold alike would otherwise share one static and read each
+    /// other's bytes. THE TURN IS NOT OPTIONAL FOR A WRITTEN ONE: a fold is a
+    /// HASH (`["call","makes"]` and `["make","calls"]` fold alike), so without
+    /// it two different values would share one static.
+    fn literal_symbol(f: FileId, e: ExprId, ty: TypeId) -> string {
+        let content = fp_list(
+            [self.store_of(f).expr_fingerprint(e), fp_str(self.types.name_of(ty))],
+        )
+        let local = if self.written_here(f, e) {
+            "${self.site_of(f, content, self.written_turn(f, e))}"
+        } else {
+            "${e.index}"
+        }
+        self.file_symbol(f, "lit${local}")
+    }
 
     /// The unit a const's initializer lowers as, named for its statement.
     fn const_symbol(f: FileId, s: StmtId) -> string { self.file_symbol(f, "const${s.index}") }

@@ -228,6 +228,22 @@ spec "features/select_expr" {
                 "`src` can end and this `select` does not say what then",
             )
         }
+        then "a source head that is a call is refused rather than skipped" {
+            refused_in(
+                supplies(
+                    "fn same(src: Source<int>) -> Source<int> {\n    src\n}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in same(src) -> x\n    }\n}\n0",
+                ),
+                "a supply made by a call cannot be named, so no `.ended` arm can answer for it",
+            )
+        }
+        then "an `.ended` arm behind a guard does not answer for the supply" {
+            refused_in(
+                supplies(
+                    "fn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n        src.ended if false -> 0\n    }\n}\n0",
+                ),
+                "`src` can end and this `select` does not say what then",
+            )
+        }
         then "the `.ended` arm's subject decides whose end it is" {
             refused_in(
                 supplies(
