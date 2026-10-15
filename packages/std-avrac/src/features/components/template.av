@@ -17,7 +17,7 @@ use core.{
     body_behavior,
 }
 use features.{ComponentWord, Instancing, Template, Record, ChildSlot, Instanced, Event}
-use grammar.{Token, TokenKind, lex_source}
+use grammar.{Token, TokenKind, lex_source, after_type_args}
 
 /// An exported component as an importing file's block word.
 export fn word_of(store: SyntaxArena, s: StmtId, origin: string) -> ComponentWord? {
@@ -64,9 +64,10 @@ fn top_starts(tokens: List<Token>) -> List<int> {
 /// `word name` opening a statement, where `word` is a component whose
 /// named instance binds its name.
 fn instance_at(tokens: List<Token>, i: int, words: List<ComponentWord>) -> Instanced? {
-    if i + 1 >= tokens.length || tokens[i + 1].kind != TokenKind.Name { return null }
+    let at = after_type_args(tokens, i + 1)
+    if at >= tokens.length || tokens[at].kind != TokenKind.Name { return null }
     let w? = words.find(it.word == tokens[i].text && binds_name(it)) else { return null }
-    Instanced { name: tokens[i + 1].text, declared: w.declared }
+    Instanced { name: tokens[at].text, declared: w.declared }
 }
 
 /// Whether a named instance of the component binds its name: a

@@ -1568,7 +1568,27 @@ fn opens_instance(
     let t = ts[i]
     if t.kind != TokenKind.Name { return false }
     if components.contains(t.text) { return true }
-    named.contains(t.text) && heads_instance(ts, i + 1, keywords)
+    named.contains(t.text) && heads_instance(ts, after_type_args(ts, i + 1), keywords)
+}
+
+/// The token where a word's head begins, past a `<…>` TYPE ARGUMENT
+/// list when one is written — `queue<Charge> charges { … }` heads on
+/// `charges`, and `Table<List<string>>` closes on the LAST `>` even
+/// where the lexer emits `>>` as two. An unbalanced `<` (a comparison)
+/// leaves `at` where it stood.
+export fn after_type_args(ts: List<Token>, at: int) -> int {
+    if at >= ts.length || !ts[at].lit_matches("<") { return at }
+    mut depth = 0
+    mut j = at
+    while j < ts.length && ts[j].kind != TokenKind.Break {
+        if ts[j].lit_matches("<") { depth = depth + 1 }
+        if ts[j].lit_matches(">") {
+            depth = depth - 1
+            if depth == 0 { return j + 1 }
+        }
+        j = j + 1
+    }
+    at
 }
 
 /// The keywords that are VALUES — each begins a head as a name does.

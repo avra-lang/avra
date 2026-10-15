@@ -1915,6 +1915,12 @@ error[type.struct_fields]: field `x` is `int`, this is `bool`
 ──╯
 ```
 
+## type.struct_targs
+
+a literal's written type arguments pin the record's parameters
+
+No witness yet.
+
 ## type.with_struct
 
 `with` copies a struct value
