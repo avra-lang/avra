@@ -11,6 +11,7 @@ use @std.avrac.testing.{
     answered,
     shown,
     ir_of,
+    said,
 }
 use compiler.{Program}
 use compiler.backend.{render_ir}
@@ -57,6 +58,20 @@ fn timers() -> string {
 fn timed(body: string) -> Program {
     floored_beside("use @std.time.{after, quiet, every}\n${body}", "time", timers())
 }
+
+/// A stand-in `@std/task`: the two supplies by name, enough for the
+/// front end to type against.
+fn sources() -> string {
+    "export type Source<T> = { ready: fn() -> bool, taken: fn() -> T?, arm: fn(int) -> void, ended: fn() -> bool, lost: fn() -> int }\nexport type Pick<T> = { at: int, item: T }\nexport type AnyOf<T> = { ready: fn() -> bool, taken: fn() -> Pick<T>?, ended: fn() -> bool, lost: fn() -> int }\n"
+}
+
+/// A program over the stand-in supplies.
+fn supplies(body: string) -> Program {
+    floored_beside("use @std.task.{Source, AnyOf}\n${body}", "task", sources())
+}
+
+/// Whether a floored program analyzes clean.
+fn clean(p: Program) -> bool { said(p).is_empty() }
 
 spec "features/select_expr" {
     given "the arm forms" {
@@ -156,10 +171,10 @@ spec "features/select_expr" {
         }
     }
     given "what an arm waits on" {
-        then "a head that is no task, list of tasks or timer is refused" {
+        then "a head that is no task, list of tasks, source or timer is refused" {
             refuses(
                 "select {\n    1 -> 2\n}",
-                "a `select` arm waits on a task, a list of tasks or a timer, and this is `int`",
+                "a `select` arm waits on a task, a list of tasks, a source or a timer, and this is `int`",
             )
         }
         then "an awaited head is refused as the value it already is" {
@@ -197,6 +212,71 @@ spec "features/select_expr" {
             )
         }
     }
+    given "a running source" {
+        then "a source arm binds the item it takes" {
+            clean(
+                supplies(
+                    "fn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n        src.ended -> 0\n    }\n}\n0",
+                ),
+            )
+        }
+        then "a source with no `.ended` arm is refused by name, and the fix is named" {
+            refused_in(
+                supplies(
+                    "fn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n    }\n}\n0",
+                ),
+                "`src` can end and this `select` does not say what then",
+            )
+        }
+        then "the `.ended` arm's subject decides whose end it is" {
+            refused_in(
+                supplies(
+                    "fn pick(a: Source<int>, b: Source<int>) -> int {\n    select {\n        x in a -> x\n        b.ended -> 0\n    }\n}\n0",
+                ),
+                "`a` can end and this `select` does not say what then",
+            )
+        }
+        then "two fields of one receiver are told apart" {
+            refused_in(
+                supplies(
+                    "type Box = { a: Source<int>, b: Source<int> }\nfn pick(x: Box) -> int {\n    select {\n        v in x.a -> v\n        x.b.ended -> 0\n    }\n}\n0",
+                ),
+                "`x.a` can end and this `select` does not say what then",
+            )
+        }
+        then "an index on a source is refused" {
+            refused_in(
+                supplies(
+                    "fn pick(src: Source<int>) -> int {\n    select {\n        i, x in src -> x\n        src.ended -> 0\n    }\n}\n0",
+                ),
+                "counts a list's members, and a source hands one item at a time",
+            )
+        }
+        then "an `.ended` arm binds nothing" {
+            refused_in(
+                supplies(
+                    "fn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n        e in src.ended -> 0\n    }\n}\n0",
+                ),
+                "an `.ended` arm waits on a supply's end and binds nothing",
+            )
+        }
+        then "an `.ended` read off a type that is no supply is no arm at all" {
+            refused_in(
+                supplies(
+                    "type Skin = { ended: bool }\nfn pick(s: Skin) -> int {\n    select {\n        s.ended -> 0\n    }\n}\n0",
+                ),
+                "a `select` arm waits on a task, a list of tasks, a source or a timer",
+            )
+        }
+        then "an `AnyOf` arm types and its end is required too" {
+            refused_in(
+                supplies(
+                    "fn pick(a: AnyOf<int>) -> int {\n    select {\n        x in a -> x\n    }\n}\n0",
+                ),
+                "`a` can end and this `select` does not say what then",
+            )
+        }
+    }
     given "a guard" {
         then "a bool read from outside the arm types" {
             types("let open = true\nlet v = select {\n    r in job if open -> r\n}\nv")
@@ -226,13 +306,10 @@ spec "features/select_expr" {
         }
     }
     given "the timers of `@std/time`" {
-        then "a `Deadline` head is an arm, binding nothing" {
+        then "a `Deadline` head is an arm that fires when it has come" {
             answered(
-                timed(
-                    "let limit = after(5)\nlet v = select {\n    limit -> 1\n}\nprintln(\"\${v}\")\n",
-                ),
-            )
-                .contains("`select` is typed and not yet lowered")
+                timed("let limit = after(5)\nlet v = select {\n    limit -> 1\n}\n\"\${v}\"\n"),
+            ) == "1"
         }
         then "a binder on a timer arm is refused" {
             refused_in(
@@ -272,21 +349,19 @@ spec "features/select_expr" {
                 "a timer made inside a loop starts over each turn",
             )
         }
-        then "a `Deadline` bound before the loop types" {
+        then "a `Deadline` bound before the loop runs" {
             answered(
                 timed(
-                    "let calm = quiet(5)\nlet limit = after(5)\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        limit -> 1\n        calm -> 2\n    }\n}\nprintln(\"\${n}\")\n",
+                    "let calm = quiet(5)\nlet limit = after(5)\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        limit -> 1\n        calm -> 2\n    }\n}\n\"\${n}\"\n",
                 ),
-            )
-                .contains("`select` is typed and not yet lowered")
+            ) == "1"
         }
-        then "a `Deadline` made each turn beside arms taken once is a limit on each attempt, and types" {
+        then "a `Deadline` made each turn beside arms taken once is a limit on each attempt" {
             answered(
                 timed(
-                    "fn one() -> int {\n    1\n}\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in spawn one() -> r\n        after(5) -> 1\n    }\n}\nprintln(\"\${n}\")\n",
+                    "fn one() -> int {\n    1\n}\nmut n = 0\nwhile n < 1 {\n    n = n + select {\n        r in spawn one() -> r\n        after(5) -> 1\n    }\n}\n\"\${n}\"\n",
                 ),
-            )
-                .contains("`select` is typed and not yet lowered")
+            ) == "1"
         }
         then "an `Every` made inside a loop is refused, whatever stands beside it" {
             refused_in(

@@ -119,6 +119,11 @@ impl Leaf {
             .Input(name, spelled, _) -> "i\t${name}\t${spelled}",
         }
     }
+
+    /// The read's digest as a saved answer spells it.
+    fn digest_text() -> string {
+        match self { .Rows(_, digest) or .Input(_, _, digest) -> "${digest}" }
+    }
 }
 
 /// What a settled query stands on, or that something it read has no name.
@@ -145,7 +150,7 @@ impl RelRef {
 
 /// A query or input asked in a Db, by its durable name: its family, each call's spelled
 /// arguments and its value's hash, read live.
-type AnswerRef = {
+export type AnswerRef = {
     name: string,
     family: fn() -> int,
     spelled: fn(int) -> string?,
@@ -543,6 +548,18 @@ impl Db {
         }
     }
 
+    /// The digest of the read `Leaf.id` names, as it stands here; absent when this Db cannot
+    /// name the read.
+    fn leaf_digest(id: string) -> string? {
+        if id.starts_with("r\t") { return "${self.rows_digest(id.substring(2, id.length))}" }
+        if !id.starts_with("i\t") { return null }
+        let rest = id.substring(2, id.length)
+        let at = rest.index_of("\t")
+        if at < 0 { return null }
+        let now? = self.input_digest(rest.substring(0, at), rest.substring(at + 1, rest.length)) else { return null }
+        "${now}"
+    }
+
     /// A relation's rows' hash here; an unreached relation holds none.
     fn rows_digest(name: string) -> int {
         let rel = self.relations.get().find(it.name == name)
@@ -586,6 +603,12 @@ impl Db {
 
     /// A query or input asked here, as a saved answer may name it.
     fn answer_known(ref: AnswerRef) { self.answer_refs.push(ref) }
+
+    /// The answers named here, forgotten: each holds the owner that named it.
+    fn answers_forgotten() {
+        let none: List<AnswerRef> = []
+        self.answer_refs.set(none)
+    }
 
     /// The revision `cell` moved at, kept where a family verifies by it.
     fn stamped(family: int, cell: int, rev: int) {

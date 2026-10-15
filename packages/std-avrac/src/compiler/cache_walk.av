@@ -12,6 +12,7 @@ use @std.path.{relative_path, joined_path, normalized}
 use @std.text.{parse_int}
 use compiler.families.{Family}
 use compiler.host.{InputName, InputKind}
+use compiler.store.{Traffic}
 use features.{Decl}
 use @std.relation.engine.{Key, same_key, no_key_marks}
 
@@ -19,7 +20,7 @@ use @std.relation.engine.{Key, same_key, no_key_marks}
 /// read with why, the files whose text moved since they were kept, and what
 /// the derivation that judged them spent — its attempts, those among them
 /// that did not stand, and its phases.
-export type CacheWalk = { root: string, holds: List<FileHold>, moved: List<string>, attempts: int, discarded: int, phases: List<Phase> }
+export type CacheWalk = { root: string, holds: List<FileHold>, moved: List<string>, attempts: int, discarded: int, turns: List<string>, phases: List<Phase> }
 
 /// An answer as a person reads it, with its digest — none for an answer the
 /// kernel never digested.
@@ -79,7 +80,7 @@ fn keyed_by(f: Family) -> KeyedBy {
     match f {
         .Source or .Parsed or .Items or .Admitted or .Visible or .Resolved or .Folded or .Analysis or .Expanded or .Plain or .MethodDiags -> KeyedBy.File,
         .Namespace or .HeldSig -> KeyedBy.Module,
-        .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Marks or .DeclReads -> KeyedBy.Decl,
+        .Sig or .Methods or .Typed or .ConstTyped or .Raised or .Syntax or .Names or .Marks or .DeclReads or .Writes or .CancelBits -> KeyedBy.Decl,
         .Manifest -> KeyedBy.Package,
         .Receivers or .References or .Failures or .ReadReach or .CancelReach -> KeyedBy.Program,
         .Lowered or .LiftLowered or .Lifted or .Settled -> KeyedBy.Unit,
@@ -134,6 +135,7 @@ impl Workspace {
             moved: [h.path for h in holds if h.moved.any(it.part is .Text)],
             attempts: d.turned + 1,
             discarded: d.turned,
+            turns: [left_line(l) for l in d.left],
             phases: grouped_phases(d.program.phases.concat(d.spans)),
         }
         d.program.ws.discarded()
@@ -288,6 +290,9 @@ impl Workspace {
             ),
         }
     }
+
+    /// What this process asked of the store while deriving: lookups, misses, values read, bytes.
+    fn store_traffic() -> Traffic { self.opened_store().traffic() }
 
     /// Every family holding an answer, counted, in the families' own order.
     fn family_counts() -> Counted {

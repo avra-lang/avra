@@ -43,6 +43,7 @@
 #define AVRA_KQUEUE 1
 #elif defined(__linux__)
 #include <sys/epoll.h>
+#include <sys/signalfd.h>
 #define AVRA_EPOLL 1
 #else
 #error "the scheduler has no poller for this platform"
@@ -158,9 +159,9 @@ enum { FIBER_RUNNING, FIBER_READY, FIBER_PARKED, FIBER_DONE };
 typedef struct Fiber Fiber;
 
 // A WAITER is one thing a parked task waits on, filed with its source:
-// a descriptor's direction, the timer heap, or a gate. `arm` and
-// `member` are what the task is told when this one wakes it.
-enum { W_FD_READ, W_FD_WRITE, W_AT, W_GATE, W_DEADLINE };
+// a descriptor's direction, the timer heap, a gate, or a signal. `arm`
+// and `member` are what the task is told when this one wakes it.
+enum { W_FD_READ, W_FD_WRITE, W_AT, W_GATE, W_DEADLINE, W_SIG };
 typedef struct Waiter Waiter;
 struct Waiter {
     Waiter* next;
@@ -169,7 +170,7 @@ struct Waiter {
     int32_t arm, member;
     uint32_t kind;
     uint32_t filed;
-    union { int fd; size_t timer; void* gate; } on;   // timer: 1 + its index in the heap
+    union { int fd; size_t timer; void* gate; int sig; } on;   // timer: 1 + its index in the heap
 };
 
 // A waiter past the ones a fiber holds inline.
@@ -470,6 +471,7 @@ static void traced_waiter(const Fiber* f, const Waiter* w) {
         case W_FD_READ: avra_fmt(line, sizeof line, "park id=%lld src=fd:r:%d arm=%d:%d", (long long)id_of(f), w->on.fd, w->arm, w->member); break;
         case W_FD_WRITE: avra_fmt(line, sizeof line, "park id=%lld src=fd:w:%d arm=%d:%d", (long long)id_of(f), w->on.fd, w->arm, w->member); break;
         case W_GATE: avra_fmt(line, sizeof line, "park id=%lld src=gate:%p arm=%d:%d", (long long)id_of(f), w->on.gate, w->arm, w->member); break;
+        case W_SIG: avra_fmt(line, sizeof line, "park id=%lld src=sig:%d arm=%d:%d", (long long)id_of(f), w->on.sig, w->arm, w->member); break;
         default: avra_fmt(line, sizeof line, "park id=%lld src=at arm=%d:%d", (long long)id_of(f), w->arm, w->member); break;
     }
     traced(line);
@@ -703,6 +705,22 @@ static int64_t g_parked_fds = 0;
 static FdWaits* g_fds = NULL;
 static size_t g_fds_cap = 0;
 
+// A SIGNAL IS NO DESCRIPTOR: its number would collide with a
+// descriptor's in the table above (SIGINT is 2), so its waiters get a
+// list per signal of their own, and the poller's event names the signal
+// rather than a descriptor. `g_sig_armed` is the one registration each
+// signal gets with the poller.
+static Waiter* g_sig_head[NSIG];
+static Waiter* g_sig_tail[NSIG];
+static unsigned char g_sig_armed[NSIG];
+#if AVRA_EPOLL
+// ONE signalfd FOR THE PROCESS: every armed signal is blocked and named
+// in its mask, and a readable signalfd carries which one arrived.
+static int g_signalfd = -1;
+static sigset_t g_sig_mask;
+static int g_sig_mask_ready = 0;
+#endif
+
 static int pinned(void) { return g_seeded || avra_clock.virtual; }
 
 // The poller has been asked, or its count begins: when it is next due.
@@ -809,6 +827,9 @@ static void list_of(Waiter* w, Waiter*** head, Waiter*** tail) {
         int64_t* cells = task_cells(w->on.gate);
         *head = (Waiter**)&cells[GATE_HEAD];
         *tail = (Waiter**)&cells[GATE_TAIL];
+    } else if (w->kind == W_SIG) {
+        *head = &g_sig_head[w->on.sig];
+        *tail = &g_sig_tail[w->on.sig];
     } else {
         FdWaits* f = fd_waits(w->on.fd);
         int d = w->kind == W_FD_WRITE;
@@ -1004,6 +1025,60 @@ int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing) {
     return (g_fds[fd].ready & bit) != 0;
 }
 
+// A SIGNAL'S WAITERS are claimed: every task filed on that signal, an
+// edge that came once, whoever waited when it came.
+static void sig_ready(int sig) {
+    while (g_sig_head[sig]) waiter_claims(g_sig_head[sig], BY_POLLER);
+}
+
+// The poller is told to watch `sig` ONCE: kqueue's signal filter reports
+// it, a signalfd reads it. The process ignores (Darwin) or blocks
+// (Linux) the signal while a task waits on it, so its default action is
+// spent on the wait rather than on the process.
+static int sig_arm(int sig) {
+    if (sig <= 0 || sig >= NSIG) return 0;
+    if (g_sig_armed[sig]) return 1;
+#if AVRA_KQUEUE
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(g_poller, &ev, 1, NULL, 0, NULL) != 0) return 0;
+    signal(sig, SIG_IGN);
+#else
+    if (!g_sig_mask_ready) {
+        sigemptyset(&g_sig_mask);
+        g_sig_mask_ready = 1;
+    }
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, sig);
+    if (sigprocmask(SIG_BLOCK, &set, NULL) != 0) return 0;
+    sigaddset(&g_sig_mask, sig);
+    if (g_signalfd < 0) {
+        g_signalfd = signalfd(-1, &g_sig_mask, SFD_NONBLOCK | SFD_CLOEXEC);
+        if (g_signalfd < 0) return 0;
+        struct epoll_event ev = { .events = EPOLLIN | EPOLLET, .data.fd = g_signalfd };
+        if (epoll_ctl(g_poller, EPOLL_CTL_ADD, g_signalfd, &ev) != 0) {
+            close(g_signalfd);
+            g_signalfd = -1;
+            return 0;
+        }
+    } else if (signalfd(g_signalfd, &g_sig_mask, SFD_NONBLOCK | SFD_CLOEXEC) < 0) {
+        return 0;
+    }
+#endif
+    g_sig_armed[sig] = 1;
+    return 1;
+}
+
+#if AVRA_EPOLL
+// A readable signalfd carries one record per signal; every record names
+// its signal and claims that signal's waiters.
+static void sigfd_drain(void) {
+    struct signalfd_siginfo si;
+    while (read(g_signalfd, &si, sizeof si) == (ssize_t)sizeof si) sig_ready((int)si.ssi_signo);
+}
+#endif
+
 // Waits for the poller up to `timeout_ns` (below zero: forever) and
 // claims whoever it names.
 static void poller_wait(int64_t timeout_ns) {
@@ -1019,6 +1094,7 @@ static void poller_wait(int64_t timeout_ns) {
     // the clock: held by the caller whenever this waits (`next_with_world`)
     int n = kevent(g_poller, NULL, 0, evs, BATCH, timeout_ns < 0 ? NULL : &ts);
     for (int i = 0; i < n; i++) {
+        if (evs[i].filter == EVFILT_SIGNAL) { sig_ready((int)evs[i].ident); continue; }
         if (evs[i].filter == EVFILT_READ && (evs[i].flags & EV_EOF)) fd_closed((int)evs[i].ident);
         fd_ready((int)evs[i].ident, evs[i].filter == EVFILT_WRITE);
     }
@@ -1029,6 +1105,7 @@ static void poller_wait(int64_t timeout_ns) {
     int n = epoll_wait(g_poller, evs, BATCH, ms);
     for (int i = 0; i < n; i++) {
         int fd = evs[i].data.fd;
+        if (fd == g_signalfd) { sigfd_drain(); continue; }
         uint32_t e = evs[i].events;
         int failed = (e & (EPOLLERR | EPOLLHUP)) != 0;
         if ((e & EPOLLRDHUP) || failed) fd_closed(fd);
@@ -1799,6 +1876,20 @@ static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
     if (TRACING) traced_waiter(f, w);
 }
 
+// A signal a task waits on: one signal per waiter, so a source watching
+// several files each as its own member. A signal the poller cannot watch
+// is ready now, as a descriptor the poller refuses is.
+static void waits_sig(Fiber* f, int64_t sig, int64_t arm, int64_t member) {
+    if (f->claimed) return;
+    if (sig <= 0 || sig >= NSIG) { set_claimed(f, (int32_t)arm, (int32_t)member, BY_POLLER); return; }
+    poller_open();
+    Waiter* w = waiter_new(f, W_SIG, arm, member);
+    w->on.sig = (int)sig;
+    waiter_filed(w);
+    if (!sig_arm((int)sig)) waiter_claims(w, BY_POLLER);
+    else if (TRACING) traced_waiter(f, w);
+}
+
 static void unwind_cleared(void);
 
 // A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set,
@@ -1910,6 +2001,8 @@ void avra_wait_fd(int64_t fd, int64_t writable, int64_t arm, int64_t member) { w
 void avra_wait_until(int64_t at_ns, int64_t arm, int64_t member) { waits_until(g_current, at_ns, arm, member); }
 
 void avra_wait_gate(void* gate, int64_t arm, int64_t member) { waits_gate(g_current, gate, arm, member); }
+
+void avra_wait_sig(int64_t sig, int64_t arm, int64_t member) { waits_sig(g_current, sig, arm, member); }
 
 void avra_wait_task(void* task, int64_t arm, int64_t member) { waits_gate(g_current, task, arm, member); }
 
@@ -2605,6 +2698,13 @@ void avra_fiber_forked(void) {
     g_ready_head = g_ready_tail = NULL;
     g_parked_fds = 0;
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
+    memset(g_sig_head, 0, sizeof g_sig_head);
+    memset(g_sig_tail, 0, sizeof g_sig_tail);
+    memset(g_sig_armed, 0, sizeof g_sig_armed);
+#if AVRA_EPOLL
+    if (g_signalfd >= 0) close(g_signalfd);
+    g_signalfd = -1;
+#endif
     // the child is asked under its own id, and owes no ask its parent had
     g_asked = 0;
     tasks_door_named();
@@ -2757,6 +2857,8 @@ void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, in
 void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member) { waits_until(virtual_at(t), at_ns, arm, member); }
 
 void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member) { waits_gate(virtual_at(t), gate, arm, member); }
+
+void avra_vtask_wait_sig(int64_t t, int64_t sig, int64_t arm, int64_t member) { waits_sig(virtual_at(t), sig, arm, member); }
 
 int64_t avra_vtask_join(int64_t t, void* task) {
     Fiber* f = virtual_at(t);
@@ -2932,6 +3034,7 @@ static void waiter_said(FILE* out, Numbered no, const Fiber* f, const Waiter* w)
     if (!w->filed) return;
     if (w->kind == W_AT) { fputs(" waits on a time", out); return; }
     if (w->kind == W_DEADLINE) return;
+    if (w->kind == W_SIG) { fprintf(out, " waits on signal %d", w->on.sig); return; }
     if (w->kind != W_GATE) { fprintf(out, " waits on descriptor %d", w->on.fd); return; }
     if (w->on.gate == f->joining) return;
     if (((AvraArray*)w->on.gate)->len != TASK_CELLS) { fprintf(out, " waits on gate %p", w->on.gate); return; }
@@ -3500,6 +3603,7 @@ static int waiter_listed(FILE* out, int64_t now, const Fiber* f, const Waiter* w
         case W_FD_READ: fprintf(out, "fd:r:%d", w->on.fd); break;
         case W_FD_WRITE: fprintf(out, "fd:w:%d", w->on.fd); break;
         case W_GATE: fprintf(out, "gate:%p", w->on.gate); break;
+        case W_SIG: fprintf(out, "sig:%d", w->on.sig); break;
         case W_AT: fputs("at", out); break;
         case W_DEADLINE: break;
     }

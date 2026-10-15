@@ -5,7 +5,7 @@
 use @std.time.{stamp}
 use @std.io.{list_dir, remove, read_bytes, write_bytes}
 use @std.path.{joined_path}
-use compiler.store.{pack_at, pack_put, pack_has, pack_get, seal, val_path}
+use compiler.store.{pack_at, pack_put, pack_has, pack_get, pack_traffic, seal, val_path}
 
 /// One store directory per case, so no case reads another's segments.
 fn pack_root(name: string) -> string { "/tmp/avra-pack-test/${name}-${stamp()}" }
@@ -119,6 +119,22 @@ spec "store/pack — segments, commit markers, the two tiers" {
             refused &&
                 pack_get(fresh, "unit", "first") == "1" &&
                 pack_get(fresh, "unit", "second") == "2"
+        }
+    }
+    given "lookups and value reads asked of a pack" {
+        then "are counted: a row found, a row absent, a value read out of the sealed body" {
+            let root = pack_root("traffic")
+            let writer = pack_at(root, "print-one")
+            let _ = pack_put(writer, "unit", "k", "value", [])
+            let _ = seal(writer)
+            for file in pack_files(root) {
+                if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+            }
+            let reader = pack_at(root, "print-one")
+            let _ = pack_has(reader, "unit", "absent")
+            let _ = pack_get(reader, "unit", "k")
+            let t = pack_traffic(reader)
+            t.hits == 1 && t.misses == 1 && t.values == 1 && t.bytes == 5
         }
     }
 }

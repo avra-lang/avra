@@ -1,25 +1,19 @@
 // Loopback, both directions: a listener on the kernel's port, a
-// connect, an accept, readiness through the poller, a write and its
-// exact read, EOF after a close, and the failures each verb names.
-// Every case is a fn answering `Result<bool, NetError>` so `?` reads
-// straight, and `passes` is the one seam to the harness.
-use @std.net.{listen, listen_all, connect, poller, Listener, Conn, Poller, Read, NetError, Reach}
-use @std.time.{secs, ms}
+// connect, an accept, a write and its exact read through the
+// connection's own source, EOF after a close, and the failures each
+// verb names. Every case is a fn answering `Result<bool, NetError>` so
+// `?` reads straight, and `passes` is the one seam to the harness.
+use @std.net.{listen, listen_all, connect, Listener, Conn, Read, NetError, Reach}
+use @std.time.{secs, ms, Duration, quiet}
 
-/// A listener, a connected client, the server's side of it, and a
-/// poller watching the server side.
-type Pair = { l: Listener, client: Conn, server: Conn, p: Poller }
+/// A listener, a connected client, and the server's side of it.
+type Pair = { l: Listener, client: Conn, server: Conn }
 
 fn pair() -> Result<Pair, NetError> {
     let l = listen("127.0.0.1", 0)?
     let client = connect("127.0.0.1", l.port, secs(2))?
-    let p = poller()?
-    p.watch(l.fd, .Read)?
-    p.wait(secs(2))?
-    let server = l.try_accept()?
-    p.watch(l.fd, .None)?
-    p.watch(server!.fd, .Read)?
-    .Ok(Pair { l: l, client: client, server: server!, p: p })
+    let server = l.accept()?
+    .Ok(Pair { l: l, client: client, server: server })
 }
 
 /// A listener on any free port of `host`, asked how far it reaches and
@@ -45,9 +39,16 @@ fn passes(r: Result<bool, NetError>) -> bool {
     match r { .Ok(b) -> b, .Err(_) -> false }
 }
 
-fn readable(p: Poller, fd: int) -> Result<bool, NetError> {
-    let events = p.wait(secs(2))?
-    .Ok(events.any(it.fd == fd && it.readable))
+/// The chunk the connection hands over within `budget`, null once the
+/// wait runs out or the peer has finished — the connection's own source
+/// reads it, so nothing is lost between the look and the take.
+fn arrived(c: Conn, budget: Duration) -> Result<Bytes?, NetError> {
+    let src = c.reads()
+    select {
+        b in src -> .Ok(b)
+        quiet(budget) -> .Ok(null)
+        src.ended -> .Ok(null)
+    }
 }
 
 fn data_of(r: Read) -> Bytes {
@@ -58,36 +59,26 @@ fn exact_read() -> Result<bool, NetError> {
     let pr = pair()?
     let sent = "GET / HTTP/1.1\r\n".bytes()
     let put = pr.client.try_write(sent, 0)?
-    let ready = readable(pr.p, pr.server.fd)?
-    .Ok(put == 16 && ready && data_of(pr.server.try_read(64)?) == sent)
+    let got = arrived(pr.server, secs(2))?
+    .Ok(put == 16 && got == sent)
 }
 
 fn pending_then_eof() -> Result<bool, NetError> {
     let pr = pair()?
     let before = data_of(pr.server.try_read(64)?)
     pr.client.close()?
-    let ready = readable(pr.p, pr.server.fd)?
-    .Ok(
-        ready &&
-            before == "<pending>".bytes() &&
-            data_of(pr.server.try_read(64)?) == "<eof>".bytes(),
-    )
+    let after = arrived(pr.server, secs(2))?
+    .Ok(before == "<pending>".bytes() && after == null)
 }
 
 fn half_close() -> Result<bool, NetError> {
     let pr = pair()?
     pr.client.try_write("bye".bytes(), 0)?
     pr.client.shutdown_write()?
-    let ready = readable(pr.p, pr.server.fd)?
-    let first = data_of(pr.server.try_read(64)?)
+    let first = arrived(pr.server, secs(2))?
     // the shutdown is its own segment: waited for like the data
-    let again = readable(pr.p, pr.server.fd)?
-    .Ok(
-        ready &&
-            first == "bye".bytes() &&
-            again &&
-            data_of(pr.server.try_read(64)?) == "<eof>".bytes(),
-    )
+    let again = arrived(pr.server, secs(2))?
+    .Ok(first == "bye".bytes() && again == null)
 }
 
 fn peers() -> Result<bool, NetError> {
@@ -98,17 +89,14 @@ fn peers() -> Result<bool, NetError> {
 fn large_transfer() -> Result<bool, NetError> {
     let pr = pair()?
     let big = [i % 251 for i in 0..300000].bytes()!
-    mut at = 0
+    pr.client.write(big)?
     mut got: List<Bytes> = []
     mut total = 0
-    pr.p.watch(pr.client.fd, .Write)?
     while total < big.length {
-        if at < big.length { at = at + pr.client.try_write(big, at)? }
-        if readable(pr.p, pr.server.fd)? {
-            let piece = data_of(pr.server.try_read(65536)?)
-            got.push(piece)
-            total = total + piece.length
-        }
+        let piece = pr.server.read(65536)? ?? "".bytes()
+        if piece.is_empty() { return .Ok(false) }
+        got.push(piece)
+        total = total + piece.length
     }
     .Ok(got.bytes() == big)
 }

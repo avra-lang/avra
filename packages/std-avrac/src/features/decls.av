@@ -50,10 +50,10 @@ use core.{
     Annotation,
     At,
 }
-use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind}
+use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind, db_verified}
 use @std.relation.db.{Db, new_db}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
-use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
+use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -564,6 +564,9 @@ export type Decls = {
     name_buckets: Cell<List<int>>,
     /// The name each name bucket files, dense by bucket — its `Named` cell's label.
     cell_names: Cell<List<string>>,
+    /// Each declaration's and type's durable fold, dense by index; -1 until asked.
+    decl_fps: Cell<List<int>>,
+    type_fps: Cell<List<int>>,
     rows_state: Cell<List<int>>,
     held_rows: Cell<fn(FileId) -> void>,
     /// The revision each armed relation cell last moved at, by family.
@@ -642,6 +645,9 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
     ensure_writes: Cell<fn(DeclId) -> bool>,
+    // the workspace's cancel hook: a record-carrying declaration's reach
+    // read by name, so a reader stands on that decl's answer alone
+    ensure_cancels: Cell<fn(DeclId) -> bool>,
     // WHICH SEATS THE BODY CONSUMES (R3) — computed on first ask
     // through `ensure_consumed`, the same shape as `marks` (null =
     // unasked). No fixpoint: unlike `written_seats`, a seat's
@@ -815,6 +821,8 @@ export fn new_decls() -> Decls {
         recording: Cell.new(false),
         name_buckets: list_cell(),
         cell_names: list_cell(),
+        decl_fps: list_cell(),
+        type_fps: list_cell(),
         rows_state: list_cell(),
         held_rows: Cell.new(no_store),
         ensure_store: Cell.new(no_store),
@@ -863,6 +871,7 @@ export fn new_decls() -> Decls {
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
         ensure_writes: Cell.new(no_answer),
+        ensure_cancels: Cell.new(no_answer),
         inferred_errs: new_table(),
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
@@ -1090,6 +1099,38 @@ impl Decls {
         self.decl_row_rows.get().members(b)
     }
 
+    /// Arena ids as a fold reaches them: by the durable name of what they index.
+    fn ids() -> Ids {
+        let ds = self
+        Ids {
+            decl: (i: int) -> if i < 0 { i } else { ds.decl_door(DeclId { index: i }) },
+            ty: (i: int) -> if i < 0 { i } else { ds.durable(ds.type_fps, i, () -> fp_str(ds.type_wire(TypeId { index: i }))) },
+            file: (i: int) -> if i < 0 { i } else { fp_str(ds.file(FileId { index: i }).path) },
+            expr: (i: int) -> i,
+            stmt: (i: int) -> i,
+        }
+    }
+
+    /// A declaration's durable fold. Its wire counts same-named siblings, which are all minted
+    /// only once the file's rows settle, so a fold made earlier is never remembered.
+    fn decl_door(d: DeclId) -> int {
+        let ds = self
+        let make = () -> fp_str(ds.decl_wire(d))
+        if self.is_builtin(d) || self.home_stand(self.decl(d).file) != 0 { return self.durable(self.decl_fps, d.index, make) }
+        if db_verified() { wreck("a declaration's durable name was asked before its file's rows settled") }
+        make()
+    }
+
+    /// `memo`'s fold at `at`, made once.
+    fn durable(memo: Cell<List<int>>, at: int, make: fn() -> int) -> int {
+        while memo.get().length <= at { memo.push(-1) }
+        let held = memo.get()[at]
+        if held >= 0 { return held }
+        let made = make()
+        memo.set_at(at, made)
+        made
+    }
+
     /// Room for name bucket `b`'s label in the dense table.
     fn room_for_cell(b: int, name: string) {
         while self.cell_names.get().length <= b { self.cell_names.push("") }
@@ -1101,6 +1142,19 @@ impl Decls {
     @bracket("decls")
     fn named_now(b: int) {
         self.record_kernel.set_input(self.name_key_at(b), self.decl_row_rows.get().bucket_hash(b))
+    }
+
+    /// The name bucket `b` is filed under, when it stands.
+    fn bucket_label(b: int) -> string? {
+        if b < 0 || b >= self.cell_names.get().length { return null }
+        self.cell_names.get()[b]
+    }
+
+    /// The bucket `name` files under, when one stands; nothing is opened.
+    @bracket("decls")
+    fn bucket_standing(name: string) -> int? {
+        let found = self.decl_row_rows.get().bucket_of_text(name_index, name)
+        if found >= 0 { found } else { null }
     }
 
     /// How many name buckets stand, emptied ones among them.
@@ -1637,6 +1691,7 @@ impl Decls {
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_answer)
+        self.ensure_cancels.set(no_answer)
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
         self.ensure_file.set(no_store)
@@ -1657,6 +1712,7 @@ impl Decls {
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_ensure)
         self.ensure_refs.set(no_refs_ensure)
+        self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
         self.types.disarm_declare()
@@ -2142,9 +2198,22 @@ impl Decls {
         self.cancels.keep(d.index, r)
     }
 
-    /// The recorded answer — null where nothing has said.
+    /// The recorded answer — null where nothing has said. A reader asks through the
+    /// workspace's hook, so it stands on the declaration's own `CancelBits` answer;
+    /// the pass's own reads go to `cancels_so_far`.
     fn cancel_bits(d: DeclId) -> CancelReach? {
+        (self.ensure_cancels.get())(d)
         self.cancels.at(d.index)
+    }
+
+    /// The pass's own read, hook-free — the table as it stands.
+    fn cancels_so_far(d: DeclId) -> CancelReach? {
+        self.cancels.at(d.index)
+    }
+
+    /// The workspace arms the cancel hook once.
+    fn arm_cancels(ensure: fn(DeclId) -> bool) {
+        self.ensure_cancels.set(ensure)
     }
 
     /// The program-wide bit the cancel pass settled.
