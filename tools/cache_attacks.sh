@@ -700,6 +700,26 @@ fi
 rm -rf $lv
 fi
 
+if section ra; then
+# THE FIRST ATTEMPT STARTS WITH THE READS THE LAST STANDING ONE NEEDED. `ra`'s K reads
+# twice in calc.av, and an edit to that body moves the text the next build meets. Then an
+# edit adds a compile-time read of a file no run read before, and the build turns once
+# and answers as the evaluator does. (A deleted file that a kept verdict still reads is
+# a separate trap on origin/main, not covered here.)
+mkdir -p $R/ra/src/f $R/ra/src/y
+printf '[package]\nname = "rt-ra"\nversion = "0.1.0"\n' > $R/ra/avra.toml
+printf 'export fn twice(n: int) -> int { n * 2 }\n' > $R/ra/src/y/calc.av
+printf 'use y.{twice}\nexport const K: int = twice(3)\nexport fn shown() -> int { K }\n' > $R/ra/src/f/held.av
+printf 'use f.{shown}\nprintln("${shown()}")\n' > $R/ra/src/main.av
+S "ra: built, the run's read remembered" ra
+ed $R/ra/src/y/calc.av "n * 2" "n * 3"
+S "ra: the body its run read moved" ra
+mkdir -p $R/ra/src/z
+printf 'export fn plus(n: int) -> int { n + 1 }\n' > $R/ra/src/z/add.av
+printf 'use y.{twice}\nuse z.{plus}\nexport const K: int = plus(twice(3))\nexport fn shown() -> int { K }\n' > $R/ra/src/f/held.av
+S "ra: an edit adds a compile-time read of a new file" ra
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
@@ -2257,6 +2277,7 @@ eo_built() { # eo_built <label>: the program built, its binary kept under the la
 steps=$((steps+1)); rm -rf .avra-cache $R/eo.cold $R/eo.warm; eo_built cold
 steps=$((steps+1)); rm -rf .avra-cache; ./avra check $eo >/dev/null 2>&1; eo_built warm
 if [ -s $R/eo.cold ] && [ -s $R/eo.warm ] && cmp -s $R/eo.cold $R/eo.warm; then [ -n "${VERBOSE:-}" ] && echo "ok    eo: a build after a check is the cold build's bytes"; else fails=$((fails+1)); echo "FAIL  eo: $eo built after a check differs from its cold build in $(cmp -l $R/eo.cold $R/eo.warm 2>/dev/null | wc -l | tr -d ' ') bytes (0 means one side did not build)"; fi
+
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.

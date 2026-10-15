@@ -306,6 +306,17 @@ fn case_of(line: string) -> CaseCall? {
 /// Where a program's instantiation homes are remembered, by its entry.
 fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", entry]) }
 
+/// Where the files a program's compile-time runs read are remembered, by its entry.
+fn runs_key(entry: string) -> string { node_key(Stored.Unit, ["runs", entry]) }
+
+/// Whether a read is one a compile-time run made of a body.
+fn run_read(r: ReadFile) -> bool {
+    match r.why {
+        .RunBy(_) -> true,
+        rest -> false,
+    }
+}
+
 /// Where "these instantiations lowered clean" is remembered.
 fn clean_key(asked: string) -> string { node_key(Stored.Unit, ["clean", asked]) }
 
@@ -657,10 +668,18 @@ impl Workspace {
     /// The reads an attempt takes up front: the files a held module's kept verdicts read,
     /// for those whose file lines already refuse them — read from the store alone, before
     /// the attempt starts, so the attempt never turns to read them.
+    /// Whether a path is among the source files the packages list now: a guess is kept
+    /// only where the listing says the file is there, and the listing is a recorded input.
+    fn listed_here(path: string) -> bool {
+        self.packages().any((k) -> path.starts_with("${k.src}/") && self.all_files(k.src).contains(path))
+    }
+
     fn lead_reads(at: Attempt) -> List<ReadFile> {
         if !at.hold { return [] }
         let store = self.opened_store()
-        [ReadFile { path: path, why: Reads.Unkept } for path in self.verdict_reads_first(store, held_modules(self, store, built_entry(at)))]
+        let kept = self.verdict_reads_first(store, held_modules(self, store, built_entry(at)))
+        let ran = [path for path in remembered(store, runs_key(self.known_as(at))) if !path.is_empty() && self.listed_here(path)]
+        [ReadFile { path: path, why: Reads.Unkept } for path in distinct(kept.concat(ran))]
     }
 
     /// The files a held module's kept const verdicts read, for those whose file lines
@@ -817,6 +836,7 @@ impl Workspace {
             self.typed_said_pass(store)
         }
         store.settle()
+        remember(store, runs_key(self.known_as(at)), [r.path for r in at.parse if run_read(r)].concat([r.path for r in self.hold.read_files.get() if run_read(r)]))
         Derived {
             entry: at.entry,
             want: at.want,
