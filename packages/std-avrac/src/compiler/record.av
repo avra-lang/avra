@@ -1345,12 +1345,16 @@ fn unordered(line: string) -> string {
     if p.length > 6 && p[6] == "main" { joined(["main", p[1], "-"].concat(p.slice(3, p.length)), "\t") } else { line }
 }
 
-/// Every identifier a text spells, once, in name order, comma-joined. A token is a run of
-/// letters, digits and `_`: names in comments and strings count too, which only widens a file's key.
+/// Every identifier a text spells, once, in name order. A token is a run of letters,
+/// digits and `_`: names in comments and strings count too, which only widens a file's key.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a text in, the names it spells out.
-fn idents_of(text: string) -> List<string> {
+fn idents_of(text: string) -> List<string> { sorted_texts(token_counts(text).keys()) }
+
+/// Every identifier a text spells, with how many times.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a text in, the names it spells out.
+fn token_counts(text: string) -> Map<string, int> {
     let b = text.bytes()
-    let found: Cell<Map<string, bool>> = Cell.new({})
+    let found: Cell<Map<string, int>> = Cell.new({})
     mut start = 0 - 1
     for i in 0..b.length + 1 {
         let c = if i < b.length { b.at(i) } else { 0 }
@@ -1359,11 +1363,11 @@ fn idents_of(text: string) -> List<string> {
             if start < 0 { start = i }
         } else if start >= 0 {
             let word = b.slice(start, i).text()
-            if word != null { found.put(word!, true) }
+            if word != null { found.put(word!, (found.get().get(word!) ?? 0) + 1) }
             start = 0 - 1
         }
     }
-    sorted_texts(found.get().keys())
+    found.get()
 }
 
 /// A module a file sees: its name, its interface's bytes key, its file count.

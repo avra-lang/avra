@@ -116,5 +116,44 @@ add w/members 'fn zz_beside_members() -> int { 1 }'; chk
 not_read "an unrelated fn beside a collect's members" n/count.av w/table.av; no_discard "an unrelated fn beside a collect's members"
 back; chk
 
+# 11. a const settled from a fn: an fn added beside it that nothing spells leaves its verdict standing; one it spells re-runs it
+printf 'export fn gt() -> int { 3 }\nexport const k3: int = gt() * 2\nexport fn gk() -> int { k3 }\n' > $P/src/n/third.av
+verdict() { AVRA_QTRACE=1 ./avra check $P 2>&1 | grep "const_verdict" | awk '{print $NF}' | sort -u | tr '\n' ' '; }
+chk; steps=$((steps + 1))
+add n/third 'fn zz_beside_const() -> int { 1 }'
+[ "$(verdict)" = "stood " ] || fail "an unspelled fn added beside a const re-ran its verdict"
+printf 'export fn gt() -> int { 3 }\nexport const k3: int = gt() * 2\nexport fn gk() -> int { k3 }\nfn zz_beside_const() -> int { 1 }\nexport fn gz() -> int { zz_beside_const() }\n' > $P/src/n/third.av
+case "$(verdict)" in *ran*) ;; *) fail "a fn the file now spells did not re-run the const verdict" ;; esac
+back; chk
+
+# 12. the narrowed names digest: what it must NOT miss. A verdict is read as "stood"/"ran" per const.
+VOUT=
+vstate() { VOUT=$(AVRA_QTRACE=1 ./avra check $P 2>&1); V=$(printf '%s\n' "$VOUT" | grep "const_verdict" | grep "m.c.const" | awk '{print $NF}' | sort -u | tr '\n' ' '); }
+# a) a fn that SHADOWS the prelude's println in the module a const's run resolves through
+printf 'export fn gc() -> int {\n    println("c")\n    10\n}\nexport const kc: int = gc() + 1\nexport fn gk() -> int { kc }\n' > $P/src/m/c.av; chk; steps=$((steps + 1))
+add m/a 'fn println(s: string) {}'
+vstate
+case "$V" in *ran*) ;; *) fail "a fn shadowing println left a const verdict standing: [$V] $(printf '%s' "$VOUT" | grep -v '^Q' | head -4 | tr '\n' ' ' | cut -c1-500)" ;; esac
+back; chk
+# b) a name only a comment of the const's file spells: counted (tokens read comments), which only widens
+printf 'export fn gc() -> int { 10 }\n// zz_commented\nexport const kc: int = gc() + 1\nexport fn gk() -> int { kc }\n' > $P/src/m/c.av; chk; steps=$((steps + 1))
+add m/a 'fn zz_commented() -> int { 1 }'
+vstate; case "$V" in *stood*|*ran*) ;; *) fail "a fn named in a comment: no verdict read" ;; esac
+back; chk
+# c) a module holding generated code: every name counts, so even an unspelled fn re-runs the verdict
+printf 'use @std.meta.{Directive, Type}\nexport trait Gen {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: "", name: t.name, at: t.at, source: quote { fn gen_made() -> int { 1 } } }]\n    }\n}\n' > $P/src/m/gen.av
+printf 'use @std.meta.{derive}\nuse m.{Gen}\n@derive(Gen)\nexport type G = { n: int }\n' > $P/src/m/g.av
+printf 'export fn gc() -> int { 10 }\nexport const kc: int = gc() + 1\nexport fn gk() -> int { kc }\n' > $P/src/m/c.av; chk; steps=$((steps + 1))
+[ $ST = 0 ] || fail "the generated-code fixture does not check: $(printf '%s' "$OUT" | head -3 | tr '\n' ' ')"
+add m/a 'fn zz_unspelled() -> int { 1 }'
+vstate
+case "$V" in *stood*) fail "a fn added beside generated code left a const verdict standing: [$V]" ;; esac
+mv $P/src/m/gen.av $P/src/m/g.av $T/; back; chk
+# d) a rename of a spelled fn: the const that calls it re-runs, and the program no longer checks
+printf 'export fn gc() -> int { f() }\nexport const kc: int = gc() + 1\nexport fn gk() -> int { kc }\n' > $P/src/m/c.av; chk; steps=$((steps + 1))
+sed 's/export fn f()/export fn f2()/' $P/src/m/a.av > $T/a.new && mv $T/a.new $P/src/m/a.av
+vstate; [ "$V" != "stood " ] || fail "a renamed fn left the verdict of a const calling it standing"
+back; chk
+
 echo "fn-add-attack: $steps checks, $fails failed"
 [ "$fails" = 0 ]
