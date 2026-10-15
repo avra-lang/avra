@@ -71,9 +71,12 @@ export fn memory(l: Lowered) -> Lowered {
     // behind (docs/2026_09_23_REUSE_IN_PLACE.md §30). Measured at
     // ~23% of `avra check packages/cli`'s own instructions retired —
     // too much for every ordinary check or build, so it runs only
-    // when asked: `avra test`, a landing's gate, or `AVRA_SOUND_CHECK=1`
-    // set by hand.
-    out with { diagnostics: out.diagnostics.concat(checked(out, (ty: TypeId) -> is_managed(l.types, ty))) }
+    // where the caller sets `AVRA_SOUND_CHECK=1`: the Makefile's `test`
+    // target, the CI suites job, or a hand-set environment. `avra test`
+    // and `make gate` set it nowhere.
+    // The proof takes this pass's OWN `by_name`; the one outside fact
+    // it consumes is `Body.marks` — the `consumed` seats.
+    out with { diagnostics: out.diagnostics.concat(checked(out, by_name, (ty: TypeId) -> is_managed(l.types, ty))) }
 }
 
 /// Whether this process runs the memory pass's own proof — it adds

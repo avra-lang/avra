@@ -2615,8 +2615,9 @@ doctrine it expands.
   where every probe asks about BEHAVIOUR, and a reviewer who CANNOT
   RUN THE CODE is forced to ask it. (Strings lane's, attributed. The
   ARITY law above is the fix, and this tree already pays it:
-  `fingerprint_stmt` folds through `fp_list(param_fps(…))` rather
-  than splicing.)
+  `signature_fp` folds through `fp_list(param_fps(…))` — tparams
+  then params, one value each — and `stmt_fps` folds a statement
+  list, rather than splicing.)
 - A CHECK THAT EXAMINED NOTHING IS NOT A CHECK THAT PASSED. A keeper
   reading objects from disk examines nothing on a COLD TREE and
   reports success; a grep scoped too narrowly answers "absent" about

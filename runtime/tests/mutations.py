@@ -133,6 +133,7 @@ MUTATIONS = [
     ("a virtual rest with nothing filed parks", "    if (!set_open(f)) return -1;\n", ""),
     ("a virtual scan answers nothing", "    return scan_begun(f) ? claim_taken(f) : 0;", "    return scan_begun(f) ? 0 : 0;"),
     ("a task that waits without switching never asks the world", " && ++f->own_turns >= FAIR_TURNS) world_asked(f);", " && 0) world_asked(f);"),
+    ("a signal's wake claims nobody", "    while (g_sig_head[sig]) waiter_claims(g_sig_head[sig], BY_POLLER);", "    (void)sig;"),
     ("the turns that ask the world never ask the poller", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n    if (g_parked_fds > 0) poller_wait(0);\n}", "    if (g_timers_len > 0) fire_due_timers(now_ns());\n}"),
     ("the turns that ask the world fire no timer", "    f->own_turns = 0;\n    if (g_timers_len > 0) fire_due_timers(now_ns());\n", "    f->own_turns = 0;\n"),
     ("a task that ends leaves its waits filed", "    retract(self);\n    self->claimed = 0;\n    waiter_out(&self->due);\n", "    waiter_out(&self->due);\n"),
@@ -392,7 +393,7 @@ HOST_MUTATIONS = [
     ("a cold arm never records the pid", "    g_owner = this_pid();\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);", "    g_owner = 0;\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);"),
     ("the pid read is never counted", "    pid_t pid = getpid();\n    __atomic_add_fetch(&g_pid_reads, 1, __ATOMIC_RELAXED);\n    return pid;", "    return getpid();"),
 ]
-TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test"]
+TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test", "sig_test"]
 BOUND = 60
 # A BREAK LIVES INSIDE ITS OWN TEST. A mutation that makes the scheduler
 # spawn threads or processes without bound would otherwise exhaust the

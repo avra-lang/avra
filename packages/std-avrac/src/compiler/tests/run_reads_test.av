@@ -2,7 +2,7 @@
 // whose run asks: the record names it, so the file is held only while
 // that text stands.
 use @std.avrac.testing.{test_workspace}
-use compiler.{Workspace, RunRead, reads_field, reads_of}
+use compiler.{Workspace, RunRead, reads_field, reads_of, distinct_reads}
 use compiler.host.{memory_host}
 
 const RUN_READS_MAIN: string = "/w/src/main.av"
@@ -76,5 +76,53 @@ spec "compiler/record — a read's wire round-trips, empty cells included" {
         }
         let xs = reads_of(reads_field([r])) ?? []
         xs.length == 1 && xs[0].outline == "o" && xs[0].print == "42"
+    }
+}
+
+fn read_at(path: string, ref: string) -> RunRead { RunRead { path: path, digest: "d", ref: ref, print: "", outline: "" } }
+
+/// What `distinct_reads` makes of the same sequence: the reference every list below is held to.
+fn reads_named(xs: List<RunRead>) -> string { distinct_reads(xs).map("${it.path}:${it.ref}").join(",") }
+
+fn listed(ws: Workspace) -> string { (ws.hold.runs.get().get(RUN_READS_MAIN) ?? []).map("${it.path}:${it.ref}").join(",") }
+
+spec "compiler/settle — a reader's list is the distinct fold of what was read into it" {
+    then "reads appended in pieces list as distinct_reads lists them whole, order included" {
+        let ws = run_reads_workspace()
+        let a = read_at("/w/a", "")
+        let b = read_at("/w/b", "x")
+        let b2 = read_at("/w/b", "y")
+        ws.read_by(RUN_READS_MAIN, [a, b])
+        ws.read_by(RUN_READS_MAIN, [b, b2, a])
+        ws.read_by(RUN_READS_MAIN, [b2, read_at("/w/c", "")])
+        listed(ws) == reads_named([a, b, b, b2, a, b2, read_at("/w/c", "")])
+    }
+    then "a scope's reads join what the list held, as the fold of both" {
+        let ws = run_reads_workspace()
+        let a = read_at("/w/a", "")
+        let b = read_at("/w/b", "")
+        let c = read_at("/w/c", "")
+        ws.read_by(RUN_READS_MAIN, [a, b])
+        let scope = ws.opened_reads(RUN_READS_MAIN)
+        let empty = listed(ws) == ""
+        ws.read_by(RUN_READS_MAIN, [b, c, c])
+        let own = ws.closed_reads(RUN_READS_MAIN, scope).map(it.path).join(",")
+        empty && own == "/w/b,/w/c" && listed(ws) == reads_named([a, b, b, c, c])
+    }
+    then "a scope nested in a scope restores each list in turn" {
+        let ws = run_reads_workspace()
+        let a = read_at("/w/a", "")
+        let b = read_at("/w/b", "")
+        let c = read_at("/w/c", "")
+        ws.read_by(RUN_READS_MAIN, [a])
+        let outer = ws.opened_reads(RUN_READS_MAIN)
+        ws.read_by(RUN_READS_MAIN, [b])
+        let inner = ws.opened_reads(RUN_READS_MAIN)
+        ws.read_by(RUN_READS_MAIN, [a, c])
+        let inner_own = ws.closed_reads(RUN_READS_MAIN, inner).map(it.path).join(",")
+        let outer_own = ws.closed_reads(RUN_READS_MAIN, outer).map(it.path).join(",")
+        inner_own == "/w/a,/w/c" &&
+            outer_own == "/w/b,/w/a,/w/c" &&
+            listed(ws) == reads_named([a, b, a, c])
     }
 }

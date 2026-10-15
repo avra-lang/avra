@@ -17,6 +17,7 @@ use core.{
     same_file,
     qtrace,
     traced,
+    db_verified,
     touch,
     Static,
     FileId,
@@ -120,9 +121,20 @@ export fn turn_said(root: string, more: List<ReadFile>, homes: bool, unheld: boo
 
 /// The first read files by path and why, the rest counted.
 fn read_words(root: string, more: List<ReadFile>) -> string {
-    let named = ["${relative_path(root, r.path)} — ${r.why.says()}" for r in more.slice(0, TURN_NAMED)]
+    let named = ["${read_label(root, r.path)} — ${r.why.says()}" for r in more.slice(0, TURN_NAMED)]
     let rest = if more.length > TURN_NAMED { ["… and ${more.length - TURN_NAMED} more"] } else { [] }
     joined(named.concat(rest), "; ")
+}
+
+/// A read as a turn names it: a file by its path, a kept verdict's read by its file and the
+/// unit it is a read of.
+fn read_label(root: string, path: string) -> string {
+    let parts = path.split("~")
+    if parts.length < 3 { return relative_path(root, path) }
+    let file? = unhex_text(parts[0]) else { return relative_path(root, path) }
+    let unit? = unhex_text(parts[2]) else { return relative_path(root, path) }
+    if file.is_empty() { return relative_path(root, path) }
+    "${relative_path(root, file)} · ${if unit.starts_with(file) { unit.substring(file.length + 1, unit.length) } else { unit }}"
 }
 
 /// One discarded attempt, as `--time` says it: its whole time, its phases, the turn.
@@ -402,7 +414,8 @@ impl Workspace {
         Derived,
         string,
     > {
-        match self.stood_first(Attempt { entry: entry, want: want, parse: parse }, owes)? {
+        match self
+            .stood_first(Attempt { entry: entry, want: want, parse: parse, hold: !db_verified() }, owes)? {
             .Kept(d) -> d,
             .Owing(at) -> self.again(at),
         }
@@ -626,7 +639,7 @@ impl Workspace {
     fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = self.opened_store()
         self.attach_store(store)
-        self.hold.serving.set(match at.want { .Diagnostics -> true, .Binary -> false })
+        self.hold.serving.set(match at.want { .Diagnostics -> !db_verified(), .Binary -> false })
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
@@ -800,6 +813,10 @@ impl Workspace {
         let asked = self.asked_print(store, self.known_as(at), roots)
         let unlowered = [w for w in roots if self.is_held(w.file)]
         if unlowered.is_empty() { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
+        if db_verified() {
+            self.lowered_said_pass(store)
+            self.typed_said_pass(store)
+        }
         store.settle()
         Derived {
             entry: at.entry,

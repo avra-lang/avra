@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
@@ -74,6 +75,12 @@ static void wake_once(void) {
 
 static void* tick_loop(void* self) {
     (void)self;
+    // A PROCESS-DIRECTED SIGNAL MUST REACH THE TASK THAT WAITS ON IT: this
+    // thread blocks every signal, so none is delivered here and spent on
+    // its default action while a task has parked on it instead.
+    sigset_t all;
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, NULL);
     int unwanted = 0;
     for (;;) {
         if (__atomic_load_n(&avra_tick_wanted, __ATOMIC_RELAXED)) {

@@ -1,16 +1,10 @@
-// @std.net's C: nonblocking stream sockets and a readiness queue —
-// kqueue on Darwin, epoll on Linux — behind integer descriptors. A
-// package's C answers ints only: a descriptor, a count, a NEGATIVE
+// @std.net's C: nonblocking stream sockets behind integer descriptors.
+// A package's C answers ints only: a descriptor, a count, a NEGATIVE
 // errno, never a C `int`, never a box. Bytes flow through the
 // runtime's descriptor rows, which are the one place a value is
-// minted; addresses come back as words the package formats.
-//
-// LEVEL-TRIGGERED on both platforms: the kernel re-reports readiness
-// until a buffer is drained, so one read per wake is correct and a
-// handler that stops early cannot stall; the write path is "write,
-// and on a short count ask for writability". Edge saves control
-// calls under load and is a later measured change; it touches no
-// framing code.
+// minted; addresses come back as words the package formats. Readiness
+// waits are the scheduler's, filed through the runtime's descriptor
+// rows; this package only starts, stops and connects sockets.
 //
 // Feature macros: Darwin needs none under -std=c11. On Linux
 // `accept4` is declared only under _GNU_SOURCE, which must precede
@@ -67,10 +61,6 @@ static void net_trap_bounds(int64_t i, int64_t len) {
     abort();
 }
 
-enum { NET_EVENTS = 256 };
-// Interest and event bits: an event carries what it is ready for
-// plus the peer's hangup and the socket's pending error.
-enum { NET_READ = 1, NET_WRITE = 2, NET_HANGUP = 4, NET_ERROR = 8 };
 enum { NET_SHUT_READ = 0, NET_SHUT_WRITE = 1, NET_SHUT_BOTH = 2 };
 
 // SIGPIPE's default action is death: a write to a peer that has gone
@@ -89,16 +79,6 @@ static void net_armed(void) {
     signal(SIGPIPE, SIG_IGN);
     g_net_armed = 1;
 }
-
-// ONE THREAD, like every table in the runtime: the events a wait
-// answers are plain statics, so the leaves that read them need no
-// frame.
-#ifdef __APPLE__
-static struct kevent g_net_events[NET_EVENTS];
-#else
-static struct epoll_event g_net_events[NET_EVENTS];
-#endif
-static int64_t g_net_nev = 0;
 
 static int net_int(int64_t x) { return x > INT_MAX ? INT_MAX : x < INT_MIN ? INT_MIN : (int)x; }
 
@@ -295,107 +275,6 @@ int64_t avra_net_shutdown(int64_t fd, int64_t how) {
     int h = how == NET_SHUT_READ ? SHUT_RD : how == NET_SHUT_WRITE ? SHUT_WR : how == NET_SHUT_BOTH ? SHUT_RDWR : -1;
     if (h < 0) return -EINVAL;
     return shutdown((int)fd, h) == 0 ? 0 : -errno;
-}
-
-// A readiness queue, as a CLOEXEC descriptor or -errno.
-int64_t avra_net_poll_new(void) {
-#ifdef __APPLE__
-    int fd = kqueue();
-    if (fd < 0) return -errno;
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
-    return fd;
-#else
-    int fd = epoll_create1(EPOLL_CLOEXEC);
-    return fd < 0 ? -errno : fd;
-#endif
-}
-
-// The queue's interest in `fd` set to `interest` — NET_READ,
-// NET_WRITE, both, or 0 to stop watching; 0 or -errno. Idempotent:
-// watching again replaces, and removing what is not watched is 0.
-// A closed descriptor leaves the queue on its own.
-#ifdef __APPLE__
-int64_t avra_net_watch(int64_t pfd, int64_t fd, int64_t interest) {
-    struct kevent ch[2], receipt[2];
-    EV_SET(&ch[0], (uintptr_t)fd, EVFILT_READ, ((interest & NET_READ) ? EV_ADD | EV_ENABLE : EV_DELETE) | EV_RECEIPT, 0, 0, NULL);
-    EV_SET(&ch[1], (uintptr_t)fd, EVFILT_WRITE, ((interest & NET_WRITE) ? EV_ADD | EV_ENABLE : EV_DELETE) | EV_RECEIPT, 0, 0, NULL);
-    int r;
-    // the clock: not a wait on time — a change list answered by receipts
-    while ((r = kevent((int)pfd, ch, 2, receipt, 2, NULL)) < 0 && errno == EINTR) {}
-    if (r < 0) return -errno;
-    for (int i = 0; i < r; i++) {
-        int err = (int)receipt[i].data;
-        if (err != 0 && !((ch[i].flags & EV_DELETE) && err == ENOENT)) return -err;
-    }
-    return 0;
-}
-#else
-int64_t avra_net_watch(int64_t pfd, int64_t fd, int64_t interest) {
-    if (interest == 0) {
-        // Darwin deletes a knote by ident and answers ENOENT for one it
-        // does not hold; ELF's epoll validates the descriptor first, so
-        // an unknown one answers EBADF. Both mean "no such watch", and
-        // removing a watch that is not held is not an error.
-        if (epoll_ctl((int)pfd, EPOLL_CTL_DEL, (int)fd, NULL) == 0 || errno == ENOENT || errno == EBADF) return 0;
-        return -errno;
-    }
-    struct epoll_event ev;
-    memset(&ev, 0, sizeof ev);
-    ev.events = ((interest & NET_READ) ? EPOLLIN : 0) | ((interest & NET_WRITE) ? EPOLLOUT : 0) | EPOLLRDHUP;
-    ev.data.fd = (int)fd;
-    if (epoll_ctl((int)pfd, EPOLL_CTL_MOD, (int)fd, &ev) == 0) return 0;
-    if (errno != ENOENT) return -errno;
-    return epoll_ctl((int)pfd, EPOLL_CTL_ADD, (int)fd, &ev) == 0 ? 0 : -errno;
-}
-#endif
-
-// Waits up to timeout_ms (-1: until something is ready, 0: a look)
-// and answers how many events the next `avra_net_event_*` reads
-// carry, at most NET_EVENTS; 0 on an interrupt, -errno otherwise.
-// kqueue reports a descriptor's read and write readiness as TWO
-// events; epoll merges them into one — a consumer dispatches per
-// event and holds for neither shape.
-int64_t avra_net_wait(int64_t pfd, int64_t timeout_ms) {
-#ifdef __APPLE__
-    int64_t ms = timeout_ms < 0 ? 0 : timeout_ms;
-    struct timespec ts = { (time_t)(ms / 1000), (long)(ms % 1000) * 1000000L };
-    avra_clock_hold(1);
-    int n = kevent((int)pfd, NULL, 0, g_net_events, NET_EVENTS, timeout_ms < 0 ? NULL : &ts);
-    avra_clock_hold(-1);
-#else
-    avra_clock_hold(1);
-    int n = epoll_wait((int)pfd, g_net_events, NET_EVENTS, timeout_ms < 0 ? -1 : net_int(timeout_ms));
-    avra_clock_hold(-1);
-#endif
-    g_net_nev = n > 0 ? n : 0;
-    if (n >= 0) return n;
-    return errno == EINTR ? 0 : -errno;
-}
-
-// Event i of the last wait: its descriptor. Out of range traps.
-int64_t avra_net_event_fd(int64_t i) {
-    if (__builtin_expect(i < 0 || i >= g_net_nev, 0)) net_trap_bounds(i, g_net_nev);
-#ifdef __APPLE__
-    return (int64_t)g_net_events[i].ident;
-#else
-    return g_net_events[i].data.fd;
-#endif
-}
-
-// Event i of the last wait: its NET_* bits. Out of range traps.
-int64_t avra_net_event_flags(int64_t i) {
-    if (__builtin_expect(i < 0 || i >= g_net_nev, 0)) net_trap_bounds(i, g_net_nev);
-#ifdef __APPLE__
-    const struct kevent* e = &g_net_events[i];
-    int64_t eof = (e->flags & EV_EOF) != 0;
-    int64_t failed = (e->flags & EV_ERROR) != 0 || (eof && e->fflags != 0);
-    return (e->filter == EVFILT_READ ? NET_READ : e->filter == EVFILT_WRITE ? NET_WRITE : 0)
-         | (eof ? NET_HANGUP : 0) | (failed ? NET_ERROR : 0);
-#else
-    uint32_t ev = g_net_events[i].events;
-    return ((ev & EPOLLIN) ? NET_READ : 0) | ((ev & EPOLLOUT) ? NET_WRITE : 0)
-         | ((ev & (EPOLLHUP | EPOLLRDHUP)) ? NET_HANGUP : 0) | ((ev & EPOLLERR) ? NET_ERROR : 0);
-#endif
 }
 
 static int64_t net_peer(int64_t fd, struct sockaddr_storage* ss) {

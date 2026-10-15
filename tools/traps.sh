@@ -104,24 +104,23 @@ trapped stale_take "avra: a take of read 1, but read 2 has landed since" 2 '
 [dependencies]
 "@std/net"  = { path = "../../../packages/std-net" }
 "@std/time" = { path = "../../../packages/std-time" }
-' 'use @std.net.{listen, connect, poller, Interest, NetError}
+' 'use @std.net.{listen, connect, NetError}
 use @std.time.{secs}
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fiber_park_fd(fd: int, write: int, timeout: int) -> int
+fn landed(fd: int) -> int {
+    let _ = avra_fiber_park_fd(fd, 0, -1)
+    avra_fd_read(fd, 10)
+}
 fn run() -> Result<int, NetError> {
     let l = listen("127.0.0.1", 0)?
     let c = connect("127.0.0.1", l.port, secs(2))?
-    let p = poller()?
-    p.watch(l.fd, .Read)?
-    p.wait(secs(2))?
-    let s = l.try_accept()?
-    p.watch(s!.fd, .Read)?
+    let s = l.accept()?
     c.try_write("a".bytes(), 0)?
-    p.wait(secs(2))?
-    let first = avra_fd_read(s!.fd, 10)
+    let first = landed(s.fd)
     c.try_write("b".bytes(), 0)?
-    p.wait(secs(2))?
-    let second = avra_fd_read(s!.fd, 10)
+    let second = landed(s.fd)
     .Ok(avra_fd_taken(first).length + second)
 }
 match run() {

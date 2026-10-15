@@ -215,6 +215,7 @@ extern const char avra_rt_held_avra_fiber_shield_leave __asm__(AVRA_RT_LABEL(avr
 extern const char avra_rt_held_avra_wait_fd __asm__(AVRA_RT_LABEL(avra_wait_fd));
 extern const char avra_rt_held_avra_wait_until __asm__(AVRA_RT_LABEL(avra_wait_until));
 extern const char avra_rt_held_avra_wait_gate __asm__(AVRA_RT_LABEL(avra_wait_gate));
+extern const char avra_rt_held_avra_wait_sig __asm__(AVRA_RT_LABEL(avra_wait_sig));
 extern const char avra_rt_held_avra_wait_task __asm__(AVRA_RT_LABEL(avra_wait_task));
 extern const char avra_rt_held_avra_wait_park __asm__(AVRA_RT_LABEL(avra_wait_park));
 extern const char avra_rt_held_avra_wait_enter __asm__(AVRA_RT_LABEL(avra_wait_enter));
@@ -422,6 +423,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_wait_fd,
     &avra_rt_held_avra_wait_until,
     &avra_rt_held_avra_wait_gate,
+    &avra_rt_held_avra_wait_sig,
     &avra_rt_held_avra_wait_task,
     &avra_rt_held_avra_wait_park,
     &avra_rt_held_avra_wait_enter,
@@ -783,6 +785,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_until(AVRA_RT_I
     "avra_wait_until: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_gate(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
     "avra_wait_gate: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_sig(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_wait_sig: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_task(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
     "avra_wait_task: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_wait_park()), int64_t),
