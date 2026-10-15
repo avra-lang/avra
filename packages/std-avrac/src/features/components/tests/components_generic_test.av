@@ -1,0 +1,61 @@
+//! A component's type parameters are its record's: each is pinned by
+//! what an instance writes — the head's value or a field's — and one
+//! component at two pins is two records. A parameter no value pins is
+//! refused by name, a bound on one is refused with the form that does
+//! take it, and a parameter names no value.
+use @std.avrac.testing.{provided, answered, refused_in}
+use @std.avrac.compiler.{Program}
+
+fn over(main: string) -> Program { provided(main, "") }
+
+spec "features/components — type parameters" {
+    given "a component's type parameter" {
+        then "is pinned by the head's value, per instance" {
+            answered(
+                over(
+                    "component hold<T>(head: T) {\n    tag: string = \"h\"\n}\nlet n = hold 7 { }\nlet s = hold \"hi\" { }\n\"\${n.head} \${s.head} \${s.tag}\"",
+                ),
+            ) == "7 hi h"
+        }
+        then "is pinned by a field's value, per instance" {
+            answered(
+                over(
+                    "component slot<T> {\n    held: T\n}\nlet n = slot { held: 7 }\nlet s = slot { held: \"hi\" }\n\"\${n.held} \${s.held}\"",
+                ),
+            ) == "7 hi"
+        }
+        then "makes two pins two types — an `int` seat refuses a `string` value" {
+            refused_in(
+                over(
+                    "component slot<T> {\n    held: T\n}\nfn first(s: slot<int>) -> int { s.held }\nlet a = slot { held: \"z\" }\nfirst(a)",
+                ),
+                "`slot<int>`",
+            )
+        }
+    }
+    given "a parameter nothing pins" {
+        then "is refused by name" {
+            over(
+                "component marker<T> {\n    held: int\n}\nexport fn main() -> int {\n    let m = marker { held: 7 }\n    m.held\n}",
+            )
+                .report()
+                .trim() == "error[type.struct_fields]: `T` is not pinned by the fields\n  ╭─[/w/src/main.av:5:13]\n5 │     let m = marker { held: 7 }\n  ·             ┬\n  ·             ╰── in this literal\n──╯\nhelp: give `T`'s field a value of a concrete type"
+        }
+    }
+    given "a bound on a parameter" {
+        then "is refused, naming the bound and the form that takes one" {
+            over("component q<T: Show> {\n    held: T\n}\nexport fn main() -> int { 0 }")
+                .report()
+                .trim() == "error[build.failed]: a component's type parameter takes no bound yet — `Show` is written as one\n  ╭─[/w/src/main.av:1:1]\n1 │ component q<T: Show> {\n  · ┬\n──╯"
+        }
+    }
+    given "a parameter read where a value goes" {
+        then "names no value" {
+            over(
+                "component q<T> {\n    held: T\n}\nexport fn main() -> int {\n    let x = T\n    0\n}",
+            )
+                .report()
+                .trim() == "error[resolve.unresolved]: `T` is not defined\n  ╭─[/w/src/main.av:5:13]\n5 │     let x = T\n  ·             ┬\n  ·             ╰── not defined anywhere in this program\n──╯"
+        }
+    }
+}
