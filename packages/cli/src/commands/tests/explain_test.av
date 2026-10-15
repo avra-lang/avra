@@ -287,6 +287,13 @@ spec "commands/explain" {
                 explain_lines(Asked { target: "", from: root, stats: true, time: true })
                     .any(it.starts_with("time"))
         }
+        then "the store's traffic is a row under `--time` and nowhere else" {
+            let root = lib_probe("stats_store")
+            !explain_lines(Asked { target: "", from: root, stats: true })
+                    .any(it.starts_with("store ")) &&
+                explain_lines(Asked { target: "", from: root, stats: true, time: true })
+                    .any(it.starts_with("store ") && it.contains("hits ") && it.contains("values "))
+        }
         then "a package named by its directory is the package counted" {
             let root = lib_probe("stats_dir")
             explain_lines(Asked { target: root, from: bare_dir("elsewhere"), stats: true })
