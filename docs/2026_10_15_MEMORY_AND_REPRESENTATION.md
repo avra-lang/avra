@@ -354,3 +354,54 @@ enum CallError = Unreachable | Refused | TimedOut | Remote(E)
 the author writes), a **law** (a `check`, the typer, or a `rule`), or a **refusal** (the
 wire that cannot be bridged). None of it is a convention, and none of it is a doc the
 compiler does not read.
+
+---
+
+# Part 9 — The boundary is the general case
+(2026-10-15 · Parts 6–8 are not "events"; they are the shape every crossing has)
+
+Events, queues, HTTP, RPC, a database round-trip and a socket are ONE thing wearing
+different transports. The thing is a **boundary**, and it has five parts:
+
+| part | what it is | where it is written |
+|---|---|---|
+| **locality** | same frame, another core, another machine | `on:` (the component) / `remote:` (the wire) |
+| **transport** | the call, the ring, the socket, the listen queue | derived from locality; overridable |
+| **codec** | what the value becomes on the far side | derived, or hand-written |
+| **contract** | the six terms (Part 6) | the terms themselves |
+| **failure domain** | what dies together | `supervise` / `on_crash` |
+
+**A value crosses in one of three DIRECTIONS, and that is the only distinction that
+matters:**
+
+1. **A CALL** — ask, then answer. HTTP *client*, RPC, a DB query, a remote `on` seat.
+   It answers a `Result`, it can fail in the transport's ways (Part 8), and it owes a
+   deadline.
+2. **A SEND** — one way, no answer (or an ack). A queue, a channel, an event, a metric, a
+   log line. It carries a *contract*: delivery, ordering, capacity, backpressure.
+3. **A ROLE** — the far side asks *us*. An HTTP **server**, a listener, a subscriber
+   callback. The program answers a `Source<Request>` and consumes a `Sink<Response>`; the
+   boundary runs the loop, and the six terms apply to the *arrival* (capacity = the
+   backlog, overflow = what a full listen queue does, auth = who may arrive).
+
+**So the "HTTP server" is not a new subsystem.** It is a boundary of the third direction
+whose transport is a socket and whose contract is the listen queue's — and its handler is
+an ordinary fn the compiler already checks, taking `(req, who: Caller)`. The HTTP client
+is the first direction. A queue is the second. **They share the six terms, the adaptor
+law, the error model and the trace.** What differs is a transport and two directions.
+
+**THE CONSEQUENCE, and the reason this reframing is load-bearing:** everywhere a value
+crosses, the compiler can do exactly the same three things, and those three things are
+the whole design:
+
+- **DERIVE** what it can prove (locality, direction, crossability, the declared terms);
+- **REFUSE by name** what cannot be bridged (a guarantee that does not survive the
+  transport; a value that cannot cross; a boundary with no stated failure domain);
+- **SHOW its work** (`avra explain --topology`: every hop, every term, every generated
+  adaptor).
+
+**A boundary the compiler cannot see is a boundary with no contract.** That is why this
+belongs in the language and not in a client library: a signature that crosses a machine
+must SAY so, or the six terms are folklore and the failure modes are discovered in
+production. Parts 6–8 are therefore not an event system — **they are what "across" means
+in Avra**, and events, queues, HTTP, RPC and the database are its instances.
