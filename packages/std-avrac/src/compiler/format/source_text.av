@@ -1149,7 +1149,10 @@ impl SourceText {
                 depth,
                 exported +
                     joined(
-                        [source_name(word), source_name(inst)]
+                        [
+                            "${source_name(word)}${self.pins(self.store.targs_of_lit(value))}",
+                            source_name(inst),
+                        ]
                             .concat([self.instance_body(b, depth) for b in some_list(block)]),
                         " ",
                     ),
@@ -1439,7 +1442,7 @@ impl SourceText {
             ),
             .WaitArm(index, bind, head, guard, value) -> self.wait_arm(index, bind, head, guard, value, depth),
             .ElseArm(value) -> self.headed_arm("else -> ", value, depth),
-            .Collect(body) -> grouped(self.instance("collect", [body], null, depth), loosest_tier, parent),
+            .Collect(body) -> grouped(self.instance(id, "collect", [body], null, depth), loosest_tier, parent),
             .Call(callee, pins, args) -> {
                 let head = "${source_name(callee.of)}${self.pins(pins)}"
                 grouped(
@@ -1780,7 +1783,7 @@ impl SourceText {
         col: int = -1,
     ) -> string {
         let text? = self.store.grammar_lit_of(id) else {
-            let head = "${source_name(name)} "
+            let head = "${source_name(name)}${self.pins(self.store.targs_of_lit(id))} "
             return "${head}${self.struct_fields_text(id, fields, values, depth, col_after(head, resolved_col(col, depth)))}"
         }
         "grammar {${text}}"
@@ -2033,9 +2036,9 @@ impl SourceText {
     /// registry: a string, a `quote { … }`, or a word's own block.
     /// A component instance as written: its word, its head values, its
     /// block.
-    mut fn instance(word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
+    mut fn instance(id: ExprId, word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
         joined(
-            [source_name(word)]
+            ["${source_name(word)}${self.pins(self.store.targs_of_lit(id))}"]
                 .concat([self.head(e, depth) for e in heads])
                 .concat([self.instance_body(b, depth) for b in some_list(block)]),
             " ",
@@ -2055,9 +2058,9 @@ impl SourceText {
     /// head between its source and its block, every other instance its
     /// word, head values and block.
     mut fn keyed_instance(id: ExprId, word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
-        let key? = self.store.keyed_list_key(id) else { return self.instance(word, heads, block, depth) }
+        let key? = self.store.keyed_list_key(id) else { return self.instance(id, word, heads, block, depth) }
         joined(
-            [source_name(word)]
+            ["${source_name(word)}${self.pins(self.store.targs_of_lit(id))}"]
                 .concat([self.expression(e, loosest_tier, depth) for e in heads])
                 .concat(["by it.${self.keyed_field(key)}"])
                 .concat([self.instance_body(b, depth) for b in some_list(block)]),

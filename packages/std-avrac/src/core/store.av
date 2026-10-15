@@ -133,6 +133,11 @@ export type SyntaxArena = {
     // a `table<Row> { … }` literal's row type and header, by the
     // list it desugared to
     tables: Cell<List<TableSpec?>>,
+    // the type arguments a literal or instance writes after its name
+    // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
+    // struct literal they pin — the record's parameters, seated from
+    // the WRITTEN types rather than inferred from the fields
+    struct_targs: Cell<List<List<TypeRef>>>,
     // a written `{ … }`'s own closing-brace offset, by the Block whose
     // span `tail_scoped` narrowed to its lone tail value for
     // diagnostics — printing only, absent everywhere the node's own
@@ -198,6 +203,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
         tables: list_cell(),
+        struct_targs: list_cell(),
         written_close: list_cell(),
         quotes_at: map_cell(),
         sublangs: list_cell(),
@@ -269,6 +275,7 @@ impl SyntaxArena {
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
         self.tables.push(null)
+        self.struct_targs.push([])
         self.written_close.push(null)
         self.keyed_lists.push(null)
         self.on_handlers.push(null)
@@ -496,6 +503,34 @@ impl SyntaxArena {
     /// on every list that states no key, so `Tree` stays its lowering.
     fn mark_keyed_list(e: ExprId, key: ExprId) {
         self.keyed_lists.set_at(e.index, key)
+    }
+
+    /// The type arguments a literal writes after its name — part of
+    /// the expression's identity: `Box<int> { … }` and `Box<string> {
+    /// … }` are different literals even where their fields read alike.
+    fn mark_struct_targs(e: ExprId, args: List<TypeRef>) {
+        self.struct_targs.set_at(e.index, args)
+        if !args.is_empty() {
+            self
+                .expr_fingerprints
+                .set_at(
+                    e.index,
+                    fp(
+                        188,
+                        [self.expr_fingerprints.get()[e.index], fp_list([type_fp(a) for a in args])],
+                    ),
+                )
+        }
+    }
+
+    /// The written type arguments a literal carries, in written order.
+    fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.get()[e.index] }
+
+    /// The type arguments a literal OR instance writes: an instance's
+    /// live on its expansion's literal.
+    fn targs_of_lit(e: ExprId) -> List<TypeRef> {
+        let x? = self.expansion_of(e) else { return self.struct_targs_of(e) }
+        self.struct_targs_of(x)
     }
 
     fn keyed_list_key(e: ExprId) -> ExprId? {

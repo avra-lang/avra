@@ -81,14 +81,20 @@ export component within(limit: Code) {           // a VALUE head
 - TYPE PARAMETERS: `component Queue<T>(head: T) { … }` — the spelling a
   struct, enum and alias already take. Each parameter is its RECORD's,
   pinned by what an instance writes: the head's value, or a field's
-  (`slot { held: 7 }`). One component at two pins is two records, each
-  built for its own. A parameter nothing pins refuses by name; a bound
+  (`slot { held: 7 }`). An instance may also WRITE its arguments after the
+  word — `queue<Charge> charges { … }`, `Box<float> { held: 1.25 }` — the
+  same `<…>` a `type Name<T>` spells, so a head that is a NAME with no
+  value (a queue's `charges`) still seats its element type. One component
+  at two pins is two records, each built for its own. A parameter nothing
+  pins refuses by name; a wrong type-argument count, and arguments on a
+  record that takes none, refuse by name (`type.struct_targs`); a bound
   (`<T: Trait>`) is refused, naming the bound, because a bound lands on a
   free fn's parameters alone; a parameter names no value (`let x = T`
   answers "`T` is not defined"). A TEMPLATE's parameter cannot reach its
-  copied code — a written `T` there is an unknown type, and a `T`-typed
-  head spliced into a hole refuses — so a type parameter that must be
-  seated wants a record component.
+  copied code — a written `T` there is an unknown type, a `T`-typed head
+  spliced into a hole refuses, and a template's instance takes no written
+  type arguments — so a type parameter that must be seated wants a record
+  component.
 
 ## 3. The instance — one grammar
 
