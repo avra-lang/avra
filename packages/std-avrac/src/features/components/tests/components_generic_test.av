@@ -58,4 +58,28 @@ spec "features/components — type parameters" {
                 .trim() == "error[resolve.unresolved]: `T` is not defined\n  ╭─[/w/src/main.av:5:13]\n5 │     let x = T\n  ·             ┬\n  ·             ╰── not defined anywhere in this program\n──╯"
         }
     }
+    given "an instance's written type arguments" {
+        then "pin the parameter from the written type" {
+            answered(
+                over(
+                    "component slot<T> {\n    held: T\n}\nlet si = slot<int> { held: 42 }\n\"\${si.held}\"",
+                ),
+            ) == "42"
+        }
+        then "seat a named instance's parameter with no field value" {
+            answered(
+                over(
+                    "component queue<T> {\n    capacity: int = 1000\n}\nqueue<int> counts { capacity: 5 }\n\"\${counts.capacity}\"",
+                ),
+            ) == "5"
+        }
+        then "a wrong count is refused by name" {
+            refused_in(
+                over(
+                    "component slot<T> {\n    held: T\n}\nlet si = slot<int, int> { held: 1 }\nsi.held",
+                ),
+                "error[type.struct_targs]",
+            )
+        }
+    }
 }

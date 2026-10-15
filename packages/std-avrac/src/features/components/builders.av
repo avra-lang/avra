@@ -111,7 +111,8 @@ fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
 /// head value.
 fn build_component_value(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
-    b.wrap_expr(b.instance(word, [b.expr(1)?], b.expr(2)?, null)?)
+    let targs = b.type_refs(1)?
+    b.wrap_expr(b.instance(word, targs, [b.expr(2)?], b.expr(3)?, null)?)
 }
 
 /// `list visible() by it.id { t -> item { … } }` — a KEYED list. The
@@ -138,7 +139,7 @@ fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
     let stmts = keyed_loop_body(b.store, parts.body, key, b.span)
     let loop_stmt = b.store.alloc_stmt(Stmt.ForEach(null, Scoped(binder), source, stmts), b.span)
     let loop_block = b.store.alloc_expr(Expr.Block([loop_stmt], null), b.span)
-    let built = b.instance(word, [], loop_block, null)?
+    let built = b.instance(word, [], [], loop_block, null)?
     match b.store.expr(built) {
         .Component(_, _, _, .Expanded(lit), check) -> {
             let inst = b
@@ -196,15 +197,17 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
 /// record literal's.
 fn build_component_name_head(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
-    let head = b.token(1)?
-    if !(b.exprs(3)?).is_empty() { return .Err("${braced_head(head.text)} — ${parenthesised_head(word.word, head.text)}") }
+    let targs = b.type_refs(1)?
+    let head = b.token(2)?
+    if !(b.exprs(4)?).is_empty() { return .Err("${braced_head(head.text)} — ${parenthesised_head(word.word, head.text)}") }
     b
         .wrap_expr(
             b
                 .instance(
                     word,
+                    targs,
                     [b.store.alloc_expr(Expr.Ident(Scoped(head.text)), head.span)],
-                    b.expr(2)?,
+                    b.expr(3)?,
                     null,
                 )?,
         )
@@ -213,25 +216,27 @@ fn build_component_name_head(b: Builder) -> Result<LangNode, string> {
 /// `row { … }` — an instance with no head value.
 fn build_component_headless(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
-    b.wrap_expr(b.instance(word, [], b.expr(1)?, null)?)
+    let targs = b.type_refs(1)?
+    b.wrap_expr(b.instance(word, targs, [], b.expr(2)?, null)?)
 }
 
 /// `within ms(5)` — a head with no block after it.
 fn build_component_blockless(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
-    b.wrap_expr(b.instance(word, [b.expr(1)?], null, null)?)
+    let targs = b.type_refs(1)?
+    b.wrap_expr(b.instance(word, targs, [b.expr(2)?], null, null)?)
 }
 
 /// `table orders { … }` at a statement: a record without a head BINDS
 /// the name, and fills its `name` field; any other component reads the
 /// name as its head value.
 fn build_component_named(b: Builder) -> Result<LangNode, string> {
-    b.named(b.word_at(0)?, b.token(1)?, b.expr(2)?)
+    b.named(b.word_at(0)?, b.type_refs(1)?, b.token(2)?, b.expr(3)?)
 }
 
 /// `secret stripe_key` — a named instance with no block.
 fn build_component_named_bare(b: Builder) -> Result<LangNode, string> {
-    b.named(b.word_at(0)?, b.token(1)?, null)
+    b.named(b.word_at(0)?, b.type_refs(1)?, b.token(2)?, null)
 }
 
 /// An instance's body: its settings and statements as written — the
@@ -382,17 +387,23 @@ impl Builder {
         )
     }
 
-    fn named(word: ComponentWord, n: Token, body: ExprId?) -> Result<LangNode, string> {
+    fn named(word: ComponentWord, targs: List<TypeRef>, n: Token, body: ExprId?) -> Result<
+        LangNode,
+        string,
+    > {
         match word.form {
-            .Record(r) -> if r.head.is_empty() { self.bound(word, n, body) } else { self.wrap_expr_stmt(self.instance(word, [self.name_value(n)], body, null)?) },
-            .Template(_) or .Refused(_) or .Unread -> self.wrap_expr_stmt(self.instance(word, [self.name_value(n)], body, null)?),
+            .Record(r) -> if r.head.is_empty() { self.bound(word, targs, n, body) } else { self.wrap_expr_stmt(self.instance(word, targs, [self.name_value(n)], body, null)?) },
+            .Template(_) or .Refused(_) or .Unread -> self.wrap_expr_stmt(self.instance(word, targs, [self.name_value(n)], body, null)?),
         }
     }
 
     /// A headless record's named instance: `let n =` the instance, which
     /// the printer spells back as it was written.
-    fn bound(word: ComponentWord, n: Token, body: ExprId?) -> Result<LangNode, string> {
-        let value = self.instance(word, [], body, n.text)?
+    fn bound(word: ComponentWord, targs: List<TypeRef>, n: Token, body: ExprId?) -> Result<
+        LangNode,
+        string,
+    > {
+        let value = self.instance(word, targs, [], body, n.text)?
         let s = self.store.alloc_stmt(Stmt.Let(Scoped(n.text), null, value), self.span)
         self.store.mark_component_inst(s, word.declared)
         self.store.mark_instance_owner(value, s)
@@ -412,22 +423,29 @@ impl Builder {
 
     /// An instance: its component's template copied in place, or a
     /// literal of its record. `body` is absent when no block was written.
-    fn instance(word: ComponentWord, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<
-        ExprId,
-        string,
-    > {
+    fn instance(
+        word: ComponentWord,
+        targs: List<TypeRef>,
+        heads: List<ExprId>,
+        body: ExprId?,
+        name: string?,
+    ) -> Result<ExprId, string> {
         match word.form {
-            .Template(t) -> self.templated(word, t, heads, body),
-            .Record(r) -> self.recorded(word.word, r, heads, body, name),
+            .Template(t) -> self.templated(word, targs, t, heads, body),
+            .Record(r) -> self.recorded(word.word, targs, r, heads, body, name),
             .Refused(why) -> .Err(why),
             .Unread -> .Ok(self.store.alloc_expr(Expr.Error, self.span)),
         }
     }
 
-    fn templated(word: ComponentWord, t: Template, heads: List<ExprId>, body: ExprId?) -> Result<
-        ExprId,
-        string,
-    > {
+    fn templated(
+        word: ComponentWord,
+        targs: List<TypeRef>,
+        t: Template,
+        heads: List<ExprId>,
+        body: ExprId?,
+    ) -> Result<ExprId, string> {
+        if !targs.is_empty() { return .Err(template_targs(word.word)) }
         if heads.is_empty() { return .Err(headless(word.word)) }
         if t.head.length != 1 { return .Err(head_count(word.word, t.head.length)) }
         if body == null { return .Err(blockless(word.word)) }
@@ -451,10 +469,14 @@ impl Builder {
     /// the body's other statements
     /// `collect`ed into its one open `List` field — or, for a body
     /// written as a fn, that fn in the record's one fn field.
-    fn recorded(word: string, r: Record, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<
-        ExprId,
-        string,
-    > {
+    fn recorded(
+        word: string,
+        targs: List<TypeRef>,
+        r: Record,
+        heads: List<ExprId>,
+        body: ExprId?,
+        name: string?,
+    ) -> Result<ExprId, string> {
         if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
         let written_fn: ExprId? = if body != null && self.store.lambda_parts(body!) != null { self.tailed(body!, r.fn_optional) } else { null }
         let fn_filled = if written_fn == null { [] } else { [Field { name: r.fn_field ?? "", value: written_fn! }] }
@@ -480,6 +502,7 @@ impl Builder {
                     .StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]),
                 self.span,
             )
+        self.store.mark_struct_targs(literal, targs)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
         .Ok(
             self
@@ -785,6 +808,12 @@ fn keyed_binder(word: string) -> string {
 
 fn head_count(word: string, n: int) -> string {
     "`${word}` declares ${n} head fields, and its instance writes one value"
+}
+
+/// A TEMPLATE's instance writing type arguments: a template copies its
+/// code, so a written type has no seat — a RECORD component seats one.
+fn template_targs(word: string) -> string {
+    "a template's instance writes no type arguments — `${word}` copies code, where a written type has no seat; a RECORD component seats one"
 }
 
 fn foreign_member() -> string {
