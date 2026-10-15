@@ -1,0 +1,52 @@
+//! PING-PONG in Avra: two tasks alternate over a pair of rendezvous
+//! channels — `open_channel<int>(0)`, capacity zero, so both legs of a
+//! trip park. Prints `pingpong_ns` per round trip and `pingpong_rounds`.
+use @std.io.{env_or}
+use @std.text.{parse_int}
+use @std.time.{now_ns}
+use @std.task.{Channel, open_channel}
+
+/// The benchmark's environment value, or its default.
+fn env_int(name: string, fallback: int) -> int {
+    parse_int(env_or(name, "${fallback}")) ?? fallback
+}
+
+/// Take a ping, answer a pong — n times.
+fn ponger(to_pong: Channel<int>, to_ping: Channel<int>, n: int) {
+    mut i = 0
+    while i < n {
+        let got = to_pong.source.next()
+        if got == null { return }
+        let _ = to_ping.sink.send(1)
+        i = i + 1
+    }
+}
+
+/// One rally: n round trips, timed from the first send to the last answer.
+fn rally(n: int) -> int {
+    let to_pong = open_channel<int>(0)
+    let to_ping = open_channel<int>(0)
+    let t = spawn ponger(to_pong, to_ping, n)
+    let t0 = now_ns()
+    mut i = 0
+    while i < n {
+        let _ = to_pong.sink.send(1)
+        let _ = to_ping.source.next()
+        i = i + 1
+    }
+    let spent = now_ns() - t0
+    t.await
+    spent
+}
+
+let n = env_int("BENCH_N", 100000)
+let rounds = env_int("BENCH_ROUNDS", 5)
+mut best = 0
+mut r = 0
+while r < rounds {
+    let s = rally(n)
+    if r == 0 || s < best { best = s }
+    r = r + 1
+}
+println("pingpong_ns\t${best / n}\tns\t${rounds}")
+println("pingpong_rounds\t${n}\tops\t${rounds}")
