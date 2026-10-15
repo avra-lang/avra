@@ -253,3 +253,104 @@ nothing, but it DOES add a hop and can drop where its terms allow), so it is spo
 `avra explain` names every inserted adaptor and its terms, and a program that would
 need one where the fit is unbridgeable is refused at the wire. **P7: the magic is
 visible; P8: the adaptor is the explicit form of what the compiler would insert.**
+
+---
+
+# Part 8 — The crossing: components on different machines, and production
+(2026-10-15 · the deployment half of Part 7)
+
+## A wire between machines has no queue in it
+An author writes a SOURCE into a SEAT, and that is all:
+```avra
+// machine A: the sensor site                 // machine B: the analysis site
+component feed { fn readings() -> Source<Reading> { … } }
+worker analyse { reads: feed_readings, each: classify }
+
+feed.readings |> analyse.ingest      // Source<Reading>  |>  a seat — one pipe, no queue named
+```
+**Locality forces the async.** A same-machine seat can be a direct call; across a machine
+(LATENCY, a separate failure domain) it CANNOT be — so the compiler **generates the
+crossing**: serialize, transport, de-serialize, deliver. That generated thing *is* a
+queue (a transport always buffers), and it is **visible** (`avra explain --topology`:
+the graph, the machine boundaries, every generated hop and its terms).
+
+**"Smart" has a precise meaning, and it is bounded.** The compiler derives the terms it
+can PROVE from the endpoints (locality, sync/async, the value's crossability, the sink's
+declared `delivery`/`order`) and **never invents what it cannot see**:
+- it never chooses a **buffer size** (a rate is dynamic — a buffer is the author's
+  decision);
+- it never fabricates a **guarantee** — `delivery` and `ordering` are NOT adaptable, so a
+  wire that needs them un-bridged is **refused by name**, not silently upgraded;
+- it never copies a value that **cannot cross** (`flow.crossing` — a `Sink`, a closure, a
+  fn value). **The refusal is the feature:** the adaptor is insertable only because the
+  compiler already knows what may cross.
+
+## The deployment terms
+Placement is a TERM, so topology is data:
+```avra
+queue<Reading> uplink { delivery: .exactly_once, order: .by_key, remote: "site-b",
+                        trace: .propagate, auth: .required("ingest") }
+component feed { on: .machine("site-a") }
+worker analyse { on: .cores, reads: uplink, each: classify }
+```
+Move a component and every wire to it re-derives its crossing. A remote sink asking for
+`.exactly_once` with **no durable home** (the store, FLOW 09) is REFUSED — main's
+in-memory queue cannot promise it across a failure domain.
+
+## Auth: identity is a VALUE that rides the crossing
+Like the trace context, the CALLER rides the work — never an ambient global:
+```avra
+fn classify(d: Delivery<Reading>, who: Caller) -> Result<Kind, string> {
+    if !who.may("ingest") { fail "not permitted to ingest" }
+    …
+}
+```
+- `auth:` on the wire is a TERM (`.required(scope)`, `.inherited`, `.none`), and the
+  callee's seat declares what it needs — so **the fit is checked**: a wire into a seat
+  requiring `"ingest"` from a caller that cannot present it is refused at the wire.
+- A `Caller` is a value (a principal + its claims + the trace context), minted where the
+  program's edge authenticates and carried by the `Delivery`. **Secrets are never in the
+  code**: they are read through the input door at the edge, like any world read.
+- The same shape serves a local call (a `Caller` for an in-process dispatch) — one
+  concept, no "this one is remote" branch in the handler.
+
+## Error handling: a remote call FAILS IN MORE WAYS
+A local call answers its own errors; a remote one adds a transport's:
+```avra
+enum CallError = Unreachable | Refused | TimedOut | Remote(E)
+```
+- **Every remote call carries a deadline.** A `within` is the default, not an option — a
+  call with no bound is a hang dressed as a call, and the terms say so.
+- **A retry needs an idempotency key or it is a double effect.** The `Delivery`'s key is
+  the dedupe handle (FLOW 08); a wire that retries into a handler with effects and no key
+  is REFUSED, not retried hopefully.
+- **The failure domain is a term.** `on_crash`/`supervise` (Part 6) is how a peer that
+  died comes back; a caller that must not wait forever pairs a deadline with a **circuit
+  breaker** (a term: after N failures, refuse at once rather than time out) — otherwise a
+  dead peer costs every caller its deadline.
+
+## The production checklist (every item is a term, a type, or a refusal)
+| concern | the answer |
+|---|---|
+| identity / permissions | `auth:` term + a `Caller` value; the fit is checked at the wire |
+| secrets | the input door at the edge; never a literal in source |
+| deadlines | a remote call carries `within` by default (`TimedOut`) |
+| retries / idempotency | a key on the `Delivery`; no key + effects ⇒ refused |
+| ordering | `order: .by_key` (per-partition FIFO); unordered is stated, never assumed |
+| delivery | the queue's `delivery:`; un-bridgeable ⇒ refused |
+| backpressure across the wire | the sink's `overflow:` (park / latest / drop) |
+| rate limits / quotas | terms on the wire (`rate:`, `quota:`) — a world read at the edge tells the current use |
+| circuit breaking | a term: after N failures, refuse at once |
+| service discovery | the `remote:` term resolves through the input door (never a hard-coded address) |
+| versioning | the crossing law: GROWTH (append fields) is safe, MOVING is breaking; the codec is derived, so a peer's older shape is a compile-time fact, not a runtime surprise |
+| observability | `trace: .propagate` + the state-read model (Part 6); `observe.av` is replaced |
+| health / readiness | a source (`every(secs(5)) -> Health`) — a service's health is data |
+| graceful shutdown | `supervise` + a `Cancelled` value to whoever watches (FLOW 03) |
+| audit | a queue whose `delivery: .exactly_once` and `dead:` record what was done |
+| tenancy | a key part / a `Caller` claim; every row and every wire names whose it is |
+| capacity planning | the generated crossings are COUNTED (`avra explain --topology`), so the fan-out is a number, not a hope |
+
+**One line:** everything a production system argues about is either a **term** (a value
+the author writes), a **law** (a `check`, the typer, or a `rule`), or a **refusal** (the
+wire that cannot be bridged). None of it is a convention, and none of it is a doc the
+compiler does not read.
