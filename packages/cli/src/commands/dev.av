@@ -28,7 +28,7 @@ use @std.http.sse.{Event, Next, Source, Resume, event_stream, quiet_default}
 use @std.net.{Bell, Listener}
 use @std.io.{IoError, read_text, stamp}
 use @std.io.watch.{Watch, watch}
-use @std.task.{Sig, signals, Source as Supply}
+use @std.task.{signals, Signals as Supply}
 use @std.path.{joined_path, file_name}
 use @std.process.{Tool, cmd, inherited}
 use @std.text.{parse_int}
@@ -131,7 +131,7 @@ fn hosted(
     // own, and the yield lets it park and file its waiters before the
     // accept or the loop does, so no signal falls in the gap.
     // LICENSED input.live_process: a running dev server parks on the process's own signals, and no compile answer reads it
-    let quit: Supply<Sig> = signals([.Int, .Term])
+    let quit: Supply = signals([.Int, .Term])
     let stopper = spawn stopped_by(quit)
     sleep(ms(0))
     let bound = match site.listening() {
@@ -155,7 +155,7 @@ fn untended(stop: Task<bool>) { let _ = stop.await }
 
 /// The task that ends when a signal arrives: its ending is a `select`'s
 /// stop arm, so a signal and a save are waited on together.
-fn stopped_by(quit: Supply<Sig>) -> bool {
+fn stopped_by(quit: Supply) -> bool {
     let _ = quit.next()
     true
 }

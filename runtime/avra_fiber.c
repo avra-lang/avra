@@ -701,6 +701,7 @@ typedef struct { Waiter* head[2]; Waiter* tail[2]; int armed; int ready; } FdWai
 
 static int g_poller = -1;
 static void fd_drained(int64_t fd);
+static void sig_disarm(int sig);
 static int64_t g_parked_fds = 0;
 static FdWaits* g_fds = NULL;
 static size_t g_fds_cap = 0;
@@ -713,6 +714,15 @@ static size_t g_fds_cap = 0;
 static Waiter* g_sig_head[NSIG];
 static Waiter* g_sig_tail[NSIG];
 static unsigned char g_sig_armed[NSIG];
+#if AVRA_KQUEUE
+// The disposition each armed signal had before Avra spent it, given back
+// when the last waiter leaves.
+static struct sigaction g_sig_prior[NSIG];
+#else
+// Whether the signal was already blocked before Avra did, so a disarm
+// never unblocks what it did not block.
+static unsigned char g_sig_was_blocked[NSIG];
+#endif
 #if AVRA_EPOLL
 // ONE signalfd FOR THE PROCESS: every armed signal is blocked and named
 // in its mask, and a readable signalfd carries which one arrived.
@@ -869,6 +879,7 @@ static void waiter_out(Waiter* w) {
     if (w->prev) w->prev->next = w->next; else *head = w->next;
     if (w->next) w->next->prev = w->prev; else *tail = w->prev;
     w->next = w->prev = NULL;
+    if (w->kind == W_SIG && !g_sig_head[w->on.sig]) sig_disarm(w->on.sig);
     if (w->kind == W_GATE) avra_rc_release(w->on.gate);
     else g_parked_fds--;
 }
@@ -1031,38 +1042,102 @@ static void sig_ready(int sig) {
     while (g_sig_head[sig]) waiter_claims(g_sig_head[sig], BY_POLLER);
 }
 
+// The platform's number for a signal KIND: the `Sig` variant index, the
+// one currency a portable Avra enum and this C share. Every kind is
+// named; an unknown one is a defect, never a signal.
+int64_t avra_sig_number(int64_t kind) {
+    switch (kind) {
+        case 0: return SIGHUP;
+        case 1: return SIGINT;
+        case 2: return SIGQUIT;
+        case 3: return SIGTERM;
+        case 4: return SIGUSR1;
+        case 5: return SIGUSR2;
+        case 6: return SIGPIPE;
+        case 7: return SIGALRM;
+        case 8: return SIGCHLD;
+        default: avra_trap("a signal kind the runtime does not know");
+    }
+    return 0;
+}
+
+// The wait over `sig` is done: the poller's registration goes, and the
+// disposition Avra spent is given back, so the signal is the process's
+// own again — a child forked later dies to it as it did before.
+// Idempotent.
+static void sig_disarm(int sig) {
+    if (sig <= 0 || sig >= NSIG || !g_sig_armed[sig]) return;
+    g_sig_armed[sig] = 0;
+#if AVRA_KQUEUE
+    if (g_poller >= 0) {
+        struct kevent ev;
+        EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+        kevent(g_poller, &ev, 1, NULL, 0, NULL);
+    }
+    sigaction(sig, &g_sig_prior[sig], NULL);
+#else
+    sigdelset(&g_sig_mask, sig);
+    if (g_signalfd >= 0) (void)signalfd(g_signalfd, &g_sig_mask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (!g_sig_was_blocked[sig]) {
+        sigset_t set;
+        sigemptyset(&set);
+        sigaddset(&set, sig);
+        sigprocmask(SIG_UNBLOCK, &set, NULL);
+    }
+#endif
+}
+
 // The poller is told to watch `sig` ONCE: kqueue's signal filter reports
 // it, a signalfd reads it. The process ignores (Darwin) or blocks
 // (Linux) the signal while a task waits on it, so its default action is
-// spent on the wait rather than on the process.
+// spent on the wait rather than on the process. THE DISPOSITION IS
+// SPENT BEFORE THE WAIT IS FILED: a signal that arrives between the
+// file and the arm would take its default action, so the arm comes
+// first and the filer is the one that races nothing.
 static int sig_arm(int sig) {
     if (sig <= 0 || sig >= NSIG) return 0;
     if (g_sig_armed[sig]) return 1;
 #if AVRA_KQUEUE
+    struct sigaction prior;
+    if (sigaction(sig, NULL, &prior) != 0) return 0;
+    signal(sig, SIG_IGN);
     struct kevent ev;
     EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 0, NULL);
-    if (kevent(g_poller, &ev, 1, NULL, 0, NULL) != 0) return 0;
-    signal(sig, SIG_IGN);
+    if (kevent(g_poller, &ev, 1, NULL, 0, NULL) != 0) {
+        sigaction(sig, &prior, NULL);
+        return 0;
+    }
+    g_sig_prior[sig] = prior;
 #else
     if (!g_sig_mask_ready) {
         sigemptyset(&g_sig_mask);
         g_sig_mask_ready = 1;
     }
     sigset_t set;
+    sigset_t old;
     sigemptyset(&set);
     sigaddset(&set, sig);
-    if (sigprocmask(SIG_BLOCK, &set, NULL) != 0) return 0;
+    if (sigprocmask(SIG_BLOCK, &set, &old) != 0) return 0;
+    g_sig_was_blocked[sig] = sigismember(&old, sig) ? 1 : 0;
     sigaddset(&g_sig_mask, sig);
     if (g_signalfd < 0) {
         g_signalfd = signalfd(-1, &g_sig_mask, SFD_NONBLOCK | SFD_CLOEXEC);
-        if (g_signalfd < 0) return 0;
+        if (g_signalfd < 0) {
+            sigdelset(&g_sig_mask, sig);
+            if (!g_sig_was_blocked[sig]) sigprocmask(SIG_UNBLOCK, &set, NULL);
+            return 0;
+        }
         struct epoll_event ev = { .events = EPOLLIN | EPOLLET, .data.fd = g_signalfd };
         if (epoll_ctl(g_poller, EPOLL_CTL_ADD, g_signalfd, &ev) != 0) {
             close(g_signalfd);
             g_signalfd = -1;
+            sigdelset(&g_sig_mask, sig);
+            if (!g_sig_was_blocked[sig]) sigprocmask(SIG_UNBLOCK, &set, NULL);
             return 0;
         }
     } else if (signalfd(g_signalfd, &g_sig_mask, SFD_NONBLOCK | SFD_CLOEXEC) < 0) {
+        sigdelset(&g_sig_mask, sig);
+        if (!g_sig_was_blocked[sig]) sigprocmask(SIG_UNBLOCK, &set, NULL);
         return 0;
     }
 #endif
@@ -1879,15 +1954,20 @@ static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
 // A signal a task waits on: one signal per waiter, so a source watching
 // several files each as its own member. A signal the poller cannot watch
 // is ready now, as a descriptor the poller refuses is.
-static void waits_sig(Fiber* f, int64_t sig, int64_t arm, int64_t member) {
+static void waits_sig(Fiber* f, int64_t kind, int64_t arm, int64_t member) {
     if (f->claimed) return;
+    int64_t sig = avra_sig_number(kind);
     if (sig <= 0 || sig >= NSIG) { set_claimed(f, (int32_t)arm, (int32_t)member, BY_POLLER); return; }
     poller_open();
+    // THE DISPOSITION IS SPENT BEFORE THE WAITER IS FILED: a signal in the
+    // window between filing and arming would take its default action, and
+    // arming first spends it on the wait — the poller reports it, and the
+    // waiter is filed before the scheduler next polls, so nothing is lost.
+    if (!sig_arm((int)sig)) { set_claimed(f, (int32_t)arm, (int32_t)member, BY_POLLER); return; }
     Waiter* w = waiter_new(f, W_SIG, arm, member);
     w->on.sig = (int)sig;
     waiter_filed(w);
-    if (!sig_arm((int)sig)) waiter_claims(w, BY_POLLER);
-    else if (TRACING) traced_waiter(f, w);
+    if (TRACING) traced_waiter(f, w);
 }
 
 static void unwind_cleared(void);
@@ -2698,6 +2778,9 @@ void avra_fiber_forked(void) {
     g_ready_head = g_ready_tail = NULL;
     g_parked_fds = 0;
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
+    // THE CHILD OWES NO SIGNAL THE PARENT SPENT: every disposition Avra
+    // installed is given back, so a child is the process's own again.
+    for (int i = 1; i < NSIG; i++) sig_disarm(i);
     memset(g_sig_head, 0, sizeof g_sig_head);
     memset(g_sig_tail, 0, sizeof g_sig_tail);
     memset(g_sig_armed, 0, sizeof g_sig_armed);
