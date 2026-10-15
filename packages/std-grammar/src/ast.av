@@ -38,6 +38,11 @@ impl Grammar {
 
 fn alt_words(a: Alt) -> List<string> {
     flatten([item_words(x) for x in a.items()])
+        .concat(flatten([operator_words(s) for s in a.seqs()]))
+}
+
+fn operator_words(s: Seq) -> List<string> {
+    [w for w in s.operators?.lits ?? [] if !w.is_empty() && is_name_start(w.char_code(0))]
 }
 
 fn item_words(x: Item) -> List<string> {
@@ -73,8 +78,51 @@ export type BranchStart = {
 /// One branch of an Alt: items that must appear in order, plus the
 /// branch's build directive and recovery policy. No build means
 /// pass-through of the single sub-result. `start` is computed at
-/// `ready`, never authored.
-export type Seq = { items: List<Item>, build: Build?, recover: Recover?, start: BranchStart? = null }
+/// `ready`, never authored. `operators` turns the branch into a
+/// precedence climb over its one operand item: the build is the
+/// default of every tier, called with the captures `l`, `op` and `r`.
+export type Seq = {
+    items: List<Item>,
+    build: Build?,
+    recover: Recover?,
+    start: BranchStart? = null,
+    operators: Operators? = null,
+}
+
+/// How a tier groups its own operators. `Single` leaves a second
+/// operator of the tier unconsumed; `Unmixed` groups left and asks
+/// the named builder, with the run's first operator and each later
+/// one, whether the two may share a run.
+export enum Assoc {
+    Left
+    Single
+    Unmixed(refusal: string)
+}
+
+/// An operator whose right side is a rule, not an operand (`is`).
+export type Suffix = { word: string, rule: string }
+
+/// One precedence tier; the tiers of an `Operators` run loosest
+/// first. A word is the tokens of one operator, adjacent (`>` `>`).
+/// A tier's own `build` overrides the branch's.
+export type Tier = { assoc: Assoc, words: List<List<string>>, suffixes: List<Suffix>, build: Build? }
+
+/// One operator the climb can take, tightest tier first.
+export type OpEntry = { words: List<string>, tier: int, rule: string? }
+
+/// The tiers and what the climb reads off them, filled by
+/// `operators_of`: `entries` tightest first and `by_first` the same
+/// keyed by an operator's first token, `expects[i]` the words a miss
+/// at tier `i` expects, `reach[m]` those from tier `m` up (tightest
+/// first), `lits` every literal written.
+export type Operators = {
+    tiers: List<Tier>,
+    entries: List<OpEntry>,
+    by_first: Map<string, List<OpEntry>>,
+    expects: List<List<string>>,
+    reach: List<List<string>>,
+    lits: List<string>,
+}
 
 /// One thing in a sequence: an atom wearing up to three modifiers — an
 /// optional capture label, a repetition, and an optional missing-token
@@ -189,8 +237,8 @@ fn nested_seq(outer: Seq, inner: Seq) -> Seq {
 export enum Rep { One, Star, Plus, Opt }
 
 /// What an Item actually is. `NotChar` is a LEXICON's own —
-/// character-level matching, the way `Lit`/`Named` work at the token
-/// level; a parsing grammar's rules never carry it.
+/// character-tier matching, the way `Lit`/`Named` work at the token
+/// tier; a parsing grammar's rules never carry it.
 export enum Prim {
     /// Another rule's name — recurse into it.
     Ref(rule: string)

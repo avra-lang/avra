@@ -37,6 +37,11 @@ use ast.{
     BranchStart,
     StartTerm,
     Slot,
+    Build,
+    Operators,
+    OpEntry,
+    Tier,
+    Assoc,
     listed_grammar,
     node_builder_name,
 }
@@ -608,12 +613,31 @@ fn match_seq<T, N>(
             return matched<T, N>(c, bindings, cx.absent, diagnostics, farthest)
         }
     }
+    if s.operators != null {
+        let climbed = climb<T, N>(
+            cx,
+            Climbing {
+                rule_name: rule_name,
+                ops: s.operators!,
+                operand: s.items[0],
+                directive: s.build,
+                capped: capped,
+            },
+            vals[0],
+            entry,
+            cursor,
+            0,
+            diagnostics,
+            farthest,
+        )
+        return climbed with { bindings: bindings }
+    }
     // Build phase. The branch's consumed range is the builder's span.
     // A BUILDER'S WORDS ARE ITS CLAIM, carried whole: the words say
     // the law or the defect, `Cause` says the category, and neither
     // restates the other.
     let branch = consumed_loc<T>(cx.lex, cx.tokens, entry, cursor)
-    match built<T, N>(cx, s, bindings, vals, branch) {
+    match built<T, N>(cx, s.build, bindings, vals, branch) {
         .Ok(v) -> matched<T, N>(cursor, bindings, v, diagnostics, farthest),
         // a branch that already spoke has said why — the build it spoils says nothing new
         .Err(_) if !diagnostics.is_empty() -> matched<T, N>(cursor, bindings, cx.absent, diagnostics, farthest),
@@ -637,7 +661,7 @@ fn match_seq<T, N>(
 /// builder called over its named captures.
 fn built<T, N>(
     cx: MatchContext<T, N>,
-    s: Seq,
+    directive: Build?,
     bindings: List<Binding<T, N>>,
     vals: List<Captured<T, N>>,
     branch: Loc?,
@@ -645,11 +669,11 @@ fn built<T, N>(
     // A pass-through branch carries exactly one item — the validator
     // says so where a value is needed, and an empty one would index
     // nothing, so it refuses through the builder's own channel.
-    if s.build == null {
+    if directive == null {
         let only? = vals.first() else { return .Err("a pass-through branch captured nothing") }
         return .Ok(only)
     }
-    match s.build! {
+    match directive! {
         .Var(name) -> .Ok(binding_for<T, N>(bindings, name) ?? cx.absent),
         .Call(name, args) -> cx.build(name, [binding_for<T, N>(bindings, a) ?? cx.absent for a in args], branch),
         .Node(owner, variant, _, slots) -> if slots == null {
@@ -1094,4 +1118,281 @@ fn run_as<T, N>(
             )
     }
     RunOutcome { result: r.value, diagnostics: diagnostics }
+}
+
+/// What one precedence climb reads: the branch's operand and tiers,
+/// and the build a tier without its own falls back to.
+type Climbing = {
+    rule_name: string,
+    ops: Operators,
+    operand: Item,
+    directive: Build?,
+    capped: bool,
+}
+
+/// One operator taken: where it stood, which tier, what stood to its
+/// right and where the right side ended.
+type Taken<T, N> = {
+    status: MatchStatus,
+    tier: int,
+    op_at: int,
+    rhs: Captured<T, N>,
+    cursor: int,
+    diagnostics: List<Diagnostic>,
+    farthest: FarthestFailure?,
+}
+
+fn untaken<T, N>(cx: MatchContext<T, N>, status: MatchStatus, farthest: FarthestFailure?) -> Taken<
+    T,
+    N,
+> {
+    Taken {
+        status: status,
+        tier: 0,
+        op_at: 0,
+        rhs: cx.absent,
+        cursor: 0,
+        diagnostics: cx.silence,
+        farthest: farthest,
+    }
+}
+
+/// PRECEDENCE CLIMBING over `k.ops`: `left`, which began at `start`
+/// and ended at `from`, takes every operator of tier `min` and
+/// tighter that follows. A taken operator's right side is an operand
+/// climbed at the next tighter tier, so a tier groups to the left;
+/// a `Single` tier takes no second operator of its own, and an
+/// `Unmixed` one asks its builder about each operator after the first
+/// of a run. Answers a hit at the end of what was taken, or a fatal.
+fn climb<T, N>(
+    mut cx: MatchContext<T, N>,
+    k: Climbing,
+    left0: Captured<T, N>,
+    start: int,
+    from: int,
+    min: int,
+    diagnostics0: List<Diagnostic>,
+    farthest0: FarthestFailure?,
+) -> MatchResult<T, N> {
+    mut left = left0
+    mut cursor = from
+    mut diagnostics = diagnostics0
+    mut farthest = farthest0
+    mut spent = 0 - 1
+    mut run_tier = 0 - 1
+    mut run_first = 0
+    mut refused: List<string> = []
+    while true {
+        let t = one_operator<T, N>(cx, k, cursor, min, spent)
+        farthest = far_merge(farthest, t.farthest)
+        if t.status == MatchStatus.Fatal {
+            return fatal_defect<T, N>(cx, cursor, [], diagnostics.concat(t.diagnostics), farthest)
+        }
+        if t.status != MatchStatus.Hit { break }
+        let tier = k.ops.tiers[t.tier]
+        if run_tier != t.tier {
+            if !refused.is_empty() { return refused_run<T, N>(cx, k, refused[0], start, cursor, diagnostics, farthest) }
+            run_tier = t.tier
+            run_first = t.op_at
+        } else if refused.is_empty() {
+            refused = mixing<T, N>(cx, tier, run_first, t.op_at, start, t.cursor)
+        }
+        diagnostics = diagnostics.concat(t.diagnostics)
+        let paired = pair<T, N>(cx, k, tier, left, t, start)
+        match paired {
+            .Ok(v) -> { left = v },
+            .Err(m) -> { return refused_run<T, N>(cx, k, m, start, t.cursor, diagnostics, farthest) },
+        }
+        cursor = t.cursor
+        spent = if tier.assoc.spends() { t.tier } else { 0 - 1 }
+    }
+    if !refused.is_empty() { return refused_run<T, N>(cx, k, refused[0], start, cursor, diagnostics, farthest) }
+    farthest = far_merge(
+        farthest,
+        cx.miss_story(cursor, k.rule_name, k.ops.expected_from(min, spent)),
+    )
+    matched<T, N>(cursor, [], left, diagnostics, farthest)
+}
+
+impl Assoc {
+    /// Whether a second operator of the same tier is left unconsumed.
+    fn spends() -> bool {
+        match self { .Single -> true, .Left or .Unmixed(_) -> false }
+    }
+}
+
+impl Operators {
+    /// The words a miss expects from tier `min` up, less the tier a
+    /// `Single` operator just spent.
+    fn expected_from(min: int, spent: int) -> List<string> {
+        if spent < 0 { return self.reach[min] }
+        distinct(
+            flatten(
+                [self.expects[i] for i in tightest_tiers(self.tiers.length) if i >= min && i != spent],
+            ),
+        )
+    }
+}
+
+fn tightest_tiers(n: int) -> List<int> {
+    [n - 1 - i for i in 0..n]
+}
+
+/// The first operator at `cursor`, tightest tier first, whose right
+/// side also matches; an operator whose right side fails leaves the
+/// next candidate its turn.
+fn one_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, cursor: int, min: int, spent: int) -> Taken<
+    T,
+    N,
+> {
+    let entries = k.ops.by_first.get(cx.lex.text(cx.tokens[cursor])) ?? []
+    first_taken<T, N>(cx, k, entries, 0, cursor, min, spent, null)
+}
+
+/// `one_operator` from candidate `at` on, `farthest` carrying what the
+/// ones before it reached.
+fn first_taken<T, N>(
+    mut cx: MatchContext<T, N>,
+    k: Climbing,
+    entries: List<OpEntry>,
+    at: int,
+    cursor: int,
+    min: int,
+    spent: int,
+    farthest: FarthestFailure?,
+) -> Taken<T, N> {
+    if at >= entries.length { return untaken<T, N>(cx, MatchStatus.Miss, farthest) }
+    let e = entries[at]
+    if e.tier < min || e.tier == spent { return first_taken<T, N>(cx, k, entries, at + 1, cursor, min, spent, farthest) }
+    let t = take_operator<T, N>(cx, k, e, cursor)
+    let reached = far_merge(farthest, t.farthest)
+    if t.status == MatchStatus.Hit || t.status == MatchStatus.Fatal { return t with { farthest: reached } }
+    first_taken<T, N>(cx, k, entries, at + 1, cursor, min, spent, reached)
+}
+
+/// One entry at `cursor`: its tokens, then its right side.
+fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, cursor: int) -> Taken<
+    T,
+    N,
+> {
+    mut at = cursor
+    for w in e.words {
+        if !cx.lex.lit_matches(cx.tokens[at], w) {
+            return untaken<T, N>(
+                cx,
+                MatchStatus.Miss,
+                cx.miss_story(at, k.rule_name, cx.lit_expects.get(w) ?? lit_expected(w)),
+            )
+        }
+        at = at + 1
+    }
+    let right = if e.rule == null {
+        match_prim<T, N>(cx, k.rule_name, k.operand, at, [], true, k.capped)
+    } else {
+        match_rule<T, N>(cx, e.rule!, at, k.capped)
+    }
+    if right.status != MatchStatus.Hit { return untaken<T, N>(cx, right.status, right.farthest) }
+    if e.rule != null {
+        return Taken {
+            status: MatchStatus.Hit,
+            tier: e.tier,
+            op_at: cursor,
+            rhs: right.value,
+            cursor: right.cursor,
+            diagnostics: right.diagnostics,
+            farthest: right.farthest,
+        }
+    }
+    let tighter = climb<T, N>(
+        cx,
+        k,
+        right.value,
+        at,
+        right.cursor,
+        e.tier + 1,
+        right.diagnostics,
+        right.farthest,
+    )
+    Taken {
+        status: tighter.status,
+        tier: e.tier,
+        op_at: cursor,
+        rhs: tighter.value,
+        cursor: tighter.cursor,
+        diagnostics: tighter.diagnostics,
+        farthest: tighter.farthest,
+    }
+}
+
+/// `left op right` built by the tier's build, else the branch's.
+fn pair<T, N>(
+    cx: MatchContext<T, N>,
+    k: Climbing,
+    tier: Tier,
+    left: Captured<T, N>,
+    t: Taken<T, N>,
+    start: int,
+) -> Result<Captured<T, N>, string> {
+    let op: Captured<T, N> = captured_terminal<T, N>(cx.tokens[t.op_at])
+    let seen: List<Binding<T, N>> = [
+        Binding { label: "l", value: left },
+        Binding { label: "op", value: op },
+        Binding { label: "r", value: t.rhs },
+    ]
+    built<T, N>(
+        cx,
+        tier.build ?? k.directive,
+        seen,
+        [left, op, t.rhs],
+        consumed_loc<T>(cx.lex, cx.tokens, start, t.cursor),
+    )
+}
+
+/// What an `Unmixed` tier's builder says of the run's first operator
+/// and this one: its refusal, if any.
+fn mixing<T, N>(cx: MatchContext<T, N>, tier: Tier, first: int, this: int, start: int, until: int) -> List<
+    string,
+> {
+    match tier.assoc {
+        .Unmixed(refusal) -> match cx
+            .build(
+                refusal,
+                [
+                    captured_terminal<T, N>(cx.tokens[first]),
+                    captured_terminal<T, N>(cx.tokens[this]),
+                ],
+                consumed_loc<T>(cx.lex, cx.tokens, start, until),
+            ) { .Err(m) -> [m], .Ok(_) -> [] },
+        .Left or .Single -> [],
+    }
+}
+
+/// A builder's refusal inside a climb: spoken as the branch's own build
+/// refusal is, unless the branch already spoke.
+fn refused_run<T, N>(
+    cx: MatchContext<T, N>,
+    k: Climbing,
+    message: string,
+    start: int,
+    until: int,
+    diagnostics: List<Diagnostic>,
+    farthest: FarthestFailure?,
+) -> MatchResult<T, N> {
+    if !diagnostics.is_empty() { return matched<T, N>(until, [], cx.absent, diagnostics, farthest) }
+    let branch = consumed_loc<T>(cx.lex, cx.tokens, start, until)
+    fatal_defect<T, N>(
+        cx,
+        until,
+        [],
+        [
+            Diagnostic {
+                cause: Cause.Builder,
+                message: message,
+                loc: branch ?? cx.lex.loc(cx.tokens[until]),
+                expected: [],
+                in_rule: k.rule_name,
+            },
+        ],
+        farthest,
+    )
 }

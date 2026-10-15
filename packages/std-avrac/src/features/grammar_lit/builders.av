@@ -18,6 +18,10 @@ use @std.grammar.{
     Recover,
     Diagnostic,
     Cause,
+    Operators,
+    Tier,
+    Assoc,
+    Suffix,
 }
 use grammar.{parse_grammar}
 
@@ -75,8 +79,13 @@ fn seq_expr(b: Builder, s: Seq, sp: Span?) -> ExprId {
     lit_struct(
         b,
         "Seq",
-        ["items", "build", "recover"],
-        [list_expr(b, items, sp), build_expr(b, s.build, sp), recover_expr(b, s.recover, sp)],
+        ["items", "build", "recover", "operators"],
+        [
+            list_expr(b, items, sp),
+            build_expr(b, s.build, sp),
+            recover_expr(b, s.recover, sp),
+            operators_expr(b, s.operators, sp),
+        ],
         sp,
     )
 }
@@ -156,6 +165,49 @@ fn fixed_expr(b: Builder, f: Fixed, sp: Span?) -> ExprId {
         [text_expr(b, f.name, sp), text_expr(b, f.text, sp)],
         sp,
     )
+}
+
+/// An `@operators` block is written as the call that reads its tables
+/// off the tiers, so the literal carries only what the notation said.
+fn operators_expr(b: Builder, held: Operators?, sp: Span?) -> ExprId {
+    if held == null { return b.store.alloc_expr(Expr.NullLit, sp) }
+    let tiers = [tier_expr(b, t, sp) for t in held!.tiers]
+    b.store.alloc_expr(Expr.Call(Scoped("operators_of"), [], [list_expr(b, tiers, sp)]), sp)
+}
+
+fn tier_expr(b: Builder, t: Tier, sp: Span?) -> ExprId {
+    let words = [list_expr(b, [text_expr(b, w, sp) for w in word], sp) for word in t.words]
+    let suffixes = [suffix_expr(b, x, sp) for x in t.suffixes]
+    lit_struct(
+        b,
+        "Tier",
+        ["assoc", "words", "suffixes", "build"],
+        [
+            assoc_expr(b, t.assoc, sp),
+            list_expr(b, words, sp),
+            list_expr(b, suffixes, sp),
+            build_expr(b, t.build, sp),
+        ],
+        sp,
+    )
+}
+
+fn suffix_expr(b: Builder, x: Suffix, sp: Span?) -> ExprId {
+    lit_struct(
+        b,
+        "Suffix",
+        ["word", "rule"],
+        [text_expr(b, x.word, sp), text_expr(b, x.rule, sp)],
+        sp,
+    )
+}
+
+fn assoc_expr(b: Builder, a: Assoc, sp: Span?) -> ExprId {
+    match a {
+        .Left -> unit(b, "Assoc", "Left", sp),
+        .Single -> unit(b, "Assoc", "Single", sp),
+        .Unmixed(refusal) -> variant(b, "Assoc", "Unmixed", [text_expr(b, refusal, sp)], sp),
+    }
 }
 
 fn expect_expr(b: Builder, held: Expect?, sp: Span?) -> ExprId {
