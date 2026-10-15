@@ -5,7 +5,7 @@
 //! dropped. A hold past its lease is redelivered with `epoch + 1`, and
 //! the old ack answers `false`. Leases are timestamps compared here, so
 //! expiry is found by the next `take`; no timer row is needed.
-use @std.task.{Channel, Sink, open_channel}
+use @std.task.{Channel, Ring, Sink, open_channel, ring}
 use @std.time.{Duration, now_ms}
 
 /// An effect identity. In this home it is data: nothing dedupes.
@@ -53,7 +53,7 @@ export type Queue<T> = {
     ring: Channel<string>,
     live: Cell<Map<string, Live<T>>>,
     leases: Cell<Map<string, Lease>>,
-    free: Cell<List<string>>,
+    free: Ring<string>,
     seq: Cell<int>,
     count: Cell<int>,
 }
@@ -62,14 +62,13 @@ export type Queue<T> = {
 export fn open_queue<T>(name: string, terms: Terms) -> Queue<T> {
     let live: Cell<Map<string, Live<T>>> = Cell.new({})
     let leases: Cell<Map<string, Lease>> = Cell.new({})
-    let free: Cell<List<string>> = Cell.new([])
     Queue {
         name: name,
         terms: terms,
         ring: open_channel<string>(terms.capacity),
         live: live,
         leases: leases,
-        free: free,
+        free: ring<string>(0 - 1),
         seq: Cell.new(0),
         count: Cell.new(0),
     }
@@ -157,15 +156,11 @@ impl Queue<T> {
     /// An id no live item holds: one freed by a settle, else the next
     /// in the sequence.
     fn mint() -> string {
-        let f = self.free.get()
-        if f.length > 0 {
-            self.free.set(f.removed_at(0))
-            f[0]
-        } else {
-            let n = self.seq.get()
-            self.seq.set(n + 1)
-            "${n}"
-        }
+        let id = self.free.pop()
+        if id != null { return id! }
+        let n = self.seq.get()
+        self.seq.set(n + 1)
+        "${n}"
     }
 
     /// The live record a delivery may still act on, or absent once its
