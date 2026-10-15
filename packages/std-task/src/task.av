@@ -102,6 +102,87 @@ export type TrySource<T, E> = {
     work: Task<bool>? = null,
 }
 
+/// A FIFO ring: `push` writes the next slot in place and `pop`
+/// advances the head, so neither moves the buffer — a queue's head
+/// removal is O(1), never a slice-and-concat copy.
+///
+/// `span` is the storage's own length, held beside the list so a push
+/// reads a scalar: a live `get` of the storage would make `set_at`
+/// clone it, which is the copy the ring exists to avoid.
+export type Ring<T> = {
+    slots: Cell<List<T>>,
+    head: Cell<int>,
+    len: Cell<int>,
+    span: Cell<int>,
+    cap: int,
+}
+
+/// A ring bounded by `cap`; a capacity below zero grows without bound.
+export fn ring<T>(cap: int) -> Ring<T> {
+    let slots: Cell<List<T>> = Cell.new([])
+    Ring { slots: slots, head: Cell.new(0), len: Cell.new(0), span: Cell.new(0), cap: cap }
+}
+
+impl Ring<T> {
+    /// How many items stand in the ring.
+    fn length() -> int { self.len.get() }
+
+    /// Whether the ring holds nothing.
+    fn is_empty() -> bool { self.len.get() == 0 }
+
+    /// Append at the tail. The storage doubles only when it is full,
+    /// so an unbounded drain stays linear and a bounded one stops
+    /// growing at its capacity.
+    fn push(v: T) {
+        if self.span.get() == 0 {
+            self.slots.push(v)
+            self.span.set(1)
+            self.len.set(1)
+            return
+        }
+        if self.len.get() == self.span.get() {
+            self.grow()
+        }
+        let span = self.span.get()
+        let at = (self.head.get() + self.len.get()) % span
+        self.slots.set_at(at, v)
+        self.len.set(self.len.get() + 1)
+    }
+
+    /// Take the head, advancing the cursor. The storage never moves.
+    fn pop() -> T? {
+        if self.len.get() == 0 {
+            return null
+        }
+        let v = self.slots.get()[self.head.get()]
+        self.head.set((self.head.get() + 1) % self.span.get())
+        self.len.set(self.len.get() - 1)
+        v
+    }
+
+    /// The head without taking it.
+    fn first() -> T? {
+        if self.len.get() == 0 {
+            return null
+        }
+        self.slots.get()[self.head.get()]
+    }
+
+    /// Lay the live items from slot zero in a storage twice as wide,
+    /// bounded by `cap`. The slots past `len` are filler a later push
+    /// overwrites; a full storage only grows, so the moves are
+    /// O(log n) many and amortised O(1) per item.
+    fn grow() {
+        let old = self.span.get()
+        let want = old * 2
+        let next = if self.cap >= 0 && want > self.cap { self.cap } else { want }
+        let grown = [self.slots.get()[(self.head.get() + i % old) % old] for i in 0..next]
+        self.slots.set(grown)
+        self.head.set(0)
+        self.span.set(next)
+    }
+}
+
 /// A pending value with its presence NAMED: a map of a nullable `T`
 /// reads a present null back as absence, so the slot is a tagged shape
 /// and never the value's own null.
@@ -112,10 +193,8 @@ enum Slot<T> { Gone, Here(T) }
 /// the record.
 type Ch<T> = {
     cap: int,
-    buf: Cell<List<T>>,
-    len: Cell<int>,
-    handed: Cell<List<T>>,
-    hlen: Cell<int>,
+    buf: Ring<T>,
+    handed: Ring<T>,
     pending: Cell<Map<string, Slot<T>>>,
     readers: ptr,
     writers: ptr,
@@ -223,15 +302,11 @@ export fn tried<T, E>(s: Source<Result<T, Traced<E>>>) -> TrySource<T, E> {
 }
 
 fn fresh<T>(cap: int) -> Ch<T> {
-    let buf: Cell<List<T>> = Cell.new([])
-    let handed: Cell<List<T>> = Cell.new([])
     let pending: Cell<Map<string, Slot<T>>> = Cell.new({})
     Ch {
         cap: cap,
-        buf: buf,
-        len: Cell.new(0),
-        handed: handed,
-        hlen: Cell.new(0),
+        buf: ring<T>(cap),
+        handed: ring<T>(0 - 1),
         pending: pending,
         readers: avra_gate_new(),
         writers: avra_gate_new(),
@@ -245,7 +320,7 @@ fn fresh<T>(cap: int) -> Ch<T> {
 impl Ch<T> {
     /// Whether the buffer has room for one more item.
     fn room() -> bool {
-        self.cap < 0 || self.len.get() < self.cap
+        self.cap < 0 || self.buf.length() < self.cap
     }
 
     /// A member no other waiter of this channel holds.
@@ -257,28 +332,18 @@ impl Ch<T> {
 
     fn push_buf(v: T) {
         self.buf.push(v)
-        self.len.set(self.len.get() + 1)
     }
 
     fn pop_buf() -> T? {
-        let xs = self.buf.get()
-        let v = xs.first()
-        self.buf.set(xs.removed_at(0))
-        self.len.set(self.len.get() - 1)
-        v
+        self.buf.pop()
     }
 
     fn push_handed(v: T) {
         self.handed.push(v)
-        self.hlen.set(self.hlen.get() + 1)
     }
 
     fn pop_handed() -> T? {
-        let xs = self.handed.get()
-        let v = xs.first()
-        self.handed.set(xs.removed_at(0))
-        self.hlen.set(self.hlen.get() - 1)
-        v
+        self.handed.pop()
     }
 
     /// Claim the oldest parked giver and move its value straight into
@@ -393,12 +458,12 @@ impl Ch<T> {
         mut was_claimed = false
         while true {
             if was_claimed {
-                if self.hlen.get() > 0 {
+                if self.handed.length() > 0 {
                     return self.pop_handed()
                 }
                 was_claimed = false
             }
-            if self.len.get() > 0 {
+            if self.buf.length() > 0 {
                 let v = self.pop_buf()
                 if self.room() {
                     self.refill()
@@ -431,10 +496,10 @@ impl Ch<T> {
     /// parking. A sender that claimed a parked reader left its value in
     /// `handed`, so a scan after the park reads it there.
     fn taken() -> T? {
-        if self.hlen.get() > 0 {
+        if self.handed.length() > 0 {
             return self.pop_handed()
         }
-        if self.len.get() > 0 {
+        if self.buf.length() > 0 {
             let v = self.pop_buf()
             if self.room() {
                 self.refill()
@@ -447,7 +512,7 @@ impl Ch<T> {
     /// Whether a value can be taken now: one buffered, or one a sender
     /// handed to a claimed reader.
     fn ready() -> bool {
-        self.len.get() > 0 || self.hlen.get() > 0
+        self.buf.length() > 0 || self.handed.length() > 0
     }
 
     /// File this channel's wake for arm `a`: a sender claims the reader
@@ -459,7 +524,7 @@ impl Ch<T> {
     }
 
     fn ended() -> bool {
-        self.closed.get() && self.len.get() == 0 && self.hlen.get() == 0
+        self.closed.get() && self.buf.length() == 0 && self.handed.length() == 0
     }
 
     /// No item is dropped by a channel: a full `post` answers `Full`
