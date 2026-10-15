@@ -15,16 +15,18 @@
 <h3><code>tasks/drain</code> — Channel drain</h3>
 <p><b>Invariant.</b> a producer pushes n items into a channel of capacity cap while one consumer drains it; every item arrives exactly once, in FIFO order, so the sum is n(n-1)/2 and none is dropped. cap = 64 is the bounded row; cap = -1 is the unbounded row, and both must hold the same invariant</p>
 <p><b>Row.</b> wall-clock nanoseconds per item for the bounded and the unbounded drain, at two sizes, plus the ratio of the large per-item cost to the small one for each</p>
-<p><b>Workload.</b> <code>small=1000</code>, <code>n=10000</code>, <code>cap=64</code>, <code>rounds=5</code></p>
+<p><b>Workload.</b> <code>small=1000</code>, <code>n=10000</code>, <code>large=20000</code>, <code>cap=64</code>, <code>rounds=5</code></p>
 <p><b>Analogues.</b> <b>C (the floor)</b> — an OS thread producer (pthread) pushing into a ring buffer; <b>Rust</b> — an OS thread producer (std::thread) pushing into a sync_channel; <b>Python (threads, GIL-bound)</b> — an OS thread producer (threading.Thread) pushing into a queue.Queue; <b>Go</b> — a goroutine producer pushing into a buffered channel; <b>Avra</b> — a user-space task producer (`produce&lt;T&gt;(cap)`) drained with `for x in source`</p>
 <table><tr><th>row (unit)</th><th>C (the floor)</th><th>Rust</th><th>Go</th><th>Python (threads, GIL-bound)</th><th>Avra</th></tr>
-<tr><td><code>drain_1k_ns_per_op</code> (ns)</td><td>279.9 ns (5)</td><td>281.3 ns (5)</td><td>50.6 ns (5)</td><td>2.26 µs (5)</td><td>59.0 ns (5)</td></tr>
-<tr><td><code>drain_10k_ns_per_op</code> (ns)</td><td>238.1 ns (5)</td><td>230.2 ns (5)</td><td>48.0 ns (5)</td><td>2.33 µs (5)</td><td>52.0 ns (5)</td></tr>
-<tr><td><code>drain_scale</code> (x)</td><td>0.8508 x (5)</td><td>0.8184 x (5)</td><td>0.9492 x (5)</td><td>1.0304 x (5)</td><td>0.885 x (5)</td></tr>
-<tr><td><code>drain_unbounded_1k_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>60.0 ns (5)</td></tr>
-<tr><td><code>drain_unbounded_10k_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>78.0 ns (5)</td></tr>
-<tr><td><code>drain_unbounded_scale</code> (x)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>1.283 x (5)</td></tr>
-<tr><td><code>drain_ops_per_s</code> (ops)</td><td>4,199,757 ops (5)</td><td>4,344,256 ops (5)</td><td>20,833,333 ops (5)</td><td>429,099 ops (5)</td><td>18,931,505 ops (5)</td></tr>
+<tr><td><code>drain_1k_ns_per_op</code> (ns)</td><td>351.2 ns (5)</td><td>232.8 ns (5)</td><td>47.6 ns (5)</td><td>3.11 µs (5)</td><td>69.0 ns (5)</td></tr>
+<tr><td><code>drain_10k_ns_per_op</code> (ns)</td><td>198.9 ns (5)</td><td>170.0 ns (5)</td><td>51.7 ns (5)</td><td>3.12 µs (5)</td><td>68.0 ns (5)</td></tr>
+<tr><td><code>drain_scale</code> (x)</td><td>0.5664 x (5)</td><td>0.7303 x (5)</td><td>1.0849 x (5)</td><td>1.0041 x (5)</td><td>0.989 x (5)</td></tr>
+<tr><td><code>drain_unbounded_1k_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>75.0 ns (5)</td></tr>
+<tr><td><code>drain_unbounded_10k_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>94.0 ns (5)</td></tr>
+<tr><td><code>drain_unbounded_scale</code> (x)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>1.253 x (5)</td></tr>
+<tr><td><code>drain_unbounded_20k_ns_per_op</code> (ns)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>99.0 ns (5)</td></tr>
+<tr><td><code>drain_unbounded_scale_20k</code> (x)</td><td>—</td><td>—</td><td>—</td><td>—</td><td>1.317 x (5)</td></tr>
+<tr><td><code>drain_ops_per_s</code> (ops)</td><td>5,027,374 ops (5)</td><td>5,883,391 ops (5)</td><td>19,343,856 ops (5)</td><td>320,377 ops (5)</td><td>14,636,359 ops (5)</td></tr>
 <tr><td><code>drain_bytes</code> (bytes)</td><td>78.1 kB (5)</td><td>78.1 kB (5)</td><td>78.1 kB (5)</td><td>78.1 kB (5)</td><td>78.1 kB (5)</td></tr>
 <tr><td><code>drain_sum</code> (ops)</td><td>49,995,000 ops (5)</td><td>49,995,000 ops (5)</td><td>49,995,000 ops (5)</td><td>49,995,000 ops (5)</td><td>49,995,000 ops (5)</td></tr>
 </table>
@@ -34,7 +36,7 @@
 <p><b>Workload.</b> <code>producers=8</code>, <code>per=6250</code>, <code>cap=64</code>, <code>rounds=5</code></p>
 <p><b>Analogues.</b> <b>C (the floor)</b> — OS threads (one producer per pthread), one bounded channel; <b>Rust</b> — OS threads (one producer per std::thread), one bounded sync_channel; <b>Python (threads, GIL-bound)</b> — OS threads (one producer per threading.Thread), one bounded queue; <b>Go</b> — goroutines (one producer each), one buffered channel; <b>Avra</b> — user-space tasks (one channel each), a single `select` over 8 sources</p>
 <table><tr><th>row (unit)</th><th>C (the floor)</th><th>Rust</th><th>Go</th><th>Python (threads, GIL-bound)</th><th>Avra</th></tr>
-<tr><td><code>fanin_ns_per_op</code> (ns)</td><td>936.9 ns (5)</td><td>446.5 ns (5)</td><td>64.2 ns (5)</td><td>3.87 µs (5)</td><td>475.0 ns (5)</td></tr>
+<tr><td><code>fanin_ns_per_op</code> (ns)</td><td>1.46 µs (5)</td><td>368.1 ns (5)</td><td>85.5 ns (5)</td><td>5.48 µs (5)</td><td>119.0 ns (5)</td></tr>
 <tr><td><code>fanin_received</code> (ops)</td><td>50,000 ops (5)</td><td>50,000 ops (5)</td><td>50,000 ops (5)</td><td>50,000 ops (5)</td><td>50,000 ops (5)</td></tr>
 <tr><td><code>fanin_dropped</code> (ops)</td><td>0 ops (5)</td><td>0 ops (5)</td><td>0 ops (5)</td><td>0 ops (5)</td><td>0 ops (5)</td></tr>
 </table>
@@ -53,7 +55,7 @@
 <p><b>Workload.</b> <code>n=100000</code>, <code>rounds=5</code></p>
 <p><b>Analogues.</b> <b>C (the floor)</b> — OS threads, a mutex and condition variable rendezvous on both legs; <b>Rust</b> — OS threads, two rendezvous sync_channels; <b>Python (threads, GIL-bound)</b> — OS threads, two one-slot queues; <b>Go</b> — goroutines, two unbuffered channels; <b>Avra</b> — user-space tasks, two rendezvous channels (`open_channel&lt;int&gt;(0)`)</p>
 <table><tr><th>row (unit)</th><th>C (the floor)</th><th>Rust</th><th>Go</th><th>Python (threads, GIL-bound)</th><th>Avra</th></tr>
-<tr><td><code>pingpong_ns</code> (ns)</td><td>16.58 µs (5)</td><td>17.32 µs (5)</td><td>314.5 ns (5)</td><td>22.74 µs (5)</td><td>772.0 ns (5)</td></tr>
+<tr><td><code>pingpong_ns</code> (ns)</td><td>13.39 µs (5)</td><td>15.53 µs (5)</td><td>454.6 ns (5)</td><td>27.23 µs (5)</td><td>1.07 µs (5)</td></tr>
 <tr><td><code>pingpong_rounds</code> (ops)</td><td>100,000 ops (5)</td><td>100,000 ops (5)</td><td>100,000 ops (5)</td><td>100,000 ops (5)</td><td>100,000 ops (5)</td></tr>
 </table>
 <h3><code>tasks/spawn</code> — Spawn cost</h3>
@@ -62,10 +64,10 @@
 <p><b>Workload.</b> <code>n=10000</code>, <code>rounds=5</code></p>
 <p><b>Analogues.</b> <b>C (the floor)</b> — both analogues: OS threads (pthread) and user-space fibers (ucontext/makecontext); <b>Rust</b> — OS threads (std::thread) — Rust's std has no fiber runtime; <b>Go</b> — user-space fibers (goroutines); <b>Python (threads, GIL-bound)</b> — OS threads (threading.Thread) — GIL-bound; <b>Avra</b> — user-space tasks (the scheduler's `spawn`)</p>
 <table><tr><th>row (unit)</th><th>C (the floor)</th><th>Rust</th><th>Go</th><th>Python (threads, GIL-bound)</th><th>Avra</th></tr>
-<tr><td><code>spawn_thread</code> (ns)</td><td>38.87 µs (5)</td><td>54.68 µs (5)</td><td>—</td><td>108.65 µs (5)</td><td>—</td></tr>
-<tr><td><code>spawn_thread_alive</code> (ns)</td><td>46.99 µs (5)</td><td>54.66 µs (5)</td><td>—</td><td>150.07 µs (5)</td><td>—</td></tr>
-<tr><td><code>spawn_fiber</code> (ns)</td><td>1.69 µs (5)</td><td>—</td><td>489.8 ns (5)</td><td>—</td><td>276.0 ns (5)</td></tr>
-<tr><td><code>spawn_fiber_alive</code> (ns)</td><td>5.11 µs (5)</td><td>—</td><td>449.3 ns (5)</td><td>—</td><td>272.0 ns (5)</td></tr>
+<tr><td><code>spawn_thread</code> (ns)</td><td>43.37 µs (5)</td><td>57.65 µs (5)</td><td>—</td><td>119.00 µs (5)</td><td>—</td></tr>
+<tr><td><code>spawn_thread_alive</code> (ns)</td><td>46.00 µs (5)</td><td>59.96 µs (5)</td><td>—</td><td>158.91 µs (5)</td><td>—</td></tr>
+<tr><td><code>spawn_fiber</code> (ns)</td><td>850.0 ns (5)</td><td>—</td><td>784.9 ns (5)</td><td>—</td><td>432.0 ns (5)</td></tr>
+<tr><td><code>spawn_fiber_alive</code> (ns)</td><td>3.67 µs (5)</td><td>—</td><td>333.8 ns (5)</td><td>—</td><td>599.0 ns (5)</td></tr>
 <tr><td><code>spawn_sum</code> (ops)</td><td>333,283,335,000 ops (5)</td><td>333,283,335,000 ops (5)</td><td>333,283,335,000 ops (5)</td><td>333,283,335,000 ops (5)</td><td>333,283,335,000 ops (5)</td></tr>
 </table>
 </body></html>
