@@ -1,0 +1,18 @@
+//! proves the handler shape drains a queue: every take is begun and
+//! acked, so nothing is left behind and the queue owes no fate.
+use @std.queue.{open_queue, key, Terms}
+use @std.time.{ms}
+
+let q = open_queue<string>(
+    "jobs",
+    Terms { capacity: 8, lease: ms(60000), retries: 3, dead: "failed" },
+)
+for i in 1..4 { let _ = q.send("job${i}", key("k${i}")) }
+mut acked = 0
+mut d = q.take()
+while d != null {
+    let _ = q.began(d!)
+    if q.ack(d!) { acked = acked + 1 }
+    d = q.take()
+}
+"${acked} ${q.depth()}"
