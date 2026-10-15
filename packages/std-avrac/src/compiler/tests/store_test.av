@@ -14,7 +14,7 @@ use compiler.store.{
     Keeping,
     Producer,
     Producers,
-    Read,
+    Reading,
     Store,
     Stored,
     node_key,
@@ -84,7 +84,7 @@ spec "store" {
                     Stored.Unit,
                     k,
                     "answer",
-                    [Read { name: "a.av", digest: "d1" }, Read { name: "b.av", digest: "d2" }],
+                    [Reading { name: "a.av", digest: "d1" }, Reading { name: "b.av", digest: "d2" }],
                 )
             s.get_valid(Stored.Unit, k, (n: string) -> if n == "a.av" { "d1" } else { "d2" }) == "answer"
         }
@@ -96,7 +96,7 @@ spec "store" {
                     Stored.Unit,
                     k,
                     "answer",
-                    [Read { name: "a.av", digest: "d1" }, Read { name: "b.av", digest: "d2" }],
+                    [Reading { name: "a.av", digest: "d1" }, Reading { name: "b.av", digest: "d2" }],
                 )
             s.get(Stored.Unit, k) == "answer" &&
                 s.get_valid(Stored.Unit, k, (n: string) -> if n == "a.av" { "d1" } else { "d3" }) == null
@@ -104,22 +104,23 @@ spec "store" {
         then "a read that cannot be read now is a miss" {
             let s = at("gone")
             let k = node_key(Stored.Unit, ["gone"])
-            let _ = s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a.av", digest: "d1" }])
+            let _ = s
+                .keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d1" }])
             s.get_valid(Stored.Unit, k, (n: string) -> null) == null
         }
         then "a name holding a space reads back whole" {
             let s = at("spaced")
             let k = node_key(Stored.Unit, ["spaced"])
             let _ = s
-                .keep_reading(Stored.Unit, k, "answer", [Read { name: "a b.av", digest: "d1" }])
+                .keep_reading(Stored.Unit, k, "answer", [Reading { name: "a b.av", digest: "d1" }])
             s.get_valid(Stored.Unit, k, (n: string) -> if n == "a b.av" { "d1" } else { null }) == "answer"
         }
         then "a read that cannot be spelled whole refuses the keep" {
             let s = at("unspelled")
             let k = node_key(Stored.Unit, ["unspelled"])
-            !s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a.av", digest: "d 1" }]) &&
-                !s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a\nb", digest: "d1" }]) &&
-                !s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a.av", digest: "" }]) &&
+            !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d 1" }]) &&
+                !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a\nb", digest: "d1" }]) &&
+                !s.keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "" }]) &&
                 s.get(Stored.Unit, k) == null
         }
         then "a row kept with edges that are no pairs is a miss" {
@@ -141,7 +142,8 @@ spec "store" {
         then "an aside store judges its reads alike" {
             let s = store_with("${store_base()}/aside", "", Keeping.Aside(map_cell()))
             let k = node_key(Stored.Unit, ["aside"])
-            let _ = s.keep_reading(Stored.Unit, k, "answer", [Read { name: "a.av", digest: "d1" }])
+            let _ = s
+                .keep_reading(Stored.Unit, k, "answer", [Reading { name: "a.av", digest: "d1" }])
             s.get_valid(Stored.Unit, k, (n: string) -> "d1") == "answer" &&
                 s.get_valid(Stored.Unit, k, (n: string) -> "d2") == null
         }
@@ -163,16 +165,22 @@ spec "store" {
                     Stored.Unit,
                     a,
                     "1",
-                    [Read { name: "a.av", digest: "d1" }, Read { name: "shared.av", digest: "d9" }],
+                    [
+                        Reading { name: "a.av", digest: "d1" },
+                        Reading { name: "shared.av", digest: "d9" },
+                    ],
                 )
             let _ = s
                 .keep_reading(
                     Stored.Unit,
                     b,
                     "2",
-                    [Read { name: "b.av", digest: "d2" }, Read { name: "shared.av", digest: "d9" }],
+                    [
+                        Reading { name: "b.av", digest: "d2" },
+                        Reading { name: "shared.av", digest: "d9" },
+                    ],
                 )
-            let _ = s.keep_reading(Stored.Unit, c, "3", [Read { name: "c.av", digest: "d3" }])
+            let _ = s.keep_reading(Stored.Unit, c, "3", [Reading { name: "c.av", digest: "d3" }])
             s.suspects(["a.av"]).length == 1 &&
                 s.suspects(["shared.av"]).length == 2 &&
                 s.suspects(["a.av", "shared.av"]).length == 2 &&
@@ -189,10 +197,10 @@ spec "store" {
                     Stored.Unit,
                     a,
                     "1",
-                    [Read { name: "a.av", digest: "d1" }, Read { name: "s.av", digest: "d9" }],
+                    [Reading { name: "a.av", digest: "d1" }, Reading { name: "s.av", digest: "d9" }],
                 )
-            let _ = s.keep_reading(Stored.Unit, b, "2", [Read { name: "s.av", digest: "d9" }])
-            let _ = s.keep_reading(Stored.Unit, c, "3", [Read { name: "c.av", digest: "d3" }])
+            let _ = s.keep_reading(Stored.Unit, b, "2", [Reading { name: "s.av", digest: "d9" }])
+            let _ = s.keep_reading(Stored.Unit, c, "3", [Reading { name: "c.av", digest: "d3" }])
             let readers = s.suspects(["s.av"])
             readers.length == 2 &&
                 readers.any(it.ends_with("\n${a}")) &&
@@ -204,14 +212,14 @@ spec "store" {
         then "a write after the index was built is seen" {
             let s = at("suspects-later")
             let a = node_key(Stored.Unit, ["a"])
-            let _ = s.keep_reading(Stored.Unit, a, "1", [Read { name: "a.av", digest: "d1" }])
+            let _ = s.keep_reading(Stored.Unit, a, "1", [Reading { name: "a.av", digest: "d1" }])
             let before = s.suspects(["z.av"]).length
             let _ = s
                 .keep_reading(
                     Stored.Unit,
                     node_key(Stored.Unit, ["z"]),
                     "2",
-                    [Read { name: "z.av", digest: "d1" }],
+                    [Reading { name: "z.av", digest: "d1" }],
                 )
             before == 0 && s.suspects(["z.av"]).length == 1
         }
