@@ -1245,19 +1245,23 @@ bench: $(COMPILER_OBJS)
 bench-collections: build/libavra_runtime.a
 	@sh tools/bench/collections/run.sh
 
-# THE FLOW BENCH: tasks, waits and wakes, each Avra program beside its Go
-# twin on this machine (tools/flow_bench/run.sh); `flow-probes` is the
-# stack allocator's own measurements.
+# THE BENCHMARK SUITE, ONE DOOR: `benchmarks/run.sh` measures every
+# registered language's twin on this machine and `--g1` prints each Avra
+# row beside Go's, with the target verdict (2x time, 3x parked bytes, as
+# data in benchmarks/bench.toml's [gate.target]). `flow-g1` is the same
+# view, and each Avra row past its target against the recorded Go row
+# REFUSES.
 #
-# `flow-g1` is the GATE a runtime/*.c change answers: the same rows, each
-# Avra row's ratio against Go's best judged (2x time, 3x memory, in
-# table.py), and a row that FAILs fails the target. It needs Go and the
-# compiler and SKIPS, spoken, where either is absent.
+# `tools/flow_bench/` is the older scheduler-transition harness. Its
+# Go-beside-Avra view is the design the suite now carries at scale; what
+# it uniquely holds stays here — `flow-gate` is the runtime-only C floor
+# a runtime/*.c change answers, and `flow-probes` is the stack
+# allocator's own measurements, neither needing a compiler or Go.
 .PHONY: flow-bench flow-probes flow-g1 flow-trace
 flow-bench: build/libavra_runtime.a
-	@sh tools/flow_bench/run.sh
+	@sh benchmarks/run.sh --g1 --quiet
 flow-g1: build/libavra_runtime.a
-	@FLOW_GATE=1 sh tools/flow_bench/run.sh
+	@sh benchmarks/run.sh --g1 --gate --require --quiet
 flow-probes:
 	@sh tools/flow_bench/run.sh probes
 
