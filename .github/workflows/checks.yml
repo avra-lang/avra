@@ -43,6 +43,9 @@ on:
       only:
         description: "leave empty for a whole train; `keepers` runs the keepers and seed-check jobs alone"
         default: ""
+      one_generation:
+        description: "set to hand generation one down as a PR's run does, and prove generation two beside the suites"
+        default: ""
       warm_skip:
         description: "set only to skip the warm-edit gate BY HAND; unset, a run that cannot judge FAILS (a skip is not a pass)"
         default: ""
@@ -83,6 +86,7 @@ jobs:
       codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
       main: ${{ steps.plan.outputs.main }}
+      second_gen: ${{ steps.compiler.outputs.second_gen }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -150,7 +154,7 @@ jobs:
           fi
           # Asked for by hand, the run is a train's over EVERY package: the
           # whole gate on any branch, without a queue entry.
-          if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then
+          if { [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; } || [ "$event" = push ]; then
             for d in packages/*/; do
               [ -d "${d}src" ] || { echo "::error::${d} has no src — a whole train would pass it by untested"; exit 1; }
             done
@@ -301,6 +305,7 @@ jobs:
       # gate judges fmt and the idioms with it, and the full run is the proof.
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (steps.plan.outputs.full == '1' || steps.release.outputs.source == 'none')
         name: compiler
+        id: compiler
         timeout-minutes: 50
         run: |
           s=$(date +%s)
@@ -313,7 +318,15 @@ jobs:
           # gen-2 by gen-1), so a source broken for real still dies there. The
           # fallback forgives a compiler too old, never a source wrong.
           gen() { timeout -k 10 1500 make -s avra; rc=$?; [ "$rc" = 0 ] || { said "$rc" "a compiler generation"; return 1; }; }
-          if [ -x build/avra ] && gen && gen; then :; else
+          # A PR HANDS GENERATION ONE DOWN: the suites and keepers judge the tree's
+          # behaviour, which generation one carries; generation two, the compiler
+          # compiled by itself, is proved by its own job beside them. Main's run keeps
+          # both here, since what it publishes is generation two.
+          gens=2
+          [ "${{ github.event_name }}" != pull_request ] && [ -z "${{ inputs.one_generation }}" ] || gens=1
+          if [ -x build/avra ] && gen && { [ "$gens" = 1 ] || gen; }; then
+            [ "$gens" != 1 ] || echo "second_gen=1" >> "$GITHUB_OUTPUT"
+          else
             # a store is one compiler's: the recovery starts without the one the older compiler left
             [ -d .avra-cache ] && mv .avra-cache "${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler"
             timeout -k 10 1500 make -s bootstrap; rc=$?; [ "$rc" = 0 ] || { said "$rc" "the bootstrap"; exit 1; }
@@ -418,6 +431,10 @@ jobs:
           # suite reads what prepare's self-compile already analysed.
           tar -cf avra-build.tar --exclude=build/avra build
           [ ! -d .avra-cache ] || tar -rf avra-build.tar .avra-cache
+          # The tar rides to every downstream job; a store that grows into it costs each of them a download.
+          size=$(wc -c < avra-build.tar)
+          echo "hand-down: avra-build.tar is $(( size / 1048576 )) MB"
+          [ "$size" -le 157286400 ] || { echo "::error::avra-build.tar is $(( size / 1048576 )) MB, over the 150 MB budget every downstream job downloads"; exit 1; }
           echo "objects: ${{ steps.objcache.outputs.cache-hit == 'true' && 'restored from cache' || 'built' }}"
       - if: steps.plan.outputs.build == '1' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
@@ -456,15 +473,15 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-prepare-${{ github.sha }}
-  # THE COMPILER MAIN BUILT, PUBLISHED WHERE A TRAIN CAN READ IT. Only a push to
-  # `main` reaches this job (this workflow fires on no other branch), so no
-  # PR-supplied binary is ever published. The key is the compiler's own source
+  # THE COMPILER MAIN BUILT AND PROVED, PUBLISHED WHERE A PR CAN READ IT. Only a
+  # run on `main` reaches this job, and only once that run's `test` verdict is
+  # green: every PR falls back to the newest published compiler, so a compiler
+  # main has not proved is never served. The key is the compiler's own source
   # digest, so the artifact is immutable: one key, one binary, and `publish`
-  # never overwrites one. A train cannot publish here — its tree is the queue's
-  # combination, not main.
+  # never overwrites one.
   publish-compiler:
-    needs: [prepare]
-    if: needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1'
+    needs: [prepare, test]
+    if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && needs.test.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -482,7 +499,7 @@ jobs:
 
   keepers-a:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -573,7 +590,7 @@ jobs:
   # never a second list kept in step by hand.
   keepers-b:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -602,6 +619,42 @@ jobs:
             python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
           }
           peak keepers-b make -s -o avra keepers-b || exit 1
+  # GENERATION TWO, BESIDE THE JOBS THAT RUN ON GENERATION ONE. A PR's prepare
+  # hands down the first generation (the released compiler building this tree);
+  # this job is the compiler building ITSELF: the second generation must build,
+  # type the compiler's own packages and pass the suites that read its core and
+  # grammar. It runs only where prepare built generation one and stopped.
+  generation-two:
+    needs: [prepare]
+    if: needs.prepare.outputs.second_gen == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      - name: built
+        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: second generation
+        timeout-minutes: 25
+        run: |
+          s=$(date +%s)
+          timeout -k 10 1500 make -s avra
+          echo "generation two: built in $(( $(date +%s) - s ))s"
+      - name: generation two reads the compiler
+        timeout-minutes: 10
+        run: build/avra check packages/cli
+      - name: generation two proves its core and grammar
+        timeout-minutes: 15
+        run: |
+          for d in core grammar; do
+            AVRA_SOUND_CHECK=1 build/avra test "packages/std-avrac/src/$d"
+          done
   # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
   # heaviest single keeper. It stands ALONE: run beside the two halves it was
   # the third compiler process on one runner, and the OOM killed the whole
@@ -611,7 +664,7 @@ jobs:
   # land — and now a refusal is that job's, not the keepers'.
   seed-check:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -713,7 +766,7 @@ jobs:
     needs: [prepare]
     # A LIGHT RUN WHOSE TREE'S COMPILER IS NOT PUBLISHED OWES NO GATE: the gate's fmt and
     # idioms would run an older compiler over this tree's source. Skipped, not passed.
-    if: github.event_name != 'push' && (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
+    if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -770,7 +823,7 @@ jobs:
     # THE TRAIN'S, and a hand-run whole gate's. A PR's check does not run a
     # suite: the train runs every AFFECTED package (dependents included) on
     # the combination, which no single PR's tree can. A PR pays fmt + idioms.
-    if: needs.prepare.outputs.packages != '' && github.event_name != 'push' && needs.prepare.outputs.full == '1'
+    if: needs.prepare.outputs.packages != '' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -909,7 +962,7 @@ jobs:
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers-a, keepers-b, keepers-static, runtime-keep, seed-check, flow-gate, cache-attacks, codecs, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, keepers-static, runtime-keep, seed-check, flow-gate, cache-attacks, codecs, gate, suites, generation-two]
     if: always()
     runs-on: ubuntu-latest
     permissions:
