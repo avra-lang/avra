@@ -458,16 +458,18 @@ export type DirectCall = { callee: string, host: bool, args: List<Reg>, ret: Typ
 
 export type Deferred = { work: Deferral, depth: int, on_error: bool }
 
-/// The per-pass behavior of one feature's expression nodes.
+/// The per-pass behavior of one feature's expression nodes, delegated
+/// over `Expr`: each record writes its own impl and reads `self`.
 /// `heirs` are the sub-expressions a planted WANT flows into
 /// UNCHANGED — a branch answers its arms' values, everything else
 /// answers nothing; the expected-type channel recurses through
 /// them before the bottom-up walk begins.
+@delegates(Expr)
 export trait NodeSemantics {
-    fn kids(e: Expr) -> List<ExprId> {
+    fn kids() -> List<ExprId> {
         []
     }
-    fn heirs(e: Expr) -> List<ExprId> {
+    fn heirs() -> List<ExprId> {
         []
     }
 }
@@ -482,11 +484,11 @@ export trait Meaning {
 }
 
 /// The per-pass behavior of one feature's STATEMENT kinds — the
-/// stmt-spine's twin of NodeSemantics. Drivers loop statements
-/// through `stmt_semantics_of` and never match Stmt kinds; a
-/// value-producing statement answers its register (lower), which the
-/// DRIVER records as the statement's slot; what a program SHOWS is
-/// its final expression statement's, read through the store.
+/// stmt-spine's twin of NodeSemantics. A driver calls the method on
+/// the `Stmt` VALUE and never matches Stmt kinds; a value-producing
+/// statement answers its register (lower), which the DRIVER records
+/// as the statement's slot; what a program SHOWS is its final
+/// expression statement's, read through the store.
 @delegates(Stmt)
 export trait StmtSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {

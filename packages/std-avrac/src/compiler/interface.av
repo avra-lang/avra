@@ -736,22 +736,17 @@ impl Decls {
 
     /// Every declaration of one file sharing a wire's identity — one, almost
     /// always; more only for a kind the namespace law leaves unpoliced.
-    /// `f`'s declarations of one kind, owner and name, in file order. A
-    /// reader that reads rows whole takes the file's own edge; any other
-    /// owes only the NAME's bucket, so a declaration of another name never
-    /// moves it.
+    /// `f`'s declarations of one kind, owner and name, in file order. The
+    /// reader owes only the NAME's bucket, so a declaration of another name
+    /// never moves it.
     fn wire_siblings(f: FileId, kind: string, owner: string, name: string) -> List<DeclId> {
         let ids = self.wire_rows(f)
         let kept = self.wire_index.get().get("${f.index}")
         let by = if kept != null && kept!.count == ids.length { kept!.by } else { self.wire_indexed(f, ids) }
-        if self.record_kernel.reading_whole() {
-            self.rows_read(f)
-        } else {
-            let b = self.name_bucket(name)
-            if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
-            self.bucket_moved(b)
-            self.record_kernel.record_at(self.record_names.get(), b)
-        }
+        let b = self.name_bucket(name)
+        if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
+        self.bucket_moved(b)
+        self.record_kernel.record_at(self.record_names.get(), b)
         by.get(wire_key(kind, owner, name)) ?? []
     }
 

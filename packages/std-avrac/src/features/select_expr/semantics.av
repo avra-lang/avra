@@ -3,31 +3,20 @@
 //! is a kid; its guard and its body are walked by the arm itself, under
 //! the scope it opens. The body answers for the arm, and each arm for
 //! the `select`, so the seat's want flows down both.
-use core.{Expr, ExprId}
+use core.{ExprId}
 use features.{NodeSemantics, ResolveCx}
 
-export type SelectSemantics = {}
-
-impl NodeSemantics for SelectSemantics {
-    fn kids(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e {
-            .Select(_, arms) -> arms,
-            .WaitArm(_, _, head, _, _) -> [head],
-            .ElseArm(value) -> [value],
-            rest -> [],
-        }
-    }
-
-    fn heirs(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e {
-            .Select(_, arms) -> arms,
-            .WaitArm(_, _, _, _, value) or .ElseArm(value) -> [value],
-            rest -> [],
-        }
-    }
-
+impl NodeSemantics for Select {
+    fn kids() -> List<ExprId> { self.arms }
+    fn heirs() -> List<ExprId> { self.arms }
+}
+impl NodeSemantics for WaitArm {
+    fn kids() -> List<ExprId> { [self.head] }
+    fn heirs() -> List<ExprId> { [self.value] }
+}
+impl NodeSemantics for ElseArm {
+    fn kids() -> List<ExprId> { [self.value] }
+    fn heirs() -> List<ExprId> { [self.value] }
 }
 
 /// An arm's guard and its body, each under the names the arm binds. The

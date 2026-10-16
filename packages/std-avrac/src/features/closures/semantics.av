@@ -1,22 +1,16 @@
 //! The lambda's semantics: dispatch only. CONTROL-OWNING — the
 //! body hides from `kids` and walks under the lambda's own frame
 //! (resolve) and law (typing); the lift owns its lowering.
-use core.{Expr, ExprId, TypeId, Reg}
+use core.{ExprId, TypeId, Reg, inserted}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
 
 use core.expr.{Lambda, CallValue}
 
-export type ClosureSemantics = {}
-
-impl NodeSemantics for ClosureSemantics {
-    fn kids(e: Expr) -> List<ExprId> {
-        // the LAMBDA's body hides (control-owning); a CallValue's
-        // subject and arguments are ordinary children
-        // a feature cannot enumerate OTHER features' variants
-        match e { .CallValue(subject, args) -> [subject].concat(args), _ -> [] }
-    }
-
+impl NodeSemantics for CallValue {
+    fn kids() -> List<ExprId> { inserted(self.args, 0, self.subject) }
 }
+/// The LAMBDA's body hides (control-owning).
+impl NodeSemantics for Lambda {}
 
 impl Meaning for Lambda {
     fn resolve(mut cx: ResolveCx, e: ExprId) {

@@ -2,32 +2,30 @@
 //! lowering — the MEANING — in lower.av. `??` is CONTROL-OWNING at
 //! lowering (its right side runs only on absence) but plain for the
 //! earlier passes: both sides resolve and type in the same scope.
-use core.{Expr, ExprId, Type, TypeId, Reg}
+use core.{ExprId, Type, TypeId, Reg}
 use features.{named_bind, NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
 
 use core.expr.{NullLit, Coalesce, Force, Propagate, MatchOpt, Chain}
 
-export type NullableSemantics = {}
-
-impl NodeSemantics for NullableSemantics {
-    fn kids(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e {
-            .Coalesce(l, r) -> [l, r],
-            .Force(v) or .Propagate(v) -> [v],
-            // the arms are hidden: each is typed under its own scope,
-            // and the present one lowers INSIDE its region
-            .MatchOpt(subject, _, _, _) or .Chain(subject, _) -> [subject],
-            rest -> [],
-        }
-    }
-
-    fn heirs(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e { .MatchOpt(_, _, present, absent) -> [present, absent], _ -> [] }
-    }
-
+impl NodeSemantics for Coalesce {
+    fn kids() -> List<ExprId> { [self.left, self.right] }
 }
+impl NodeSemantics for Force {
+    fn kids() -> List<ExprId> { [self.value] }
+}
+impl NodeSemantics for Propagate {
+    fn kids() -> List<ExprId> { [self.value] }
+}
+impl NodeSemantics for MatchOpt {
+    /// The arms are hidden: each is typed under its own scope, and
+    /// the present one lowers INSIDE its region.
+    fn kids() -> List<ExprId> { [self.subject] }
+    fn heirs() -> List<ExprId> { [self.present, self.absent] }
+}
+impl NodeSemantics for Chain {
+    fn kids() -> List<ExprId> { [self.subject] }
+}
+impl NodeSemantics for NullLit {}
 
 impl Meaning for NullLit {
     fn resolve(mut cx: ResolveCx, e: ExprId) {

@@ -1,112 +1,32 @@
-//! The semantics dispatch: every feature's node and statement
-//! semantics boxed once, and the exhaustive maps that select a
-//! node's. A new node kind breaks the map at compile time, and the
-//! impl it names owes every pass, enforced by the traits. The walk
-//! order every pass shares lives here too.
-use core.{Expr, Stmt, ExprId, SyntaxArena, flatten, Pat, body_behavior, TypeId, Reg}
+//! The semantics dispatch: every feature's pattern semantics boxed
+//! once, and the exhaustive map that selects a kind's. A new `Pat`
+//! variant breaks the map at compile time, and the impl it names owes
+//! every method, enforced by the trait. The walk order every pass
+//! shares lives here too. An expression's own kids and heirs are its
+//! record's `NodeSemantics`, reached on the `Expr` value, exactly as
+//! its passes are its record's `Meaning`.
+use core.{ExprId, SyntaxArena, flatten, Pat, body_behavior, TypeId, Reg}
 use core.expr.{Body}
 use features.str_lit.{str_type, str_lower}
 use features.quote.{quote_type, quote_reg}
 use features.sublang.{block_type, block_reg}
 
-/// Every feature's boxed semantics, built ONCE per assembly — the
-/// exhaustive maps below only SELECT. The language builds it (the
+/// Every feature's boxed pattern semantics, built ONCE per assembly —
+/// the exhaustive map below only SELECTS. The language builds it (the
 /// boxing happens under typed lets there); every pass reaches a
-/// node's semantics through it, never by matching feature nodes.
+/// pattern's semantics through it, never by matching feature nodes.
 export type Dispatch = {
-    spine: dyn NodeSemantics,
-    strs: dyn NodeSemantics,
-    bools: dyn NodeSemantics,
-    ifs: dyn NodeSemantics,
-    whens: dyn NodeSemantics,
-    blocks: dyn NodeSemantics,
-    calls: dyn NodeSemantics,
-    aggs: dyn NodeSemantics,
-    structs: dyn NodeSemantics,
-    enums: dyn NodeSemantics,
-    nullables: dyn NodeSemantics,
-    catches: dyn NodeSemantics,
-    quotes: dyn NodeSemantics,
-    sublangs: dyn NodeSemantics,
-    components: dyn NodeSemantics,
-    syntaxes: dyn StmtSemantics,
-    lets: dyn StmtSemantics,
-    exprs: dyn StmtSemantics,
-    decls: dyn StmtSemantics,
-    holes: dyn StmtSemantics,
-    mutlets: dyn StmtSemantics,
-    consts: dyn StmtSemantics,
-    assigns: dyn StmtSemantics,
-    whiles: dyn StmtSemantics,
-    fors: dyn StmtSemantics,
-    structdecls: dyn StmtSemantics,
-    componentdecls: dyn StmtSemantics,
-    namedtypes: dyn StmtSemantics,
-    enumdecls: dyn StmtSemantics,
-    ifstmts: dyn StmtSemantics,
-    returns: dyn StmtSemantics,
-    letelses: dyn StmtSemantics,
-    fails: dyn StmtSemantics,
-    foreaches: dyn StmtSemantics,
-    implds: dyn StmtSemantics,
-    methods: dyn NodeSemantics,
-    lambdas: dyn NodeSemantics,
-    tasks: dyn NodeSemantics,
-    selects: dyn NodeSemantics,
-    ranges: dyn NodeSemantics,
-    maps: dyn NodeSemantics,
-    uses: dyn StmtSemantics,
-    specs: dyn StmtSemantics,
-    defers: dyn StmtSemantics,
-    collects: dyn StmtSemantics,
-    collectenums: dyn StmtSemantics,
-    jumps: dyn StmtSemantics,
     enumpats: dyn PatSemantics,
     formatpats: dyn PatSemantics,
     narrowpats: dyn PatSemantics,
     quotepats: dyn PatSemantics,
 }
 
-/// The semantics of each expression node — THE exhaustive map,
-/// selecting from the once-built Dispatch. A new variant breaks
-/// HERE at compile time, and the impl it names owes every pass,
-/// enforced by the trait.
-/// A body is handled by the feature its WORD names — the one
-/// registry in core, asked once.
-fn body_semantics(d: Dispatch, word: string) -> dyn NodeSemantics {
-    match body_behavior(word) { .Text -> d.strs, .Quote -> d.quotes, .Foreign -> d.sublangs }
-}
-
-export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
-    match e {
-        .IntLit(_) or .FloatLit(_) or .Ident(_) or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .Error -> d.spine,
-        .ListLit(_) or .Comp(_, _) or .Collect(_) -> d.aggs,
-        .MapLit(_, _) -> d.maps,
-        .StrLit(_) or .BytesLit(_) -> d.strs,
-        .Body(word, _, _, _) -> body_semantics(d, word),
-        .Component(_, _, _, _, _) -> d.components,
-        .BoolLit(_) -> d.bools,
-        .If(_, _, _) -> d.ifs,
-        .When(_, _, _) -> d.whens,
-        .Block(_, _) -> d.blocks,
-        .Call(_, _, _) or .Named(_, _) -> d.calls,
-        .StructLit(_, _, _) or .With(_, _, _) -> d.structs,
-        .Match(_, _) or .Is(_, _) or .VariantLit(_, _) -> d.enums,
-        .NullLit or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MatchOpt(_, _, _, _) or .Chain(_, _) -> d.nullables,
-        .Catch(_, _, _, _) -> d.catches,
-        .MethodCall(_, _, _) or .Receiver -> d.methods,
-        .Lambda(_, _) or .CallValue(_, _) -> d.lambdas,
-        .Spawn(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) -> d.tasks,
-        .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) -> d.selects,
-        .Range(_, _) -> d.ranges,
-        .Env(_) -> d.spine,
-    }
-}
-
 /// The semantics of each PATTERN kind — the pattern ladder's twin
-/// of semantics_of. A new `Pat` variant breaks HERE at compile
-/// time, and the impl it names owes all three methods, enforced by
-/// the trait. An owner adds its arms here and nowhere else.
+/// of a node's own record `Meaning`. A new `Pat` variant breaks HERE
+/// at compile time, and the impl it names owes all three methods,
+/// enforced by the trait. An owner adds its arms here and nowhere
+/// else.
 export fn pat_semantics_of(d: Dispatch, p: Pat) -> dyn PatSemantics {
     match p {
         .Wild or .Rest or .Bind(_) or .Variant(_, _) or .Lit(_) or .Member(_, _) -> d.enumpats,
@@ -116,49 +36,19 @@ export fn pat_semantics_of(d: Dispatch, p: Pat) -> dyn PatSemantics {
     }
 }
 
-/// The semantics of each STATEMENT kind — the stmt-spine's twin of
-/// semantics_of. A new statement kind breaks HERE at compile time,
-/// and the impl it names owes every pass, enforced by the trait.
-export fn stmt_semantics_of(d: Dispatch, s: Stmt) -> dyn StmtSemantics {
-    match s {
-        .Let(_, _, _) -> d.lets,
-        .MutLet(_, _, _) -> d.mutlets,
-        .ConstDecl(_, _, _) -> d.consts,
-        .Assign(_, _) -> d.assigns,
-        .ExprStmt(_) or .Discard(_) -> d.exprs,
-        .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) -> d.decls,
-        .While(_, _) -> d.whiles,
-        .For(_, _, _, _, _, _) -> d.fors,
-        .StructDecl(_, _, _) -> d.structdecls,
-        .ComponentDecl(_, _, _, _, _) -> d.componentdecls,
-        .NamedType(_, _, _) or .Alias(_, _, _) -> d.namedtypes,
-        .EnumDecl(_, _, _) -> d.enumdecls,
-        .IfStmt(_, _, _) -> d.ifstmts,
-        .Return(_) -> d.returns,
-        .LetElse(_, _, _) -> d.letelses,
-        .Fail(_) -> d.fails,
-        .ForEach(_, _, _, _) -> d.foreaches,
-        .ImplDecl(_, _, _) or .TraitDecl(_, _) -> d.implds,
-        .SyntaxDecl(_, _) -> d.syntaxes,
-        .Use(_, _, _) -> d.uses,
-        .Spec(_, _) -> d.specs,
-        .Defer(_, _) -> d.defers,
-        .Collect(_, _, _, _, _, _) -> d.collects,
-        .CollectEnum(_, _, _, _, _) -> d.collectenums,
-        .Jump(_, _) -> d.jumps,
-        // a setting lives in an instance's body, consumed where the
-        // instance is built — it reaches a pass only as a hole would
-        .Setting(_, _) or .Error -> d.holes,
-    }
-}
-
 /// Every node at and under `root`, children before owners — THE
 /// order every pass visits: facts a node reads exist before it
 /// speaks. Which nodes are a node's children is each feature's
 /// answer, reached through the dispatch.
 export fn post_order(d: Dispatch, store: SyntaxArena, root: ExprId) -> List<ExprId> {
     let node = store.expr(root)
-    flatten([post_order(d, store, k) for k in semantics_of(d, node).kids(node)]).concat([root])
+    flatten([post_order(d, store, k) for k in node.kids()]).concat([root])
+}
+
+impl NodeSemantics for Body {
+    fn kids() -> List<ExprId> {
+        match self.view { .Expanded(x) -> [x], rest -> self.holes }
+    }
 }
 
 impl Meaning for Body {
