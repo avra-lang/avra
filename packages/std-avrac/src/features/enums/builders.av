@@ -1,93 +1,15 @@
-//! Parse-time lowering: captures -> the EnumDecl statement, the
-//! Match node with its arms, and the pattern nodes. Arms and
-//! values ZIP (both are written every time); a declaration's
-//! payloads cannot, because they are optional — spans restore the
-//! truth: a payload belongs to the variant whose name precedes it
-//! and whose successor follows it, and a payload's NAME, when
-//! written, precedes its type inside that window. A MARK stands
-//! before the member it marks, so a variant NAME and a payload TYPE
-//! are both anchors — a window set short of the payloads reads a
-//! variant's last payload's mark as the NEXT variant's.
-use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped, SyntaxArena}
-use features.{
-    LangNode,
-    Builder,
-    window_end,
-    pat_ids_at,
-    ref_within,
-    between,
-    marks_at,
-    type_lo,
-    MarkWindows,
-    expr_id_at,
-}
-use grammar.{Token}
+//! Parse-time lowering: captures -> the Match node with its arms and
+//! the pattern nodes. Arms and values ZIP (both are written every
+//! time); a declaration's variants arrive already built — each rule
+//! writes its own `NVariant`, its payloads their own `NParam` — so no
+//! span window restores what the grammar nests.
+use core.{Expr, Stmt, Pat, Plain, Scoped}
+use features.{LangNode, Builder, variants_at, pat_ids_at, expr_id_at}
 
 fn build_enum_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
-    let ends? = b.span_end() else {
-        return .Err(
-            "defect: an enum declaration without a span — the arena and the grammar disagree",
-        )
-    }
-    let vs = b.tokens(2)?
-    let names = b.tokens(4)?
-    let tys = b.type_refs(5)?
-    // A VARIANT NAME AND A PAYLOAD TYPE ARE BOTH ANCHORS: a mark
-    // marks the member it precedes, and a set short of the payloads
-    // reads the last payload's mark as the next variant's.
-    let w = MarkWindows {
-        anchors: [v.span.lo for v in vs].concat([type_lo(t) for t in tys]),
-        marks: marks_at(b.args, 6).concat(marks_at(b.args, 7)),
-        from: b.span?.lo ?? 0,
-    }
-    mut variants: List<Variant> = []
-    for j, v in vs {
-        let upto = window_end(vs, j, ends)
-        variants
-            .push(
-                Variant {
-                    name: Plain(v.text),
-                    payloads: payloads_between(b.store, names, tys, w, v.span.lo, upto),
-                    span: v.span,
-                    marks: w.at(v.span.lo),
-                },
-            )
-    }
-    b.make_stmt(Stmt.EnumDecl(Scoped(n.text), [Plain(t.text) for t in tp], variants))
-}
-
-/// One variant's payloads: the types inside its window, each named
-/// by the field name written just before it, or "" when positional,
-/// and each carrying the marks written in front of it.
-fn payloads_between(
-    store: SyntaxArena,
-    names: List<Token>,
-    tys: List<TypeRef>,
-    w: MarkWindows,
-    after: int,
-    before: int,
-) -> List<Param> {
-    [Param {
-        name: Scoped(name_before(names, t, after)),
-        ty: t,
-        default: null,
-        promises: plain_mark,
-        id: store.alloc_param_id(t.span),
-        marks: w.at(type_lo(t)),
-    } for t in tys if ref_within(t, after, before)]
-}
-
-/// The field name written between the variant's name and this
-/// payload type, when one was.
-fn name_before(names: List<Token>, t: TypeRef, after: int) -> string {
-    let lo: int = t.span?.lo ?? after
-    mut best = ""
-    for n in names {
-        if between(n.span.lo, after, lo) { best = n.text }
-    }
-    best
+    b.make_stmt(Stmt.EnumDecl(Scoped(n.text), [Plain(t.text) for t in tp], variants_at(b.args, 2)))
 }
 
 fn build_arm(b: Builder) -> Result<LangNode, string> {
