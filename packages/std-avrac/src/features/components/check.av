@@ -6,6 +6,7 @@
 use core.{
     StmtId,
     ExprId,
+    Type,
     TypeId,
     DeclId,
     Annotation,
@@ -136,6 +137,34 @@ fn names_record(cx: TypeCx, e: ExprId) -> bool {
     cx.view.decls.is_record(d)
 }
 
+/// A COMPONENT THAT HOLDS A HANDLER WHICH CAN FAIL NAMES A FATE:
+/// `flow.no_fate`. The handler is structural — a field whose value
+/// answers `Result` — and the fate is the component's own `dead:`
+/// field, set. A component that declares no `dead:` field is not one
+/// that owes a fate.
+fn fate_law(mut cx: TypeCx, x: ExprId) {
+    let parts? = cx.view.store.struct_lit_parts(x) else { return }
+    let handler? = parts.values.find((v) -> fails(cx, v)) else { return }
+    let sig? = cx.fields_of(cx.type_at(x)) else { return }
+    if !sig.names.contains(fate_field) { return }
+    let slot = parts.fields.index_of(fate_field)
+    if slot >= 0 && !(cx.shape_at(parts.values[slot]) is .Null) { return }
+    cx.emit(no_fate(cx.loc_of(handler), cx.view.store.struct_lit_name(x) ?? "this component"))
+}
+
+/// The field a component names its fate in.
+const fate_field = "dead"
+
+/// Whether a value's type is a fn whose answer can fail.
+fn fails(cx: TypeCx, v: ExprId) -> bool {
+    match cx.shape_at(v) { .Fn(_, _, ret) -> is_failure(cx, ret), rest -> false }
+}
+
+/// Whether a type is a `Result`.
+fn is_failure(cx: TypeCx, ty: TypeId) -> bool {
+    match cx.view.types.shape_of(ty) { .Res(_, _) -> true, rest -> false }
+}
+
 /// An instance hears the events its component declares, each with all
 /// its event says or none of it: a handler the component cannot hear is
 /// refused by name.
@@ -158,6 +187,16 @@ fn event_law(mut cx: TypeCx, e: ExprId) {
 }
 
 // ── voices ──
+
+fn no_fate(at: Loc?, word: string) -> Diag {
+    refusal(
+        "flow.no_fate",
+        at,
+        "a handler that can fail must name a fate for its failure, and `${word}` names none",
+        "this handler can fail",
+        "name the letter a failed item is buried in — `dead: <sink>`",
+    )
+}
 
 fn no_diagnostics(at: Loc?, found: string) -> Diag {
     refusal(

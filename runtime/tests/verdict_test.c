@@ -47,6 +47,16 @@ static bool three_any(void) {
     return true;
 }
 
+// Two tasks; one choice, two orders.
+static bool two_any(void) {
+    g_runs++;
+    g_at = 0;
+    void* t[2];
+    for (int i = 0; i < 2; i++) t[i] = spawn1(notes, 'a' + i);
+    for (int i = 0; i < 2; i++) joined(t[i]);
+    return true;
+}
+
 // Three tasks; fails unless `a` runs first — not under schedule 0.
 static bool a_first(void) {
     g_runs++;
@@ -275,6 +285,38 @@ static void replayed(void) {
     g_runs = 0;
     CHECK(verdict(a_first) == 0 && g_runs == 1, "AVRA_SCHED_SEED runs the failing schedule alone, and it fails again");
 }
+
+// ── path mode: every order, depth first, and its spelling ───────
+
+static void walks_every_order(void) {
+    setenv("AVRA_SCHED_PATH", "all", 1);
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    g_runs = 0;
+    CHECK(verdict(two_any) == 1 && g_runs > 1 && g_runs < 8, "a case whose tree is smaller than its schedule count walks it and stops");
+}
+
+static char g_failing_path[64];
+
+static void found_a_path(void) {
+    setenv("AVRA_SCHED_PATH", "all", 1);
+    setenv("AVRA_SCHED_RUNS", "8", 1);
+    g_runs = 0;
+    CHECK(verdict(a_first) == 0, "a case that fails in some order fails on the walk");
+    CHECK(g_runs >= 2 && g_runs <= 8, "and the failing order is found within the walk");
+}
+
+static void replayed_a_path(void) {
+    setenv("AVRA_SCHED_PATH", g_failing_path, 1);
+    unsetenv("AVRA_SCHED_RUNS");
+    g_runs = 0;
+    CHECK(verdict(a_first) == 0 && g_runs == 1, "the spelling the failure named replays that order alone");
+}
+
+static void two_modes(void) {
+    setenv("AVRA_SCHED_PATH", "all", 1);
+    setenv("AVRA_SCHED_SEED", "2", 1);
+    verdict(alone);
+}
 // The settings are read once, at a process's first case.
 static void zero_alone(void) {
     setenv("AVRA_SCHED_SEED", "0", 1);
@@ -334,6 +376,37 @@ int main(void) {
         CHECK(g_failed_at > 0 && says(want), "the number said is the one that replays it");
     }
     heard("the failing schedule, replayed", replayed);
+    heard("a path walk runs every order and stops", walks_every_order);
+    CHECK(g_said[0] == 0, "a passing walk says nothing");
+    heard("a failing order is named with its path", found_a_path);
+    CHECK(says("failed under path") && says("AVRA_SCHED_PATH="), "the failure names the path that replays it");
+    {
+        const char* at = strstr(g_said, "AVRA_SCHED_PATH=");
+        g_failing_path[0] = 0;
+        if (at) {
+            at += strlen("AVRA_SCHED_PATH=");
+            size_t n = 0;
+            while (at[n] && at[n] != ' ' && at[n] != '\n' && n < sizeof g_failing_path - 1) n++;
+            memcpy(g_failing_path, at, n);
+            g_failing_path[n] = 0;
+        }
+        CHECK(g_failing_path[0] != 0, "and its spelling was read");
+    }
+    heard("the failing path, replayed", replayed_a_path);
+    CHECK(says("failed under path") && says(g_failing_path), "it fails again, on the path it named");
+    {
+        int out[2];
+        if (pipe(out) != 0) return 1;
+        pid_t pid = fork();
+        if (pid == 0) { dup2(out[1], 2); close(out[0]); two_modes(); _exit(0); }
+        close(out[1]);
+        size_t got = 0;
+        for (ssize_t n; got < sizeof g_said - 1 && (n = read(out[0], g_said + got, sizeof g_said - 1 - got)) > 0;) got += (size_t)n;
+        g_said[got] = 0;
+        int status = 0;
+        waitpid(pid, &status, 0);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && says("name one"), "path mode and seed mode are two settings, and one is named");
+    }
     heard("schedule 0 alone", zero_alone);
     heard("the count, said once", said_at_the_end);
     CHECK(says("8 schedules") && says("AVRA_SCHED_RUNS=8 runs more, as the nightly `orders` run does") && says("orders past 16 ready tasks are not all reachable"), "the count is said with how to run more and what it cannot reach");

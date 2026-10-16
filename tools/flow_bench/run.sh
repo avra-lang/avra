@@ -5,7 +5,15 @@
 # nanoseconds per unit; the parked rows are bytes per parked task, read
 # from the process's own status (resident set, page tables).
 #
-#   sh tools/flow_bench/run.sh          the bench
+# THE ONE DOOR FOR AVRA BESIDE GO IS NOW `benchmarks/run.sh --g1`
+# (`make flow-bench`), where the target factors live as data and every
+# row is judged. This harness keeps what is uniquely its own: the
+# runtime-only C floor a `runtime/*.c` change answers (`--gate`,
+# `--record`, the `make flow-gate` job) and the stack allocator's probes.
+# The Go view below stays runnable by hand and is the design the suite
+# carries; nothing here is a second door for the suite's question.
+#
+#   sh tools/flow_bench/run.sh          the bench (the older Go view)
 #   sh tools/flow_bench/run.sh probes   the stack allocator's probes
 #   sh tools/flow_bench/run.sh --gate [--require]   the runtime change
 #                                       gate: the C rows against

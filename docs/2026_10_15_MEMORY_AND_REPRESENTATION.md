@@ -199,9 +199,12 @@ TERMS to add: `overflow` (`.park`/`.latest`/`.drop_oldest`/`.drop_newest`/`.fail
 
 ## Three tiers make a contract the LANGUAGE'S, not a doc's
 1. **Fields/terms** — the values above.
-2. **`check`** — value laws **written by the library author in Avra**, run by the
-   compiler at each instance, each diagnostic spoken there (`capacity >= 1`; "a fate is
-   named when `delivery` is `exactly_once`").
+2. **`@std/validate`'s rules** — value laws **written by the library author in Avra**,
+   run by the compiler at each instance, each diagnostic spoken there (`capacity >= 1`;
+   "a fate is named when `delivery` is `exactly_once`"). A rule is a plain fn, a
+   constraint belongs on the FIELD it constrains, and a relation between fields is a
+   rule on the RECORD — the machinery `@std/validate` already has, called by the
+   compiler instead of by `decode` (`2026_10_16_BOUNDARY_CONTRACTS.md` §8).
 3. **The typer** — laws needing TYPES/signatures (`flow.no_fate`: a failing handler
    needs a `dead:`, which a `check` cannot see).
 A `rule` (`avra check`) is for cross-cutting SHAPES no single declaration owns

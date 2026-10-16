@@ -1,0 +1,22 @@
+//! proves `order: .by_key` lets a different key through while the next
+//! item of a held key waits its turn.
+use @std.queue.{queue, key, Dead, Order}
+use @std.task.{unbounded_channel}
+use @std.time.{ms}
+
+type Job = { n: int }
+
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    capacity: 4
+    lease: ms(60000)
+    order: Order.by_key
+    dead: letters.sink
+}
+let _ = jobs.home().send(Job { n: 1 }, key("a"))
+let _ = jobs.home().send(Job { n: 2 }, key("b"))
+let _ = jobs.home().send(Job { n: 3 }, key("a"))
+let a1 = jobs.home().take()
+let b1 = jobs.home().take()
+let blocked = jobs.home().take()
+"${b1!.item.n} ${blocked == null}"
