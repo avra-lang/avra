@@ -1,13 +1,21 @@
 //! proves a queue's `check` states its value laws over the settings: a
-//! capacity below one, a negative retries, and exactly-once with no
-//! fate. The instances are built from parameters, so the check is read
-//! where it stands rather than spoken at a settled instance.
-use @std.queue.{queue, Guarantee}
+//! capacity below one, a negative retries, exactly-once with no fate,
+//! and exactly-once that drops on overflow. The instances are built from
+//! parameters, so the check is read where it stands rather than spoken
+//! at a settled instance.
+use @std.queue.{queue, Guarantee, Overflow, Dead}
+use @std.task.{unbounded_channel}
 
-fn said(capacity: int, retries: int, delivery: Guarantee) -> string {
+fn said(capacity: int, retries: int, delivery: Guarantee, overflow: Overflow) -> string {
+    let letters = unbounded_channel<Dead<int, string>>()
     let a = queue<int> { capacity: capacity }
     let b = queue<int> { retries: retries }
     let c = queue<int> { delivery: delivery }
-    "${a.check()[0].message}|${b.check()[0].message}|${c.check()[0].message}"
+    let d = queue<int> {
+        delivery: Guarantee.exactly_once
+        overflow: overflow
+        dead: letters.sink
+    }
+    "${a.check()[0].message}|${b.check()[0].message}|${c.check()[0].message}|${d.check()[0].message}"
 }
-said(0, 0 - 1, Guarantee.exactly_once)
+said(0, 0 - 1, Guarantee.exactly_once, Overflow.latest)

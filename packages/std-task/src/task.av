@@ -44,8 +44,10 @@ export type Source<T> = {
     work: Task<bool>? = null,
 }
 
-/// Both ends of one in-memory channel.
-export type Channel<T> = { sink: Sink<T>, source: Source<T> }
+/// Both ends of one in-memory channel. `peek` reads the value at the
+/// head without consuming it — the oldest a `taken` would answer — so a
+/// holder can judge it before giving it up.
+export type Channel<T> = { sink: Sink<T>, source: Source<T>, peek: fn() -> T? }
 
 /// Which member of an `AnyOf` handed an item over.
 export type Pick<T> = { at: int, item: T }
@@ -142,7 +144,7 @@ export fn open_channel<T>(cap: int) -> Channel<T> {
         lost: () -> st.lost(),
         work: null,
     }
-    Channel { sink: sink, source: source }
+    Channel { sink: sink, source: source, peek: () -> st.peek_buf() }
 }
 
 /// A channel bounded only by memory.
@@ -267,6 +269,9 @@ impl Ch<T> {
         self.len.set(self.len.get() - 1)
         v
     }
+
+    /// The value a `pop_buf` would hand over, left in place.
+    fn peek_buf() -> T? { self.buf.get().first() }
 
     fn push_handed(v: T) {
         self.handed.push(v)
