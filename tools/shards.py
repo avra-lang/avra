@@ -85,12 +85,13 @@ def pack(names, n, w):
         i = load.index(min(load))
         bins[i].append(name)
         load[i] += w.get(name, DEFAULT)
-    return [b for b in bins if b] or [[]]
+    # a shard runs its lightest suites first, so a long one never delays the short ones' verdicts
+    return [sorted(b, key=lambda p: (w.get(p, DEFAULT), p)) for b in bins if b] or [[]]
 
 
 def self_test():
     w = {"a": 100, "b": 60, "c": 50}
-    assert pack(["x", "a", "c", "b", "y"], 2, w) == [["a", "x", "y"], ["b", "c"]]
+    assert pack(["x", "a", "c", "b", "y"], 2, w) == [["x", "y", "a"], ["c", "b"]]
     assert pack([], 4, w) == [[]]
     assert pack(["x"], 4, w) == [["x"]]
     got = pack([f"p{i}" for i in range(9)], 4, {})
