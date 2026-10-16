@@ -294,6 +294,54 @@ spec "features/enums (adversarial)" {
             ) == "empty/x"
         }
     }
+    given "the variant carrier — a variant's own record" {
+        then "the payload order is the declaration's" {
+            shown(
+                "enum E {\n    a(x: int, y: string), b\n}\nmatch E.a(1, \"s\") {\n    .a(p, q) -> q\n    .b -> \"\"\n}",
+            ) == "s"
+        }
+        then "five payloads read back in order" {
+            shown(
+                "enum E {\n    a(int, int, int, int, int)\n}\nmatch E.a(1, 2, 3, 4, 5) {\n    .a(a, b, c, d, e) -> a + b + c + d + e\n}",
+            ) == "15"
+        }
+        then "an applied payload type lands whole" {
+            shown(
+                "enum E {\n    a(List<int>), b\n}\nmatch E.a([1, 2, 3]) {\n    .a(v) -> v.length\n    .b -> 0\n}",
+            ) == "3"
+        }
+        then "a nullable payload carries absence" {
+            shown(
+                "enum E {\n    a(int?), b\n}\nmatch E.a(null) {\n    .a(v) -> v ?? 9\n    .b -> 0\n}",
+            ) == "9"
+        }
+        then "a union payload holds either member" {
+            shown(
+                "enum E {\n    a(int or string), b\n}\nmatch E.a(3) {\n    .a(v) -> 1\n    .b -> 0\n}",
+            ) == "1"
+        }
+        then "a trailing comma after the last payload parses" {
+            shown("enum E {\n    a(int,), b\n}\nmatch E.a(1) {\n    .a(v) -> v\n    .b -> 0\n}") == "1"
+        }
+        then "a literal where a payload type belongs refuses" {
+            refusals("enum E {\n    a(1)\n    b\n}\n1") == 1
+        }
+        then "a keyword where a payload type belongs refuses" {
+            refusals("enum E {\n    a(if)\n    b\n}\n1") == 1
+        }
+        then "a payload naming no type refuses" {
+            refusals("enum E {\n    a(x:)\n    b\n}\n1") == 1
+        }
+        then "a pattern longer than the variant refuses, naming the count" {
+            refused_with(
+                "enum E {\n    a(int)\n    b\n}\nmatch E.a(1) {\n    .a(x, y) -> 1\n    .b -> 0\n}",
+                "`.a` carries 1, the pattern names 2",
+            )
+        }
+        then "an empty payload list refuses, not parses as a unit variant" {
+            refusals("enum E {\n    a()\n    b\n}\n1") == 1
+        }
+    }
 }
 
 spec "features/enums — an or-run's shape" {
