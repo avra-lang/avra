@@ -1,8 +1,9 @@
 //! `@derive(Makes)` — a flat node's MAKERS, read off the declaration. A
 //! variant whose every payload has a `Slots` accessor gets one fn that
 //! builds it from its labels and one `Maker` row naming that fn. A
-//! variant with a payload no accessor reads is not made; it keeps its
-//! own builder.
+//! payload that declares a default takes it where the rule leaves its
+//! label out. A variant with a payload no accessor reads is not made;
+//! it keeps its own builder.
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md): running a derive
 //! TYPES the file that declares it.
@@ -93,8 +94,15 @@ fn construction(v: MetaVariant) -> Code {
     quote { .Ok(.${v}(${..args})) }
 }
 
-/// One payload's read: the `Slots` accessor its type names, by its label.
+/// One payload's value: its read, or its declared default when the rule
+/// writes nothing under the label.
 fn slot(f: Field) -> Code {
+    let fallback? = f.default else { return read(f) }
+    quote { if s.present_of(${literal(f.name)})? { ${read(f)} } else { ${fallback} } }
+}
+
+/// One payload's read: the `Slots` accessor its type names, by its label.
+fn read(f: Field) -> Code {
     match f.ty {
         "ExprId" -> quote { s.expr_of(${literal(f.name)})? },
         "List<ExprId>" -> quote { s.exprs_of(${literal(f.name)})? },
