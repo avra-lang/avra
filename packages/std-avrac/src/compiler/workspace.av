@@ -517,8 +517,10 @@ export type Workspace = {
 }
 
 /// One annotation query's stable inputs. Its dense list position is
-/// the `Lifted` family's key; the call expression mints that identity.
-type LiftAsk = { name: string, decl: DeclId, file: FileId, stmt: StmtId, args: List<ExprId> }
+/// the `Lifted` family's key; the call expression mints that identity,
+/// and is kept so the answer's durable name spells the call from its
+/// declaration, wherever the file sits.
+type LiftAsk = { name: string, decl: DeclId, file: FileId, stmt: StmtId, call: ExprId, args: List<ExprId> }
 
 /// A const site's stable inputs. The dense list position is the
 /// `Settled` family's key; its initializer is read inside the query.
@@ -529,8 +531,8 @@ fn const_stmt(root: SettleRoot) -> StmtId? {
     match root { .Const(s) -> s, .Expr(_) -> null }
 }
 
-fn lift_ask(name: string, d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
-    LiftAsk { name: name, decl: d, file: f, stmt: s, args: args }
+fn lift_ask(name: string, d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> LiftAsk {
+    LiftAsk { name: name, decl: d, file: f, stmt: s, call: call, args: args }
 }
 
 /// The query family's held value. A refusal remains here in full so a
@@ -658,7 +660,7 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 fn reads_rows_whole(f: Family) -> bool {
     match f {
         .LiftLowered or .Lifted or .Settled -> true,
-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach or .Writes or .CancelBits or .ReadFound or .Consumed or .Lowered -> false,
+        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Placed or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach or .Writes or .CancelBits or .ReadFound or .Consumed or .Lowered -> false,
     }
 }
 
@@ -792,6 +794,11 @@ fn names_verified(ws: Workspace, arg: int) -> int {
     touch(ws.name_slice(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Names, arg))
 }
+// LICENSED compiler.free_state_verb: a code-hash TARGET — `family_code_hash` asks `code_hash(placed_verified)`, a fn VALUE, so the verifier cannot be a method.
+fn placed_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.placed(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Placed, arg))
+}
 fn marks_verified(ws: Workspace, arg: int) -> int {
     touch(ws.computed_marks(decl_at_arg(arg)))
     ws.db.changed_at(key(Family.Marks, arg))
@@ -867,6 +874,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .MethodDiags -> method_diags_verified(ws, arg),
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
+        .Placed -> placed_verified(ws, arg),
         .Marks -> marks_verified(ws, arg),
         .Writes -> writes_verified(ws, arg),
         .CancelBits -> cancel_bits_verified(ws, arg),
@@ -2123,6 +2131,21 @@ impl Workspace {
         h
     }
 
+    /// A declaration's own PLACEMENT, DECLARATION-GRAIN: the arena
+    /// range its facts sit at, `lo, hi, stmt_lo, stmt_hi` folded whole.
+    /// `Syntax` is durable — two declarations of one shape fold alike
+    /// wherever they sit — but a body's typed facts carry ARENA IDS, so
+    /// a same-file insert above it must move this and retype that body.
+    fn placed(d: DeclId) -> int {
+        let k = key(Family.Placed, d.index)
+        if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
+        self.db.begin(k)
+        let x = self.decls.decl(d)
+        let h = fp(122, [x.lo, x.hi, x.stmt_lo, x.stmt_hi])
+        self.db.settle(k, h)
+        h
+    }
+
     /// A declaration's own slice of its file's names, DECLARATION-GRAIN
     /// (COMPILER DB townhall §6.11): `name_slice_fp` over its expr
     /// range. Recomputed with the file's `Resolved`, and cut off by
@@ -2215,9 +2238,24 @@ impl Workspace {
     }
 
     /// The one context over a declaration's expression range: the view
-    /// of its file, the names it reads.
+    /// of its file, the names it reads. Stands on `syntax(x)` — a
+    /// declaration's own nodes, the one edge a body owes the file — and
+    /// on `placed(x)` — WHERE those nodes sit, since the context is over
+    /// an arena range. Reads the file's `parsed` table UNRECORDED, so an
+    /// edit elsewhere in the file never retypes this declaration.
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
-        let p = self.parsed(x.file)
+        // A file's module pseudo-declaration owns no statements, so it
+        // owes no own-syntax edge.
+        if x.stmt.index < self.decls.store(x.id).stmts.count() { let _ = self.syntax(x.id) }
+        let _ = self.placed(x.id)
+        let p = if self.relation(Family.Parsed).open(x.file.index) {
+            self.parsed(x.file)
+        } else {
+            match self.relation(Family.Parsed).values.entry(x.file.index) {
+                .Present(r) -> parsed_of(r),
+                .Missing -> self.parsed(x.file),
+            }
+        }
         let view = file_view(self.lang, p, self.decls, x.file)
         new_type_cx(
             self.lang.dispatch,
@@ -2254,10 +2292,18 @@ impl Workspace {
             return out
         }
         let ids = self.decls.ids()
+        // The facts carry ARENA IDS: the settle fingerprint folds WHERE
+        // they are placed, so a shift that leaves `syntax(d)` and
+        // `names(d)` alike still reads this body's value as moved.
+        let spot = self.placed(d)
         typed_of(
             self
                 .relation(Family.Typed)
-                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r), ids, true)),
+                .finish_lazy(
+                    d.index,
+                    DbRow.Typed(out),
+                    (r: DbRow) -> fp(123, [spot, type_facts_fp(typed_of(r), ids, true)]),
+                ),
         )
     }
 
@@ -2449,6 +2495,7 @@ export fn family_code_hash(f: Family) -> string {
         .MethodDiags -> code_hash(method_diags_verified) ?? "",
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
+        .Placed -> code_hash(placed_verified) ?? "",
         .Marks -> code_hash(marks_verified) ?? "",
         .Writes -> code_hash(writes_verified) ?? "",
         .CancelBits -> code_hash(cancel_bits_verified) ?? "",

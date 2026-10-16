@@ -58,9 +58,9 @@ def ceiling_check(count, ceil):
 
 # (count, ceiling, refused?) — the hand-written count may not rise.
 CEILING_CASES = [
-    (37, 37, False),                                      # at the ceiling
-    (36, 37, False),                                      # fallen
-    (38, 37, True),                                       # rose
+    (42, 42, False),                                      # at the ceiling
+    (41, 42, False),                                      # fallen
+    (43, 42, True),                                       # rose
 ]
 
 

@@ -1,0 +1,85 @@
+// `Family.Placed` (COMPILER DB townhall §6.11): a body's typed facts
+// carry ARENA IDS, so a reader stands not only on a declaration's own
+// `Syntax` — durable content, equal wherever the declaration sits — but
+// on WHERE it sits. A same-file insert above a declaration that leaves
+// its `Syntax`, its `Names` slice and its file's `Visible` names alike
+// must still move `Placed`: without that dep a served `Typed` answer
+// keeps stale arena positions, and the body is judged over nodes that
+// have moved.
+//
+// `a_process_over` and `checked` are workspace_fixtures.av's own.
+use compiler.{Workspace}
+use compiler.families.{Family}
+use core.{DeclId}
+use @std.relation.engine.{Key}
+
+/// The file's one declaration `b`, optionally behind a NON-exported `a`
+/// whose only work is to shift `b`'s arena range.
+fn placed_source(lead: string) -> string { "${lead}fn b() -> int {\n    2\n}\n" }
+
+fn placed_lead() -> string { "fn a() -> int {\n    1\n}\n" }
+
+fn placed_decl(ws: Workspace) -> DeclId {
+    [x.id for x in ws.decls.all_decls() if x.name == "b"][0]
+}
+
+/// `b`'s own answers, read once the file is checked: its own syntax, its
+/// name slice, its file's visible-names hash, its placement, and the
+/// arena offset that placement names.
+type PlacedSeen = { syntax: int, names: int, visible: int, placed: int, lo: int }
+
+fn placed_seen(lead: string) -> PlacedSeen {
+    let ws = a_process_over({"/w/src/main.av": placed_source(lead)}, ["/w/src/main.av"])
+    let f = ws.file_id("/w/src/main.av")
+    let _ = checked(ws, "/w/src/main.av")
+    let b = placed_decl(ws)
+    PlacedSeen {
+        syntax: ws.syntax(b),
+        names: ws.name_slice(b),
+        visible: ws.db.value_hash_of(Key { family: Family.Visible.ordinal, arg: f.index }) ?? 0 - 1,
+        placed: ws.placed(b),
+        lo: ws.decls.decl(b).lo,
+    }
+}
+
+fn placed_reads(ws: Workspace, reader: Family, d: DeclId) -> bool {
+    ws
+        .db
+        .edges_by_reader(Key { family: reader.ordinal, arg: d.index })
+        .any((k: Key) -> k.family == Family.Placed.ordinal && k.arg == d.index)
+}
+
+spec "compiler/workspace — Family.Placed is declaration-grain and position-true" {
+    given "a non-exported declaration inserted above `b`" {
+        then "`b`'s syntax, name slice and file's visible names all stand" {
+            let before = placed_seen("")
+            let after = placed_seen(placed_lead())
+            before.syntax == after.syntax &&
+                before.names == after.names &&
+                before.visible == after.visible
+        }
+        then "but the insert shifts `b`'s arena range and moves `Placed`" {
+            let before = placed_seen("")
+            let after = placed_seen(placed_lead())
+            before.lo < after.lo && before.placed != after.placed
+        }
+    }
+    given "a body typed in a file where a declaration sits above it" {
+        then "`Typed(b)` reads `Placed(b)`, so the shift must retype that body" {
+            let ws = a_process_over(
+                {"/w/src/main.av": placed_source(placed_lead())},
+                ["/w/src/main.av"],
+            )
+            let _ = checked(ws, "/w/src/main.av")
+            placed_reads(ws, Family.Typed, placed_decl(ws))
+        }
+        then "`Sig(b)` reads `Placed(b)` too" {
+            let ws = a_process_over(
+                {"/w/src/main.av": placed_source(placed_lead())},
+                ["/w/src/main.av"],
+            )
+            let _ = checked(ws, "/w/src/main.av")
+            placed_reads(ws, Family.Sig, placed_decl(ws))
+        }
+    }
+}
