@@ -34,7 +34,7 @@ use core.{
     SeatMark,
     Span,
 }
-use features.{DeclSig, DeclFacts, AnnotationFact, LitArg, LitKind, CancelReach}
+use features.{ExternNote, DeclSig, DeclFacts, AnnotationFact, LitArg, LitKind, CancelReach}
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
 use @std.meta.{code_hash}
@@ -772,7 +772,7 @@ fn load_imports(
 }
 
 /// THE PRODUCER INDEX, BESIDE `named_in`: every declaration NAME, WORD and MARK a held
-/// module's record lines carry, and whether it declares an extern — filed while the record
+/// module's record lines carry, each extern it declares and each file's re-exports — filed while the record
 /// is read for its names alone, so a bucket reader can mint the modules that would file a
 /// row there BEFORE its own read. The fields are the ones `read_row` and `facts_unblocked`
 /// already decode, so nothing is parsed a second time.
@@ -785,17 +785,15 @@ fn note_producers(ws: Workspace, m: ModulePath, fields: List<List<string>>) {
         filed_under(ws.hold.named_by, row.name, m)
         if f.word != null { filed_under(ws.hold.worded_by, f.word!, m) }
         for a in f.annotations { filed_under(ws.hold.marked_by, a.name, m) }
-        if f.external { filed_under_list(ws.hold.externed_by, m) }
+        if f.external { ws.hold.externed_by.push(ExternNote { module: m.text(), path: row.path, name: row.name, hosted: f.hosted }) }
     }
+    for path in distinct([p[1] for p in fields if p.length >= 5 && p[0] == "reexport"]) { ws.hold.reexports.put(path, reexports_in(fields, path)) }
 }
 
 /// One module filed under a value in a producer map, once.
 fn filed_under(map: Cell<Map<string, List<string>>>, value: string, m: ModulePath) {
     map.put(value, distinct((map.get().get(value) ?? []).concat([m.text()])))
 }
-
-/// One module filed once in a producer list.
-fn filed_under_list(list: Cell<List<string>>, m: ModulePath) { list.set(distinct(list.get().concat([m.text()]))) }
 
 /// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
 /// record — as a read `collect` admits it — so a file nothing imports stands, held,

@@ -46,6 +46,7 @@ use core.{
 use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
+    ExternNote,
     takes_receiver,
     Unsettled,
     Settled,
@@ -257,18 +258,20 @@ type Hold = {
     holds_settled: Cell<bool>,
     named_in: Cell<Map<string, List<string>>>,
     /// THE PRODUCER INDEX, BESIDE `named_in`: for each held module, every declaration NAME,
-    /// WORD and MARK its record lines carry, and whether it declares an extern. A bucket
+    /// WORD and MARK its record lines carry, and each extern it declares. A bucket
     /// reader mints the modules listed for its value before it reads the bucket, so a
     /// held module's row exists before the read that wants it — never eagerly, never late.
     named_by: Cell<Map<string, List<string>>>,
     worded_by: Cell<Map<string, List<string>>>,
     marked_by: Cell<Map<string, List<string>>>,
-    externed_by: Cell<List<string>>,
+    externed_by: Cell<List<ExternNote>>,
+    /// The record `ref` rows whose target is a held file, by that file's path, with the file each came from.
+    held_refs: Cell<Map<string, List<HeldRef>>>,
     held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
     file_module: Table<int>,
     sig_asked: Table<int>,
-    // each held file's re-exports, read off its record as its module mints
+    // each held file's re-exports, read off its record as it loads
     reexports: Cell<Map<string, List<Reexport>>>,
     settle_frames: Cell<List<Cell<List<KeptLine>>>>,
     // each held collector, with the set its record says it gathered
@@ -284,6 +287,9 @@ type Hold = {
     rows_live: Cell<Map<string, List<UnitRow>>>,
     rows_fresh: Cell<Map<string, bool>>,
 }
+
+/// A held file's `ref` row and the file that wrote it.
+type HeldRef = { file: FileId, row: List<string> }
 
 /// One const a unit's lowering asked the settlement for.
 type ConstAsk = { file: FileId, root: SettleRoot, seats: List<SeatValue> }
@@ -346,7 +352,8 @@ fn new_hold() -> Hold {
         named_by: Cell.new(no_named_in),
         worded_by: Cell.new(no_named_in),
         marked_by: Cell.new(no_named_in),
-        externed_by: Cell.new(no_paths()),
+        externed_by: list_cell(),
+        held_refs: map_cell(),
         held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
         file_module: new_table<int>(),
@@ -1049,7 +1056,7 @@ fn built(
     ws.decls.arm_named((name: string) -> ws.held_named(name))
     ws.decls.arm_worded((word: string) -> ws.held_worded(word))
     ws.decls.arm_marked((mark: string) -> ws.held_marked(mark))
-    ws.decls.arm_external(() -> ws.held_external())
+    ws.decls.arm_externs(() -> ws.hold.externed_by.get(), (modules: List<string>) -> ws.minted_modules(modules))
     ws.decls.arm_embeds((f: FileId, rel: string) -> ws.embed_placed(f, rel))
     ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
@@ -1059,6 +1066,7 @@ fn built(
     ws.decls.arm_cancels((d: DeclId) -> ws.cancel_ensured(d))
     ws.decls.arm_consumed((d: DeclId) -> ws.consumed_ensured(d))
     ws.decls.arm_references(() -> ws.refs_ensured())
+    ws.decls.arm_held_refs((d: DeclId) -> ws.held_refs_to(d))
     ws.decls.arm_read_found((d: DeclId) -> ws.read_found_ensured(d))
     ws.decls.arm_failures(() -> ws.failures_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
@@ -1180,8 +1188,6 @@ impl Workspace {
     fn held_worded(word: string) { self.minted_modules(self.hold.worded_by.get().get(word) ?? []) }
 
     fn held_marked(mark: string) { self.minted_modules(self.hold.marked_by.get().get(mark) ?? []) }
-
-    fn held_external() { self.minted_modules(self.hold.externed_by.get()) }
 
     /// Every listed module minted, once: `mint_module` is its own guard.
     fn minted_modules(modules: List<string>) {
@@ -1774,8 +1780,10 @@ impl Workspace {
     }
 
     /// A file's rows standing before a reader reads them through their buckets: its
-    /// admission asked under a cell whose hash never moves.
+    /// admission asked under a cell whose hash never moves. A held file's rows stand
+    /// through the producer index, which mints a module for the name a bucket read asks.
     fn admission(f: FileId) {
+        if self.is_held(f) { return }
         let k = key(Family.Admitted, f.index)
         let rev = self.db.revision()
         if self.admission_asked.at(f.index) ?? 0 == rev {

@@ -390,7 +390,10 @@ impl Decls {
 
     fn hold_marked(mark: string) { (self.ensure_marked.get())(mark) }
 
-    fn hold_external() { (self.ensure_external.get())() }
+    fn hold_modules(modules: List<string>) { (self.ensure_modules.get())(modules) }
+
+    /// The externs the records of the files held now declare.
+    fn held_externs() -> List<ExternNote> { [n for n in (self.externs_index.get())() if self.held.get().get(n.path) != null] }
 
     /// The files whose rows came from a record.
     fn held_files() -> List<FileId> {
@@ -410,7 +413,10 @@ impl Decls {
 
     fn arm_marked(ensure: fn(string) -> void) { self.ensure_marked.set(ensure) }
 
-    fn arm_external(ensure: fn() -> void) { self.ensure_external.set(ensure) }
+    fn arm_externs(index: fn() -> List<ExternNote>, ensure: fn(List<string>) -> void) {
+        self.externs_index.set(index)
+        self.ensure_modules.set(ensure)
+    }
 
     fn held_items_of_file(f: FileId) -> List<DeclId> {
         (self.ensure_file.get())(f)
