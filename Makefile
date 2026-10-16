@@ -601,12 +601,12 @@ cache-attacks: cache-attacks-a cache-attacks-b
 cache-attacks-a: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
 
-# THE STORE'S GC AND TIME TRAVEL (§6.7): the window, the size and age limits,
-# a reader beside gc, a torn frame, a hold, the empty and absent cases — each
+# THE STORE'S CLEAN AND TIME TRAVEL (§6.7): the window, the size and age limits,
+# a reader beside clean, a torn frame, a hold, the empty and absent cases — each
 # CLEARS the store. `tools/store_attacks.sh` is §6.8's own list (a separate run;
 # it holds a stage-1 marker for the S2 per-query rebuild).
 store-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@sh tools/store_gc_attack.sh
+	@sh tools/store_clean_attack.sh
 
 cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
@@ -628,7 +628,7 @@ cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cancel_bits_attack.sh
 	@sh tools/readfound_attack.sh
 	@sh tools/durable_symbol_attack.sh
-	@sh tools/store_gc_attack.sh
+	@sh tools/store_clean_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It

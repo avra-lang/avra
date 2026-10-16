@@ -48,13 +48,13 @@ const ACTION_TAG: int = 2
 
 /// THE STORE'S LIMITS, in one place (§6.7/S8): the time-travel window — sealed
 /// revisions kept beside the newest — a whole-store byte ceiling, and an age for
-/// history. Zero on a limit means no limit. The automatic seal and `avra cache gc`
+/// history. Zero on a limit means no limit. The automatic seal and `avra cache clean`
 /// reclaim by the same rule, so a store is bounded however it is written.
 const REVISIONS_KEPT: int = 10
 const MAX_BYTES_KEPT: int = 2147483648
 const MAX_AGE_KEPT_NS: int = 0
 
-/// A store's limits, as `avra cache gc` and the automatic seal read them.
+/// A store's limits, as `avra cache clean` and the automatic seal read them.
 export type StoreLimits = { revisions: int, max_bytes: int, max_age_ns: int }
 
 fn env_int(name: string) -> int? {
@@ -77,7 +77,7 @@ export fn store_limits() -> StoreLimits {
 
 /// What a reclaim did: whether it sealed and could take the lock, the revision
 /// count before and after, the revisions it evicted, and the store's bytes.
-export type GcReport = {
+export type CleanReport = {
     skipped: bool,
     sealed: bool,
     bodies_before: int,
@@ -562,19 +562,19 @@ fn retire(pack: Pack) {
     }
 }
 
-/// RECLAIM BY §6.7'S RULE. Compaction IS gc: the reachable rows (the merged
+/// RECLAIM BY §6.7'S RULE. Compaction IS clean: the reachable rows (the merged
 /// index — the latest command's answers, §6.7's roots until DB 08) fold into a
 /// fresh sealed body when the segments hold frames, then the limits evict the
 /// oldest history. A process that cannot take the compaction lock says it
 /// skipped. Answers what it reclaimed.
-export fn pack_gc(pack: Pack, limits: StoreLimits) -> GcReport {
+export fn pack_clean(pack: Pack, limits: StoreLimits) -> CleanReport {
     // LICENSED input.store_io: the store's own directory, asked whether it stands
-    if !exists(pack.dir) { return empty_gc() }
+    if !exists(pack.dir) { return empty_clean() }
     let bytes_before = store_bytes(pack.dir)
     let bodies_before = all_body_names(pack.dir).length
     opened_at(pack, false)
     if !locked(pack) {
-        return GcReport {
+        return CleanReport {
             skipped: true,
             sealed: false,
             bodies_before: bodies_before,
@@ -587,7 +587,7 @@ export fn pack_gc(pack: Pack, limits: StoreLimits) -> GcReport {
     mut sealed = false
     if pack.frames.get() > 0 || pack.torn.get() {
         if seal(pack) {
-            if traced() { qtrace("Q\tstore\tgc-sealed\t${pack.rev.get()}\n") }
+            if traced() { qtrace("Q\tstore\tclean-sealed\t${pack.rev.get()}\n") }
             retire(pack)
             emptied(pack)
             pack.frames.set(0)
@@ -595,7 +595,7 @@ export fn pack_gc(pack: Pack, limits: StoreLimits) -> GcReport {
         }
     }
     let evicted = prune_bodies(pack.dir, limits)
-    GcReport {
+    CleanReport {
         skipped: false,
         sealed: sealed,
         bodies_before: bodies_before,
@@ -606,8 +606,8 @@ export fn pack_gc(pack: Pack, limits: StoreLimits) -> GcReport {
     }
 }
 
-fn empty_gc() -> GcReport {
-    GcReport {
+fn empty_clean() -> CleanReport {
+    CleanReport {
         skipped: false,
         sealed: false,
         bodies_before: 0,
@@ -618,7 +618,7 @@ fn empty_gc() -> GcReport {
     }
 }
 
-/// The limit rule the automatic seal and `pack_gc` share: evict history the
+/// The limit rule the automatic seal and `pack_clean` share: evict history the
 /// window, the age or the byte ceiling no longer reaches, then values no body names.
 fn enforce_limits(pack: Pack) {
     let _ = prune_bodies(pack.dir, store_limits())

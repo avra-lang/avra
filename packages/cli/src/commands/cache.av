@@ -1,5 +1,5 @@
-//! `avra cache` — the store's own verbs (DB 05c, §6.7). `gc` reclaims by the
-//! design's rule: compaction IS gc, so the reachable rows (the merged index,
+//! `avra cache` — the store's own verbs (DB 05c, §6.7). `clean` reclaims by the
+//! design's rule: compaction IS clean, so the reachable rows (the merged index,
 //! the latest command's answers) fold into a fresh sealed body, then the
 //! time-travel window and the size/age limits evict the oldest history. `log`
 //! lists the sealed revisions. `show <rev>` answers one — the time-travel read,
@@ -26,18 +26,18 @@ impl Runnable for CacheCmd {
     fn run(args: CliResult) -> int {
         let action = args.arg("action")
         let store = cache_store()
-        if action == "gc" { return cache_gc(store) }
+        if action == "clean" { return cache_clean(store) }
         if action == "log" { return cache_log(store) }
         if action == "show" { return cache_show(store, args.arg("rev")) }
-        eprintln("avra cache: `gc`, `log` or `show <rev>`")
+        eprintln("avra cache: `clean`, `log` or `show <rev>`")
         2
     }
 }
 
 export command cache {
-    description: "The compiler store: reclaim it (`gc`), list its sealed revisions (`log`), answer one (`show <rev>`)"
+    description: "The compiler store: reclaim it (`clean`), list its sealed revisions (`log`), answer one (`show <rev>`)"
     arg action {
-        description: "`gc`, `log` or `show`"
+        description: "`clean`, `log` or `show`"
         required: true
     }
     arg rev {
@@ -57,18 +57,18 @@ fn cache_store() -> Store {
 /// The store directory under the cache root.
 fn store_dir(store: Store) -> string { store_dir_of(store.root) }
 
-/// `gc` prints what it reclaimed, or that another process holds the lock.
-fn cache_gc(store: Store) -> int {
-    let rep = store.gc()
+/// `clean` prints what it reclaimed, or that another process holds the lock.
+fn cache_clean(store: Store) -> int {
+    let rep = store.clean()
     if rep.skipped {
-        println("avra cache gc: another process holds the compaction lock — nothing reclaimed")
+        println("avra cache clean: another process holds the compaction lock — nothing reclaimed")
         return 0
     }
     let evicted = if rep.evicted.is_empty() { "none" } else { ["${r}" for r in rep.evicted].join(",") }
     println(
-        "avra cache gc: sealed ${yesno(rep.sealed)} · revisions ${rep.bodies_before} → ${rep.bodies_after} · evicted ${evicted}",
+        "avra cache clean: sealed ${yesno(rep.sealed)} · revisions ${rep.bodies_before} → ${rep.bodies_after} · evicted ${evicted}",
     )
-    println("avra cache gc: bytes ${rep.bytes_before} → ${rep.bytes_after}")
+    println("avra cache clean: bytes ${rep.bytes_before} → ${rep.bytes_after}")
     0
 }
 
