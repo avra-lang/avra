@@ -140,68 +140,119 @@ Assume G = 20-25 min gate (18 after stage 1), runner pool not binding.
 | H. One integration branch the lead feeds | one gate per integration | bursty | lead time | = C with a name |
 | I. Bigger/self-hosted runners | -20% wall maybe | ~ | $ | compile is mostly single-thread + memory; unproven |
 
-Recommended: **D, with G and the stage-1 shaving, and E's one good idea:
-run bisect candidates in parallel.**
+Recommended (owner ruling 2026-10-16: no optimistic merge, no auto-revert,
+because it reruns everything after the damage and leaves a reverted PR with
+no owner): **batch before merge with parallel bisection**, below. Row D above
+is kept as the rejected alternative.
 
-### 3.1 Target process (D)
+### 3.1 Target process: the integrator
 
-1. A PR is gated on its own merge-ref (as now). When green and mergeable it is
-   armed. **No "up to date" requirement**; GitHub still refuses a conflicting
-   merge, and the watcher refreshes only a PR that conflicts or whose base is
-   more than N (say 5) code merges stale (then the stale gate is not evidence).
-2. Every merge to main triggers one **main verify** (a `push` run, already
-   exists; make the merge fire it — #823 did the publish half). Coalesce: while
-   a verify runs, later merges queue behind it; when it ends, one run starts on
-   the newest main. The verify runs the full gate, including suites (today's
-   push run skips suites and the seed check).
-3. Green verify -> publish compiler as `latest-green`, tag the commit
-   `main-green`. Red verify -> **parallel bisect**: start one gate per merge
-   since `main-green` on that merge's own first-parent prefix, all at once
-   (runners are idle, G wall, K gates of cost). The first red prefix names the
-   culprit PR. The watcher opens its revert, labelled `revert`.
-4. Revert fast path: a revert whose resulting tree equals the tree of a
-   `main-green` commit merges with no gate (the proof already exists: tree
-   digest, not hope). Otherwise it takes the normal gate with priority.
-5. While main is red and a revert is in flight, the watcher stops arming
-   (everything gated now would carry the breakage). Expected freeze:
-   verify (G) + bisect (G) + revert (0 or G) = 40-75 min, versus today where a
-   red main goes unnoticed for hours and its failure is read as a PR's.
-6. **Ladder PRs are marked.** A PR that grows a compiler-read shape or needs a
-   seed refresh carries a `ladder` label (the watcher can detect: diff touches
-   `bootstrap/seed.*` or `features/crossing.av` rows). Ladder PRs merge only when
-   nothing else is armed and main is green, i.e. they still serialise; ordinary
-   PRs never do. This keeps the one rule that genuinely needs ordering without
-   charging it to everyone.
-7. Generated files out of the PR path: `bootstrap/seed.ll` and
-   `seed.sources` conflict with every other PR that touches the compiler
-   (5 of the last 27 commits). Refresh the seed only in its own bot PR on a
-   schedule or on a ladder request; feature PRs that touch compiler source do
-   not include it, and seed-check proves HEAD still builds from the committed
-   seed, which stays valid until a ladder PR.
+Main moves only to a tree that a full gate has already passed. Nothing is
+ever reverted; a PR that fails is never merged and keeps its author.
 
-Expected result: wall to land a ready PR = its own G (18-24 min) regardless of
-how many others are ready; K=8 ready PRs land in ~25 min instead of ~3 h;
-runs per landed PR 3.7 -> ~1.3 (no refresh or cancel waste); main red windows
-bounded and automatic.
+1. **Candidates.** Open, non-draft PRs that merge cleanly into main, are green
+   on their own gate (`test` on the head sha, as today), are not `hold`, and
+   are not quarantined (4 below). Own gates stay: they give an author feedback
+   in one gate time and keep a red batch rare. "Require up to date" is lifted;
+   the integrator is the only thing that merges.
+2. **Batch.** Up to N candidates (cap below), oldest first, merged one by one
+   (`git merge --squash`, one commit per PR, author kept, subject `title (#n)`)
+   onto `integrate/<k>` off main. A PR that conflicts with the batch so far is
+   left out of this batch with a comment naming the PR it conflicts with: only
+   that PR rebases, never everyone behind it. A **ladder PR** (by diff: the
+   crossing rows, the lexer or grammar's own source, `bootstrap/**`; the list is
+   one file, `tools/ladder_paths`) batches alone.
+3. **One full gate** on the batch tip (the existing `checks` workflow, dispatched
+   on the integration ref; it already runs the whole gate on a dispatch).
+   Failed jobs are re-run once before the batch is judged red, so a flake does
+   not split a batch.
+4. **Green: land all, in one go.** Verify every head sha still equals the sha
+   in the batch (else drop that PR and re-gate the rest), then merge each PR
+   through the API **as a squash, in batch order**. Because the integration was
+   built by the same squash order, the resulting tree equals the tested tree;
+   the integrator asserts tree equality after the last merge and, if it differs,
+   raises an alarm and runs the main verify (stage 1, kept as the backstop).
+   Per-PR squash, not one batch commit: attribution, `git blame`, per-PR revert
+   and the "(#n)" history all stay as they are. Main is never red.
+5. **Red: split, run both halves at once, recurse.** Batch B of size > 1 splits
+   into halves L, R (compiler-touching PRs spread across both: a docs-only PR
+   cannot fail the gate, so it rides with whichever half is green). Both halves
+   are gated concurrently on main (runners are idle).
+   - one green, one red: land the green half at once; the red half recurses on
+     the new main.
+   - both green (the interaction is between halves): land L, re-gate R on
+     main+L (one gate); a red R recurses on that base.
+   - both red: recurse on both, concurrently; whichever half finishes green
+     first lands, and the other half's gate, now on a stale base, is re-run.
+   A batch of one that fails is the **culprit**: re-run once to exclude a flake.
+   An interaction is blamed on the later PR (the one that fails on top of the
+   earlier), and the comment names both.
+6. **The culprit is told, not reverted.** The integrator comments on the PR with
+   the failing job, its first `##[error]` line, the log link and (for an
+   interaction) the PR it failed on top of, labels it `quarantined`, and leaves
+   it out of every batch until its head sha changes (a push, or `retry` label).
+   Its author is exactly who they were before.
+7. **Seed as a release.** After main's verify is green, CI builds the seed from
+   main's compiler and publishes it as the immutable release asset `seed-<key>`
+   (the same mechanism as `avrac-<key>`). `bootstrap/seed.ref`, one line naming
+   the key and its sha256, replaces `seed.ll` + `seed.sources` in the tree;
+   `make bootstrap` and `seed-check` fetch the asset it names. Feature PRs never
+   carry a seed; the integrator refreshes `seed.ref` itself, in its own batch,
+   only when a ladder PR has landed. The cost is that a cold bootstrap needs
+   the network or a cached asset (the sha256 makes a stale one unmistakable);
+   the ref is committed, so every historical commit still names the seed that
+   built it. Moving the seed out of the PR path removes the most frequent text
+   conflict (5 of the last 27 commits touched it).
 
-What it costs: ~1 main verify per merge-batch (full gate, ~110 runner-min,
-amortised over the batch) and, on red only, K prefix gates. At 11 landings/day
-it is roughly half of today's runner-minutes (3.7 -> 1.3 gates per PR) even
-with the verify.
+**Batch size cap.** Start at N = 6. Green batch: N = min(N + 2, 10); red batch:
+N = max(N / 2, 2). Two reasons for a ceiling: the bisection depth is log2(N)
+gate times, and the concurrent gates are about 2 x 16 jobs per level, so the
+runner pool (to be confirmed: the org's concurrent-job limit) bounds how deep a
+recursion can run at once.
 
-How it fails here, honestly:
-- Two individually green PRs whose combination is red: caught by the verify
-  (minutes, not hours) and auto-reverted; today the same case is caught by the
-  later PR's gate and read as that PR's defect. Net: the blame is correct.
-- A compiler regression merged green (#813): the verify now runs cache-attacks
-  and suites for every compiler change (lesson 2 made structural), and a red
-  main publishes nothing.
-- A flaky std-avrac failure on a verify triggers a bisect that finds nothing:
-  the bisect re-runs each prefix once; all-green prefixes + red head = flake,
-  unfreeze, open an issue, never revert. A flake budget needs the flake list;
-  the first month of verify logs makes it.
-- Revert conflicts when later PRs touched the same lines: the watcher stops and
-  pages the lead (rare; the freeze then lasts until a human acts).
+**What happens to a PR that arrives mid-batch.** Main is frozen while a batch
+is in flight (a merge under a running gate would make the landed tree differ
+from the tested one), so a late PR joins the next batch. Its wait is the rest of
+the current batch plus its own: about G to 2G (16-32 min) once green. A batch
+of only light PRs (docs, no compiler) gates in 2 minutes, so a docs PR behind a
+heavy batch waits for it but not for another heavy one. If that wait matters,
+stage 2d speculates: the next batch is gated on main + the in-flight batch, and
+lands the instant the first one does (a wasted gate when the first goes red).
+
+**How this avoids the old queue's three failures.**
+- One red killed the train: a red batch splits and only the culprit is dropped;
+  the green halves land at the first level they are proved.
+- HEADGREEN batching: no proxy. The gate runs on the exact tree that lands, so
+  there is no "head green" to infer and no trains tested in parallel with other
+  trains' contents.
+- The rebase treadmill: a PR's evidence is its own gate, which a landing
+  elsewhere does not void, so nothing is refreshed and no gate is re-run
+  because someone else merged. A true line conflict names the one PR that must
+  move.
+
+**Numbers** (G = gate wall, 16 min after stage 1; K ready PRs, cap 8):
+
+| Case | Wall until all green PRs are on main | Gates run beyond the PRs' own |
+|---|---|---|
+| all green | G (own gates, parallel) + G = ~32 min | 1 |
+| one culprit among 8 | 4 land at ~2G after the batch starts, 2 at 3G, 1 at 4G; the culprit is named at 4G (~64 min) | 1 + 2 per level = 7 |
+| today, serial | K x ~25 min plus refresh gates (3.7 runs per PR observed) | K refreshes |
+
+Landings per hour: about 8 per 16-32 min = 15-30/hr green, against 1-2.5 now.
+
+**Failure modes, and what holds them.**
+- A partial landing (a PR gets a push between the gate and the merge): heads are
+  checked immediately before the first merge, merges follow in seconds, and the
+  tree-equality assertion plus the main verify catch what slips.
+- A flake splits a batch: one re-run of the failed jobs first; the flake list
+  from the first month sizes a budget.
+- Integrator state: it is a pure decision function over (state, observations),
+  fixture-tested as `pr_watcher` is; the state is a small JSON on a `batcher`
+  branch, so a crash resumes.
+- Someone merges by hand under a running batch: the post-merge tree assertion
+  fails loudly, and the batch is re-gated on the new main.
+- The ruleset: `test` stays required on the PR head; only "up to date" is lifted.
+
 
 ## 4. Staged plan
 
@@ -219,15 +270,15 @@ Stage 1 - cheap wins, each landable alone, none changes how PRs land.
 
 Stage 1 target: compiler PR wall 24-32 -> ~14-18 min.
 
-Stage 2 - landing model (needs the lead's ruling).
+Stage 2 - the integrator (owner-ruled: batch before merge, parallel bisection).
 
 | # | Change |
 |---|---|
-| 2a | Drop "require up to date"; require `test` only. Keep auto-merge. |
-| 2b | Watcher: refresh only conflicts or > N stale; stop arming while main is red; label `ladder` PRs and serialise only those. |
-| 2c | Main verify coalescing + `main-green` tag + parallel prefix bisect + auto-revert PR (new `tools/` script, fixture-tested like pr_watcher). |
-| 2d | Revert fast path by tree digest. |
-| 2e | Seed out of feature PRs: scheduled/on-demand seed refresh bot. |
+| 2a | `tools/batcher.py`: pure `advance(state, observations)`, fixture-tested; SHADOW MODE first (forms batches, dispatches gates on `integrate/<k>`, comments, lands nothing) beside the real landings for a week; compare its verdicts to what main did. |
+| 2b | Lift "require up to date"; the integrator lands a green batch by squash through the API in batch order and asserts tree equality. The watcher stops arming normal PRs (it still arms docs-only light PRs between batches). |
+| 2c | Seed as a release: `seed-<key>` published after a green verify, `bootstrap/seed.ref` in the tree, `make bootstrap`/`seed-check` fetch it; seed.ll leaves the PR path. Two landings (the ref first, the removal second), per the ladder rule. |
+| 2d | Speculative next batch on main + the in-flight batch. |
+| 2e | Adaptive cap, culprit comments with job and log line, `quarantined` label, `tools/ladder_paths`. |
 
 Stage 3 - only if still slow after stages 1-2.
 
@@ -238,12 +289,10 @@ Stage 3 - only if still slow after stages 1-2.
 
 ## 5. Open questions for the lead
 
-1. Is "main red for 40-75 min, auto-reverted" acceptable in exchange for no
-   serial ceiling? (This is the one real trade; everything else is cost.)
-2. May the watcher open and merge a revert PR unattended, with the tree-digest
-   fast path as its only gate exemption?
-3. Ladder detection by diff (seed files, crossing rows) or by an explicit label
-   the author sets?
+1. The org's concurrent-job limit (it bounds the recursion's width).
+2. Cold bootstrap needing the network or a cached seed asset: acceptable?
+3. May the integrator be the only merger (a repo ruleset bypass is not needed;
+   it merges through the API as the existing bot identity)?
 
 ## 6. Not measured, to be read as questions
 
