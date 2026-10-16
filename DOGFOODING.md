@@ -1454,8 +1454,8 @@ Heterogeneous behaviour pairs data with `dyn Trait` — the CLI's
 `Subcommand { meta: CommandSpec, body: dyn Runnable }` dispatches
 each command through the one-method trait. `NodeSemantics` scales the
 same shape to a MULTI-method contract: a feature's whole per-pass
-behavior as one impl, and `semantics_of` — the ONE exhaustive map —
-returns it directly (typed-let boxed; no strings, no lookup, no miss
+behavior as one impl on the node's own record, and `@delegates(Expr)`
+dispatches each node to its record's impl (no strings, no lookup, no miss
 possible). The impl is the completeness gate: a missing pass method
 fails to compile. A method that deliberately does no work calls
 `nothing()` — the decision is written, never implied. One limit: no
