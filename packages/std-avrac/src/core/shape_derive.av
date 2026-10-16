@@ -72,8 +72,9 @@ export trait Matchable {
         }
     }
 
-    /// No marks: a payload's type says everything this derive folds.
-    static fn marks(t: MetaType) -> List<string> { [] }
+    /// `@local` fields are not part of what a node IS; a payload's
+    /// type otherwise says everything this derive folds.
+    static fn marks(t: MetaType) -> List<string> { [local_word] }
 }
 
 /// One variant's shallow arm — its IDENTITY pins the kind, never its
@@ -85,7 +86,7 @@ fn shallow_case(t: MetaType, v: MetaVariant) -> Arms {
 }
 
 fn shallow_parted(t: MetaType, v: MetaVariant) -> Code {
-    parted_at(t.name, variant_id(t, v), [shallow_part(f) for f in v.fields])
+    parted_at(t.name, variant_id(t, v), [shallow_part(f) for f in v.fields if !local(f)])
 }
 
 /// A variant's stable identity: its qualified name, folded — what a
@@ -191,7 +192,7 @@ fn kids_case(v: MetaVariant) -> Arms {
 /// is folded rather than spliced, and a `[]` fed to `.concat` cannot
 /// know its own element type.
 fn reach_parts(v: MetaVariant) -> List<Code> {
-    let held = [reach_shape(f) for f in v.fields]
+    let held = [reach_shape(f) for f in v.fields if !local(f)]
     [r! for r in held if r != null]
 }
 
