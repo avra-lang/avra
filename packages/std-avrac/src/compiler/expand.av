@@ -122,8 +122,8 @@ impl Workspace {
         let vis = self.visible(f)
         mut made: List<DeclId> = []
         let gatherers = self.decls.collect_enums()
-        for d in self.decls.decls_of_file(f) { made = made.concat(self.derived_for(gatherers, d)) }
-        for d in self.decls.decls_of_file(f) {
+        for d in self.written_decls(f, p) { made = made.concat(self.derived_for(gatherers, d)) }
+        for d in self.written_decls(f, p) {
             for w in self.declared_work(f, d, p, vis) {
                 made = made.concat(self.materialized(f, w, p, vis))
             }
@@ -136,6 +136,13 @@ impl Workspace {
             .finish(f.index, DbRow.Expanded(made), fp(31, [d.index for d in made]))
         if reentrant { self.decls.reentry_kept(f, made) } else { self.decls.reentry_over(f) }
         made
+    }
+
+    /// The declarations of `f` its parse wrote. A held file's record also
+    /// carries rows an earlier expansion generated, whose statements live
+    /// in an arena this parse does not have.
+    fn written_decls(f: FileId, p: Parsed) -> List<DeclId> {
+        [d for d in self.decls.decls_of_file(f) if self.written_stmt(f, d).index < p.store.stmts.count()]
     }
 
     /// One annotation's declarations materialized. A DECLARES or
