@@ -84,11 +84,11 @@ export trait Children {
         }
     }
 
-    /// The words this derive reads off a variant — and no others. A
-    /// derive that claims a mark it never reads makes the claim law
-    /// say nothing: the word stops being refused without anything
-    /// having started to read it.
-    static fn marks(t: MetaType) -> List<string> { shape_words }
+    /// The words this derive reads — a variant's shape, and a field's
+    /// `@local` and `@facet` — and no others. A derive that claims a
+    /// mark it never reads makes the claim law say nothing: the word
+    /// stops being refused without anything having started to read it.
+    static fn marks(t: MetaType) -> List<string> { shape_words.concat([local_word, facet_word]) }
 }
 
 /// What a refused enum is given: the walk answers nothing anyone
@@ -136,7 +136,7 @@ fn reach_of(v: MetaVariant) -> Code {
 /// An EXPANDING node's written payloads are nodes its view already
 /// holds, so the view alone is walked — each node reached once.
 fn view_parts(v: MetaVariant) -> List<Code> {
-    [r! for r in [reach(f) for f in v.fields if f.ty == "BodyView"] if r != null]
+    [r! for r in [reach(f) for f in v.fields if reached(f) && f.ty == "BodyView"] if r != null]
 }
 
 /// The mark of this name the variant carries, or absence.
@@ -150,7 +150,7 @@ fn marked(v: MetaVariant, word: string) -> MetaMark? {
 /// "here is how to reach them" cannot drift into two lists that
 /// disagree.
 fn parts_of(v: MetaVariant) -> List<Code> {
-    let held = [reach(f) for f in v.fields]
+    let held = [reach(f) for f in v.fields if reached(f)]
     [r! for r in held if r != null]
 }
 

@@ -1,0 +1,110 @@
+//! `avra cache` — the store's own verbs (DB 05c, §6.7). `clean` reclaims by the
+//! design's rule: compaction IS clean, so the reachable rows (the merged index,
+//! the latest command's answers) fold into a fresh sealed body, then the
+//! time-travel window and the size/age limits evict the oldest history. `log`
+//! lists the sealed revisions. `show <rev>` answers one — the time-travel read,
+//! loaded by name from that body's own index, never a second format.
+use @std.cli.{CliResult, Runnable, command, arg}
+use @std.avrac.compiler.{build_cache_root}
+use @std.avrac.compiler.store.{
+    Store,
+    Keeping,
+    store_stamped,
+    unshared,
+    store_print,
+    store_dir_of,
+    store_file_bytes,
+    all_body_names,
+    body_rev_of,
+}
+use @std.avrac.core.{sorted_by}
+use @std.text.{parse_int}
+
+type CacheCmd = {}
+
+impl Runnable for CacheCmd {
+    fn run(args: CliResult) -> int {
+        let action = args.arg("action")
+        let store = cache_store()
+        if action == "clean" { return cache_clean(store) }
+        if action == "log" { return cache_log(store) }
+        if action == "show" { return cache_show(store, args.arg("rev")) }
+        eprintln("avra cache: `clean`, `log` or `show <rev>`")
+        2
+    }
+}
+
+export command cache {
+    description: "The compiler store: reclaim it (`clean`), list its sealed revisions (`log`), answer one (`show <rev>`)"
+    arg action {
+        description: "`clean`, `log` or `show`"
+        required: true
+    }
+    arg rev {
+        description: "the revision `show` answers, as `log` lists it"
+    }
+    run: CacheCmd {}
+}
+
+/// The tree's store, standing where the command does — the root `build_cache_root`
+/// names, and the print the newest body was made under, so a reclaim folds under
+/// the store's own compiler rather than renaming it.
+fn cache_store() -> Store {
+    let root = build_cache_root(root_workspace(here()))
+    store_stamped(root, store_print(store_dir_of(root)) ?? "", unshared(), Keeping.Disk)
+}
+
+/// The store directory under the cache root.
+fn store_dir(store: Store) -> string { store_dir_of(store.root) }
+
+/// `clean` prints what it reclaimed, or that another process holds the lock.
+fn cache_clean(store: Store) -> int {
+    let rep = store.clean()
+    if rep.skipped {
+        println("avra cache clean: another process holds the compaction lock — nothing reclaimed")
+        return 0
+    }
+    let evicted = if rep.evicted.is_empty() { "none" } else { ["${r}" for r in rep.evicted].join(",") }
+    println(
+        "avra cache clean: sealed ${yesno(rep.sealed)} · revisions ${rep.bodies_before} → ${rep.bodies_after} · evicted ${evicted}",
+    )
+    println("avra cache clean: bytes ${rep.bytes_before} → ${rep.bytes_after}")
+    0
+}
+
+fn yesno(b: bool) -> string { if b { "yes" } else { "no" } }
+
+/// `log` lists every sealed revision, oldest first, with what it costs on disk.
+fn cache_log(store: Store) -> int {
+    let dir = store_dir(store)
+    let revs = sorted_by([body_rev_of(n) for n in all_body_names(dir)], (a, b) -> a < b)
+    if revs.is_empty() {
+        println("avra cache log: no sealed revision")
+        return 0
+    }
+    for rev in revs {
+        println(
+            "rev ${rev} · pack ${store_file_bytes(dir, "body-${rev}.pack") ?? 0} · idx ${store_file_bytes(dir, "body-${rev}.idx") ?? 0}",
+        )
+    }
+    0
+}
+
+/// `show <rev>` answers a sealed revision's rows from its own body and index —
+/// the time-travel read. A revision no body holds, or a torn one, refuses.
+fn cache_show(store: Store, raw: string) -> int {
+    let rev? = parse_int(raw) else {
+        eprintln("avra cache show: `${raw}` is no revision number — write one `log` lists")
+        return 2
+    }
+    let rows = store.rows_at(rev)
+    if rows.is_empty() {
+        eprintln(
+            "avra cache show: revision ${rev} holds nothing — no body stands there, or it is torn",
+        )
+        return 1
+    }
+    for h in rows { println("${h.family}\t${h.key}\t${h.digest}") }
+    0
+}
+

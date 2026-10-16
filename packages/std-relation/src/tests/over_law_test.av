@@ -1,0 +1,108 @@
+// The `@over` law, judged on the Fns a derive receives: the producer
+// takes the `Db` and one key and answers its rows; the lister takes the
+// `Db` alone and answers `List<K>`; and `@over` is not worn beside
+// `@query`.
+use @std.relation.query.{over_problems}
+use @std.meta.{Fn, Param, Kind, Annotation}
+
+fn over_seat(name: string, ty: string, kind: Kind) -> Param {
+    Param { name: name, ty: ty, mutable: false, settled: false, at: null, kind: kind }
+}
+
+fn over_db_seat() -> Param { over_seat("db", "Db", Kind.Named("Db", [])) }
+
+fn fn_of(name: string, params: List<Param>, answer: string, kind: Kind) -> Fn {
+    Fn { name: name, params: params, answer: answer, at: null, answers: kind }
+}
+
+fn fn_wearing(name: string, params: List<Param>, answer: string, kind: Kind, marks: List<string>) -> Fn {
+    Fn {
+        name: name,
+        params: params,
+        answer: answer,
+        at: null,
+        answers: kind,
+        annotations: [Annotation { name: m, args: [], at: null } for m in marks],
+    }
+}
+
+fn producer() -> Fn {
+    fn_of(
+        "icons_in",
+        [over_db_seat(), over_seat("dir", "string", Kind.Str)],
+        "List<Icon>",
+        Kind.List(Kind.Named("Icon", [])),
+    )
+}
+
+fn lister() -> Fn { fn_of("icon_dirs", [over_db_seat()], "List<string>", Kind.List(Kind.Str)) }
+
+fn problems(p: Fn, l: Fn) -> string { [d.kind ?? "?" for d in over_problems(p, l)].join(",") }
+
+spec "std/relation — the listing law" {
+    given "a producer and the lister of its keys" {
+        then "a Db, one key, rows, and a `List<K>` lister are a listing" {
+            problems(producer(), lister()) == ""
+        }
+        then "a producer whose first seat is no Db is refused" {
+            let p = fn_of(
+                "icons_in",
+                [over_seat("dir", "string", Kind.Str)],
+                "List<Icon>",
+                Kind.List(Kind.Named("Icon", [])),
+            )
+            problems(p, lister()) == "over_db"
+        }
+        then "a producer with no key, or more than one, is refused" {
+            let none = fn_of(
+                "icons_in",
+                [over_db_seat()],
+                "List<Icon>",
+                Kind.List(Kind.Named("Icon", [])),
+            )
+            let two = fn_of(
+                "icons_in",
+                [
+                    over_db_seat(),
+                    over_seat("dir", "string", Kind.Str),
+                    over_seat("n", "int", Kind.Int),
+                ],
+                "List<Icon>",
+                Kind.List(Kind.Named("Icon", [])),
+            )
+            problems(none, lister()) == "over_key" && problems(two, lister()) == "over_key"
+        }
+        then "a producer whose answer is no list of rows is refused" {
+            let p = fn_of(
+                "icons_in",
+                [over_db_seat(), over_seat("dir", "string", Kind.Str)],
+                "int",
+                Kind.Int,
+            )
+            problems(p, lister()) == "over_rows"
+        }
+        then "a lister that takes more than the Db is refused" {
+            let l = fn_of(
+                "icon_dirs",
+                [over_db_seat(), over_seat("n", "int", Kind.Int)],
+                "List<string>",
+                Kind.List(Kind.Str),
+            )
+            problems(producer(), l) == "over_lister"
+        }
+        then "a lister answering something other than `List<K>` is refused" {
+            let l = fn_of("icon_dirs", [over_db_seat()], "int", Kind.Int)
+            problems(producer(), l) == "over_lister_answer"
+        }
+        then "`@over` worn beside `@query` is refused — it is already a query" {
+            let p = fn_wearing(
+                "icons_in",
+                [over_db_seat(), over_seat("dir", "string", Kind.Str)],
+                "List<Icon>",
+                Kind.List(Kind.Named("Icon", [])),
+                ["query"],
+            )
+            problems(p, lister()) == "over_query"
+        }
+    }
+}

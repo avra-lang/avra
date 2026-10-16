@@ -1,0 +1,66 @@
+// RED TEAM — `@facet`. The attacks a field mark and its side table must
+// survive: every field position, the payload/record split, and the side
+// table's presence for `once` and absence for a plain `fn`.
+use @std.meta.{Field, Mark}
+use @std.avrac.compiler.{Parsed, parse_source}
+use @std.avrac.core.{StmtId, node_payload_rows, row_for, facet_table, reached, carried}
+
+fn seed_of(p: Parsed) -> StmtId? {
+    [s for s in p.stmts if p.store.fn_parts(s)?.name == "seed"].first()
+}
+
+fn ids(marks: List<Mark>) -> Field { Field { name: "x", ty: "int", at: null, marks: marks } }
+
+fn id_mark(word: string, args: List<string>) -> Mark { Mark { name: word, args: args, at: null } }
+
+spec "facet adversarial" {
+    given "every field position" {
+        then "an unmarked field is reached and carried" {
+            let f = ids([])
+            reached(f) && carried(f) && facet_table(f) == null
+        }
+        then "a `@local` field is no child, stays on the node" {
+            let f = ids([id_mark("local", [])])
+            !reached(f) && carried(f) && facet_table(f) == null
+        }
+        then "a `@facet` field is no child and names its table" {
+            let f = ids([id_mark("facet", ["once"])])
+            !reached(f) && !carried(f) && facet_table(f) == "once"
+        }
+        then "a facet with no argument names no table — refused where the write lands" {
+            let f = ids([id_mark("facet", [])])
+            !reached(f) && !carried(f) && facet_table(f) == ""
+        }
+    }
+    given "the payload/record split" {
+        then "the record declares six fields, so the grammar row names them all" {
+            (row_for(node_payload_rows(), "Stmt", "FnDecl")?.payloads ?? []).length == 6
+        }
+        then "the gathered enum carries five: `Stmt.FnDecl` is built without `is_once`" {
+            // A compile-time fact: the maker constructs
+            // `.FnDecl(name, tparams, params, ret, body)`, five
+            // payloads. A sixth would not compile, and the row would
+            // disagree with the declaration.
+            (row_for(node_payload_rows(), "Stmt", "FnDecl")?.payloads ?? [])
+                .any(it.name == "is_once")
+        }
+    }
+    given "the side table" {
+        then "is absent for a plain `fn`" {
+            let plain = parse_source("fn seed() -> int { 7 }")
+            let s = seed_of(plain)
+            s != null && !plain.store.is_once(s!)
+        }
+        then "is present for a `once fn`, and tells the two apart" {
+            let once_src = parse_source("once fn seed() -> int { 7 }")
+            let plain = parse_source("fn seed() -> int { 7 }")
+            let a = seed_of(once_src)
+            let b = seed_of(plain)
+            a != null &&
+                b != null &&
+                once_src.store.is_once(a!) &&
+                !plain.store.is_once(b!) &&
+                once_src.store.stmt_fingerprint(a!) != plain.store.stmt_fingerprint(b!)
+        }
+    }
+}

@@ -1,0 +1,134 @@
+// Attacks on the complete child walk, assuming it is broken: the
+// degenerate shapes (none, one, many), the order the declaration
+// wrote its fields, and the hidden branches the SHAPE still holds.
+use @std.avrac.core.{new_node_store, Expr, Arm, BinOp, CompClause, Scoped, ExprId}
+
+spec "core/children adversarial" {
+    given "degenerate shapes" {
+        then "a node with NO child reaches nothing" {
+            mut s = new_node_store()
+            let leaf = s.alloc_expr(Expr.IntLit(1))
+            let recv = s.alloc_expr(Expr.Receiver)
+            let none = s.alloc_expr(Expr.NullLit)
+            s.expr_children(leaf).is_empty() &&
+                s.expr_children(recv).is_empty() &&
+                s.expr_children(none).is_empty()
+        }
+        then "a node with ONE child reaches exactly it" {
+            mut s = new_node_store()
+            let v = s.alloc_expr(Expr.IntLit(7))
+            let not_v = s.alloc_expr(Expr.Not(v))
+            let forced = s.alloc_expr(Expr.Force(v))
+            let one = s.expr_children(not_v)
+            let two = s.expr_children(forced)
+            one.length == 1 && one[0].index == v.index && two.length == 1 && two[0].index == v.index
+        }
+        then "a node with MANY children reaches each, in field order" {
+            mut s = new_node_store()
+            let a = s.alloc_expr(Expr.IntLit(1))
+            let b = s.alloc_expr(Expr.IntLit(2))
+            let c = s.alloc_expr(Expr.IntLit(3))
+            let d = s.alloc_expr(Expr.IntLit(4))
+            let call = s.alloc_expr(Expr.Call(Scoped("f"), [], [a, b, c, d]))
+            let ks = s.expr_children(call)
+            ks.length == 4 &&
+                ks[0].index == a.index &&
+                ks[1].index == b.index &&
+                ks[2].index == c.index &&
+                ks[3].index == d.index
+        }
+    }
+    given "the walk reads the SHAPE, not a position" {
+        then "a record's fields are reached in declaration order" {
+            mut s = new_node_store()
+            let subject = s.alloc_expr(Expr.IntLit(1))
+            let v1 = s.alloc_expr(Expr.IntLit(2))
+            let v2 = s.alloc_expr(Expr.IntLit(3))
+            let made = s.alloc_expr(Expr.With(subject, [], [v1, v2]))
+            let ks = s.expr_children(made)
+            ks.length == 3 &&
+                ks[0].index == subject.index &&
+                ks[1].index == v1.index &&
+                ks[2].index == v2.index
+        }
+        then "a left operand is reached before its right" {
+            mut s = new_node_store()
+            let l = s.alloc_expr(Expr.IntLit(1))
+            let r = s.alloc_expr(Expr.IntLit(2))
+            let bin = s.alloc_expr(Expr.Binary(BinOp.Add, l, r))
+            let ks = s.expr_children(bin)
+            ks.length == 2 && ks[0].index == l.index && ks[1].index == r.index
+        }
+        then "a map's keys are reached before its values" {
+            mut s = new_node_store()
+            let k1 = s.alloc_expr(Expr.StrLit("a"))
+            let k2 = s.alloc_expr(Expr.StrLit("b"))
+            let v1 = s.alloc_expr(Expr.IntLit(1))
+            let v2 = s.alloc_expr(Expr.IntLit(2))
+            let m = s.alloc_expr(Expr.MapLit([k1, k2], [v1, v2]))
+            let ks = s.expr_children(m)
+            ks.length == 4 &&
+                ks[0].index == k1.index &&
+                ks[1].index == k2.index &&
+                ks[2].index == v1.index &&
+                ks[3].index == v2.index
+        }
+    }
+    given "a hidden branch is still held" {
+        then "a match's subject and every arm's value are children, an absent guard contributing none" {
+            mut s = new_node_store()
+            let subject = s.alloc_expr(Expr.IntLit(0))
+            let value = s.alloc_expr(Expr.IntLit(1))
+            let unguarded = s
+                .alloc_expr(Expr.Match(subject, [Arm { pats: [], guard: null, value: value }]))
+            let ks = s.expr_children(unguarded)
+            ks.length == 2 && ks[0].index == subject.index && ks[1].index == value.index
+        }
+        then "a match's written guard is reached between subject and value" {
+            mut s = new_node_store()
+            let subject = s.alloc_expr(Expr.IntLit(0))
+            let guard = s.alloc_expr(Expr.BoolLit(true))
+            let value = s.alloc_expr(Expr.IntLit(1))
+            let held = s
+                .alloc_expr(Expr.Match(subject, [Arm { pats: [], guard: guard, value: value }]))
+            let ks = s.expr_children(held)
+            ks.length == 3 &&
+                ks[0].index == subject.index &&
+                ks[1].index == guard.index &&
+                ks[2].index == value.index
+        }
+        then "a lambda's body is held by the COMPLETE walk" {
+            mut s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1))
+            let lam = s.alloc_expr(Expr.Lambda([], body))
+            let ks = s.expr_children(lam)
+            ks.length == 1 && ks[0].index == body.index
+        }
+    }
+    given "a clause carries its own expressions" {
+        then "a comprehension reaches its element and each clause's source in written order" {
+            mut s = new_node_store()
+            let elem = s.alloc_expr(Expr.IntLit(1))
+            let source = s.alloc_expr(Expr.IntLit(2))
+            let hi = s.alloc_expr(Expr.IntLit(3))
+            let cond = s.alloc_expr(Expr.IntLit(4))
+            let made = s
+                .alloc_expr(
+                    Expr
+                        .Comp(
+                            elem,
+                            [
+                                CompClause.Head(null, Scoped("x"), source, hi),
+                                CompClause.Filter(cond),
+                            ],
+                        ),
+                )
+            let ks: List<ExprId> = s.expr_children(made)
+            ks.length == 4 &&
+                ks[0].index == elem.index &&
+                ks[1].index == source.index &&
+                ks[2].index == hi.index &&
+                ks[3].index == cond.index
+        }
+    }
+}

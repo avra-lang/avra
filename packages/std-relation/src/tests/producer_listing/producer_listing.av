@@ -1,0 +1,69 @@
+// proves: a `@over(lister)` producer lists its rows by the listed keys —
+// the listing answers every row the listed producers own, the same set
+// the relation enumerates after the producers run; an empty listing owns
+// no row; the listing asks the producer once per listed key — in both
+// engines
+use @std.relation.{relation, query, over}
+use @std.relation.db.{Db, new_db}
+
+@relation
+type Icon = { @key name: string, dir: string }
+
+once fn runs() -> Cell<int> { Cell.new(0) }
+
+/// The producer's keys: two directories.
+@query
+fn icon_dirs(_db: Db) -> List<string> { ["a", "b"] }
+
+/// Every icon in `dir` — the producer returns its rows AND files them, so
+/// a read of the relation enumerates the same set the listing answers.
+@over(icon_dirs)
+fn icons_in(db: Db, dir: string) -> List<Icon> {
+    runs().set(runs().get() + 1)
+    let rows = [Icon { name: "${dir}${n}", dir: dir } for n in 0..2]
+    let _ = Icon.replaced(db, dir, rows)
+    rows
+}
+
+@relation
+type Empty = { @key name: string }
+
+/// A producer nothing lists.
+@query
+fn no_dirs(_db: Db) -> List<string> { [] }
+
+@over(no_dirs)
+fn empties_in(db: Db, _name: string) -> List<Empty> {
+    let rows = [Empty { name: "never" }]
+    let _ = Empty.replaced(db, "none", rows)
+    rows
+}
+
+/// Whether two icon lists hold the same names, whatever the order.
+fn same_set(xs: List<Icon>, ys: List<Icon>) -> bool {
+    xs.length == ys.length && xs.all((x: Icon) -> ys.any((y: Icon) -> y.name == x.name))
+}
+
+/// The listing's rows equal the relation's, after the listing ran.
+fn listed() -> string {
+    let db = new_db()
+    let listed = icons_in_listed(db)
+    "${listed.length} ${Icon.all(db).length} ${same_set(listed, Icon.all(db))}"
+}
+
+/// A lister with no keys drives no producer and owns no row.
+fn empty_listing() -> string {
+    let db = new_db()
+    let _ = empties_in_listed(db)
+    "${Empty.all(db).length}"
+}
+
+/// The listing asks the producer once per listed key, not once per row.
+fn once_per_key() -> string {
+    let db = new_db()
+    let before = runs().get()
+    let _ = icons_in_listed(db)
+    "${runs().get() - before}"
+}
+
+"${listed()} | ${empty_listing()} | ${once_per_key()}"

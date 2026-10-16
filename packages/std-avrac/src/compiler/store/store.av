@@ -239,6 +239,7 @@ impl Store {
             return true
         }
         let edge = self.edge_path(family, key)
+        // LICENSED input.store_io: the store's own edge file, asked only to uncommit it
         if !exists(edge) { return true }
         match remove(edge) { .Ok(_) -> true, .Err(_) -> false }
     }
@@ -261,6 +262,7 @@ impl Store {
     }
 
     fn on_disk(family: Stored, key: string) -> bool {
+        // LICENSED input.store_io: the store's own kept row and its edge, asked to prove the row
         exists(self.path(family, key)) && exists(self.edge_path(family, key))
     }
 
@@ -389,6 +391,20 @@ impl Store {
         if !inspects(self.keeping) { pack_settle(self.pack) }
     }
 
+    /// RECLAIM by §6.7's rule: compaction folds the reachable rows into a fresh
+    /// sealed body, then the limits evict the oldest history. The time-travel
+    /// window is the limits' `revisions`.
+    fn clean() -> CleanReport { pack_clean(self.pack, store_limits()) }
+
+    /// ANSWER ONE ROW FROM AN OLDER REVISION — §6.7's time-travel read, over a fresh
+    /// index of that body (never this process's live one).
+    fn at_revision(rev: int, family: Stored, key: string) -> string? {
+        pack_get_rev(pack_at(self.root, self.print), rev, self.packed(family), key)
+    }
+
+    /// The rows a sealed revision holds, for an `explain` that says what changed.
+    fn rows_at(rev: int) -> List<Held> { pack_rows_rev(pack_at(self.root, self.print), rev) }
+
     /// A ROW WHOSE KEY IS ITS CONTENT is kept once: the same key names the same
     /// bytes, so a second write is skipped.
     fn keep_once(family: Stored, key: string, bytes: string, read: List<string> = []) -> bool {
@@ -424,6 +440,7 @@ impl Store {
     /// the bytes and the caller wants them at a path, and neither re-reads the other.
     fn place(family: Stored, key: string, to: string) -> bool {
         if !self.has(family, key) { return false }
+        // LICENSED input.store_io: the store's own kept row, read to place it for a caller
         let bytes = match read_bytes(self.path(family, key)) {
             .Ok(b) -> b,
             .Err(_) -> { return false },

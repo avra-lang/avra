@@ -19,6 +19,7 @@ use @std.io.{
     make_dirs,
     list_dir,
     remove,
+    exists,
     opened_for_append,
     truncate_to,
     env,
@@ -32,7 +33,7 @@ use @std.relation.engine.{map_cell, list_cell}
 use @std.text.{parse_int}
 use core.{digest_of_octets, distinct, sorted_by}
 use core.debug.{qtrace, traced}
-use @std.time.{now_ns}
+use @std.time.{now_ns, wall_secs}
 
 extern fn avra_pid_alive(pid: int) -> int
 extern fn avra_own_pid() -> int
@@ -45,8 +46,46 @@ const FORMAT_VERSION: int = 3
 const CONTENT_TAG: int = 1
 const ACTION_TAG: int = 2
 
-/// Sealed bodies kept besides the newest: the time-travel window `explain` reads.
-const KEPT_BODIES: int = 2
+/// THE STORE'S LIMITS, in one place (§6.7/S8): the time-travel window — sealed
+/// revisions kept beside the newest — a whole-store byte ceiling, and an age for
+/// history. Zero on a limit means no limit. The automatic seal and `avra cache clean`
+/// reclaim by the same rule, so a store is bounded however it is written.
+const REVISIONS_KEPT: int = 10
+const MAX_BYTES_KEPT: int = 2147483648
+const MAX_AGE_KEPT_NS: int = 0
+
+/// A store's limits, as `avra cache clean` and the automatic seal read them.
+export type StoreLimits = { revisions: int, max_bytes: int, max_age_ns: int }
+
+fn env_int(name: string) -> int? {
+    // LICENSED input.debug_flag: the store's own limits, never an input of what is built
+    let raw? = env(name) else { return null }
+    parse_int(raw)
+}
+
+/// The limits in force: the design's revision window by default, overridden by
+/// `AVRA_STORE_REVISIONS`, `AVRA_STORE_MAX_MB` and `AVRA_STORE_MAX_AGE_S`.
+export fn store_limits() -> StoreLimits {
+    let mb = env_int("AVRA_STORE_MAX_MB") ?? 0
+    let age = env_int("AVRA_STORE_MAX_AGE_S") ?? 0
+    StoreLimits {
+        revisions: env_int("AVRA_STORE_REVISIONS") ?? REVISIONS_KEPT,
+        max_bytes: mb * 1048576,
+        max_age_ns: age * 1000000000,
+    }
+}
+
+/// What a reclaim did: whether it sealed and could take the lock, the revision
+/// count before and after, the revisions it evicted, and the store's bytes.
+export type CleanReport = {
+    skipped: bool,
+    sealed: bool,
+    bodies_before: int,
+    bodies_after: int,
+    evicted: List<int>,
+    bytes_before: int,
+    bytes_after: int,
+}
 
 /// Frames in live segments before a writer seals them into a body.
 const SEAL_FRAMES: int = 32
@@ -140,10 +179,15 @@ export type Pack = {
 /// of the sealed body, and the bytes those reads covered.
 export type Traffic = { hits: int, misses: int, values: int, bytes: int }
 
+/// THE STORE DIRECTORY a cache root names — ONE projection, so the pack and
+/// every tool that measures it (`avra cache log`) agree where it stands.
+// LICENSED compiler.free_state_verb: a pure PROJECTION — a root in, its store directory out.
+export fn store_dir_of(root: string) -> string { joined_path(root, "store") }
+
 /// One store's pack, empty — nothing read from disk until the first ask.
 export fn pack_at(root: string, print: string) -> Pack {
     Pack {
-        dir: joined_path(root, "store"),
+        dir: store_dir_of(root),
         print: print,
         records: map_cell(),
         withdrawn: map_cell(),
@@ -426,7 +470,7 @@ fn admit(pack: Pack) {
     if seal(pack) {
         if traced() { qtrace("Q\tstore\tsealed\t${pack.rev.get()}\t${pack.records.get().length}\n") }
         retire(pack)
-        keep_bodies(pack)
+        enforce_limits(pack)
         emptied(pack)
         pack.frames.set(0)
     }
@@ -518,22 +562,151 @@ fn retire(pack: Pack) {
     }
 }
 
-/// The time-travel window: the last N sealed bodies (default 10,
-/// `AVRA_STORE_REVISIONS`), so `explain` can say what changed.
-fn keep_bodies(pack: Pack) {
-    // LICENSED input.debug_flag: the time-travel window's size, never an input of what is built
-    let raw = env("AVRA_STORE_REVISIONS")
-    let n = if raw == null { KEPT_BODIES } else { parse_int(raw!) ?? KEPT_BODIES }
-    if n < 1 { return }
-    let mine = sorted_by(all_body_names(pack.dir), rev_before)
-    for name in mine.slice(0, if mine.length > n { mine.length - n } else { 0 }) {
-        let _ = remove(joined_path(pack.dir, name))
-        let _ = remove(joined_path(pack.dir, "${name.substring(0, name.length - 5)}.idx"))
+/// RECLAIM BY §6.7'S RULE. Compaction IS clean: the reachable rows (the merged
+/// index — the latest command's answers, §6.7's roots until DB 08) fold into a
+/// fresh sealed body when the segments hold frames, then the limits evict the
+/// oldest history. A process that cannot take the compaction lock says it
+/// skipped. Answers what it reclaimed.
+export fn pack_clean(pack: Pack, limits: StoreLimits) -> CleanReport {
+    // LICENSED input.store_io: the store's own directory, asked whether it stands
+    if !exists(pack.dir) { return empty_clean() }
+    let bytes_before = store_bytes(pack.dir)
+    let bodies_before = all_body_names(pack.dir).length
+    opened_at(pack, false)
+    if !locked(pack) {
+        return CleanReport {
+            skipped: true,
+            sealed: false,
+            bodies_before: bodies_before,
+            bodies_after: bodies_before,
+            evicted: [],
+            bytes_before: bytes_before,
+            bytes_after: bytes_before,
+        }
     }
+    mut sealed = false
+    if pack.frames.get() > 0 || pack.torn.get() {
+        if seal(pack) {
+            if traced() { qtrace("Q\tstore\tclean-sealed\t${pack.rev.get()}\n") }
+            retire(pack)
+            emptied(pack)
+            pack.frames.set(0)
+            sealed = true
+        }
+    }
+    let evicted = prune_bodies(pack.dir, limits)
+    CleanReport {
+        skipped: false,
+        sealed: sealed,
+        bodies_before: bodies_before,
+        bodies_after: all_body_names(pack.dir).length,
+        evicted: evicted,
+        bytes_before: bytes_before,
+        bytes_after: store_bytes(pack.dir),
+    }
+}
+
+fn empty_clean() -> CleanReport {
+    CleanReport {
+        skipped: false,
+        sealed: false,
+        bodies_before: 0,
+        bodies_after: 0,
+        evicted: [],
+        bytes_before: 0,
+        bytes_after: 0,
+    }
+}
+
+/// The limit rule the automatic seal and `pack_clean` share: evict history the
+/// window, the age or the byte ceiling no longer reaches, then values no body names.
+fn enforce_limits(pack: Pack) {
+    let _ = prune_bodies(pack.dir, store_limits())
     drop_unreferenced_values(pack.dir)
 }
 
+/// Evict sealed revisions past the time window, past the age, or to fit the byte
+/// ceiling — oldest first, and NEVER the newest, so a store always answers. A
+/// value file is shared by the bodies that appended to it and goes only when the
+/// last of them is evicted. Answers the revisions evicted.
+fn prune_bodies(dir: string, limits: StoreLimits) -> List<int> {
+    let names = sorted_by(all_body_names(dir), rev_before)
+    // THE NEWEST REVISION IS THE ROOTS: it is never doomed, whatever the limit,
+    // so a store always answers. Evict the history around it.
+    let newest? = names.last() else { return [] }
+    let over = if limits.revisions > 0 && names.length > limits.revisions { names.length - limits.revisions } else { 0 }
+    let doomed = names
+        .slice(0, over)
+        .concat(aged_out(dir, names.slice(over, names.length), newest, limits))
+    for n in doomed { drop_body(dir, n) }
+    drop_unreferenced_values(dir)
+    [body_rev_of(n) for n in doomed.concat(trimmed_to_fit(dir, limits))]
+}
+
+/// The bodies past the age limit, oldest first, never the newest.
+fn aged_out(dir: string, names: List<string>, newest: string, limits: StoreLimits) -> List<string> {
+    if limits.max_age_ns <= 0 { return [] }
+    // The file's time is WALL seconds, so the clock is read the same way —
+    // `now_ns` is monotonic and would never compare to it.
+    // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
+    let now_s = wall_secs()
+    let age_s = limits.max_age_ns / 1000000000
+    [n for n in names if n != newest && now_s - (body_mtime_s(dir, n) ?? now_s) > age_s]
+}
+
+/// The oldest bodies dropped until the store fits its byte ceiling; the newest stays.
+fn trimmed_to_fit(dir: string, limits: StoreLimits) -> List<string> {
+    if limits.max_bytes <= 0 { return [] }
+    mut gone: List<string> = []
+    while store_bytes(dir) > limits.max_bytes {
+        let keep = sorted_by(all_body_names(dir), rev_before)
+        if keep.length <= 1 { break }
+        drop_body(dir, keep.first()!)
+        drop_unreferenced_values(dir)
+        gone.push(keep.first()!)
+    }
+    gone
+}
+
+fn drop_body(dir: string, name: string) {
+    let _ = remove(joined_path(dir, name))
+    let _ = remove(joined_path(dir, "${name.substring(0, name.length - 5)}.idx"))
+}
+
 fn rev_before(a: string, b: string) -> bool { body_rev_of(a) < body_rev_of(b) }
+
+/// The store directory's own bytes, every body, index, value file and segment.
+fn store_bytes(dir: string) -> int {
+    // LICENSED input.store_io: the store's own files, listed to measure it
+    let names = match list_dir(dir) { .Ok(ns) -> ns, .Err(_) -> [] }
+    names.fold(0, (sum, n) -> sum + (store_file_bytes(dir, n) ?? 0))
+}
+
+/// ONE STORE FILE'S OWN BYTES — what the byte ceiling and `cache log` both read.
+export fn store_file_bytes(dir: string, name: string) -> int? {
+    // LICENSED input.store_io: the store's own file, measured for the byte ceiling
+    match open_beneath(dir, name) {
+        .Ok(o) -> {
+            let n = o.size
+            let _ = o.close()
+            n
+        },
+        .Err(_) -> null,
+    }
+}
+
+/// A file's modification time in WHOLE SECONDS, as the age limit reads it.
+fn body_mtime_s(dir: string, name: string) -> int? {
+    // LICENSED input.store_io: the store's own file, its time read for the age limit
+    match open_beneath(dir, name) {
+        .Ok(o) -> {
+            let m = o.mtime
+            let _ = o.close()
+            m
+        },
+        .Err(_) -> null,
+    }
+}
 
 // ── Reading and writing ──
 
@@ -574,6 +747,24 @@ export fn pack_reads(pack: Pack, family: string, key: string, inspect: bool) -> 
     if withdrawn(pack, at) { return null }
     let held? = pack.records.get().get(at) else { return null }
     reads_known(pack, held)
+}
+
+/// ANSWER ONE ROW FROM AN OLDER REVISION — §6.7's time-travel read (§6.2 step 6:
+/// whatever a recomputation needs is loaded by name, on demand). The sealed body
+/// is read on its own, so this pack's live open is untouched. Use a fresh pack.
+export fn pack_get_rev(pack: Pack, rev: int, family: string, key: string) -> string? {
+    if !body_scan_rev(pack, rev) { return null }
+    pack.opened.set(true)
+    pack_found(pack, family, key, true)
+}
+
+/// The rows a sealed revision holds, in body order — what `explain` reads to
+/// say what changed between two revisions.
+export fn pack_rows_rev(pack: Pack, rev: int) -> List<Held> {
+    if !body_scan_rev(pack, rev) { return [] }
+    pack.opened.set(true)
+    let by = pack.records.get()
+    [by.get(k)! for k in pack.order.get() if by.get(k) != null]
 }
 
 /// A value by its digest without keeping it: held in memory, else read from the
@@ -638,7 +829,6 @@ export fn pack_forget(pack: Pack, family: string, key: string) {
 
 /// The segment this process owns for this compiler's print: one file a print, so a process
 /// that holds two prints never writes one header into the middle of the other's frames.
-// LICENSED input.live_process: this writer's own pid names its segment
 fn writer_segment(pack: Pack) -> string {
     // LICENSED input.live_process: this writer's own pid names its segment
     let name = "seg-${avra_own_pid()}-${digest_of_octets(pack.print.bytes()).substring(0, 8)}.log"
@@ -653,7 +843,6 @@ fn segment_file(pack: Pack, path: string) -> AppendFile? {
         if held != null { return held }
     }
     for old in pack.seg_open.get() { let _ = old.closed() }
-    // LICENSED input.store_io: the store's own segment, opened once under the writer's print
     let o = match opened_for_append(path) { .Ok(f) -> f, .Err(_) -> { return null } }
     pack.seg_open.set([o])
     pack.seg_path.set(path)

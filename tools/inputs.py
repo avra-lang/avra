@@ -437,6 +437,15 @@ def selftest():
         # the door is its file: a neighbour in the directory is outside
         (os.path.dirname(sorted(DOOR)[0]) + "/manifest.av", io + "fn f() { read_text(\"/etc/passwd\") catch \"\" }\n", [(3, "read", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.debug_flag: read once, changes no answer\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "licensed")]),
+        # the licence is one exact form: a near miss licenses NOTHING, or hiding a read is silent
+        ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.saved_read: read once, changes no answer\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "licensed")]),
+        ("packages/std-avrac/src/compiler/x.av", io + "// licensed input.clock: a case-miss is not a licence\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.Clock: a reason is lower-case\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.: no reason, no licence\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.clock:\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", io + "/* LICENSED input.clock: not a line comment */\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", io + "fn g() {} // LICENSED input.clock: not on its own line\nfn f() { env(\"AVRA_X\") }\n", [(4, "env", "outside")]),
+        ("packages/std-avrac/src/compiler/x.av", io + "// LICENSED input.clock: a line above the read\n\nfn f() { env(\"AVRA_X\") }\n", [(5, "env", "outside")]),
         ("packages/std-avrac/src/compiler/x.av", io + "fn f() { write_text(\"a\", \"b\") }\n", []),
         ("packages/std-avrac/src/compiler/x.av", "use @std.io.{\n    read_text,\n    env,\n}\nfn f() {}\n", []),
         ("packages/std-avrac/src/compiler/x.av", "fn env(n: string) -> string { n }\nfn f() { env(\"HOME\") }\n", []),
