@@ -220,3 +220,56 @@ other three can be expressed as extractors rather than as rivals.
 twelve axes, the three tiers and the crossing, each block marked BUILT / PARTIAL /
 PROPOSED — is `2026_10_16_BOUNDARY_DESIGN.av` beside this file. It is not compiled;
 it is the design in the language we intend rather than the one we have.*
+
+---
+
+## 8. Tier 2 IS `@std/validate` — the `check` spelling is a re-spelling
+
+§5 says a value law is "a `check` written in Avra". Reading `@std/validate`'s own
+module doc shows that machinery not only exists — it is **richer** than a bespoke
+checker:
+
+> Each field is read at its slot by its kind, then each annotation is CALLED over
+> what was read — `@range(13, 130)` is `range(age, 13, 130)` — so a rule on the
+> wrong type is refused **where the annotation is written**, and a rule naming a
+> **sibling field** reads that field's value. A rule on the **record itself** reads
+> the whole value once every field has passed — the **cross-field rules**. A
+> `type Name = shape` carrying rules reads its shape, then wraps it: **a
+> `Username` is proof it passed.**
+
+So a value law has ONE spelling, not two:
+
+| what | spelled |
+|---|---|
+| a constraint on one field | `@rule(…)` on the field — shared with `decode` |
+| a relation between fields | a rule **on the record** — run "once every field has passed" |
+| "this value passed" | a **named type** carrying the rules — its existence is the proof |
+| any logic at all | a rule is a **plain fn**: `fn at_least(v: int, n: int) -> Result<int, string>` |
+
+The compiler and `decode` call the **same fn**; only the clock differs — a
+declaration versus the edge. And because a rule answers the value the field
+receives, a rule may **normalise**.
+
+**Consequences.**
+
+- The `fn check()` tier should **migrate to these annotations**. It is the same
+  mechanism with a second spelling, which is exactly the defect this document was
+  written to name.
+- **A `require` keyword is NOT wanted.** It was proposed (a per-declaration law
+  block) and then **struck**: `@std/validate` already has cross-field rules, rules
+  that read a sibling, and proof types — a `require` would have been a second
+  mechanism for a question already answered.
+- **A constraint belongs on the field it constrains, and nowhere else** — which
+  also means the surface is smaller than it looked: where a field's TYPE is already
+  precise (every enum: `overflow: Overflow`, `order: Order`), the constraint is
+  free and needs no spelling at all. An annotation earns its place only where the
+  type is too wide (`capacity: int` cannot say "≥ 1").
+- **One open point, and it is real:** a component declaration is not a *named
+  record type*, so a record-level rule's parameter is undecided. `self` is the
+  candidate — it is what `fn check()` already has, and it avoids minting a terms
+  type per component.
+
+Tickets: `avra-8sb5.34.53.26` (`law` declarations: a spec-level law with a
+proven/checked/trusted/open ladder, property-checked in `avra test`) is a
+**different, larger** feature and is unaffected by this — a per-declaration
+constraint is not a law about the language's semantics.
