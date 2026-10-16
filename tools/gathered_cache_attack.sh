@@ -105,6 +105,12 @@ AV
 steps=$((steps+1)); moved_home=$(ran)
 [ "$moved_home" = "$grown" ] || { fails=$((fails+1)); echo "FAIL  a member moved between files: got '$moved_home', want '$grown'"; }
 
+# a member is RENAMED in a file nothing else reads: its variant takes the new name
+ed $R/src/shapes/shapes.av 'type Box = { side: int, deep: string }' 'type Crate = { side: int, deep: string }'
+steps=$((steps+1)); renamed=$(ran)
+[ "$renamed" = "Dot() Line(string/Str) Crate(int/Int,string/Str) 0" ] || { fails=$((fails+1)); echo "FAIL  after a member was renamed: got '$renamed'"; }
+ed $R/src/shapes/shapes.av 'type Crate = ' 'type Box = '
+
 # a member is REMOVED from a file nothing else reads
 ed $R/src/shapes/shapes.av '@shape(2)
 type Box = { side: int, deep: string }' ''

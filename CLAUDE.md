@@ -346,7 +346,11 @@ registry is the idiom engine's spec, written by dogfooding.
   HELPER that returns the next attempt and dies (`stood_first`,
   `heard`, `tried_anew`), never in the fn that asks again. THE HOOKS:
   `Workspace.discarded()` ends every one, the registry's declare hook
-  among them — it captures the table that holds the registry. THE
+  among them — it captures the table that holds the registry, and
+  EVERY HOOK A `Decls` ARMS is cleared in `let_go`: the four producer
+  doors were not, and each turned attempt stood beside the next
+  (419 MB against 77). RECORDED TRIGGER: a keeper diffing the `ensure_*`
+  fields against `let_go`. THE
   PROCESS: a relation's rows stand in a process-wide store under their
   Db until `close()`, whoever else died. `make turn-memory-attack`
   holds it by memory: a rebuild that turns twelve times, under a
