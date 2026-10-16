@@ -29,8 +29,9 @@ sh benchmarks/run.sh --lang c,rust,go      the named languages
 sh benchmarks/run.sh --bench tasks/drain   the named benchmarks (family/name)
 sh benchmarks/run.sh --record              run, store the rows, accept a baseline, regenerate the report
 sh benchmarks/run.sh --report              regenerate report/ from results/runs.jsonl
-sh benchmarks/run.sh --gate                the C floor against baseline.json, refusing past a margin
-sh benchmarks/run.sh --gate --require      a machine with no baseline row refuses instead of noting
+sh benchmarks/run.sh --gate                the C floor and each Avra row's target against Go, refusing past it
+sh benchmarks/run.sh --gate --require      a machine with no row, C or Go, refuses instead of noting
+sh benchmarks/run.sh --g1                  each Avra row printed beside Go's, with the target verdict
 sh benchmarks/run.sh --list                benchmarks and languages
 sh benchmarks/run.sh --self-test           the gate's rules, the row contract, the report
 ```
@@ -72,6 +73,11 @@ Every run emits ONE object with exactly these keys:
 The **reporter is a pure projection** of these rows: no clock, no
 measurement, so the same `results/runs.jsonl` renders byte-identically —
 the property `--self-test` checks against `report/results.md`.
+
+`--g1` prints the **G1 view**: one row per benchmark, Avra's number
+beside Go's from the SAME run, the ratio, and PASS/FAIL against the
+row's target. It also names the ticket's rows that no Avra twin measures
+yet, so a missing row is a finding and never a silence.
 
 ## The row contract (what a language program speaks)
 
@@ -143,11 +149,39 @@ A machine with no accepted row prints the rows and does not gate;
 margin because a scaling ratio is noisier than a fixed cost.
 
 This is the idea `tools/flow_bench/gate.py` landed for the scheduler's
-transition rows, at the suite's scale: the C runtime rows there are a
-runtime-only, no-compiler gate and STAY in `tools/flow_bench/`. That
-suite's C probes are the probe style reused here; the two are companions,
-not duplicates. (A later slice could move `tools/flow_bench` under
-`benchmarks/` as its own family; nothing moves it now.)
+transition rows, at the suite's scale. `tools/flow_bench/` is the OLDER
+harness and this suite is the ONE DOOR for the Avra-beside-Go question:
+`make flow-bench` runs `benchmarks/run.sh --g1`. What `tools/flow_bench/`
+uniquely holds stays there — `make flow-gate` is the runtime-only C
+floor a `runtime/*.c` change answers (no compiler, no Go) and
+`make flow-probes` is the stack allocator's own measurements. Those are
+different questions, not a second door; its Avra-beside-Go view is the
+design this suite now carries.
+
+### The G1 target against Go
+
+A `--gate` keeps the C floor AND judges each Avra row against **Go's row
+from the SAME run** — never across machines, and never a fresh Avra
+against a stale Go baseline, which would charge Avra for the machine's
+own drift. Where the machine has no Go, Go's recorded row for this
+machine is the fallback. The factors are data in `bench.toml`:
+
+```toml
+[gate.target]
+default = 2.0
+[gate.target.rows]
+parked_bytes = 3.0
+```
+
+the ticket's target (`avra-8sb5.34.53.21`): within 2× on the time rows —
+ping-pong, fan-in, select over N, the deadline row — and within 3× on
+bytes per parked task. A witness count (`check = "exact"`) is not a cost
+and carries no target. A row Go never measures is a SKIP named; a row Go
+measures on some machine but not on this one is a word, and `--require`
+refuses instead. `--self-test` witnesses the target gate REFUSING on a
+fixture, so its failure is seen and not assumed. On the tree's own Sprite
+the gate is RED today: Avra's ping-pong is 2.6x Go, past the ticket's 2x
+target — the finding the gate exists to make loud.
 
 ## What is measured, and what is not
 

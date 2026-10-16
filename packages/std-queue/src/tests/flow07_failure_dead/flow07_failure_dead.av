@@ -1,22 +1,32 @@
 //! proves a handler that keeps failing is buried once its attempts
-//! reach the terms, and the dead letter carries the error and the path.
-use @std.queue.{open_queue, key, Terms, Dead, release}
+//! reach the terms, and the letter carries the error and the path.
+use @std.queue.{queue, worker, drain, key, Dead, Delivery}
 use @std.task.{unbounded_channel}
 use @std.time.{ms}
 
-let q = open_queue<string>(
-    "jobs",
-    Terms { capacity: 8, lease: ms(60000), retries: 2, dead: "failed" },
-)
-let dead = unbounded_channel<Dead<string, int>>()
-let _ = q.send("job", key("k"))
-mut last = false
-mut d = q.take()
-while d != null {
-    let _ = q.began(d!)
-    last = release(q, d!, 7, dead.sink)
-    d = q.take()
+type Job = { n: int }
+type Receipt = { ok: bool }
+
+fn pay(d: Delivery<Job>) -> Result<Receipt, string> { .Err("job ${d.item.n} failed") }
+
+let letters = unbounded_channel<Dead<Job, string>>()
+queue<Job> jobs {
+    capacity: 8
+    lease: ms(60000)
+    retries: 2
+    dead: letters.sink
 }
-let gone = dead.source.taken()
-let g = gone!
-"${last} ${g.item} ${g.error} ${g.path[0]} ${g.path[1]} ${q.depth()}"
+worker settle {
+    reads: jobs
+    each: pay
+    dead: letters.sink
+}
+let _ = jobs.home().send(Job { n: 7 }, key("k"))
+match drain(settle) {
+    .Ok(n) -> {
+        let gone = letters.source.taken()
+        let g = gone!
+        "${n} ${g.item.n} ${g.error} ${g.path[0]} ${g.path[1]} ${jobs.home().depth()}"
+    },
+    .Err(e) -> e,
+}

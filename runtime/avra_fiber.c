@@ -655,6 +655,25 @@ static int64_t g_pinned_until_poll = 0;
 
 static int64_t g_polls = 0;
 
+// PATH MODE: THE RUNNER WALKS THE CHOICE TREE instead of drawing each
+// choice from a schedule. `g_path` is the order the next run follows,
+// zero-extended; `g_path_last` and `g_path_arity` are the order the run
+// just gone followed and how many tasks were ready at each of its
+// choices, which is what the odometer advances on. `path_step` moves to
+// the next order, and `g_path_exhausted` says every one has been walked.
+// A path is a spelling (`2.0.1`), so a failing order can be named and
+// re-run.
+enum { PATH_OFF, PATH_ENUM, PATH_REPLAY };
+#define PATH_MAX 64
+#define SCHED_PATH_SETTING "AVRA_SCHED_PATH"
+static int g_path_mode = PATH_OFF;
+static uint64_t g_path[PATH_MAX];
+static int64_t g_path_len = 0;
+static uint64_t g_path_last[PATH_MAX];
+static uint64_t g_path_arity[PATH_MAX];
+static int64_t g_path_last_len = 0;
+static int g_path_exhausted = 0;
+
 static void timer_set(uint32_t kind, void* who, int64_t at) {
     // THE FIRST TIMER OF A BURST SETS THE WINDOW: the clock is read at
     // the next switch, then every AVRA_TIMER_TURNS. Measured from the
@@ -1733,9 +1752,63 @@ static uint64_t seed_drawn(void) {
     return z ^ (z >> 31);
 }
 
-// Which of `n` runs: schedule 0 takes the first, any other draws.
+// The order a path spells, one choice per dot: `2.0.1`. No choices
+// spells `0`.
+static void path_text(char* out, size_t cap, const uint64_t* p, int64_t len) {
+    if (cap == 0) return;
+    out[0] = 0;
+    if (len == 0) { avra_fmt(out, cap, "0"); return; }
+    size_t at = 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (at + 1 >= cap) break;
+        int wrote = snprintf(out + at, cap - at, "%s%llu", i ? "." : "", (unsigned long long)p[i]);
+        if (wrote < 0 || (size_t)wrote >= cap - at) { out[cap - 1] = 0; return; }
+        at += (size_t)wrote;
+    }
+}
+
+__attribute__((noinline, cold, noreturn))
+static void path_unfit(void) {
+    char said[128], words[220];
+    path_text(said, sizeof said, g_path, g_path_len);
+    avra_fmt(words, sizeof words, SCHED_PATH_SETTING " must name one of the ready tasks at each choice — %s is not a path of this case", said);
+    avra_trap(words);
+}
+
+// One choice of a path run: the path's word where it has one, else the
+// first option. The arity and the chosen word are kept for the odometer's
+// next step and for a failure's spelling.
+static uint64_t path_chosen(uint64_t n) {
+    uint64_t i = (uint64_t)(g_choices - 1);
+    if (i >= PATH_MAX) avra_trap("a scheduling path is longer than 64 choices");
+    g_path_arity[i] = n;
+    g_path_last[i] = i < (uint64_t)g_path_len ? g_path[i] : 0;
+    g_path_last_len = (int64_t)i + 1;
+    if (g_path_last[i] >= n) path_unfit();
+    return g_path_last[i];
+}
+
+// Advance like an odometer: the deepest choice that can grow, its tail
+// reset to the first option. 0 when every order has been walked.
+static int path_step(void) {
+    for (int64_t i = g_path_last_len - 1; i >= 0; i--) {
+        if (g_path_last[i] + 1 < g_path_arity[i]) {
+            for (int64_t j = 0; j <= i; j++) g_path[j] = g_path_last[j];
+            g_path[i] = g_path_last[i] + 1;
+            g_path_len = i + 1;
+            return 1;
+        }
+    }
+    g_path_len = 0;
+    g_path_exhausted = 1;
+    return 0;
+}
+
+// Which of `n` runs: schedule 0 takes the first, any other draws. IN
+// PATH MODE the order is read from the path instead, one word a pick.
 static uint64_t chosen(uint64_t n) {
     g_choices++;
+    if (g_path_mode != PATH_OFF) return path_chosen(n);
     if (g_schedule == 0) return 0;
     return (uint64_t)(((__uint128_t)seed_drawn() * n) >> 64);
 }
@@ -3026,6 +3099,7 @@ void avra_sched_seed(int64_t schedule) {
     g_schedule = schedule;
     g_seed_state = (uint64_t)schedule;
     g_choices = 0;
+    g_path_last_len = 0;
     // NO SOURCE, AND THE TICK IS HELD: every checked back-edge takes
     // its cold side, where the turn is drawn from the schedule.
     __atomic_store_n(&avra_tick, 1, __ATOMIC_RELAXED);
@@ -3035,10 +3109,12 @@ void avra_sched_seed(int64_t schedule) {
 }
 
 // The first unseeded switch after it finds the poller's count spent and
-// sets it again.
+// sets it again. IN PATH MODE the walk moves to the next order here, so
+// a caller reads exhaustion before it asks for another.
 int64_t avra_sched_settle(void) {
     g_seeded = 0;
     __atomic_store_n(&avra_tick, 0, __ATOMIC_RELAXED);
+    if (g_path_mode == PATH_ENUM) path_step();
     return g_choices;
 }
 
@@ -3413,10 +3489,43 @@ static void case_clock_settled(void) {
     g_case_clock_virtual = 0;
 }
 
+// PATH MODE IS OPT-IN: `AVRA_SCHED_PATH=all` walks every order of the
+// choice tree, depth first, up to AVRA_SCHED_RUNS; a dotted spelling
+// like `2.0.1` runs that one order alone. Seed mode is the default, and
+// the two settings name different modes.
+__attribute__((noinline, cold, noreturn))
+static void path_bad(const char* said) {
+    char words[220];
+    avra_fmt(words, sizeof words, SCHED_PATH_SETTING " names `all` or choices like `2.0.1`, each under %d — it says `%s`", PICK_WINDOW, said);
+    avra_trap(words);
+}
+
+static void path_settled(void) {
+    const char* said = getenv(SCHED_PATH_SETTING);
+    if (!said || !*said) return;
+    const char* drawn = getenv(SCHED_SEED_SETTING);
+    if (drawn && *drawn) avra_trap(SCHED_PATH_SETTING " walks paths and " SCHED_SEED_SETTING " draws seeds — name one");
+    g_path_exhausted = 0;
+    g_path_len = 0;
+    if (!strcmp(said, "all")) { g_path_mode = PATH_ENUM; return; }
+    g_path_mode = PATH_REPLAY;
+    const char* at = said;
+    for (;;) {
+        char* end = NULL;
+        long long v = strtoll(at, &end, 10);
+        if (end == at || v < 0 || v >= PICK_WINDOW || g_path_len >= PATH_MAX) path_bad(said);
+        g_path[g_path_len++] = (uint64_t)v;
+        if (*end == 0) break;
+        if (*end != '.') path_bad(said);
+        at = end + 1;
+    }
+}
+
 static void schedules_settled(void) {
     if (g_sched_settled) return;
     g_sched_runs = whole_setting(SCHED_RUNS_SETTING, 1, SCHED_RUNS_DEFAULT);
     g_sched_only = whole_setting(SCHED_SEED_SETTING, 0, -1);
+    path_settled();
     case_clock_settled();
     g_sched_settled = 1;
 }
@@ -3433,6 +3542,8 @@ static int64_t case_body_held(void) { return avra_case_run(case_body_called); }
 static int64_t scheduled(int64_t schedule, int64_t* choices, int64_t (*run)(void)) {
     avra_sched_seed(schedule);
     avra_case_schedule = schedule;
+    if (g_path_mode != PATH_OFF) path_text(avra_case_path, sizeof avra_case_path, g_path, g_path_len);
+    else avra_case_path[0] = 0;
     // the case's clock is a run of its own: what it jumps ends with it
     if (g_case_clock_virtual) {
         avra_clock_run_begins();
@@ -3452,13 +3563,38 @@ static int64_t case_failed_under(const char* what, const char* label, int64_t sc
     return 0;
 }
 
+__attribute__((noinline, cold))
+static int64_t path_failed(const char* what, const char* label) {
+    char spell[220];
+    path_text(spell, sizeof spell, g_path_last, g_path_last_len);
+    fprintf(stderr, "avra: %s%s failed under path %s — " SCHED_PATH_SETTING "=%s replays it\n", what, label, spell, spell);
+    return 0;
+}
+
 static int64_t case_under(int64_t schedule, int64_t* choices) { return scheduled(schedule, choices, case_body_held); }
 
 // THE SCHEDULES A VERDICT RUNS: schedule 0, then — only when it chose —
-// the next, up to the setting; or the one AVRA_SCHED_SEED names.
+// the next, up to the setting; or the one AVRA_SCHED_SEED names. IN PATH
+// MODE each run follows the next order the odometer reaches, depth
+// first, and the walk stops when every order has been walked.
 static int64_t over_schedules(const char* what, const char* label, int64_t (*one)(int64_t, int64_t*)) {
     schedules_settled();
+    // EVERY CASE WALKS FROM THE FIRST ORDER: the walk is the case's, not
+    // the process's.
+    if (g_path_mode == PATH_ENUM) { g_path_len = 0; g_path_exhausted = 0; }
     int64_t choices = 0;
+    if (g_path_mode == PATH_REPLAY) return one(0, &choices) ? 1 : path_failed(what, label);
+    if (g_path_mode == PATH_ENUM) {
+        for (int64_t k = 0; k < g_sched_runs; k++) {
+            // EVERY ORDER WALKED: nothing left to run.
+            if (g_path_exhausted) break;
+            if (!one(k, &choices)) return path_failed(what, label);
+            // A CASE THAT MADE NO CHOICE HAS ONE ORDER: no other order differs.
+            if (choices == 0) break;
+            g_any_chose = 1;
+        }
+        return 1;
+    }
     if (g_sched_only >= 0) return one(g_sched_only, &choices) ? 1 : case_failed_under(what, label, g_sched_only);
     for (int64_t k = 0; k < g_sched_runs; k++) {
         // A CASE WITH ONE ORDER FAILS IN EVERY ORDER: no schedule replays
@@ -3502,11 +3638,46 @@ static void program_said_otherwise(const char* got, int ended, int status) {
     g_any_failed = 1;
 }
 
+// WHAT A CHILD'S SCHEDULE LEAVES THE RUNNER, over the pipe: how many
+// choices it made, the order it followed and its arities (for a
+// failure's spelling), and the next order to walk in path mode.
+typedef struct {
+    int64_t made;
+    int64_t exhausted;
+    int64_t last_len;
+    int64_t next_len;
+    uint64_t last[PATH_MAX];
+    uint64_t arity[PATH_MAX];
+    uint64_t next[PATH_MAX];
+} PathWire;
+
+static void path_wire_put(int fd, const PathWire* w) {
+    const char* at = (const char*)w;
+    for (size_t n = sizeof *w; n > 0;) {
+        ssize_t wrote = write(fd, at, n);
+        if (wrote <= 0) _exit(3);
+        at += wrote;
+        n -= (size_t)wrote;
+    }
+}
+
+static int path_wire_get(int fd, PathWire* w) {
+    char* at = (char*)w;
+    for (size_t n = sizeof *w; n > 0;) {
+        ssize_t got = read(fd, at, n);
+        if (got <= 0) return 0;
+        at += got;
+        n -= (size_t)got;
+    }
+    return 1;
+}
+
 // ONE SCHEDULE IS ONE CHILD, forked before the program runs: what the
 // program leaves dies with it, so the next schedule starts from the image
 // as it stood and a failure replays from its seed alone; a trap or a
-// deadlock ends the child, never the suite. The child's choices come back
-// over a pipe, and a child that never says them made an unknown number.
+// deadlock ends the child, never the suite. The child's choices — and, in
+// path mode, the order it walked and the next to walk — come back over a
+// pipe, and a child that never says them made an unknown number.
 static int64_t program_under(int64_t schedule, int64_t* choices) {
     int told[2];
     if (pipe(told) != 0) avra_trap("a program test has no pipe to its schedule");
@@ -3520,20 +3691,38 @@ static int64_t program_under(int64_t schedule, int64_t* choices) {
         close(told[0]);
         int64_t made = 0;
         scheduled(schedule, &made, program_body_called);
+        PathWire w;
+        memset(&w, 0, sizeof w);
+        w.made = made;
+        w.exhausted = g_path_exhausted;
+        w.last_len = g_path_last_len;
+        w.next_len = g_path_len;
+        memcpy(w.last, g_path_last, sizeof w.last);
+        memcpy(w.arity, g_path_arity, sizeof w.arity);
+        memcpy(w.next, g_path, sizeof w.next);
         fflush(stdout);
-        _exit(write(told[1], &made, sizeof made) == sizeof made ? 0 : 3);
+        path_wire_put(told[1], &w);
+        _exit(0);
     }
     close(told[1]);
-    int64_t made = -1;
-    // the clock: the suite waits on its child, outside every clock run
-    ssize_t heard = read(told[0], &made, sizeof made);
+    PathWire w;
+    memset(&w, 0, sizeof w);
+    int heard = path_wire_get(told[0], &w);
     close(told[0]);
     int status = 0;
     // the clock: the suite waits on its child, outside every clock run
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    if (heard) {
+        g_path_exhausted = w.exhausted;
+        g_path_len = w.next_len > PATH_MAX ? PATH_MAX : w.next_len;
+        g_path_last_len = w.last_len > PATH_MAX ? PATH_MAX : w.last_len;
+        memcpy(g_path, w.next, sizeof g_path);
+        memcpy(g_path_last, w.last, sizeof g_path_last);
+        memcpy(g_path_arity, w.arity, sizeof g_path_arity);
+    }
     const char* got = avra_capture_end();
-    int ended = heard == sizeof made && WIFEXITED(status) && WEXITSTATUS(status) == 0;
-    *choices = ended ? made : -1;
+    int ended = heard && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+    *choices = ended ? w.made : -1;
     int64_t same = ended && avra_streq(got, g_program_expected);
     if (!same) program_said_otherwise(got, ended, status);
     avra_rc_release((void*)got);
@@ -3549,11 +3738,18 @@ int64_t avra_program_verdict(int64_t code, const char* label, const char* expect
 
 int64_t avra_sched_runs_wanted(void) {
     schedules_settled();
+    // EVERY EVALUATED PROGRAM WALKS FROM THE FIRST ORDER: the walk is the
+    // program's, not the compiler's.
+    if (g_path_mode == PATH_ENUM) { g_path_len = 0; g_path_exhausted = 0; }
+    if (g_path_mode == PATH_REPLAY) return 1;
     return g_sched_only >= 0 ? 1 : g_sched_runs;
 }
 
 int64_t avra_sched_schedule_at(int64_t i) {
     schedules_settled();
+    // PATH MODE WALKED EVERY ORDER: no schedule is left to name, and the
+    // evaluated leg stops where the native one does.
+    if (g_path_mode == PATH_ENUM && g_path_exhausted) return -1;
     return g_sched_only >= 0 ? g_sched_only : i;
 }
 
@@ -3565,6 +3761,10 @@ int64_t avra_case_clock_virtual(void) {
 void avra_case_schedules_said(void) {
     if (g_any_failed && g_case_clock_virtual) fputs("avra: the cases ran on the virtual clock — " CLOCK_SETTING "=real runs them on the wall's\n", stderr);
     if (!g_any_chose || g_sched_only >= 0) return;
+    if (g_path_mode != PATH_OFF) {
+        fprintf(stderr, "avra: a case that chose an order walked paths — " SCHED_PATH_SETTING "=all walks every order up to " SCHED_RUNS_SETTING "; orders past %d ready tasks are not all reachable\n", PICK_WINDOW);
+        return;
+    }
     fprintf(stderr, "avra: a case that chose an order ran up to %lld schedule%s — " SCHED_RUNS_SETTING "=8 runs more, as the nightly `orders` run does; orders past %d ready tasks are not all reachable\n", (long long)g_sched_runs, g_sched_runs == 1 ? "" : "s", PICK_WINDOW);
 }
 

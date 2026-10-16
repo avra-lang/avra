@@ -61,8 +61,16 @@ fn check_new(mut cx: TypeCx, mc: MethodCall) -> TypeId {
         return cx.error_type
     }
     let arg = mc.args[0]
-    if cx.errored(arg) { return cx.error_type }
-    let held? = wanted_held(cx, mc.e) else { return held_by_value(cx, arg) }
+    // A DECLARED WANT FEEDS A HUNGRY ARGUMENT — a generic literal
+    // arrives as the Error stand-in, and the seat is what pins it.
+    // With no want the cell WAITS on a hungry argument, since that
+    // argument's type IS the held type; one that refused absorbs its
+    // own cause and the cell holds nothing.
+    let held? = wanted_held(cx, mc.e) else {
+        if cx.facts.hungry_at(arg) { return cx.hungry(mc.e) }
+        if cx.errored(arg) { return cx.error_type }
+        return held_by_value(cx, arg)
+    }
     if !cx.accepts(arg, held) { return unfit_cell(cx, arg, held) }
     cx.view.types.intern(Type.Cell(held))
 }
