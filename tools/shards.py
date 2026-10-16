@@ -12,7 +12,9 @@ shard, which the workflow skips.
 
 With `--split`, a package named in .github/ci/suite-splits.txt becomes one
 item per listed path (`std-avrac/src/features`), each proved by `avra test` on
-that path alone. `--check-splits` refuses a split package that carries a proof
+that path alone; a `cold` row runs first in a shard of its own among the cold
+ones, since its scope refuses to run after another suite on a warm store.
+`--check-splits` refuses a split package that carries a proof
 outside every listed path, which would otherwise run nowhere.
 """
 import json
@@ -36,17 +38,20 @@ def weights(path):
 
 
 def splits(path):
-    """package -> the paths (under the package) its suite is proved by."""
-    out = {}
+    """package -> the paths (under the package) its suite is proved by, and
+    the items (`package/path`) that must run first in their shard."""
+    out, cold = {}, set()
     try:
         with open(path) as f:
             for line in f:
                 parts = line.split("#")[0].split()
-                if len(parts) == 2:
+                if len(parts) in (2, 3):
                     out.setdefault(parts[0], []).append(parts[1])
+                    if parts[2:] == ["cold"]:
+                        cold.add(f"{parts[0]}/{parts[1]}")
     except FileNotFoundError:
         pass
-    return out
+    return out, cold
 
 
 def split_items(names, table):
@@ -78,15 +83,22 @@ def unreached(root, table):
     return gone
 
 
-def pack(names, n, w):
+def pack(names, n, w, cold=()):
+    """Heaviest first into the lightest shard. A cold item takes a shard of its
+    own among the cold ones and runs first there."""
     bins = [[] for _ in range(n)]
     load = [0] * n
-    for name in sorted(names, key=lambda p: (-w.get(p, DEFAULT), p)):
+    firsts = sorted((x for x in names if x in cold), key=lambda p: (-w.get(p, DEFAULT), p))
+    assert len(firsts) <= n, f"{len(firsts)} cold items, {n} shards"
+    for i, name in enumerate(firsts):
+        bins[i].append(name)
+        load[i] += w.get(name, DEFAULT)
+    for name in sorted((x for x in names if x not in cold), key=lambda p: (-w.get(p, DEFAULT), p)):
         i = load.index(min(load))
         bins[i].append(name)
         load[i] += w.get(name, DEFAULT)
-    # a shard runs its lightest suites first, so a long one never delays the short ones' verdicts
-    return [sorted(b, key=lambda p: (w.get(p, DEFAULT), p)) for b in bins if b] or [[]]
+    # a shard runs its cold items, then its lightest suites first, so a long one never delays the short ones' verdicts
+    return [sorted(b, key=lambda p: (p not in cold, w.get(p, DEFAULT), p)) for b in bins if b] or [[]]
 
 
 def self_test():
@@ -99,7 +111,9 @@ def self_test():
     t = {"p": ["src/a", "src/b"]}
     assert split_items(["p", "q"], t) == ["p/src/a", "p/src/b", "q"]
     assert split_items([], t) == []
-    print("shards: self-test passed — 6 fixtures")
+    got = pack(["a", "b", "c", "d"], 2, {"a": 9, "b": 1, "c": 1, "d": 1}, {"c", "d"})
+    assert [g[0] for g in got] == ["c", "d"] and sorted(sum(got, [])) == ["a", "b", "c", "d"], got
+    print("shards: self-test passed — 7 fixtures")
 
 
 if __name__ == "__main__":
@@ -109,7 +123,7 @@ if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.join(here, "..")
     ci = os.path.join(root, ".github", "ci")
-    table = splits(os.path.join(ci, "suite-splits.txt"))
+    table, cold = splits(os.path.join(ci, "suite-splits.txt"))
     if sys.argv[1:] == ["--check-splits"]:
         bad = unreached(root, table)
         for b in bad:
@@ -123,4 +137,4 @@ if __name__ == "__main__":
     names = [l.strip() for l in sys.stdin if l.strip()]
     if split:
         names = split_items(names, table)
-    print(json.dumps(pack(names, n, weights(os.path.join(ci, "suite-seconds.txt")))))
+    print(json.dumps(pack(names, n, weights(os.path.join(ci, "suite-seconds.txt")), cold)))
