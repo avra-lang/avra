@@ -29,7 +29,6 @@ use features.{
     Gathering,
     OpenLoop,
     Dispatch,
-    semantics_of,
     post_order,
     FnSig,
     TypeRow,
@@ -450,9 +449,8 @@ impl TypeCx {
     /// it ran under is remembered, for the feed.
     mut fn type_node(e: ExprId) {
         let node = self.view.store.expr(e)
-        let sem = semantics_of(self.dispatch, node)
         self.facts.set_type(e, node.type_of(self, e))
-        if self.any_hungry(sem.kids(node).concat(sem.heirs(node))) { self.facts.go_hungry(e) }
+        if self.any_hungry(node.kids().concat(node.heirs())) { self.facts.go_hungry(e) }
         if self.facts.hungry_at(e) { self.facts.remember_scope(e, self.scope) }
     }
 
@@ -467,8 +465,7 @@ impl TypeCx {
     /// control node hides from the walk — in post-order, `e` last.
     fn beneath(e: ExprId) -> List<ExprId> {
         let node = self.view.store.expr(e)
-        let sem = semantics_of(self.dispatch, node)
-        flatten([self.beneath(k) for k in sem.kids(node).concat(sem.heirs(node))]).concat([e])
+        flatten([self.beneath(k) for k in node.kids().concat(node.heirs())]).concat([e])
     }
 
     /// Every expression still hungry when typing ends never met the
@@ -569,7 +566,7 @@ impl TypeCx {
     mut fn plant_want(e: ExprId, ty: TypeId) {
         self.facts.set_want(e, ty)
         let node = self.view.store.expr(e)
-        for h in semantics_of(self.dispatch, node).heirs(node) {
+        for h in node.heirs() {
             self.plant_want(h, ty)
         }
     }

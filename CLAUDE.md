@@ -1267,8 +1267,8 @@ registry is the idiom engine's spec, written by dogfooding.
   assembly refuses on the dangling name — "no feature owns builder
   `x`"; the let_stmt tests assemble a PARTIAL list). The NODE may
   still be another
-  feature's to give meaning: semantics_of decides ownership of
-  MEANING, the gram decides ownership of PARSE.
+  feature's to give meaning: the node record's own `impl Meaning`
+  decides ownership of MEANING, the gram decides ownership of PARSE.
 - Grammar authoring: a KEYWORD ANCHOR merges before every
   NAME-HEADED branch, not merely before the spine's bare `ident`.
   `fns` contributes a call rule headed `primary = c:NAME "("`
@@ -1457,12 +1457,16 @@ registry is the idiom engine's spec, written by dogfooding.
   constant it compares to), the answer last.
 - A feature is a directory: `mod.av` is the declarative manifest
   (component + tables), `builders.av` holds parse lowering,
-  `semantics.av` holds its NodeSemantics impl (dispatch one-liners),
-  and rule bodies live by concern — `check.av` for typing,
-  `lower.av` for MEANING (lowering is the one semantics; the IR
-  interpreter and the backend both consume it). Passes NEVER match feature nodes: `semantics_of`
-  (THE one exhaustive map, no strings) returns the node's semantics
-  directly; the trait impl forces every pass method at compile time.
+  `semantics.av` holds its `Meaning`/`NodeSemantics` impls (the
+  record's own passes, dispatch one-liners), and rule bodies live by
+  concern — `check.av` for typing, `lower.av` for MEANING (lowering
+  is the one semantics; the IR interpreter and the backend both
+  consume it). Passes NEVER match feature nodes: an expression's
+  passes and walk (`resolve`/`type_of`/`lower`, `kids`/`heirs`) are
+  the record's own `impl Meaning`/`impl NodeSemantics`, reached on the
+  `Expr` value through `@delegates(Expr)`; a pattern's are its
+  record's `impl PatSemantics` through `pat_semantics_of`; the trait
+  impl forces every pass method at compile time.
 - A pass CONTEXT carries the pass's STATE verbs only — walk, look
   up, record, emit, mint, slots — never a feature's rule. A
   feature-named fn on a cx (`check_mut`, `emit_loop`) is a rule
@@ -1478,8 +1482,8 @@ registry is the idiom engine's spec, written by dogfooding.
   a Grammar VALUE — Avra has no type-qualified call) — a feature's
   gram fragment IS its keyword claim.
   A feature owning a STATEMENT kind also impls `StmtSemantics`
-  (`stmt.av` or `semantics.av`) and joins `stmt_semantics_of` — the
-  drivers' one statement loop reaches it there.
+  (`stmt.av` or `semantics.av`) — the drivers' one statement loop
+  reaches it on the `Stmt` value through `@delegates(Stmt)`.
   Start a feature with `avra new feature <name>`; prove it with a
   program test (`<feature>/tests/<name>/<name>.av` + `.expected` — a
   program gets a directory of its own, so its names are its own,
