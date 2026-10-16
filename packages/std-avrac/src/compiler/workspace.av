@@ -1154,12 +1154,8 @@ impl Workspace {
         if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
         self.hold.file_ready.keep(f.index, true)
         if self.is_held(f) && self.store.get() != null {
-            self
-                .mint_module(
-                    self.store.get()!,
-                    module_path(segments_of(self.module_of(self.decls.file(f).path))),
-                )
-            self.decls.note_module_rows(self.decls.file(f).module_id, 2)
+            self.minted_files([self.decls.file(f).path])
+            self.decls.note_rows(f, 2)
         }
     }
 
@@ -1176,16 +1172,25 @@ impl Workspace {
     /// THE PRODUCER INDEX'S FOUR DOORS: a bucket reader asks for the value it is about to
     /// read, and every held module whose record files a row there is minted first — so the
     /// row exists before the read, and only where it is wanted.
-    fn held_named(name: string) { self.minted_modules(self.hold.named_by.get().get(name) ?? []) }
+    fn held_named(name: string) { self.minted_files(self.hold.named_by.get().get(name) ?? []) }
 
-    fn held_worded(word: string) { self.minted_modules(self.hold.worded_by.get().get(word) ?? []) }
+    fn held_worded(word: string) { self.minted_files(self.hold.worded_by.get().get(word) ?? []) }
 
-    fn held_marked(mark: string) { self.minted_modules(self.hold.marked_by.get().get(mark) ?? []) }
+    fn held_marked(mark: string) { self.minted_files(self.hold.marked_by.get().get(mark) ?? []) }
 
-    /// Every listed module minted, once: `mint_module` is its own guard.
+    /// Every held file of each listed module minted, once.
     fn minted_modules(modules: List<string>) {
-        if self.store.get() == null { return }
-        for m in modules { self.mint_module(self.store.get()!, module_path(segments_of(m))) }
+        let store? = self.store.get() else { return }
+        for m in modules {
+            let at = module_path(segments_of(m))
+            self.mint_files(store, at, self.module_files(at))
+        }
+    }
+
+    /// Every listed held file minted, once: `mint_files` is its own guard.
+    fn minted_files(paths: List<string>) {
+        let store? = self.store.get() else { return }
+        for p in paths { self.mint_files(store, self.module_path_of(p), [p]) }
     }
 
     /// A held declaration may need syntax-only facts that were not part of
