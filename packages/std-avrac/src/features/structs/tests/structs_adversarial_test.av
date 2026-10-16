@@ -27,26 +27,30 @@ spec "features/structs (adversarial)" {
         // refused with an internal defect while the backend quietly
         // answered `false` for two IDENTICAL records — an engine
         // divergence and a silently wrong native answer.
-        then "a record of two fields refuses equality, and says to compare a field" {
-            let a = analyze_source(
-                "type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\nlet b = Q { x: 1, y: 2 }\na == b",
-            )
-            a.diagnostics.length == 1 &&
-                a
-                    .report()
-                    .contains(
-                        "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
-                    ) &&
-                a.report().contains("compare a field instead")
+        then "a record of two fields compares by value" {
+            shown(
+                "type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\nlet b = Q { x: 1, y: 2 }\nlet c = Q { x: 9, y: 2 }\n\"\${a == b} \${a != c}\"",
+            ) == "true true"
         }
-        then "inequality over two fields refuses the same way" {
-            refusals("type Q = { x: int, y: int }\nlet a = Q { x: 1, y: 2 }\na != a") == 1
+        then "a record holding a list compares by that list" {
+            shown(
+                "type L = { xs: List<int> }\nlet a = L { xs: [1, 2] }\nlet b = L { xs: [1, 2] }\nlet c = L { xs: [1, 3] }\n\"\${a == b} \${a == c}\"",
+            ) == "true false"
         }
         then "a record of ONE field compares by it" {
             shown("${p1_bound()}let b = P { x: 1 }\nlet c = P { x: 2 }\n\"\${a == b} \${a != c}\"") == "true true"
         }
-        then "a record of one field whose field does not compare refuses" {
-            refusals("type L = { xs: List<int> }\nL { xs: [1] } == L { xs: [1] }") == 1
+        then "a record of one field whose field cannot compare refuses" {
+            refused_with(
+                "type L = { c: Cell<int> }\nL { c: Cell.new(1) } == L { c: Cell.new(1) }",
+                "`==` compares by value — a scalar, text, bytes, a record, list, map or enum whose parts compare",
+            )
+        }
+        then "a recursive record refuses by name" {
+            refused_with(
+                "type Tree = { v: int, kids: List<Tree> }\nTree { v: 1, kids: [] } == Tree { v: 1, kids: [] }",
+                "`Tree` is a recursive type",
+            )
         }
         then "two different one-field types are two types" {
             refused_with(

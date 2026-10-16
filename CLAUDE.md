@@ -1106,6 +1106,20 @@ registry is the idiom engine's spec, written by dogfooding.
   very key, a miss's index word must be of the same building of the
   index and still empty — so the lowering's proof is the fast path,
   never what the write's rightness rests on.
+- STRUCTURAL EQUALITY: `==`/`!=`, `contains`/`index_of` and a const
+  PATTERN share ONE by-value law, and it is a deep walk: a scalar,
+  text or bytes; a record every field of which compares; a list whose
+  element compares, in order; a map whose value compares, ORDER-FREE
+  (same count and every key present with an equal value — insertion
+  order is a projection, not identity); an enum every payload of which
+  compares; and a nullable of any of these, through presence. The walk
+  SHORT-CIRCUITS on the first difference. A type that REACHES ITSELF
+  is refused by name (`type.recursive_compare`, "a deep walk would
+  follow the cycle forever") because the runtime carries no visited
+  set. A `Cell`, a `fn`, a `dyn` or a type parameter is still refused.
+  Maps snapshot the left map's keys — an O(n) temporary; there is no
+  hash and no identity short-circuit. One law, so no consumer spells
+  a second one.
 - Grammar authoring: EVERY COMMA LIST TAKES A TRAILING COMMA — a
   repeated `( "," x )*` ends `","?` before its closer, in every
   rule (params, type params and args, payload declarations, lambda
@@ -1913,24 +1927,6 @@ Wants the typer does not carry yet:
 - `join` over a list that is not text: `[1, 2].join(",")` is F2005
   "`join` reads a list of text, this one holds `int`" — map to text
   first.
-- `==`/`!=`, `contains`/`index_of` and a literal pattern share ONE
-  equality: a scalar, text, a tagged enum, or a record of ONE such
-  field, compared by that field (a one-field record inside one
-  compares through), so `Id { n: 1 } == Id { n: 1 }` answers true
-  and `[a, c].contains(b)` finds it. Everything else refuses:
-  a record of two fields is F2000 "`==` compares by value — a
-  scalar, text, a tagged enum, or a record of one such field" with
-  help "compare a field instead"; two different one-field types, or
-  one against its own field's scalar, is "`==` compares matching
-  types, found `Id` and `Other`"; the list scan is F2005 "`contains`
-  scans by value — … — and this list holds `Pair`" (a nullable of
-  a comparable type scans through presence) — spell the scan
-  (`xs.any(same(it))`). Probed at d11ea0f. ENUMS SPLIT ON THE PAYLOAD, which
-  nobody had written down: a payload-FREE enum compares fine
-  (`.Timeout == .Refused` answers false), and one CARRYING a payload
-  is F2000 with the help "match on it instead — only an enum carrying
-  nothing compares, by variant".
-
 Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
 `List<int>` has none" — the others read alike — or the map's F2000):
 - `List.reverse()` / `sort()` — core's `reversed` is the helper
