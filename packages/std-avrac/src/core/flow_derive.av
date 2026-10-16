@@ -50,7 +50,7 @@ export trait Flow {
         }
     }
 
-    static fn marks(t: MetaType) -> List<string> { flow_words.concat(["clauses"]) }
+    static fn marks(t: MetaType) -> List<string> { flow_words.concat(["clauses", local_word, facet_word]) }
 }
 
 /// What a refused enum is given: the walk, answering nothing anyone
@@ -78,12 +78,12 @@ fn flow_arm(owner: string, v: MetaVariant) -> Arms {
 fn flow_answer(owner: string, v: MetaVariant) -> Code {
     if marked(v, "apart") != null { return quote { Control.Apart } }
     if marked(v, "sequence") != null { return quote { Control.Seq(${concatenated(steps_of(v))}) } }
-    let args = [name(f.name) for f in v.fields]
+    let args = [name(f.name) for f in v.fields if carried(f)]
     quote { ${branch_of(owner, v.name)}(${..args}) }
 }
 
 /// What a `@sequence` variant runs, field by field.
-fn steps_of(v: MetaVariant) -> List<Code> { [c for f in v.fields for c in runs(step(f))] }
+fn steps_of(v: MetaVariant) -> List<Code> { [c for f in v.fields if reached(f) for c in runs(step(f))] }
 
 fn runs(s: Step) -> List<Code> {
     match s { .Runs(c) -> [c], .Still or .Unknown -> [] }

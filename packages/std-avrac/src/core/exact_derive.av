@@ -42,7 +42,7 @@ export trait Exact {
     }
 
     /// No marks: a payload's type says everything this derive compares.
-    static fn marks(t: MetaType) -> List<string> { [] }
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
 }
 
 /// One variant's arm: `a`'s fields bind under their own names, `b`'s
@@ -55,11 +55,11 @@ fn exact_variant_arm(v: MetaVariant) -> Arms {
     quote { .${v}(${binders_a(v)}) -> match b { .${v}(${binders_b(v)}) -> ${anded(field_eqs(v))}, rest -> false } }
 }
 
-fn binders_a(v: MetaVariant) -> List<string> { [f.name for f in v.fields] }
+fn binders_a(v: MetaVariant) -> List<string> { [f.name for f in v.fields if carried(f)] }
 
-fn binders_b(v: MetaVariant) -> List<string> { ["${f.name}_b" for f in v.fields] }
+fn binders_b(v: MetaVariant) -> List<string> { ["${f.name}_b" for f in v.fields if carried(f)] }
 
-fn field_eqs(v: MetaVariant) -> List<Code> { [field_eq(f) for f in v.fields] }
+fn field_eqs(v: MetaVariant) -> List<Code> { [field_eq(f) for f in v.fields if reached(f)] }
 
 /// HOW A PAYLOAD'S TYPE COMPARES — Identity's own registry
 /// (identity_derive.av's `part`), with every hashed fold answering a

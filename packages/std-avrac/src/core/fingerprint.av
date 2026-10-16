@@ -42,9 +42,69 @@ use @std.meta.{
     int_node,
 }
 
+// ── The field-mark registry. `@local` is this process's own: no child,
+// out of identity, its value stays on the node. `@facet(table)` leaves
+// the gathered payload for the side table the mark names: no child
+// either, and still part of what the node is. ONE row says each, and a
+// shape derive asks HERE — never the mark's own word. ──
+
+/// The mark that takes a field out of what a value IS.
+export const local_word: string = "local"
+
+/// The mark that takes a field's value out of the payload, for a side
+/// table the mark names.
+export const facet_word: string = "facet"
+
+/// How a field's mark routes it.
+export enum FieldRoute {
+    /// Unmarked — a payload, a child, part of the node.
+    Plain
+    /// `@local` — no child, out of identity, the value stays on the node.
+    Local
+    /// `@facet(table)` — no child; the value leaves the payload for the
+    /// side table `table` names, and still tells one node from another.
+    Facet(side: string)
+}
+
+/// The route a field's marks name. A field wears at most one; one
+/// wearing both reads as a facet.
+export fn field_route(f: Field) -> FieldRoute {
+    let facet? = f.marks.find(it.name == facet_word) else {
+        if f.marks.any(it.name == local_word) { return FieldRoute.Local }
+        return FieldRoute.Plain
+    }
+    FieldRoute.Facet(facet.args.first() ?? "")
+}
+
+/// Whether the field is one a shape derive REACHES: a `@local` field and
+/// a `@facet` field are no child, and neither folds from the payload.
+export fn reached(f: Field) -> bool {
+    match field_route(f) { .Plain -> true, .Local or .Facet(_) -> false }
+}
+
+/// Whether the gathered payload CARRIES the field: a facet does not.
+export fn carried(f: Field) -> bool {
+    match field_route(f) { .Facet(_) -> false, .Plain or .Local -> true }
+}
+
+/// The side table a `@facet` field names, absent for any other field.
+export fn facet_table(f: Field) -> string? {
+    match field_route(f) { .Facet(side) -> side, .Plain or .Local -> null }
+}
+
+/// The side table a WRITTEN field's own marks name — the same question
+/// asked of the store's `Mark`, before the crossing makes a `Field`.
+export fn facet_on(marks: List<Mark>) -> string? {
+    let m? = marks.find(it.name == facet_word) else { return null }
+    m.args.first()
+}
+
+/// Whether a written field's marks name a facet.
+export fn faceted(marks: List<Mark>) -> bool { facet_on(marks) != null }
+
 export trait Fingerprint {
-    /// `@local` fields are not part of what a value IS.
-    static fn marks(t: MetaType) -> List<string> { [local_word] }
+    /// `@local` and `@facet` fields are not part of what a value folds.
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
 
     static fn derive(t: MetaType) -> List<MetaDirective> {
         [
@@ -77,14 +137,8 @@ fn folding(t: MetaType, leaf: fn(Code) -> Code) -> Code {
 
 /// `fp(tag, [name, f1, f2, …])` over `self.<field>`.
 fn record_fold(t: MetaType, leaf: fn(Code) -> Code) -> Code {
-    parted(t.name, [folded(f.kind, quote { self.${f.name} }, leaf) for f in t.fields if !local(f)])
+    parted(t.name, [folded(f.kind, quote { self.${f.name} }, leaf) for f in t.fields if reached(f)])
 }
-
-/// The mark on a field that is not part of what its node IS: a span, a
-/// process-local id. A field with no mark folds.
-export const local_word: string = "local"
-
-fn local(f: Field) -> bool { f.marks.any(it.name == local_word) }
 
 /// One arm per variant: its INDEX pins the arity, so two variants of
 /// one type cannot fold alike however their payloads line up.
@@ -94,18 +148,19 @@ fn arms_of(t: MetaType, leaf: fn(Code) -> Code) -> List<Arms> {
 
 fn variant_arm(owner: string, v: MetaVariant, at: int, leaf: fn(Code) -> Code) -> Arms {
     if v.fields.is_empty() { return quote { .${v} -> ${parted_at(owner, at, [])} } }
-    quote { .${v}(${binders(v)}) -> ${parted_at(owner, at, payload_folds(v, leaf))} }
+    quote { .${v}(${binders(v)}) -> ${parted_at(owner, at, payload_folds([f for f in v.fields if reached(f)], leaf))} }
 }
 
 /// A payload's own FIELD NAMES are the binders — the names the
 /// declaration wrote, so an arm reads as the declaration does. A
-/// BINDER HOLE TAKES NAMES, not templates.
+/// BINDER HOLE TAKES NAMES, not templates. The carried fields bind;
+/// a `@facet` field is not in the payload at all.
 fn binders(v: MetaVariant) -> List<string> {
-    [f.name for f in v.fields]
+    [f.name for f in v.fields if carried(f)]
 }
 
-fn payload_folds(v: MetaVariant, leaf: fn(Code) -> Code) -> List<Code> {
-    [folded(f.kind, name(f.name), leaf) for f in v.fields]
+fn payload_folds(kept: List<Field>, leaf: fn(Code) -> Code) -> List<Code> {
+    [folded(f.kind, name(f.name), leaf) for f in kept]
 }
 
 /// The type's NAME folded first, then its parts. THE NAME IS FOLDED
