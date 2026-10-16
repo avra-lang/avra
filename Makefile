@@ -354,7 +354,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
+.PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -601,6 +601,13 @@ cache-attacks: cache-attacks-a cache-attacks-b
 cache-attacks-a: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cache_attacks.sh
 
+# THE STORE'S GC AND TIME TRAVEL (§6.7): the window, the size and age limits,
+# a reader beside gc, a torn frame, a hold, the empty and absent cases — each
+# CLEARS the store. `tools/store_attacks.sh` is §6.8's own list (a separate run;
+# it holds a stage-1 marker for the S2 per-query rebuild).
+store-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/store_gc_attack.sh
+
 cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/link_cache_attack.sh
 	@sh tools/turn_memory_attack.sh
@@ -621,6 +628,7 @@ cache-attacks-b: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/cancel_bits_attack.sh
 	@sh tools/readfound_attack.sh
 	@sh tools/durable_symbol_attack.sh
+	@sh tools/store_gc_attack.sh
 
 # A CODE HASH IS STALE WHEN ITS CODE MOVES, AND ONLY THEN: each case edits what a query
 # reaches and must recompute it, edits what it never reaches and must read it back. It

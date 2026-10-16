@@ -394,6 +394,40 @@ fn hex_val(c: string) -> int { "0123456789abcdef".index_of(c) }
 
 // ── Reading ──
 
+/// Read ONE sealed revision into the pack — the time-travel read (§6.7). A
+/// missing or torn revision answers false; `pack` is reset to hold only this
+/// body's rows, so use a fresh pack and leave the live open alone.
+export fn body_scan_rev(pack: Pack, rev: int) -> bool {
+    let at = body_path(pack.dir, rev)
+    // LICENSED input.store_io: the store's own body, read to answer a past revision
+    let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> { return false } }
+    let payload? = read_frame(reader(raw)) else {
+        torn_at(pack, 0)
+        return false
+    }
+    pack.records.set({})
+    pack.order.set([])
+    pack.slots.set({})
+    pack.withdrawn.set({})
+    pack.tables.set([])
+    body_read(pack, payload)
+}
+
+/// The print the newest whole body was made under — what a compaction folds
+/// under, so a reclaim does not rename the store's compiler. None when no body
+/// stands, and the caller writes its own.
+export fn store_print(dir: string) -> string? {
+    mut newest = 0
+    mut print: string? = null
+    for n in all_body_names(dir) {
+        if body_rev_of(n) >= newest {
+            newest = body_rev_of(n)
+            print = body_print_of(dir, n)
+        }
+    }
+    print
+}
+
 /// Read the newest whole body into the pack, before the segments so a later
 /// segment wins. Only that body is read: each body holds everything its
 /// writer had merged. A torn or foreign body is skipped, and says so once.
