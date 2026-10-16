@@ -1,0 +1,100 @@
+// The store's limits and its time-travel read (design §6.7). A reclaim is
+// compaction: the reachable rows fold forward, the oldest revisions are
+// evicted by the window, and a revision the window kept still answers by name
+// from its own body. Every row is proved through the ONE sealed format.
+use @std.time.{stamp}
+use @std.io.{make_dirs}
+use compiler.store.{
+    Pack,
+    StoreLimits,
+    all_body_names,
+    body_rev_of,
+    pack_at,
+    pack_clean,
+    pack_get,
+    pack_get_rev,
+    pack_put,
+    pack_rows_rev,
+    seal,
+}
+
+/// One directory per run, so no earlier run's revisions answer for this one.
+once fn base() -> string { "/tmp/avra-store-clean/${stamp()}" }
+
+/// A store of `name`'s own.
+fn at(name: string) -> Pack { pack_at("${base()}/${name}", "print-clean") }
+
+/// Two sealed revisions: rev 1 holds k1 -> v1, rev 2 holds both.
+fn two_revisions(name: string) -> Pack {
+    let p = at(name)
+    pack_put(p, "unit", "k1", "v1", [])
+    let _ = seal(p)
+    pack_put(p, "unit", "k2", "v2", [])
+    let _ = seal(p)
+    p
+}
+
+fn body_revs(p: Pack) -> List<int> { [body_rev_of(n) for n in all_body_names(p.dir)] }
+
+spec "compiler/store/clean — the store's limits" {
+    given "a store of two revisions" {
+        then "a window of one keeps the newest and evicts the older history" {
+            let p = two_revisions("window")
+            let rep = pack_clean(p, StoreLimits { revisions: 1, max_bytes: 0, max_age_ns: 0 })
+            !rep.skipped &&
+                rep.evicted.contains(1) &&
+                !all_body_names(p.dir).any(it.contains("body-1.pack")) &&
+                all_body_names(p.dir).any(it.contains("body-3.pack"))
+        }
+        then "the live answer survives the reclaim" {
+            let p = two_revisions("live")
+            let _ = pack_clean(p, StoreLimits { revisions: 1, max_bytes: 0, max_age_ns: 0 })
+            let fresh = at("live")
+            pack_get(fresh, "unit", "k1") == "v1" && pack_get(fresh, "unit", "k2") == "v2"
+        }
+        then "a window wider than the store evicts nothing" {
+            let p = two_revisions("all-live")
+            let rep = pack_clean(p, StoreLimits { revisions: 10, max_bytes: 0, max_age_ns: 0 })
+            rep.evicted.is_empty() && body_revs(p).contains(1) && body_revs(p).contains(2)
+        }
+        then "the time-travel read answers a revision the window kept" {
+            let p = two_revisions("travel")
+            let _ = pack_clean(p, StoreLimits { revisions: 2, max_bytes: 0, max_age_ns: 0 })
+            let fresh = at("travel")
+            pack_get_rev(fresh, 2, "unit", "k1") == "v1" &&
+                pack_get_rev(fresh, 2, "unit", "k2") == "v2"
+        }
+        then "an evicted revision answers nothing" {
+            let p = two_revisions("gone")
+            let _ = pack_clean(p, StoreLimits { revisions: 1, max_bytes: 0, max_age_ns: 0 })
+            pack_get_rev(at("gone"), 1, "unit", "k1") == null
+        }
+        then "the rows of a kept revision are listed for an explain" {
+            let p = two_revisions("rows")
+            let _ = pack_clean(p, StoreLimits { revisions: 2, max_bytes: 0, max_age_ns: 0 })
+            let rows = pack_rows_rev(at("rows"), 2)
+            rows.any(it.key == "k1") && rows.any(it.key == "k2")
+        }
+    }
+    given "a store that has never sealed a body" {
+        then "an absent store directory reclaims nothing and seals nothing" {
+            let rep = pack_clean(
+                at("empty"),
+                StoreLimits { revisions: 1, max_bytes: 0, max_age_ns: 0 },
+            )
+            !rep.skipped &&
+                !rep.sealed &&
+                rep.bodies_before == 0 &&
+                rep.bodies_after == 0 &&
+                rep.bytes_before == 0 &&
+                rep.bytes_after == 0 &&
+                rep.evicted.is_empty()
+        }
+        then "a store directory with no body is not a skip" {
+            let p = at("bodyless")
+            let _ = make_dirs(p.dir)
+            let rep = pack_clean(p, StoreLimits { revisions: 1, max_bytes: 0, max_age_ns: 0 })
+            !rep.skipped && !rep.sealed && rep.bodies_before == 0 && rep.evicted.is_empty()
+        }
+    }
+}
