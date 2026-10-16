@@ -90,6 +90,13 @@ impl Workspace {
         if self.is_dir(src) { built(self.host, root, src, self.lang, self.clock, false, false) } else { built(self.host, root, root, self.lang, self.clock, false, true) }
     }
 
+    /// Whether this run proves the rule examples: std-avrac's own, once, in an
+    /// unscoped run or one whose scope holds `src/compiler`.
+    fn proves_rules(only: string?) -> bool {
+        let home = joined_path(self.root, "src/compiler")
+        self.manifest(0).name == "@std/avrac" && in_scope(only, home)
+    }
+
     /// One suite's binary, or null when there is nothing to prove.
     fn suite(only: string?, told_from: string, tools: Toolchain) -> Result<BuildOutcome?, string> {
         // A rule's examples run NATIVE, right here, at build time —
@@ -98,8 +105,9 @@ impl Workspace {
         // binary. Gated to std-avrac's own suite alone, so testing an
         // unrelated package never runs a stranger's rules — and this
         // is also the one build where `rules` can be held to what
-        // `self.decls` actually declares (`rules_checked`).
-        if self.manifest(0).name == "@std/avrac" {
+        // `self.decls` actually declares (`rules_checked`). A scoped
+        // run proves them once, where its scope holds `src/compiler`.
+        if self.proves_rules(only) {
             let results = self.rules_proved()
             let missed = [c.label for c in results if !c.ok]
             if !missed.is_empty() { fail joined([rule_example_missed(l) for l in missed], "\n") }

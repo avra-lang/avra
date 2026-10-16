@@ -150,7 +150,7 @@ jobs:
           fi
           # Asked for by hand, the run is a train's over EVERY package: the
           # whole gate on any branch, without a queue entry.
-          if [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; then
+          if { [ "$event" = workflow_dispatch ] && [ -z "${{ inputs.only }}" ]; } || [ "$event" = push ]; then
             for d in packages/*/; do
               [ -d "${d}src" ] || { echo "::error::${d} has no src — a whole train would pass it by untested"; exit 1; }
             done
@@ -177,7 +177,7 @@ jobs:
           if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
-          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py 4)
+          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 4)
           # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
           # the compiler-free keepers and the codecs scan. The heavy legs owe
           # nothing until the PR is ready or carries `full-ci`, so a draft that
@@ -418,6 +418,11 @@ jobs:
           # suite reads what prepare's self-compile already analysed.
           tar -cf avra-build.tar --exclude=build/avra build
           [ ! -d .avra-cache ] || tar -rf avra-build.tar .avra-cache
+          # The tar rides to every downstream job; a store that grows into it costs each of them a download.
+          size=$(wc -c < avra-build.tar)
+          echo "hand-down: avra-build.tar is $(( size / 1048576 )) MB"
+          [ "$size" -le 314572800 ] || echo "::warning::avra-build.tar is $(( size / 1048576 )) MB; every downstream job downloads it (2.4 GB cost 3-5 min a job)"
+          [ "$size" -le 1073741824 ] || { echo "::error::avra-build.tar is $(( size / 1048576 )) MB, over the 1 GB budget every downstream job downloads"; exit 1; }
           echo "objects: ${{ steps.objcache.outputs.cache-hit == 'true' && 'restored from cache' || 'built' }}"
       - if: steps.plan.outputs.build == '1' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
@@ -456,15 +461,15 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-prepare-${{ github.sha }}
-  # THE COMPILER MAIN BUILT, PUBLISHED WHERE A TRAIN CAN READ IT. Only a push to
-  # `main` reaches this job (this workflow fires on no other branch), so no
-  # PR-supplied binary is ever published. The key is the compiler's own source
+  # THE COMPILER MAIN BUILT AND PROVED, PUBLISHED WHERE A PR CAN READ IT. Only a
+  # run on `main` reaches this job, and only once that run's `test` verdict is
+  # green: every PR falls back to the newest published compiler, so a compiler
+  # main has not proved is never served. The key is the compiler's own source
   # digest, so the artifact is immutable: one key, one binary, and `publish`
-  # never overwrites one. A train cannot publish here — its tree is the queue's
-  # combination, not main.
+  # never overwrites one.
   publish-compiler:
-    needs: [prepare]
-    if: needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1'
+    needs: [prepare, test]
+    if: always() && needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1' && needs.test.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -482,7 +487,7 @@ jobs:
 
   keepers-a:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -573,7 +578,7 @@ jobs:
   # never a second list kept in step by hand.
   keepers-b:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -611,7 +616,7 @@ jobs:
   # land — and now a refusal is that job's, not the keepers'.
   seed-check:
     needs: [prepare]
-    if: github.event_name != 'push' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -647,7 +652,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: ['a', 'b']
+        shard: ['a', 'b1', 'b2']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -664,7 +669,7 @@ jobs:
           s=$(date +%s)
           make -s -o avra cache-attacks-${{ matrix.shard }}
           echo "speed cache-attacks-${{ matrix.shard }} $(( $(date +%s) - s ))" >> speed.log
-      - if: matrix.shard == 'b'
+      - if: matrix.shard == 'b2'
         name: code-hash-attacks
         timeout-minutes: 15
         run: make -s -o avra code-hash-attacks
@@ -713,7 +718,7 @@ jobs:
     needs: [prepare]
     # A LIGHT RUN WHOSE TREE'S COMPILER IS NOT PUBLISHED OWES NO GATE: the gate's fmt and
     # idioms would run an older compiler over this tree's source. Skipped, not passed.
-    if: github.event_name != 'push' && (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
+    if: (needs.prepare.outputs.changed != '' || needs.prepare.outputs.packages != '') && !(needs.prepare.outputs.full == '0' && needs.prepare.outputs.compiler_source == 'latest')
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -770,7 +775,7 @@ jobs:
     # THE TRAIN'S, and a hand-run whole gate's. A PR's check does not run a
     # suite: the train runs every AFFECTED package (dependents included) on
     # the combination, which no single PR's tree can. A PR pays fmt + idioms.
-    if: needs.prepare.outputs.packages != '' && github.event_name != 'push' && needs.prepare.outputs.full == '1'
+    if: needs.prepare.outputs.packages != '' && needs.prepare.outputs.full == '1'
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/avra-lang/avra-ci:llvm22
@@ -795,14 +800,14 @@ jobs:
         run: |
           fail=0
           for p in ${{ join(matrix.shard, ' ') }}; do
-            [ -d "packages/$p/src" ] || continue
+            [ -d "packages/${p%%/*}/src" ] || continue
             echo "::group::$p"
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
             AVRA_SOUND_CHECK=1 build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
-            echo "$p $(( $(date +%s) - t ))s" | tee -a speed.log
+            echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
           done
           exit $fail
 
