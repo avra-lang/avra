@@ -50,7 +50,7 @@ export trait Flow {
         }
     }
 
-    static fn marks(t: MetaType) -> List<string> { flow_words.concat(["clauses", local_word]) }
+    static fn marks(t: MetaType) -> List<string> { flow_words.concat(["clauses", local_word, facet_word]) }
 }
 
 /// What a refused enum is given: the walk, answering nothing anyone
@@ -78,13 +78,13 @@ fn flow_arm(owner: string, v: MetaVariant) -> Arms {
 fn flow_answer(owner: string, v: MetaVariant) -> Code {
     if marked(v, "apart") != null { return quote { Control.Apart } }
     if marked(v, "sequence") != null { return quote { Control.Seq(${concatenated(steps_of(v))}) } }
-    let args = [name(f.name) for f in v.fields]
+    let args = [name(f.name) for f in v.fields if carried(f)]
     quote { ${branch_of(owner, v.name)}(${..args}) }
 }
 
-/// What a `@sequence` variant runs, field by field. A `@local`
-/// field runs nowhere.
-fn steps_of(v: MetaVariant) -> List<Code> { [c for f in v.fields if !local(f) for c in runs(step(f))] }
+/// What a `@sequence` variant runs, field by field. A field no walk
+/// reaches (`@local`, `@facet`) runs nowhere.
+fn steps_of(v: MetaVariant) -> List<Code> { [c for f in v.fields if reached(f) for c in runs(step(f))] }
 
 fn runs(s: Step) -> List<Code> {
     match s { .Runs(c) -> [c], .Still or .Unknown -> [] }
@@ -121,7 +121,7 @@ fn flow_problems(v: MetaVariant) -> List<Diagnostic> {
     if worn.is_empty() { return [wordless(v)] }
     if worn.length > 1 { return [two_words(v, worn)] }
     if worn[0] != "sequence" { return [] }
-    [unsteppable(v, f) for f in v.fields if !local(f) && unknown(step(f))]
+    [unsteppable(v, f) for f in v.fields if reached(f) && unknown(step(f))]
 }
 
 /// The walk's name per arena.

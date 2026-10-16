@@ -20,7 +20,6 @@ use diagnostics.{DiagCode}
 export fn fns() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name        | build
-        "once_fn"   | build_once_fn
         "extern_fn" | build_extern
     }
     let codes = table<DiagCode> {
@@ -55,7 +54,7 @@ export fn fns() -> LanguageFeature {
             once_seat = ( "const" )? ( "mut" )? name:NAME ( ":" ty:type )? -> Record.ParamSyntax
             seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ( ":" ty:type )? -> Record.ParamSyntax
             extern_seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ":" ty:type -> Record.ParamSyntax
-            stmt = "once" "fn" n:NAME "(" ( ps:once_seat ( "," ps:once_seat )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> once_fn(n, ps, r, b)
+            stmt = is_once:"once" "fn" name:NAME "(" ( params:once_seat ( "," params:once_seat )* ","? )? ")" ( "->" ret:type )? body:block END @recover(sync_to: "END") -> Stmt.FnDecl
             stmt = "return" ( value:expression )? END @recover(sync_to: "END") -> Stmt.Return
             primary = callee:NAME "<" pins:type ( "," pins:type )* ","? ">" "(" ( args:argument ( "," args:argument )* ","? )? ")" -> Expr.Call
             primary = callee:NAME "(" ( args:argument ( "," args:argument )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> Expr.Call

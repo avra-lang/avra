@@ -25,6 +25,10 @@ export trait Makes {
         ]
             .concat([made(t, v) for v in t.variants.filter(makeable(it))])
     }
+
+    /// The mark a facet rides: the maker reads it, so a `@facet` field
+    /// reaches the payload's writer.
+    static fn marks(t: MetaType) -> List<string> { [facet_word] }
 }
 
 /// A variant is made when every payload is one a `Slots` accessor reads.
@@ -80,9 +84,11 @@ fn made(t: MetaType, v: MetaVariant) -> Directive {
     }
 }
 
-/// The variant's constructor, its payloads read by label.
+/// The variant's constructor, its payloads read by label. A `@facet`
+/// field is not among them: its value left the payload for a side
+/// table the builder writes, keyed by the node it just made.
 fn construction(v: MetaVariant) -> Code {
-    let args = [slot(f) for f in v.fields]
+    let args = [slot(f) for f in v.fields if carried(f)]
     if args.is_empty() { return quote { .Ok(.${v}) } }
     quote { .Ok(.${v}(${..args})) }
 }
