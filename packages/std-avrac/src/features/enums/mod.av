@@ -20,15 +20,14 @@ use diagnostics.{DiagCode}
 
 export fn enums() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name         | build
-        "enum_decl"  | build_enum_decl
-        "match_expr" | build_match
-        "match_arm"  | build_arm
-        "hole_arm"   | build_hole_arm
-        "bind_pat"   | build_bind_pat
-        "num_pat"    | build_num_pat
-        "true_pat"   | build_true_pat
-        "false_pat"  | build_false_pat
+        name        | build
+        "enum_decl" | build_enum_decl
+        "match_arm" | build_arm
+        "hole_arm"  | build_hole_arm
+        "bind_pat"  | build_bind_pat
+        "num_pat"   | build_num_pat
+        "true_pat"  | build_true_pat
+        "false_pat" | build_false_pat
     }
     let codes = table<DiagCode> {
         kind                   | summary
@@ -60,7 +59,7 @@ export fn enums() -> LanguageFeature {
         gram: grammar {
             stmt = "enum" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "{" ( BREAK | "," | ( vm:mark )* vs:NAME ( po:"(" ( pm:mark )* ( pn:NAME ":" )? pt:type ( "," ( pm:mark )* ( pn:NAME ":" )? pt:type )* ","? ")" )? )* "}" END @recover(sync_to: "END") -> enum_decl(n, tp, vs, po, pn, pt, vm, pm)
             primary = "." name:NAME ( "(" ( args:expression ( "," args:expression )* ","? )? ")" )? -> Expr.VariantLit
-            primary = "match" subj:expression "{" ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, a) @head(subj)
+            primary = "match" subject:expression "{" ( BREAK | "," | arms:arm | arms:hole_arm )* "}" @expect("}", "expected `}` to close the `match`") -> Expr.Match @head(subject)
             arm = p:pattern ( "or" p:pattern )* ( "if" g:expression )? "->" v:expression -> match_arm(p, g, v)
             hole_arm = h:HOLE -> hole_arm(h)
             pattern = "." name:NAME "as" bind:NAME -> Pat.Member | "." name:NAME ( "(" args:pattern ( "," args:pattern )* ","? ")" )? -> Pat.Variant | "_" -> Pat.Wild | "true" -> true_pat() | "false" -> false_pat() | v:NUMBER -> num_pat(v) | n:NAME -> bind_pat(n)
