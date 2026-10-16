@@ -275,7 +275,19 @@ fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
         defaulted: p.default != null,
         says: crossed_says(v, p, kind),
         state: p.state,
+        default: crossed_default(v, p),
     }
+}
+
+/// A field's default as the code that writes it — the expression the
+/// declaration wrote, absent when it declares none. A rule that omits
+/// the field's label fills it with this, so the value is the source
+/// itself rather than a spelling of it.
+fn crossed_default(v: FileView, p: Param) -> MetaCode? {
+    let e? = p.default else { return null }
+    let sp: Span? = if v.store.spanned_elsewhere(e) { null } else { v.store.expr_span(e) }
+    let at? = sp else { return null }
+    MetaCode { node: Node.Template(v.source.file, at.lo, [at.text(v.source.text)], []) }
 }
 
 /// A declared seat as a `Param`: its name, its type's spelling AND ITS
