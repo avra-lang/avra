@@ -652,18 +652,6 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
     fp_list([mix_final(store.stmt_fingerprint(x.stmt))].concat(exprs))
 }
 
-/// Whether a family's queries read declaration rows WHOLE — one edge per file,
-/// never one per name. Lowering reads the one declaration it names, as typing
-/// does, so a signature edit moves only that declaration's bucket and the
-/// readers of it; the compile-time runs come after typing and re-run with it,
-/// so what they read needs no finer edge than its file.
-fn reads_rows_whole(f: Family) -> bool {
-    match f {
-        .LiftLowered or .Lifted or .Settled -> true,
-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Placed or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach or .Writes or .CancelBits or .ReadFound or .Consumed or .Lowered -> false,
-    }
-}
-
 // Per-family verifiers — each calls only its own query, so a family's
 // code hash moves only when its own answer does.
 fn source_verified(ws: Workspace, arg: int) -> int {
@@ -1039,7 +1027,6 @@ fn built(
     for f in Family.all() {
         if ws.db.family() != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
         ws.db.kernel.named(f.ordinal, f.name)
-        if reads_rows_whole(f) { ws.db.kernel.reads_whole(f.ordinal) }
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
