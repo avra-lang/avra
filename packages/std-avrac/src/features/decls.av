@@ -452,6 +452,13 @@ export type Decls = {
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
     ensure_file: Cell<fn(FileId) -> void>,
+    /// THE PRODUCER INDEX'S FOUR DOORS, the workspace's to arm: a bucket reader asks for
+    /// the value it is about to read and every held module with a row filed there is
+    /// minted first — `named_rows`, `indexed`, `indexed_by_mark`, `externs`.
+    ensure_named: Cell<fn(string) -> void>,
+    ensure_worded: Cell<fn(string) -> void>,
+    ensure_marked: Cell<fn(string) -> void>,
+    ensure_external: Cell<fn() -> void>,
     /// THE FILE AN `embed` LITERAL NAMES, or why a const may not read
     /// it: the hook the workspace arms — it knows the package a file
     /// stands in and the ones it depends on, and its host is what reads.
@@ -752,6 +759,12 @@ fn embed_unjudged(_f: FileId, _rel: string) -> Result<string, EmbedFault> {
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
 
+// LICENSED fns.dead_parameter: a fn VALUE filling a producer-ensure seat — no workspace stands behind the table, so no module is minted
+fn no_holder(_v: string) {}
+
+// LICENSED fns.dead_parameter: a fn VALUE filling the extern-ensure seat — no workspace stands behind the table, so no module is minted
+fn no_holders() {}
+
 fn no_audit(_r: Bypassed) {}
 
 /// Whether a scope gathers from every file of the owner's package.
@@ -834,6 +847,10 @@ export fn new_decls_under(durable: Durable) -> Decls {
         held_rows: Cell.new(no_store),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
+        ensure_named: Cell.new(no_holder),
+        ensure_worded: Cell.new(no_holder),
+        ensure_marked: Cell.new(no_holder),
+        ensure_external: Cell.new(no_holders),
         embed_judge: Cell.new(embed_unjudged),
         ensure_package: Cell.new(no_store),
         scoped: map_cell(),
@@ -1461,13 +1478,19 @@ impl Decls {
 
     /// Every declaration `collect` gathers under `word` — a declared instance
     /// of that component — in id order.
-    fn indexed(word: string) -> List<Decl> { self.filed(word_index, word) }
+    fn indexed(word: string) -> List<Decl> {
+        self.hold_worded(word)
+        self.filed(word_index, word)
+    }
 
     /// Every `collect enum` declared, in id order.
     fn collect_enums() -> List<Decl> { self.indexed(collect_enum_word) }
 
     /// Every declaration wearing `@name`, in id order.
-    fn indexed_by_mark(name: string) -> List<Decl> { self.filed(marks_index, name) }
+    fn indexed_by_mark(name: string) -> List<Decl> {
+        self.hold_marked(name)
+        self.filed(marks_index, name)
+    }
 
     /// The rows filed under `v` in `Decl`'s index `i`: the bucket read
     /// unrecorded, each row read through `decl`, which records it.
@@ -2569,6 +2592,7 @@ impl Decls {
     /// Every `extern fn`, in id order, off the externs' bucket.
     @bracket("decls")
     fn externs() -> List<Decl> {
+        self.hold_external()
         let rs = self.decl_row_rows.get()
         [x for x in rs.members(rs.bucket_of(external_index, bool_key(true))) if self.is_extern(x.id)]
     }
@@ -2716,6 +2740,7 @@ impl Decls {
     /// unrecorded.
     @bracket("decls")
     fn named_rows(name: string) -> List<Decl> {
+        self.hold_named(name)
         let rs = self.decl_row_rows.get()
         rs.members(rs.bucket_of_text(name_index, name))
     }

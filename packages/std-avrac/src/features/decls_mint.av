@@ -382,6 +382,16 @@ impl Decls {
         [FileId { index: i } for i in 0..self.file_count() if !self.file_held(FileId { index: i })]
     }
 
+    /// The four producer doors, read by the bucket readers and answered by the armed
+    /// workspace hook: mint the held modules whose record files a row under this value.
+    fn hold_named(name: string) { (self.ensure_named.get())(name) }
+
+    fn hold_worded(word: string) { (self.ensure_worded.get())(word) }
+
+    fn hold_marked(mark: string) { (self.ensure_marked.get())(mark) }
+
+    fn hold_external() { (self.ensure_external.get())() }
+
     /// The files whose rows came from a record.
     fn held_files() -> List<FileId> {
         [FileId { index: i } for i in 0..self.file_count() if self.file_held(FileId { index: i })]
@@ -391,6 +401,16 @@ impl Decls {
     fn file_held(f: FileId) -> bool { self.held.get().get(self.file(f).path) != null }
 
     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
+
+    /// THE FOUR PRODUCER DOORS: a bucket reader mints the held modules whose record files
+    /// a row under the value it is about to read, through the workspace armed here.
+    fn arm_named(ensure: fn(string) -> void) { self.ensure_named.set(ensure) }
+
+    fn arm_worded(ensure: fn(string) -> void) { self.ensure_worded.set(ensure) }
+
+    fn arm_marked(ensure: fn(string) -> void) { self.ensure_marked.set(ensure) }
+
+    fn arm_external(ensure: fn() -> void) { self.ensure_external.set(ensure) }
 
     fn held_items_of_file(f: FileId) -> List<DeclId> {
         (self.ensure_file.get())(f)
