@@ -19,6 +19,7 @@ use @std.meta.{
     Fn,
     Param,
     Kind,
+    Annotation,
     Directive,
     Declared,
     Diagnostic,
@@ -51,7 +52,7 @@ use stable.{
 /// `@query`: the wrapper and the query's contract, from one reading.
 export fn query(f: Fn) -> Declared {
     let problems = query_problems(f)
-    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    if !problems.is_empty() { return nothing_made(problems) }
     let kept = kept_name(f)
     Declared {
         made: [
@@ -66,6 +67,78 @@ export fn query(f: Fn) -> Declared {
         problems: [],
     }
 }
+
+/// `@over(lister)`: a `@query` whose calls are LISTED by `lister`, so
+/// the producer drives every key a reader has not asked yet — "those
+/// asked so far" is never the answer. It generates the query, the
+/// `Db`-less twin and the wrapper a `@query` does, PLUS
+/// `<name>_listed(db)`: the lister asked for its keys, then the producer
+/// once per key, in listed order.
+///
+///     @over(icon_dirs)
+///     fn icons_in(db: Db, dir: string) -> List<Icon> { … }
+///
+///     @query
+///     fn icon_dirs(db: Db) -> List<string> { … }
+///
+/// `icons_in_listed(db)` answers every row the listed producers own,
+/// flattened in listed order — the same set a read of the relation
+/// enumerates. A lister takes the `Db` alone and answers `List<K>` for
+/// the producer's one key seat; the producer answers the rows (`List<R>`)
+/// its key owns.
+export fn over(f: Fn, lister: Fn) -> Declared {
+    let base = query(f)
+    if !base.problems.is_empty() { return base }
+    let problems = over_problems(f, lister)
+    if !problems.is_empty() { return nothing_made(problems) }
+    Declared {
+        made: base
+            .made
+            .concat(
+                [
+                    Directive {
+                        twin: "",
+                        name: listed_name(f),
+                        at: f.at,
+                        source: listed_source(f, lister),
+                    },
+                ],
+            ),
+        problems: [],
+    }
+}
+
+/// Every way a listing breaks its law: a producer that takes no single
+/// key, a lister that is no query over the Db alone, a lister whose
+/// answer is not the producer's keys.
+export fn over_problems(f: Fn, lister: Fn) -> List<Diagnostic> {
+    if f.annotations.any((a: Annotation) -> a.name == "query") { return [over_beside_query(f)] }
+    let first? = f.params.first() else { return [over_no_db(f)] }
+    if !is_db(first.kind) { return [over_no_db(f)] }
+    if f.params.length != 2 { return [over_one_key(f)] }
+    if !is_list(f.answers) { return [over_rows(f)] }
+    let seats = lister.params
+    if seats.length != 1 || !is_db(seats[0].kind) { return [over_lister_db(f, lister)] }
+    if lister.answer != "List<${f.params[1].ty}>" { return [over_lister_list(f, lister)] }
+    []
+}
+
+/// The fn a listing generates: the producer asked once per listed key.
+fn listed_name(f: Fn) -> string { "${f.name}_listed" }
+
+fn listed_source(f: Fn, lister: Fn) -> Decls {
+    let db = f.params[0].name
+    let key = f.params[1].name
+    quote {
+        fn ${listed_name(f)}(${db}: Db) -> ${f.answer} {
+            [row for k in ${lister.name}(${name(db)}) for row in ${f.name}(${name(db)}, k)]
+        }
+    }
+}
+
+/// A declaration that makes nothing, carrying the refusals it spoke —
+/// the one shape every refusal here answers.
+fn nothing_made(problems: List<Diagnostic>) -> Declared { Declared { made: [], problems: problems } }
 
 /// Every way a fn breaks the query law: a first seat that is no `Db`, an
 /// argument or an answer with no stable encoding.
@@ -96,6 +169,10 @@ export fn seat_problems(
 fn is_db(k: Kind) -> bool {
     match k { .Named(n, _) -> n == "Db", rest -> false }
 }
+
+/// Whether a query's answer is a plain list — the rows a listing collects.
+/// A nullable list is not one: the rows are never absent.
+fn is_list(k: Kind) -> bool { match k { .List(_) -> true, rest -> false } }
 
 /// The fn holding a query's kept answers.
 fn kept_name(f: Fn) -> string { "${f.name}_answers" }
@@ -179,6 +256,60 @@ fn no_db(f: Fn) -> Diagnostic {
         f.at,
         "`@query fn ${f.name}` takes the `Db` its answer is kept under as its first seat",
         "write `fn ${f.name}(db: Db, …)`",
+    )
+}
+
+fn over_beside_query(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "over_query",
+        f.at,
+        "`@over` is already a `@query`, so `${f.name}` wears it once",
+        "drop the `@query` — `@over(lister)` generates the query and its listing together",
+    )
+}
+
+fn over_no_db(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "over_db",
+        f.at,
+        "`@over` lists a producer's keys, so `${f.name}` takes the `Db` it is asked under first",
+        "write `fn ${f.name}(db: Db, key: K)`",
+    )
+}
+
+fn over_one_key(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "over_key",
+        f.at,
+        "`@over` lists a producer's keys, so `${f.name}` takes the `Db` and one key",
+        "write `fn ${f.name}(db: Db, key: K)` and list the keys with `List<K>`",
+    )
+}
+
+fn over_lister_db(f: Fn, lister: Fn) -> Diagnostic {
+    refuse_as_at(
+        "over_lister",
+        lister.at ?? f.at,
+        "the lister `${lister.name}` answers `${f.name}`'s keys, so it takes the `Db` and nothing else",
+        "write `fn ${lister.name}(db: Db) -> List<K>`",
+    )
+}
+
+fn over_lister_list(f: Fn, lister: Fn) -> Diagnostic {
+    refuse_as_at(
+        "over_lister_answer",
+        lister.at ?? f.at,
+        "the lister `${lister.name}` answers `${lister.answer}`, and `${f.name}`'s key is `${f.params[1].ty}`",
+        "answer `List<${f.params[1].ty}>` — the producer's own key type",
+    )
+}
+
+fn over_rows(f: Fn) -> Diagnostic {
+    refuse_as_at(
+        "over_rows",
+        f.at,
+        "a listing collects the rows its producers own, so `${f.name}` answers a plain `List<R>`, this is `${f.answer}`",
+        "answer `List<R>` — the rows its key owns",
     )
 }
 

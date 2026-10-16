@@ -1,0 +1,143 @@
+// The `@over` listing, attacked class by class: degenerate key counts,
+// every slot's wrong type, names against names, and refusal count —
+// each refusal is exactly one voice, naming the slot it refused.
+use @std.relation.query.{over_problems}
+use @std.meta.{Fn, Param, Kind, Annotation}
+
+fn adv_seat(name: string, ty: string, kind: Kind) -> Param {
+    Param { name: name, ty: ty, mutable: false, settled: false, at: null, kind: kind }
+}
+
+fn adv_db() -> Param { adv_seat("db", "Db", Kind.Named("Db", [])) }
+
+fn adv_fn(name: string, params: List<Param>, answer: string, kind: Kind) -> Fn {
+    Fn { name: name, params: params, answer: answer, at: null, answers: kind }
+}
+
+fn adv_with(name: string, params: List<Param>, answer: string, kind: Kind, marks: List<string>) -> Fn {
+    Fn {
+        name: name,
+        params: params,
+        answer: answer,
+        at: null,
+        answers: kind,
+        annotations: [Annotation { name: m, args: [], at: null } for m in marks],
+    }
+}
+
+fn adv_producer(key: string, key_kind: Kind, answer: string, answer_kind: Kind) -> Fn {
+    adv_fn("p", [adv_db(), adv_seat("k", key, key_kind)], answer, answer_kind)
+}
+
+fn adv_lister(key: string, key_kind: Kind) -> Fn {
+    adv_fn("l", [adv_db()], "List<${key}>", Kind.List(key_kind))
+}
+
+fn adv_kinds(p: Fn, l: Fn) -> List<string> { [d.kind ?? "?" for d in over_problems(p, l)] }
+
+fn adv_problems(p: Fn, l: Fn) -> string { adv_kinds(p, l).join(",") }
+
+spec "std/relation — the listing, attacked" {
+    given "degenerate key counts" {
+        then "a producer with no key seat is refused, one voice" {
+            let p = adv_fn("p", [adv_db()], "List<R>", Kind.List(Kind.Named("R", [])))
+            adv_problems(p, adv_lister("string", Kind.Str)) == "over_key"
+        }
+        then "a producer with three seats is refused, one voice" {
+            let p = adv_fn(
+                "p",
+                [
+                    adv_db(),
+                    adv_seat("k", "string", Kind.Str),
+                    adv_seat("n", "int", Kind.Int),
+                    adv_seat("m", "int", Kind.Int),
+                ],
+                "List<R>",
+                Kind.List(Kind.Named("R", [])),
+            )
+            adv_problems(p, adv_lister("string", Kind.Str)) == "over_key"
+        }
+    }
+    given "every key type the query law carries" {
+        then "a string, int, bool or tagged-enum key lists when the lister answers its type" {
+            let rows = Kind.List(Kind.Named("R", []))
+            adv_problems(
+                    adv_producer("string", Kind.Str, "List<R>", rows),
+                    adv_lister("string", Kind.Str),
+                ) == "" &&
+                adv_problems(
+                    adv_producer("int", Kind.Int, "List<R>", rows),
+                    adv_lister("int", Kind.Int),
+                ) == "" &&
+                adv_problems(
+                    adv_producer("bool", Kind.Bool, "List<R>", rows),
+                    adv_lister("bool", Kind.Bool),
+                ) == "" &&
+                adv_problems(
+                    adv_producer("E", Kind.Named("E", []), "List<R>", rows),
+                    adv_lister("E", Kind.Named("E", [])),
+                ) == ""
+        }
+    }
+    given "every wrong type in every slot" {
+        then "a lister answering a bare int is refused, one voice" {
+            let rows = Kind.List(Kind.Named("R", []))
+            adv_problems(
+                adv_producer("string", Kind.Str, "List<R>", rows),
+                adv_fn("l", [adv_db()], "int", Kind.Int),
+            ) == "over_lister_answer"
+        }
+        then "a lister answering a different list is refused, one voice" {
+            let rows = Kind.List(Kind.Named("R", []))
+            adv_problems(
+                adv_producer("string", Kind.Str, "List<R>", rows),
+                adv_lister("int", Kind.Int),
+            ) == "over_lister_answer"
+        }
+        then "a lister taking more than the Db is refused, one voice" {
+            let rows = Kind.List(Kind.Named("R", []))
+            let l = adv_fn(
+                "l",
+                [adv_db(), adv_seat("n", "int", Kind.Int)],
+                "List<string>",
+                Kind.List(Kind.Str),
+            )
+            adv_problems(adv_producer("string", Kind.Str, "List<R>", rows), l) == "over_lister"
+        }
+        then "a producer answering a scalar or a string is refused, one voice" {
+            adv_problems(
+                    adv_producer("string", Kind.Str, "int", Kind.Int),
+                    adv_lister("string", Kind.Str),
+                ) == "over_rows" &&
+                adv_problems(
+                    adv_producer("string", Kind.Str, "string", Kind.Str),
+                    adv_lister("string", Kind.Str),
+                ) == "over_rows"
+        }
+        then "a producer answering a NULLABLE list is refused, one voice — the rows are never absent" {
+            let opt = Kind.Opt(Kind.List(Kind.Named("R", [])))
+            adv_problems(
+                adv_producer("string", Kind.Str, "List<R>?", opt),
+                adv_lister("string", Kind.Str),
+            ) == "over_rows"
+        }
+        then "the producer's first seat must be the Db" {
+            let rows = Kind.List(Kind.Named("R", []))
+            let p = adv_fn("p", [adv_seat("k", "string", Kind.Str)], "List<R>", rows)
+            adv_problems(p, adv_lister("string", Kind.Str)) == "over_db"
+        }
+    }
+    given "names against names" {
+        then "`@over` beside `@query` is refused, one voice" {
+            let rows = Kind.List(Kind.Named("R", []))
+            let p = adv_with(
+                "p",
+                [adv_db(), adv_seat("k", "string", Kind.Str)],
+                "List<R>",
+                rows,
+                ["query"],
+            )
+            adv_problems(p, adv_lister("string", Kind.Str)) == "over_query"
+        }
+    }
+}
