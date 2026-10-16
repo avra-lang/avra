@@ -631,39 +631,41 @@ fn enforce_limits(pack: Pack) {
 /// last of them is evicted. Answers the revisions evicted.
 fn prune_bodies(dir: string, limits: StoreLimits) -> List<int> {
     let names = sorted_by(all_body_names(dir), rev_before)
-    if names.is_empty() { return [] }
     // THE NEWEST REVISION IS THE ROOTS: it is never doomed, whatever the limit,
     // so a store always answers. Evict the history around it.
-    let newest = names[names.length - 1]
-    mut doomed: List<string> = []
-    if limits.revisions > 0 && names.length > limits.revisions {
-        doomed = doomed.concat(names.slice(0, names.length - limits.revisions))
-    }
-    if limits.max_age_ns > 0 {
-        // The file's time is WALL seconds, so the clock is read the same way —
-        // `now_ns` is monotonic and would never compare to it.
-        // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
-        let now_s = wall_secs()
-        let age_s = limits.max_age_ns / 1000000000
-        for n in names {
-            if n == newest || doomed.contains(n) { continue }
-            let m_s? = body_mtime_s(dir, n) else { continue }
-            if now_s - m_s > age_s { doomed.push(n) }
-        }
-    }
+    let newest? = names.last() else { return [] }
+    let over = if limits.revisions > 0 && names.length > limits.revisions { names.length - limits.revisions } else { 0 }
+    let doomed = names
+        .slice(0, over)
+        .concat(aged_out(dir, names.slice(over, names.length), newest, limits))
     for n in doomed { drop_body(dir, n) }
     drop_unreferenced_values(dir)
-    if limits.max_bytes > 0 {
-        while store_bytes(dir) > limits.max_bytes {
-            let keep = sorted_by(all_body_names(dir), rev_before)
-            if keep.length <= 1 { break }
-            let gone = keep.first()!
-            drop_body(dir, gone)
-            drop_unreferenced_values(dir)
-            doomed.push(gone)
-        }
+    [body_rev_of(n) for n in doomed.concat(trimmed_to_fit(dir, limits))]
+}
+
+/// The bodies past the age limit, oldest first, never the newest.
+fn aged_out(dir: string, names: List<string>, newest: string, limits: StoreLimits) -> List<string> {
+    if limits.max_age_ns <= 0 { return [] }
+    // The file's time is WALL seconds, so the clock is read the same way —
+    // `now_ns` is monotonic and would never compare to it.
+    // LICENSED input.store_clock: the age limit reads the wall clock, never an input of what is built
+    let now_s = wall_secs()
+    let age_s = limits.max_age_ns / 1000000000
+    [n for n in names if n != newest && now_s - (body_mtime_s(dir, n) ?? now_s) > age_s]
+}
+
+/// The oldest bodies dropped until the store fits its byte ceiling; the newest stays.
+fn trimmed_to_fit(dir: string, limits: StoreLimits) -> List<string> {
+    if limits.max_bytes <= 0 { return [] }
+    mut gone: List<string> = []
+    while store_bytes(dir) > limits.max_bytes {
+        let keep = sorted_by(all_body_names(dir), rev_before)
+        if keep.length <= 1 { break }
+        drop_body(dir, keep.first()!)
+        drop_unreferenced_values(dir)
+        gone.push(keep.first()!)
     }
-    [body_rev_of(n) for n in doomed]
+    gone
 }
 
 fn drop_body(dir: string, name: string) {
