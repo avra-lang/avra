@@ -375,6 +375,100 @@ static void forked_while_seeded(void) {
     avra_sched_settle();
 }
 
+// A SCENARIO OF ONE STEP EACH: the root waits on a task the last step
+// answers, so it takes no part in the pick and the choice tree is the
+// orders of the tasks alone.
+static int g_left = 0;
+static void* g_done = NULL;
+static void* step_once(void* self) {
+    note((char)((AvraArray*)self)->data[1]);
+    if (--g_left == 0) avra_task_answer(g_done, NULL);
+    return NULL;
+}
+static void n_once(int n) {
+    g_left = n;
+    g_done = avra_task_pending();
+    void* t[8];
+    for (int i = 0; i < n; i++) t[i] = spawn1(step_once, 'a' + i);
+    avra_wait_task(g_done, 0, 0);
+    (void)avra_wait_park();
+    for (int i = 0; i < n; i++) avra_rc_release(t[i]);
+    avra_rc_release(g_done);
+}
+
+// The evaluator's shape of the same: each task readied once, the policy
+// naming one at a time.
+static void virtual_once(int n) {
+    int64_t ids[8];
+    for (int i = 0; i < n; i++) { ids[i] = avra_vtask_new(); avra_vtask_ready(ids[i]); }
+    int done = 0;
+    while (done < n) {
+        int64_t id = avra_vtask_next();
+        for (int i = 0; i < n; i++) if (ids[i] == id) { note((char)('a' + i)); done++; }
+    }
+    for (int i = 0; i < n; i++) avra_vtask_free(ids[i]);
+}
+
+static const char* TWO[2] = { "ab", "ba" };
+static const char* SIX[6] = { "abc", "acb", "bac", "bca", "cab", "cba" };
+static int among(const char* log, const char** orders, int n) {
+    for (int i = 0; i < n; i++) if (strcmp(log, orders[i]) == 0) return i;
+    return -1;
+}
+
+// A SMALL CHOICE TREE: path mode walks one order per run, depth first,
+// exactly its orders and no more, and the two engines walk them alike.
+static void path_walk_exactly(void) {
+    setenv("AVRA_SCHED_PATH", "all", 1);
+    setenv("AVRA_SCHED_RUNS", "64", 1);
+    char walked[64][64];
+    int runs = 0, ours = 1;
+    (void)avra_sched_runs_wanted();
+    for (int64_t k = 0; k < 64 && avra_sched_schedule_at(k) >= 0; k++) {
+        fresh(); avra_sched_seed(k); n_once(2); avra_sched_settle();
+        int at = among(g_log, TWO, 2);
+        ours &= at >= 0;
+        strcpy(walked[runs++], g_log);
+    }
+    CHECK(ours && runs == 2, "a two-task scenario of one choice walks its two orders and stops");
+    int seen[2] = {0};
+    for (int i = 0; i < runs; i++) if (among(walked[i], TWO, 2) >= 0) seen[among(walked[i], TWO, 2)] = 1;
+    CHECK(seen[0] && seen[1], "and both of its orders are reached");
+
+    int virtual_runs = 0, same = 1;
+    (void)avra_sched_runs_wanted();
+    for (int64_t k = 0; k < 64 && avra_sched_schedule_at(k) >= 0; k++) {
+        fresh(); avra_sched_seed(k); virtual_once(2); avra_sched_settle();
+        same &= virtual_runs < runs && strcmp(walked[virtual_runs], g_log) == 0;
+        virtual_runs++;
+    }
+    CHECK(virtual_runs == runs && same, "and the evaluator's own tasks walk the same two orders");
+
+    (void)avra_sched_runs_wanted();
+    runs = 0; ours = 1;
+    for (int64_t k = 0; k < 64 && avra_sched_schedule_at(k) >= 0; k++) {
+        fresh(); avra_sched_seed(k); n_once(3); avra_sched_settle();
+        int at = among(g_log, SIX, 6);
+        ours &= at >= 0;
+        strcpy(walked[runs++], g_log);
+    }
+    CHECK(ours && runs == 6, "a three-task scenario of one step each walks all six orders in six runs");
+    int six[6] = {0};
+    for (int i = 0; i < runs; i++) if (among(walked[i], SIX, 6) >= 0) six[among(walked[i], SIX, 6)] = 1;
+    int reached = 0;
+    for (int i = 0; i < 6; i++) reached += six[i];
+    CHECK(reached == 6, "and all six of its orders are reached");
+
+    virtual_runs = 0; same = 1;
+    (void)avra_sched_runs_wanted();
+    for (int64_t k = 0; k < 64 && avra_sched_schedule_at(k) >= 0; k++) {
+        fresh(); avra_sched_seed(k); virtual_once(3); avra_sched_settle();
+        same &= virtual_runs < runs && strcmp(walked[virtual_runs], g_log) == 0;
+        virtual_runs++;
+    }
+    CHECK(virtual_runs == runs && same, "and the evaluator's own tasks walk the same six orders");
+}
+
 int main(void) {
     alarm(120);
     if (pipe(g_pipe) != 0) { perror("pipe"); return 1; }
@@ -394,6 +488,7 @@ int main(void) {
     settled();
     run_in_a_run();
     forked_while_seeded();
+    path_walk_exactly();
     CHECK(avra_mem_live() == live, "a seeded run leaves nothing behind");
     avra_fiber_fd_closing(g_pipe[0]);
     close(g_pipe[0]);

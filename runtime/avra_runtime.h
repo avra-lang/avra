@@ -49,7 +49,9 @@ const char* avra_main_cancelled_words(int64_t by);
 int32_t avra_main_ended(int32_t code);
 
 // The schedule the case in flight runs under, or -1; a trap says it.
+// In path mode, the order it walks, spelled so a trap can replay it.
 extern int64_t avra_case_schedule __attribute__((visibility("hidden")));
+extern char avra_case_path[128] __attribute__((visibility("hidden")));
 // The running task's slot `key`, owned; and `v` kept in it, what it
 // held released. A slot past the table is a trap.
 void* avra_task_slot(int64_t key);
