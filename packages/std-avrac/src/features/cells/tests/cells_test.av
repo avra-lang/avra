@@ -96,4 +96,28 @@ spec "features/cells" {
             )
         }
     }
+    given "a generic enum at a cell seat" {
+        then "a payload-less variant fills a declared cell" {
+            shown(
+                "enum Slot<T> { Gone, Here(T) }\nlet c: Cell<Slot<int>> = Cell.new(Slot.Gone)\nmatch c.get() { .Gone -> true, .Here(_) -> false }",
+            ) == "true"
+        }
+        then "a payload-less variant fills an argument seat" {
+            shown(
+                "enum Slot<T> { Gone, Here(T) }\nfn hold(c: Cell<Slot<int>>) -> bool { c.get() is .Gone }\nhold(Cell.new(Slot.Gone))",
+            ) == "true"
+        }
+        then "a variant of the wrong type refuses, in the cell's words" {
+            refused_with(
+                "enum Slot<T> { Gone, Here(T) }\nlet c: Cell<Slot<int>> = Cell.new(Slot.Here(\"x\"))\n1",
+                "this cell holds `Slot<int>`, this is `Slot<string>`",
+            )
+        }
+        then "a payload-less variant of another enum refuses by name, not by a defect" {
+            refused_with(
+                "enum Slot<T> { Gone, Here(T) }\nenum Other<T> { None, Some(T) }\nlet c: Cell<Slot<int>> = Cell.new(Other.None)\n1",
+                "`Other.None` cannot pin `T`",
+            )
+        }
+    }
 }
