@@ -48,6 +48,10 @@ def main():
         ok &= check(gate.self_test(), "the gate's rules hold on fixtures")
     except AssertionError as e:
         ok &= check(False, str(e))
+    try:
+        ok &= check(gate.self_test_go(), "the gate against Go refuses past the target (witnessed)")
+    except AssertionError as e:
+        ok &= check(False, str(e))
     ok &= check(report.check(), "the committed report equals a fresh projection of the stored JSON")
     if ok:
         print("self-test: clean")

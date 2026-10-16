@@ -109,6 +109,7 @@ def main():
     ap.add_argument("--record", action="store_true")
     ap.add_argument("--report", action="store_true")
     ap.add_argument("--gate", action="store_true")
+    ap.add_argument("--g1", action="store_true")
     ap.add_argument("--require", action="store_true")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--self-test", action="store_true")
@@ -139,8 +140,15 @@ def main():
         return 0
 
     requested = csv(args.lang)
-    if args.gate and not requested:
-        requested = [reg["gate"].get("floor", "c")]
+    if not requested and (args.gate or args.g1):
+        # The C floor stays. Avra and Go run too, so a row's own target
+        # against Go is judged from the SAME run — a fresh Avra against
+        # a stale Go baseline would charge Avra for the machine's drift.
+        # A language the machine lacks is SKIPPED and the recorded Go row
+        # is the fallback; `--lang` narrows this for a lighter gate.
+        requested = [reg["gate"].get("floor", "c"), "avra", "go"]
+    if requested:
+        requested = list(dict.fromkeys(requested))
     when = now()
     rows, failures = run_suite(reg, benches, requested, when)
 
@@ -163,12 +171,18 @@ def main():
         reportmod.write()
         if not args.quiet:
             print(f"record: {len(rows)} row(s) stored, {wrote} accepted into baseline.json, report regenerated")
+    if args.g1:
+        print()
+        gatemod.g1_table(rows, reg)
+        print()
     if args.gate:
         refusals, gated, words = gatemod.check(
             [r for r in rows if r["rows"]], machine_id(),
             reg["gate"].get("margin", gatemod.DEFAULT_MARGIN), args.require,
         )
         code = gatemod.report(refusals, gated, words, reg["gate"].get("margin", gatemod.DEFAULT_MARGIN), args.require)
+        gref, gjudged, gwords = gatemod.check_against_go(rows, machine_id(), reg, args.require)
+        code = gatemod.report_go(gref, gjudged, gwords, args.require) or code
     if failures:
         code = code or 1
     return code
