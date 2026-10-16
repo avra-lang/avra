@@ -219,8 +219,10 @@ fn fold_groups(groups: List<Group>, write: bool, shared_id: string? = null, seen
     if shared_id != null { ws.seed_compiler_id(shared_id!) }
     let files = g.explicit ?? ws.all_files(joined_path(g.root, "src"))
     light_or_leave(seen + files.length)
+    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
     let t0 = now_ns()
     let store = ws.opened_store()
+    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
     let store_ns = now_ns() - t0
     let group = check_files(store, ws, files, write)
     // THE GROUP'S WORKSPACE PHASES ARE READ ONCE, after its files are
@@ -270,29 +272,37 @@ fn check_files(store: Store, ws: Workspace, files: List<string>, write: bool) ->
 /// here directly — `ast`, `sublang` and `print` ride the workspace's
 /// own clock (`ws.phases`, folded in once per group by the caller).
 fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checked1 {
+    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
     let t0 = now_ns()
     let f = ws.file_id(path)
     let src = ws.source(f)
+    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
     let source_ns = now_ns() - t0
+    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
     let t1 = now_ns()
     let key = canon_key(ws, f, src.text)
     let hit = ws.db.canon(store, key) != null
     let base = [
         Phase { name: "source", ns: source_ns },
+        // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
         Phase { name: "digest", ns: now_ns() - t1 },
     ]
     if hit { return ended(Outcome.Canonical, base) }
     if write { return written_one(store, ws, f, path, src.text, base) }
     match ws.formatted_source(f) {
         .Ok(text) -> {
+            // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
             let t2 = now_ns()
             let matches = "${text}\n" == src.text
+            // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
             let compare = Phase { name: "compare", ns: now_ns() - t2 }
             if matches {
+                // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
                 let t3 = now_ns()
                 ws.db.insert_canon(store, key, "")
                 Checked1 {
                     outcome: Outcome.Canonical,
+                    // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
                     phases: base.concat([compare, Phase { name: "digest", ns: now_ns() - t3 }]),
                 }
             } else {

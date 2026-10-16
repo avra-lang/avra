@@ -275,8 +275,10 @@ fn opened_libraries(l: Lowered) -> List<OpenLibrary> {
 }
 
 fn opened(stem: string) -> int {
+    // LICENSED input.evaluator_effect: the interpreted program's own library, loaded under the evaluator
     let mach_o = avra_ffi_open("${stem}.dylib")
     if mach_o != 0 { return mach_o }
+    // LICENSED input.evaluator_effect: the interpreted program's own library, loaded under the evaluator
     avra_ffi_open("${stem}.so")
 }
 
@@ -1525,11 +1527,14 @@ impl Machine {
             .BytesIeqAt -> self.bytes_eq_at_val(vals, true),
             .BytesGathered -> self.bytes_gathered_val(vals[0]),
             .BytesAdopted -> self.adopted_val(vals),
+            // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
             .FdRead -> Val.I(avra_fd_read(self.whole(vals[0]), self.whole(vals[1]))),
             .FdTaken -> Val.Y(avra_fd_taken(self.whole(vals[0]))),
             .FdWrite -> Val.I(avra_fd_write(self.whole(vals[0]), self.octets(vals[1]), self.whole(vals[2]))),
             .ErrnoText -> Val.S(avra_errno_text(self.whole(vals[0]))),
+            // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
             .NowNs -> Val.I(avra_now_ns()),
+            // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
             .HostEnv -> Val.S(avra_host_env(self.text_val(vals[0]))),
             .Eputs -> self.eputs_row(vals),
             .IoList -> self.io_list_val(vals),
@@ -2456,6 +2461,7 @@ impl Machine {
 
     fn io_list_val(vals: List<Val>) -> Val {
         let path? = self.named_act(vals[0]) else { return Val.I(0) }
+        // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
         Val.I(avra_io_list(path))
     }
 
@@ -2469,6 +2475,7 @@ impl Machine {
     fn exec_self_val(vals: List<Val>) -> Val {
         let words = self.texts_of(vals[0])
         if !self.failures.is_empty() { return Val.I(0) }
+        // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
         Val.I(avra_exec_self(words))
     }
 
@@ -2484,6 +2491,7 @@ impl Machine {
         let prog? = self.named_act(which) else { return Val.I(127) }
         let words = self.texts_of(args)
         if !self.failures.is_empty() { return Val.I(127) }
+        // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
         Val.I(avra_spawn_in(dir, prog, words))
     }
 
@@ -2491,6 +2499,7 @@ impl Machine {
         let prog? = self.named_act(vals[0]) else { return Val.I(0) }
         let words = self.texts_of(vals[1])
         if !self.failures.is_empty() { return Val.I(0) }
+        // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
         Val.I(avra_spawn_status(prog, words))
     }
 
