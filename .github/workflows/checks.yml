@@ -82,6 +82,7 @@ jobs:
       cache: ${{ steps.plan.outputs.cache }}
       codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
+      main: ${{ steps.plan.outputs.main }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -201,7 +202,13 @@ jobs:
                 mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0 ;;
             esac
           fi
+          # MAIN'S OWN RUN: its push, or the dispatch the watcher sends when a merge's
+          # token fired no push. It publishes the compiler and saves the baselines.
+          main=0
+          if [ "$event" = push ]; then main=1; fi
+          if [ "$event" = workflow_dispatch ] && [ "${{ github.ref }}" = refs/heads/main ] && [ -z "${{ inputs.only }}" ]; then main=1; fi
           {
+            echo "main=${main}"
             echo "full=${full}"
             echo "mirror=${mirror}"
             echo "changed=${changed}"
@@ -307,6 +314,8 @@ jobs:
           # fallback forgives a compiler too old, never a source wrong.
           gen() { timeout -k 10 1500 make -s avra; rc=$?; [ "$rc" = 0 ] || { said "$rc" "a compiler generation"; return 1; }; }
           if [ -x build/avra ] && gen && gen; then :; else
+            # a store is one compiler's: the recovery starts without the one the older compiler left
+            [ -d .avra-cache ] && mv .avra-cache "${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler"
             timeout -k 10 1500 make -s bootstrap; rc=$?; [ "$rc" = 0 ] || { said "$rc" "the bootstrap"; exit 1; }
           fi
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
@@ -437,11 +446,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
+      - if: always() && steps.plan.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
+      - if: always() && steps.plan.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -455,7 +464,7 @@ jobs:
   # combination, not main.
   publish-compiler:
     needs: [prepare]
-    if: github.event_name == 'push' && needs.prepare.outputs.build == '1'
+    if: needs.prepare.outputs.main == '1' && needs.prepare.outputs.build == '1'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -549,11 +558,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -673,11 +682,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -810,11 +819,11 @@ jobs:
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && github.event_name == 'push' && hashFiles('speed-now.metrics') != ''
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && github.event_name == 'push' && hashFiles('speed-base.metrics') != ''
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:

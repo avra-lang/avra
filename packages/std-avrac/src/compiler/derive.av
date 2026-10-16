@@ -664,7 +664,9 @@ impl Workspace {
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
         if at.hold {
+            let interfaces = self.clock()
             for m in held_modules(self, store, built_entry(at)) { load_interface(self, store, m, at.entry, at.want) }
+            self.timed("interfaces", interfaces)
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
             self.settle_holds(store, at.want)
@@ -1102,7 +1104,9 @@ impl Workspace {
     /// the noting below is the same one the worklist does for what IT finds,
     /// never a second law.
     fn settle_holds(store: Store, want: Want) {
+        let pending = self.clock()
         self.read_unkept(store, self.resolve_pending_reads(store), want)
+        self.timed("pending", pending)
         // LICENSED compiler.seen_accumulator: a WORKLIST — the list grows while it is walked
         mut reads: List<string> = distinct(self.hold.read_with.get())
         for rf in self.hold.read_seeds.get() {
@@ -1139,6 +1143,7 @@ impl Workspace {
                 let _ = self.file_id(path)
             }
         }
+        let minting = self.clock()
         // EVERY HELD DECLARATION IS MINTED BEFORE ANY QUERY READS THE RELATION —
         // minting parses nothing, and a held file's rows are read by name from
         // another module's wire (a type's own declarations, a method table), so a
@@ -1153,6 +1158,7 @@ impl Workspace {
                 self.decls.note_module_rows(self.decls.file(f).module_id, 2)
             }
         }
+        self.timed("minting", minting)
     }
 
     /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the

@@ -617,11 +617,7 @@ export fn grouped_phases(phases: List<Phase>) -> List<Phase> {
     } for n in distinct([p.name for p in phases])]
 }
 
-fn phase_sum(counts: List<int>) -> int {
-    mut sum = 0
-    for c in counts { sum = sum + c }
-    sum
-}
+fn phase_sum(counts: List<int>) -> int { counts.fold(0, (sum, c) -> sum + c) }
 
 export fn phase_total(phases: List<Phase>, name: string) -> int {
     mut total = 0
@@ -1279,8 +1275,9 @@ impl Workspace {
         }
     }
 
-    fn timed(name: string, ns: int) {
-        self.phases.push(Phase { name: name, ns: ns })
+    /// The span since `since` on the workspace's clock, kept under `name`.
+    fn timed(name: string, since: int) {
+        self.phases.push(Phase { name: name, ns: self.clock() - since })
     }
 
     fn defect(message: string) {
@@ -1350,7 +1347,7 @@ impl Workspace {
     fn clocked_print(parsed: Parsed, f: FileId) -> string {
         let t0 = self.clock()
         let text = render_source_of(parsed.store, parsed.stmts, self.source(f).text)
-        self.timed("print", self.clock() - t0)
+        self.timed("print", t0)
         text
     }
 
@@ -1482,7 +1479,7 @@ impl Workspace {
             self.source(f),
             BlockWords { components: self.unread_words(f) },
         )
-        self.timed("ast", self.clock() - t0)
+        self.timed("ast", t0)
         p
     }
 
@@ -1504,11 +1501,11 @@ impl Workspace {
         let first = self.plain_parsed(f)
         let t0 = self.clock()
         let words = self.block_words(f, first)
-        self.timed("sublang", self.clock() - t0)
+        self.timed("sublang", t0)
         if words.is_empty() { return self.with_import_remedies(first, words) }
         let t1 = self.clock()
         let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
-        self.timed("ast", self.clock() - t1)
+        self.timed("ast", t1)
         for r in p.store.foreign.get() {
             let origin = self.file_id(r.path)
             if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
