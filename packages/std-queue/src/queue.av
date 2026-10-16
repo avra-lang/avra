@@ -1,10 +1,14 @@
 //! @std.queue — the in-memory home of a declared queue. The items wait
 //! in the carrier's ring; an id set remembers each live item and a
 //! lease table remembers who holds it and under which epoch. Delivery
-//! is at-least-once: an item is acked, buried, or still held — never
-//! dropped. A hold past its lease is redelivered with `epoch + 1`, and
-//! the old ack answers `false`. Leases are timestamps compared here, so
-//! expiry is found by the next `take`; no timer row is needed.
+//! is at-least-once: an item is acked, buried, or still held. The two
+//! terms a full queue and a busy one argue about are here too and read
+//! on the send and take paths: `overflow` says what a full ring does
+//! (`park`, `fail`, or one of the drops), and `order` says how many
+//! deliveries may stand at once (`fifo` one, `by_key` one per key). A
+//! hold past its lease is redelivered with `epoch + 1`, and the old ack
+//! answers `false`. Leases are timestamps compared here, so expiry is
+//! found by the next `take`; no timer row is needed.
 use @std.task.{Channel, Ring, Sink, open_channel, ring}
 use @std.time.{Duration, now_ms, secs}
 use @std.meta.{Diagnostic, refuse}
@@ -30,13 +34,43 @@ export type Delivery<T> = {
 /// it, and the queues it passed through.
 export type Dead<T, E> = { item: T, error: E, path: List<string> }
 
+/// What a full queue does with the next send. `park` waits for room,
+/// `fail` refuses the send, `drop_newest` discards the arriving item,
+/// and `drop_oldest`/`latest` discard what waits to keep it — `latest`
+/// dropping an item of the same key first, so a key coalesces.
+export enum Overflow { park, latest, drop_oldest, drop_newest, fail }
+
+/// The order a queue delivers in: `fifo` is one delivery at a time,
+/// strictly in send order; `by_key` lets keys run apart and keeps the
+/// order of each key alone.
+export enum Order { fifo, by_key }
+
 /// What a queue promises: how much it holds, how long a hold lasts,
-/// how many attempts an item gets, and the dead letter it fails to.
+/// how many attempts an item gets, the dead letter it fails to, what a
+/// full queue does, and the order it delivers in.
 export type Terms = {
     capacity: int,
     lease: Duration,
     retries: int,
     dead: string,
+    overflow: Overflow,
+    order: Order,
+}
+
+/// Whether an overflow policy drops an item nothing was told about.
+fn drops(o: Overflow) -> bool {
+    match o { .latest or .drop_oldest or .drop_newest -> true, .park or .fail -> false }
+}
+
+/// An overflow policy as the word a refusal names it by.
+fn overflow_word(o: Overflow) -> string {
+    match o {
+        .park -> "park",
+        .latest -> "latest",
+        .drop_oldest -> "drop_oldest",
+        .drop_newest -> "drop_newest",
+        .fail -> "fail",
+    }
 }
 
 /// Where a live item stands: waiting in the ring, held by a worker,
@@ -108,27 +142,49 @@ export fn bury<T, E>(q: Queue<T>, d: Delivery<T>, err: E, dead: Sink<Dead<T, E>>
 
 impl Queue<T> {
     /// Send one item under `key`, answering its id once the ring holds
-    /// it — `null` once the ring is closed.
+    /// it. A full ring is the `overflow` term's to decide: `park` waits
+    /// for room, `fail` answers `null`, `drop_newest` answers the id of
+    /// an item the queue never keeps, and `drop_oldest`/`latest` give up
+    /// what waits to keep this one. `null` too once the ring is closed.
     fn send(item: T, key: Key) -> string? {
         let id = self.mint()
-        if !self.ring.sink.send(id) {
-            self.free.push(id)
-            return null
+        if self.terms.overflow == Overflow.park {
+            if !self.ring.sink.send(id) {
+                self.free.push(id)
+                return null
+            }
+            self.enqueue(id, item, key)
+            return id
         }
-        self.live.put(id, Live { item: item, key: key, attempt: 0, stage: Stage.Pending })
-        self.count.set(self.count.get() + 1)
-        id
+        match self.ring.sink.post(id) {
+            .Taken -> {
+                self.enqueue(id, item, key)
+                id
+            },
+            .Ended -> {
+                self.free.push(id)
+                null
+            },
+            .Full -> self.full(id, item, key),
+        }
     }
 
-    /// Lease the oldest item free to deliver — one awaiting redelivery
-    /// first, else the ring's head. `null` when none is.
+    /// Lease the item due next — one awaiting redelivery first, else the
+    /// ring's head — as far as the `order` term allows. `null` when none
+    /// is due, or when the one due is held back by a delivery already
+    /// standing.
     fn take() -> Delivery<T>? {
         self.expire()
+        self.drain()
         let back = self.waiting()
-        if back != null { return self.deliver(back!) }
-        let head = self.ring.source.taken()
-        if head == null { return null }
-        self.deliver(head!)
+        if back != null {
+            if !self.may_deliver(back!) { return null }
+            return self.deliver(back!)
+        }
+        let head? = self.ring.peek() else { return null }
+        if !self.may_deliver(head) { return null }
+        let _ = self.ring.source.taken()
+        self.deliver(head)
     }
 
     /// Count a handler's start against the delivery's attempt. `false`
@@ -150,6 +206,119 @@ impl Queue<T> {
     /// How many items the queue still owes a fate.
     fn depth() -> int {
         self.count.get()
+    }
+
+    // ── The terms ──
+
+    /// A full ring: the overflow term decides what happens to `id`.
+    fn full(id: string, item: T, key: Key) -> string? {
+        match self.terms.overflow {
+            .fail -> {
+                self.free.push(id)
+                null
+            },
+            .drop_newest -> id,
+            .drop_oldest or .latest -> {
+                if self.terms.overflow == Overflow.latest { self.discard_same(key) }
+                self.discard_head()
+                match self.ring.sink.post(id) {
+                    .Taken -> {
+                        self.enqueue(id, item, key)
+                        id
+                    },
+                    .Ended or .Full -> {
+                        self.free.push(id)
+                        null
+                    },
+                }
+            },
+            .park -> {
+                self.free.push(id)
+                null
+            },
+        }
+    }
+
+    /// Record a waiting item and count it.
+    fn enqueue(id: string, item: T, key: Key) {
+        self.live.put(id, Live { item: item, key: key, attempt: 0, stage: Stage.Pending })
+        self.count.set(self.count.get() + 1)
+    }
+
+    /// Give up the ring's oldest waiting item for room: its record is a
+    /// tombstone no one is told about, and its id is free once it leaves
+    /// the ring.
+    fn discard_head() {
+        let id? = self.ring.source.taken() else { return }
+        let h = self.live.get().get(id)
+        if h != null && h!.stage == Stage.Pending {
+            self.live.put(id, h! with { stage: Stage.Settled })
+            self.count.set(self.count.get() - 1)
+        }
+        self.free.push(id)
+    }
+
+    /// Give up a waiting item of `key`'s own — a `latest` keeps one item
+    /// per key, so the newest replaces the one that waits.
+    fn discard_same(key: Key) {
+        let id? = self.oldest(true, key) else { return }
+        let h? = self.live.get().get(id) else { return }
+        self.live.put(id, h with { stage: Stage.Settled })
+        self.count.set(self.count.get() - 1)
+    }
+
+    /// The oldest waiting item, of `like`'s key alone when `same` is set.
+    fn oldest(same: bool, like: Key) -> string? {
+        for id, h in self.live.get() {
+            if h.stage == Stage.Pending && (!same || h.key.text == like.text) { return id }
+        }
+        null
+    }
+
+    /// Whether the order term lets this delivery stand now: `fifo` until
+    /// the queue is idle, `by_key` until this one's key is.
+    fn may_deliver(id: string) -> bool {
+        match self.terms.order {
+            .fifo -> !self.any_held(),
+            .by_key -> {
+                let h? = self.live.get().get(id) else { return true }
+                !self.key_held(h.key.text)
+            },
+        }
+    }
+
+    /// Whether any delivery stands this moment.
+    fn any_held() -> bool {
+        for id, h in self.live.get() {
+            if h.stage == Stage.Held { return true }
+        }
+        false
+    }
+
+    /// Whether a delivery of `k` stands this moment.
+    fn key_held(k: string) -> bool {
+        for id, h in self.live.get() {
+            if h.stage == Stage.Held && h.key.text == k { return true }
+        }
+        false
+    }
+
+    /// Drop the ring's leading tombstones — ids a drop gave up. Their ids
+    /// are free only once they leave the ring, so `mint` never hands one
+    /// out while it waits there.
+    fn drain() {
+        mut head = self.ring.peek()
+        while head != null && self.gone(head!) {
+            let _ = self.ring.source.taken()
+            self.free.push(head!)
+            head = self.ring.peek()
+        }
+    }
+
+    /// Whether the ring entry `id` names nothing a delivery can take.
+    fn gone(id: string) -> bool {
+        let h? = self.live.get().get(id) else { return true }
+        h.stage == Stage.Settled
     }
 
     // ── The tables ──
@@ -234,12 +403,22 @@ export component queue<T> {
     lease: Duration = secs(30)
     delivery: Guarantee = Guarantee.at_least_once
     retries: int = 3
+    overflow: Overflow = Overflow.park
+    order: Order = Order.fifo
     dead: Sink<Dead<T, string>>? = null
     state opened: Cell<Queue<T>?> = Cell.new(null)
     on took(d: Delivery<T>)
     on acked(d: Delivery<T>)
     on failed(d: Delivery<T>, e: string)
     on buried(dead: Dead<T, string>)
+    /// The value laws of a queue, over the settings one instance states.
+    /// A `check` is the SECOND of three tiers: it reads the field values
+    /// of this declaration, and nothing else. It cannot see a TYPE or a
+    /// SIGNATURE — whether a handler's answer is a `Result` is the
+    /// typer's (`flow.no_fate`), not this fn's — and it cannot judge a
+    /// SHAPE no single declaration owns, which a `rule` judges. So the
+    /// wire is refused by the typer, the instance by this `check`, and
+    /// the cross-cutting shape by a `rule`.
     fn check() -> List<Diagnostic> {
         mut said: List<Diagnostic> = []
         if self.capacity < 1 { said.push(refuse("a queue holds at least one item, and this holds ${self.capacity}")) }
@@ -256,6 +435,14 @@ export component queue<T> {
                 .push(
                     refuse(
                         "a queue that delivers exactly once names a `dead:` letter, and this names none",
+                    ),
+                )
+        }
+        if drops(self.overflow) && self.delivery == Guarantee.exactly_once {
+            said
+                .push(
+                    refuse(
+                        "a queue that drops on overflow cannot promise exactly once, and this drops with `overflow: ${overflow_word(self.overflow)}`",
                     ),
                 )
         }
@@ -276,6 +463,8 @@ export component queue<T> {
                 lease: self.lease,
                 retries: self.retries,
                 dead: "${self.name}/dead",
+                overflow: self.overflow,
+                order: self.order,
             },
         )
     }
