@@ -2,20 +2,19 @@
 //! lowering — the MEANING — in lower.av. A spawn's body is HIDDEN from
 //! the walk: its lambda resolves and types here, and lowers only as the
 //! task's own lift — never as a closure nobody calls.
-use core.{Expr, ExprId, TypeId, Reg}
-use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing}
+use core.{ExprId}
+use features.{NodeSemantics}
 
-export type TasksSemantics = {}
-
-impl NodeSemantics for TasksSemantics {
-    fn kids(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e { .Within(limit, _) -> [limit], .Emit(value) -> [value], rest -> [] }
-    }
-
-    fn heirs(e: Expr) -> List<ExprId> {
-        // the body answers for the expression, so the seat's want flows there
-        match e { .Within(_, body) -> [body], rest -> [] }
-    }
-
+impl NodeSemantics for Within {
+    fn kids() -> List<ExprId> { [self.limit] }
+    // the body answers for the expression, so the seat's want flows there
+    fn heirs() -> List<ExprId> { [self.body] }
 }
+impl NodeSemantics for Emit {
+    fn kids() -> List<ExprId> { [self.value] }
+}
+/// A spawn's body is HIDDEN: the lambda resolves and types here, and
+/// lowers only as the task's own lift.
+impl NodeSemantics for Spawn {}
+impl NodeSemantics for Produce {}
+impl NodeSemantics for Channel {}

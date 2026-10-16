@@ -1,25 +1,27 @@
 //! The spine's dispatch: typing rules live in check.av, lowering
 //! rules in lower.av.
-use core.{Expr, ExprId, TypeId, Reg, Ins}
+use core.{ExprId, TypeId, Reg, Ins}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Meaning}
 
 use core.expr.{IntLit, FloatLit, Ident, Binary, Not, Index, Prop, Error, Env}
 
-export type SpineSemantics = {}
-
-impl NodeSemantics for SpineSemantics {
-    fn kids(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e {
-            .Binary(_, l, r) -> [l, r],
-            .Index(s, i) -> [s, i],
-            .Not(v) -> [v],
-            .Prop(s, _) -> [s],
-            rest -> [],
-        }
-    }
-
+impl NodeSemantics for Binary {
+    fn kids() -> List<ExprId> { [self.left, self.right] }
 }
+impl NodeSemantics for Index {
+    fn kids() -> List<ExprId> { [self.subject, self.index] }
+}
+impl NodeSemantics for Not {
+    fn kids() -> List<ExprId> { [self.value] }
+}
+impl NodeSemantics for Prop {
+    fn kids() -> List<ExprId> { [self.subject] }
+}
+impl NodeSemantics for IntLit {}
+impl NodeSemantics for FloatLit {}
+impl NodeSemantics for Ident {}
+impl NodeSemantics for Error {}
+impl NodeSemantics for Env {}
 
 impl Meaning for IntLit {
     fn resolve(mut cx: ResolveCx, e: ExprId) {

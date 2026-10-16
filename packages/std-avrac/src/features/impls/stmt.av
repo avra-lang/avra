@@ -7,29 +7,28 @@ use core.stmt.{ImplDecl, TraitDecl}
 use features.{StmtSemantics, ResolveCx, TypeCx}
 
 impl StmtSemantics for ImplDecl {
-    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { ImplSemantics {}.resolve_stmt(cx, s) }
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { resolve_block(cx, s) }
 
-    fn type_stmt(mut cx: TypeCx, s: StmtId) { ImplSemantics {}.type_stmt(cx, s) }
+    fn type_stmt(mut cx: TypeCx, s: StmtId) { type_block(cx, s) }
+
 }
 
 impl StmtSemantics for TraitDecl {
-    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { ImplSemantics {}.resolve_stmt(cx, s) }
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { resolve_block(cx, s) }
 
-    fn type_stmt(mut cx: TypeCx, s: StmtId) { ImplSemantics {}.type_stmt(cx, s) }
+    fn type_stmt(mut cx: TypeCx, s: StmtId) { type_block(cx, s) }
+
 }
 
-export type ImplSemantics = {}
+/// An `impl` and a `trait` block walk the same way — the shared home is a
+/// fn, never an empty object beside the two records.
+fn resolve_block(mut cx: ResolveCx, s: StmtId) {
+    if cx.refuses_nested(s, "resolve.nested_impl", "impl and trait blocks") { return }
+    cx.impl_stmts(impl_fns(cx.view.store.stmt(s)))
+}
 
-impl StmtSemantics for ImplSemantics {
-    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
-        if cx.refuses_nested(s, "resolve.nested_impl", "impl and trait blocks") { return }
-        cx.impl_stmts(impl_fns(cx.view.store.stmt(s)))
-    }
-
-    fn type_stmt(mut cx: TypeCx, s: StmtId) {
-        cx.type_stmts(impl_fns(cx.view.store.stmt(s)))
-    }
-
+fn type_block(mut cx: TypeCx, s: StmtId) {
+    cx.type_stmts(impl_fns(cx.view.store.stmt(s)))
 }
 
 /// This feature's own variant, projected.

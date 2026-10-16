@@ -1,35 +1,20 @@
 //! An instance's semantics: its EXPANSION is the node every pass
 //! reads — typing answers its type, lowering its register. Nothing of
 //! the component survives to the IR.
-use core.{Expr, ExprId, StmtId, TypeId, Reg}
+use core.{ExprId, StmtId, TypeId, Reg}
 use core.stmt.{ComponentDecl}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, Meaning, nothing}
 
 use core.expr.{Component}
 
-export type ComponentSemantics = {}
-
-impl NodeSemantics for ComponentSemantics {
-    fn kids(e: Expr) -> List<ExprId> {
-        // a feature matching its own variant
-        match e {
-            // a check reads the literal, so walking it walks the expansion once
-            .Component(_, _, _, .Expanded(x), check) -> [check ?? x],
-            rest -> [],
-        }
+impl NodeSemantics for Component {
+    fn kids() -> List<ExprId> {
+        // a check reads the literal, so walking it walks the expansion once
+        match self.view { .Expanded(x) -> [self.check ?? x], rest -> [] }
     }
-
 }
 
 impl StmtSemantics for ComponentDecl {
-    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { ComponentDeclSemantics {}.resolve_stmt(cx, s) }
-
-    fn type_stmt(mut cx: TypeCx, s: StmtId) { ComponentDeclSemantics {}.type_stmt(cx, s) }
-}
-
-export type ComponentDeclSemantics = {}
-
-impl StmtSemantics for ComponentDeclSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { resolve_component(cx, s) }
 
     fn type_stmt(mut cx: TypeCx, s: StmtId) { check_component(cx, s) }

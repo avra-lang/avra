@@ -4,7 +4,7 @@
 //! the type namespace, so its own passes do nothing. A match is
 //! CONTROL-OWNING: its arms are hidden from `kids` and walked
 //! through the driver, each under its own bind.
-use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, SyntaxArena, Binder}
+use core.{ExprId, StmtId, TypeId, Reg, Arm, PatId, SyntaxArena, Binder}
 use core.stmt.{EnumDecl}
 use features.{
     NodeSemantics,
@@ -21,7 +21,16 @@ use features.enums.{bind_types, pat_reg, bind_regs}
 
 use core.expr.{Match, Is, VariantLit}
 
-export type EnumsSemantics = {}
+impl NodeSemantics for Match {
+    fn kids() -> List<ExprId> { [self.subject] }
+    fn heirs() -> List<ExprId> { [a.value for a in self.arms] }
+}
+impl NodeSemantics for Is {
+    fn kids() -> List<ExprId> { [self.subject] }
+}
+impl NodeSemantics for VariantLit {
+    fn kids() -> List<ExprId> { self.args }
+}
 
 /// The pattern ladder's five variants are all enums' today. Each
 /// body lives with its concern — typing in check.av, meaning in
@@ -34,32 +43,7 @@ impl PatSemantics for EnumPatSemantics {
     fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> { bind_regs(cx, p, v, vty) }
 }
 
-impl NodeSemantics for EnumsSemantics {
-    fn kids(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e {
-            .Match(subject, _) or .Is(subject, _) -> [subject],
-            .VariantLit(_, args) -> args,
-            rest -> [],
-        }
-    }
-
-    fn heirs(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e { .Match(_, arms) -> [a.value for a in arms], _ -> [] }
-    }
-
-}
-
 impl StmtSemantics for EnumDecl {
-    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) { EnumDeclSemantics {}.resolve_stmt(cx, s) }
-
-    fn type_stmt(mut cx: TypeCx, s: StmtId) { EnumDeclSemantics {}.type_stmt(cx, s) }
-}
-
-export type EnumDeclSemantics = {}
-
-impl StmtSemantics for EnumDeclSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
         let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
     }

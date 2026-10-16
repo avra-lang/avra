@@ -1,39 +1,31 @@
 //! The list literal's NodeSemantics — dispatch one-liners; the rule
 //! bodies live beside this file, by concern.
-use core.{Expr, ExprId, TypeId, Reg, CompClause, some_list}
+use core.{ExprId, TypeId, Reg, CompClause, some_list}
 use features.{NodeSemantics, ResolveCx, TypeCx, LowerCx, nothing, Bound, Meaning}
 use diagnostics.{refusal}
 
 use core.expr.{ListLit, Comp, Collect}
 
-export type ListSemantics = {}
-
-impl NodeSemantics for ListSemantics {
-    /// A literal's elements are kids; a comprehension's FIRST head's
-    /// source and range bound are — they resolve outside every
-    /// binder. Its element is the one HEIR: `heirs` is also the
-    /// expected-type channel's propagation list (`plant_want` hands
-    /// every heir the parent's own want), and only the element wears
-    /// the comprehension's — a later clause's own source, range bound
-    /// or condition answers an unrelated type, so `resolve_comp`/
-    /// `comp_type`/`comp_reg` walk those by hand, under the scope
-    /// each opens, never through this list. A `collect` owns its
-    /// body's walk, as a block owns its own.
-    fn kids(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e {
-            .Comp(_, clauses) -> comp_kids(clauses),
-            // LICENSED compiler.elems_of_defaulted: kids() has no failure channel; [] is the right answer for a node that is not a list
-            _ -> e.elems_of() ?? [],
-        }
-    }
-
-    fn heirs(e: Expr) -> List<ExprId> {
-        // a feature cannot enumerate OTHER features' variants
-        match e { .Comp(elem, _) -> [elem], _ -> [] }
-    }
-
+/// A literal's elements are kids.
+impl NodeSemantics for ListLit {
+    fn kids() -> List<ExprId> { self.elems }
 }
+
+/// A comprehension's FIRST head's source and range bound are kids —
+/// they resolve outside every binder. Its element is the one HEIR:
+/// `heirs` is also the expected-type channel's propagation list
+/// (`plant_want` hands every heir the parent's own want), and only the
+/// element wears the comprehension's — a later clause's own source,
+/// range bound or condition answers an unrelated type, so `resolve_comp`/
+/// `comp_type`/`comp_reg` walk those by hand, under the scope each
+/// opens, never through this list.
+impl NodeSemantics for Comp {
+    fn kids() -> List<ExprId> { comp_kids(self.clauses) }
+    fn heirs() -> List<ExprId> { [self.elem] }
+}
+
+/// A `collect` owns its body's walk, as a block owns its own.
+impl NodeSemantics for Collect {}
 
 /// The FIRST clause's source (and range bound) alone — the only read
 /// that names no binder of its own, so the generic walk may visit it
