@@ -849,6 +849,15 @@ fn segment_file(pack: Pack, path: string) -> AppendFile? {
     o
 }
 
+/// The bytes this process has written to a store, rows and kept files alike.
+once fn written_tally() -> Cell<int> { Cell.new(0) }
+
+/// The bytes written to a store since the process began.
+export fn store_bytes_written() -> int { written_tally().get() }
+
+/// `n` more bytes written to a store.
+export fn store_wrote(n: int) { written_tally().set(written_tally().get() + n) }
+
 fn append(pack: Pack, body: Bytes) {
     let _ = make_dirs(pack.dir)
     let af? = segment_file(pack, writer_segment(pack)) else { return }
@@ -857,6 +866,7 @@ fn append(pack: Pack, body: Bytes) {
         pack.headed.set(true)
     }
     let _ = af.write(octets_only(body))
+    store_wrote(body.length)
     kill_at_commit()
     let _ = af.write(marker_of(body))
     pack.frames.set(pack.frames.get() + 1)

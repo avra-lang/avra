@@ -1,0 +1,40 @@
+// The operator table's words against `op_symbol`, the one projection
+// of a binary operator's spelling: every word the table spells that is
+// a binary operator is some `BinOp`'s symbol, and every `BinOp` has a
+// word.
+use @std.avrac.core.{BinOp, all_binops, op_symbol}
+use @std.avrac.features.expr_spine.{expr_spine}
+use @std.avrac.core.{flatten}
+use @std.grammar.{Seq}
+
+/// The tiers of every operator table the spine declares.
+fn tier_words() -> List<string> {
+    flatten([branch_words(s) for r in expr_spine().gram.rules for s in r.body.branches])
+}
+
+fn branch_words(s: Seq) -> List<string> {
+    flatten([[spelled(w) for w in t.words] for t in s.operators?.tiers ?? []])
+}
+
+/// One operator word as the reader writes it: `>` `>` is `>>`.
+fn spelled(word: List<string>) -> string {
+    word.join("")
+}
+
+/// The words no `BinOp` spells: `??` and `|>` build their own nodes.
+const unbinary: List<string> = ["??", "|>"]
+
+spec "features/expr_spine operator words" {
+    given "the table the spine declares" {
+        then "every binary word is a BinOp's symbol" {
+            let symbols = [op_symbol(op) for op in all_binops]
+            tier_words().all((w) -> symbols.contains(w) || unbinary.contains(w))
+        }
+        then "every BinOp's symbol is a word" {
+            tier_words().length > 0 && all_binops.all((op) -> tier_words().contains(op_symbol(op)))
+        }
+        then "the shift-right word is the one token pair" {
+            tier_words().contains(">>")
+        }
+    }
+}
