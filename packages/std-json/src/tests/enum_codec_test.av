@@ -17,6 +17,9 @@ type Pin = { row: int, label: string }
 type Bag = { counts: Map<string, int>, pins: Map<string, List<Pin>>, note: string? }
 
 @json
+type Chain = { next: Chain?, n: int }
+
+@json
 enum Choice {
     Nothing
     One(row: int)
@@ -102,5 +105,17 @@ spec "std/json — an enum's codec" {
             to_text(Bag.json_schema())
                 .contains("\"counts\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}}")
         }
+    }
+    given "a type's shape" {
+        then "names its fields and their kinds, down through the types it reads" {
+            Bag.json_shape() == "Bag<counts:map<int>,pins:map<[Pin<row:int,label:string>]>,note:string?>"
+        }
+        then "names each variant of an enum with its payload" {
+            Show.json_shape() == "Show|All()|Active()|Done()"
+        }
+        then "changes when a field of a type it reads changes, whatever the names" {
+            Choice.json_shape().contains("Pinned(pin:Pin<row:int,label:string>,more:[int])")
+        }
+        then "names a type that reads itself by that name" { Chain.json_shape() == "Chain<next:~Chain?,n:int>" }
     }
 }
