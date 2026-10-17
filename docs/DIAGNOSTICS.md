@@ -548,7 +548,31 @@ No witness here: a timer is `@std/time`'s own declaration, which a lone source c
 
 a source that can end says what happens when it does
 
-No witness here: `select` over a supply needs `@std/task`, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use @std.task.{Source}
+fn pick(src: Source<int>) -> int {
+    select {
+        x in src -> x
+    }
+}
+0
+```
+
+```
+error[flow.end_arm]: `src` can end and this `select` does not say what then
+  ╭─[/w/src/main.av:4:14]
+4 │         x in src -> x
+  ·              ┬
+  ·              ╰── no `.ended` arm for it
+──╯
+help: add `src.ended -> …`
+```
 
 ## type.component_expand
 
@@ -617,7 +641,34 @@ No witness here: an instance's component is another file's, which a lone source 
 
 a handler that can fail must name a fate for its failure
 
-No witness here: a handler that can fail is a component of `@std/task`, which a lone source cannot import — the golden is features/components/tests/components_fate_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{work, ok}
+let w = work {
+    each: ok
+}
+0
+
+```
+
+```
+error[flow.no_fate]: a handler that can fail must name a fate for its failure, and `work` names none
+  ╭─[/w/src/main.av:3:11]
+3 │     each: ok
+  ·           ┬
+  ·           ╰── this handler can fail
+──╯
+help: name the letter a failed item is buried in — `dead: <sink>`
+```
 
 ## type.applied
 
@@ -1804,7 +1855,30 @@ help: every ordinal 0, 1, 2 … appears exactly once
 
 a library folds a closure collection at compile time
 
-No witness here: a lone program always has its entry, and the law reads a library with none — the golden is features/collects/tests/collects_test.av, which says so.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[lib]
+
+// /w/src/lib.av
+type Entry = { name: string }
+collect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name
+const n: int = xs.length
+
+```
+
+```
+error[collect.closure_fold]: `xs` is closed only when a program links — read it at run time
+  ╭─[/w/src/lib.av:3:16]
+3 │ const n: int = xs.length
+  ·                ┬
+  ·                ╰── folded here
+──╯
+help: read it from a fn's body, never from a const's compile-time value
+```
 
 ## collect.self_read
 
@@ -2640,7 +2714,31 @@ No witness yet.
 
 a hole takes what its seat takes
 
-No witness here: a hole is filled from `@std/meta`, which a lone source cannot import — the golden is features/quote/tests/rewrite_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Code}
+let xs = [1, 2]
+let w = quote { fn f(x: ${xs}) -> int { 1 } }
+1
+```
+
+```
+error[type.quote_hole]: a hole in type position takes a `Type`, a `Field`'s or a `string` spelling, found `List<int>`
+  ╭─[/w/src/main.av:3:27]
+3 │ let w = quote { fn f(x: ${xs}) -> int { 1 } }
+  ·                           ┬
+  ·                           ╰── this is `List<int>`
+──╯
+help: fill the hole with what its seat takes
+```
 
 ## type.quote_meta
 
