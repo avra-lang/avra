@@ -142,7 +142,7 @@ impl SyntaxArena {
     /// diverges — it answers nothing, so it joins with anything.
     fn leaves(e: ExprId) -> bool {
         match self.expr(e) {
-            .Block(stmts, value) -> value == null && stmts.last() != null && self.diverges(stmts.last()!),
+            .Block(stmts, _) -> self.tail_of(e) == null && stmts.last() != null && self.diverges(stmts.last()!),
             _ -> false,
         }
     }
@@ -240,9 +240,16 @@ impl SyntaxArena {
     /// — a body that IS its value.
     fn lone_value(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Block(stmts, value) -> if stmts.is_empty() { value } else { null },
+            .Block(stmts, _) -> if stmts.is_empty() { self.tail_of(e) } else { null },
             _ -> null,
         }
+    }
+
+    /// The value a block answers — absent for one that leaves or ends on
+    /// a statement. Every reader asks here, so where a value lives is
+    /// one decision.
+    fn tail_of(e: ExprId) -> ExprId? {
+        match self.expr(e) { .Block(_, value) -> value, _ -> null }
     }
 
     /// A component declaration's pieces, when the statement is one.
