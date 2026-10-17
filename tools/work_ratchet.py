@@ -11,6 +11,13 @@ same on every machine and needs no slack: a counter past its row in
 `tools/work.budget` REFUSES, a counter with no row refuses (record it with
 `--accept`), and a row no run measured refuses.
 
+WORK THAT GROWS WITH THE TREE IS HELD AS A RATIO to the program's size (`_pm`:
+per thousand of the program's files, modules or declarations), because the
+gate measures the compiler checking its OWN tree and a PR that adds source
+raises the raw counts legitimately (CLAUDE.md: a gate floor is relative, never
+an absolute count). The raw counts and `program_*` sizes are REPORTED, never
+judged (INFORMATIONAL). The unchanged scenario stays absolute: nothing at all.
+
 A ceiling MAY ONLY FALL. `--accept` lowers each row to what was measured,
 seeds a counter that has no row yet, and never raises one; a raise is a human
 edit of the budget and the diff is the review. A run under its ceiling says so
@@ -23,6 +30,12 @@ import sys
 BUDGET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "work.budget")
 ROW = re.compile(r"^counts (?P<scenario>[a-z]+) (?P<counter>[a-z_]+) (?P<n>[0-9]+)$")
 BUDGET_ROW = re.compile(r"^(?P<scenario>[a-z]+) (?P<counter>[a-z_]+) (?P<n>[0-9]+)$")
+# Reported beside the gated rows, never judged: the program's size and the raw counts
+# whose ratios are gated.
+INFORMATIONAL = {
+    "program_files", "program_modules", "program_decls",
+    "files_minted", "modules_minted", "queries_computed", "store_rows_written",
+}
 HEAD = """\
 # THE WORK-COUNT RATCHET'S CEILINGS: the most work a warm `check packages/cli`
 # may do, counted by the compiler itself (`check --counts`, compiler/work.av) —
@@ -48,6 +61,10 @@ def measured_rows(text):
             n = int(m.group("n"))
             rows[key] = min(n, rows.get(key, n))
     return rows
+
+
+def gated(rows):
+    return {k: v for k, v in rows.items() if k[1] not in INFORMATIONAL}
 
 
 def budget_rows(text):
@@ -100,7 +117,8 @@ def main(argv):
     if raw is None:
         print("work_ratchet: --raw <file> names the measurement", file=sys.stderr)
         return 2
-    measured = measured_rows(open(raw).read())
+    reported = measured_rows(open(raw).read())
+    measured = gated(reported)
     if not measured:
         print("work_ratchet: REFUSED — the measurement carries no `counts` row (did `check --counts` print one?)")
         return 1
@@ -111,6 +129,9 @@ def main(argv):
         print("work_ratchet: --accept — %d row(s) written, none raised" % len(new))
         return 0
     refusals, words = judge(measured, ceilings)
+    for (scenario, name), n in sorted(reported.items()):
+        if name in INFORMATIONAL:
+            print("work: %s %s: %d (reported)" % (scenario, name, n))
     for w in words:
         print("work: %s" % w)
     if refusals:
@@ -140,7 +161,8 @@ def self_test():
     }
     assert accepted({("edit", "files_minted"): 4}, held)[("edit", "files_minted")] == 4
     assert budget_rows(budget_text(held)) == held
-    print("work_ratchet: self-test passed — 8 fixtures")
+    assert gated({("edit", "program_files"): 9, ("edit", "files_minted_pm"): 3}) == {("edit", "files_minted_pm"): 3}
+    print("work_ratchet: self-test passed — 9 fixtures")
     return 0
 
 
