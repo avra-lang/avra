@@ -28,9 +28,19 @@ export enum Msg {
     Ended(worker: int, serial: int)
 }
 
-/// The way into a running loop: where a message goes, and how the loop is
-/// told to end. A target with no tasks has none.
-export type Door = { send: fn(Msg) -> bool, close: fn() -> void }
+/// What a source asks the target for, as DATA: a wait of `ms`, once or
+/// over and over. The target realizes it its own way — a task that sleeps
+/// natively, a host timer on a page — and the answer comes back as an
+/// `Act`, run as a turn.
+export enum Want {
+    After(ms: int)
+    Every(ms: int)
+}
+
+/// The way into a running loop: where a message goes, what a source's ask
+/// is realized as, and how the loop is told to end. A target with no
+/// loop has none.
+export type Door = { send: fn(Msg) -> bool, ask: fn(Want, Act, string?) -> bool, close: fn() -> void }
 
 /// An app on one target. `show` is the target's own paint: the tree as it
 /// stands and the theme it wears, in; whatever the target does with them.
@@ -225,6 +235,13 @@ impl App {
     fn send(msg: Msg) -> bool {
         let door? = self.door.get() else { return self.direct(msg) }
         door.send(msg)
+    }
+
+    /// A source asks for `want`; `act` runs as a turn when it is met,
+    /// owned by the control being heard. False when no loop runs.
+    fn ask(want: Want, act: Act) -> bool {
+        let door? = self.door.get() else { return false }
+        door.ask(want, act, self.asking.get())
     }
 
     /// Where messages go now: the running loop's inbox, held — a source
