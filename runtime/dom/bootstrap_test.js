@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { createApplier, parseFrame, sendEvent, run, HOST, WIRE_VERSION } from "./bootstrap.js";
+import { createApplier, parseFrame, sendEvent, run, instantiate, hasExceptionHandling, HOST, WIRE_VERSION } from "./bootstrap.js";
 import { NO_ID, OP, SAYS } from "./wire.gen.js";
 import { stubDocument, stubElement, textOf } from "./stub_dom.js";
 
@@ -240,6 +240,24 @@ const empty = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);
 let lacking = "";
 try { await run(empty, { document: stubDocument(), mount: stubElement("root"), wasi: () => ({}) }); } catch (e) { lacking = e.message; }
 check("a module that mounts nothing refuses by the names it lacks", lacking.startsWith(`the module exports no ${HOST.entry}, ${HOST.event}, ${HOST.seat}`), true);
+
+// ── a browser without exception handling refuses by that name ──
+check("this engine runs exception handling", hasExceptionHandling(), true);
+{
+  const compile = WebAssembly.compile, validate = WebAssembly.validate;
+  WebAssembly.compile = async () => { throw new WebAssembly.CompileError("invalid opcode 0x1f"); };
+  WebAssembly.validate = () => false;
+  let said = "";
+  try { await instantiate(empty, { rt: {}, wasi: {} }); } catch (e) { said = e.message; }
+  WebAssembly.compile = compile;
+  WebAssembly.validate = validate;
+  check("an engine that cannot validate the probe names the missing feature", said.startsWith("this browser lacks WebAssembly exception handling"), true);
+  WebAssembly.compile = async () => { throw new WebAssembly.CompileError("something else"); };
+  let other = "";
+  try { await instantiate(empty, { rt: {}, wasi: {} }); } catch (e) { other = e.message; }
+  WebAssembly.compile = compile;
+  check("a compile error with exception handling present is the engine's own", other, "something else");
+}
 
 console.log(fails === 0 ? `bootstrap: ${passes}/${passes}` : `bootstrap: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);
