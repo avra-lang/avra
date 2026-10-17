@@ -428,6 +428,7 @@ by nobody.
 | `make rt-header` | `runtime/avra_rt.h` is what `rt_sigs()` says (generated, never edited) |
 | `make rt-ns` | `packages/std-avrac/src/features/rt.av` is what `rt_sigs()` says |
 | `make witnesses` | every diagnostic code's golden in `docs/DIAGNOSTICS.md` is the compiler's own words, and each witness still triggers its kind |
+| `make voices` | every kind and rule carries what its row owes — a witness, help, a structured fix where declared — and no gap is new (`tools/voices.baseline` only shrinks; `docs/VOICES.md` is the generated inventory) |
 | `make dogfooding-rules` | DOGFOODING.md's generated registry block is current (`avra rules --check-markdown`) |
 | `make attack` | the set of malformed mutants the compiler accepts has not moved (`tools/attack.baseline`) |
 | `make speed-ratchet` | each phase of `packages/cli`'s build/check is under its ceiling (§5) |

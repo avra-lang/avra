@@ -5,8 +5,8 @@
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
-use app.{Act, App, Async, Door, Fetch, Job, Msg, running}
-use @std.time.{Duration, every, sleep}
+use app.{Act, App, Async, Door, Fetch, Job, Msg, Want, after_ms, every_ms, running}
+use @std.time.{Duration, every, ms, sleep}
 use @std.task.{Channel, Posted, Sink, Source, unbounded_channel}
 
 /// A paint that shows nothing further.
@@ -18,10 +18,33 @@ export fn opened(on: App) -> Channel<Msg> {
     if on.looping.get() { avra_trap(one_loop()) }
     on.looping.set(true)
     let inbox = unbounded_channel<Msg>()
+    let send = (m: Msg) -> taken(inbox.sink.post(m))
     on
         .door
-        .set(Door { send: (m: Msg) -> taken(inbox.sink.post(m)), close: () -> inbox.sink.close() })
+        .set(
+            Door {
+                send: send,
+                ask: (w: Want, act: Act, owner: string?) -> asked(send, w, act, owner),
+                close: () -> inbox.sink.close(),
+            },
+        )
     inbox
+}
+
+/// `act` runs as a turn once `span` has gone by. False when no loop runs.
+export fn later(span: Duration, act: Act) -> bool { after_ms(span.ms, act) }
+
+/// `act` runs as a turn every `period`, until the loop ends. False when
+/// no loop runs.
+export fn repeating(period: Duration, act: Act) -> bool { every_ms(period.ms, act) }
+
+/// A want as the loop realizes it: a job that waits, then posts.
+fn asked(send: fn(Msg) -> bool, want: Want, act: Act, owner: string?) -> bool {
+    let job: Job = match want {
+        .After(span) -> () -> waited(send, owner, ms(span), act),
+        .Every(period) -> () -> ticked(send, owner, ms(period), act),
+    }
+    send(Msg.Start(job, owner))
 }
 
 fn taken(p: Posted) -> bool {
@@ -157,23 +180,6 @@ fn worked(at: int, jobs: Source<Job>, cuts: Source<int>, send: fn(Msg) -> bool) 
         let _ = send(Msg.Ended(at, serial))
     }
     true
-}
-
-/// `act` runs as a turn once `span` has gone by. False when no loop runs.
-export fn later(span: Duration, act: Act) -> bool {
-    let on? = running() else { return false }
-    let send = on.sender()
-    let owner = on.asking.get()
-    on.start(() -> waited(send, owner, span, act))
-}
-
-/// `act` runs as a turn every `period`, until the loop ends. False when
-/// no loop runs.
-export fn repeating(period: Duration, act: Act) -> bool {
-    let on? = running() else { return false }
-    let send = on.sender()
-    let owner = on.asking.get()
-    on.start(() -> ticked(send, owner, period, act))
 }
 
 fn waited(send: fn(Msg) -> bool, owner: string?, span: Duration, act: Act) -> bool {
