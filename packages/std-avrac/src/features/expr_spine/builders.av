@@ -1,19 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{
-    Expr,
-    ExprId,
-    BinOp,
-    Pat,
-    PatId,
-    want,
-    op_symbol,
-    all_binops,
-    TypeRef,
-    pronoun_param,
-    Plain,
-    Scoped,
-    span_of,
-}
+use core.{Expr, ExprId, binop_of, Pat, PatId, want, TypeRef, pronoun_param, Plain, Scoped, span_of}
 use features.{
     LangNode,
     Builder,
@@ -35,29 +21,17 @@ fn build_int_lit(b: Builder) -> Result<LangNode, string> {
     // here is a defect, not a program's mistake
     b.make_expr(Expr.IntLit(t.int_value() ?? 0))
 }
-/// `l op r` over the arithmetic and logical bands: the climb has
-/// grouped the pair, so `1 + 2 - x` arrives as `(1 + 2) - x`.
-fn build_binary(b: Builder) -> Result<LangNode, string> {
-    binary_of(b, (b.token(1)?).text, "a binary operator")
-}
-
-/// `l op r` over the BITWISE band. One law lives with it and it is
-/// the reason the band is one tier rather than five: A RUN THAT MIXES
-/// TWO DIFFERENT BITWISE OPERATORS IS REFUSED (`unmixed_bitwise`).
-/// `a | b & c` has two readings a reader must know a table to choose
-/// between, and a generated one is as likely to mean either — so it
-/// names both and asks for parentheses instead of picking.
+/// THE BITWISE BAND'S ONE LAW, and the reason it is one tier rather
+/// than five: A RUN THAT MIXES TWO DIFFERENT BITWISE OPERATORS IS
+/// REFUSED. `a | b & c` has two readings a reader must know a table to
+/// choose between, and a generated one is as likely to mean either —
+/// so it names both and asks for parentheses instead of picking. Only
+/// the run is visible there, which is exactly the right reach: `a << 1
+/// + 2` is a DIFFERENT level (the additive arrives already built) and
+/// reads as C reads it, because C is arbitrary there rather than wrong.
+/// What C gets wrong is `a & b == c`, and the band's PLACE in the table
+/// — tighter than comparison — fixes that without any law at all.
 ///
-/// Only the run is visible there, which is exactly the right reach:
-/// `a << 1 + 2` is a DIFFERENT level (the additive arrives already
-/// built) and reads as C reads it, because C is arbitrary there
-/// rather than wrong. What C gets wrong is `a & b == c`, and the
-/// band's PLACE in the table — tighter than comparison — fixes that
-/// without any law at all.
-fn build_bitwise(b: Builder) -> Result<LangNode, string> {
-    binary_of(b, bitwise_symbol((b.token(1)?).text), "a bitwise operator")
-}
-
 /// A run's agreement: its first operator and the one just taken. The
 /// climb reads only a refusal, so agreement answers a placeholder.
 fn build_unmixed_bitwise(b: Builder) -> Result<LangNode, string> {
@@ -67,21 +41,12 @@ fn build_unmixed_bitwise(b: Builder) -> Result<LangNode, string> {
     b.make_type(void_ref)
 }
 
-/// `l op r` for the operator whose source symbol is `symbol`.
+/// `left op right` for the operator whose source symbol is `symbol`.
 fn binary_of(b: Builder, symbol: string, what: string) -> Result<LangNode, string> {
     let op = want(binop_of(symbol), what)?
     let l = b.expr(0)?
     let r = b.expr(2)?
     b.wrap_expr(b.store.alloc_expr(Expr.Binary(op, l, r), b.cover(l, r)))
-}
-
-/// A captured operator's SYMBOL. Shift-right arrives as a lone `>`
-/// — its twin is matched and dropped by the grammar, because `>>`
-/// cannot be one token without closing type arguments wrong — so the
-/// one place that knows it names it here rather than at every reader.
-fn bitwise_symbol(text: string) -> string {
-    if text == ">" { return ">>" }
-    text
 }
 
 /// The words that law refuses in — one place, so the two operators
@@ -171,14 +136,6 @@ fn build_neg(b: Builder) -> Result<LangNode, string> {
 fn force_link(link: string, value: ExprId) -> Expr {
     if link == "?" { return Expr.Propagate(value) }
     Expr.Force(value)
-}
-
-/// `l ?? r` — the pair the climb grouped, so `a ?? b ?? c` arrives
-/// as `(a ?? b) ?? c`. The node's meaning lives in `nullable`.
-fn build_coalesce(b: Builder) -> Result<LangNode, string> {
-    let l = b.expr(0)?
-    let r = b.expr(2)?
-    b.wrap_expr(b.store.alloc_expr(Expr.Coalesce(l, r), b.cover(l, r)))
 }
 
 /// `v ( .name | .name(args) | ?.name | [i] | (args) | ?.(args) | { … } | .type(T) )*`
@@ -482,12 +439,6 @@ fn prop_link(link: string, subject: ExprId, name: string) -> Expr {
 
 fn compare_without_right_side() -> string {
     "a comparison's right side is a value, or the pattern an `is` names"
-}
-
-/// The operator a source token names — derived from core's roster,
-/// so the symbol projection stays the single source.
-fn binop_of(text: string) -> BinOp? {
-    all_binops.find(op_symbol(it) == text)
 }
 
 /// `{ ( mut? x, … -> )? statements }` — a lambda whose body is a
