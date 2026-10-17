@@ -438,16 +438,15 @@ export fn holds(owner: Type, k: Kind, atom: fn(string) -> bool) -> bool {
 
 fn holds_under(owner: Type, k: Kind, atom: fn(string) -> bool, seen: List<string>) -> bool {
     match k {
-        .List(inner) -> holds_under(owner, inner, atom, seen),
-        .Opt(inner) -> holds_under(owner, inner, atom, seen),
+        .List(inner) or .Opt(inner) -> holds_under(owner, inner, atom, seen),
         .Named(name, _) -> {
             if atom(name) { return true }
             if seen.contains(name) { return false }
             let held? = payload_of(owner, name) else { return false }
             let entered = seen.concat([name])
             match held {
-                .Record(fields) -> fields.any((f) -> holds_under(owner, f.kind, atom, entered)),
-                .Enum(variants) -> variants.any((v) -> v.fields.any((f) -> holds_under(owner, f.kind, atom, entered))),
+                .Record(fields) -> fields.any(holds_under(owner, it.kind, atom, entered)),
+                .Enum(variants) -> variants.any(it.fields.any(holds_under(owner, it.kind, atom, entered))),
             }
         },
         .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
