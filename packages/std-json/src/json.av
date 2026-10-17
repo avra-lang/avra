@@ -470,11 +470,38 @@ fn scan_string(text: string, n: int, i: int) -> Scan {
 
 /// The escape at `j` (the backslash): its text and where it ends.
 fn scan_escape(text: string, n: int, j: int) -> Scan {
-    if j + 1 >= n { return Scan.Refused(JsonError.BadEscape(j)) }
+    let d? = escape_at(text, n, j) else { return Scan.Refused(JsonError.BadEscape(j)) }
+    Scan.Value(Json.Str(d.piece), d.next)
+}
+
+/// What an escape stands for and where it ends.
+type Decoded = { piece: string, next: int }
+
+/// The escape at `j` (the backslash) decoded — `\uXXXX`, and a high
+/// surrogate followed by `\uXXXX` low as one code point — or none where it
+/// names nothing. THE ONE DECODER: `parse` and `text_of` both read escapes
+/// here.
+fn escape_at(text: string, n: int, j: int) -> Decoded? {
+    if j + 1 >= n { return null }
     let e = text.char_code(j + 1)
-    if e == 117 { return scan_unicode(text, n, j) }
-    let piece? = simple_escape(e) else { return Scan.Refused(JsonError.BadEscape(j)) }
-    Scan.Value(Json.Str(piece), j + 2)
+    if e != 117 {
+        let piece? = simple_escape(e) else { return null }
+        return Decoded { piece: piece, next: j + 2 }
+    }
+    let code? = hex4(text, n, j + 2) else { return null }
+    if code >= 55296 && code < 56320 && at(text, n, j + 6, 92) && at(text, n, j + 7, 117) {
+        let low: int? = hex4(text, n, j + 8)
+        if low != null {
+            let tail = low!
+            if tail >= 56320 && tail < 57344 {
+                return Decoded {
+                    piece: from_codepoint(65536 + (code - 55296) * 1024 + (tail - 56320)),
+                    next: j + 12,
+                }
+            }
+        }
+    }
+    Decoded { piece: from_codepoint(code), next: j + 6 }
 }
 
 fn simple_escape(e: int) -> string? {
@@ -489,26 +516,6 @@ fn simple_escape(e: int) -> string? {
         e == 116 -> "\t"
         _ -> null
     }
-}
-
-/// `\uXXXX`, and a high surrogate followed by `\uXXXX` low as one
-/// code point.
-fn scan_unicode(text: string, n: int, j: int) -> Scan {
-    let code? = hex4(text, n, j + 2) else { return Scan.Refused(JsonError.BadEscape(j)) }
-    if code >= 55296 && code < 56320 && at(text, n, j + 6, 92) && at(text, n, j + 7, 117) {
-        let low: int? = hex4(text, n, j + 8)
-        if low != null {
-            let tail = low!
-            if tail >= 56320 && tail < 57344 {
-                return Scan
-                    .Value(
-                        Json.Str(from_codepoint(65536 + (code - 55296) * 1024 + (tail - 56320))),
-                        j + 12,
-                    )
-            }
-        }
-    }
-    Scan.Value(Json.Str(from_codepoint(code)), j + 6)
 }
 
 /// Four hex digits at `i`, as a number; null when they are not there.
@@ -663,7 +670,22 @@ fn is_hex(c: int) -> bool { hex_value(c) != null }
 /// The text of the string from `i` to `end`, its escapes decoded.
 export fn text_of(text: string, b: Bytes, i: int, end: int) -> string {
     if b.run(i + 1, plain) == end - 1 { return text.substring(i + 1, end - 1) }
-    match scan_string(text, b.length, i) { .Value(j, _next) -> j.text() ?? "", .Refused(_e) -> "" }
+    mut out = builder()
+    mut run = i + 1
+    mut j = i + 1
+    while j < end - 1 {
+        if b.at(j) != 92 {
+            j = j + 1
+            continue
+        }
+        out.push(text.substring(run, j))
+        let d = escape_at(text, b.length, j) ?? Decoded { piece: "", next: j + 2 }
+        out.push(d.piece)
+        j = d.next
+        run = d.next
+    }
+    out.push(text.substring(run, end - 1))
+    out.built()
 }
 
 /// Past the number at `i` as `parse` reads it — `-`? an integer part
