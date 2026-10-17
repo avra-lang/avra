@@ -191,6 +191,26 @@ export fn vendored_prelude(files: Map<string, string>) -> Map<string, string> {
     out
 }
 
+const task_real: string = embed("@std/task/src/task.av")
+
+/// One package of the toolchain's std root: its name and its one file.
+type StdFile = { name: string, text: string }
+
+/// `files` with the real `@std/task` laid out beside the prelude under the
+/// std root, with `@std/meta` and `@std/errors` it rests on.
+export fn vendored_task(files: Map<string, string>) -> Map<string, string> {
+    mut out = vendored_prelude(files)
+    for p in [
+        StdFile { name: "task", text: task_real },
+        StdFile { name: "meta", text: meta_real },
+        StdFile { name: "errors", text: errors_real },
+    ] {
+        out.set("/std/std-${p.name}/avra.toml", "[package]\nname = \"@std/${p.name}\"\nversion = \"0.0.1\"\n")
+        out.set("/std/std-${p.name}/src/${p.name}.av", p.text)
+    }
+    out
+}
+
 /// A program at `/w` whose toolchain carries the real `@std/prelude`
 /// and nothing else — what a file in a package sees and a lone source
 /// does not.
