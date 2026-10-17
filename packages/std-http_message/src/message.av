@@ -10,10 +10,30 @@
 //! `@std/time` carries rows a page does not have. A body is data too: a
 //! stream (a closure) is `@std/http`'s own extra, never part of the value.
 
+use @std.url.{encoded as percent_encoded}
+
 /// The nine methods RFC 9110 registers, and `Other` for a token this
 /// framer read and does not name — a method is extensible, so an
 /// unknown one is well formed and not a refusal.
 export enum Method { Get, Head, Post, Put, Delete, Patch, Options, Connect, Trace, Other }
+
+impl Method {
+    /// The method as a request line spells it.
+    fn word() -> string {
+        match self {
+            .Get -> "GET",
+            .Head -> "HEAD",
+            .Post -> "POST",
+            .Put -> "PUT",
+            .Delete -> "DELETE",
+            .Patch -> "PATCH",
+            .Options -> "OPTIONS",
+            .Connect -> "CONNECT",
+            .Trace -> "TRACE",
+            .Other -> "GET",
+        }
+    }
+}
 
 /// One field of a message: its name and its value.
 export type Header = { name: string, value: string }
@@ -48,6 +68,38 @@ export type Request = {
     timeout_ms: int? = null,
     retries: int = 0,
 }
+
+/// A body as it travels: its content type (none for an empty one) and its
+/// octets, whole.
+export type Encoded = { kind: string, bytes: Bytes }
+
+impl Body {
+    /// The body as it is sent: text names its charset, JSON is the text it
+    /// holds, a form is its fields percent-encoded as query parameters
+    /// joined by `&`, octets bring their own type.
+    fn encoded() -> Encoded {
+        match self {
+            .Empty -> Encoded { kind: "", bytes: "".bytes() },
+            .Text(text) -> Encoded { kind: "text/plain; charset=utf-8", bytes: text.bytes() },
+            .Json(text) -> Encoded { kind: "application/json", bytes: text.bytes() },
+            .Form(fields) -> Encoded {
+                kind: "application/x-www-form-urlencoded",
+                bytes: [form_pair(f) for f in fields].join("&").bytes(),
+            },
+            .Octets(bytes, kind) -> Encoded { kind: kind, bytes: bytes },
+        }
+    }
+}
+
+fn form_pair(f: Header) -> string {
+    let name = percent_encoded(f.name.bytes(), .Param).text() ?? ""
+    let value = percent_encoded(f.value.bytes(), .Param).text() ?? ""
+    "${name}=${value}"
+}
+
+/// What a request is answered with: the status, the fields the answer
+/// carries and its body, whole.
+export type Reply = { status: int, headers: List<Header> = [], body: Bytes }
 
 impl Request {
     /// A request for `url`.

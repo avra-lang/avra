@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { createApplier, createTimers, parseFrame, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { createApplier, createFetches, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { NO_ID, OP, SAYS } from "./wire.gen.js";
 import { stubDocument, stubElement, textOf } from "./stub_dom.js";
 
@@ -284,7 +284,81 @@ const clockAt = () => {
   timers.disarm(99n);
   clock.advance(10);
   check("a disarmed one-shot never fires; disarming twice, or a stranger, says nothing", [fired.length, timers.count()], [4, 0]);
-  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["arm", "disarm", "frame"]);
+  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["abort", "arm", "disarm", "frame", "get"]);
+}
+
+// ── the page's requests ──
+// A request frame as the program writes it (`request_frame`): the version, the
+// method's word, the URL, the wait (-1: none), the fields, the body's content
+// type and its octets.
+const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind = "", body = [] }) => Uint8Array.from([
+  WIRE_VERSION, ...str(method), ...str(url), ...i32(timeoutMs), ...i32(headers.length), ...headers.flatMap(([n, v]) => [...str(n), ...str(v)]), ...str(kind), ...i32(body.length), ...body,
+]);
+{
+  const r = parseRequest(requestFrame({ method: "POST", url: "/a?b=1", timeoutMs: 250, headers: [["accept", "text/plain"]], kind: "application/json", body: utf8("{}") }));
+  check("a request frame reads back: method, url, wait, fields, content type, octets", [r.method, r.url, r.timeoutMs, r.headers, r.kind, new TextDecoder().decode(r.body)], ["POST", "/a?b=1", 250, [["accept", "text/plain"]], "application/json", "{}"]);
+  const e = parseRequest(requestFrame({ url: "/x" }));
+  check("a bare get has no wait, no fields and no body", [e.method, e.timeoutMs, e.headers.length, e.kind, e.body.length], ["GET", -1, 0, "", 0]);
+  let refused = "";
+  try { parseRequest(Uint8Array.from([WIRE_VERSION + 1, 0, 0, 0, 0])); } catch (err) { refused = err.message; }
+  check("a request of another wire version is refused by name", refused.startsWith("unsupported wire version"), true);
+}
+{
+  // A fetch a test answers by hand: each call is a promise the test settles.
+  const calls = [];
+  const fetchFn = (url, init) => new Promise((resolve, reject) => {
+    const call = { url, init, resolve, reject };
+    calls.push(call);
+    init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+  });
+  const reply = (status, text) => ({ status, arrayBuffer: async () => new TextEncoder().encode(text).buffer });
+  const heard = [];
+  const clock = clockAt();
+  const fetches = createFetches(fetchFn, (t, status, octets) => heard.push([t, status, new TextDecoder().decode(octets)]), clock);
+  const settle = async () => { for (let k = 0; k < 6; k++) await Promise.resolve(); };
+
+  fetches.get(1n, requestFrame({ method: "POST", url: "/p", headers: [["x-id", "7"]], kind: "text/plain; charset=utf-8", body: utf8("hi") }));
+  await settle();
+  check("a request is sent with its method, fields, content type and body", [calls[0].url, calls[0].init.method, calls[0].init.headers, new TextDecoder().decode(calls[0].init.body)], ["/p", "POST", { "x-id": "7", "content-type": "text/plain; charset=utf-8" }, "hi"]);
+  calls[0].resolve(reply(200, "ok"));
+  await settle();
+  check("an answer crosses with its status and octets, and the request is forgotten", [heard, fetches.count()], [[[1, 200, "ok"]], 0]);
+
+  fetches.get(2n, requestFrame({ url: "/g" }));
+  await settle();
+  check("a get carries no body", calls[1].init.body === undefined, true);
+  fetches.abort(2n);
+  calls[1].resolve(reply(200, "late"));
+  await settle();
+  check("an aborted request is aborted at the host and a late answer is dropped", [calls[1].init.signal.aborted, heard.length, fetches.count()], [true, 1, 0]);
+
+  fetches.get(3n, requestFrame({ url: "/n" }));
+  await settle();
+  calls[2].reject(new Error("offline"));
+  await settle();
+  check("a failure crosses as status -1 and its words", heard[1], [3, -1, "offline"]);
+
+  fetches.get(4n, requestFrame({ url: "/t", timeoutMs: 20 }));
+  await settle();
+  clock.advance(25);
+  await settle();
+  check("a request past its wait answers -1 and is aborted", [heard[2], calls[3].init.signal.aborted], [[4, -1, "the request timed out"], true]);
+
+  fetches.get(5n, requestFrame({ url: "/two" }));
+  await settle();
+  calls[4].resolve(reply(204, ""));
+  calls[4].resolve(reply(500, "again"));
+  await settle();
+  check("a request answers once", heard.filter((h) => h[0] === 5).length, 1);
+  fetches.abort(99n);
+  check("aborting a stranger says nothing", fetches.count(), 0);
+
+  // the answer crosses into the program through the seat
+  const seen = [];
+  const mod = { memory: { buffer: new ArrayBuffer(64) }, [HOST.seat]: (room) => { seen.push(["seat", Number(room)]); return 16n; }, [HOST.answered]: (t, st, len) => seen.push([Number(t), Number(st), Number(len)]) };
+  sendAnswer(mod, 9, 201, new TextEncoder().encode("abc"));
+  check("an answer writes its octets into the seat, then names the token, status and length", [seen, new TextDecoder().decode(new Uint8Array(mod.memory.buffer, 16, 3))], [[["seat", 3], [9, 201, 3]], "abc"]);
+  check("the rows a page answers include the request rows", ["get", "abort"].every((k) => typeof ROWS[k] === "string"), true);
 }
 
 // ── a page runs a program that mounts ──
