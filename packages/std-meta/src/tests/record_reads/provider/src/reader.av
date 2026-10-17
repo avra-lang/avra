@@ -1,8 +1,8 @@
 //! What a derive over a gathered enum can read of the types its
-//! variants hold: `type_exported` answers for what the ENUM's module
+//! variants hold: `payload_of` answers for what the ENUM's module
 //! exports — a record, an enum — and for nothing a member's own file
 //! imported from elsewhere.
-use @std.meta.{Type, Variant, Directive, Decls, Field, Kind, type_exported, literal}
+use @std.meta.{Type, Variant, Directive, Decls, Field, Kind, Held, payload_of, literal}
 
 fn named(k: Kind) -> string? {
     match k {
@@ -12,11 +12,14 @@ fn named(k: Kind) -> string? {
     }
 }
 
-/// The shape of what `type_exported` reads for a field's named type.
+/// What `payload_of` reads for a field's named type.
 fn read(t: Type, f: Field) -> string {
     let n? = named(f.kind) else { return "${f.name}: ${f.ty} names no declaration" }
-    let found? = type_exported(t.module, n) else { return "${f.name}: ${f.ty} is NOT readable from the enum's module" }
-    "${f.name}: ${f.ty} reads fields [${[x.name for x in found.fields].join(", ")}] variants [${[v.name for v in found.variants].join(", ")}]"
+    let found? = payload_of(t, n) else { return "${f.name}: ${f.ty} is NOT readable from the enum's module" }
+    match found {
+        .Record(fields) -> "${f.name}: ${f.ty} is a record of [${[x.name for x in fields].join(", ")}]",
+        .Enum(variants) -> "${f.name}: ${f.ty} is an enum of [${[v.name for v in variants].join(", ")}]",
+    }
 }
 
 fn lines(t: Type, v: Variant) -> List<string> {

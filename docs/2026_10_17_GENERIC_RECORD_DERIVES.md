@@ -46,18 +46,24 @@ A payload type that is a RECORD or an ENUM and is not one of the derive's leaf r
 
 So `Arm`'s Children reach (`some_list(a.guard).concat([a.value])`) falls out of `{ pats: List<PatId>, guard: ExprId?, value: ExprId }` (a `PatId` has no reach row, so `pats` contributes none), and `CompClause`'s `comp_clause_reach` falls out of its two variants.
 
-### 3.1 What the types cannot say: marks on the declaration, not rows in the derive
+### 3.1 What the types cannot say — no new annotation surface (CHECKED)
 
-Four record-specific behaviours are real. Each becomes a mark ON THE TYPE (data beside the declaration, claimed by the derive that reads it, an unclaimed mark refused, as the maker derive already does), replacing a string row in a derive:
+The lead's question: are `@apart` and `@rebuilt(verb)` new marks, or derivable? Answer, from the code:
 
-| semantics today | where | as a mark |
-|---|---|---|
-| **a record walked from its own root, never through its holder**: `Param` (holds a field DEFAULT), `Variant`, `Case` (a spec body), `FormatPart` | Children has no row for them on purpose | `@apart` on the record — the shape word the nodes already use for a variant, now readable on a record: Children reaches nothing through it; Shape folds it by its own `Identity` instead of shallowly |
-| **a hole seat**: `Arm` (a lone hole standing as a whole arm fills with arms), `Param` (params), `FormatPart` | Rebuild's `mut fn arm`/`params`/`rebuilt_parts` with `Filled.Arms`/`.Params` | `@rebuilt(arms)` — names the Rebuilder verb; the generic walk calls it instead of mapping fields. A record with no mark is mapped field by field (so `CompClause` and `CatchArm` need none) |
-| **the builder-side carrier**: one `LangNode` variant and one `Slots` accessor per record | `makers_derive` rows, `NArm`, `arms_at` | unchanged in this epic: it is the builder seat, not a derive row; the table is 1 row per record there and stays (listed as a follow-up) |
-| **fold ORDER and tags**: `fp(300…315, …)` literals in `shape.av`, pinned by `make fingerprints` | Shape | the generic fold uses `derived(parts)` (`fingerprint.av`), whose tag is claimed once; see 3.3 |
+**`@apart` is already there, one level up, and is enough.** Every variant that holds a `Param`, `Case` or `Variant` payload already wears the variant-level shape word `@apart` (scripted over `core/expr/expr.av` and `core/stmt/stmt.av`): `Lambda`, `FnDecl`, `ExternFn`, `StructDecl`, `EnumDecl`, `Spec`, `ComponentDecl`. The variants that hold `Arm` and `CompClause` wear `@branches` / `@clauses` (`Match`, `Comp`). Today `@apart` is a required word with no behaviour of its own (Children's `reach_of` treats it like `@sequence`; the absence of rows for `Param`/`Case`/`Variant` does the skipping). The generic rule gives the existing word its teeth, deciding at the HOLDER, so the record types carry no mark at all:
 
-Net effect on the table in section 1: Children 2 rows, Shape 4, Exact 6 die outright; Rebuild's 6 rows become 3 marks (`Arm`, `Param`, `FormatPart`) plus pure field maps for `CompClause`, `Variant`, `Case`; `Makes` keeps its 7 rows (builder side). Hand fns that die: every `exact_*`, `shallow_*` and `kids_*` for these six records, and `comp_clause_reach`; the `arms`/`comp_clauses`/`cases`/`variants` Rebuilder verbs; `arm_fps`/`comp_clause_fps`-class fingerprint helpers where `Identity` already folds the record structurally.
+| holder's shape word | record payloads it holds |
+|---|---|
+| `@apart` | Children reaches nothing through them; Shape folds each by the record's own `Identity` (a `Param` fold already includes its default); Exact compares every field |
+| `@branches`, `@clauses(…)`, `@sequence` | read structurally: Children reaches the expression fields, Shape folds the id-bearing ones as constants/lengths/flags and reports the ids as kids |
+
+`FormatPart` holds no expression at all, so it needs no word either.
+
+**`@rebuilt(verb)` is NOT derivable, and needs no mark either.** The hole-seat behaviour is a property of two records only — `Arm` (a lone hole binding the whole arm: `arm_hole`, `Filled.Arms`) and `Param` (a lone hole as a whole entry: `param_hole`, `Filled.Params`). `Filled`/`HoleKind` are keyed by what FILLS a hole, and their pairing with `List<Arm>`/`List<Param>` is by name, so there is nothing structural to derive it from. Proposed: Rebuild keeps exactly **two** rows (`List<Arm>` → `arms`, `List<Param>` → `params`), documented as "the hole SEATS", and maps every other record structurally. That is a registry of two named seats, not annotation surface. `FormatPart` becomes structural by a TYPE change, not a mark: `Hole.name` is a binder written as `string` and renamed through `scoped_name` only when the hole binds; declaring it `Scoped` (free at runtime) makes the generic name rewrite do the same (`_` is unchanged by the rewrite). `Case`, `Variant`, `CompClause`, `CatchArm` map field by field (`Variant.marks` through `Mark.call`).
+
+So: **no owner question is open.** The only decisions are the ones above: the two named hole-seat rows, and `Hole.name: Scoped`.
+
+Corrected tally of section 1's table: Children 2 rows and Shape 4 die; Exact 6 die; Rebuild 6 rows → 2 (the seats); `Makes` keeps 7 (builder-side). The hand fns that die are the `exact_*`/`shallow_*`/`kids_*` set and the `comp_clauses`/`cases`/`variants` Rebuilder verbs; `arms`/`params` stay as the seat verbs.
 
 ### 3.2 Where the recursion lives
 
@@ -75,16 +81,16 @@ Derives "stand ALONE in their file" (CLAUDE.md), so the recursion cannot be one 
 ## 4. Slices (each lands green, each deletes what it replaces)
 
 1. **Probe lands** (done here): `record_reads` pins what a derive may read.
-2. **Helper**: `payload_of` in `@std/meta` + its own suite.
+2. **Helper** (built): `payload_of(owner, name) -> Held?` and `Held { Record(fields), Enum(variants) }` in `@std/meta`, pinned by `record_reads`.
 3. **Children** reads `Arm`/`CompClause` generically; delete 2 rows + `comp_clause_reach`'s hand walk. Witness: the existing `core/tests` child-walk goldens unchanged, plus a mutation (a record whose field order is swapped) failing.
 4. **Exact**: 6 rows + `exact_arm(s)`, `exact_comp_clause(s)`, `exact_param(s)`, `exact_variant(s)`, `exact_case(s)`, `exact_format_parts` die. Witness: `Exact`'s own adversarial suite.
 5. **Shape** (the fingerprint move): measured as in 3.3.
-6. **Rebuild**: marks `@rebuilt(...)`; `CompClause`, `Variant`, `Case` map generically.
+6. **Rebuild**: two seat rows remain (`Arm`, `Param`); `CompClause`, `Variant`, `Case` map generically; `Hole.name: Scoped` makes `FormatPart` generic.
 7. **`catch` option A** (parked on `nodes-catch`, commit 3564737e): `CatchArm` then costs zero derive rows.
 
 ## 5. Risks
 
-- A record whose behaviour I assumed generic is not: `Case` (a spec body) and `Variant` (its payload seats carry defaults) need `@apart`; the first witness for each is a derive-level test, not a suite pass.
+- A record whose behaviour I assumed generic is not: `Case` (a spec body) and `Variant` (its payload seats carry defaults) are read apart because their HOLDERS are `@apart`; the first witness for each is a derive-level test, not a suite pass. A new variant that holds one of them without `@apart` would walk it — the same holder law, now also checkable (a keeper can refuse a non-`@apart` holder of a record whose fields reach a default).
 - Shape fingerprints moving changes which hole runs line up only if two shapes collided before and not after (or the reverse): the quote-pattern suites are the witness.
 - `type_exported` needs the enum's module to EXPORT every payload record. Today every one is. A record added in a member's own file would answer absence and be refused, loudly, naming the type (finding 2).
 - The probe pinned module `rprobe2.core` style names only in a throwaway; the committed test prints no module name, so it does not move with a package rename.
