@@ -17,11 +17,12 @@ let b = 2
 ```
 
 ```
-error[lex.error]: unexpected character
+error[lex.error]: unexpected character `$`
   ╭─[witness.av:2:1]
 2 │ $
   · ┬
 ──╯
+help: no token starts with this character — remove it, or put it inside a string
 ```
 
 ## parse.expected
@@ -33,11 +34,12 @@ the parse needed a token that is not there
 ```
 
 ```
-error[parse.expected]: expected `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `produce`, `channel`, `select`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
+error[parse.expected]: this cannot start or continue a `stmt`
   ╭─[witness.av:1:1]
 1 │ }
   · ┬
 ──╯
+help: it could begin with `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect` — and 52 more
 ```
 
 ## parse.trailing
@@ -70,6 +72,8 @@ a name is not defined
 
 ```avra
 nope(1)
+fn alpha() -> int { 1 }
+alph()
 ```
 
 ```
@@ -79,6 +83,17 @@ error[resolve.unresolved]: no `fn nope` is defined
   · ┬
   · ╰── called here
 ──╯
+help: define it — `fn nope(…) { … }` — or import it — `use module.{nope}`
+
+error[resolve.unresolved]: no `fn alph` is defined
+  ╭─[witness.av:3:1]
+3 │ alph()
+  · ┬
+  · ╰── called here
+──╯
+help: did you mean `alpha`?
+fix (high): replace `alph` with `alpha`
+  alpha
 ```
 
 ## resolve.use_before_def
@@ -849,37 +864,152 @@ No witness yet.
 
 a manifest declares `[package]`
 
-No witness yet.
+```
+// /w/avra.toml
+[bin]
+path = "src/main.av"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.no_package]: a manifest declares its package — `[package]` is missing
+  ╭─[/w/avra.toml:1:1]
+1 │ [bin]
+  · ┬
+  · ╰── this manifest
+──╯
+help: add `[package]` with `name` and `version`
+```
 
 ## manifest.no_name
 
 `[package]` names the package
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+version = "0.1.0"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.no_name]: `[package]` needs a name — `name = "@scope/name"`
+  ╭─[/w/avra.toml:1:1]
+1 │ [package]
+  · ┬
+  · ╰── here
+──╯
+help: add it under `[package]` — the line above shows its form
+```
 
 ## manifest.no_version
 
 `[package]` gives a version
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.no_version]: `[package]` needs a version — `version = "0.1.0"`
+  ╭─[/w/avra.toml:1:1]
+1 │ [package]
+  · ┬
+  · ╰── here
+──╯
+help: add it under `[package]` — the line above shows its form
+```
 
 ## manifest.bad_version
 
 a version is semver: `MAJOR.MINOR.PATCH`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "one"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_version]: a version is `MAJOR.MINOR.PATCH` — `one` is not
+  ╭─[/w/avra.toml:3:1]
+3 │ version = "one"
+  · ┬
+  · ╰── here
+──╯
+help: write three dot-separated numbers — `version = "0.1.0"`
+```
 
 ## manifest.bad_name
 
 a package name is `@scope/name`, or one bare word for a program
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "Bad Name"
+version = "0.1.0"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_name]: a package is named `@scope/name` — `Bad Name` is not
+  ╭─[/w/avra.toml:2:1]
+2 │ name = "Bad Name"
+  · ┬
+  · ╰── here
+──╯
+help: scope and name are words of `[a-z0-9_-]`
+```
 
 ## manifest.lib_name
 
 a `[lib] name` is the stem its package's name derives
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[lib]
+name = "other"
+path = "src/main.av"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.lib_name]: a library is named for its package — `app` is `app`, not `other`
+  ╭─[/w/avra.toml:6:1]
+6 │ name = "other"
+  · ┬
+  · ╰── here
+──╯
+help: write `name = "app"`, or drop the key
+```
 
 ## manifest.no_target
 
@@ -897,19 +1027,85 @@ No witness here: it names a directory's own shape — no src/ and no direct .av 
 
 a package does not depend on itself
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"app" = { path = "." }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.self_dependency]: `app` is this package — a package does not depend on itself
+  ╭─[/w/avra.toml:6:1]
+6 │ "app" = { path = "." }
+  · ┬
+  · ╰── here
+──╯
+help: remove the row — a package reaches its own modules with `use`
+```
 
 ## manifest.bad_path
 
 a path dependency points at a package directory
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@x/y" = { path = "nowhere" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_path]: `@x/y` points at `/w/nowhere`, which holds no `avra.toml`
+  ╭─[/w/avra.toml:6:1]
+6 │ "@x/y" = { path = "nowhere" }
+  · ┬
+  · ╰── this dependency
+──╯
+help: a path dependency is a package directory
+```
 
 ## manifest.bad_opt_level
 
 `opt_level` is 0–3, s or z
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[profile.release]
+opt_level = 9
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_opt_level]: `opt_level` is 0, 1, 2, 3, "s" or "z"
+  ╭─[/w/avra.toml:6:1]
+6 │ opt_level = 9
+  · ┬
+  · ╰── here
+──╯
+help: write one of those — `opt_level = 2`
+```
 
 ## manifest.bad_profile
 
@@ -921,13 +1117,57 @@ No witness yet.
 
 a dependency is named `@scope/name`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+y = { path = "../y" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.unscoped_dependency]: a dependency is named `@scope/name` — `y` has no scope
+  ╭─[/w/avra.toml:6:1]
+6 │ y = { path = "../y" }
+  · ┬
+  · ╰── here
+──╯
+help: name it as its own manifest does, `"@scope/y"`
+```
 
 ## manifest.unsupported_dependency
 
 only path dependencies resolve; registry and git forms wait on their transports
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@x/y" = "1.0"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.unsupported_dependency]: `@x/y` is not a path dependency — only `{ path = "…" }` resolves; registry and git forms arrive with their transports
+  ╭─[/w/avra.toml:6:1]
+6 │ "@x/y" = "1.0"
+  · ┬
+  · ╰── here
+──╯
+help: write a path — `name = { path = "../name" }`
+```
 
 ## manifest.name_mismatch
 
@@ -975,7 +1215,29 @@ No witness yet.
 
 a `[link]` word's variable is set wherever the hole is not the whole word
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[link]
+search = ["${NOPE_VAR}/lib"]
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.unset_link_variable]: `${NOPE_VAR}/lib` in `search` fills `NOPE_VAR`, which is not set — a hole inside a `[link]` word needs its variable, or the word names another path
+  ╭─[/w/avra.toml:6:1]
+6 │ search = ["${NOPE_VAR}/lib"]
+  · ┬
+  · ╰── here
+──╯
+help: set `NOPE_VAR`, or write the word without the hole; a word that is only the hole is dropped while its variable is unset
+```
 
 ## manifest.bad_budget
 
@@ -989,17 +1251,105 @@ the manifest is TOML the compiler reads
 
 No witness yet.
 
+## manifest.bad_tool_from
+
+a `[process.tools]` row comes from `path`, `env` or `abs`
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[process.tools]
+git = { from = "nowhere" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_tool_from]: `git` comes from `nowhere` — a tool comes from `path`, `env` or `abs`
+  ╭─[/w/avra.toml:6:1]
+6 │ git = { from = "nowhere" }
+  · ┬
+  · ╰── here
+──╯
+help: write `from = "path"`, `"env"` or `"abs"`
+```
+
+## manifest.tool_env_var
+
+an `env` tool names its `var`
+
+No witness yet.
+
+## manifest.tool_abs_at
+
+an `abs` tool names its `at`
+
+No witness yet.
+
+## manifest.unknown_process_key
+
+`[process]` takes only the keys it reads — a typo there is refused, never ignored
+
+No witness yet.
+
 ## manifest.unknown_section
 
 an unknown section is ignored with a warning
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[nonsense]
+a = 1
+
+// /w/src/main.av
+1
+
+```
+
+```
+warning[manifest.unknown_section]: `[nonsense]` is not a section this compiler reads
+  ╭─[/w/avra.toml:5:1]
+5 │ [nonsense]
+  · ┬
+  · ╰── ignored
+──╯
+help: check the spelling — a section this compiler does not read has no effect
+```
 
 ## manifest.unknown_key
 
 an unknown key is ignored with a warning
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+frobnicate = 1
+
+// /w/src/main.av
+1
+
+```
+
+```
+warning[manifest.unknown_key]: `frobnicate` is not a key of `[package]`
+  ╭─[/w/avra.toml:4:1]
+4 │ frobnicate = 1
+  · ┬
+  · ╰── ignored
+──╯
+help: check the spelling — a key this compiler does not read has no effect
+```
 
 ## resolve.nested_spec
 
@@ -1236,6 +1586,7 @@ an annotated binding holds what it declares
 
 ```avra
 let x: int = true
+let y: string = 5
 x
 ```
 
@@ -1246,6 +1597,17 @@ error[type.binding]: `x` declares `int`, this is `bool`
   ·              ┬
   ·              ╰── this is `bool`
 ──╯
+help: make the value a `int`, or change the declaration that wants it
+
+error[type.binding]: `y` declares `string`, this is `int`
+  ╭─[witness.av:2:17]
+2 │ let y: string = 5
+  ·                 ┬
+  ·                 ╰── this is `int`
+──╯
+help: text is made by interpolation, never by conversion
+fix (high): interpolate it — `"${5}"`
+  "${5}"
 ```
 
 ## const.reach
@@ -1309,6 +1671,7 @@ a method call resolves through the receiver's impl
 
 ```avra
 [1].reverse()
+[1].lenght()
 ```
 
 ```
@@ -1319,6 +1682,16 @@ error[type.method]: `.reverse(…)` calls a method, and `List<int>` has none
   · ╰── this is `List<int>`
 ──╯
 help: methods live on lists, maps, and declared types with an `impl`
+
+error[type.method]: `.lenght(…)` calls a method, and `List<int>` has none
+  ╭─[witness.av:2:1]
+2 │ [1].lenght()
+  · ┬
+  · ╰── this is `List<int>`
+──╯
+help: did you mean `length`?
+fix (medium): replace `lenght` with `length`
+  length
 ```
 
 ## type.impl
@@ -1404,6 +1777,12 @@ error[type.mut_fn]: `mut fn` marks a method that writes its receiver — `f` has
 ──╯
 help: drop `mut`, or move `f` into `impl <Type> { … }`
 ```
+
+## type.static_fn
+
+`static fn` marks a method with no receiver — a plain fn needs no mark
+
+No witness yet.
 
 ## resolve.receiver
 
@@ -1657,6 +2036,8 @@ error[resolve.immutable]: `x` is not `mut`
   · ╰── assigned here
 ──╯
 help: declare it `mut x = ...` to mutate it — or build a changed copy with `with`
+fix (high): declare `x` with `mut` — `mut x = …`
+  mut
 ```
 
 ## resolve.place
@@ -1810,6 +2191,7 @@ error[type.list_element]: a list's elements share one type — the first is `int
   ·     ┬
   ·     ╰── this is `bool`
 ──╯
+help: make the value a `int`, or change the declaration that wants it
 ```
 
 ## type.list_scalar
@@ -1926,6 +2308,7 @@ error[type.struct_scalar]: a struct field cannot hold nothing
   · ┬
   · ╰── field `x` is `void`
 ──╯
+help: a slot holds a value — `void` and a type name are not one
 ```
 
 ## type.duplicate_field
@@ -1959,18 +2342,29 @@ No witness yet.
 a literal provides each declared field exactly once
 
 ```avra
-type P = { x: int }
-let p = P { x: true }
+type P = { x: int, y: string }
+let p = P { x: true, y: 5 }
 2
 ```
 
 ```
 error[type.struct_fields]: field `x` is `int`, this is `bool`
   ╭─[witness.av:2:16]
-2 │ let p = P { x: true }
+2 │ let p = P { x: true, y: 5 }
   ·                ┬
   ·                ╰── this is `bool`
 ──╯
+help: make the value a `int`, or change the declaration that wants it
+
+error[type.struct_fields]: field `y` is `string`, this is `int`
+  ╭─[witness.av:2:25]
+2 │ let p = P { x: true, y: 5 }
+  ·                         ┬
+  ·                         ╰── this is `int`
+──╯
+help: text is made by interpolation, never by conversion
+fix (high): interpolate it — `"${5}"`
+  "${5}"
 ```
 
 ## type.struct_targs
@@ -1996,6 +2390,7 @@ error[type.with_struct]: `with` copies a struct, found `int`
   ·         ┬
   ·         ╰── this is `int`
 ──╯
+help: `with` copies a struct and replaces some fields — `p with { x: 1 }`; for other values, build the new one directly
 ```
 
 ## type.named
@@ -2260,6 +2655,7 @@ error[type.match]: `match` chooses over an enum, found `int`
   ·       ┬
   ·       ╰── this is `int`
 ──╯
+help: variant patterns (`.a`) choose over an enum — match literals (`5 -> …`) or bind the value (`n -> …`) here, or declare an `enum`
 ```
 
 ## type.variant_arity
@@ -2310,6 +2706,7 @@ error[type.enum_payload]: an enum payload cannot hold nothing
   · ┬
   · ╰── `.a` carries `void`
 ──╯
+help: a slot holds a value — `void` and a type name are not one
 ```
 
 ## type.pattern
@@ -2534,6 +2931,12 @@ error[type.catch]: `catch` recovers a `Result`, this is `int`
 ──╯
 help: only a fallible value has a failure to recover from
 ```
+
+## type.infer_result
+
+`Result<T, _>` infers its failure type from a `fail` or `?` its fn contains
+
+No witness yet.
 
 ## type.defer
 
@@ -2838,16 +3241,30 @@ No witness yet.
 an operand has the wrong type
 
 ```avra
-!5
+let a = !5
+fn f(n: int) -> int { n }
+let v: int? = null
+f(v)
 ```
 
 ```
 error[type.mismatch]: `!` negates a `bool`, found `int`
-  ╭─[witness.av:1:2]
-1 │ !5
-  ·  ┬
-  ·  ╰── this is `int`
+  ╭─[witness.av:1:10]
+1 │ let a = !5
+  ·          ┬
+  ·          ╰── this is `int`
 ──╯
+help: `!` negates a `bool` — test a nullable with `v != null`, a number with `n == 0`
+
+error[type.mismatch]: argument 1 of `f` wants `int`, found `int?`
+  ╭─[witness.av:4:3]
+4 │ f(v)
+  ·   ┬
+  ·   ╰── this is `int?`
+──╯
+help: `v` may be null — `v ?? <default>` supplies a value, `if let n? = v { … }` branches, and `!` asserts presence
+fix (low): assert it is present — `v!` (traps when it is null)
+  v!
 ```
 
 ## type.unknown_prop
@@ -2857,6 +3274,10 @@ a property name nothing answers to
 ```avra
 let n = 3
 n.x
+let xs = [1]
+xs.lengt
+let ys = [1]
+ys.push
 ```
 
 ```
@@ -2867,6 +3288,26 @@ error[type.unknown_prop]: no property `x` on `int`
   · ╰── read here
 ──╯
 help: a property is a record's field, or a measure like `length` on the shapes that have one
+
+error[type.unknown_prop]: no property `lengt` on `List<int>`
+  ╭─[witness.av:4:1]
+4 │ xs.lengt
+  · ┬
+  · ╰── read here
+──╯
+help: did you mean `length`?
+fix (high): replace `lengt` with `length`
+  length
+
+error[type.unknown_prop]: no property `push` on `List<int>`
+  ╭─[witness.av:6:1]
+6 │ ys.push
+  · ┬
+  · ╰── read here
+──╯
+help: `push` is a method of `List<int>`, and a method is called — `.push(…)`
+fix (medium): call it — `.push()`
+  ()
 ```
 
 ## type.shift_count
@@ -2922,6 +3363,7 @@ error[type.map_value]: this map holds `int`, this is `bool`
   ·                       ┬
   ·                       ╰── this is `bool`
 ──╯
+help: make the value a `int`, or change the declaration that wants it
 ```
 
 ## type.map_entry

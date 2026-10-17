@@ -44,7 +44,18 @@ type Reader = { src: SourceFile, doc: TomlDoc, voices: List<Diag> }
 
 export fn read_manifest(src: SourceFile) -> Manifest {
     mut r = Reader { src: src, doc: parse_toml(src.text), voices: [] }
-    for e in r.doc.errors { r.speak(refusal("manifest.syntax", r.at(e.lo, e.hi), e.message, "here", null)) }
+    for e in r.doc.errors {
+        r
+            .speak(
+                refusal(
+                    "manifest.syntax",
+                    r.at(e.lo, e.hi),
+                    e.message,
+                    "here",
+                    "a manifest is TOML — `key = value` lines under `[section]` headers",
+                ),
+            )
+    }
     r.unknowns()
     if !r.doc.has_section("package") {
         r
@@ -249,7 +260,16 @@ impl Reader {
         let text: string? = if e == null { null } else { toml_text(e!.value) }
         if text != null && text!.length > 0 { return text! }
         let at: Loc? = if e == null { self.header_at("package") } else { self.entry_at(e!) }
-        self.speak(refusal(kind, at, "`[package]` needs ${wanted}", "here", null))
+        self
+            .speak(
+                refusal(
+                    kind,
+                    at,
+                    "`[package]` needs ${wanted}",
+                    "here",
+                    "add it under `[package]` — the line above shows its form",
+                ),
+            )
         ""
     }
 
@@ -272,7 +292,7 @@ impl Reader {
                             self.header_at(s),
                             "`[${s}]` is not a section this compiler reads",
                             "ignored",
-                            null,
+                            "check the spelling — a section this compiler does not read has no effect",
                         ),
                     )
             } else {
@@ -290,7 +310,7 @@ impl Reader {
             self.entry_at(e),
             "`${e.key}` is not a key of `[${s}]`",
             "ignored",
-            null,
+            "check the spelling — a key this compiler does not read has no effect",
         )
     }
 
@@ -347,7 +367,7 @@ impl Reader {
                         at,
                         "`${name}` comes from `${word!}` — a tool comes from `path`, `env` or `abs`",
                         "here",
-                        null,
+                        "write `from = \"path\"`, `\"env\"` or `\"abs\"`",
                     ),
                 )
             return Provenance.Path
@@ -443,7 +463,7 @@ impl Reader {
                                 self.header_at(s),
                                 "a profile name is `[a-z0-9_-]+` — `${pname}` is not",
                                 "this profile",
-                                null,
+                                "name the profile in lowercase letters, digits, `_` and `-` — `[profile.release]`",
                             ),
                         )
                 }
@@ -456,7 +476,7 @@ impl Reader {
                                 self.entry_at(opt_level!),
                                 "`opt_level` is 0, 1, 2, 3, \"s\" or \"z\"",
                                 "here",
-                                null,
+                                "write one of those — `opt_level = 2`",
                             ),
                         )
                 }
@@ -550,7 +570,7 @@ impl Reader {
             self.entry_at(self.doc.entry("package", "version")!),
             "a version is `MAJOR.MINOR.PATCH` — `${version}` is not",
             "here",
-            null,
+            "write three dot-separated numbers — `version = \"0.1.0\"`",
         )
     }
 
@@ -590,7 +610,7 @@ impl Reader {
             at,
             "`${key}` is this package — a package does not depend on itself",
             "here",
-            null,
+            "remove the row — a package reaches its own modules with `use`",
         )
     }
 
@@ -610,7 +630,7 @@ impl Reader {
             at,
             "`${key}` is not a path dependency — only `{ path = \"…\" }` resolves; registry and git forms arrive with their transports",
             "here",
-            null,
+            "write a path — `name = { path = \"../name\" }`",
         )
     }
 }
