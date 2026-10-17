@@ -5,18 +5,23 @@
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
-use app.{Act, App, Msg, running, stood}
+use app.{Act, App, Job, Msg, running}
 use @std.time.{Duration, every, sleep}
-use @std.task.{Sink}
+use @std.task.{Sink, Source, unbounded_channel}
 
 /// A paint that shows nothing further.
 export fn unshown() {}
 
-/// THE LOOP: each act in the inbox is a turn and each job a task this
-/// block owns, until the inbox ends. `painted` runs after a turn that
-/// ran.
+/// THE LOOP: each act in the inbox is a turn, until the inbox ends. Each
+/// job runs on a worker, a task this block owns: a job takes an idle
+/// worker or, when none is idle, a new one, and a worker that finishes a
+/// job says so and waits for the next. The block holds as many tasks as
+/// jobs were ever live at once, however many have run. `painted` runs
+/// after a turn that ran.
 export fn served(on: App, painted: fn() -> void) {
-    mut work: List<Task<bool>> = []
+    let queue = unbounded_channel<Job>()
+    mut workers: List<Task<bool>> = []
+    mut idle = 0
     mut going = true
     while going {
         going = select {
@@ -25,13 +30,34 @@ export fn served(on: App, painted: fn() -> void) {
                     .Turn(act) -> {
                         if on.turn(act) { painted() }
                     },
-                    .Start(job) -> { work.push(spawn job()) },
+                    .Start(job) -> {
+                        if idle > 0 {
+                            idle = idle - 1
+                        } else {
+                            workers.push(spawn worked(queue.source, on.inbox.sink))
+                        }
+                        let _ = queue.sink.post(job)
+                    },
+                    .Ended -> {
+                        idle = idle + 1
+                    },
                 }
+                on.jobs.set(workers.length)
                 true
             }
             on.inbox.source.ended -> false
         }
     }
+    queue.sink.close()
+}
+
+/// A worker: each job it is handed, then its word that it is free.
+fn worked(jobs: Source<Job>, sink: Sink<Msg>) -> bool {
+    for job in jobs {
+        let _ = job()
+        let _ = sink.post(Msg.Ended)
+    }
+    true
 }
 
 /// `act` runs as a turn once `span` has gone by. False when no loop runs.

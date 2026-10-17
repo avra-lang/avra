@@ -17,10 +17,12 @@ export alias Act = fn() -> bool
 /// loop owns, so it ends with the loop.
 export alias Job = fn() -> bool
 
-/// What a source leaves in the inbox: a turn to run, or a job to start.
+/// What the inbox carries: a turn to run, a job to start, or a job's
+/// word that it has finished (the loop's own).
 export enum Msg {
     Turn(act: Act)
     Start(job: Job)
+    Ended
 }
 
 /// An app on one target. `show` is the target's own paint: the tree as it
@@ -31,7 +33,7 @@ export enum Msg {
 /// nowhere else. `told` is what its walk has said that a target already
 /// passed on. `inbox` is where every source that is not a control —
 /// a timer, an answer, a stream — leaves its `Act`; its writers never
-/// wait.
+/// wait. `jobs` is how many tasks the loop holds.
 export type App = {
     view: Cell<fn(Standing) -> Node>,
     theme: Cell<fn() -> Theme>,
@@ -39,6 +41,7 @@ export type App = {
     stands: Standing,
     told: Cell<List<string>>,
     inbox: Channel<Msg>,
+    jobs: Cell<int>,
 }
 
 /// The theme of an app that names none.
@@ -55,6 +58,7 @@ export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, The
         stands: standing(),
         told: Cell.new(untold),
         inbox: unbounded_channel<Msg>(),
+        jobs: Cell.new(0),
     }
 }
 
