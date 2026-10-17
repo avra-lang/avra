@@ -67,12 +67,22 @@ export async function openPage(binary, url, { width = 900, height = 700 } = {}) 
     if (answer.type === "exception") throw new Error(`${expression} threw: ${answer.exceptionDetails.text}`);
     return answer.result.value === undefined ? undefined : JSON.parse(answer.result.value);
   };
-  const act = (actions) => send("input.performActions", { context, actions });
+  // A PAINT COMES AT THE DISPLAY'S NEXT FRAME: an event marks the app and the
+  // page paints when the browser asks, so a reader of the page waits for that
+  // frame — two, since the first may be the one the event itself raced.
+  const framed = () => read("new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(1))))");
+  const act = async (actions) => {
+    const done = await send("input.performActions", { context, actions });
+    await framed();
+    return done;
+  };
 
   const pressAt = (x, y) => act([{ type: "pointer", id: "mouse", parameters: { pointerType: "mouse" }, actions: [{ type: "pointerMove", x, y }, { type: "pointerDown", button: 0 }, { type: "pointerUp", button: 0 }] }]);
 
   return {
     read,
+    // The display's next frame, which is when the program's paint comes.
+    frame: framed,
     // Every warning and error the page's console holds, and every uncaught one.
     complaints: () => logged.filter((entry) => entry.level === "error" || entry.level === "warn").map((entry) => `${entry.level}: ${entry.text}`),
     // The pointer pressed and let go at a point of the window.
