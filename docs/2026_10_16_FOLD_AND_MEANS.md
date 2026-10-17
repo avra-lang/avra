@@ -414,3 +414,155 @@ Rule: a branch is rebased on `origin/main` only; landings 1+2 can be parallel,
 7. **`Neg` stays a hand builder** (literal folding is data-dependent), or lowering
    learns to fold `0 - IntLit`. And whether to accept that `Pronoun` argument wrapping
    becomes a `@pronoun` seat mark (sugar-backlog entry, site `build_fold_postfix`).
+
+---
+
+# 5. Implementation plan: `@fold(field)` in std-grammar (owner-approved)
+
+Read against main 16b28a3b. Everything here was read from the code; nothing in this
+section was run.
+
+## 5.1 Design shifts from sections 1.3-1.4 (corrections found while reading the engine)
+
+| was | now | why |
+|---|---|---|
+| `@fold` attaches at the group's tail and marks the group | **branch-tail annotation, `Seq.fold: string?`**, exactly like `@operators` (`Seq.operators`) | the DSL attaches annotations per branch (`builders.av:225-239`, `PendingAnnot`); `@head`/`@trailer` mark by label, but a group carries no label |
+| the rule answers the fold implicitly | the rule ends `-> subject` (`Build.Var`, `built` `executor.av:677`) | zero engine code for the outer value; reads as "answers the subject" |
+| "the executor runs a build only per top-level branch" (1.5) | **wrong**: a group's branches go `match_alt` -> `match_seq`, which runs `built` with the branch's own `s.build` | a turn's node build needs no new build machinery; what is new is the loop and the bindings, below |
+
+## 5.2 Spelling (final)
+
+```avra
+postfix = subject:primary ( turn | turn | … )* @fold(subject) -> subject
+```
+
+Shape is fixed and validated: exactly two items — a seed item labeled `field`
+(any `rep: One`), then one `Rep.Star` group — then `@fold(field)`, then a build that
+answers `field`. Every branch of the group ends in a build (node or call, below).
+
+## 5.3 Engine (`std-grammar/src/executor.av`)
+
+New `match_fold` beside `match_repetition` (`executor.av:774`, same speculation
+rules: a non-Hit iteration ends the loop and lives only in `farthest`; Fatal
+propagates; a turn that consumes nothing is the existing "repetition matched without
+consuming input" defect). Called from `match_seq` in place of `match_item` for
+`items[1]` when `s.fold != null`. Per turn:
+
+1. `turn_bindings = [b.rebound(field, acc, false) for b in bindings]` — `Binding.rebound`
+   exists (`executor.av:~270`); the seed label now holds the accumulator, replacing
+   (not accumulating).
+2. `match_alt(cx, rule_name, inner, cursor, turn_bindings, false, capped, origin)`.
+   Direct call, not `match_prim`: `match_prim`'s Group arm drops an unlabeled group's
+   value (`executor.av:~905`), and the turn's value IS the new accumulator.
+   `acc: false` keeps a turn's labels last-wins.
+3. On Hit: `acc = r.value`; `cursor = r.cursor`; **do not keep `r.bindings`** — a turn's
+   labels are turn-local, so a stale `args` from one turn can never fill the next
+   turn's variant (see 5.5, same rule at assembly).
+4. After the loop: `bindings = rebound(field, acc)`, value `acc`. The branch's
+   `-> subject` then reads it.
+
+**Span origin.** `match_seq` computes the builder's span as `consumed_loc(entry, cursor)`
+(`executor.av:~637`), `entry` being the *turn's* start. Add a parameter
+`origin: int` to `match_alt` and `match_seq` only (callers: `executor.av:410`
+`match_rule` and `:900` pass `cursor`; `match_fold` passes the fold branch's `entry`).
+`match_seq` uses `origin` for `branch` and nothing else. A turn node thus spans seed
+start .. turn end, from the engine, which is what makes every hand span cursor dead.
+(Not a mutable slot on `cx`: a nested sequence inside a turn would read it.)
+
+**Open question, check first:** the head law. `open` (`executor.av:~560`) is per
+`match_seq`, so a delimiter consumed in turn 1 no longer opens turn 2's trailer.
+Today the postfix star is one item inside one sequence and `opens(Group)` is false
+(`:730`), so delimiters inside the group never opened either — the two should agree;
+prove it with the existing head tests in `executor_test.av` before cutover.
+
+## 5.4 Notation and records (each site, in landing order)
+
+| file | change |
+|---|---|
+| `std-grammar/src/ast.av:89` | `Seq` gains `fold: string? = null` (a default, so every `Seq { … }` literal compiles) |
+| `std-grammar/src/seed.av:~299-355` | `annot` rule gains `"@fold" "(" label:NAME ")"` with `expecting(lit(")"), "expected ')' to close @fold")` -> `Build.Call("build_fold", ["label"])` |
+| `std-grammar/src/builders.av:~61, 233, 246, 405` | `PendingAnnot.AFold(label)`; `build_fold` row; applied in the annotation loop to set `Seq.fold`; a second `@fold` on one branch is "duplicate @fold on one branch"; add `.AFold(_)` to `operator_blocks`'s exhaustive arm |
+| `std-grammar/src/validate.av` | one `fold_defects(rule_name, s)` beside `operators_defects`: not two items; first not labeled `field`; second not a Star group; a turn branch with no build; a turn build that is a pass-through |
+| `std-grammar/src/render.av:~31` | print `@fold(field)` after the items (round-trip) |
+| `std-avrac/src/features/grammar_lit/builders.av:82` | `seq_expr`'s field list adds `"fold"` + a `text_opt` (the `grammar { }` literal's value carries it) |
+| `std-avrac/src/features/coherence.av:77` | read: it asks a branch's build names; confirm a fold branch's turn builds are reached |
+| `std-avrac/src/features/node_grammar.av` | **scope rule, below** |
+
+## 5.5 Node-build binding (`node_grammar.av`) — the one real subtlety
+
+`bound_seq`/`judged` judge a nested build against the ENCLOSING branch's labels
+(`outer.labels()`). For a fold that is wrong in two ways: a turn variant could claim a
+payload filled by a *sibling* turn's label (absent at run time, so silently `null`),
+and the seed would not be visible to the turn. Rule: **for a branch with `fold`, each
+turn is judged against its own labels plus `field`** — `fold_scope(turn, field)` builds
+that `Seq` and passes it as `outer` to `bound_seq`, `branch_defects`, `judged`. Then:
+
+- the turn variant's payload `field` is filled `Slot.Label(field)` (the accumulator),
+- the existing `unfilled_defects` / `stranger_defects` / `shape_defects` apply
+  unchanged (the seed is a `Ref`, so `Carrier.Built` — a node payload, as wanted),
+- a variant with no `field` payload is refused by `stranger_defects` already.
+
+## 5.6 The `postfix` rule on main today vs after (landing B)
+
+Turns whose variant is a plain node are `-> Expr.X`. Turns that still desugar or
+widen in a hand builder use a **call build over the turn's labels**
+(`Build.Call(name, args)` reads `bindings`, so `subject` = accumulator is available;
+`executor.av:678`). They are one-liners that move to `means()` later:
+
+| link | turn build now | later |
+|---|---|---|
+| `.name` / `?.name` | `-> Expr.Prop` / `-> Expr.Chain` | same |
+| `.name(args)` | `-> method_call(subject, name, args)` (keeps `store.pronouned`) | `-> Expr.MethodCall` + `@pronoun` seat |
+| `?.name(args)`, `?.(args)` | `-> chained_call(subject, name, args)`, `-> chained_apply(subject, args)` | `Expr.ChainCall`/`ChainApply` + `means` |
+| `(args)` | `-> call_value(subject, args)` | `-> Expr.CallValue` |
+| `[i]` | `-> Expr.Index` | same |
+| `!` / `?` | `-> Expr.Force` / `-> Expr.Propagate` | same (kills `force_link`) |
+| `.type(T)` / `?.type(T)` | `-> type_literal(subject, ty)` / `-> chained_type_literal(subject, ty)` (both exist, `type_lit.av`) | same |
+| `{…}` (+`else {…}`) | `-> trailed(subject, blocks, else_block)` | `Expr.Trailed` + `means` |
+
+The two state flags die as **facts of the accumulator**, no cursor: `blocked` is "the
+subject is a call whose last argument `is_trailing`" and `spelled` is "the subject
+`is_type_lit`" (marks `mark_trailing` / `mark_type_lit` already exist in
+`core/store.av`); `trailed` refuses with its two existing words. `call_chains` /
+`jx` die: `?.(` is its own branch.
+
+## 5.7 What dies in landing B (exact)
+
+`expr_spine/builders.av`: `build_fold_postfix` (197-376, 180), `next_anchor` (19),
+`more_links` (24), `args_between` (8), `span_lo` (4), `span_hi` (4), `call_hi` (4),
+`force_link` (4), `prop_link` (4) = 247 lines; `expr_spine/mod.av`: the
+`"fold_postfix"` row and the 14-label `postfix` rule. `chained_call`,
+`chained_apply` (12) stay until `means`. `margs_here`'s `pronouned` wrap moves into
+`method_call`. `binop_of`, `asked_*`, `build_fold_pipe` stay (pipe moves with the
+`@operators` lane).
+
+## 5.8 Tests (written first, each witnessed failing without its code)
+
+In `std-avrac/src/grammar/tests/` beside `executor_test.av`:
+
+1. chain of 3 turns builds `((s t1) t2) t3`; zero turns answers the seed unwrapped.
+2. span: a turn node covers seed start .. turn end (the test `operators_diff_test.av`
+   pins place the same way).
+3. **turn-local labels**: two turn kinds, the second variant lacking the first's
+   label — assembly refuses the sibling claim (5.5) and run time never reads a stale one.
+4. each validator refusal (5.4), plus duplicate `@fold`.
+5. render round trip, and `parse_test.av`'s grammar-of-grammars row for `@fold`.
+6. head law: `if f(a) { b }` keeps its brace, `g(f(a) { b })` takes the block, with a fold rule.
+7. **differential** `postfix_diff_test.av`, as `operators_diff_test.av`: the hand
+   `fold_postfix` grammar and the `@fold` grammar over a corpus of chains (every link
+   kind, interleaved, `else`, trailing blocks, `?.`, type literals, nested args, a block
+   after a block, a block after a type literal), same tree and diagnostics. Delete
+   the hand builder only when it is green.
+
+## 5.9 Landings
+
+| # | content | gate |
+|---|---|---|
+| A | 5.3, 5.4, 5.5, tests 1-6; no grammar uses `@fold` | `avra test packages/std-grammar` and `std-avrac/grammar`; the standing binary builds it |
+| — | `make seed` | cold `make bootstrap` reads `@fold` |
+| B | the `postfix` rule (5.6), test 7, then the deletions (5.7) | whole suite, goldens unchanged, `eval == native`, `avra fmt --check` tree-wide, `make idioms` |
+
+Risk specific to B: exact turn spans change interior calls (`call_hi` was "narrower
+than the truth"); read every golden that moves, never re-pin. A branch rebased on
+`origin/main` only; the `@operators` lane touches `expr_spine/mod.av` too, so B
+lands after it or merges its rows.
