@@ -15,6 +15,8 @@ export fn unshown() {}
 /// The inbox of an app's loop, open: the app's door leads to it, so what
 /// a source leaves is kept for the loop that serves it.
 export fn opened(on: App) -> Channel<Msg> {
+    if on.looping.get() { avra_trap(one_loop()) }
+    on.looping.set(true)
     let inbox = unbounded_channel<Msg>()
     on
         .door
@@ -25,6 +27,8 @@ export fn opened(on: App) -> Channel<Msg> {
 fn taken(p: Posted) -> bool {
     match p { .Taken or .Full -> true, .Ended -> false }
 }
+
+extern fn avra_trap(message: string)
 
 /// THE LOOP: each act in the inbox is a turn, until the inbox ends. Each
 /// job runs on a worker, a task this block owns: a job takes an idle
@@ -63,6 +67,7 @@ export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
         }
     }
     queue.sink.close()
+    on.looping.set(false)
 }
 
 /// A worker: each job it is handed, then its word that it is free.
@@ -102,4 +107,10 @@ fn ticked(send: fn(Msg) -> bool, period: Duration, act: Act) -> bool {
         if !send(Msg.Turn(act)) { return true }
     }
     true
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn one_loop() -> string {
+    "an app runs one loop at a time — this one already has its inbox open, and a second loop would orphan the first's sources"
 }
