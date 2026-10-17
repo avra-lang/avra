@@ -849,14 +849,16 @@ fn segment_file(pack: Pack, path: string) -> AppendFile? {
     o
 }
 
-/// The bytes this process has written to a store, rows and kept files alike.
+/// The frames and kept files this process has written to a store. A COUNT, never bytes:
+/// a stored row carries absolute paths and clock text, so its size moves with where the
+/// tree stands and when it ran.
 once fn written_tally() -> Cell<int> { Cell.new(0) }
 
-/// The bytes written to a store since the process began.
-export fn store_bytes_written() -> int { written_tally().get() }
+/// The frames and files written to a store since the process began.
+export fn store_rows_written() -> int { written_tally().get() }
 
-/// `n` more bytes written to a store.
-export fn store_wrote(n: int) { written_tally().set(written_tally().get() + n) }
+/// One more frame or file written to a store.
+export fn store_wrote() { written_tally().set(written_tally().get() + 1) }
 
 fn append(pack: Pack, body: Bytes) {
     let _ = make_dirs(pack.dir)
@@ -866,7 +868,7 @@ fn append(pack: Pack, body: Bytes) {
         pack.headed.set(true)
     }
     let _ = af.write(octets_only(body))
-    store_wrote(body.length)
+    store_wrote()
     kill_at_commit()
     let _ = af.write(marker_of(body))
     pack.frames.set(pack.frames.get() + 1)
