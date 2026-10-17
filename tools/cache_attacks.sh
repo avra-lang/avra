@@ -758,6 +758,98 @@ fi
 rm -rf $lv
 fi
 
+# EXTERNS AND EXPORTS ARE ANSWERED BY NAME, HELD OR READ. A held module answers "what
+# does it export", "which externs does it declare" and "which of them have bodies" from
+# its record, so a reader names the one thing it wants and mints at most the module that
+# has it. Each step is an edit the index must follow while a sibling file stays held: an
+# export renamed (the importer fresh), an import left stale, a host fn added beside held
+# files, a dependency's host fn the program never imports, a host fn answering another
+# package's bodiless extern. Every verdict is the one a cold build speaks.
+if section ex; then
+ex=$R/ex; xl=$R/exl; x2=$R/exl2; mkdir -p $ex/src/x $xl/src $x2/src
+printf '[package]\nname = "ex"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/exl" = { path = "../exl" }\n"@rt/exl2" = { path = "../exl2" }\n' > $ex/avra.toml
+printf '[package]\nname = "@rt/exl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-exl"\npath = "src/lib.av"\n\n[dependencies]\n"@rt/exl2" = { path = "../exl2" }\n' > $xl/avra.toml
+printf '[package]\nname = "@rt/exl2"\nversion = "0.1.0"\n\n[lib]\nname = "rt-exl2"\npath = "src/lib.av"\n' > $x2/avra.toml
+printf 'extern fn avra_exl2_event(who: int) -> int { who + 7 }\nexport fn exl2_one() -> int { 2 }\n' > $x2/src/lib.av
+printf 'use @rt.exl2.{exl2_one}\nextern fn avra_exl_event(who: int) -> int { who + 5 }\nexport fn exl_one() -> int { exl2_one() - 1 }\n' > $xl/src/lib.av
+printf 'export fn one() -> int { 1 }\n' > $ex/src/x/a.av
+printf 'export fn two() -> int { 2 }\n' > $ex/src/x/b.av
+printf 'extern fn avra_ex_event(who: int) -> int { who + 1 }\n' > $ex/src/x/host.av
+printf 'use x.{one, two}\nuse @rt.exl.{exl_one}\nuse @rt.exl2.{exl2_one}\nprintln("ex ${one()} ${two()} ${exl_one()} ${exl2_one()}")\n' > $ex/src/main.av
+EXC() { # EXC <label> <want exit> <phrase the refusal speaks, or ->: a check of ex
+    steps=$((steps+1)); ex_out=$(./avra check --time $ex 2>&1); ex_st=$?
+    case "$ex_out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    if [ $ex_st -ne "$2" ]; then fails=$((fails+1)); echo "FAIL  ex: $1: exit $ex_st, wanted $2: $(printf '%s' "$ex_out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    case "$3" in -) ;; *) case "$ex_out" in *"$3"*) ;; *) fails=$((fails+1)); echo "FAIL  ex: $1: the refusal did not speak '$3': $(printf '%s' "$ex_out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')" ;; esac ;; esac
+}
+EXH() { # EXH <label> <symbol>: the build names the host fn and the binary defines it
+    steps=$((steps+1)); ex_b=$(./avra build --time $ex 2>&1)
+    case "$ex_b" in *"host fn: "*"$2"*) ;; *) fails=$((fails+1)); echo "FAIL  ex: $1: the build does not list the host fn $2: $(printf '%s' "$ex_b" | grep -a '^host fn' | tr '\n' ' ')" ;; esac
+    nm $ex/src/main 2>/dev/null | grep -q "$2" || { fails=$((fails+1)); echo "FAIL  ex: $1: the binary does not define $2"; }
+}
+S "ex: cold" ex
+EXH "cold lists the program's host fns" avra_ex_event
+EXH "cold lists a dependency's host fn it imports" avra_exl_event
+EXH "cold lists a dependency's own dependency's host fn it imports" avra_exl2_event
+printf '// moved\n' >> $ex/src/main.av
+S "ex: an edit elsewhere, every module held" ex
+EXH "a held module's host fn is listed" avra_ex_event
+# an export renamed in a module whose sibling stays held, the importer fresh
+ed $ex/src/x/a.av "fn one()" "fn uno()"
+EXC "the importer still names the old export" 1 "does not export \`one\`"
+ed $ex/src/main.av "use x.{one, two}" "use x.{uno, two}"
+ed $ex/src/main.av '${one()}' '${uno()}'
+S "ex: the importer follows the renamed export" ex
+# a host fn added in one file of a module whose other files stay held
+printf 'extern fn avra_ex_b(n: int) -> int { n + 2 }\nexport fn two() -> int { 2 }\n' > $ex/src/x/b.av
+S "ex: a host fn added beside held files" ex
+EXH "the added host fn is listed and defined" avra_ex_b
+EXH "the held host fns are still listed" avra_ex_event
+# the same file loses its body: the extern is bodiless now, and no host fn
+printf 'extern fn avra_ex_b(n: int) -> int\nexport fn two() -> int { 2 }\n' > $ex/src/x/b.av
+steps=$((steps+1)); ex_b=$(./avra build --time $ex 2>&1)
+case "$ex_b" in *"host fn: "*"avra_ex_b"*) fails=$((fails+1)); echo "FAIL  ex: a host fn that lost its body is still listed" ;; esac
+printf 'export fn two() -> int { 2 }\n' > $ex/src/x/b.av
+# a dependency's host fn the program's own sources no longer import
+printf 'use x.{uno, two}\nuse @rt.exl.{exl_one}\nprintln("ex ${uno()} ${two()} ${exl_one()}")\n' > $ex/src/main.av
+EXC "a dependency's host fn nothing in the program's own sources imports" 1 "never import"
+printf 'use x.{uno, two}\nuse @rt.exl.{exl_one}\nuse @rt.exl2.{exl2_one}\nprintln("ex ${uno()} ${two()} ${exl_one()} ${exl2_one()}")\n' > $ex/src/main.av
+EXC "importing it again lifts the refusal" 0 -
+# a dependency's host fn answering a bodiless extern of another package
+printf 'extern fn avra_exl_event(who: int) -> int\n' > $ex/src/x/claim.av
+EXC "a host fn answering another package's bodiless extern" 1 "to name"
+rm -f $ex/src/x/claim.av
+EXC "and the claim gone" 0 -
+rm -rf $ex $xl $x2
+fi
+
+# A REFERENCE BETWEEN TWO HELD FILES IS NOT RESTORED UNTIL ASKED. `user.av` is the only
+# reader of `target`, and both stay held: the relation holds no row for the edge, yet
+# `refs_of` on the held target answers it on demand, so `--verify-held` finds the warm
+# count equal to a fresh reading. Then the target is renamed with `user.av` untouched:
+# the edge must surface as the refusal a cold check speaks, never a stale held answer.
+if section hh; then
+hh=$R/hh; mkdir -p $hh/src/t $hh/src/u
+printf '[package]\nname = "hh"\nversion = "0.1.0"\n' > $hh/avra.toml
+printf 'export fn target() -> int { 7 }\n' > $hh/src/t/target.av
+printf 'use t.{target}\nexport fn user() -> int { target() }\n' > $hh/src/u/user.av
+printf 'use u.{user}\nprintln("hh ${user()}")\n' > $hh/src/main.av
+S "hh: cold" hh
+printf '// moved\n' >> $hh/src/main.av
+S "hh: an edit elsewhere, both ends of the edge held" hh
+steps=$((steps+1)); hh_vh=$(./avra check $hh --verify-held 2>&1 | unwatched)
+case "$hh_vh" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  hh: verify-held compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    hh: verify-held over a held-to-held edge -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  hh: verify-held: $(printf '%s' "$hh_vh" | tail -5 | tr '\n' ' ')" ;;
+esac
+ed $hh/src/t/target.av "fn target()" "fn goal()"
+steps=$((steps+1)); hh_out=$(./avra check $hh 2>&1); hh_st=$?
+if [ $hh_st -ne 1 ]; then fails=$((fails+1)); echo "FAIL  hh: a rename the only reader never followed exited $hh_st, wanted 1"
+else case "$hh_out" in *"does not export \`target\`"*) [ -n "${VERBOSE:-}" ] && echo "ok    hh: the held reader's edge surfaced as a refusal" ;; *) fails=$((fails+1)); echo "FAIL  hh: the rename was not refused where the held reader imports it: $(printf '%s' "$hh_out" | grep -vE '^watch:|^time:' | head -3 | tr '\n' ' ')" ;; esac; fi
+rm -rf $hh
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
