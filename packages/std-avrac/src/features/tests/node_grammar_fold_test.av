@@ -1,0 +1,86 @@
+// A FOLD'S TURN IS ITS OWN SCOPE for the node binding: it reads its seed
+// and its own labels, never a sibling turn's. Against a node model of
+// made-up variants, so these cases prove the BINDING and never the
+// compiler's own payloads.
+use @std.grammar.{Grammar, Slot, Diagnostic}
+use @std.avrac.grammar.{parse_grammar}
+use @std.avrac.features.{bind_nodes}
+use @std.avrac.core.{PayloadRow}
+use @std.meta.{Field}
+
+fn fold_rows() -> List<PayloadRow> {
+    [
+        PayloadRow {
+            owner: "E",
+            variant: "Prop",
+            payloads: [
+                Field { name: "subject", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "name", ty: "Scoped", at: null, kind: .Named("Scoped", []) },
+            ],
+        },
+        PayloadRow {
+            owner: "E",
+            variant: "Force",
+            payloads: [Field { name: "subject", ty: "ExprId", at: null, kind: .Named("ExprId", []) }],
+        },
+        PayloadRow {
+            owner: "E",
+            variant: "Lit",
+            payloads: [Field { name: "value", ty: "string", at: null, kind: .Str }],
+        },
+    ]
+}
+
+fn fold_grammar_of(src: string) -> Grammar {
+    parse_grammar(src).built ?? Grammar { name: "unparsed", start: "unparsed", rules: [] }
+}
+
+fn fold_refusals(src: string) -> List<Diagnostic> {
+    bind_nodes(fold_grammar_of(src), fold_rows()).defects
+}
+
+fn fold_refuses(src: string, words: string) -> bool {
+    fold_refusals(src).any(it.message.contains(words))
+}
+
+/// The slots of the first rule's `j`th turn.
+fn turn_slots(src: string, j: int) -> List<Slot>? {
+    let g = bind_nodes(fold_grammar_of(src), fold_rows()).g
+    let turns = g.rules[0].body.branches[0].items[1].prim.group_alt()?.branches ?? []
+    if j >= turns.length { return null }
+    let held? = turns[j].build else { return null }
+    match held { .Node(_, _, _, slots) -> slots, .Call(_, _) or .Var(_) -> null }
+}
+
+fn turn_label(src: string, j: int, k: int) -> string {
+    let slots = turn_slots(src, j)
+    if slots == null || k >= slots!.length { return "" }
+    match slots![k] { .Label(name) -> name, .Fixed(text) -> "=${text}", .Empty -> "-" }
+}
+
+const two_turns: string = "r = subject:NAME ( \".\" name:NAME -> E.Prop | \"!\" -> E.Force )* @fold(subject) -> subject\n"
+
+spec "features/node_grammar — a fold's turns" {
+    given "turns that name their nodes" {
+        then "a turn fills its seed's payload from the label the fold names" {
+            fold_refusals(two_turns).is_empty() &&
+                turn_label(two_turns, 0, 0) == "subject" &&
+                turn_label(two_turns, 0, 1) == "name" &&
+                turn_label(two_turns, 1, 0) == "subject"
+        }
+    }
+    given "a turn that leans on another turn's label" {
+        then "is refused: `name` is the first turn's, and this turn captures none" {
+            let src = "r = subject:NAME ( \".\" name:NAME -> E.Force | \"!\" -> E.Prop )* @fold(subject) -> subject\n"
+            fold_refuses(src, "nothing fills `name: Scoped`")
+        }
+    }
+    given "a turn whose variant has no seat for the seed" {
+        then "is refused where it is declared" {
+            fold_refuses(
+                "r = subject:NAME ( \".\" value:NAME -> E.Lit )* @fold(subject) -> subject\n",
+                "names `subject`",
+            )
+        }
+    }
+}
