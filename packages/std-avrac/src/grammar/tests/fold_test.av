@@ -127,6 +127,18 @@ fn fold_long(links: int) -> string {
     "s${joined([".a" for _i in 0..links], "")}\n"
 }
 
+fn fold_once() -> Grammar {
+    fold_parsed("prog = s:chain BREAK -> prog(s)\nchain = s:NAME ( \"!\" -> force(s) )? @fold(s) -> s\n")
+}
+
+spec "grammar/fold — an optional group is one turn at most" {
+    given "a fold over an optional group" {
+        then "answers the seed when the turn is absent" { fold_answer(fold_once(), "s\n") == "(prog s) 0" }
+        then "takes the turn once" { fold_answer(fold_once(), "s!\n") == "(prog (force s)) 0" }
+        then "leaves a second turn unread, and says so" { fold_answer(fold_once(), "s!!\n") == "<none> 1" }
+    }
+}
+
 spec "grammar/fold — hostile inputs" {
     given "a label that collects inside a turn" {
         then "collects there and dies with the turn" {
@@ -178,9 +190,9 @@ spec "grammar/fold — the notation" {
             fold_defects("e = x:NAME ( \".\" n:NAME -> f(x, n) )* @fold(y) -> y\n")
                 .contains("wants a seed captured as `y`")
         }
-        then "a group that does not repeat is refused" {
-            fold_defects("e = x:NAME ( \".\" n:NAME -> f(x, n) )? @fold(x) -> x\n")
-                .contains("then one repeated group")
+        then "a group that must be taken is refused" {
+            fold_defects("e = x:NAME ( \".\" n:NAME -> f(x, n) )+ @fold(x) -> x\n")
+                .contains("repeated or optional group")
         }
         then "a turn with no build is refused" {
             fold_defects("e = x:NAME ( \".\" n:NAME )* @fold(x) -> x\n").contains("it has no build")
