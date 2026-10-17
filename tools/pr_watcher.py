@@ -442,6 +442,24 @@ def failing_job(repo, run_id):
     return {"job": j["name"], "line": first_cause(log)}
 
 
+def merge_state(mss, behind_by):
+    """A PR's merge state as the order should read it. GitHub computes `mergeStateStatus`
+    lazily, so a green PR can read CLEAN (or BLOCKED) for a while after `main` moved;
+    the compare answer — how many commits of `main` the head lacks — is exact. A head
+    that lacks any is BEHIND, whatever the field says: that is the state its next step
+    (a refresh) is keyed on, and a PR that reads CLEAN there is neither landed nor
+    refreshed."""
+    if behind_by and behind_by > 0:
+        return "BEHIND"
+    return (mss or "CLEAN").upper()
+
+
+def behind_by(repo, trunk, head):
+    """How many commits of `trunk` `head` lacks, or None when the compare is unanswered."""
+    out = _gh(["api", f"repos/{repo}/compare/{trunk}...{head}", "--jq", ".behind_by"], check=False).strip()
+    return int(out) if out.isdigit() else None
+
+
 def open_prs(repo):
     return _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
                      "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
@@ -516,6 +534,12 @@ def collect(repo, state):
                              for c in raw.get("statusCheckRollup") or []
                              if (c.get("name") or c.get("context")) == "test")
         prs.append(p)
+    # A green, armed-or-armable PR's merge state is read from the compare, never trusted from
+    # the lazily computed field.
+    for p in prs:
+        if (p["state"] == "OPEN" and not p.get("isDraft") and p.get("mergeable") != "CONFLICTING"
+                and p.get("test") and p["test"]["conclusion"] == "SUCCESS"):
+            p["mergeStateStatus"] = merge_state(p.get("mergeStateStatus"), behind_by(repo, "main", p["headRefOid"]))
     # Enrich only a failing PR that will be acted on (untold, or attempt 1).
     detail = 0
     for p in prs:
@@ -808,6 +832,15 @@ def selftest():
         got = [(a["do"], a.get("pr", a.get("run"))) for a in acts]
         if got != want:
             sys.exit(f"pr-watcher: self-test failed on `{name}`: got {got}, want {want}")
+    # a lazily computed CLEAN or BLOCKED over a head that lacks main's commits reads BEHIND.
+    for field, lacks, want in (("CLEAN", 3, "BEHIND"), ("BLOCKED", 1, "BEHIND"), ("CLEAN", 0, "CLEAN"),
+                               ("BLOCKED", 0, "BLOCKED"), ("", None, "CLEAN")):
+        if merge_state(field, lacks) != want:
+            sys.exit(f"pr-watcher: self-test — merge_state({field!r}, {lacks}) is {merge_state(field, lacks)}, want {want}")
+    # the front that read CLEAN but is behind is refreshed, not left landing.
+    stale = [_pr(7, "SUCCESS", autoMerge=True, mergeStateStatus=merge_state("CLEAN", 2))]
+    if [a["do"] for a in plan(stale, [], _empty_state())] != ["refresh"]:
+        sys.exit("pr-watcher: self-test — a green front that lacks main's commits was not refreshed")
     # THE TREADMILL: five green PRs all behind main cost ONE refresh a pass, never five.
     five = [_pr(n, "SUCCESS", mergeStateStatus="BEHIND", autoMerge=True) for n in (4, 6, 7, 8, 9)]
     refreshed = [a["pr"] for a in plan(five, [], _empty_state()) if a["do"] == "refresh"]

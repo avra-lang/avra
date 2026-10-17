@@ -12,6 +12,7 @@
 //!
 //! The board names no target. A page mounts it (`web/`) and so does a
 //! terminal (`term/`).
+use @std.ui.app.{after_ms}
 use @std.ui.components.{
     button,
     card,
@@ -44,6 +45,7 @@ state filter: Show = .All
 state dark: bool = false
 state newest_first: bool = false
 state dialog_open: bool = false
+state reminded: bool = false
 state seq: int = 5
 state tasks: List<Todo> = [
     Todo { id: "t1", title: "Draft the spec", done: true },
@@ -208,10 +210,27 @@ component board {
     }
 }
 
+/// The reminder fires: the footer says so.
+fn remind_now() -> bool {
+    reminded = true
+    true
+}
+
+/// A reminder is asked for: a timer, whatever the target keeps it with.
+fn remind() {
+    let _ = after_ms(100, remind_now)
+}
+
 component footer {
     row {
         layout: spread_layout()
-        text "${open_count()} open · ${done_count()} done of ${tasks.length}" { style: Style { color: .Muted } }
+        text "${open_count()} open · ${done_count()} done of ${tasks.length}${if reminded { " · reminder" } else { "" }}" {
+            style: Style { color: .Muted }
+        }
+        button "Remind me" {
+            on press { remind() }
+            style: sunk_style()
+        }
         button "About" {
             on press { dialog_open = true }
             style: sunk_style()
