@@ -122,6 +122,18 @@ export fn refusal(kind: string, at: Loc?, message: string, label: string, help: 
     pointed(error_at(kind, at, message), label) with { help: help }
 }
 
+/// `d` follows from `root`, a parse error in a file `subject` holds:
+/// the refusal points at it, and offers no remedy of its own — the name
+/// may be declared where nothing could be read.
+export fn unread_behind(d: Diag, subject: string, root: Diag, name: string) -> Diag {
+    d
+        with {
+            secondary: [Frame { label: "${subject} fails to parse here, so its names are unread: ${root.message}", loc: root.primary.loc }],
+            help: "fix the parse error first — `${name}` may be declared where nothing could be read",
+            suggestions: [],
+        }
+}
+
 /// A warning in the refusal's shape — rendered, never blocking.
 export fn warning(kind: string, at: Loc?, message: string, label: string, help: string?) -> Diag {
     refusal(kind, at, message, label, help) with { severity: Severity.Warning }

@@ -3,7 +3,7 @@
 use core.{StmtId, ExprId, FileId, Param, closest, some_list, DeclId, Binding, found_at, same_file}
 use core.{binds_type, binds_name}
 use core.{SeatMark}
-use diagnostics.{Diag, error_at, pointed, refusal}
+use diagnostics.{Diag, error_at, pointed, refusal, unread_behind}
 use features.{ResolveCx, SelfSeat, self_word, Cap, Namespace, NameKind, remedy_for, nothing, Bound}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 use compiler.typing.{builtin_type_name}
@@ -714,6 +714,11 @@ impl ResolveCx {
     /// A "did you mean" from the given candidates — later and
     /// shadowed names are honest candidates for a typo.
     fn suggested(d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
+        let root? = self.names_in(self.view.origin_of(e)).unread.first() else { return self.closest_to(d, e, name, candidates) }
+        unread_behind(d, "this module", root, name)
+    }
+
+    fn closest_to(d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
         let n? = closest(name, candidates) else { return d }
         let at: Loc? = self.loc_of(e)
         let edits = [Edit { loc: l, replacement: n.name } for l in some_list(at)]
