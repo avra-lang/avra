@@ -282,11 +282,14 @@ fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
 /// A field's default as the code that writes it — the expression the
 /// declaration wrote, absent when it declares none. A rule that omits
 /// the field's label fills it with this, so the value is the source
-/// itself rather than a spelling of it.
+/// itself rather than a spelling of it. Absent for a default another
+/// template already names — a quote literal holds its offset — and for
+/// one the declaration did not write itself.
 fn crossed_default(v: FileView, p: Param) -> MetaCode? {
     let e? = p.default else { return null }
     let sp: Span? = if v.store.spanned_elsewhere(e) { null } else { v.store.expr_span(e) }
     let at? = sp else { return null }
+    if v.store.quote_at(at.lo) != null { return null }
     v.decls.note_default(v.file, e, at.lo)
     MetaCode { node: Node.Template(v.source.file, at.lo, [at.text(v.source.text)], []) }
 }
