@@ -5,7 +5,7 @@
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
-use app.{Act, App, Async, Door, Job, Msg, running}
+use app.{Act, App, Async, Door, Fetch, Job, Msg, running}
 use @std.time.{Duration, every, sleep}
 use @std.task.{Channel, Posted, Source, unbounded_channel}
 
@@ -139,18 +139,21 @@ fn carried<T>(send: fn(Msg) -> bool, source: Source<T>, on_item: fn(T) -> bool) 
 }
 
 /// `held` is loading now, and becomes what `work` answers: `Ready` with
-/// its answer, or `Failed` with its refusal. An answer lands only while
-/// the cell is still `Loading`, so a slower earlier ask never overwrites
-/// a later one's answer. False, and the cell untouched, when no loop runs.
-export fn fetched<T>(held: Cell<Async<T>>, work: fn() -> Result<T, string>) -> bool {
+/// its answer, or `Failed` with its refusal. THE LATEST ASK WINS: each ask
+/// takes the next number, and an answer lands only if its number is still
+/// the latest, so an older ask answering late never shows. False, and the
+/// fetch untouched, when no loop runs.
+export fn fetched<T>(held: Fetch<T>, work: fn() -> Result<T, string>) -> bool {
     if running() == null { return false }
-    held.set(Async.Loading)
+    let ask = held.asks.get() + 1
+    held.asks.set(ask)
+    held.now.set(Async.Loading)
     answered(
         work,
         (r: Result<T, string>) -> {
-            let waiting = held.get().is_loading()
-            if waiting { held.set(settled(r)) }
-            waiting
+            let latest = held.asks.get() == ask
+            if latest { held.now.set(settled(r)) }
+            latest
         },
     )
 }
