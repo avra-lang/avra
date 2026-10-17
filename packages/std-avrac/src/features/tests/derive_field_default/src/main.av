@@ -2,8 +2,9 @@
 // expression: a literal, a computation, a call, a negation, an interpolated
 // string, a lambda call, an `if` and a `match` all splice; a field with no
 // default, a nullable one included, contributes nothing; a generic record
-// crosses like any other.
-use @std.meta.{derive}
+// crosses like any other; a default that is itself a quote crosses absent,
+// since its offset already names the quote.
+use @std.meta.{derive, Code}
 use @test.field_default.{Defaults}
 
 fn five() -> int { 5 }
@@ -20,8 +21,11 @@ type Shapes = { a: int = -3, b: int = if five() > 2 { 10 } else { 20 }, c: int =
 @derive(Defaults)
 type Gen<T> = { a: int = 3, v: T }
 
+@derive(Defaults)
+type Quoted = { a: int = 1, c: Code = quote { 2 } }
+
 let kept: Gen<int> = Gen { a: 1, v: 2 }
 
-"${join(Cfg.defaults())} / ${Bare.defaults().length} / ${join(Shapes.defaults())} / ${kept.a}"
+"${join(Cfg.defaults())} / ${Bare.defaults().length} / ${join(Shapes.defaults())} / ${kept.a} / ${join(Quoted.defaults())}"
 
 fn join(xs: List<int>) -> string { ["${x}" for x in xs].join(" ") }
