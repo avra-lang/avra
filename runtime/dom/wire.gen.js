@@ -3,7 +3,11 @@ export const WIRE_VERSION = 14;
 export const NO_ID = -1;
 export const OP = { create: 1, create_text: 2, place: 3, remove: 4, set_attr: 5, drop_attr: 6, set_prop: 7, set_text: 8, listen: 9, unlisten: 10, style: 11, call: 12, define: 13, set_var: 14, drop_var: 15, adopt: 16 };
 export const SAYS = { nothing: 0, number: 1, flag: 2, text: 3 };
+<<<<<<< HEAD
 export const TAGS = ["span", "button", "div", "a", "img", "input", "dialog", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "ul", "li", "article", "progress", "form", "label"];
 export const AFTER = { first: 0, append: 1, sibling: 2 };
 export const HOST = { entry: "avra_main", event: "avra_ui_event", seat: "avra_ui_seat", fired: "avra_ui_fired", answered: "avra_ui_answered", painted: "avra_ui_painted", repaired: "avra_ui_repaired", walks: "avra_ui_walks", scrolled: "avra_ui_scrolled" };
+=======
+export const HOST = { entry: "avra_main", event: "avra_ui_event", seat: "avra_ui_seat", fired: "avra_ui_fired", answered: "avra_ui_answered", painted: "avra_ui_painted", repaired: "avra_ui_repaired", said: "avra_ui_said", took: "avra_ui_took", walks: "avra_ui_walks" };
+>>>>>>> dcdf9f99 (ui: a module swapped under the page takes its elements over (hot reload (c)))
 export const ROWS = { frame: "avra_dom_frame", arm: "avra_ui_arm", disarm: "avra_ui_disarm", stood: "avra_ui_stood", get: "avra_ui_get", abort: "avra_ui_abort", next_paint: "avra_ui_next_paint" };

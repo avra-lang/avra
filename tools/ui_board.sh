@@ -47,6 +47,14 @@ carried=$(node -e 'const m = new WebAssembly.Module(require("fs").readFileSync(p
 shrunk="unshrunk (no wasm-opt on PATH)"
 command -v "${WASM_OPT:-wasm-opt}" >/dev/null 2>&1 && shrunk="shrunk by ${WASM_OPT:-wasm-opt}"
 
+# THE SAME BOARD WITH ONE WORD EDITED: the module a page swaps to on a view edit.
+mkdir -p "$work/edited"
+cp -R "$tree/tools/ui-board" "$work/edited/ui-board"
+sed 's/fn title() -> string { "Tasks" }/fn title() -> string { "Tasks today" }/' "$tree/tools/ui-board/src/board.av" > "$work/edited/ui-board/src/board.av"
+cmp -s "$tree/tools/ui-board/src/board.av" "$work/edited/ui-board/src/board.av" && { echo "ui-board: the edit found no heading to change"; exit 1; }
+"$avra" build --target "$target" --wasm_reactor "$work/edited/ui-board" >"$work/edited.out" 2>"$work/edited.err" || { cat "$work/edited.err"; echo "ui-board: the edited board did not build"; exit 1; }
+edited=$(tail -1 "$work/edited.out")
+
 # THE SERVER'S FIRST PAGE, drawn natively from the same view: the print the
 # module is held to and the bytes of HTML a page carries.
 mkdir -p "$work/server/tools"
@@ -56,7 +64,7 @@ if ! sent=$("$avra" run "$work/server/tools/ui-board" 2>"$work/hydrate.err"); th
     cat "$work/hydrate.err"; echo "ui-board: the server's page did not draw"; exit 1
 fi
 
-if ! out=$(node "$tree/tools/ui-board/demo.mjs" "$wasm" "$(echo "$sent" | sed -n 1p)" "$(echo "$sent" | sed -n 2p)" 2>&1); then
+if ! out=$(node "$tree/tools/ui-board/demo.mjs" "$wasm" "$(echo "$sent" | sed -n 1p)" "$(echo "$sent" | sed -n 2p)" "$edited" 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-board: the board failed on the page"; exit 1
 fi
 # WHAT THE HOST MAY CALL, and whose word each is: the module's host fns.
