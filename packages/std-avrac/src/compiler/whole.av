@@ -1,6 +1,7 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
+    EmbedKind,
     digest_of,
     some_list,
     CollectScope,
@@ -50,7 +51,7 @@ use compiler.lower.{
     FieldPlan,
     collect_answer_type,
 }
-use compiler.host.{library_stem, Beneath, Read, InputName}
+use compiler.host.{library_stem, Beneath, Read, InputName, embedded_kind}
 use compiler.backend.{platform_defines}
 use @std.errors.{Loc}
 
@@ -372,16 +373,19 @@ impl Workspace {
     }
 
     /// THE EMBED LAW, judged where the literal stands: the file's path,
-    /// or what is wrong with it.
-    fn embed_placed(f: FileId, rel: string) -> Result<string, EmbedFault> {
-        self.embed_placed_beside(self.decls.file(f).path, rel)
+    /// or what is wrong with it. Both kinds read beside their source.
+    fn embed_placed(f: FileId, rel: string, kind: EmbedKind) -> Result<string, EmbedFault> {
+        self.embed_placed_beside(self.decls.file(f).path, rel, kind)
     }
 
-    fn embed_placed_beside(source: string, rel: string) -> Result<string, EmbedFault> {
+    fn embed_placed_beside(source: string, rel: string, kind: EmbedKind) -> Result<
+        string,
+        EmbedFault,
+    > {
         let place = self.embed_place(source, rel)?
         let path = joined_path(place.root, place.rel)
-        match self.embedded(path) {
-            .Text(_) -> path,
+        match self.embedded(path, kind) {
+            .Text(_) or .Octets(_) -> path,
             .Missing -> .Err(EmbedFault.Missing),
             .Linked -> .Err(EmbedFault.Linked),
             .NotText(at) -> .Err(EmbedFault.NotText(at)),
@@ -389,15 +393,17 @@ impl Workspace {
         }
     }
 
-    /// A settlement's `embed`: the text of the file a literal named, or
-    /// why not. THE SAME LAW AS THE LITERAL'S, asked of the path the
-    /// lowering wrote: inside a package of this workspace, through no
-    /// link — so a path no literal named reads nothing.
-    fn embed_read(path: string) -> Result<string, string> {
+    /// A settlement's `embed`: the octets of the file a literal named, as
+    /// the kind reads them, or why not. THE SAME LAW AS THE LITERAL'S,
+    /// asked of the path the lowering wrote: inside a package of this
+    /// workspace, through no link — so a path no literal named reads
+    /// nothing.
+    fn embed_read(path: string, kind: EmbedKind) -> Result<Bytes, string> {
         let root? = self.root_over(path) else { fail embed_literal_law }
         let place? = beneath_root(root, path) else { fail embed_literal_law }
-        match self.embedded(path) {
-            .Text(text) -> text,
+        match self.embedded(path, kind) {
+            .Text(text) -> text.bytes(),
+            .Octets(octets) -> octets,
             .Missing -> .Err("`embed` finds no `${place.rel}`"),
             .Linked -> .Err("`embed` follows no link — one stands on the way to `${place.rel}`"),
             .NotText(at) -> .Err("`embed` answers text, and `${place.rel}` is not UTF-8 — byte ${at}"),
@@ -408,9 +414,9 @@ impl Workspace {
     /// What stands at an embedded file, through its cell: AN EMBEDDED FILE
     /// IS AN INPUT, NEVER A FILE ROW — a query that reads it depends on its
     /// cell, and no row is minted while a query reads the File relation.
-    fn embedded(path: string) -> Beneath {
-        match self.input(InputName { kind: .Embedded, key: path }) {
-            .Embedded(_, seen) -> seen,
+    fn embedded(path: string, kind: EmbedKind) -> Beneath {
+        match self.input(InputName { kind: embedded_kind(kind), key: path }) {
+            .Embedded(_, _, seen) -> seen,
             .Text(_, _) or .Octets(_, _) or .Range(_, _, _, _) or .Listing(_, _) or .Exists(_, _) or .Env(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> {
                 avra_trap("defect: an `embedded` input answered another kind of read")
                 Beneath.Missing
@@ -420,10 +426,10 @@ impl Workspace {
 
     /// The door's read of an embedded file: beneath the package root over
     /// it, as the key alone names it, through no link.
-    fn embedded_asked(path: string) -> Read {
-        let root? = self.root_over(path) else { return unrooted(path) }
-        let place? = beneath_root(root, path) else { return unrooted(path) }
-        self.host.embedded(path, place.root, place.rel)
+    fn embedded_asked(path: string, kind: EmbedKind) -> Read {
+        let root? = self.root_over(path) else { return unrooted(path, kind) }
+        let place? = beneath_root(root, path) else { return unrooted(path, kind) }
+        self.host.embedded(path, place.root, place.rel, kind)
     }
 
     /// Whether a file is Avra source, by its shape alone (`is_source` — a lone
@@ -693,7 +699,7 @@ fn mark_prints(mark: AnnotationFact?) -> List<string> {
 fn lit_print(a: LitArg) -> string { fields_wire([lit_kind_word(a.kind), a.text]) }
 
 /// An embedded file no package root stands over: the law's refusal.
-fn unrooted(path: string) -> Read { Read.Embedded(path, Beneath.Refused(embed_literal_law)) }
+fn unrooted(path: string, kind: EmbedKind) -> Read { Read.Embedded(path, kind, Beneath.Refused(embed_literal_law)) }
 
 /// `path` as it stands beneath `root`, or null when it does not.
 fn beneath_root(root: string, path: string) -> EmbedPlace? {

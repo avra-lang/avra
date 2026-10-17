@@ -8,6 +8,7 @@
 //! the representation laws re-judge every substituted slot.
 use core.{
     void_ref,
+    EmbedKind,
     ExprId,
     StmtId,
     TypeId,
@@ -423,8 +424,9 @@ fn dispatched_call(
 ) -> TypeId {
     let placed? = cx.placed(e, callee, cx.bound_decl(e), args, s.params) else { return cx.error_type }
     let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args) }
-    if cx.view.decls.is_meta_fn(d, "embed") {
-        let refused: TypeId? = embed_law(cx, e, placed.args[0])
+    let reads = cx.view.decls.embed_kind_of(d)
+    if reads != null {
+        let refused: TypeId? = embed_law(cx, e, placed.args[0], reads!)
         if refused != null { return refused! }
     }
     if cx.view.decls.is_meta_fn(d, "code_hash") && !names_a_fn(cx, placed.args[0]) { return code_hash_unnamed(cx, placed.args[0]) }
@@ -759,9 +761,9 @@ fn component_called(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
 /// THE EMBED LAW, at the literal: the path is written, it stays inside
 /// the package that writes it, no link stands on the way to it, and
 /// what stands there is text. Null when the const may read it.
-fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId) -> TypeId? {
+fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId, kind: EmbedKind) -> TypeId? {
     let rel? = cx.view.store.expr(path).text_of() else { return embed_computed_path(cx, e) }
-    let fault = match cx.view.decls.embed_placed(cx.view.file, rel) {
+    let fault = match cx.view.decls.embed_placed(cx.view.file, rel, kind) {
         .Ok(_) -> { return null },
         .Err(why) -> why,
     }
