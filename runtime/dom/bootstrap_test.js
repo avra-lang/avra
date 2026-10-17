@@ -397,7 +397,7 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   let repairs = 0;
   const sent = [];
   const apply = createApplier(doc, s.mount, (who, kind, said) => sent.push([who, kind]), null, () => repairs++);
-  apply(frame(adopt("div", "#text", "b"), setAttr(1, "title", "t")));
+  apply(frame(adopt("div", "#text:2", "b"), setAttr(1, "title", "t")));
   check("an adopted page keeps its elements and numbers them in document order", [s.mount.childNodes[0] === s.div, s.div.attrs.title === undefined, s.text.attrs.title], [true, true, "t"]);
   apply(frame(setText(1, "yo"), create(3, "i"), place(3, 0, 2)));
   check("a patch after adoption reaches the adopted nodes", [s.text.textContent, tags(s.div)], ["yo", ["#text", "#comment", "b", "i"]]);
@@ -410,10 +410,17 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   await Promise.resolve();
   check("a page that is not the program's is emptied, the rest of the frame skipped, and the program asked to draw again", [t.mount.childNodes.length, repairs], [0, 1]);
 
+  const v = served(doc);
+  v.text.textContent = "h";
+  const apply4 = createApplier(doc, v.mount, () => {}, null, () => repairs++);
+  apply4(frame(adopt("div", "#text:2", "b")));
+  await Promise.resolve();
+  check("a text that holds other words than the program drew is not adopted", [v.mount.childNodes.length, repairs], [0, 2]);
+
   const u = served(doc);
   const apply3 = createApplier(doc, u.mount, () => {}, null, () => repairs++);
   apply3(frame(adopt(), create(0, "p"), place(0, NO_ID, NO_ID)));
-  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 1]);
+  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 2]);
   console.warn = warn;
 }
 

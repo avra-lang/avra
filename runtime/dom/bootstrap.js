@@ -114,8 +114,11 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
   // numbers. Markers (comments) are the writer's, between texts a parser
   // would join. A page that is not the program's elements is emptied, loudly,
   // and the program draws from nothing.
-  const kindOf = (n) => String(n.nodeName ?? n.tagName).toLowerCase();
-  const marker = (n) => kindOf(n) === "#comment";
+  const nameOf = (n) => String(n.nodeName ?? n.tagName).toLowerCase();
+  const marker = (n) => nameOf(n) === "#comment";
+  // A text is its octets' length too: a parser that drops a leading newline or
+  // folds a line ending holds other words than the program drew.
+  const kindOf = (n) => (nameOf(n) === "#text" ? `#text:${new TextEncoder().encode(n.textContent).length}` : nameOf(n));
   const standing = () => {
     const out = [];
     const walk = (parent) => {
