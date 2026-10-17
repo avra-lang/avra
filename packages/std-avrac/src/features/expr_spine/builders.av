@@ -90,16 +90,19 @@ fn mixed_bitwise(first: string, second: string) -> string {
     "`${first}` and `${second}` in one expression have no agreed order — write parentheses to say which binds first"
 }
 
-/// `~v` is `v ^ -1`: the parse desugars, so no pass learns a node —
-/// the same trick `-v` uses, and for the same reason. Two's
-/// complement makes the two exact, and an `Expr` variant would tax
-/// every exhaustive match in the tree for a form that is already
-/// spellable.
+/// `~v` keeps its own node; what it MEANS is `v ^ -1`, minted with it
+/// and walked in its place, so no pass learns a rule for `~`.
 fn build_bitnot(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
-    let ones = b.store.alloc_expr(Expr.IntLit(0 - 1), b.span)
-    let xor = want(binop_of("^"), "the xor operator")?
-    b.make_expr(Expr.Binary(xor, v, ones))
+    let ones = b.expr_node(Expr.IntLit(0 - 1))
+    let rewrite = b.expr_node(Expr.Binary(want(binop_of("^"), "the xor operator")?, v, ones))
+    let sugar = b.expr_node(Expr.Bitnot(rewrite))
+    b.store.mint_for(sugar, [ones, rewrite], bitnot_means(b.source_of(sugar), b.source_of(v)))
+    b.wrap_expr(sugar)
+}
+
+fn bitnot_means(written: string, operand: string) -> string {
+    "`${written}` means `${operand} ^ -1`"
 }
 
 /// `l op r` or `l is …` — at most one, never a chain. The right side
