@@ -844,6 +844,12 @@ fn match_repetition<T, N>(
     )
 }
 
+/// The bindings with the fold's seed label holding the value so far,
+/// replacing whatever it held.
+fn with_seed<T, N>(bindings: List<Binding<T, N>>, field: string, acc: Captured<T, N>) -> List<Binding<T, N>> {
+    [b.rebound(field, acc, false) for b in bindings]
+}
+
 /// A fold's repeated group: each turn is matched with the seed's label
 /// bound to the value so far, and the node it builds becomes that
 /// value. `origin` is where the fold's branch began, so a turn's node
@@ -871,7 +877,7 @@ fn match_fold<T, N>(
             rule_name,
             turns,
             cursor,
-            [b.rebound(field, acc, false) for b in bindings],
+            with_seed<T, N>(bindings, field, acc),
             false,
             capped,
             origin,
@@ -882,7 +888,7 @@ fn match_fold<T, N>(
             return fatal_defect<T, N>(
                 cx,
                 cursor,
-                [b.rebound(field, acc, false) for b in bindings],
+                with_seed<T, N>(bindings, field, acc),
                 diagnostics,
                 farthest,
             )
@@ -899,7 +905,7 @@ fn match_fold<T, N>(
     }
     matched<T, N>(
         cursor,
-        [b.rebound(field, acc, false) for b in bindings],
+        with_seed<T, N>(bindings, field, acc),
         acc,
         diagnostics,
         farthest,

@@ -632,9 +632,9 @@ climb showed the word itself already names the variant through `op_symbol`.
 |---|---|
 | `op` | the climb binds `op` as the word it took: its one token, or — for a multi-token word (`>` `>`) — the word's text as one stated token (`executor.av` `operator_capture`; `Taken.op_words`). `bitwise_symbol` is dead weight |
 | `BinOp` payload | `core.binop_of` (inverse of `op_symbol`, one source); `Slots.op_of`; `Makes` knows `"BinOp"`; `Binary` is now makeable |
-| node-build tiers | `validate.av` accepts `.Node` in a tier; `node_grammar.av` binds and judges tier builds (and the branch's build for every tier it serves) against the branch's `l`/`op`/`r`; a build need not read `op`/`r` (`Seq.written_labels`) |
+| node-build tiers | `validate.av` accepts `.Node` in a tier; `node_grammar.av` binds and judges tier builds (and the branch's build for every tier it serves) against the branch's `left`/`op`/`right`; a build need not read `op`/`right` (`Seq.written_labels`) |
 | the assembly refuses | a word a `BinOp`-payload build serves that names no operator ("`+=`, which spells no operator") |
-| payload names | `Binary { op, l, r }` and `Coalesce { l, r }` — labels are payload names, and the climb's are `l`/`op`/`r`; the two `self.left`/`self.right` readers (expr_spine, nullable semantics) follow |
+| labels | the climb's captures are `left`, `op`, `right` (was `l`/`op`/`r`), so they equal the nodes' own payload names (`Binary { op, left, right }`, `Coalesce { left, right }`) and read as prose; the operand label an `@operators` branch needs is `left` |
 | not built | `is` as a tier suffix with its pattern kept as `Is`'s field (step 5 `@facet`); `pipe` (means) |
 
 nodes-operators can now write `left "+" "-" … } -> Expr.Binary` with plain words and
@@ -649,3 +649,9 @@ baseline clean, fmt clean. One observation: a warm `.avra-cache` left by an earl
 build of the changing tree trapped `avra test` with "index 129 is out of bounds
 (length 124)" until the cache was moved aside; not reproduced on a cold cache, cause
 not found.
+
+Adopted on top of #828 in the same branch: the spine's two `@operators` blocks build
+`-> Expr.Binary` and `left "??" -> Expr.Coalesce`; `build_binary`, `build_bitwise`,
+`build_coalesce`, `bitwise_symbol` and the local `binop_of` are gone (`core.binop_of`).
+`compare` (the `is` suffix), `pipe` and `unmixed_bitwise` stay, as listed above. Backlog:
+tasks `avra-8sb5.10.173` (a payload enum spelled by source words).
