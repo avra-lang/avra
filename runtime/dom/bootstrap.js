@@ -482,6 +482,11 @@ export function createTimers(clock, fired) {
       held.delete(t);
     },
     count: () => held.size,
+    // Every timer a module that stood down armed is let go.
+    clear: () => {
+      for (const timer of held.values()) (timer.again ? clock.clearInterval : clock.clearTimeout)(timer.handle);
+      held.clear();
+    },
   };
 }
 
@@ -551,6 +556,14 @@ export function createFetches(fetchFn, answered, clock = globalThis) {
       mine.controller.abort();
     },
     count: () => held.size,
+    // Every request a module that stood down asked is aborted, unanswered.
+    clear: () => {
+      for (const mine of held.values()) {
+        if (mine.timer !== null) clock.clearTimeout(mine.timer);
+        mine.controller.abort();
+      }
+      held.clear();
+    },
   };
 }
 
@@ -592,8 +605,12 @@ export function printOf(mount) {
 // `style` are a real page's or a stub's; `wasi(memory)` answers the
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
-// the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, failed = (e) => { throw e; }, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb) }) {
+// the name it lacks. `hot(swap)` is handed the verb that replaces the
+// module under the page: `swap(source)` asks the running module to say its
+// page, lets go of what it armed and asked, and starts the new one over the
+// elements the page holds — so its first paint is a diff against them.
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, failed = (e) => { throw e; }, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb), hot = null }) {
+  // The module events, answers and fires reach: the one running now.
   let mod = null;
   const into = guarded(failed);
   const timers = createTimers(clock, into((token) => mod[HOST.fired](BigInt(token))));
@@ -601,32 +618,56 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const fetches = createFetches(fetchFn, into((token, status, octets) => sendAnswer(mod, token, status, octets)), clock);
   const windows = createWindows(document, mount, into((path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin)));
   const apply = createApplier(document, mount, into((who, what, said) => sendEvent(mod, who, what, said)), style, into(() => mod[HOST.repaired]()));
-  mod = await instantiate(source, {
-    wasi: wasi(() => mod.memory),
-    // The seat is a Bytes: the pointer names its box, and the LENGTH comes
-    // from the runtime's own reader, exported by the module.
-    rt: {
-      [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); queueMicrotask(windows.check); },
-      [ROWS.arm]: timers.arm,
-      [ROWS.disarm]: timers.disarm,
-      [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
-      [ROWS.abort]: fetches.abort,
-      [ROWS.next_paint]: frames.next,
-      [ROWS.stood]: () => BigInt(printOf(mount)),
-    },
-  });
-  const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
-  if (lacks.length > 0) {
-    throw new Error(`the module exports no ${lacks.join(", ")} — a page runs a program whose statements \`mount\` a view (\`use @std.ui.web.{mount}\`)`);
-  }
-  // A REACTOR: initialize the C runtime once, then the program's own
-  // statements — never a `main` that exits.
-  mod._initialize();
-  const code = mod[HOST.entry]();
-  if (code !== 0) throw new Error(`the program's statements answered ${code}`);
+
+  // Start a module. Its rows reach IT, not the module running before it.
+  // `left` is the page that module said: none for a first start.
+  const start = async (from, left) => {
+    const own = { module: null };
+    const exports = await instantiate(from, {
+      wasi: wasi(() => own.module.memory),
+      // The seat is a Bytes: the pointer names its box, and the LENGTH comes
+      // from the runtime's own reader, exported by the module.
+      rt: {
+        [ROWS.frame]: (ptr) => { const bytes = frameOf(own.module.memory, ptr, own.module.avra_bytes_len); sent(bytes); apply(bytes); queueMicrotask(windows.check); },
+        [ROWS.arm]: timers.arm,
+        [ROWS.disarm]: timers.disarm,
+        [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
+        [ROWS.abort]: fetches.abort,
+        [ROWS.next_paint]: frames.next,
+        [ROWS.stood]: () => BigInt(left ? 0 : printOf(mount)),
+      },
+    });
+    own.module = exports;
+    const lacks = Object.values(HOST).filter((name) => typeof exports[name] !== "function");
+    if (lacks.length > 0) {
+      throw new Error(`the module exports no ${lacks.join(", ")} — a page runs a program whose statements \`mount\` a view (\`use @std.ui.web.{mount}\`)`);
+    }
+    // A REACTOR: initialize the C runtime once, then the program's own
+    // statements — never a `main` that exits.
+    exports._initialize();
+    if (left && left.length > 0) {
+      const at = Number(exports[HOST.seat](BigInt(left.length)));
+      new Uint8Array(exports.memory.buffer, at, left.length).set(left);
+      exports[HOST.took](BigInt(left.length));
+    }
+    mod = exports;
+    const code = exports[HOST.entry]();
+    if (code !== 0) throw new Error(`the program's statements answered ${code}`);
+    return exports;
+  };
+
+  const first = await start(source, null);
   // Said last: a reader of the page knows the module stands and has painted.
   if (document.documentElement) document.documentElement.setAttribute("data-avra", "ready");
-  return { mod, ears: apply.ears };
+  if (hot) {
+    hot(async (next) => {
+      const said = frameOf(mod.memory, Number(mod[HOST.said]()), mod.avra_bytes_len).slice();
+      timers.clear();
+      fetches.clear();
+      return start(next, said);
+    });
+  }
+  return first;
 }
 
 // EVERY WAY THE PAGE ENTERS THE MODULE — an event, a timer, a frame, an
