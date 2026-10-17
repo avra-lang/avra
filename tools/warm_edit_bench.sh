@@ -111,9 +111,10 @@ cp "$file" "$orig"
 restore() { cp "$orig" "$file"; rm -f "$orig"; }
 trap restore EXIT INT TERM
 
-# A FRESH EDIT per round: the appended word carries a run nonce and the
+# A FRESH EDIT per round, of the same WIDTH every run (a count of bytes written is exact only
+# if the edit's text is): the appended word carries a run nonce and the
 # round's own name, so no round lands on a store hit.
-nonce=${SPEED_NONCE:-$(date +%s)-$$}
+nonce=${SPEED_NONCE:-$(date +%s)-$(printf '%07d' $$)}
 edit() { # <word>
     cp "$orig" "$file"
     python3 - "$file" "$lit" "$1$nonce" <<'PY'
@@ -153,11 +154,27 @@ while [ "$i" -lt "$rounds" ]; do
 done
 printf 'warm edit %s\n' "$least" >> "$raw"
 
+# THE WORK, COUNTED: what the unchanged check and one more fresh edit DID, as the
+# compiler counts it (`check --counts`, compiler/work.av) — exact on every machine,
+# so tools/work_ratchet.py holds it with no slack. One round each, the edit never
+# a store hit.
+counted() { # <scenario>: `counts <scenario> <counter> <n>` rows from one check, its whole-read attribution to stderr
+    out=$("$avra" check --counts "$target" 2>&1 >/dev/null)
+    printf '%s\n' "$out" | grep '^whole:' | sed "s/^/$1 /" >&2
+    printf '%s\n' "$out" | grep '^counts:' | tail -n 1 | tr ' ' '\n' | grep = \
+        | while IFS== read -r name n; do printf 'counts %s %s %s\n' "$1" "$name" "$n"; done
+}
+counted unchanged >> "$raw"
+edit "counts"
+counted edit >> "$raw"
+
 cat "$raw"
 # `WARM_EDIT_ACCEPT` lowers this host's warm ceilings to what was measured
 # (never raises one); a human sets it when a real run landed under them.
 [ -z "${WARM_EDIT_ACCEPT:-}" ] || echo "warm_edit_bench: --accept — the warm ceilings may only fall" >&2
 python3 tools/speed_ratchet.py --warm ${WARM_EDIT_ACCEPT:+--accept} --raw "$raw"
 st=$?
+# `WORK_ACCEPT` lowers the work-count ceilings to what was counted (never raises one).
+python3 tools/work_ratchet.py ${WORK_ACCEPT:+--accept} --raw "$raw" >&2 || st=1
 rm -f "$raw"
 exit $st

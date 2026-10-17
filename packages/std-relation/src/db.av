@@ -285,6 +285,14 @@ impl Db {
         self.joined_unnamed(hash, close)
         self.relations.push(RelRef { name: name, family: family, hash: hash })
         self.reached(name)
+        self.named_in(name, family())
+    }
+
+    /// A relation's declared name given to the kernel as its family's trace name, so a read
+    /// of it is reported by name; none while the Db has no kernel (`homed` names them then).
+    fn named_in(name: string, family: int) {
+        let kernel? = self.kernel.get() else { return }
+        kernel.named(family, name)
     }
 
     /// A column reached here that no saved answer can name: its hash and its close only.
@@ -356,6 +364,7 @@ impl Db {
         self.forgotten()
         self.kernel.set(kernel)
         for again in self.registrars.get() { again((verify: fn(int) -> int) -> self.family(kernel, verify)) }
+        for r in self.relations.get() { self.named_in(r.name, r.family()) }
     }
 
     /// Everything kept about the kernel being left: its families' ids and

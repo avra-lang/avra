@@ -1,0 +1,50 @@
+// The operator table's corners, parsed through the composed language:
+// what a tier takes, what a closed suffix leaves alone, and what a
+// run never chains. A count of voices pins each, never "at least one".
+use @std.avrac.compiler.{parse_source}
+
+/// How many voices parsing `source` as a program raises.
+fn voices(source: string) -> int {
+    parse_source(source).voices.list.length
+}
+
+spec "features/expr_spine — operator table corners" {
+    given "an `is` test, which closes its tier's right side" {
+        then "a tighter operator after it is refused" {
+            voices("let a = 1\na is .X ?? a") == 1
+        }
+        then "a pipe after it is refused" {
+            voices("let a = 1\na is .X |> a") == 1
+        }
+        then "a looser operator after it is read" {
+            voices("let a = 1\na is .X && a is .Y") == 0
+        }
+        then "a comparison after it is refused" {
+            voices("let a = 1\na is .X == a") == 1
+        }
+    }
+    given "comparisons, which never chain" {
+        then "a second comparison is refused" {
+            voices("let a = 1\na < a < a") == 1
+        }
+        then "a parenthesised one is read" {
+            voices("let a = 1\n(a < a) < a") == 0
+        }
+    }
+    given "a coalesce run" {
+        then "it groups to the left" {
+            let p = parse_source("let a = 1\na ?? a ?? a")
+            let root = p.store.stmt_value(p.stmts[1])!
+            p.voices.list.length == 0 &&
+                match p.store.expr(root) {
+                    .Coalesce(l, _) -> p.store.expr(l) is .Coalesce,
+                    _ -> false,
+                }
+        }
+    }
+    given "a line that begins with an operator" {
+        then "it is refused where the pipe says so" {
+            voices("let a = 1\n|> a") == 1
+        }
+    }
+}

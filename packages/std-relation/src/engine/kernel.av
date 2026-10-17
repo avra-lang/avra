@@ -880,8 +880,19 @@ impl Kernel {
         Verdict.Reuse
     }
 
+    /// A whole read of `relation` recorded under the innermost open query: counted in total and
+    /// by who asked, so the queries that read all of a relation are named.
+    fn whole_read(relation: int) {
+        whole_counted()
+        let edge = self.asking_edge()
+        let who = if edge < 0 { "no query open" } else { self.family_name(family_of(edge)) }
+        let key = "${who} reads ${self.family_name(relation)}"
+        whole_by().put(key, (whole_by().get().get(key) ?? 0) + 1)
+    }
+
     fn miss(family: int) -> Verdict {
         self.misses.set(self.misses.get() + 1)
+        computed_tally().set(computed_tally().get() + 1)
         if self.reporting { self.verdict_counted(2 * family + 1) }
         Verdict.Compute
     }
@@ -966,6 +977,28 @@ fn abandoned_out_of_order(key: Key) {
         "defect: only the innermost open query may be abandoned, and ${key.family}:${key.arg} is not it",
     )
 }
+
+/// Asks computed rather than served, over every kernel, since the process began.
+once fn computed_tally() -> Cell<int> { Cell.new(0) }
+
+/// The queries recomputed over every kernel, since the process began.
+export fn queries_computed() -> int { computed_tally().get() }
+
+/// Whole-relation reads, over every kernel, since the process began.
+once fn whole_tally() -> Cell<int> { Cell.new(0) }
+
+/// One whole-relation read recorded outside any kernel (`Rows.seen_whole`, the one door).
+export fn whole_counted() { whole_tally().set(whole_tally().get() + 1) }
+
+/// Whole-relation reads by the family that asked and the relation read all of, since the process began.
+once fn whole_by() -> Cell<Map<string, int>> { Cell.new({}) }
+
+/// The whole reads as `<asker> reads <relation>: <n>`, in the order first seen — a family by
+/// the name its owner gave (a relation's is its declaration's), else its number.
+export fn whole_reads_by() -> List<string> { ["${who}: ${n}" for who, n in whole_by().get()] }
+
+/// The whole-relation reads recorded over every kernel, since the process began.
+export fn whole_reads() -> int { whole_tally().get() }
 
 /// Recorded reads, and abandoned frames, over every kernel that counted them.
 once fn reads_tally() -> Cell<int> { Cell.new(0) }

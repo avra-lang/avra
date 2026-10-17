@@ -1460,6 +1460,12 @@ impl Workspace {
         null
     }
 
+    /// A file's text read from disk, as the Source row its input holds.
+    fn read_source(path: string) -> DbRow {
+        work_loaded()
+        DbRow.Source(new_source_file(path, self.listed_text(path)))
+    }
+
     /// A file's text as a source, over its Text input: the input's cell
     /// is the one place the text is read, and the source is cut by the
     /// word that cell is.
@@ -1468,11 +1474,7 @@ impl Workspace {
         source_of(
             self
                 .relation(Family.Source)
-                .demand(
-                    f.index,
-                    () -> DbRow.Source(new_source_file(path, self.listed_text(path))),
-                    (s: DbRow) -> self.text_word(path),
-                ),
+                .demand(f.index, () -> self.read_source(path), (s: DbRow) -> self.text_word(path)),
         )
     }
 
