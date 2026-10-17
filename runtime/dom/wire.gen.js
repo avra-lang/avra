@@ -3,4 +3,5 @@ export const WIRE_VERSION = 10;
 export const NO_ID = -1;
 export const OP = { create: 1, create_text: 2, place: 3, remove: 4, set_attr: 5, drop_attr: 6, set_prop: 7, set_text: 8, listen: 9, unlisten: 10, style: 11, call: 12 };
 export const SAYS = { nothing: 0, number: 1, flag: 2, text: 3 };
-export const HOST = { entry: "avra_main", event: "avra_ui_event", seat: "avra_ui_seat" };
+export const HOST = { entry: "avra_main", event: "avra_ui_event", seat: "avra_ui_seat", fired: "avra_ui_fired" };
+export const ROWS = { frame: "avra_dom_frame", arm: "avra_ui_arm", disarm: "avra_ui_disarm" };

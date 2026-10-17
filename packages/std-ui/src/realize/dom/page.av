@@ -1,7 +1,7 @@
 //! `realize/dom/page.av` — an app on a live page. Each paint is the frame
 //! of what changed, handed to whoever holds the page; each echo runs the
 //! handler the last paint bound and paints again.
-use app.{App, app, notice_node}
+use app.{App, notice_node, owned_app}
 use realize.dom.live.{Live}
 use realize.dom.wire.{echo, frame}
 use tree.node.{Node}
@@ -16,14 +16,17 @@ export type Paged = { app: App, page: Live }
 /// already shows something is TURNED INTO the view, never drawn over.
 export fn paged<V: View>(view: fn() -> V, theme: fn() -> Theme, page: Live, send: fn(Bytes) -> void) -> Paged {
     let notice: Cell<Node?> = Cell.new(null)
+    let standing: Cell<List<string>> = Cell.new([])
     let made = Paged {
-        app: app(
+        app: owned_app(
             view,
             theme,
             (root: Node, worn: Theme) -> {
                 let patches = page.patches(root, worn, notice.get())
+                standing.set(page.owners())
                 if !patches.is_empty() { send(frame(patches)) }
             },
+            standing,
         ),
         page: page,
     }
@@ -44,6 +47,6 @@ impl Paged {
     /// cannot read, or one nothing hears, answers false and paints nothing.
     fn heard(who: int, what: int, tag: int, num: int, text: string?) -> bool {
         let said? = echo(who, what, tag, num, text) else { return false }
-        self.app.turn(() -> self.page.fire(said.id, said.kind, said.said))
+        self.app.turn_of("${said.id.n}", () -> self.page.fire(said.id, said.kind, said.said))
     }
 }

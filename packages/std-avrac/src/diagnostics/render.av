@@ -121,8 +121,8 @@ export fn located_files(d: Diag) -> List<string> {
 }
 
 /// The diagnostic rendered over MANY sources — each frame's window
-/// comes from the file its Loc names; a file no source answers to
-/// falls back to the first.
+/// comes from the file its Loc names (a Loc naming none reads the
+/// first); a file no source answers to renders its label alone.
 export fn render_among(d: Diag, sources: List<SourceFile>) -> string {
     render_with(diag_facts_of(d), (l: Loc) -> source_named(sources, l.file))
 }
@@ -151,8 +151,17 @@ export fn diag_facts_of(d: Diag) -> DiagFacts {
     }
 }
 
-fn source_named(sources: List<SourceFile>, file: string?) -> SourceFile {
-    sources.find(it.file == file) ?? sources[0]
+fn source_named(sources: List<SourceFile>, file: string?) -> SourceFile? {
+    if file == null { sources[0] } else { sources.find(it.file == file) }
+}
+
+/// One frame: a window from the source its Loc picks; with no Loc, or a
+/// Loc into a file no source answers to, its label alone — a window
+/// over the wrong text would read offsets that are not there.
+fn framed(f: Frame, pick: fn(Loc) -> SourceFile?) -> List<string> {
+    let at? = f.loc else { return unplaced(f.label) }
+    let src? = pick(at) else { return unplaced("${at.file ?? "<source>"}: ${f.label ?? ""}") }
+    [window(at, f.label, src)]
 }
 
 /// Every frame windowed from the source its Loc picks.
@@ -166,15 +175,10 @@ fn source_named(sources: List<SourceFile>, file: string?) -> SourceFile {
 /// those words went red with the refusal itself still correct. The
 /// workaround is worse than the defect: folding the label into the
 /// message at one voice is a copy the next unlocated voice repeats.
-fn render_with(d: DiagFacts, pick: fn(Loc) -> SourceFile) -> string {
+fn render_with(d: DiagFacts, pick: fn(Loc) -> SourceFile?) -> string {
     mut parts = ["${severity_word(d.severity)}[${d.kind}]: ${d.message}"]
-    if d.primary.loc != null {
-        parts.push(window(d.primary.loc!, d.primary.label, pick(d.primary.loc!)))
-    } else {
-        parts = parts.concat(unplaced(d.primary.label))
-    }
-    parts = parts
-        .concat([window(f.loc!, f.label, pick(f.loc!)) for f in d.secondary if f.loc != null])
+    parts = parts.concat(framed(d.primary, pick))
+    parts = parts.concat(flatten([framed(f, pick) for f in d.secondary if f.loc != null]))
     parts = parts.concat(d.cause_lines)
     if d.help != null { parts.push("help: ${d.help!}") }
     parts = parts.concat(flatten([suggestion_lines(sg) for sg in d.suggestions]))

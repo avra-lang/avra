@@ -8,7 +8,7 @@
 use core.{StmtId, ExprId, DeclId, Binding, same_expr}
 use features.{ResolveCx, FileView, NameFacts}
 use diagnostics.{Diag, refusal}
-use @std.errors.{Loc}
+use @std.errors.{Loc, Suggestion, Edit, Confidence}
 
 export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
     let t? = cx.view.store.assign_target(s) else { return }
@@ -63,7 +63,7 @@ fn root_refusal(view: FileView, names: NameFacts, t: ExprId, r: ExprId, b: Bindi
             _ -> null
         },
         .Index(_) -> immutable_index(n, at),
-        .Def(s) -> if view.store.stmt(s) is .MutLet { null } else { not_mut(n, at) },
+        .Def(s) -> if view.store.stmt(s) is .MutLet { null } else { not_mut(view, s, n, at) },
         .Pattern(_, _) -> immutable_bind(n, at),
         .Capture(l, j) -> if captures_state(view, names, l, j) { null } else { captured_copy(n, at) },
         .Decl(d) -> declared_place(view, d, n, at),
@@ -195,12 +195,28 @@ fn immutable_const(n: string, at: Loc?) -> Diag {
     )
 }
 
-fn not_mut(n: string, at: Loc?) -> Diag {
+fn not_mut(view: FileView, s: StmtId, n: string, at: Loc?) -> Diag {
     refusal(
         "resolve.immutable",
         at,
         "`${n}` is not `mut`",
         assigned_here,
         "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`",
-    )
+    ) with { suggestions: mut_keyword(view, s, n) }
+}
+
+/// `let` → `mut`: the one edit that makes a plain `let` a place. A
+/// `let` statement's span opens on its keyword.
+fn mut_keyword(view: FileView, s: StmtId, n: string) -> List<Suggestion> {
+    let at? = view.stmt_loc(s) else { return [] }
+    match view.store.stmt(s) {
+        .Let(_, _, _) -> [
+            Suggestion {
+                confidence: Confidence.High,
+                description: "declare `${n}` with `mut` — `mut ${n} = …`",
+                edits: [Edit { loc: at with { hi: at.lo + 3 }, replacement: "mut" }],
+            },
+        ],
+        _ -> [],
+    }
 }
