@@ -15,8 +15,10 @@
 //! A typed reader walks the text itself through the SCANS (`space`,
 //! `plain_end`, `string_end`, `text_of`, `number_end`, `int_end`,
 //! `int_of`, `skip`, `value_at`): each answers the position past what
-//! it read, or -1 where the text is not JSON. They accept exactly the
-//! texts `parse` accepts, so a reader that meets -1 asks `parse` why.
+//! it read, or -1 where the text is not JSON. They accept the texts `parse`
+//! accepts, but for a float past the largest float, whose range is its
+//! reader's to judge; a reader that meets -1 asks `parse` why. `typed` is
+//! such a reader, and the one scanner a page that moves its own types links.
 use @std.text.{builder, repeat, from_codepoint, parse_int, parse_float, admits}
 use @std.errors.{Error, ErrorInfo, info}
 
@@ -666,8 +668,9 @@ export fn text_of(text: string, b: Bytes, i: int, end: int) -> string {
 
 /// Past the number at `i` as `parse` reads it — `-`? an integer part
 /// with no leading zero, then a fraction and an exponent each
-/// optional — or -1 where there is none, or it is past what its kind
-/// holds.
+/// optional — or -1 where there is none, or an integer past what an int
+/// holds. A float's RANGE is its reader's to judge (`parse_float`): the scan
+/// is the grammar alone, so a page that reads no float links no float parser.
 export fn number_end(b: Bytes, i: int) -> int {
     let from = if i < b.length && b.at(i) == 45 { i + 1 } else { i }
     let whole = b.run(from, digits)
@@ -679,8 +682,7 @@ export fn number_end(b: Bytes, i: int) -> int {
     let end = if e > point { b.run(signed, digits) } else { point }
     if e > point && end == signed { return -1 }
     if end == whole { return if whole - from < 19 || fits(b, i, end) { end } else { -1 } }
-    let t? = b.slice(i, end).text() else { return -1 }
-    if parse_float(t) == null { -1 } else { end }
+    end
 }
 
 /// Past the integer at `i` — a number with no fraction and no
