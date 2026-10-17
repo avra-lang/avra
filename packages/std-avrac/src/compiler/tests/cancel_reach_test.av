@@ -5,7 +5,7 @@
 // interface, where the bit is contract.
 use compiler.{Workspace}
 use compiler.host.{memory_host}
-use compiler.record.{read_fields, iface_digest}
+use compiler.record.{read_fields, iface_digest, note_producers}
 use core.{DeclId, flatten}
 use @std.avrac.testing.{provided, test_workspace, ir_of}
 use compiler.backend.{render_ir}
@@ -418,7 +418,9 @@ fn held_reading(lines: List<string>, edited: fn(string) -> string) -> Workspace 
     let records = [parsed.record_line(parsed.decls.raw_decl(d), ordinal, false) for ordinal, d in parsed.decls.decls_of_file(f)]
     let held = reach_workspace(source)
     held.hold_only(REACH_PATH)
-    held.mint_file(REACH_PATH, [read_fields(edited(line)) for line in records], {})
+    let rows = [read_fields(edited(line)) for line in records]
+    held.mint_file(REACH_PATH, rows, {})
+    note_producers(held, held.module_path_of(REACH_PATH), rows)
     held
 }
 
