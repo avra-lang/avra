@@ -120,6 +120,7 @@ INERT = {
     "hash": {"rows": {"avra_b3_state_len", "avra_b3_fresh", "avra_b3_update", "avra_b3_digest",
                       "avra_b3_oneshot", "avra_b3_digest_hex", "avra_b3_oneshot_hex",
                       "avra_bytes_adopted", "avra_trap"}, "world": {}},
+    "http_message": {"rows": set(), "world": {}},
     "json": {"rows": set(), "world": {}},
     "math": {"rows": set(), "world": {}},
     "path": {"rows": set(), "world": {}},

@@ -109,14 +109,17 @@ impl Workspace {
         // walks is itself a dependency of that resolve. The first
         // re-entry while the file's run is open expands again and keeps
         // its answer for the run; a later one reads it, so a file is not
-        // expanded once per member that asks.
+        // expanded once per member that asks. A re-entry that arrives
+        // while that first one still computes reads what is minted so far.
         let reentrant = self.relation(Family.Expanded).open(f.index)
         let settled = if reentrant { self.decls.reentry_answer(f) } else { null }
         if settled != null { return settled! }
+        if reentrant && self.decls.reentry_running(f) { return self.generated_so_far(f) }
         match self.relation(Family.Expanded).start_recursive(f.index) {
             .Reuse(value) -> { return expanded_of(value) },
             .Compute -> nothing(),
         }
+        if reentrant { self.decls.reentry_begun(f) }
         self.decls.hush_expansion(f)
         let p = self.parsed(f)
         let vis = self.visible(f)
@@ -136,6 +139,12 @@ impl Workspace {
             .finish(f.index, DbRow.Expanded(made), fp(31, [d.index for d in made]))
         if reentrant { self.decls.reentry_kept(f, made) } else { self.decls.reentry_over(f) }
         made
+    }
+
+    /// The declarations of `f` generated so far, in the store.
+    fn generated_so_far(f: FileId) -> List<DeclId> {
+        let p = self.parsed(f)
+        [d for d in self.decls.decls_of_file(f) if self.written_stmt(f, d).index >= p.store.stmts.count()]
     }
 
     /// The declarations of `f` its parse wrote. A held file's record also

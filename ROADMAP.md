@@ -3214,6 +3214,34 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — a view reads a fetch as its Async, with no call
+
+`profile.state()` and `profile.value()` (`Fetch<T>`,
+`packages/std-ui/src/app/async.av`; read in every view that fetches) are
+the shortest forms the language allows, and two asks remove the
+parentheses and the `.state()`. (1) MATCHING A VALUE THROUGH ITS
+DESIGNATED PROJECTION (Scala's `unapply`, Rust's `Deref`): `match
+profile { .Loading -> …, .Ready(p) -> … }` sees the `Async` the type
+designates, so no view names the projection. (2) PROPERTY-STYLE
+ACCESSORS: a computed read with no parentheses (`profile.value`,
+`profile.is_loading`), which also reads right on every other
+state-shaped type.
+
+### Interim record — a task group wants to let go of a finished task
+
+`Tasks` (an owner a helper can be handed, `push`, `cancel`) lets
+`served` (`packages/std-ui/src/native/sources.av`) split into start,
+grow and sweep helpers, and `t.done` (a property) asks a task. What
+neither does is DROP a finished or cancelled task: a `List<Task>` write
+that replaces one is `type.task_escape`, and `Tasks` has no shed (the
+loopable group with a take is FLOW 04's D5). So `served` pools one WORKER
+per concurrently live job and runs each job inside it as an inner task a
+cut cancels, rather than reaping tasks. The want: `Tasks` reaping what
+has answered, so a loop that starts a task per job needs no pool. Also
+wanted: a handler reaching its app through the component context instead
+of the scoped `running()` binding, and work owned by a component instance
+rather than a control.
+
 ### Interim record — a bounded cleanup wants one phrase
 
 `flow.unbounded_cleanup` makes a `within` the only legal waiting cleanup,

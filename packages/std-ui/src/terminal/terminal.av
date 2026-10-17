@@ -8,7 +8,7 @@
 //! held text and the character, and a view that does not keep what it was
 //! told shows none of it.
 use @std.text.{codepoints, from_codepoints}
-use app.{Act, Shown, running, shown, stood}
+use app.{Act, Shown, running, shown, stood, notice_node}
 use tree.controls.{Control}
 use tree.node.{Said}
 use realize.tui.said.{said_of}
@@ -121,7 +121,7 @@ impl Terminal {
         let on = self.reachable()
         let at? = self.resting(on) else { return false }
         self.focus.set(Focus { path: on[at].path, at: at })
-        self.shown.app.turn(() -> by(on[at]))
+        self.shown.app.turn_of(on[at].path, () -> by(on[at]))
     }
 
     /// One key. True when a handler ran.
@@ -157,10 +157,13 @@ impl Terminal {
     fn feed(text: string) { self.press(keys(text)) }
 
     /// The screen as the terminal shows it: the tree in lines, the control
-    /// that holds the focus marked.
+    /// that holds the focus marked, and under them a status line while the
+    /// last turn has failed.
     fn screen() -> string {
         let root? = self.shown.tree.get() else { return "" }
-        focused(root, self.width, self.focused()?.seat)
+        let drawn = focused(root, self.width, self.focused()?.seat)
+        let said? = self.shown.app.failed.get() else { return drawn }
+        "${drawn}\n${focused(notice_node(said), self.width, null)}"
     }
 
     /// The screen as a reader finds it, with no terminal's drawing.

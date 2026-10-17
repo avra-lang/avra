@@ -1,0 +1,40 @@
+// proves: a failed turn in a TERMINAL leaves the screen as the state stands
+// with a status line under it (words that carry a control character are drawn safe), and the next key still acts and clears it.
+use @std.text.{from_codepoint}
+use @std.ui.components.{button, column, text}
+use @std.ui.terminal.{terminal}
+
+state count: int = 0
+state failing: bool = false
+state words: string = "boom"
+
+fn view() -> column {
+    column {
+        text "count ${count}"
+        button "add" { on press { count = count + 1 } }
+    }
+}
+
+fn contained(act: fn() -> bool) -> Result<bool, string> {
+    let ran = act()
+    if !failing { return .Ok(ran) }
+    .Err(words)
+}
+
+let on = terminal(view, width: 24)
+on.shown.app.guarded(contained)
+on.feed("\n")
+println(on.screen())
+failing = true
+on.feed("\n")
+println("── failed")
+println(on.screen())
+failing = false
+on.feed("\n")
+println("── next key")
+println(on.screen())
+words = "bad" + from_codepoint(27) + "[2J"
+failing = true
+on.feed("\n")
+println("── escape in the words")
+println(on.screen())

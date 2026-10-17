@@ -34,6 +34,7 @@
 #ifndef __APPLE__
 #define _GNU_SOURCE
 #endif
+#include <setjmp.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1051,6 +1052,59 @@ static const char* appended(const char* a, const char* b, size_t m) {
     return out;
 }
 
+static const char* str_owned(const char* s, size_t n);
+
+// ── Guarded runs ────────────────────────────────────────────────
+
+// A CATCH POINT PER OPEN RUN, kept by the task that opened it: a trap
+// jumps only to a point its own task opened, since a jump across stacks is
+// undefined. Points on one chain, innermost first; a run closes its own
+// wherever it stands, so tasks that interleave never close each other's.
+typedef struct Guard {
+    jmp_buf at;
+    int64_t task;
+    struct Guard* up;
+} Guard;
+
+typedef _Bool (*GuardCode)(void*);
+
+static Guard* g_guard = NULL;
+static char g_guard_text[512];
+
+static void guard_close(Guard* g) {
+    for (Guard** at = &g_guard; *at; at = &(*at)->up) {
+        if (*at != g) continue;
+        *at = g->up;
+        return;
+    }
+}
+
+// A trap: the innermost run this task opened takes it, with the words.
+static void guard_caught(const char* msg) {
+    int64_t me = avra_task_id();
+    for (Guard* g = g_guard; g; g = g->up) {
+        if (g->task != me) continue;
+        snprintf(g_guard_text, sizeof g_guard_text, "%s", msg);
+        longjmp(g->at, 1);
+    }
+}
+
+int64_t avra_guard_run(void* body) {
+    Guard g;
+    g.task = avra_task_id();
+    g.up = g_guard;
+    g_guard = &g;
+    if (setjmp(g.at) != 0) {
+        guard_close(&g);
+        return 1;
+    }
+    (void)((GuardCode)(uintptr_t)((AvraArray*)body)->data[0])(body);
+    guard_close(&g);
+    return 0;
+}
+
+const char* avra_guard_words(void) { return str_owned(g_guard_text, strlen(g_guard_text)); }
+
 // ── The trap contract ───────────────────────────────────────────
 
 // THE CASE IN FLIGHT. A suite runs in one process, so a trap kills
@@ -1078,6 +1132,7 @@ int64_t avra_case_schedule = -1;
 char avra_case_path[128] = {0};
 
 void avra_trap(const char* msg) {
+    guard_caught(msg);
     fflush(stdout);
     if (g_case) {
         fputs("avra: while running ", stderr);
