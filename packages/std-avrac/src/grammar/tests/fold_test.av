@@ -1,0 +1,215 @@
+// `@fold`: a branch that folds its repeated group's turns over a seed.
+// Builders render to S-expressions so every outcome is a plain string.
+use @std.errors.{Loc}
+use @std.grammar.{Grammar, Captured, RunOutcome, render_grammar, run_grammar, ready}
+use @std.avrac.grammar.{Token, lex_source, avra_known_terminals, avra_lexeme, parse_grammar}
+use @std.avrac.core.{joined}
+
+fn fold_render(v: Captured<Token, string>) -> string {
+    match v {
+        .Terminal(t) -> t.text,
+        .Node(n) -> n,
+        .Many(items) -> "[${joined([fold_render(x) for x in items], " ")}]",
+        .Absent -> "_",
+    }
+}
+
+/// `(name args)`, each argument rendered; a build's own name `at` also
+/// answers where it was said to begin and end.
+fn fold_build(name: string, args: List<Captured<Token, string>>, loc: Loc?) -> Result<
+    Captured<Token, string>,
+    string,
+> {
+    if name == "boom" { return Result.Err("boom") }
+    mut out = "(${name}"
+    for a in args { out = "${out} ${fold_render(a)}" }
+    let at = if name.starts_with("at_") && loc != null { " @${loc!.lo}..${loc!.hi}" } else { "" }
+    let built: Captured<Token, string> = Captured.Node("${out}${at})")
+    Result.Ok(built)
+}
+
+fn fold_run(g: Grammar, src: string) -> RunOutcome<Token, string> {
+    run_grammar<Token, string>(
+        ready(g, avra_known_terminals()),
+        lex_source(src).tokens,
+        avra_lexeme(),
+        fold_build,
+    )
+}
+
+fn fold_answer(g: Grammar, src: string) -> string {
+    let o = fold_run(g, src)
+    if o.result == null { return "<none> ${o.diagnostics.length}" }
+    "${fold_render(o.result!)} ${o.diagnostics.length}"
+}
+
+fn fold_parsed(text: string) -> Grammar {
+    parse_grammar(text).built ?? Grammar { name: "unparsed", start: "unparsed", rules: [] }
+}
+
+const chain_text: string = "prog = s:chain BREAK -> prog(s)\nchain = s:NAME ( \".\" n:NAME -> prop(s, n) | \"[\" i:NAME \"]\" -> index(s, i) | \"!\" -> force(s) | \"(\" ( a:NAME )? \")\" -> call(s, a) )* @fold(s) -> s\n"
+
+fn fold_chain() -> Grammar {
+    fold_parsed(chain_text)
+}
+
+/// A turn's own span: the build is named `at_…` so it prints its place.
+fn fold_spans() -> Grammar {
+    fold_parsed(
+        "prog = s:chain BREAK -> prog(s)\nchain = s:NAME ( \".\" n:NAME -> at_prop(s, n) )* @fold(s) -> s\n",
+    )
+}
+
+/// The head law over a fold: a trailing block is closed inside a head.
+fn fold_headed() -> Grammar {
+    fold_parsed(
+        "prog = s:stmt BREAK -> prog(s)\nstmt = \"if\" c:chain \"{\" b:NAME \"}\" -> if_(c, b) @head(c) | c:chain -> c\nchain = n:NAME ( \"(\" a:chain \")\" -> app(n, a) | tb:block -> trail(n, tb) @trailer(tb) )* @fold(n) -> n\nblock = \"{\" v:NAME \"}\" -> block(v)\n",
+    )
+}
+
+fn fold_defects(text: string) -> string {
+    let p = parse_grammar(text)
+    let said = [d.message for d in p.diagnostics]
+    if p.built == null { return joined(said, " ;; ") }
+    joined(said.concat([d.message for d in p.built!.defects(avra_known_terminals())]), " ;; ")
+}
+
+spec "grammar/fold — each turn builds over the value so far" {
+    given "a chain of turns of four kinds" {
+        then "folds left, in source order" {
+            fold_answer(fold_chain(), "s.a[i]!(x)\n") == "(prog (call (force (index (prop s a) i)) x)) 0"
+        }
+        then "answers the seed when no turn is taken" { fold_answer(fold_chain(), "s\n") == "(prog s) 0" }
+        then "a turn's labels die with it: the next turn's absent label reads absent" {
+            fold_answer(fold_chain(), "s(x)()\n") == "(prog (call (call s x) _)) 0"
+        }
+        then "a turn that cannot finish ends the chain at the last whole turn" {
+            fold_answer(fold_chain(), "s.a[\n") == "<none> 1"
+        }
+    }
+    given "the builder's place" {
+        then "a turn's node begins where the seed began and ends where the turn ends" {
+            fold_answer(fold_spans(), "ab.c.dd\n") == "(prog (at_prop (at_prop ab c @0..4) dd @0..7)) 0"
+        }
+    }
+    given "the head law" {
+        then "a trailing block is the call's outside a head" {
+            fold_answer(fold_headed(), "f { x }\n") == "(prog (trail f (block x))) 0"
+        }
+        then "an `if` keeps its brace — the head takes no trailer" {
+            fold_answer(fold_headed(), "if f { x }\n") == "(prog (if_ f x)) 0"
+        }
+        then "a delimiter opens the head: inside parentheses the block is the call's" {
+            fold_answer(fold_headed(), "if g ( f { x } ) { y }\n") == "(prog (if_ (app g (trail f (block x))) y)) 0"
+        }
+    }
+}
+
+fn fold_listed() -> Grammar {
+    fold_parsed(
+        "prog = s:chain BREAK -> prog(s)\nchain = s:NAME ( \"(\" a:NAME ( \",\" a:NAME )* \")\" -> call(s, a) )* @fold(s) -> s\n",
+    )
+}
+
+fn fold_refusing() -> Grammar {
+    fold_parsed(
+        "prog = s:chain BREAK -> prog(s)\nchain = s:NAME ( \".\" n:NAME -> boom(s, n) | \"!\" -> force(s) )* @fold(s) -> s\n",
+    )
+}
+
+fn fold_empty_turn() -> Grammar {
+    fold_parsed(
+        "prog = s:chain BREAK -> prog(s)\nchain = s:NAME ( ( \"!\" )? -> force(s) )* @fold(s) -> s\n",
+    )
+}
+
+fn fold_long(links: int) -> string {
+    "s${joined([".a" for _i in 0..links], "")}\n"
+}
+
+spec "grammar/fold — hostile inputs" {
+    given "a label that collects inside a turn" {
+        then "collects there and dies with the turn" {
+            fold_answer(fold_listed(), "s(x,y)(z)\n") == "(prog (call (call s [x y]) [z])) 0"
+        }
+    }
+    given "a builder that refuses inside a turn" {
+        then "speaks once, at a place that begins where the seed does" {
+            let o = fold_run(fold_refusing(), "s!.a!\n")
+            o.result == null &&
+                o.diagnostics.length == 1 &&
+                o.diagnostics[0].message == "boom" &&
+                o.diagnostics[0].loc?.lo ?? 0 - 1 == 0
+        }
+    }
+    given "a turn that can match nothing" {
+        then "stops the fold at the last whole value and says so" {
+            fold_answer(fold_empty_turn(), "s\n") == "(prog s) 1"
+        }
+        then "still takes the turns that did consume" {
+            fold_answer(fold_empty_turn(), "s!\n") == "(prog (force s)) 1"
+        }
+    }
+    given "a long chain" {
+        then "folds a thousand and a half links without a complaint" {
+            let o = fold_run(fold_chain(), fold_long(1500).replace(".a", "!"))
+            o.result != null && o.diagnostics.is_empty()
+        }
+    }
+}
+
+spec "grammar/fold — the notation" {
+    given "a fold rule" {
+        then "renders with its annotation and parses back to the same grammar" {
+            let g = fold_chain()
+            let shown = render_grammar(g)
+            shown.contains("@fold(s)") && render_grammar(fold_parsed(shown)) == shown
+        }
+        then "marks every turn with the seed it reads" {
+            let turns = fold_chain().rules[1].body.branches[0].items[1].prim.group_alt()?.branches ?? []
+            turns.length == 4 &&
+                turns.all(it.seed == "s") &&
+                fold_chain().rules[1].body.branches[0].fold == "s"
+        }
+        then "has no defects" { fold_defects(chain_text) == "" }
+    }
+    given "a fold rule that is mis-shaped" {
+        then "a seed the label does not name is refused" {
+            fold_defects("e = x:NAME ( \".\" n:NAME -> f(x, n) )* @fold(y) -> y\n")
+                .contains("wants a seed captured as `y`")
+        }
+        then "a group that does not repeat is refused" {
+            fold_defects("e = x:NAME ( \".\" n:NAME -> f(x, n) )? @fold(x) -> x\n")
+                .contains("then one repeated group")
+        }
+        then "a turn with no build is refused" {
+            fold_defects("e = x:NAME ( \".\" n:NAME )* @fold(x) -> x\n").contains("it has no build")
+        }
+        then "a turn that only returns a capture is refused" {
+            fold_defects("e = x:NAME ( \".\" n:NAME -> n )* @fold(x) -> x\n")
+                .contains("not a bare capture")
+        }
+        then "a branch that does not answer the fold is refused" {
+            fold_defects("e = x:NAME ( \".\" n:NAME -> f(x, n) )* @fold(x) -> f(x)\n")
+                .contains("answers the fold — end it `-> x`")
+        }
+        then "a turn that reads a label nobody captured is refused" {
+            fold_defects("e = x:NAME ( \".\" n:NAME -> f(x, q) )* @fold(x) -> x\n")
+                .contains("`q` is not captured")
+        }
+        then "a turn that captures the fold's own label is refused" {
+            fold_defects("e = x:NAME ( \".\" x:NAME -> f(x) )* @fold(x) -> x\n")
+                .contains("captures `x` again")
+        }
+        then "a fold beside @operators is refused" {
+            fold_defects(
+                "e = x:NAME ( \".\" n:NAME -> f(x, n) )* @fold(x) @operators { left \"+\" } -> x\n",
+            )
+                .contains("folds or climbs")
+        }
+        then "a second @fold on one branch is refused" {
+            fold_defects("e = x:NAME ( \".\" n:NAME -> f(x, n) )* @fold(x) @fold(x) -> x\n")
+                .contains("duplicate @fold")
+        }
+    }
+}
