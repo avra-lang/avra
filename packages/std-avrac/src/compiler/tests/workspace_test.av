@@ -302,16 +302,23 @@ spec "compiler/workspace" {
                     .contains("its exports: twice, ident, Pair, Box, Shape")
         }
         then "an item its module's unread file would have declared — the parse error named, the reads silent" {
-            let a = with_unread_solo("use solo.{only}\nonly(true, true)\n").analyze_file("/w/src/main.av")
+            let a = with_unread_solo("use solo.{only}\nonly(true, true)\n")
+                .analyze_file("/w/src/main.av")
             a.diagnostics.length == 1 &&
                 a.report().contains("`solo` does not export `only`") &&
-                a.report().contains("`solo` fails to parse here, so its names are unread: expected `}` to close the block") &&
+                a
+                    .report()
+                    .contains(
+                        "`solo` fails to parse here, so its names are unread: expected `}` to close the block",
+                    ) &&
                 a.report().contains("fix the parse error first") &&
                 !a.report().contains("is not defined") &&
                 !a.report().contains("no `fn only`")
         }
         then "a failed use's names answer to the use alone — a type read and a call both stay silent" {
-            let a = with_unread_solo("use solo.{only, Wide}\nlet w = Wide { n: 1 }\nonly(true, true)\n")
+            let a = with_unread_solo(
+                "use solo.{only, Wide}\nlet w = Wide { n: 1 }\nonly(true, true)\n",
+            )
                 .analyze_file("/w/src/main.av")
             a.diagnostics.length == 2 && !a.report().contains("no `type Wide`")
         }
