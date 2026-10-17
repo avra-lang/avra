@@ -1,5 +1,7 @@
 //! `@std/ui_http` — a `Document` is a titled view; answered from a route,
-//! it is the page `@std/ui` draws for it, with no script.
+//! it is the page `@std/ui` draws for it. Given a `module`, the page runs
+//! that web app over the HTML it holds, adopting it rather than drawing
+//! again.
 //!
 //!     server site {
 //!         port: 8080
@@ -7,15 +9,22 @@
 //!     }
 use @std.http_message.message.{Header}
 use @std.http.{Response, Respond}
-use @std.ui.realize.html.html.{Page, page}
+use @std.ui.realize.html.html.{Page, page, takeover}
 use @std.ui.tree.view.{View, tree_of}
 
 /// A titled view. Answered by a handler, it is a `text/html` page of
 /// its status.
-export type Document = { title: string, body: dyn View, status: int = 200 }
+export type Document = { title: string, body: dyn View, status: int = 200, module: string = "", host: string = "/avra" }
 
 impl Respond for Document {
-    fn response() -> Response { html_response(self.status, page(Page { title: self.title }, tree_of(self.body))) }
+    fn response() -> Response {
+        let shown = Page { title: self.title }
+        let root = tree_of(self.body)
+        html_response(
+            self.status,
+            if self.module == "" { page(shown, root) } else { takeover(shown, root, self.module, self.host) },
+        )
+    }
 }
 
 /// A full page as a response of this status.
