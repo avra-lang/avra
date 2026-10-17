@@ -45,7 +45,15 @@ watcher closes the gap between "green" and "landed", deterministically:
   (i) A HELD RUN — a `checks` run the Actions bot's push left in
       `action_required` (a bot-pushed head fires a run that waits for an
       approver) on an open, same-repository PR's CURRENT head: approve it,
-      once per run id. A fork's run is never approved here.
+      once per run id. A fork's run is never approved here;
+  (m) ONLY THE ORDER'S OWNER MAY MERGE: any other armed PR that could land
+      (its gate under way, or green and up to date) is disarmed once per
+      head, so a PR somebody refreshed by hand never merges ahead of the
+      owner and puts it behind again. `priority` outranks a gate under
+      way; otherwise a PR already landing outranks one merely ready;
+  (n) A RECIPE MERGE — a commit on main that touched `.github/ci` fired no
+      push event, so `ci-image` never ran for it: dispatch it once per
+      commit, while the commit is under IMAGE_WINDOW old.
 
 EVERY open PR gets an action or a loud name: a state the watcher cannot
 move is still a state it says out loud, never one it skips. Every comment
@@ -100,6 +108,9 @@ HELD_GREEN_S = 2 * 3600
 # A bot merge's head gets a grace before the watcher asks for its run: a
 # push run that is merely slow to appear is not a missing run.
 MAIN_GRACE = 180
+# How long after a merge to `.github/ci` an image build is still owed: a commit older than
+# this was built or judged by hand.
+IMAGE_WINDOW = 6 * 3600
 CONFLICT_PHRASE = ("this conflicts with main. Rebase onto origin/main, then "
                    "`sh tools/work land`")
 
@@ -171,15 +182,27 @@ def _landing(p):
     return _running(p)
 
 
-def next_in_order(prs):
-    """The one PR to arm and refresh now, or None: nobody while one is landing, else the
-    `priority` PRs first, then the oldest, among the green, mergeable, un-held."""
-    if any(_landing(p) for p in prs):
-        return None
+def _order_key(p):
+    """A PR's place in the order: `priority` first, then one already landing (a gate under
+    way, or clean and about to merge) before one that is only ready, then the oldest."""
+    return (0 if PRIORITY_LABEL in _labels(p) else 1, 0 if _landing(p) else 1, p["number"])
+
+
+def owner_of_order(prs):
+    """The one PR that owns the order now: the first among those landing and those ready
+    (green, mergeable, un-held), or None. Every other armed PR that could merge is kept
+    from it (`plan`), so a PR somebody refreshed by hand cannot land ahead of it."""
     ready = [p for p in prs if p["state"] == "OPEN" and not p.get("isDraft") and not _held(p)
-             and _is_green(p) and p.get("mergeable") == "MERGEABLE"]
-    ready.sort(key=lambda p: (0 if PRIORITY_LABEL in _labels(p) else 1, p["number"]))
+             and ((_is_green(p) and p.get("mergeable") == "MERGEABLE") or _landing(p))]
+    ready.sort(key=_order_key)
     return ready[0] if ready else None
+
+
+def next_in_order(prs):
+    """The one PR to arm and refresh now, or None: nobody while the owner of the order is
+    already landing, else the owner (`priority` first, then the oldest)."""
+    owner = owner_of_order(prs)
+    return None if owner is None or _landing(owner) else owner
 
 
 def _ahead(prs, front):
@@ -230,6 +253,7 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
                              f"{branch} — its PR is no longer open"})
 
     front = next_in_order(prs)
+    owner = owner_of_order(prs)
     for p in prs:
         n, head = p["number"], p["headRefOid"]
         t = p.get("test")
@@ -316,6 +340,19 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         if failed or conflicted or draft:
             continue
 
+        # (m) ONLY THE ORDER'S OWNER MAY MERGE: an armed PR that could land (its gate under way,
+        # or green and up to date) while another owns the order is disarmed, once per head —
+        # a PR refreshed by hand would otherwise merge ahead of the owner and put it behind
+        # again. A PR behind main cannot merge and is left armed; it is armed again on its turn.
+        if owner is not None and owner["number"] != n and p["autoMerge"] and _landing(p):
+            key = f"unarm:{n}:{head}"
+            if key not in told:
+                acts.append({"do": "disarm", "pr": n, "key": key, "mark": ("told", key),
+                             "text": f"#{n} is disarmed — #{owner['number']} owns the order"})
+            else:
+                acts.append({"do": "note", "pr": n, "text": f"#{n} waits behind #{owner['number']} (disarmed)"})
+            continue
+
         # (b)+(c) a green, mergeable PR is armed; once armed, one that is
         # behind is refreshed so "up to date" is met without a human.
         if green and mergeable and open_ and (front is None or front["number"] != n):
@@ -384,6 +421,14 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         if key not in told:
             acts.append({"do": "dispatch", "key": key, "mark": ("told", key),
                          "text": f"main {trunk['sha'][:7]} has no `checks` run — dispatching one"})
+    # (n) a merge that changed the machine image's recipe fires no push event either, so
+    # `ci-image` never ran for it: dispatch it, once per commit that touched `.github/ci`.
+    image = (trunk or {}).get("image")
+    if image and image["age"] < IMAGE_WINDOW:
+        key = f"image:{image['sha']}"
+        if key not in told:
+            acts.append({"do": "dispatch", "workflow": "ci-image.yml", "key": key, "mark": ("told", key),
+                         "text": f"{image['sha'][:7]} changed `.github/ci` — dispatching ci-image"})
     return acts
 
 
@@ -483,7 +528,19 @@ def main_state(repo, runs):
     age = (datetime.datetime.now(datetime.timezone.utc) - born).total_seconds()
     checked = any(r.get("headSha") == sha and r.get("workflowName") == "checks"
                   for r in runs)
-    return {"sha": sha, "age": age, "checked": checked}
+    return {"sha": sha, "age": age, "checked": checked, "image": image_commit(repo)}
+
+
+def image_commit(repo):
+    """The newest commit on main that touched the image recipe (`.github/ci`), with its age
+    in seconds, or None."""
+    rows = _gh_json(["api", f"repos/{repo}/commits?sha=main&path=.github/ci&per_page=1"])
+    if not rows:
+        return None
+    when = rows[0]["commit"]["committer"]["date"]
+    born = datetime.datetime.fromisoformat(when.replace("Z", "+00:00"))
+    return {"sha": rows[0]["sha"],
+            "age": (datetime.datetime.now(datetime.timezone.utc) - born).total_seconds()}
 
 
 def test_of(repo, pr):
@@ -538,7 +595,7 @@ def collect(repo, state):
     # the lazily computed field.
     for p in prs:
         if (p["state"] == "OPEN" and not p.get("isDraft") and p.get("mergeable") != "CONFLICTING"
-                and p.get("test") and p["test"]["conclusion"] == "SUCCESS"):
+                and ((p.get("test") and p["test"]["conclusion"] == "SUCCESS") or p["autoMerge"])):
             p["mergeStateStatus"] = merge_state(p.get("mergeStateStatus"), behind_by(repo, "main", p["headRefOid"]))
     # Enrich only a failing PR that will be acted on (untold, or attempt 1).
     detail = 0
@@ -597,7 +654,7 @@ def do_action(a, repo, run):
     elif a["do"] == "approve":
         run(["api", "-X", "POST", f"repos/{repo}/actions/runs/{a['run']}/approve"])
     elif a["do"] == "dispatch":
-        run(["workflow", "run", "checks.yml", "-R", repo, "--ref", "main"])
+        run(["workflow", "run", a.get("workflow", "checks.yml"), "-R", repo, "--ref", "main"])
     elif a["do"] == "enqueue":
         # THE QUEUE IS OFF; this spelling is kept, corrected, for a repo that
         # re-enables one. `gh api graphql` reads the operation from the
@@ -748,6 +805,31 @@ SELFTEST = [
      dict(prs=[_pr(2, "SUCCESS", autoMerge=True, labels=["hold"])],
           runs=[], state=_empty_state()),
      [("note", 2), ("disarm", 2)]),
+    # (m) a PR refreshed by hand, green and armed, lands ahead of a priority front that is only
+    # behind: it is disarmed, and the front is armed and refreshed.
+    ("order-leak-disarmed-front-refreshed",
+     dict(prs=[_pr(9, "SUCCESS", autoMerge=True),
+               _pr(7, "SUCCESS", autoMerge=True, mergeStateStatus="BEHIND", labels=["priority"])],
+          runs=[], state=_empty_state()),
+     [("disarm", 9), ("refresh", 7)]),
+    # a non-priority PR already landing keeps the order against an older one that is only ready.
+    ("order-landing-outranks-older-ready",
+     dict(prs=[_pr(3, "SUCCESS", mergeStateStatus="BEHIND", autoMerge=True),
+               _pr(5, "", autoMerge=True, mergeStateStatus="BLOCKED")],
+          runs=[], state=_empty_state()),
+     [("note", 3), ("comment", 5)]),
+    # a priority PR outranks one whose gate is under way: that one is disarmed.
+    ("order-priority-outranks-inflight",
+     dict(prs=[_pr(5, "", autoMerge=True, mergeStateStatus="BLOCKED"),
+               _pr(7, "SUCCESS", autoMerge=True, mergeStateStatus="BEHIND", labels=["priority"])],
+          runs=[], state=_empty_state()),
+     [("disarm", 5), ("refresh", 7)]),
+    # a PR behind main cannot merge: it stays armed, and only the owner moves.
+    ("order-behind-armed-left-armed",
+     dict(prs=[_pr(2, "SUCCESS", autoMerge=True),
+               _pr(3, "SUCCESS", autoMerge=True, mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("note", 2), ("note", 3)]),
     # a PR armed and awaiting its run is the one in flight: nobody else is armed or refreshed.
     ("order-inflight-blocks-others",
      dict(prs=[_pr(2, "", autoMerge=True, mergeStateStatus="BLOCKED"),
@@ -899,6 +981,24 @@ def selftest():
     execute(first, "avra-lang/avra", run=lambda args: sent.append(args) or "")
     if sent != [["workflow", "run", "checks.yml", "-R", "avra-lang/avra", "--ref", "main"]]:
         sys.exit(f"pr-watcher: self-test — the dispatch was sent as {sent}")
+
+    # (n) a merge that touched `.github/ci` dispatches ci-image once per commit; an old one,
+    # and one already dispatched, are left alone.
+    def with_image(sha, age):
+        return {"sha": "m1", "age": 60, "checked": True, "image": {"sha": sha, "age": age}}
+    st = _empty_state()
+    first = plan([], [], st, with_image("i1", 600))
+    if [(a["do"], a.get("workflow")) for a in first] != [("dispatch", "ci-image.yml")]:
+        sys.exit(f"pr-watcher: self-test — a recipe merge did not dispatch ci-image: {first}")
+    commit_marks(first, [], st)
+    if plan([], [], st, with_image("i1", 600)):
+        sys.exit("pr-watcher: self-test — ci-image was dispatched twice for one commit")
+    if plan([], [], _empty_state(), with_image("i2", IMAGE_WINDOW + 1)):
+        sys.exit("pr-watcher: self-test — an old recipe commit dispatched ci-image")
+    sent = []
+    execute(first, "avra-lang/avra", run=lambda args: sent.append(args) or "")
+    if sent != [["workflow", "run", "ci-image.yml", "-R", "avra-lang/avra", "--ref", "main"]]:
+        sys.exit(f"pr-watcher: self-test — the image dispatch was sent as {sent}")
 
     # (i) a held checks run on a same-repo current head is approved once per
     # run id; a fork's, a stale head's and an approved one's are left alone.
