@@ -275,6 +275,11 @@ WASM_EMULATED := -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_
 # for one to name a site by. `make -B WASM_INSTRUMENTS=1 wasm-runtime` builds
 # the archive with them, for a host that passes an environment.
 WASM_INSTRUMENTS ?= 0
+# A GUARDED RUN CATCHES A TRAP IN PLACE: the runtime file that holds the
+# catch point is built with WebAssembly exception handling, which lowers
+# setjmp/longjmp to throw and catch (the module links libsetjmp for the
+# rest). No other member is built so, and the exnref encoding is LLVM's default.
+WASM_SJLJ_avra_runtime.c := -mllvm -wasm-enable-sjlj -mexception-handling
 WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wildcard runtime/*.c))
 WASM_RUNTIME_OBJS := $(patsubst runtime/%.c,build/wasm32/%.o,$(WASM_RUNTIME_SRCS))
 WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
@@ -285,7 +290,7 @@ WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
 # edited header links a stale member.
 build/wasm32/%.o: runtime/%.c build/%.sha
 	@mkdir -p build/wasm32
-	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated -c -o $@ $<
+	$(WASM_CC) --target=$(WASM_TARGET) $(if $(WASI_SYSROOT),--sysroot=$(WASI_SYSROOT)) $(WASM_EMULATED) -DAVRA_INSTRUMENTS=$(WASM_INSTRUMENTS) -Iruntime -MMD -MP -ffunction-sections -fdata-sections -Oz -Wno-deprecated $(WASM_SJLJ_$(notdir $<)) -c -o $@ $<
 
 # A PACKAGE'S C FOR WASM, from the paths its manifest's `wasm_objects` names.
 # A package opts in by naming its wasm objects; one that names none is refused
