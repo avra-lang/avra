@@ -106,12 +106,15 @@ export fn render(root: Node, env: Env) -> string {
 /// element, for a policy that allows styles by nonce alone.
 export type Page = { title: string, env: Env = Env {}, alternates: List<Theme> = [], nonce: string? = null }
 
+/// What a page's head says: its title and the environment's words.
+fn head_of(p: Page) -> Head { Head { title: p.title, locale: p.env.locale, direction: p.env.direction } }
+
 /// A complete document with no script: the page's head, its one
 /// stylesheet, then the tree.
 export fn page(p: Page, root: Node) -> string {
     let d = drawn(root)
     page_source(
-        Head { title: p.title, locale: p.env.locale, direction: p.env.direction },
+        head_of(p),
         sheet_of(root, p.env.theme, p.alternates, d),
         p.nonce,
         d.ops,
@@ -138,7 +141,7 @@ export fn takeover(p: Page, root: Node, module: string, host: string) -> string 
     let run = lowered(root)
     let css = page_sheet(distinct_rules(rules_of(root)), p.env.theme, [])
     takeover_source(
-        Head { title: p.title, locale: p.env.locale, direction: p.env.direction },
+        head_of(p),
         css,
         run_ops(run),
         Takeover { print: print_of(run, css), module: module, host: host },
