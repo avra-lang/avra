@@ -18,15 +18,41 @@ fn blanked(b: Bytes, i: int) -> int {
     j
 }
 
-/// Past the string whose quote is at `i`; -1 when it never closes.
+/// Past the string whose quote is at `i`; -1 when it never closes, holds a
+/// raw control octet or names an escape JSON does not have.
 fn string_end(b: Bytes, i: int) -> int {
     mut j = i + 1
     // LICENSED loops.push_loop: a string ends at its first unescaped quote
     while j < b.length {
-        if b.at(j) == 34 { return j + 1 }
-        j = j + if b.at(j) == 92 { 2 } else { 1 }
+        let c = b.at(j)
+        if c == 34 { return j + 1 }
+        if c < 32 { return -1 }
+        if c != 92 {
+            j = j + 1
+            continue
+        }
+        if j + 1 >= b.length { return -1 }
+        let e = b.at(j + 1)
+        if e == 117 {
+            if !four_hex(b, j + 2) { return -1 }
+            j = j + 6
+        } else if e == 34 || e == 92 || e == 47 || e == 98 || e == 102 || e == 110 || e == 114 || e == 116 {
+            j = j + 2
+        } else {
+            return -1
+        }
     }
     -1
+}
+
+/// Whether four hex digits stand at `i`.
+fn four_hex(b: Bytes, i: int) -> bool {
+    if i + 4 > b.length { return false }
+    for j in 0..4 {
+        let c = b.at(i + j)
+        if !(c >= 48 && c <= 57 || c >= 97 && c <= 102 || c >= 65 && c <= 70) { return false }
+    }
+    true
 }
 
 /// Past the value at `i`: a string, or anything else up to its balanced end
@@ -140,9 +166,14 @@ export fn members(raw: string) -> Result<List<Piece>, string> {
     found.get()
 }
 
-/// The members, when nothing but blanks follows the object.
+/// The members, when nothing but blanks follows the object and no name is
+/// written twice: a document that says two things of one name means neither.
 fn after(b: Bytes, i: int, found: List<Piece>) -> Result<List<Piece>, string> {
     if blanked(b, i) != b.length { fail "has more after the object" }
+    let keys = [p.key for p in found]
+    for j, k in keys {
+        if keys.slice(0, j).contains(k) { fail "names a member twice" }
+    }
     found
 }
 
@@ -180,7 +211,10 @@ export fn member(ms: List<Piece>, key: string) -> string? { ms.find(it.key == ke
 
 /// The integer `raw` is.
 export fn as_int(raw: string) -> Result<int, string> {
-    let n? = parse_int(raw.trim()) else { fail "wants an integer" }
+    let t = raw.trim()
+    let digits = if t.starts_with("-") { t.substring(1, t.length) } else { t }
+    if digits.length > 1 && digits.starts_with("0") { fail "wants an integer" }
+    let n? = parse_int(t) else { fail "wants an integer" }
     n
 }
 
