@@ -31,6 +31,11 @@ watcher closes the gap between "green" and "landed", deterministically:
       the rest are named `#N waits behind #F`. A PR's own run stays the
       gate. A `hold` label is respected like a DO NOT MERGE title: never
       armed, never refreshed, one already armed is disarmed;
+  (n) A MERGE TOUCHING `.github/ci/**` fires no push event, so `ci-image` is
+      dispatched once for the newest such commit with no `ci-image` run after it;
+  LANDING IS EXACT: a PR is `landing` only while it is running its own checks, or
+  green AND up to date by the compare's `behind_by` (never the lazy
+  `mergeStateStatus`). Green and behind is next in order and refreshed at once;
   (d) a CONFLICT — name the rebase its owner owes, once;
   (e) a DRAFT — name it `#N is a DRAFT — unlandable` so it is never
       invisible. The watcher NEVER readies a draft: a draft is a hold, and
@@ -159,10 +164,18 @@ def _running(p):
     return pending or bool(p.get("live"))
 
 
+def _lacks_main(p):
+    """True when the head lacks commits of `main`. `behind_by` is the compare's exact count
+    (set by `collect`); `mergeStateStatus` is a lazily computed field that can read CLEAN or
+    BLOCKED long after `main` moved, so it only ever adds a BEHIND, never clears one."""
+    return (p.get("behind_by") or 0) > 0 or (p.get("mergeStateStatus") or "").upper() == "BEHIND"
+
+
 def _landing(p):
-    """A PR that is armed and either awaiting a run that can still pass, or clean, about to
-    land: the one PR in the order that nothing else may disturb by moving `main` or its own
-    head. A RED PR is not landing (a job of its run already failed, though the aggregate
+    """A PR that is armed and EITHER running its own checks now, OR green and up to date
+    (not behind `main`, by the exact compare): the one PR in the order that nothing else may
+    disturb by moving `main` or its own head. Green and behind is never landing: it cannot
+    merge until refreshed, so it is next in order, not in the way. A RED PR is not landing (a job of its run already failed, though the aggregate
     `test` may not say so yet), nor is one that never ran: neither can merge, so neither may
     hold the order."""
     if p["state"] != "OPEN" or p.get("isDraft") or _held(p) or not p["autoMerge"]:
@@ -173,7 +186,7 @@ def _landing(p):
     if t is not None and t["conclusion"] == "FAILURE":
         return False
     if _is_green(p):
-        return (p.get("mergeStateStatus") or "CLEAN").upper() == "CLEAN"
+        return not _lacks_main(p) and (p.get("mergeStateStatus") or "CLEAN").upper() == "CLEAN"
     return _running(p)
 
 
@@ -252,8 +265,8 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         # reviews, no conflict, up to date — is met; BEHIND is the one
         # requirement the watcher can clear itself.
         mss = (p.get("mergeStateStatus") or "CLEAN").upper()
-        landable = mergeable and mss == "CLEAN"
-        behind = mergeable and mss == "BEHIND"
+        landable = mergeable and mss == "CLEAN" and not _lacks_main(p)
+        behind = mergeable and _lacks_main(p)
 
         # (a) a failing check is the cause behind every other state: name the
         # job — line, and rerun the failed jobs once.
@@ -352,7 +365,9 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
                 acts.append({"do": "arm", "pr": n,
                              "text": f"#{n} is green — arming auto-merge"})
             if behind:
-                key = f"refresh:{n}:{head}"
+                # one ask per head AND per main sha: an ask that moved nothing (the update
+                # refused, `main` moved again) is retried when `main` has moved.
+                key = f"refresh:{n}:{head}" + (f":{trunk['sha']}" if trunk else "")
                 if key in told:
                     acts.append({"do": "note", "pr": n,
                                  "text": f"#{n} is behind main (refresh asked)"})
@@ -403,6 +418,15 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         if key not in told:
             acts.append({"do": "dispatch", "key": key, "mark": ("told", key),
                          "text": f"main {trunk['sha'][:7]} has no `checks` run — dispatching one"})
+    # (n) a merge that touched `.github/ci/**` fires no push event (a bot merge triggers
+    # nothing), so the machine image is never rebuilt: dispatch `ci-image` once the newest such
+    # commit on main has no `ci-image` run standing on it or any later commit.
+    if trunk and trunk.get("ci_touched") and not trunk.get("ci_covered"):
+        key = f"ci-image:{trunk['ci_touched']}"
+        if key not in told:
+            acts.append({"do": "dispatch_image", "key": key, "mark": ("told", key),
+                         "text": f"main {trunk['ci_touched'][:7]} changed `.github/ci` and no "
+                                 f"`ci-image` run follows it — dispatching one"})
     return acts
 
 
@@ -502,7 +526,28 @@ def main_state(repo, runs):
     age = (datetime.datetime.now(datetime.timezone.utc) - born).total_seconds()
     checked = any(r.get("headSha") == sha and r.get("workflowName") == "checks"
                   for r in runs)
-    return {"sha": sha, "age": age, "checked": checked}
+    out = {"sha": sha, "age": age, "checked": checked}
+    out.update(ci_touch(repo, runs))
+    return out
+
+
+CI_PATH = ".github/ci/"
+CI_LOOKBACK = 5
+
+
+def ci_touch(repo, every_runs):
+    """`{ci_touched, ci_covered}`: the newest of main's last few commits that touched
+    `.github/ci/`, and whether a `ci-image` run stands on it or a later commit."""
+    log = _gh_json(["api", f"repos/{repo}/commits?sha=main&per_page={CI_LOOKBACK}"])
+    shas = [c["sha"] for c in log]
+    for i, sha in enumerate(shas):
+        detail = _gh_json(["api", f"repos/{repo}/commits/{sha}"])
+        if any((f.get("filename") or "").startswith(CI_PATH) for f in detail.get("files") or []):
+            later = set(shas[:i + 1])
+            covered = any(r.get("workflowName") == "ci-image" and r.get("headSha") in later
+                          for r in every_runs)
+            return {"ci_touched": sha, "ci_covered": covered}
+    return {"ci_touched": None, "ci_covered": True}
 
 
 def test_of(repo, pr):
@@ -558,7 +603,8 @@ def collect(repo, state):
     for p in prs:
         if (p["state"] == "OPEN" and not p.get("isDraft") and p.get("mergeable") != "CONFLICTING"
                 and p.get("test") and p["test"]["conclusion"] == "SUCCESS"):
-            p["mergeStateStatus"] = merge_state(p.get("mergeStateStatus"), behind_by(repo, "main", p["headRefOid"]))
+            p["behind_by"] = behind_by(repo, "main", p["headRefOid"])
+            p["mergeStateStatus"] = merge_state(p.get("mergeStateStatus"), p["behind_by"])
     # Enrich only a failing PR that will be acted on (untold, or attempt 1).
     detail = 0
     for p in prs:
@@ -617,6 +663,8 @@ def do_action(a, repo, run):
         run(["api", "-X", "POST", f"repos/{repo}/actions/runs/{a['run']}/approve"])
     elif a["do"] == "dispatch":
         run(["workflow", "run", "checks.yml", "-R", repo, "--ref", "main"])
+    elif a["do"] == "dispatch_image":
+        run(["workflow", "run", "ci-image.yml", "-R", repo, "--ref", "main"])
     elif a["do"] == "enqueue":
         # THE QUEUE IS OFF; this spelling is kept, corrected, for a repo that
         # re-enables one. `gh api graphql` reads the operation from the
@@ -883,6 +931,44 @@ def selftest():
         if merge_state(field, lacks) != want:
             sys.exit(f"pr-watcher: self-test — merge_state({field!r}, {lacks}) is {merge_state(field, lacks)}, want {want}")
     # the front that read CLEAN but is behind is refreshed, not left landing.
+    ci = {"sha": "m9", "age": 10, "checked": True}
+    # (n) a merge touching .github/ci with no ci-image run after it dispatches one, once.
+    for trunk_, want in (({**ci, "ci_touched": "c1", "ci_covered": False}, ["dispatch_image"]),
+                         ({**ci, "ci_touched": "c1", "ci_covered": True}, []),
+                         ({**ci, "ci_touched": None, "ci_covered": True}, [])):
+        got = [a["do"] for a in plan([], [], _empty_state(), trunk_)]
+        if got != want:
+            sys.exit(f"pr-watcher: self-test — ci trunk {trunk_} planned {got}, want {want}")
+    if plan([], [], {RERUN: {}, TOLD: {"ci-image:c1": True}}, {**ci, "ci_touched": "c1", "ci_covered": False}):
+        sys.exit("pr-watcher: self-test — ci-image dispatched twice for one commit")
+    # a GREEN front the API calls CLEAN but whose compare says it lacks main is refreshed.
+    clean_lie = [_pr(7, "SUCCESS", autoMerge=True, mergeStateStatus="CLEAN", behind_by=1)]
+    if [a["do"] for a in plan(clean_lie, [], _empty_state())] != ["refresh"]:
+        sys.exit("pr-watcher: self-test — a green+behind front read CLEAN was not refreshed")
+    # and it is never 'landing', so the PR behind it is not told to wait on it.
+    waiting = [_pr(7, "SUCCESS", autoMerge=True, behind_by=1), _pr(8, "SUCCESS")]
+    acts_ = plan(waiting, [], _empty_state())
+    got = [(a["do"], a["pr"]) for a in acts_]
+    if got != [("refresh", 7), ("note", 8)] or "landing" in acts_[-1]["text"]:
+        sys.exit(f"pr-watcher: self-test — a green+behind front held the order as landing: {got}")
+    # landing = running its own checks, or green AND up to date; nothing else.
+    for pr_, want in ((_pr(1, "SUCCESS", autoMerge=True, behind_by=0), True),
+                      (_pr(1, "SUCCESS", autoMerge=True, behind_by=2), False),
+                      (_pr(1, "SUCCESS", autoMerge=True, mergeStateStatus="BEHIND"), False),
+                      (_pr(1, "", autoMerge=True), True),
+                      (_pr(1, None, autoMerge=True, live=True, behind_by=1), True),
+                      (_pr(1, None, autoMerge=True), False),
+                      (_pr(1, "SUCCESS", autoMerge=False, behind_by=0), False)):
+        if _landing(pr_) is not want:
+            sys.exit(f"pr-watcher: self-test — _landing({pr_.get('test')}, behind_by={pr_.get('behind_by')}) "
+                     f"is {not want}, want {want}")
+    # a refresh whose ask moved nothing is asked again once `main` has moved.
+    told_ = {RERUN: {}, TOLD: {"refresh:7:h7:m1": True}}
+    for sha, want in (("m1", ["note"]), ("m2", ["refresh"])):
+        trunk_ = {"sha": sha, "age": 10, "checked": True}
+        got = [a["do"] for a in plan([_pr(7, "SUCCESS", autoMerge=True, behind_by=1)], [], told_, trunk_)]
+        if got != want:
+            sys.exit(f"pr-watcher: self-test — refresh at main {sha} planned {got}, want {want}")
     stale = [_pr(7, "SUCCESS", autoMerge=True, mergeStateStatus=merge_state("CLEAN", 2))]
     if [a["do"] for a in plan(stale, [], _empty_state())] != ["refresh"]:
         sys.exit("pr-watcher: self-test — a green front that lacks main's commits was not refreshed")
