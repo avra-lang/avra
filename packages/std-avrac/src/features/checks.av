@@ -21,7 +21,6 @@ use core.{
     settled_mark,
     isolated_mark,
     is_literal,
-    literal_form,
     hears_want,
     some_list,
 }
@@ -431,7 +430,7 @@ impl TypeCx {
     /// and `Name(v)` is how it crosses.
     mut fn named_accepts(e: ExprId, want: TypeId) -> bool {
         let of: TypeId? = self.view.types.stands_for(want)
-        if of == null || !literal_form(self.view.store.expr(e)) { return false }
+        if of == null || !self.view.store.expr(e).literal_form() { return false }
         if self.seals(self.loc_of(e), want, "a literal fills it here") {
             // spoken: the literal absorbs every later ask of it
             self.facts.set_type(e, self.error_type)
@@ -1142,7 +1141,7 @@ impl TypeCx {
     /// Where a call's written arguments stand, as its refusal says it
     /// — a piped call's first one stands left of the `|>`.
     fn arguments_from(e: ExprId) -> string {
-        if self.view.store.is_piped(e) { "the pipe and the parentheses give" } else { "the parentheses give" }
+        if self.view.store.minted_for(e) != null { "the pipe and the parentheses give" } else { "the parentheses give" }
     }
 
     /// A trailing block with no seat left for it — the arity refusal in
@@ -1500,8 +1499,7 @@ impl TypeCx {
     /// subject, a `??`'s sides, and every branch heir wearing the
     /// value's own type — a comprehension's element is no heir of that.
     fn value_sides(v: ExprId) -> List<ExprId> {
-        let node = self.view.store.expr(v)
-        let heirs = [h for h in node.heirs() if !self.types_disagree(self.type_at(h), self.type_at(v))]
+        let heirs = [h for h in self.view.store.heired(v) if !self.types_disagree(self.type_at(h), self.type_at(v))]
         some_list(self.view.store.forced(v)).concat(self.view.store.coalesced(v)).concat(heirs)
     }
 

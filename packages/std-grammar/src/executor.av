@@ -1221,6 +1221,7 @@ type Taken<T, N> = {
     status: MatchStatus,
     tier: int,
     suffixed: bool,
+    suffix_at: int,
     op_at: int,
     op_words: int,
     rhs: Captured<T, N>,
@@ -1237,6 +1238,7 @@ fn untaken<T, N>(cx: MatchContext<T, N>, status: MatchStatus, farthest: Farthest
         status: status,
         tier: 0,
         suffixed: false,
+        suffix_at: 0 - 1,
         op_at: 0,
         op_words: 0,
         rhs: cx.absent,
@@ -1399,6 +1401,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
             status: MatchStatus.Hit,
             tier: e.tier,
             suffixed: true,
+            suffix_at: e.at,
             op_at: cursor,
             op_words: e.words.length,
             rhs: right.value,
@@ -1421,6 +1424,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
         status: tighter.status,
         tier: e.tier,
         suffixed: false,
+        suffix_at: 0 - 1,
         op_at: cursor,
         op_words: e.words.length,
         rhs: tighter.value,
@@ -1446,7 +1450,7 @@ fn pair<T, N>(
         Binding { label: "op", value: op },
         Binding { label: "right", value: t.rhs },
     ]
-    built<T, N>(cx, tier.build ?? k.directive, seen, [left, op, t.rhs], branch)
+    built<T, N>(cx, tier.build_at(t.suffix_at) ?? k.directive, seen, [left, op, t.rhs], branch)
 }
 
 /// The operator a pair's builds read as `op`: its one token, or — for a

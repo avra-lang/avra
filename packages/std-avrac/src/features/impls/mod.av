@@ -15,12 +15,10 @@ use diagnostics.{DiagCode}
 
 export fn impls() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name             | build
-        "impl_decl"      | build_impl
-        "trait_decl"     | build_trait
-        "trait_member"   | build_trait_member
-        "mut_fn_decl"    | build_mut_fn
-        "static_fn_decl" | build_static_fn
+        name           | build
+        "impl_decl"    | build_impl
+        "trait_decl"   | build_trait
+        "trait_member" | build_trait_member
     }
     let codes = table<DiagCode> {
         kind                   | summary
@@ -57,8 +55,8 @@ export fn impls() -> LanguageFeature {
             tseat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ( ":" ty:type )? -> Record.ParamSyntax
             mparam = ( constant:"const" )? ( mutable:"mut" )? ( unshared:"isolated" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             mtparam = name:NAME ( ":" NAME )? -> Record.ParamSyntax
-            stmt = "static" "fn" n:NAME ( "<" tp:mtparam ( "," tp:mtparam )* ","? ">" )? "(" ( ps:mparam ( "," ps:mparam )* ","? )? ")" ( "->" r:type )? b:block END -> static_fn_decl(n, tp, ps, r, b)
-            stmt = "mut" "fn" n:NAME ( "<" tp:mtparam ( "," tp:mtparam )* ","? ">" )? "(" ( ps:mparam ( "," ps:mparam )* ","? )? ")" ( "->" r:type )? b:block END -> mut_fn_decl(n, tp, ps, r, b)
+            stmt = is_static:"static" "fn" name:NAME ( "<" tparams:mtparam ( "," tparams:mtparam )* ","? ">" )? "(" ( params:mparam ( "," params:mparam )* ","? )? ")" ( "->" ret:type )? body:block END -> Stmt.FnDecl
+            stmt = is_mutating:"mut" "fn" name:NAME ( "<" tparams:mtparam ( "," tparams:mtparam )* ","? ">" )? "(" ( params:mparam ( "," params:mparam )* ","? )? ")" ( "->" ret:type )? body:block END -> Stmt.FnDecl
             primary = "self" -> Expr.Receiver
         }
         diags: codes
