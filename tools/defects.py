@@ -179,7 +179,7 @@ def generated(n, seed):
             texts[f] = open(f, encoding="utf-8").read()
         made = token_mutants(texts[f], rng, "gen:" + os.path.relpath(f, ROOT))
         if made and made[1] != texts[f]:
-            out.append(made)
+            out.append(("%s#%d" % (made[0], len(out)), made[1]))
     return out
 
 
