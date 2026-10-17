@@ -45,8 +45,8 @@ type Hand = { queue: Sink<Job>, cuts: Sink<int>, owner: Cell<string?>, busy: Cel
 /// and what that control left in the inbox is dropped unrun. `painted`
 /// runs after a turn that ran.
 export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
-    mut workers: List<Task<bool>> = []
-    mut hands: List<Hand> = []
+    let workers = Tasks.new()
+    let hands: Cell<List<Hand>> = Cell.new([])
     mut going = true
     while going {
         going = select {
@@ -56,54 +56,79 @@ export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
                         if on.owns(owner) && on.turn(act) { painted() }
                     },
                     .Start(job, owner) -> {
-                        if on.owns(owner) {
-                            let free = [j for j, h in hands if !h.busy.get()].first()
-                            let at = free ?? hands.length
-                            if free == null {
-                                let jobs = unbounded_channel<Job>()
-                                let cuts = unbounded_channel<int>()
-                                let nobody: string? = null
-                                hands
-                                    .push(
-                                        Hand {
-                                            queue: jobs.sink,
-                                            cuts: cuts.sink,
-                                            owner: Cell.new(nobody),
-                                            busy: Cell.new(false),
-                                            serial: Cell.new(0),
-                                        },
-                                    )
-                                workers
-                                    .push(spawn worked(at, jobs.source, cuts.source, on.sender()))
-                            }
-                            hands[at].busy.set(true)
-                            hands[at].owner.set(owner)
-                            hands[at].serial.set(hands[at].serial.get() + 1)
-                            let _ = hands[at].queue.post(job)
-                        }
+                        if on.owns(owner) { started(on, hands, workers, job, owner) }
                     },
-                    .Ended(at) -> {
-                        hands[at].busy.set(false)
-                        hands[at].owner.set(null)
-                    },
+                    .Ended(at, serial) -> { hands.get()[at].freed(serial) },
                 }
-                for h in hands {
-                    if h.busy.get() && !on.owns(h.owner.get()) {
-                        let _ = h.cuts.post(h.serial.get())
-                        h.busy.set(false)
-                    }
-                }
-                on.jobs.set(workers.length)
+                swept(on, hands)
+                on.jobs.set(hands.get().length)
                 true
             }
             inbox.source.ended -> false
         }
     }
-    for h in hands {
+    for h in hands.get() {
+        if h.busy.get() { let _ = h.cuts.post(h.serial.get()) }
         h.queue.close()
         h.cuts.close()
     }
     on.looping.set(false)
+}
+
+impl Hand {
+    /// The worker says it is done with job `serial`: waiting for another,
+    /// unless it has been handed one since.
+    fn freed(serial: int) {
+        if self.serial.get() != serial { return }
+        self.busy.set(false)
+        self.owner.set(null)
+    }
+
+    /// The worker runs `job` for the control at `owner`.
+    fn handed(job: Job, owner: string?) {
+        self.busy.set(true)
+        self.owner.set(owner)
+        self.serial.set(self.serial.get() + 1)
+        let _ = self.queue.post(job)
+    }
+}
+
+/// `job` goes to an idle worker, or to a new one when none is idle.
+fn started(on: App, hands: Cell<List<Hand>>, workers: Tasks, job: Job, owner: string?) {
+    let free = [j for j, h in hands.get() if !h.busy.get()].first()
+    let at = free ?? hands.get().length
+    if free == null { grown(on, hands, workers) }
+    hands.get()[at].handed(job, owner)
+}
+
+/// A new worker, its hand the last of `hands`.
+fn grown(on: App, hands: Cell<List<Hand>>, workers: Tasks) {
+    let jobs = unbounded_channel<Job>()
+    let cuts = unbounded_channel<int>()
+    let nobody: string? = null
+    let at = hands.get().length
+    hands
+        .push(
+            Hand {
+                queue: jobs.sink,
+                cuts: cuts.sink,
+                owner: Cell.new(nobody),
+                busy: Cell.new(false),
+                serial: Cell.new(0),
+            },
+        )
+    workers.push(spawn worked(at, jobs.source, cuts.source, on.sender()))
+}
+
+/// The job of a control no longer on the screen is cancelled; its worker
+/// is free at once.
+fn swept(on: App, hands: Cell<List<Hand>>) {
+    for h in hands.get() {
+        if h.busy.get() && !on.owns(h.owner.get()) {
+            let _ = h.cuts.post(h.serial.get())
+            h.owner.set(null)
+        }
+    }
 }
 
 /// A worker: each job it is handed runs as a task of its own, which a cut
@@ -117,12 +142,19 @@ fn worked(at: int, jobs: Source<Job>, cuts: Source<int>, send: fn(Msg) -> bool) 
         mut waiting = true
         while waiting {
             waiting = select {
-                n in cuts -> n != serial
-                cuts.ended -> false
+                n in cuts -> {
+                    let stays = n != serial
+                    if !stays { run.cancel() }
+                    stays
+                }
+                cuts.ended -> {
+                    run.cancel()
+                    false
+                }
                 run -> false
             }
         }
-        let _ = send(Msg.Ended(at))
+        let _ = send(Msg.Ended(at, serial))
     }
     true
 }
