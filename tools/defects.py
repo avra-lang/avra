@@ -25,9 +25,11 @@ import glob
 import os
 import random
 import re
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "tools", "defects", "corpus.txt")
@@ -169,16 +171,21 @@ def generated(n, seed):
 
 
 def run(avra, verb, package):
+    """(exit, output); a run past the clock is killed with everything it
+    started, and answers 124."""
+    p = subprocess.Popen(
+        [avra, verb, package],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
     try:
-        p = subprocess.run(
-            [avra, verb, package],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=TIMEOUT,
-        )
+        out, _ = p.communicate(timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
+        os.killpg(p.pid, signal.SIGKILL)
+        p.communicate()
         return 124, "timed out after %ds" % TIMEOUT
-    return p.returncode, p.stdout.decode("utf-8", "replace")
+    return p.returncode, out.decode("utf-8", "replace")
 
 
 def verdict(code, out, lenient=False):
@@ -242,7 +249,10 @@ def main():
             for verb in verbs + ["build"]:
                 if verb == "build" and not clean:
                     continue
+                t0 = time.time()
                 code, out = run(a.avra, verb, d)
+                if a.progress and time.time() - t0 > 10:
+                    print("defects: slow %s (%s) %ds" % (n, verb, time.time() - t0), flush=True)
                 clean = clean or (verb == "check" and code == 0)
                 why = verdict(code, out, lenient=mutant and verb == "run")
                 if a.show:
