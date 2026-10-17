@@ -18,6 +18,9 @@ import { stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js
 const mount = stubElement("root");
 // The page's timers, by hand: what was armed, and a way to let it fire.
 const armed = new Map();
+// The page's fetch, by hand: each call waits for the test to answer it.
+const asked = [];
+const fetchFn = (url, init) => new Promise((resolve, reject) => asked.push({ url, init, resolve, reject }));
 const clock = {
   setTimeout: (fn, ms) => { const h = armed.size + 1; armed.set(h, { fn, ms }); return h; },
   setInterval: (fn, ms) => { const h = armed.size + 1; armed.set(h, { fn, ms }); return h; },
@@ -35,6 +38,7 @@ await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
   wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
   sent: (bytes) => { frames++; writes += bytes.length; },
   clock,
+  fetch: fetchFn,
 });
 
 const shape = (n) => {
@@ -145,6 +149,29 @@ claim("pressing it arms one timer of 100 ms on the page's clock", armed.size ===
 claim("asking cost no frame: nothing changed on the page", frames === 0, spent());
 [...armed.values()][0].fn();
 claim("the timer firing is a turn: the footer says the reminder", footerWords().includes("reminder"), footerWords());
+spent();
+
+// A SOURCE IS THE HOST'S FETCH TOO: the same Request value, one frame to the
+// host, its answer a turn.
+const settle = async () => { for (let k = 0; k < 8; k++) await Promise.resolve(); };
+const sync = named("Sync")[0];
+claim("the footer holds a Sync that listens", Boolean(sync));
+spent();
+fire(sync);
+await settle();
+claim("pressing it sends one request for /tasks with the page's fetch", asked.length === 1 && asked[0].url === "/tasks" && asked[0].init.method === "POST", `${asked.length}`);
+claim("the whole request crossed the wasm boundary: field, content type and body", asked[0].init.headers["x-board"] === "1" && asked[0].init.headers["content-type"] === "application/json" && new TextDecoder().decode(asked[0].init.body) === "[1,2]", JSON.stringify(asked[0].init.headers));
+claim("the footer says it is syncing; the ask cost one small frame", footerWords().includes("syncing") && frames === 1, `${footerWords()} / ${spent()}`);
+spent();
+asked[0].resolve({ status: 200, arrayBuffer: async () => new TextEncoder().encode("12345").buffer });
+await settle();
+claim("the answer is a turn: the footer says what the server sent", footerWords().includes("synced 5"), footerWords());
+spent();
+fire(sync);
+await settle();
+asked[1].resolve({ status: 503, arrayBuffer: async () => new ArrayBuffer(0) });
+await settle();
+claim("a refusal shows as the words the parse gave", footerWords().includes("sync failed: status 503"), footerWords());
 spent();
 
 console.log(failed === 0 ? "ui-board: every claim holds" : `ui-board: ${failed} claim(s) FAILED`);

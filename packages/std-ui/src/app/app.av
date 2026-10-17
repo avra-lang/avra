@@ -8,6 +8,7 @@ use style.box.{Box}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use style.theme.{Theme, default_theme}
+use @std.http_message.message.{Reply, Request}
 
 /// Whatever may change the program's state, as the door takes it: it
 /// answers whether it ran.
@@ -28,22 +29,15 @@ export enum Msg {
 }
 
 /// What a source asks the target for, as DATA: a wait of `ms`, once or
-/// over and over. The target realizes it its own way — a task that sleeps
-/// natively, a host timer on a page — and the answer comes back as an
-/// `Act`, run as a turn.
+/// over and over, or a request answered. The target realizes it its own
+/// way — a task that sleeps and a client that sends natively, a host timer
+/// and the host's `fetch` on a page — and the answer comes back as an
+/// `Act`, run as a turn: for a request, the reply (or why there is none) is
+/// left in `into` first.
 export enum Want {
     After(ms: int)
     Every(ms: int)
-}
-
-impl Want {
-    /// The wait, in milliseconds.
-    fn span() -> int { match self { .After(ms) or .Every(ms) -> ms } }
-
-    /// Whether the wait starts over when it ends.
-    fn repeats() -> bool {
-        match self { .Every(_) -> true, .After(_) -> false }
-    }
+    Get(request: Request, into: Cell<Result<Reply, string>?>)
 }
 
 /// The way into a running loop: where a message goes, what a source's ask
@@ -81,6 +75,9 @@ export type App = {
     asking: Cell<string?>,
     standing: Cell<List<string>>,
 }
+
+/// A turn that changes nothing.
+fn unmoved() -> bool { false }
 
 /// A target with nowhere to show a notice beside the view.
 fn unnoticed(_words: string?) {}
@@ -158,7 +155,17 @@ impl App {
         let view = self.view.get()
         let theme = self.theme.get()
         self.stands.begun()
+        let before = self.standing.get().join("\n")
         self.show(view(self.stands), theme())
+        if self.standing.get().join("\n") != before { self.woken() }
+    }
+
+    /// A paint moved who stands on the screen: the loop is left a turn that
+    /// changes nothing, so it sweeps what the controls that left asked even
+    /// when the paint came from outside it (a test's verb, a host's echo).
+    fn woken() {
+        let door? = self.door.get() else { return }
+        let _ = door.send(Msg.Turn(unmoved, null))
     }
 
     /// What the last paint's walk said of the tree it was handed — an

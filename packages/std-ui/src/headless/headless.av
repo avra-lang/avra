@@ -4,7 +4,9 @@
 //! the view bound and the loop paints again, so a test drives the same
 //! door a host does and names no platform.
 use app.{Act, Shown, running, shown, stood}
+use native.net.{unwired}
 use native.sources.{opened, served, unshown}
+use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration, ms, sleep}
 use tree.controls.{Control}
 use tree.node.{EventKind, Said}
@@ -13,7 +15,7 @@ use tree.view.{View}
 extern fn avra_clock_virtual(on: int)
 
 /// A screen nobody draws.
-export type Screen = { shown: Shown }
+export type Screen = { shown: Shown, net: Cell<fn(Request) -> Result<Reply, string>> = Cell.new(unwired) }
 
 /// `view` on a screen held in memory, painted once.
 export fn headless<V: View>(view: fn() -> V) -> Screen { Screen { shown: shown(view) } }
@@ -69,6 +71,10 @@ impl Screen {
         self.shown.app.turn(() -> action.fire(null))
     }
 
+    /// The screen's requests go over `net` from now: a test's own network,
+    /// answering after whatever it waits.
+    fn wired(net: fn(Request) -> Result<Reply, string>) { self.net.set(net) }
+
     /// `act` runs as a turn, as a source of the loop would leave it: a
     /// paint follows when it ran.
     fn turn(act: Act) -> bool { self.shown.app.turn(act) }
@@ -81,7 +87,7 @@ impl Screen {
         avra_clock_virtual(1)
         let before = running()
         stood(self.shown.app)
-        let inbox = opened(self.shown.app)
+        let inbox = opened(self.shown.app, self.net.get())
         let loop = spawn served(self.shown.app, inbox, unshown)
         body()
         self.shown.app.close()
