@@ -54,6 +54,9 @@ use stable.{
     Reader,
 }
 
+/// What a query's answer codec calls its helpers on: the answer's own name, every record inline.
+fn answer_owner(f: Fn) -> Owner { Owner { name: f.answer, all: false } }
+
 /// `@query`: the wrapper and the query's contract, from one reading.
 export fn query(f: Fn) -> Declared {
     let problems = query_problems(f)
@@ -191,7 +194,7 @@ fn wrapper(f: Fn) -> Decls {
     let body = quote { () -> ${wrapped(f)}(${..args}) }
     let again = quote { () -> ${f.name}(${..args}) }
     if decodable(f.answers) {
-        let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: ${args_hash(f)}, write: ${write_each(f.answers, f.answer)}, read: ${read_each(f.answers, f.answer)} } }
+        let record = quote { KeptRecord { query: code_keyed(${literal(durable_name(f))}, code_hash(${name(wrapped(f).name)})), args: ${args_hash(f)}, write: ${write_each(f.answers, answer_owner(f))}, read: ${read_each(f.answers, answer_owner(f))} } }
         return quote {
             fn ${f.name}(..${seats}) -> ${f.answer} {
                 let held = ${kept_name(f)}().under(${db})
@@ -222,7 +225,7 @@ fn wrapper(f: Fn) -> Decls {
 /// order through the codec, the octets spelled out. What a call's cell
 /// is interned by — never a hash, which two calls may share.
 export fn args_spelled(f: Fn) -> Code {
-    let writes = [quote { (w: Writer) -> ${written(quote { w }, name(p.name), p.kind, f.answer)} } for p in f.params.slice(1, f.params.length)]
+    let writes = [quote { (w: Writer) -> ${written(quote { w }, name(p.name), p.kind, answer_owner(f))} } for p in f.params.slice(1, f.params.length)]
     quote { spelled_with([${..writes}]) }
 }
 
@@ -237,7 +240,7 @@ fn arg_code(f: Fn) -> Code {
 
 /// The answer's own stable hash, one value folded alone.
 export fn answer_hash(f: Fn) -> Code {
-    quote { (v: ${f.answer}) -> ${hashed(quote { stable_hasher(0) }, quote { v }, f.answers, f.answer)}.finish() }
+    quote { (v: ${f.answer}) -> ${hashed(quote { stable_hasher(0) }, quote { v }, f.answers, answer_owner(f))}.finish() }
 }
 
 /// The name a query's answers are kept under past the process: its
@@ -249,7 +252,7 @@ fn durable_name(f: Fn) -> string { "${f.name}(${[p.ty for p in f.params].join(",
 /// query's own name the seed — two queries never share a cell.
 fn args_hash(f: Fn) -> Code {
     mut acc: Code = quote { stable_hasher(${text_hash(f.name)}) }
-    for p in f.params.slice(1, f.params.length) { acc = hashed(acc, name(p.name), p.kind, f.answer) }
+    for p in f.params.slice(1, f.params.length) { acc = hashed(acc, name(p.name), p.kind, answer_owner(f)) }
     quote { ${acc}.finish() }
 }
 

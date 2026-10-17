@@ -1,0 +1,186 @@
+// `@codec`: any record or enum round-trips through its own octets under a scope — a dense
+// id crosses by the spelling the scope gives it, a generic record of one parameter is its
+// fields at the argument, a `@local` field is rebuilt from its default — and every text that
+// is not the type's own is refused, never half read.
+use @std.meta.{dense, Type, Field, Kind, Variant, Mark}
+use @std.relation.{codec, stored_problems}
+use @std.relation.stable.{Scope, indexed_scope, CodecFault}
+use @std.text.{parse_int}
+
+@dense
+type Tid = { index: int }
+
+@codec
+type Row = { a: int, b: string, c: bool, d: List<int>, e: string? }
+
+@codec
+enum Shape {
+    Dot
+    Sq(side: int)
+    Pair(left: string, right: List<string>)
+}
+
+@codec
+type Node = { name: string, kids: List<Node>, next: Node?, shape: Shape, marks: List<string?> }
+
+@codec
+enum Tree {
+    Leaf(n: int)
+    Branch(left: Tree, right: Tree)
+    Many(items: List<Tree>)
+}
+
+/// a generic record of one parameter
+type Tbl<V> = { lo: int, cells: List<V>, seed: V }
+
+@codec
+type Facts = { widens: Tbl<Tid?>, shapes: Tbl<Shape?>, at: Tid, ids: List<Tid> }
+
+/// ids spelled with a base: only a scope that holds the kind's own prefix reads one back
+type Based = { base: int }
+
+impl Scope for Based {
+    fn spelled(kind: string, index: int) -> string { "${kind}@${index + self.base}" }
+
+    fn unspelled(kind: string, text: string) -> int? {
+        if !text.starts_with("${kind}@") { return null }
+        let n? = parse_int(text.substring(kind.length + 1, text.length)) else { return null }
+        n - self.base
+    }
+}
+
+fn here() -> dyn Scope { indexed_scope() }
+
+fn based() -> dyn Scope { Based { base: 100 } }
+
+fn nul() -> string { "a${from_codepoint_zero()}b" }
+
+fn from_codepoint_zero() -> string { "\u0000" }
+
+fn row_back(r: Row) -> Result<Row, CodecFault> { Row.decoded_in(here(), r.encoded_in(here())) }
+
+fn row_same(a: Row, b: Result<Row, CodecFault>) -> bool {
+    match b {
+        .Ok(x) -> x.a == a.a &&
+            x.b == a.b &&
+            x.c == a.c &&
+            x.d.length == a.d.length &&
+            [i for i in 0..a.d.length if a.d[i] != x.d[i]].is_empty() &&
+            x.e == a.e,
+        .Err(_) -> false,
+    }
+}
+
+fn leaf() -> Node { Node { name: "l", kids: [], next: null, shape: Shape.Dot, marks: [null, "m"] } }
+
+fn root() -> Node { Node { name: "r", kids: [leaf(), leaf()], next: leaf(), shape: Shape.Sq(4), marks: [] } }
+
+fn tree() -> Tree {
+    Tree.Branch(Tree.Leaf(1), Tree.Many([Tree.Leaf(2), Tree.Branch(Tree.Leaf(3), Tree.Leaf(4))]))
+}
+
+fn facts() -> Facts {
+    Facts {
+        widens: Tbl { lo: 5, cells: [null, Tid { index: 9 }], seed: null },
+        shapes: Tbl { lo: 1, cells: [Shape.Sq(2), null], seed: null },
+        at: Tid { index: 3 },
+        ids: [Tid { index: 4 }],
+    }
+}
+
+fn refused(r: Result<Row, CodecFault>) -> bool { match r { .Ok(_) -> false, .Err(_) -> true } }
+
+fn unfit_row(kind: Kind) -> Type {
+    Type {
+        name: "Unfit",
+        fields: [Field { name: "f", ty: "x", at: null, kind: kind }],
+        variants: [],
+        at: null,
+        module: "m",
+    }
+}
+
+spec "std/relation — a stored type round-trips under a scope" {
+    given "a record of scalars, a list and a nullable" {
+        then "a baseline and a zero row come back whole" {
+            let full = Row { a: -7, b: "hi", c: true, d: [1, 2], e: null }
+            let zero = Row { a: 0, b: "", c: false, d: [], e: "x" }
+            row_same(full, row_back(full)) && row_same(zero, row_back(zero))
+        }
+        then "the smallest int and a NUL-bearing string survive" {
+            let odd = Row { a: -9223372036854775807 - 1, b: nul(), c: false, d: [], e: "" }
+            row_same(odd, row_back(odd))
+        }
+    }
+    given "a payload enum" {
+        then "every variant comes back as itself" {
+            let pair = Shape.decoded_in(here(), Shape.Pair("a", ["b", "cc"]).encoded_in(here()))
+            let dot = Shape.decoded_in(here(), Shape.Dot.encoded_in(here()))
+            let sq = Shape.decoded_in(here(), Shape.Sq(-3).encoded_in(here()))
+            (pair is .Ok) && (dot is .Ok) && (sq is .Ok)
+        }
+    }
+    given "a record and an enum that reach themselves" {
+        then "children, a nullable child and a list of nullable strings nest" {
+            match Node.decoded_in(here(), root().encoded_in(here())) {
+                .Ok(back) -> back.kids.length == 2 && back.next!.name == "l" && back.kids[1].marks.length == 2,
+                .Err(_) -> false,
+            }
+        }
+        then "a branch of branches and a list of trees nest" {
+            match Tree.decoded_in(here(), tree().encoded_in(here())) {
+                .Ok(back) -> back.encoded_in(here()) == tree().encoded_in(here()),
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "dense ids and a generic record" {
+        then "ids cross by the scope's spelling and return by its inverse" {
+            let bytes = facts().encoded_in(based())
+            match Facts.decoded_in(based(), bytes) {
+                .Ok(back) -> back.at.index == 3 &&
+                    back.ids[0].index == 4 &&
+                    back.widens.cells[1]!.index == 9 &&
+                    back.widens.lo == 5 &&
+                    back.shapes.cells.length == 2,
+                .Err(_) -> false,
+            }
+        }
+        then "a scope that does not hold the spelling refuses the read" {
+            match Facts.decoded_in(indexed_scope(), facts().encoded_in(based())) {
+                .Ok(_) -> false,
+                .Err(_) -> true,
+            }
+        }
+        then "equal values write equal bytes" {
+            facts().encoded_in(based()).length == facts().encoded_in(based()).length
+        }
+    }
+}
+
+spec "std/relation — what is not a stored type's own octets is refused" {
+    given "octets cut short, padded or empty" {
+        then "none decodes" {
+            let good = Row { a: -7, b: "hi", c: true, d: [1, 2], e: null }.encoded_in(here())
+            refused(Row.decoded_in(here(), good.slice(0, good.length - 1))) &&
+                refused(Row.decoded_in(here(), good.concat(good.slice(0, 1)))) &&
+                refused(Row.decoded_in(here(), good.slice(0, 0)))
+        }
+    }
+    given "the octets of another type" {
+        then "they are never decoded: the shapes differ" {
+            Row.codec_shape() != Shape.codec_shape() &&
+                Node.codec_shape() != Tree.codec_shape() &&
+                refused(Row.decoded_in(here(), Shape.Dot.encoded_in(here())))
+        }
+    }
+    given "a field with no wire form" {
+        then "a fn, a map, a cell and a float are each refused, named" {
+            [stored_problems(unfit_row(k)).length for k in [Kind.Float, Kind.Cell(Kind.Int), Kind.Map(Kind.Str, Kind.Int), Kind.Fn([], Kind.Int)]]
+                .all(it == 1)
+        }
+        then "a scalar, a list and a nullable are fit" {
+            [stored_problems(unfit_row(k)).length for k in [Kind.Int, Kind.List(Kind.Str), Kind.Opt(Kind.Bool)]].all(it == 0)
+        }
+    }
+}
