@@ -1249,7 +1249,37 @@ No witness yet.
 
 the manifest is TOML the compiler reads
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[package]
+name = "other"
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.syntax]: `[package]` is declared twice — the first stays, and this one's keys are not read
+  ╭─[/w/avra.toml:5:1]
+5 │ [package]
+  · ┬
+  · ╰── here
+──╯
+help: a manifest is TOML — `key = value` lines under `[section]` headers
+
+error[manifest.syntax]: duplicate key `name`
+  ╭─[/w/avra.toml:6:1]
+6 │ name = "other"
+  · ┬
+  · ╰── here
+──╯
+help: a manifest is TOML — `key = value` lines under `[section]` headers
+```
 
 ## manifest.bad_tool_from
 
