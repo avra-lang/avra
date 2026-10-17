@@ -10,7 +10,7 @@ Each case is the entry of a one-file package in a scratch directory
 (a lone file reads no std and no prelude, and a file inside this tree
 is silent), so a refusal actually prints.
 
-usage: defects.py [--avra PATH] [--only NAME] [--list]
+usage: defects.py [--avra PATH] [--only NAME] [--list] [--show]
 """
 import argparse
 import os
@@ -117,6 +117,7 @@ def main():
     ap.add_argument("--avra", default=os.path.join(ROOT, "avra"))
     ap.add_argument("--only")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--show", action="store_true", help="print every run's output")
     a = ap.parse_args()
     all_cases = cases(open(CORPUS, encoding="utf-8").read())
     work = []
@@ -149,6 +150,8 @@ def main():
                 code, out = run(a.avra, verb, d)
                 clean = clean or (verb == "check" and code == 0)
                 why = verdict(code, out)
+                if a.show:
+                    print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
                 if why:
                     bad.append((n, why))
                     print("defects: %s (%s) — %s" % (n, verb, why))
