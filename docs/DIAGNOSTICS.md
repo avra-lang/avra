@@ -1158,6 +1158,25 @@ two collected members would name the same variant
 
 No witness yet.
 
+## collect_enum.empty
+
+a collected enum gathers at least one member
+
+```avra
+collect enum Shape = @numbered in self by it.name
+1
+```
+
+```
+error[collect_enum.empty]: `Shape` gathers no member, and an enum names at least one variant
+  ╭─[witness.av:1:1]
+1 │ collect enum Shape = @numbered in self by it.name
+  · ┬
+  · ╰── this gathering is empty
+──╯
+help: declare a member this `collect enum` gathers, or drop the enum
+```
+
 ## collect_enum.member
 
 a gathered member's record cannot be a variant's payload
@@ -1188,6 +1207,14 @@ collect enum Shape: Nope = @numbered in self by it.mark.args[0] dense
 ```
 
 ```
+error[collect_enum.empty]: `Shape` gathers no member, and an enum names at least one variant
+  ╭─[witness.av:3:1]
+3 │ collect enum Shape: Nope = @numbered in self by it.mark.args[0] dense
+  · ┬
+  · ╰── this gathering is empty
+──╯
+help: declare a member this `collect enum` gathers, or drop the enum
+
 error[collect_enum.trait]: every member of a `collect enum E: T` implements `T` — `Nope` names no trait here
   ╭─[witness.av:3:21]
 3 │ collect enum Shape: Nope = @numbered in self by it.mark.args[0] dense
