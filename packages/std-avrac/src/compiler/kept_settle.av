@@ -547,15 +547,7 @@ impl Workspace {
 
     /// A module's declaration names, over the files it holds.
     fn module_decl_names(m: ModulePath) -> List<string> {
-        flatten([self.recorded_decl_names(m, path) ?? self.file_decl_names(path, [], false) for path in self.module_files(m)])
-    }
-
-    /// A held file's declaration names as its module's record lists them — the file's rows
-    /// stay unminted. Absent for a file read fresh, and where no record is attached.
-    fn recorded_decl_names(m: ModulePath, path: string) -> List<string>? {
-        let store? = self.store.get() else { return null }
-        if !self.held_path(path) { return null }
-        flatten([bound_names(p) for p in file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))])
+        flatten([self.file_decl_names(path, [], false) for path in self.module_files(m)])
     }
 
     /// Whether any declaration of a file was written by an annotation: its code spells names
@@ -573,10 +565,31 @@ impl Workspace {
     /// spell it beyond its own declaration, or `narrow` is off.
     fn file_decl_names(path: string, files: List<string>, narrow: bool) -> List<string> {
         let f? = self.decls.known_file_id(path) else { return [] }
+        if self.held_path(path) && self.store.get() != null {
+            let m = self.module_path_of(path)
+            let fields = record_fields(self, self.store.get()!, m)
+            let makers = makers_in(fields, path)
+            let rows = file_rows(fields, record_places(self, self.store.get()!, m).get(path))
+            return flatten([self.kept_names(p, path, files, narrow, makers) for p in rows])
+        }
         [self.decls.decl(d).name for d in self.decls.decls_of_file(f) if binds_name(self.decls.decl(d).kind) &&
             (!narrow ||
                 !self.plain_free(d) ||
                 self.spelled_beside(path, self.decls.decl(d).name, files))]
+    }
+
+    /// The name a held file's record line binds, counted as `file_decl_names` counts it.
+    fn kept_names(parts: List<string>, path: string, files: List<string>, narrow: bool, makers: Map<string, string>) -> List<string> {
+        let row? = read_row(parts) else { return [] }
+        let kind? = declared_kind(row.shape, row.kind) else { return [] }
+        let facts? = facts_unblocked(row.facts) else { return [] }
+        let plain = kind is .Fn &&
+            row.owner.is_empty() &&
+            row.enclosing.is_empty() &&
+            (makers.get("${row.ordinal}") ?? "").is_empty() &&
+            facts.word == null &&
+            facts.annotations.is_empty()
+        if binds_name(kind) && (!narrow || !plain || self.spelled_beside(path, row.name, files)) { [row.name] } else { [] }
     }
 
     /// Whether a declaration is a free fn nothing generated and no annotation touches.
@@ -725,11 +738,4 @@ fn settles(k: DeclKind) -> bool {
 /// A verdict as one number: a value's own fingerprint, a refusal's words.
 fn verdict_fp(r: Result<Settled, Unsettled>) -> int {
     match r { .Ok(v) -> fp(309, [v.fingerprint]), .Err(why) -> fp(310, [fp_str(why.words())]) }
-}
-
-/// The name a record line binds — none for a line that binds no name.
-fn bound_names(parts: List<string>) -> List<string> {
-    let row? = read_row(parts) else { return [] }
-    let kind? = declared_kind(row.shape, row.kind) else { return [] }
-    if binds_name(kind) { [row.name] } else { [] }
 }
