@@ -118,4 +118,59 @@ spec "std/json — an enum's codec" {
         }
         then "names a type that reads itself by that name" { Chain.json_shape() == "Chain<next:~Chain?,n:int>" }
     }
+    given "text with no tree" {
+        then "a record writes the same document the tree writes" {
+            let b = Bag {
+                counts: {"b": 2, "a": 1},
+                pins: {"p": [Pin { row: 1, label: "x" }]},
+                note: null,
+            }
+            b.json_text() == to_text(b.to_json())
+        }
+        then "an enum writes the same document the tree writes" {
+            [
+                Choice.Nothing,
+                Choice.One(3),
+                Choice.Both(1, "n"),
+                Choice.Both(2, null),
+                Choice.Marks([Show.All, Show.Done]),
+                Choice.Wide(1, 2, 3, 4, 5, 6),
+            ]
+                .all(it.json_text() == to_text(it.to_json()))
+        }
+        then "reads back what it wrote, every shape" {
+            [
+                Choice.Nothing,
+                Choice.One(3),
+                Choice.Both(1, "n"),
+                Choice.Both(2, null),
+                Choice.Pinned(Pin { row: 2, label: "q\"r" }, [1, 2]),
+                Choice.Table({"x": 1}),
+            ]
+                .all(text_round(it))
+        }
+        then "reads a document the tree wrote" {
+            match Bag.from_json_text("{\"counts\":{\"b\":2},\"pins\":{},\"note\":\"n\"}") {
+                .Ok(b) -> b.note == "n" && b.counts.get("b") == 2,
+                .Err(_) -> false,
+            }
+        }
+        then "refuses a document that misfits, in its own words" {
+            match Choice.from_json_text("{\"tag\":\"One\",\"row\":\"x\"}") {
+                .Ok(_) -> "read",
+                .Err(e) -> e,
+            } == "wants an integer"
+        }
+        then "refuses a tag that names no variant" {
+            match Choice.from_json_text("{\"tag\":\"Nope\"}") { .Ok(_) -> "read", .Err(e) -> e } == "names no variant"
+        }
+    }
+}
+
+/// A choice written as text and read back, written again.
+fn text_round(c: Choice) -> bool {
+    match Choice.from_json_text(c.json_text()) {
+        .Ok(back) -> back.json_text() == c.json_text(),
+        .Err(_) -> false,
+    }
 }
