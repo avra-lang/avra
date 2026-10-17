@@ -2,6 +2,7 @@
 // program ANSWERS the page's row itself — a host fn of the row's name — so
 // `mount` paints into it, the page's echo (`avra_ui_event`) runs the handler
 // the paint bound, and each repaint is a frame, evaluated and native alike.
+use @std.ui.app.{after_ms, every_ms}
 use @std.ui.components.{button, column, text}
 use @std.ui.web.{mount}
 
@@ -29,3 +30,62 @@ for who in 0..8 {
 println("── mounted again")
 mount(view)
 println("${presses} presses heard")
+
+// ── sources: the page's timers ──
+// The page's other rows, answered here too: a press that asks for a wait
+// arms a timer, the host's `fired` re-enters as a turn, a period keeps
+// firing until its control leaves, and then its timer is disarmed and a
+// late fire is ignored.
+state waited: int = 0
+state ticks: int = 0
+
+extern fn avra_ui_arm(token: int, ms: int, repeat: int) {
+    println("arm ${token} ${ms} ${repeat}")
+}
+
+extern fn avra_ui_disarm(token: int) {
+    println("disarm ${token}")
+}
+
+extern fn avra_ui_fired(token: int)
+
+fn waits() -> bool {
+    waited = waited + 1
+    true
+}
+
+fn ticks_on() -> bool {
+    ticks = ticks + 1
+    true
+}
+
+fn asks() {
+    let _ = after_ms(50, waits)
+    let _ = every_ms(10, ticks_on)
+}
+
+fn timed() -> column {
+    column { items: [text "waited ${waited} ticks ${ticks}", button "Ask" { on press { asks() } }] }
+}
+
+fn leaves() -> column {
+    column { items: [text "waited ${waited} ticks ${ticks}"] }
+}
+
+mount(timed)
+println("── a press asks for two timers")
+avra_ui_event(7, 1, 0, 0, 0)
+println("── the period fires twice, the wait once")
+avra_ui_fired(2)
+avra_ui_fired(2)
+avra_ui_fired(1)
+println("── ${waited} waited, ${ticks} ticks")
+println("── a late fire of the wait is ignored")
+avra_ui_fired(1)
+println("── ${waited} waited, ${ticks} ticks")
+println("── a press asks again, and the control leaves: both timers are disarmed")
+avra_ui_event(7, 1, 0, 0, 0)
+mount(leaves)
+println("── then a late fire is ignored")
+avra_ui_fired(4)
+println("── ${waited} waited, ${ticks} ticks")
