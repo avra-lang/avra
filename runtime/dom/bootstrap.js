@@ -240,6 +240,84 @@ export function createTimers(clock, fired) {
   };
 }
 
+// A request frame the program wrote (`request_frame`, realize/dom/wire.av):
+// the wire's version, the method's word, the URL, the wait in milliseconds
+// (-1: none), the fields as a count and name/value pairs, and the body as its
+// content type (empty: none) and its octets.
+export function parseRequest(bytes) {
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
+  let i = 0;
+  const seen = bytes[i++];
+  if (seen !== WIRE_VERSION) {
+    throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
+  }
+  const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
+  const octets = () => { const len = int(); const o = bytes.slice(i, i + len); i += len; return o; };
+  const str = () => decoder.decode(octets());
+  const method = str();
+  const url = str();
+  const timeoutMs = int();
+  const headers = [];
+  for (let n = int(); n > 0; n--) headers.push([str(), str()]);
+  const kind = str();
+  const body = octets();
+  return { method, url, timeoutMs, headers, kind, body };
+}
+
+// The page's requests, for the program's asks. The program names one by a
+// number it counted out (`get(token, frame)`), the host keeps its abort handle,
+// and `answered(token, status, octets)` re-enters the program as a turn: the
+// status and body of the reply, or status -1 and the words of why there is
+// none. An aborted request, or one already answered, never answers — a late
+// answer is dropped here, not by the program. `fetchFn` is the page's `fetch`,
+// or a test's; `clock` supplies the wait.
+export function createFetches(fetchFn, answered, clock = globalThis) {
+  const held = new Map();
+  const finish = (token, status, octets) => {
+    const mine = held.get(token);
+    if (!mine) return;
+    held.delete(token);
+    if (mine.timer !== null) clock.clearTimeout(mine.timer);
+    answered(token, status, octets);
+  };
+  return {
+    get: (token, frame) => {
+      const t = Number(token);
+      const r = parseRequest(frame);
+      const controller = new AbortController();
+      const timer = r.timeoutMs >= 0 ? clock.setTimeout(() => { finish(t, -1, new TextEncoder().encode("the request timed out")); controller.abort(); }, r.timeoutMs) : null;
+      held.set(t, { controller, timer });
+      const headers = Object.fromEntries(r.headers);
+      if (r.kind !== "" && !Object.keys(headers).some((n) => n.toLowerCase() === "content-type")) headers["content-type"] = r.kind;
+      const init = { method: r.method, headers, signal: controller.signal };
+      if (r.body.length > 0 && r.method !== "GET" && r.method !== "HEAD") init.body = r.body;
+      Promise.resolve()
+        .then(() => fetchFn(r.url, init))
+        .then((res) => res.arrayBuffer().then((buf) => finish(t, res.status, new Uint8Array(buf))))
+        .catch((err) => finish(t, -1, new TextEncoder().encode(String(err && err.message ? err.message : err))));
+    },
+    abort: (token) => {
+      const t = Number(token);
+      const mine = held.get(t);
+      if (!mine) return;
+      held.delete(t);
+      if (mine.timer !== null) clock.clearTimeout(mine.timer);
+      mine.controller.abort();
+    },
+    count: () => held.size,
+  };
+}
+
+// The program's `answered(token, status, len)` — `HOST.answered`: the octets
+// are written into the seat the program hands out for exactly that many
+// (`HOST.seat`), then the three numbers cross as i64 seats.
+export function sendAnswer(mod, token, status, octets) {
+  const at = Number(mod[HOST.seat](BigInt(octets.length)));
+  new Uint8Array(mod.memory.buffer, at, octets.length).set(octets);
+  mod[HOST.answered](BigInt(token), BigInt(status), BigInt(octets.length));
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
@@ -247,9 +325,10 @@ export function createTimers(clock, fired) {
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
 // the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a) }) {
   let mod = null;
   const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
+  const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
   const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
@@ -259,6 +338,8 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); },
       [ROWS.arm]: timers.arm,
       [ROWS.disarm]: timers.disarm,
+      [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
+      [ROWS.abort]: fetches.abort,
     },
   });
   const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");

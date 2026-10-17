@@ -5,7 +5,8 @@
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
-use app.{Act, App, Async, Door, Fetch, Job, Msg, Want, after_ms, every_ms, running}
+use app.{Act, App, Door, Job, Msg, Want, after_ms, every_ms, running}
+use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration, every, ms, sleep}
 use @std.task.{Channel, Posted, Sink, Source, unbounded_channel}
 
@@ -14,7 +15,7 @@ export fn unshown() {}
 
 /// The inbox of an app's loop, open: the app's door leads to it, so what
 /// a source leaves is kept for the loop that serves it.
-export fn opened(on: App) -> Channel<Msg> {
+export fn opened(on: App, net: fn(Request) -> Result<Reply, string>) -> Channel<Msg> {
     if on.looping.get() { avra_trap(one_loop()) }
     on.looping.set(true)
     let inbox = unbounded_channel<Msg>()
@@ -24,7 +25,7 @@ export fn opened(on: App) -> Channel<Msg> {
         .set(
             Door {
                 send: send,
-                ask: (w: Want, act: Act, owner: string?) -> asked(send, w, act, owner),
+                ask: (w: Want, act: Act, owner: string?) -> asked(send, net, w, act, owner),
                 close: () -> inbox.sink.close(),
             },
         )
@@ -38,11 +39,19 @@ export fn later(span: Duration, act: Act) -> bool { after_ms(span.ms, act) }
 /// no loop runs.
 export fn repeating(period: Duration, act: Act) -> bool { every_ms(period.ms, act) }
 
-/// A want as the loop realizes it: a job that waits, then posts.
-fn asked(send: fn(Msg) -> bool, want: Want, act: Act, owner: string?) -> bool {
+/// A want as the loop realizes it: a job that waits, or sends over `net`,
+/// then posts.
+fn asked(
+    send: fn(Msg) -> bool,
+    net: fn(Request) -> Result<Reply, string>,
+    want: Want,
+    act: Act,
+    owner: string?,
+) -> bool {
     let job: Job = match want {
         .After(span) -> () -> waited(send, owner, ms(span), act),
         .Every(period) -> () -> ticked(send, owner, ms(period), act),
+        .Get(request, into) -> () -> got(send, owner, net, request, into, act),
     }
     send(Msg.Start(job, owner))
 }
@@ -228,28 +237,19 @@ fn carried<T>(send: fn(Msg) -> bool, owner: string?, source: Source<T>, on_item:
     true
 }
 
-/// `held` is loading now, and becomes what `work` answers: `Ready` with
-/// its answer, or `Failed` with its refusal. THE LATEST ASK WINS: each ask
-/// takes the next number, and an answer lands only if its number is still
-/// the latest, so an older ask answering late never shows. False, and the
-/// fetch untouched, when no loop runs.
-export fn fetched<T>(held: Fetch<T>, work: fn() -> Result<T, string>) -> bool {
-    if running() == null { return false }
-    let ask = held.asks.get() + 1
-    held.asks.set(ask)
-    held.now.set(Async.Loading)
-    answered(
-        work,
-        (r: Result<T, string>) -> {
-            let latest = held.asks.get() == ask
-            if latest { held.now.set(settled(r)) }
-            latest
-        },
-    )
-}
-
-fn settled<T>(r: Result<T, string>) -> Async<T> {
-    match r { .Ok(v) -> Async.Ready(v), .Err(m) -> Async.Failed(m) }
+/// The request goes over `net`; its reply, or why there is none, is left
+/// in `into`, and `act` runs as a turn.
+fn got(
+    send: fn(Msg) -> bool,
+    owner: string?,
+    net: fn(Request) -> Result<Reply, string>,
+    request: Request,
+    into: Cell<Result<Reply, string>?>,
+    act: Act,
+) -> bool {
+    into.set(net(request))
+    let _ = send(Msg.Turn(act, owner))
+    true
 }
 
 // ── voices ──────────────────────────────────────────────────────
