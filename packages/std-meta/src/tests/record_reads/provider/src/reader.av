@@ -1,0 +1,32 @@
+//! What a derive over a gathered enum can read of the types its
+//! variants hold: `type_exported` answers for what the ENUM's module
+//! exports — a record, an enum — and for nothing a member's own file
+//! imported from elsewhere.
+use @std.meta.{Type, Variant, Directive, Decls, Field, Kind, type_exported, literal}
+
+fn named(k: Kind) -> string? {
+    match k {
+        .List(inner) -> named(inner),
+        .Named(n, _) -> n,
+        rest -> null,
+    }
+}
+
+/// The shape of what `type_exported` reads for a field's named type.
+fn read(t: Type, f: Field) -> string {
+    let n? = named(f.kind) else { return "${f.name}: ${f.ty} names no declaration" }
+    let found? = type_exported(t.module, n) else { return "${f.name}: ${f.ty} is NOT readable from the enum's module" }
+    "${f.name}: ${f.ty} reads fields [${[x.name for x in found.fields].join(", ")}] variants [${[v.name for v in found.variants].join(", ")}]"
+}
+
+fn lines(t: Type, v: Variant) -> List<string> {
+    [read(t, f) for f in v.fields]
+}
+
+export trait Reads {
+    static fn derive(t: Type) -> List<Directive> {
+        let body = literal([line for v in t.variants for line in lines(t, v)].join("\n"))
+        let source: Decls = quote { fn ${"reads_${t.name}"}() -> string { ${body} } }
+        [Directive { twin: "", name: t.name, at: t.at, source: source }]
+    }
+}
