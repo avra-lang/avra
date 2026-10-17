@@ -139,14 +139,17 @@ fn carried<T>(send: fn(Msg) -> bool, source: Source<T>, on_item: fn(T) -> bool) 
 }
 
 /// `held` is loading now, and becomes what `work` answers: `Ready` with
-/// its answer, or `Failed` with its refusal. False when no loop runs.
+/// its answer, or `Failed` with its refusal. An answer lands only while
+/// the cell is still `Loading`, so a slower earlier ask never overwrites
+/// a later one's answer. False when no loop runs.
 export fn fetched<T>(held: Cell<Async<T>>, work: fn() -> Result<T, string>) -> bool {
     held.set(Async.Loading)
     let started = answered(
         work,
         (r: Result<T, string>) -> {
-            held.set(settled(r))
-            true
+            let waiting = held.get().is_loading()
+            if waiting { held.set(settled(r)) }
+            waiting
         },
     )
     if !started { held.set(Async.Idle) }
