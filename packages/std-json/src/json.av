@@ -313,6 +313,26 @@ export fn member_once(o: Json, key: string, at: string) -> Result<Json?, DecodeE
     named.first()
 }
 
+/// One member of an object read as a map: its name and what its value read as.
+export type Member<T> = { key: string, value: T }
+
+/// An object's members, each named once.
+export fn want_members(v: Json?, at: string) -> Result<List<Field>, DecodeError> {
+    let o = want_object(v, at)?
+    let keys = [f.key for f in o.fields()]
+    for j, k in keys {
+        if keys.slice(0, j).contains(k) { fail DecodeError { at: path_field(at, k), wanted: "one member", found: "more" } }
+    }
+    o.fields()
+}
+
+/// Members, as the map from their names.
+export fn map_from<T>(members: List<Member<T>>) -> Map<string, T> {
+    mut out: Map<string, T> = {}
+    for m in members { out.set(m.key, m.value) }
+    out
+}
+
 /// The refusal for a `tag` that names no variant.
 export fn unknown_tag(at: string, tag: string) -> DecodeError {
     DecodeError { at: at, wanted: "a variant's name", found: "`${tag}`" }
