@@ -1981,9 +1981,9 @@ error[const.param]: a const cannot read a run-time parameter
   ╭─[witness.av:2:20]
 2 │     const k: int = x + 1
   ·                    ┬
-  ·                    ╰── `k` reads `parameter 1`
+  ·                    ╰── `k` reads `x`
 ──╯
-help: make `parameter 1` a `const` seat — `fn f(const parameter 1: …)` — or compute this at run time under `let`
+help: make `x` a `const` seat — `fn f(const x: …)` — or compute this at run time under `let`
 ```
 
 ## const.form
