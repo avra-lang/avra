@@ -358,6 +358,20 @@ spec "compiler/workspace" {
                 a.report().contains("fix the parse error first") &&
                 !a.report().contains("its exports: ")
         }
+        then "a refused item named as an impl's trait, a `dyn` and a bound stays silent beside its use" {
+            let a = with_main(
+                "use solo.{Gone}\ntype S = { a: int }\nimpl Gone for S {\n}\nfn f(x: dyn Gone) {}\nfn g<T: Gone>(x: T) -> int { 1 }\n1\n",
+            )
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("`solo` does not export `Gone`")
+        }
+        then "an impl's trait, a `dyn` and a bound refused in a module with an unread file point at it" {
+            let a = with_unread_solo(
+                "type S = { a: int }\nimpl Gone for S {\n}\nfn f(x: dyn Gone) {}\nfn g<T: Gone>(x: T) -> int { 1 }\n1\n",
+            )
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 3 && a.report().split("fix the parse error first").length == 4
+        }
         then "a package the manifest does not declare — a root without one declares nothing" {
             main_refuses(
                 "use @std.errors.{Loc}\n2\n",

@@ -1023,7 +1023,7 @@ impl TypeCx {
 
     fn undeclared_contract(at: Loc?, name: string) -> TypeId {
         self
-            .emit(
+            .speak_unread(
                 refusal(
                     "type.trait",
                     at,
@@ -1031,6 +1031,7 @@ impl TypeCx {
                     "written here",
                     "declare it — `trait ${name} { … }`",
                 ),
+                name,
             )
         self.error_type
     }
@@ -1361,9 +1362,18 @@ fn no_fields() -> StructSig { StructSig { names: [], types: [], defaults: [], st
 // ── The bound voices ──
 
 impl TypeCx {
+    /// A refusal of a name the file could not read: silent when the name's
+    /// `use` was refused (that refusal spoke), else pointed at the unread
+    /// file when the module has one.
+    fn speak_unread(d: Diag, name: string) {
+        let names = self.names.names
+        if names.refused.contains(name) { return }
+        self.emit(names.behind_unread(d, name))
+    }
+
     fn bound_not_a_trait(s: StmtId, written: string) {
         self
-            .emit(
+            .speak_unread(
                 refusal(
                     "type.trait",
                     self.stmt_loc(s),
@@ -1371,6 +1381,7 @@ impl TypeCx {
                     "this bound",
                     "write the trait's name, and its arguments when it takes them",
                 ),
+                written,
             )
     }
 
