@@ -38,6 +38,8 @@ BAD = re.compile(
     re.M,
 )
 TIMEOUT = 60
+# a mutant is linked one in this many: a link costs seconds, and check has lowered it already
+BUILD_EVERY = 4
 # @mutate adds the case's mutations; @check runs only `check` — a program
 # whose own run traps by the language's law (an index past the end)
 FLAGS = {"@mutate", "@check"}
@@ -247,7 +249,7 @@ def main():
                 f.write(body)
             clean = False
             for verb in verbs + ["build"]:
-                if verb == "build" and not clean:
+                if verb == "build" and not (clean and (not mutant or k % BUILD_EVERY == 0)):
                     continue
                 t0 = time.time()
                 code, out = run(a.avra, verb, d)
