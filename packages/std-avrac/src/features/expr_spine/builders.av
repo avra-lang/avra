@@ -89,25 +89,14 @@ fn build_asked_bind(b: Builder) -> Result<LangNode, string> {
     if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
     b.make_pat(Pat.Bind(Scoped(n.text)))
 }
-/// `l is …`, the tag or type test the pattern names. A payload list
-/// or a bound type is kept beside the node as that pattern: the `if`
-/// that means to bind desugars it to a match, and a payload `is`
-/// anywhere else has enums name it and refuse.
+/// `l is …`, the tag or type test the pattern names. The node keeps
+/// the pattern: the `if` that means to bind desugars it to a match,
+/// and a payload `is` anywhere else has enums name it and refuse.
 fn asked_expr(b: Builder, l: ExprId, asked: PatId) -> Result<LangNode, string> {
     match b.store.pat(asked) {
-        .Variant(name, args) -> tag_test(b, l, name, asked, !args.is_empty()),
-        .Typed(_, ty) -> tag_test(b, l, Plain(ty.name), asked, true),
+        .Variant(_, _) or .Typed(_, _) -> b.wrap_expr(b.expr_node(Expr.Is(l, asked))),
         rest -> .Err(compare_without_right_side()),
     }
-}
-
-fn tag_test(b: Builder, l: ExprId, tag: Plain, asked: PatId, binds: bool) -> Result<
-    LangNode,
-    string,
-> {
-    let id = b.expr_node(Expr.Is(l, tag))
-    if binds { b.store.mark_is_payload(id, asked, true) }
-    b.wrap_expr(id)
 }
 
 /// `-v` is `0 - v`: the parse desugars, so no pass learns a node.
