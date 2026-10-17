@@ -19,7 +19,8 @@ fn sfx_build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> R
     Captured<Token, string>,
     string,
 > {
-    let built: Captured<Token, string> = Captured.Node("(${name} ${joined([sfx_render(a) for a in args], " ")})")
+    let built: Captured<Token, string> = Captured
+        .Node("(${name} ${joined([sfx_render(a) for a in args], " ")})")
     Result.Ok(built)
 }
 
@@ -28,7 +29,12 @@ fn sfx_parsed(text: string) -> Grammar {
 }
 
 fn sfx_answer(text: string, src: string) -> string {
-    let o = run_grammar<Token, string>(ready(sfx_parsed(text), avra_known_terminals()), lex_source(src).tokens, avra_lexeme(), sfx_build)
+    let o = run_grammar<Token, string>(
+        ready(sfx_parsed(text), avra_known_terminals()),
+        lex_source(src).tokens,
+        avra_lexeme(),
+        sfx_build,
+    )
     if o.result == null { return "<none> ${o.diagnostics.length}" }
     "${sfx_render(o.result!)} ${o.diagnostics.length}"
 }
@@ -51,11 +57,16 @@ spec "grammar/suffix — a suffix's own build" {
     given "the notation" {
         then "writes a tier's build before its suffixes and a suffix's after it, and reads it back" {
             let shown = render_grammar(sfx_parsed(own_builds))
-            shown.contains("none \"==\" -> eq(left, op, right) suffix \"is\" tag -> is_(left, op, right)") &&
+            shown
+                    .contains("none \"==\" -> eq(left, op, right) suffix \"is\" tag -> is_(left, op, right)") &&
                 render_grammar(sfx_parsed(shown)) == shown
         }
         then "refuses a suffix build that calls for what the climb does not hand it" {
-            parse_grammar("e = left:operand @operators { none \"==\" suffix \"is\" tag -> is_(left, nope) } -> plus(left, op, right)\ntag = \".\" n:NAME -> tag(n)\noperand = v:NAME -> lit(v)\n").diagnostics.any(it.message.contains("`nope`"))
+            parse_grammar(
+                "e = left:operand @operators { none \"==\" suffix \"is\" tag -> is_(left, nope) } -> plus(left, op, right)\ntag = \".\" n:NAME -> tag(n)\noperand = v:NAME -> lit(v)\n",
+            )
+                .diagnostics
+                .any(it.message.contains("`nope`"))
         }
     }
 }
