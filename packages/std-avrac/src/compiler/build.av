@@ -23,7 +23,7 @@ use core.{
 }
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
-use @std.io.{read_bytes, make_dirs, remove}
+use @std.io.{read_bytes, make_dirs, remove, env}
 use @std.text.{parse_int}
 use @std.time.{now_ns}
 use compiler.backend.{
@@ -736,9 +736,13 @@ impl Workspace {
             let missing = unsupported_on_wasm(full)
             if !missing.is_empty() { fail BuildError.UnsupportedOnWasm(missing) }
         }
+        let tp = now_ns()
         let programs = self.program_objects(d, full, asked, tools)?
+        if emit_timed() { eprintln("EMIT programs\t${(now_ns() - tp) / 1000000}ms  buckets ${programs.length}\n") }
         let read = [self.object_of(d.store, a) for a in d.program.files]
+        let tk = now_ns()
         self.objects_kept(d, full, read.concat(programs), tools)?
+        if emit_timed() { eprintln("EMIT kept\t${(now_ns() - tk) / 1000000}ms  read ${read.length}\n") }
         // the program's buckets stand under what they are a function of, too
         if d.unlowered.is_empty() { let _ = d.store.keep_once(Stored.Unit, buckets_key(asked), buckets_text(programs)) }
         clock.mark("emit")
@@ -876,8 +880,11 @@ impl Workspace {
                 "Q\tobjects\t${owed.length}\t${objects.length}\t${owed.filter((o: Made) -> in_bucket(o.which)).length}\t${objects.filter((o: Made) -> in_bucket(o.which)).length}\n",
             )
         }
+        let t0 = now_ns()
         let broke = handed(full, owed, opt_level(tools.opt), tools.target)
+        let t1 = now_ns()
         let unwritten = objects_made()
+        if emit_timed() { eprintln("EMIT split\tbuild+hand ${(t1 - t0) / 1000000}ms  wait ${(now_ns() - t1) / 1000000}ms  owed ${owed.length}  of ${objects.length}\n") }
         if broke != null || unwritten != null { fail BuildError.EmitFailed(broke ?? unwritten!) }
         for o in owed { let _ = d.store.keep_file(Stored.Obj, o.key, o.obj, []) }
         owed.length
@@ -1107,4 +1114,10 @@ fn read_entry(line: string) -> ManifestEntry? {
         tag == "O" -> ManifestEntry.Object(first, second)
         _ -> null
     }
+}
+
+/// A probe's switch: print the emit phase's own times.
+fn emit_timed() -> bool {
+    // LICENSED input.debug_flag: prints timings only
+    env("AVRA_EMIT_TIMES") != null
 }
