@@ -3237,6 +3237,17 @@ Its other half is the presence read, designed and small: `Slot` (std-grammar
 — and `flag_of` already reads the stated word. Waits on the record maker,
 since no enum variant has a literal-bound bool without a hand builder.
 
+### Interim record — an arm that answers nothing has no spelling
+
+`_ -> {}` in a match arm is an EMPTY MAP, so beside a void arm the arms
+disagree (`type.match`, pinned in `features/expr_spine/tests/void_arm_test.av`);
+the only void arm is a block holding a statement (`{ let _ = 0 }`), which leaves
+a dead constant in the IR. The wanting site is a sugar's `means()` template —
+the elseless `if let`, whose rewrite is a `match` with a `_` arm answering
+nothing — which today has the node carry an empty block minted by its builder
+instead. The want: one spelling of an empty block in arm and expression
+position (`do {}` or a unit value), void by rule.
+
 ### Interim record — a view reads a fetch as its Async, with no call
 
 `profile.state()` and `profile.value()` (`Fetch<T>`,

@@ -6,6 +6,7 @@
 //! its other statements `collect`ed into its one `List` field.
 use core.{
     void_ref,
+    Means,
     Expr,
     Stmt,
     Pat,
@@ -407,7 +408,7 @@ impl Builder {
         if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word, self.store.ident_name(heads[0]))) }
         let block = self.filled_body(body!, stmts)
         let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
-        let expansion = self.store.instantiated(t, word, heads, block, minted)
+        let expansion = self.store.instantiated(t, word, heads, block, minted, self.words.door)
         .Ok(
             self
                 .store
@@ -660,6 +661,7 @@ impl SyntaxArena {
         heads: List<ExprId>,
         block: ExprId,
         minted: List<Minted?>,
+        door: Means,
     ) -> ExprId {
         let since = self.marks()
         let fills = [field_fill(template, read, heads, block, minted) for read in template.reads]
@@ -670,6 +672,7 @@ impl SyntaxArena {
             self,
             [(kind: HoleKind) -> self.filled(kind, f) for f in fills],
             [false for f in fills],
+            door,
         )
         let root = self.template_value(rb.stmts(template.stmts))
         self.note_copied(since, word.origin)
