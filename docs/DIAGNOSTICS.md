@@ -365,23 +365,7 @@ No witness here: `@unbroken` resolves to `@std/meta`'s own declaration, which a 
 
 `yield` sends into the producer it stands in
 
-```avra
-fn f() -> int {
-    yield 1
-    2
-}
-f()
-```
-
-```
-error[flow.yield]: `yield` sends into the producer it stands in, and no producer encloses it
-  ╭─[witness.av:2:5]
-2 │     yield 1
-  ·     ┬
-  ·     ╰── no producer here
-──╯
-help: write `produce<T>(n) { … yield … }` — a `-> Stream<T>` fn will say the same when COLLECTIONS lands
-```
+No witness yet.
 
 ## flow.produce
 
@@ -1295,17 +1279,6 @@ version = "0.1.0"
 use @acme.dep.{d}
 d(1)
 
-// /w/vendor/dep/avra.toml
-[package]
-name = "@acme/dep"
-version = "0.1.0"
-
-[link.raw]
-flags = ["-o", "/tmp/x"]
-
-// /w/vendor/dep/src/dep.av
-export fn d(n: int) -> int { n }
-
 ```
 
 ```
@@ -1751,13 +1724,81 @@ help: order by a text field, or by an annotation literal — `it.mark.args[i]` r
 
 a collect's `by` column mixes int and string kinds
 
-No witness here: a mark's receiver is `@std/meta`'s own `Named`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Named}
+trait Mark {
+    fn label() -> string
+}
+impl Mark for int {
+    fn label() -> string { "i" }
+}
+impl Mark for string {
+    fn label() -> string { self }
+}
+fn mark(what: Named, label: dyn Mark) -> void {}
+@mark("a")
+fn alpha() {}
+@mark(1)
+fn beta() {}
+type Entry = { name: string }
+collect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]
+1
+```
+
+```
+error[collect.order_mixed]: `it.mark.args[0]` mixes int and string arguments — a `by` column is one kind
+   ╭─[/w/src/main.av:17:1]
+17 │ collect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]
+   · ┬
+   · ╰── in this collect's order
+───╯
+help: make every member's argument the same kind, or order by a different field
+```
 
 ## collect.dense
 
 a `dense` order is not unique and gap-free from 0
 
-No witness here: a mark's receiver is `@std/meta`'s own `Named`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Named}
+fn numbered(what: Named, ordinal: int) -> void {}
+@numbered(0)
+fn a() {}
+@numbered(2)
+fn b() {}
+type MarkInfo = { name: string, args: List<string> }
+type Entry = { name: string, mark: MarkInfo }
+collect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense
+1
+```
+
+```
+error[collect.dense]: `it.mark.args[0]` is not unique and gap-free from 0
+  ╭─[/w/src/main.av:9:1]
+9 │ collect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense
+  · ┬
+  · ╰── in this collect's order
+──╯
+help: every ordinal 0, 1, 2 … appears exactly once
+```
 
 ## collect.closure_fold
 
@@ -1793,7 +1834,43 @@ help: an instance's own body sees what it is given directly, never the collectio
 
 two collected members would name the same variant
 
-No witness here: a mark's receiver is `@std/meta`'s own `Named`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Named}
+fn tag(what: Named, label: string) -> void {}
+collect enum Command = @tag in package by it.name
+1
+// /w/src/a/a.av
+use @std.meta.{Named}
+fn tag(what: Named, label: string) -> void {}
+@tag("one")
+fn run() {}
+
+// /w/src/b/b.av
+use @std.meta.{Named}
+fn tag(what: Named, label: string) -> void {}
+@tag("two")
+fn run() {}
+
+```
+
+```
+error[collect_enum.variant]: `Command` declares `run` more than once
+  ╭─[/w/src/main.av:3:1]
+3 │ collect enum Command = @tag in package by it.name
+  · ┬
+  · ╰── in this declaration
+──╯
+help: rename one of them
+```
 
 ## collect_enum.empty
 
@@ -1818,7 +1895,33 @@ help: declare a member this `collect enum` gathers, or drop the enum
 
 a gathered member's record cannot be a variant's payload
 
-No witness here: a mark's receiver is `@std/meta`'s own `Named`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Named}
+fn numbered(what: Named, ordinal: int) -> void {}
+@numbered(0)
+type Wrap<T> = { held: T }
+collect enum Shape = @numbered in self by it.mark.args[0] dense
+1
+```
+
+```
+error[collect_enum.member]: a gathered variant carries fixed types — `Wrap` takes type parameters
+  ╭─[/w/src/main.av:5:1]
+5 │ collect enum Shape = @numbered in self by it.mark.args[0] dense
+  · ┬
+  · ╰── `Shape` gathers it here
+──╯
+help: write `Wrap`'s fields at the types the variant carries
+```
 
 ## collect_enum.scope
 
@@ -1847,7 +1950,35 @@ help: gather `in self` or `in package`
 
 two members of a collected enum share an order key
 
-No witness here: a mark's receiver is `@std/meta`'s own `Named`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Named}
+fn numbered(what: Named, ordinal: int) -> void {}
+@numbered(0)
+type Dot = {}
+@numbered(0)
+type Line = { to: int }
+collect enum Shape = @numbered in self by it.mark.args[0]
+1
+```
+
+```
+error[collect_enum.tie]: an enum's `by` order is its variants' ordinals — two members share a key
+  ╭─[/w/src/main.av:7:1]
+7 │ collect enum Shape = @numbered in self by it.mark.args[0]
+  · ┬
+  · ╰── in this collect's order
+──╯
+help: order by a key every member holds apart, or number them: `by it.mark.args[0] dense`
+```
 
 ## collect_enum.trait
 
@@ -1882,7 +2013,39 @@ help: name a trait this file can see
 
 a trait method taking `Self` answers `bool` to be delegated over members
 
-No witness here: delegation reads `@std/meta`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Named}
+fn numbered(what: Named, ordinal: int) -> void {}
+trait Rank {
+    fn versus(other: Self) -> int
+}
+@numbered(0)
+type Dot = { at: int }
+impl Rank for Dot {
+    fn versus(other: Dot) -> int { self.at - other.at }
+}
+collect enum Item: Rank = @numbered in self by it.mark.args[0] dense
+1
+```
+
+```
+error[collect_enum.self]: `Rank.versus` takes `Self` and answers `int` — members of different variants have no such answer
+  ╭─[/w/src/main.av:3:1]
+3 │ trait Rank {
+  · ┬
+  · ╰── delegated by `Item`
+──╯
+help: only a `bool` answer may take `Self`: differing variants answer `false`
+```
 
 ## type.binding
 
@@ -1918,7 +2081,30 @@ fix (high): interpolate it — `"${5}"`
 
 a const cannot read the world
 
-No witness here: a lone source has no prelude to print through, and a const reads the world only through one — the golden is compiler/tests/settle_test.av.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+fn noisy() -> int {
+    println("x")
+    1
+}
+const n: int = noisy()
+n
+```
+
+```
+error[const.reach]: a const cannot read the world
+  ╭─[/w/src/main.av:5:16]
+5 │ const n: int = noisy()
+  ·                ┬
+  ·                ╰── `n` reaches `avra_puts` in `@std.prelude.println`, called from `noisy`, called from `settling$main$const3`
+──╯
+help: a const settles at compile time from pure computation alone — read the world at run time, under `let`
+```
 
 ## const.budget
 
@@ -2010,20 +2196,7 @@ help: use a scalar, text, octets, list, map, record, enum, result, or an optiona
 
 a const's value asks for its own type
 
-```avra
-const a = a + 1
-a
-```
-
-```
-error[const.cycle]: a const's value asks for its own type
-  ╭─[witness.av:1:1]
-1 │ const a = a + 1
-  · ┬
-  · ╰── `a` reads itself here
-──╯
-help: a const settles from what is written and from other consts — not from its own value
-```
+No witness yet.
 
 ## type.method
 
@@ -2492,43 +2665,128 @@ help: add `"@std/meta"` to the package's dependencies
 
 a `quote` pattern matches one node — one statement, no arms
 
-No witness yet.
+```avra
+match 1 { quote { 1
+2 } -> true, _ -> false }
+```
+
+```
+error[type.quote_pat_shape]: a `quote` pattern matches one node — one statement, no arms
+  ╭─[witness.av:1:11]
+1 │ match 1 { quote { 1
+  ·           ┬
+  ·           ╰── this pattern
+──╯
+help: write one pattern per node; a run of several arrives with `${..}` holes
+```
 
 ## type.quote_pat_subj
 
 a `quote` pattern reads code — a `Code`, not this subject's type
 
-No witness yet.
+```avra
+match 1 { quote { 1 } -> true, _ -> false }
+```
+
+```
+error[type.quote_pat_subj]: a `quote` pattern reads code — this program does not load `@std/avrac`
+  ╭─[witness.av:1:11]
+1 │ match 1 { quote { 1 } -> true, _ -> false }
+  ·           ┬
+  ·           ╰── this pattern
+──╯
+help: the handle arrives with `@std/avrac`
+```
 
 ## type.quote_pat_hole
 
 a `quote` pattern's hole names a fresh variable, not a written expression
 
-No witness yet.
+```avra
+match 1 { quote { ${1 + 1} } -> true, _ -> false }
+```
+
+```
+error[type.quote_pat_hole]: a hole in a pattern names a fresh variable — write a bare name
+  ╭─[witness.av:1:11]
+1 │ match 1 { quote { ${1 + 1} } -> true, _ -> false }
+  ·           ┬
+  ·           ╰── this pattern
+──╯
+help: `${x}` binds `x`; a written expression has nothing to bind it to
+```
 
 ## type.quote_pat_type
 
 a `quote` pattern takes no hole in type position yet
 
-No witness yet.
+```avra
+match 1 { quote { let x: ${T}? = null } -> true, _ -> false }
+```
+
+```
+error[type.quote_pat_type]: a hole in type position binds only its WHOLE field — a lone `${T}`, nothing around it — at a `let`/`mut`/`const`'s own annotation, a call's one pinned type argument, or a param's own type
+  ╭─[witness.av:1:11]
+1 │ match 1 { quote { let x: ${T}? = null } -> true, _ -> false }
+  ·           ┬
+  ·           ╰── this pattern
+──╯
+help: write `${T}` alone at one of those seats, or write the type out
+```
 
 ## type.quote_pat_seat
 
 a `quote` pattern's hole cannot bind at this seat — an embedded name/binder hole, or an arm hole
 
-No witness yet.
+```avra
+match 1 { quote { let l${x}_y = 1 } -> true, _ -> false }
+```
+
+```
+error[type.quote_pat_seat]: a hole in name position binds only its WHOLE field — a lone `${x}`, nothing around it — at a let/for/const binder, a bind pattern, a variant test, a call's callee, a method or a field name
+  ╭─[witness.av:1:11]
+1 │ match 1 { quote { let l${x}_y = 1 } -> true, _ -> false }
+  ·           ┬
+  ·           ╰── this pattern
+──╯
+help: write `${x}` alone at one of those seats, or write the name out
+```
 
 ## type.quote_pat_mixed
 
 a `quote` pattern's binder is used at both a code seat and a name seat
 
-No witness yet.
+```avra
+match 1 { quote { ${x}(${x}) } -> true, _ -> false }
+```
+
+```
+error[type.quote_pat_mixed]: `x` binds code once and a name once — one binder answers one type
+  ╭─[witness.av:1:11]
+1 │ match 1 { quote { ${x}(${x}) } -> true, _ -> false }
+  ·           ┬
+  ·           ╰── this pattern
+──╯
+help: give it a code seat everywhere, or a name seat everywhere
+```
 
 ## type.quote_pat_run
 
 two run holes with nothing between them — no scan can split them
 
-No witness here: a `quote` pattern reads `@std/meta`'s `Code`, which a lone source cannot import — the golden is features/quote/tests/quote_pattern_test.av.
+```avra
+match 1 { quote { f(${..a}, ${..b}) } -> true, _ -> false }
+```
+
+```
+error[type.quote_pat_run]: two run holes with nothing between them — no scan can split them
+  ╭─[witness.av:1:11]
+1 │ match 1 { quote { f(${..a}, ${..b}) } -> true, _ -> false }
+  ·           ┬
+  ·           ╰── this pattern
+──╯
+help: put a fixed node between them, or merge them into one run
+```
 
 ## type.syntax_action
 
