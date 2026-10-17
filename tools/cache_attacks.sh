@@ -823,6 +823,33 @@ EXC "and the claim gone" 0 -
 rm -rf $ex $xl $x2
 fi
 
+# A REFERENCE BETWEEN TWO HELD FILES IS NOT RESTORED UNTIL ASKED. `user.av` is the only
+# reader of `target`, and both stay held: the relation holds no row for the edge, yet
+# `refs_of` on the held target answers it on demand, so `--verify-held` finds the warm
+# count equal to a fresh reading. Then the target is renamed with `user.av` untouched:
+# the edge must surface as the refusal a cold check speaks, never a stale held answer.
+if section hh; then
+hh=$R/hh; mkdir -p $hh/src/t $hh/src/u
+printf '[package]\nname = "hh"\nversion = "0.1.0"\n' > $hh/avra.toml
+printf 'export fn target() -> int { 7 }\n' > $hh/src/t/target.av
+printf 'use t.{target}\nexport fn user() -> int { target() }\n' > $hh/src/u/user.av
+printf 'use u.{user}\nprintln("hh ${user()}")\n' > $hh/src/main.av
+S "hh: cold" hh
+printf '// moved\n' >> $hh/src/main.av
+S "hh: an edit elsewhere, both ends of the edge held" hh
+steps=$((steps+1)); hh_vh=$(./avra check $hh --verify-held 2>&1 | unwatched)
+case "$hh_vh" in
+    *" 0 held declaration(s)"*) fails=$((fails+1)); echo "FAIL  hh: verify-held compared nothing" ;;
+    *" 0 mismatch(es)"*) [ -n "${VERBOSE:-}" ] && echo "ok    hh: verify-held over a held-to-held edge -> clean" ;;
+    *) fails=$((fails+1)); echo "FAIL  hh: verify-held: $(printf '%s' "$hh_vh" | tail -5 | tr '\n' ' ')" ;;
+esac
+ed $hh/src/t/target.av "fn target()" "fn goal()"
+steps=$((steps+1)); hh_out=$(./avra check $hh 2>&1); hh_st=$?
+if [ $hh_st -ne 1 ]; then fails=$((fails+1)); echo "FAIL  hh: a rename the only reader never followed exited $hh_st, wanted 1"
+else case "$hh_out" in *"does not export \`target\`"*) [ -n "${VERBOSE:-}" ] && echo "ok    hh: the held reader's edge surfaced as a refusal" ;; *) fails=$((fails+1)); echo "FAIL  hh: the rename was not refused where the held reader imports it: $(printf '%s' "$hh_out" | grep -vE '^watch:|^time:' | head -3 | tr '\n' ' ')" ;; esac; fi
+rm -rf $hh
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
