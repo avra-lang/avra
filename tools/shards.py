@@ -10,6 +10,14 @@ Weights are measured seconds (.github/ci/suite-seconds.txt); a package with
 no row weighs 5. Empty shards are dropped; no package at all is one empty
 shard, which the workflow skips.
 
+Weights come from two layers, the later winning per row: the committed seed
+(.github/ci/suite-seconds.txt) and the MEASURED rows main's own runs keep
+(.github/ci/suite-seconds.measured, restored from a cache by `prepare`).
+`--merge-times <dir>` makes the measured rows: it reads every `suite-times.txt`
+the suites jobs wrote (`<path> <seconds> [first]`), takes a shard's first suite
+less COLD seconds (it also paid the runner's cold start), and averages each
+row with its prior measured value, so one noisy run moves a weight half way.
+
 With `--split`, a package named in .github/ci/suite-splits.txt becomes one
 item per listed path (`std-avrac/src/features`), each proved by `avra test` on
 that path alone; a `cold` row runs first in a shard of its own among the cold
@@ -34,6 +42,38 @@ def weights(path):
                     out[parts[0]] = int(parts[1])
     except FileNotFoundError:
         pass
+    return out
+
+
+# The seconds a shard's first suite pays that no later one does: a runner's cold store.
+COLD = 100
+
+
+def layered_weights(paths):
+    out = {}
+    for p in paths:
+        out.update(weights(p))
+    return out
+
+
+def merge_times(root, prior):
+    """Rows measured by a run -> the new weights. `prior`: path -> seconds, the
+    measured weights so far; a path not timed this run keeps its prior row."""
+    out = dict(prior)
+    seen = {}
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            if f != "suite-times.txt":
+                continue
+            with open(os.path.join(dirpath, f)) as fh:
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) in (2, 3) and parts[1].isdigit():
+                        n = int(parts[1])
+                        warm = max(n - COLD, 1) if parts[2:] == ["first"] else n
+                        seen[parts[0]] = max(seen.get(parts[0], 0), warm)
+    for path, warm in seen.items():
+        out[path] = warm if path not in prior else (prior[path] + warm + 1) // 2
     return out
 
 
@@ -113,7 +153,20 @@ def self_test():
     assert split_items([], t) == []
     got = pack(["a", "b", "c", "d"], 2, {"a": 9, "b": 1, "c": 1, "d": 1}, {"c", "d"})
     assert [g[0] for g in got] == ["c", "d"] and sorted(sum(got, [])) == ["a", "b", "c", "d"], got
-    print("shards: self-test passed — 7 fixtures")
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "a"))
+        with open(os.path.join(d, "a", "suite-times.txt"), "w") as f:
+            f.write("cli 400 first\nstd-http 120\nstd-ui 30\n")
+        got = merge_times(d, {"cli": 100, "std-http": 140, "old": 7})
+        assert got == {"cli": 200, "std-http": 130, "std-ui": 30, "old": 7}, got
+        assert merge_times(d, {})["cli"] == 300, "a first suite is less its cold start"
+        with open(os.path.join(d, "seed"), "w") as f:
+            f.write("cli 120\nstd-ui 5\n")
+        with open(os.path.join(d, "measured"), "w") as f:
+            f.write("cli 300\n")
+        assert layered_weights([os.path.join(d, "seed"), os.path.join(d, "measured"), os.path.join(d, "none")]) == {"cli": 300, "std-ui": 5}
+    print("shards: self-test passed — 10 fixtures")
 
 
 if __name__ == "__main__":
@@ -131,10 +184,17 @@ if __name__ == "__main__":
         if not bad:
             print(f"shards: {len(table)} split package(s), every proof under a listed path")
         sys.exit(1 if bad else 0)
+    measured = os.path.join(ci, "suite-seconds.measured")
+    if sys.argv[1:2] == ["--merge-times"]:
+        rows = merge_times(sys.argv[2], weights(measured))
+        print("# Suite seconds measured on main's own runs (tools/shards.py --merge-times).")
+        for k in sorted(rows):
+            print(f"{k} {rows[k]}")
+        sys.exit(0)
     split = "--split" in sys.argv[1:]
     args = [a for a in sys.argv[1:] if a != "--split"]
     n = int(args[0]) if args else 4
     names = [l.strip() for l in sys.stdin if l.strip()]
     if split:
         names = split_items(names, table)
-    print(json.dumps(pack(names, n, weights(os.path.join(ci, "suite-seconds.txt")), cold)))
+    print(json.dumps(pack(names, n, layered_weights([os.path.join(ci, "suite-seconds.txt"), measured]), cold)))
