@@ -1,0 +1,89 @@
+// A body's typing facts round-trip through their codec: every column a real program's typing
+// fills — generics, lambdas, a nullable asked and narrowed, a `dyn` dispatch, an adapter chain,
+// a match, a writing method — is written under the body's scope and read back, and the table
+// read is the table written. The oracle is `type_facts_fp`, the fold of every cell the typer
+// wrote, never a re-encoding of the decoded value (which would pass if a column were dropped
+// both times).
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace, type_facts_fp, facts_scope}
+use compiler.host.{memory_host}
+use core.{DeclId}
+use diagnostics.{no_voices}
+use features.{TypeFacts}
+use @std.relation.stable.{CodecFault}
+
+fn program() -> string {
+    "export trait Shape {\n    fn area() -> int\n}\ntype Sq = { s: int }\nimpl Shape for Sq {\n    fn area() -> int {\n        self.s * self.s\n    }\n}\ntype Box<T> = { v: T }\nexport fn ident<T>(x: T) -> T {\n    x\n}\nexport fn total(xs: List<int>) -> int {\n    let doubled = xs.map((x) -> x * 2).filter(it > 2)\n    mut acc = 0\n    for i, x in doubled {\n        acc = acc + x + i\n    }\n    let maybe: int? = if acc > 3 { acc } else { null }\n    let n = maybe ?? 0\n    let f = (a: int) -> a + n\n    let sh: dyn Shape = Sq { s: 3 }\n    let b = Box { v: ident(5) }\n    match maybe {\n        m? -> m + f(1) + sh.area() + b.v,\n        null -> 0,\n    }\n}\n"
+}
+
+fn typed_workspace() -> Workspace {
+    let ws = test_workspace(memory_host({"/w/src/main.av": program()}, ["/w/src/main.av"]), "/w")
+    let f = ws.file_id("/w/src/main.av")
+    let _ = ws.analysis(f)
+    ws
+}
+
+/// The declarations the program's own file types a body for.
+fn bodies(ws: Workspace) -> List<DeclId> {
+    [d.id for d in ws.decls.all_decls() if ws.decls.file(d.file).path == "/w/src/main.av" && ws.decls.has_body(d.id)]
+}
+
+fn back_and_forth(ws: Workspace, d: DeclId) -> Result<TypeFacts, CodecFault> {
+    let facts = ws.typed(d)
+    let scope = facts_scope(ws, facts.of_expr.lo, facts.binding_types.lo)
+    TypeFacts.decoded_in(scope, facts.encoded_in(scope))
+}
+
+fn folded(ws: Workspace, facts: TypeFacts) -> int {
+    type_facts_fp(facts with { voices: no_voices() }, ws.decls.ids(), true)
+}
+
+fn same_facts(ws: Workspace, d: DeclId) -> bool {
+    match back_and_forth(ws, d) {
+        .Ok(back) -> folded(ws, back) == folded(ws, ws.typed(d)),
+        .Err(_) -> false,
+    }
+}
+
+spec "compiler/facts_codec — typing facts round-trip" {
+    given "a program that fills every column the typer has" {
+        then "it has bodies to type" {
+            bodies(typed_workspace()).length >= 3
+        }
+        then "every body's facts come back as the table written" {
+            let ws = typed_workspace()
+            [d for d in bodies(ws) if !same_facts(ws, d)].is_empty()
+        }
+        then "the wire is deterministic: one table, one text" {
+            let ws = typed_workspace()
+            let d = bodies(ws)[0]
+            let facts = ws.typed(d)
+            let scope = facts_scope(ws, facts.of_expr.lo, facts.binding_types.lo)
+            facts.encoded_in(scope) == ws.typed(d).encoded_in(scope)
+        }
+    }
+    given "a body moved to another place in its file" {
+        then "the same facts read back at the new place under the new window" {
+            let ws = typed_workspace()
+            let d = bodies(ws)[0]
+            let facts = ws.typed(d)
+            let here = facts_scope(ws, facts.of_expr.lo, facts.binding_types.lo)
+            let moved = facts_scope(ws, facts.of_expr.lo + 100, facts.binding_types.lo + 100)
+            facts.encoded_in(here) == facts.encoded_in(here) && facts.encoded_in(moved) != facts.encoded_in(here)
+        }
+    }
+    given "a spelling the workspace no longer holds" {
+        then "the read is refused" {
+            let ws = typed_workspace()
+            let other = test_workspace(memory_host({"/w/src/main.av": "export fn nothing() -> int {\n    1\n}\n"}, ["/w/src/main.av"]), "/w")
+            let _ = other.analysis(other.file_id("/w/src/main.av"))
+            let d = bodies(ws)[0]
+            let facts = ws.typed(d)
+            let bytes = facts.encoded_in(facts_scope(ws, facts.of_expr.lo, facts.binding_types.lo))
+            match TypeFacts.decoded_in(facts_scope(other, facts.of_expr.lo, facts.binding_types.lo), bytes) {
+                .Ok(_) -> false,
+                .Err(_) -> true,
+            }
+        }
+    }
+}
