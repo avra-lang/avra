@@ -26,6 +26,8 @@ use core.{
     plain_mark,
     Scoped,
     facet_table,
+    BinOp,
+    binop_of,
 }
 use core.{Slots}
 use @std.meta.{Field}
@@ -112,9 +114,9 @@ impl Slots for Builder {
         .Ok(scoped_at((self.tokens(self.slot_of(label)?)?).first()))
     }
 
-    /// Whether the word the payload `label` names was written.
+    /// Whether the rule wrote anything under the payload `label`.
     fn present_of(label: string) -> Result<bool, string> {
-        .Ok(!(self.tokens(self.slot_of(label)?)?).is_empty())
+        .Ok(!list_at(self.args, self.slot_of(label)?).is_empty())
     }
 
     /// The seats the payload `label` carries.
@@ -182,6 +184,13 @@ impl Slots for Builder {
     /// it fills, never by how it was spelled.
     fn text_of(label: string) -> Result<string, string> {
         .Ok((self.token(self.slot_of(label)?)?).text)
+    }
+
+    /// The operator the word the payload `label` carries spells.
+    fn op_of(label: string) -> Result<BinOp, string> {
+        let word = self.text_of(label)?
+        let op? = binop_of(word) else { return .Err("`${word}` spells no operator") }
+        .Ok(op)
     }
 
     /// The truth the payload `n` states. The assembly already refused
@@ -376,6 +385,12 @@ impl Builder {
     /// branch, and a caller that needs it must say so.
     fn span_end() -> int? {
         self.span?.hi
+    }
+
+    /// The source `e` was written as; empty for a node with no span.
+    fn source_of(e: ExprId) -> string {
+        let at? = self.store.expr_span(e) else { return "" }
+        self.text.substring(at.lo, at.hi)
     }
 
     /// The span containing both expressions, when both are known.
