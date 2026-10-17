@@ -518,17 +518,24 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   await Promise.resolve();
   check("a page that is not the program's is emptied, the rest of the frame skipped, and the program asked to draw again", [t.mount.childNodes.length, repairs], [0, 1]);
 
+  const w = stubElement("root");
+  const apply5 = createApplier(doc, w, () => {}, null, () => repairs++);
+  const before = repairs;
+  apply5(frame(adopt(0, "div"), create(9, "p")));
+  await Promise.resolve();
+  check("an adoption over a page that holds nothing is drawn again, never numbered over nothing", [w.childNodes.length, repairs - before], [0, 1]);
+
   const v = served(doc);
   v.text.textContent = "h";
   const apply4 = createApplier(doc, v.mount, () => {}, null, () => repairs++);
   apply4(frame(adopt(drew, "div", "#text:2", "b")));
   await Promise.resolve();
-  check("a text that holds other words than the program drew is not adopted", [v.mount.childNodes.length, repairs], [0, 2]);
+  check("a text that holds other words than the program drew is not adopted", [v.mount.childNodes.length, repairs], [0, 3]);
 
   const u = served(doc);
   const apply3 = createApplier(doc, u.mount, () => {}, null, () => repairs++);
   apply3(frame(adopt(0), create(0, "p"), place(0, NO_ID, NO_ID)));
-  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 2]);
+  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 3]);
   console.warn = warn;
 }
 
@@ -538,7 +545,9 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   m.setAttribute("data-avra-print", "12345");
   const stamped = printOf(m);
   m.setAttribute("data-avra-print", "x");
+  const read = (text) => { m.setAttribute("data-avra-print", text); return printOf(m); };
   check("a mount's print is the number the server stamped, none otherwise", [none, stamped, printOf(m)], [0, 12345, 0]);
+  check("only a plain positive number is a print", ["0", "-5", "1e3", " 7", "0x10", "7.5", "", "99999999999999999999"].map(read), [0, 0, 0, 0, 0, 0, 0, 0]);
 }
 
 // ── a page runs a program that mounts ──
