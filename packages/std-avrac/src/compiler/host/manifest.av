@@ -187,10 +187,15 @@ fn known_key(section: string, key: string) -> bool {
     if section == "link.raw" { return key == "flags" }
     if section == "lifted" { return key == "steps" || key == "memory" }
     if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
-    if section == "process" { return key == "max_capture" || key == "enforce" }
-    if section == "process.env" { return key == "base" || key == "pass" || key == "set" }
+    if section == "process" || section == "process.env" { return process_keys(section).contains(key) }
     if is_tool_table(section) { return is_tool_key(key) }
     true
+}
+
+/// The keys `[process]` and `[process.env]` read — the words their
+/// refusal lists, and the ones `known_key` admits.
+fn process_keys(section: string) -> List<string> {
+    if section == "process" { ["max_capture", "enforce"] } else { ["base", "pass", "set"] }
 }
 
 /// What a `[link]` row holds, in the words its refusal uses.
@@ -218,8 +223,10 @@ fn link_help(key: string) -> string {
     }
 }
 
+const tool_keys: List<string> = ["from", "var", "default", "at", "terminator", "min"]
+
 fn is_tool_key(key: string) -> bool {
-    ["from", "var", "default", "at", "terminator", "min"].contains(key)
+    tool_keys.contains(key)
 }
 
 /// The provenance a row's `from` word names; absence for a word that
@@ -304,7 +311,12 @@ impl Reader {
     }
 
     fn unknown_key(s: string, e: TomlEntry) -> Diag {
-        if is_process_section(s) { return unknown_process_key(self.entry_at(e), e.key, "`[${s}]`") }
+        if is_process_section(s) { return unknown_process_key(
+                self.entry_at(e),
+                e.key,
+                "`[${s}]`",
+                if is_tool_table(s) { tool_keys } else { process_keys(s) },
+            ) }
         warning(
             "manifest.unknown_key",
             self.entry_at(e),
@@ -325,7 +337,7 @@ impl Reader {
 
     fn tool_row(name: string, v: TomlValue, at: Loc?) -> ToolRow {
         for key in inline_keys(v) {
-            if !is_tool_key(key) { self.speak(unknown_process_key(at, key, "a tool row")) }
+            if !is_tool_key(key) { self.speak(unknown_process_key(at, key, "a tool row", tool_keys)) }
         }
         let row = ToolRow {
             name: name,
@@ -637,13 +649,13 @@ impl Reader {
 
 /// The one voice for a key `[process]` does not take: a bound on what
 /// may run is never a degraded load.
-fn unknown_process_key(at: Loc?, key: string, where: string) -> Diag {
+fn unknown_process_key(at: Loc?, key: string, where: string, keys: List<string>) -> Diag {
     refusal(
         "manifest.unknown_process_key",
         at,
         "`${key}` is not a key of ${where} — and `[process]` bounds what this program may run",
         "here",
-        "the keys are from, var, default, at, terminator, min",
+        "the keys are ${joined(keys, ", ")}",
     )
 }
 

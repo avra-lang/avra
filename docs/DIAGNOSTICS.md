@@ -185,7 +185,20 @@ No witness yet.
 
 a host fn's name is no symbol the platform already defines
 
-No witness yet.
+```avra
+extern fn malloc(n: int) -> int { 1 }
+1
+```
+
+```
+error[lower.host_fn_shadows]: `malloc` is a symbol this platform already defines — a host fn of that name would answer every caller of it
+  ╭─[witness.av:1:1]
+1 │ extern fn malloc(n: int) -> int { 1 }
+  · ┬
+  · ╰── defined here
+──╯
+help: name the host fn for what its host asks of this program, as `avra_ui_event` is
+```
 
 ## lower.host_fn_answers
 
@@ -565,7 +578,23 @@ No witness here: a template is a `quote` of `@std/meta`'s `Code`, which a lone s
 
 a component's `check` answers `List<Diagnostic>`
 
-No witness yet.
+```avra
+component k {
+    x: int
+    fn check() -> int { 1 }
+}
+1
+```
+
+```
+error[type.component_check]: a component's `check` answers `List<Diagnostic>` and takes nothing — this answers `int`
+  ╭─[witness.av:3:5]
+3 │     fn check() -> int { 1 }
+  ·     ┬
+  ·     ╰── this `check`
+──╯
+help: `fn check() -> List<Diagnostic> { … }`, with `Diagnostic` from `@std.meta`
+```
 
 ## lower.component_checked
 
@@ -1327,7 +1356,29 @@ help: write one of those — `opt_level = 2`
 
 a profile name is `[a-z0-9_-]+`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[profile.Bad]
+opt_level = 1
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_profile]: a profile name is `[a-z0-9_-]+` — `Bad` is not
+  ╭─[/w/avra.toml:5:1]
+5 │ [profile.Bad]
+  · ┬
+  · ╰── this profile
+──╯
+help: name the profile in lowercase letters, digits, `_` and `-` — `[profile.release]`
+```
 
 ## manifest.unscoped_dependency
 
@@ -1389,7 +1440,37 @@ help: write a path — `name = { path = "../name" }`
 
 a dependency calls itself what it was keyed as
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@x/y" = { path = "dep" }
+
+// /w/src/main.av
+1
+
+// /w/dep/avra.toml
+[package]
+name = "@x/z"
+version = "0.1.0"
+
+// /w/dep/src/z.av
+export fn f() -> int { 1 }
+
+```
+
+```
+error[manifest.name_mismatch]: the package at `/w/dep` calls itself `@x/z`, not `@x/y`
+  ╭─[/w/avra.toml:6:1]
+6 │ "@x/y" = { path = "dep" }
+  · ┬
+  · ╰── this dependency
+──╯
+help: key it as `"@x/z"`
+```
 
 ## manifest.cycle
 
@@ -1465,7 +1546,27 @@ No witness yet.
 
 the manifest is TOML the compiler reads
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+key =
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.syntax]: expected a value after `=`
+  ╭─[/w/avra.toml:4:1]
+4 │ key =
+  · ┬
+  · ╰── here
+──╯
+help: a manifest is TOML — `key = value` lines under `[section]` headers
+```
 
 ## manifest.bad_tool_from
 
@@ -1499,19 +1600,85 @@ help: write `from = "path"`, `"env"` or `"abs"`
 
 an `env` tool names its `var`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[process.tools]
+git = { from = "env" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.tool_env_var]: `git` comes from the environment and names no `var`
+  ╭─[/w/avra.toml:6:1]
+6 │ git = { from = "env" }
+  · ┬
+  · ╰── here
+──╯
+help: add `var = "CC"`
+```
 
 ## manifest.tool_abs_at
 
 an `abs` tool names its `at`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[process.tools]
+git = { from = "abs" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.tool_abs_at]: `git` is an absolute tool and names no `at`
+  ╭─[/w/avra.toml:6:1]
+6 │ git = { from = "abs" }
+  · ┬
+  · ╰── here
+──╯
+help: add `at = "/usr/bin/…"`
+```
 
 ## manifest.unknown_process_key
 
 `[process]` takes only the keys it reads — a typo there is refused, never ignored
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[process]
+frobnicate = 1
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.unknown_process_key]: `frobnicate` is not a key of `[process]` — and `[process]` bounds what this program may run
+  ╭─[/w/avra.toml:6:1]
+6 │ frobnicate = 1
+  · ┬
+  · ╰── here
+──╯
+help: the keys are max_capture, enforce
+```
 
 ## manifest.unknown_section
 
@@ -1942,7 +2109,25 @@ help: declare a trait here and write `impl YourTrait for int`, or write a free f
 
 an impl on a builtin type adds names, never changes one
 
-No witness yet.
+```avra
+trait Named {
+    fn length() -> int
+}
+impl Named for string {
+    fn length() -> int { 1 }
+}
+1
+```
+
+```
+error[type.builtin_name]: `string` already answers `length` — an impl on a builtin type adds names, it never changes one
+  ╭─[witness.av:5:5]
+5 │     fn length() -> int { 1 }
+  ·     ┬
+  ·     ╰── this method
+──╯
+help: rename the trait's method
+```
 
 ## type.trait
 
@@ -1974,7 +2159,23 @@ help: move it to a separate `impl P { … }` block
 
 a trait names each member once
 
-No witness yet.
+```avra
+trait Tr {
+    fn a() -> int
+    fn a() -> int
+}
+1
+```
+
+```
+error[type.trait_member]: `Tr.a` is declared twice
+  ╭─[witness.av:3:8]
+3 │     fn a() -> int
+  ·        ┬
+  ·        ╰── declared again here
+──╯
+help: a trait names each member once — drop or rename one
+```
 
 ## type.mut_fn
 
@@ -1999,7 +2200,20 @@ help: drop `mut`, or move `f` into `impl <Type> { … }`
 
 `static fn` marks a method with no receiver — a plain fn needs no mark
 
-No witness yet.
+```avra
+static fn f() -> int { 1 }
+1
+```
+
+```
+error[type.static_fn]: `static fn` marks a method with no receiver — `f` is already a plain fn
+  ╭─[witness.av:1:1]
+1 │ static fn f() -> int { 1 }
+  · ┬
+  · ╰── declared here
+──╯
+help: drop `static`, or move `f` into `impl <Type> { … }` and call it `<Type>.f(…)`
+```
 
 ## resolve.receiver
 
@@ -2133,7 +2347,29 @@ help: bind it `mut` first — `mut x = …` — then hand `x`
 
 a method writes only under a `mut fn` contract
 
-No witness yet.
+```avra
+trait Tr {
+    fn bump() -> int
+}
+type R = { n: int }
+impl Tr for R {
+    fn bump() -> int {
+        self.n = self.n + 1
+        self.n
+    }
+}
+1
+```
+
+```
+error[type.contract_write]: `bump` writes through `self`, but `Tr.bump` declares no `mut`
+  ╭─[witness.av:6:5]
+6 │     fn bump() -> int {
+  ·     ┬
+  ·     ╰── writes here
+──╯
+help: declare `mut fn bump(…)` in the trait — the contract decides for every signatory
+```
 
 ## type.mut_fn_unused
 
@@ -2162,7 +2398,23 @@ help: drop `mut`: the compiler infers a writing method
 
 a `state` seat is a free fn's — a method has no caller's cell to reach
 
-No witness yet.
+```avra
+type R = { n: int }
+impl R {
+    fn f(state k: int) -> int { 1 }
+}
+1
+```
+
+```
+error[type.state_seat]: `state k` is a free fn's seat — a method has no caller's cell to reach
+  ╭─[witness.av:3:5]
+3 │     fn f(state k: int) -> int { 1 }
+  ·     ┬
+  ·     ╰── declared here
+──╯
+help: move `k` onto the free fn the method runs inside
+```
 
 ## type.seat_unused
 
@@ -2885,19 +3137,67 @@ help: a format matches a `string` or a `Bytes`
 
 one name binds one span
 
-No witness yet.
+```avra
+let s = "a=1"
+match s {
+    "{x}={x}" -> 1
+    _ -> 2
+}
+```
+
+```
+error[type.format_repeat]: `x` names two spans of this format
+  ╭─[witness.av:3:5]
+3 │     "{x}={x}" -> 1
+  ·     ┬
+  ·     ╰── written twice
+──╯
+help: rename one, or write `{_}` for a span you do not need
+```
 
 ## type.format_parse
 
 a typed hole parses through a type that reads text
 
-No witness yet.
+```avra
+let s = "a=1"
+match s {
+    "{x: bool}" -> 1
+    _ -> 2
+}
+```
+
+```
+error[type.format_parse]: `{x: bool}` reads its span as `bool`, and a hole reads text as `string` or `int`
+  ╭─[witness.av:3:5]
+3 │     "{x: bool}" -> 1
+  ·     ┬
+  ·     ╰── here
+──╯
+help: take the span as text and convert it in the arm
+```
 
 ## type.format_shape
 
 two holes need a literal between them to be split
 
-No witness yet.
+```avra
+let s = "a=1"
+match s {
+    "{x}{y}" -> 1
+    _ -> 2
+}
+```
+
+```
+error[type.format_shape]: `{x}` and `{y}` have nothing between them
+  ╭─[witness.av:3:5]
+3 │     "{x}{y}" -> 1
+  ·     ┬
+  ·     ╰── here
+──╯
+help: a scan needs a literal to stop at — put one between the holes
+```
 
 ## type.narrow
 
@@ -3276,7 +3576,20 @@ help: only a fallible value has a failure to recover from
 
 `Result<T, _>` infers its failure type from a `fail` or `?` its fn contains
 
-No witness yet.
+```avra
+fn f() -> Result<int, _> { 1 }
+f()
+```
+
+```
+error[type.infer_result]: nothing here can fail — write the fn's true answer type, not `Result<T, _>`
+  ╭─[witness.av:1:1]
+1 │ fn f() -> Result<int, _> { 1 }
+  · ┬
+  · ╰── declared here
+──╯
+help: a `fail` or a `?` site is what `_` infers from; with none, spell the answer this fn actually returns
+```
 
 ## type.defer
 
@@ -3502,7 +3815,20 @@ help: fill it with a literal or a `const` — a value that settles at compile ti
 
 a `mut` host seat wears a cell C may write, and is handed a local
 
-No witness yet.
+```avra
+extern fn avra_x(mut a: string) -> int
+1
+```
+
+```
+error[type.host_seat]: seat 1 of `avra_x` is `mut` and wears `string` — a `mut` host seat hands C the ADDRESS of the caller's cell
+  ╭─[witness.av:1:1]
+1 │ extern fn avra_x(mut a: string) -> int
+  · ┬
+  · ╰── declared here
+──╯
+help: a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes.
+```
 
 ## type.row_shape
 
