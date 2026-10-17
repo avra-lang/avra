@@ -1,146 +1,22 @@
 //! `@std.json.typed` — JSON read and written as TEXT, with no tree between.
-//! A typed reader finds the extent of each member or element by a few small
-//! scans of its own and keeps it as the text it was written in; a derived
+//! A typed reader finds the extent of each member or element with `@std.json`'s
+//! byte scans (the one scanner) and keeps it as the text it was written in; a derived
 //! decoder (`from_json_text`, `@json`) reads its fields from those extents,
 //! and a derived writer (`json_text`) writes its fields straight to text. A
 //! program that decodes a few types therefore links these scans and its own
 //! decoders, never the general value, its parser or its writer.
-use @std.text.{from_codepoint, parse_float, parse_int}
+use @std.json.{MAX_DEPTH, int_end, int_of, skip, space, string_end, text_of}
+use @std.text.{parse_float}
 
 /// One member of an object read: its decoded key, and its value as written.
 export type Piece = { key: string, raw: string }
 
-/// Past the blanks at `i`.
-fn blanked(b: Bytes, i: int) -> int {
-    mut j = i
-    // LICENSED loops.push_loop: advances past blanks one octet at a time
-    while j < b.length && (b.at(j) == 32 || b.at(j) == 10 || b.at(j) == 13 || b.at(j) == 9) { j = j + 1 }
-    j
-}
-
-/// Past the string whose quote is at `i`; -1 when it never closes, holds a
-/// raw control octet or names an escape JSON does not have.
-fn string_end(b: Bytes, i: int) -> int {
-    mut j = i + 1
-    // LICENSED loops.push_loop: a string ends at its first unescaped quote
-    while j < b.length {
-        let c = b.at(j)
-        if c == 34 { return j + 1 }
-        if c < 32 { return -1 }
-        if c != 92 {
-            j = j + 1
-            continue
-        }
-        if j + 1 >= b.length { return -1 }
-        let e = b.at(j + 1)
-        if e == 117 {
-            if !four_hex(b, j + 2) { return -1 }
-            j = j + 6
-        } else if e == 34 || e == 92 || e == 47 || e == 98 || e == 102 || e == 110 || e == 114 || e == 116 {
-            j = j + 2
-        } else {
-            return -1
-        }
-    }
-    -1
-}
-
-/// Whether four hex digits stand at `i`.
-fn four_hex(b: Bytes, i: int) -> bool {
-    if i + 4 > b.length { return false }
-    for j in 0..4 {
-        let c = b.at(i + j)
-        if !(c >= 48 && c <= 57 || c >= 97 && c <= 102 || c >= 65 && c <= 70) { return false }
-    }
-    true
-}
-
-/// Past the value at `i`: a string, or anything else up to its balanced end
-/// (a comma or closer outside every bracket and string). -1 where there is
-/// none. What it means is its reader's to judge.
-fn value_end(b: Bytes, i: int) -> int {
-    if i >= b.length { return -1 }
-    if b.at(i) == 34 { return string_end(b, i) }
-    mut depth = 0
-    mut j = i
-    // LICENSED loops.push_loop: a value is walked octet by octet to its balanced end
-    while j < b.length {
-        let c = b.at(j)
-        if c == 34 {
-            j = string_end(b, j)
-            if j < 0 { return -1 }
-            continue
-        }
-        if c == 123 || c == 91 { depth = depth + 1 }
-        if (c == 125 || c == 93) && depth == 0 { break }
-        if c == 125 || c == 93 { depth = depth - 1 }
-        if (c == 44 || c == 32 || c == 10 || c == 13 || c == 9) && depth == 0 { break }
-        j = j + 1
-    }
-    if j == i || depth != 0 { -1 } else { j }
-}
-
-/// A string literal's text, its escapes decoded. A `\u` escape is one code
-/// point: a surrogate pair is the tree reader's to join.
-fn unescaped(raw: string, b: Bytes, from: int, end: int) -> string {
-    let body = raw.substring(from + 1, end - 1)
-    if !body.contains("\\") { return body }
-    let out: Cell<List<string>> = Cell.new([])
-    mut j = from + 1
-    // LICENSED loops.push_loop: an escape is one or six octets, found where it stands
-    while j < end - 1 {
-        let c = b.at(j)
-        if c != 92 {
-            out.push(raw.substring(j, j + 1))
-            j = j + 1
-            continue
-        }
-        let e = b.at(j + 1)
-        if e == 117 && j + 6 <= end - 1 {
-            out.push(from_codepoint(hex4(raw.substring(j + 2, j + 6))))
-            j = j + 6
-            continue
-        }
-        out.push(plain_escape(e))
-        j = j + 2
-    }
-    out.get().join("")
-}
-
-fn plain_escape(e: int) -> string {
-    when {
-        e == 110 -> "\n"
-        e == 116 -> "\t"
-        e == 114 -> "\r"
-        e == 98 -> from_codepoint(8)
-        e == 102 -> from_codepoint(12)
-        _ -> from_codepoint(e)
-    }
-}
-
-/// Four hex digits as a number; zero for any that is not one.
-fn hex4(h: string) -> int {
-    let hb = h.bytes()
-    mut n = 0
-    for j in 0..hb.length { n = n * 16 + digit_value(hb.at(j)) }
-    n
-}
-
-fn digit_value(c: int) -> int {
-    when {
-        c >= 48 && c <= 57 -> c - 48
-        c >= 97 && c <= 102 -> c - 87
-        c >= 65 && c <= 70 -> c - 55
-        _ -> 0
-    }
-}
-
 /// The members of the object `raw` is, each value kept as written.
 export fn members(raw: string) -> Result<List<Piece>, string> {
     let b = raw.bytes()
-    mut i = blanked(b, 0)
+    mut i = space(b, 0)
     if i >= b.length || b.at(i) != 123 { fail "wants an object" }
-    i = blanked(b, i + 1)
+    i = space(b, i + 1)
     let found: Cell<List<Piece>> = Cell.new([])
     if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get()) }
     // LICENSED loops.push_loop: members are read in the order they stand, each from where the last ended
@@ -148,16 +24,16 @@ export fn members(raw: string) -> Result<List<Piece>, string> {
         if i >= b.length || b.at(i) != 34 { fail "wants a member name" }
         let key_end = string_end(b, i)
         if key_end < 0 { fail "wants a member name" }
-        let key = unescaped(raw, b, i, key_end)
-        i = blanked(b, key_end)
+        let key = text_of(raw, b, i, key_end)
+        i = space(b, key_end)
         if i >= b.length || b.at(i) != 58 { fail "wants `:` after a name" }
-        i = blanked(b, i + 1)
-        let end = value_end(b, i)
+        i = space(b, i + 1)
+        let end = skip(b, i, MAX_DEPTH)
         if end < 0 { fail "wants a value" }
         found.push(Piece { key: key, raw: raw.substring(i, end) })
-        i = blanked(b, end)
+        i = space(b, end)
         if i < b.length && b.at(i) == 44 {
-            i = blanked(b, i + 1)
+            i = space(b, i + 1)
             continue
         }
         if i < b.length && b.at(i) == 125 { return after(b, i + 1, found.get()) }
@@ -169,7 +45,7 @@ export fn members(raw: string) -> Result<List<Piece>, string> {
 /// The members, when nothing but blanks follows the object and no name is
 /// written twice: a document that says two things of one name means neither.
 fn after(b: Bytes, i: int, found: List<Piece>) -> Result<List<Piece>, string> {
-    if blanked(b, i) != b.length { fail "has more after the object" }
+    if space(b, i) != b.length { fail "has more after the object" }
     let keys = [p.key for p in found]
     for j, k in keys {
         if keys.slice(0, j).contains(k) { fail "names a member twice" }
@@ -180,19 +56,19 @@ fn after(b: Bytes, i: int, found: List<Piece>) -> Result<List<Piece>, string> {
 /// The elements of the array `raw` is, each kept as written.
 export fn elements(raw: string) -> Result<List<string>, string> {
     let b = raw.bytes()
-    mut i = blanked(b, 0)
+    mut i = space(b, 0)
     if i >= b.length || b.at(i) != 91 { fail "wants an array" }
-    i = blanked(b, i + 1)
+    i = space(b, i + 1)
     let found: Cell<List<string>> = Cell.new([])
     if i < b.length && b.at(i) == 93 { return done(b, i + 1, found.get()) }
     // LICENSED loops.push_loop: elements are read in the order they stand, each from where the last ended
     while true {
-        let end = value_end(b, i)
+        let end = skip(b, i, MAX_DEPTH)
         if end < 0 { fail "wants a value" }
         found.push(raw.substring(i, end))
-        i = blanked(b, end)
+        i = space(b, end)
         if i < b.length && b.at(i) == 44 {
-            i = blanked(b, i + 1)
+            i = space(b, i + 1)
             continue
         }
         if i < b.length && b.at(i) == 93 { return done(b, i + 1, found.get()) }
@@ -202,7 +78,7 @@ export fn elements(raw: string) -> Result<List<string>, string> {
 }
 
 fn done(b: Bytes, i: int, found: List<string>) -> Result<List<string>, string> {
-    if blanked(b, i) != b.length { fail "has more after the array" }
+    if space(b, i) != b.length { fail "has more after the array" }
     found
 }
 
@@ -211,21 +87,21 @@ export fn member(ms: List<Piece>, key: string) -> string? { ms.find(it.key == ke
 
 /// The integer `raw` is.
 export fn as_int(raw: string) -> Result<int, string> {
-    let t = raw.trim()
-    let digits = if t.starts_with("-") { t.substring(1, t.length) } else { t }
-    if digits.length > 1 && digits.starts_with("0") { fail "wants an integer" }
-    let n? = parse_int(t) else { fail "wants an integer" }
-    n
+    let b = raw.bytes()
+    let from = space(b, 0)
+    let end = int_end(b, from)
+    if end < 0 || space(b, end) != b.length { fail "wants an integer" }
+    int_of(raw, b, from, end)
 }
 
 /// The text `raw` is, its escapes decoded.
 export fn as_text(raw: string) -> Result<string, string> {
     let b = raw.bytes()
-    let from = blanked(b, 0)
+    let from = space(b, 0)
     if from >= b.length || b.at(from) != 34 { fail "wants text" }
     let end = string_end(b, from)
-    if end < 0 || blanked(b, end) != b.length { fail "wants text" }
-    unescaped(raw, b, from, end)
+    if end < 0 || space(b, end) != b.length { fail "wants text" }
+    text_of(raw, b, from, end)
 }
 
 /// The truth `raw` is.
