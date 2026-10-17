@@ -19,7 +19,11 @@ export const KEY = { enter: "", tab: "", escape: "", left: "", right
 
 export async function openPage(binary, url, { width = 900, height = 700 } = {}) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "avra-firefox-"));
-  const child = spawn(binary, ["--headless", "--no-remote", "--profile", profile, "--remote-debugging-port=0"], { stdio: ["ignore", "pipe", "pipe"] });
+  // Firefox refuses a HOME another user owns, and a container denies the
+  // user namespaces its content sandbox needs, so root runs it unsandboxed.
+  const root = process.getuid?.() === 0;
+  const env = { ...process.env, HOME: profile, ...(root ? { MOZ_DISABLE_CONTENT_SANDBOX: "1", MOZ_DISABLE_GMP_SANDBOX: "1", MOZ_DISABLE_RDD_SANDBOX: "1", MOZ_DISABLE_SOCKET_PROCESS_SANDBOX: "1" } : {}) };
+  const child = spawn(binary, ["--headless", "--no-remote", "--profile", profile, "--remote-debugging-port=0"], { stdio: ["ignore", "pipe", "pipe"], env });
   const gone = () => { child.kill(); fs.rmSync(profile, { recursive: true, force: true }); };
   process.on("exit", gone);
 
