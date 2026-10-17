@@ -3226,6 +3226,20 @@ designates, so no view names the projection. (2) PROPERTY-STYLE
 ACCESSORS: a computed read with no parentheses (`profile.value`,
 `profile.is_loading`), which also reads right on every other
 state-shaped type.
+### Interim record — a loop that owns tasks wants to drop or ask about one
+
+A finished or cancelled `Task` can be neither dropped nor asked about
+(`type.task_escape`: "this write leaves the task it replaces unjoined";
+`Task<bool>` has no `done`), and a task cannot leave its block, so
+`served` (`packages/std-ui/src/native/sources.av`) holds one WORKER per
+concurrently live job and reuses it, with the job inside the worker as an
+inner task a cut can cancel. The want: a task list that lets go of a task
+once it has answered, or `t.done()` on the surface, which would let the
+loop reap instead of pooling and let `served` split into start, free and
+sweep helpers (a task list cannot be handed to a helper today). Also
+wanted: a handler reaching its app through the component context instead
+of the scoped `running()` binding, and work owned by a component instance
+rather than a control.
 
 ### Interim record — a bounded cleanup wants one phrase
 
