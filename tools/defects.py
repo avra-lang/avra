@@ -6,8 +6,9 @@ the compiler blaming itself (`language.defect`, "survived typing") or
 with a trap (`avra: ...`, exit past 1). A user's mistake is always a
 refusal; a defect voice or a trap on a user's program is the compiler's.
 
-Each case is checked as a lone file under a scratch directory with no
-manifest, so a refusal actually prints.
+Each case is the entry of a one-file package in a scratch directory
+(a lone file reads no std and no prelude, and a file inside this tree
+is silent), so a refusal actually prints.
 
 usage: defects.py [--avra PATH] [--only NAME] [--keep] [--list]
 """
@@ -25,6 +26,7 @@ BAD = re.compile(
     re.M,
 )
 TIMEOUT = 60
+MANIFEST = '[package]\nname = "probe"\nversion = "0.1.0"\n\n[bin]\npath = "src/main.av"\n'
 
 
 def cases(text):
@@ -82,10 +84,10 @@ def mutants(name, text):
     return out
 
 
-def run(avra, path):
+def run(avra, package):
     try:
         p = subprocess.run(
-            [avra, "check", path],
+            [avra, "check", package],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=TIMEOUT,
@@ -127,11 +129,13 @@ def main():
         return 1
     bad = []
     with tempfile.TemporaryDirectory(prefix="avra-defects-") as d:
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "avra.toml"), "w", encoding="utf-8") as f:
+            f.write(MANIFEST)
         for n, body in work:
-            path = os.path.join(d, "case.av")
-            with open(path, "w", encoding="utf-8") as f:
+            with open(os.path.join(d, "src", "main.av"), "w", encoding="utf-8") as f:
                 f.write(body)
-            code, out = run(a.avra, path)
+            code, out = run(a.avra, d)
             why = verdict(code, out)
             if why:
                 bad.append((n, why))
