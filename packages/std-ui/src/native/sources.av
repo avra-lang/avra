@@ -1,0 +1,116 @@
+//! `native/sources.av` — the loop and the sources that wait, on a target
+//! that has tasks. A source is a `Job` the loop starts as a task it owns:
+//! it parks, then leaves an `Act` in the app's inbox, so what it does
+//! runs inside `App.turn` like a control's word, and it ends when the
+//! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
+//! a source is anything that posts an `Act`, and the page's host does it
+//! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
+use app.{Act, App, Door, Job, Msg, running}
+use @std.time.{Duration, every, sleep}
+use @std.task.{Channel, Posted, Source, unbounded_channel}
+
+/// A paint that shows nothing further.
+export fn unshown() {}
+
+/// The inbox of an app's loop, open: the app's door leads to it, so what
+/// a source leaves is kept for the loop that serves it.
+export fn opened(on: App) -> Channel<Msg> {
+    if on.looping.get() { avra_trap(one_loop()) }
+    on.looping.set(true)
+    let inbox = unbounded_channel<Msg>()
+    on
+        .door
+        .set(Door { send: (m: Msg) -> taken(inbox.sink.post(m)), close: () -> inbox.sink.close() })
+    inbox
+}
+
+fn taken(p: Posted) -> bool {
+    match p { .Taken or .Full -> true, .Ended -> false }
+}
+
+extern fn avra_trap(message: string)
+
+/// THE LOOP: each act in the inbox is a turn, until the inbox ends. Each
+/// job runs on a worker, a task this block owns: a job takes an idle
+/// worker or, when none is idle, a new one, and a worker that finishes a
+/// job says so and waits for the next. The block holds as many tasks as
+/// jobs were ever live at once, however many have run. `painted` runs
+/// after a turn that ran.
+export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
+    let queue = unbounded_channel<Job>()
+    mut workers: List<Task<bool>> = []
+    mut idle = 0
+    mut going = true
+    while going {
+        going = select {
+            msg in inbox.source -> {
+                match msg {
+                    .Turn(act) -> {
+                        if on.turn(act) { painted() }
+                    },
+                    .Start(job) -> {
+                        if idle > 0 {
+                            idle = idle - 1
+                        } else {
+                            workers.push(spawn worked(queue.source, on.sender()))
+                        }
+                        let _ = queue.sink.post(job)
+                    },
+                    .Ended -> {
+                        idle = idle + 1
+                    },
+                }
+                on.jobs.set(workers.length)
+                true
+            }
+            inbox.source.ended -> false
+        }
+    }
+    queue.sink.close()
+    on.looping.set(false)
+}
+
+/// A worker: each job it is handed, then its word that it is free.
+fn worked(jobs: Source<Job>, send: fn(Msg) -> bool) -> bool {
+    for job in jobs {
+        let _ = job()
+        let _ = send(Msg.Ended)
+    }
+    true
+}
+
+/// `act` runs as a turn once `span` has gone by. False when no loop runs.
+export fn later(span: Duration, act: Act) -> bool {
+    let on? = running() else { return false }
+    let send = on.sender()
+    on.start(() -> waited(send, span, act))
+}
+
+/// `act` runs as a turn every `period`, until the loop ends. False when
+/// no loop runs.
+export fn repeating(period: Duration, act: Act) -> bool {
+    let on? = running() else { return false }
+    let send = on.sender()
+    on.start(() -> ticked(send, period, act))
+}
+
+fn waited(send: fn(Msg) -> bool, span: Duration, act: Act) -> bool {
+    sleep(span)
+    let _ = send(Msg.Turn(act))
+    true
+}
+
+fn ticked(send: fn(Msg) -> bool, period: Duration, act: Act) -> bool {
+    let beat = every(period)
+    while true {
+        beat.wait()
+        if !send(Msg.Turn(act)) { return true }
+    }
+    true
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn one_loop() -> string {
+    "an app runs one loop at a time — this one already has its inbox open, and a second loop would orphan the first's sources"
+}

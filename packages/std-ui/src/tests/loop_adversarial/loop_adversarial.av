@@ -1,0 +1,70 @@
+// proves: the loop's edges. An empty body, a zero wait, a timer asked
+// for from inside a turn, an act that did not run (no paint), two
+// periods at once, and a screen run twice all answer as the law says,
+// eval == native.
+use @std.ui.components.{text}
+use @std.ui.headless.{headless}
+use @std.ui.native.sources.{later, repeating, unshown}
+use @std.time.{ms}
+
+let n = Cell.new(0)
+let m = Cell.new(0)
+let screen = headless(() -> text "n=${n.get()} m=${m.get()}")
+
+screen.running(unshown)
+println("empty body: ${screen.text()}")
+
+let again = headless(() -> text "n=${n.get()} m=${m.get()}")
+again
+    .running(
+        () -> {
+            again.advance(ms(0))
+            let _ = later(
+                ms(0),
+                () -> {
+                    n.set(1)
+                    true
+                },
+            )
+            again.advance(ms(0))
+            println("zero wait: ${again.text()}")
+            let _ = later(
+                ms(10),
+                () -> {
+                    let _ = later(
+                        ms(10),
+                        () -> {
+                            n.set(2)
+                            true
+                        },
+                    )
+                    m.set(1)
+                    false
+                },
+            )
+            again.advance(ms(15))
+            println("act that did not run, timer from inside a turn: ${again.text()}")
+            again.advance(ms(10))
+            println("then its child ran: ${again.text()}")
+            let _ = repeating(
+                ms(7),
+                () -> {
+                    m.set(m.get() + 1)
+                    true
+                },
+            )
+            let _ = repeating(
+                ms(11),
+                () -> {
+                    n.set(n.get() + 10)
+                    true
+                },
+            )
+            again.advance(ms(23))
+            println("two periods: ${again.text()}")
+        },
+    )
+let late = later(ms(1), () -> true)
+println("after the loop: ${late}")
+again.running(() -> again.advance(ms(5)))
+println("run again: ${again.text()}")
