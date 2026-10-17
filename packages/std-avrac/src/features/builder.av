@@ -636,6 +636,9 @@ impl Builder {
         ve.find((e) -> self.starts_between(e, lo, hi))
     }
 
+    /// Where a member was written.
+    fn written_at(p: Param) -> int { self.store.param_id_span(p.id)?.lo ?? 0 }
+
     fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
         let sp: Span? = self.store.expr_span(e)
         sp != null && between(sp!.lo, lo, hi)
@@ -657,23 +660,16 @@ fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
 /// A spread written with a third dot — the spelling other languages teach.
 export fn three_dots() -> string { "a spread is written `..R` — two dots, where other languages write three" }
 
-/// A field list's `..R` entries: each record, placed after the field
-/// entries written before it.
-export fn record_spreads(fs: List<Token>, rs: List<Token>, rt: List<TypeRef>) -> Result<
+/// A field list's `..R` entries: each record, placed after the
+/// entries written before it — `entries` holds where each began.
+export fn record_spreads(entries: List<int>, rs: List<Token>, rt: List<TypeRef>) -> Result<
     List<Spread>,
     string,
 > {
     if rs.length != rt.length { return .Err(zip_defect_of("spreads and their records")) }
     .Ok(
-        [Spread { at: [f for f in fs if f.span.lo < r.span.lo].length, of: rt[j], lo: r.span.lo } for j, r in rs],
+        [Spread { at: [lo for lo in entries if lo < r.span.lo].length, of: rt[j], lo: r.span.lo } for j, r in rs],
     )
-}
-
-/// Fields or seats renamed as written, a spread run keeping its `..`.
-export fn spread_named(entries: List<Param>, names: List<Token>, spreads: List<Token>) -> List<
-    Param,
-> {
-    [p with { name: Scoped(spread_name(names[j], spreads, names)) } for j, p in entries]
 }
 
 /// Strictly inside the window `after..before`.
