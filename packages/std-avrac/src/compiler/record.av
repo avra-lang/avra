@@ -632,7 +632,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
             ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), made)
             ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
-            keep_producers(ws, store, m, iface)
+            ws.keep_producers(store, m, iface)
             if seen_part(made) != seen_part(prior) { seen_moved = true }
         }
     }
@@ -677,6 +677,7 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
 /// THE SAME WALK, NAMES ONLY: every file registered and every module's impl/trait names indexed,
 /// so a by-name ask can answer — but no interface loaded, no file met, nothing held. What an
 /// on-demand load reads the store for before it decides which modules to load for real.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
 export fn bare_interface(ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
     load_named(ws, store, m, ws.module_files(m), entry, want, false)
 }
@@ -701,7 +702,7 @@ fn load_named(
     // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
     // a module whose importers are all held is met nowhere else, and a file never
     // met is neither parsed nor linked.
-    let pr? = producers_for(ws, store, m) else {
+    let pr? = ws.producers_for(store, m) else {
         ws.met_all(named)
         return
     }
@@ -723,7 +724,7 @@ fn load_named(
         ws.met_all(named)
         return
     }
-    if first { load_imports(ws, store, m, pr, entry, want, meet) }
+    if first { load_imports(ws, store, pr, entry, want, meet) }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
@@ -750,15 +751,7 @@ fn load_named(
 /// WHAT A MODULE'S RECORD SEES, loaded before its own files are met: the prelude, every
 /// import under the record that keeps it, and where its impls and traits are named.
 // LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a store and a module in.
-fn load_imports(
-    ws: Workspace,
-    store: Store,
-    m: ModulePath,
-    pr: Producers,
-    entry: string?,
-    want: Want,
-    meet: bool,
-) {
+fn load_imports(ws: Workspace, store: Store, pr: Producers, entry: string?, want: Want, meet: bool) {
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
     load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
