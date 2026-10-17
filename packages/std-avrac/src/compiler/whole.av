@@ -18,6 +18,7 @@ use core.{
     ExprId,
     Case,
     flatten,
+    same_file,
     SpecParts,
     spelled,
     user_kind,
@@ -297,15 +298,14 @@ impl Workspace {
     fn host_fn_voices(files: List<FileId>) -> List<Diag> {
         let hosted = self.program_host_fns(files)
         if hosted.is_empty() { return [] }
-        let named = [x for x in self.decls.externs() if !self.decls.is_host_fn(x.id)]
         let asked = self.root_imports()
-        flatten([self.host_fn_owes(d, named, asked) for d in hosted])
+        flatten([self.host_fn_owes(d, asked) for d in hosted])
     }
 
     /// The host fns of the files a program reads and of the files it holds: a
     /// held module defines its symbols for the link as a read one does.
     fn program_host_fns(read: List<FileId>) -> List<DeclId> {
-        flatten([self.decls.host_fns_of_file(f) for f in read.concat(self.decls.held_files())])
+        [x.id for x in self.decls.host_fns() if self.is_held(x.file) || read.any(same_file(it, x.file))]
     }
 
     /// The packages the program's own sources import from, by key.
@@ -315,14 +315,16 @@ impl Workspace {
         )
     }
 
-    fn host_fn_owes(d: DeclId, named: List<Decl>, asked: List<string>) -> List<Diag> {
+    fn host_fn_owes(d: DeclId, asked: List<string>) -> List<Diag> {
         let x = self.decls.decl(d)
         let from = self.packages()[self.holder_of_path(self.decls.file(x.file).path)]
         if platform_defines(x.name) || entry_symbols.contains(x.name) { return [host_fn_shadows(self.decls.loc(d), x.name)] }
         if from.ordinal == 0 { return [] }
-        let theirs? = named
+        let theirs? = self
+            .decls
+            .externs_named(x.name)
             .find(
-                (n: Decl) -> n.name == x.name &&
+                (n: Decl) -> !self.decls.is_host_fn(n.id) &&
                     self.holder_of_path(self.decls.file(n.file).path) != from.ordinal,
             ) else {
             return if asked.contains(from.key) { [] } else { [host_fn_unasked(self.decls.loc(d), x.name, from.key)] }
@@ -576,7 +578,7 @@ impl Workspace {
 
     /// The extern fns a package declares, by name.
     fn externs_of(package: string) -> List<string> {
-        [d.name for d in self.decls.externs() if self.decls.package_of(d.id) == key_spelled(package)]
+        [n.name for n in self.decls.extern_notes() if self.decls.package_named(n.module) == key_spelled(package)]
     }
 
     /// The root package's entry file: its `[bin]` path, else

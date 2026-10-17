@@ -197,10 +197,12 @@ export type HashAsk = { by: FileId?, target: string }
 impl Decls {
     /// The program's extern fns by symbol — what every emitter refuses
     /// an unknown callee against.
-    fn extern_names() -> List<string> { [self.symbol(d.id) for d in self.externs()] }
+    fn extern_names() -> List<string> { [n.name for n in self.extern_notes()] }
 
-    /// The program's extern fns as registry rows.
-    fn extern_rows() -> List<RtSig> { [self.extern_row_of(d) for d in self.externs()] }
+    /// The externs the program reached as registry rows: typing a call to an extern
+    /// stood its module, so every callee has one, and a held module nothing called
+    /// is no row.
+    fn extern_rows() -> List<RtSig> { [self.extern_row_of(d) for d in self.standing_externs()] }
 
     /// An extern's runtime row. The WIDTHS are read back from the
     /// program — the annotation the seat wrote — because the signature
@@ -504,7 +506,7 @@ impl Decls {
             d.held,
             [h.target for h in asked],
             held_codes.concat(d.kept),
-            [r.name for r in rt_sigs()].concat([r.name for r in self.extern_rows()]),
+            [r.name for r in rt_sigs()].concat(self.extern_names()),
         )
         fns = fns.concat(answered.bodies)
         let every_body = fns.concat([entry_body])
