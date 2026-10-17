@@ -1,0 +1,42 @@
+//! `place/measure.av` — what the solver asks a target about size. The
+//! solver knows no unit: a target answers in its own (terminal cells, or
+//! pixels from a typeface's metrics), always whole numbers, so one
+//! algorithm places a tree on every surface.
+use @std.text.{cells}
+use tree.node.{Node}
+use style.tokens.{Size}
+use realize.tui.layout.{own_lines, kept_cells, gap_rows, gap_cols, pad_cols}
+
+/// A size in the target's unit.
+export type Extent = { w: int, h: int }
+
+/// The questions the solver asks. `own` is the node's content before its
+/// children, wrapped to `avail` across; `kept` what a node keeps from its
+/// children's start edge (a list's bullet); `gap_x`/`gap_y` and
+/// `pad_x`/`pad_y` what a spacing step is along each axis; `flows`
+/// whether a row with no `wrap` continues on a new line when it overflows.
+export trait Measure {
+    fn own(n: Node, avail: int) -> Extent
+    fn kept(n: Node) -> int
+    fn gap_x(z: Size) -> int
+    fn gap_y(z: Size) -> int
+    fn pad_x(z: Size) -> int
+    fn pad_y(z: Size) -> int
+    fn flows() -> bool
+}
+
+/// The terminal's answers: one cell across, one line down.
+export type Cells = {}
+
+impl Measure for Cells {
+    fn own(n: Node, avail: int) -> Extent { extent_of(own_lines(n, avail)) }
+    fn kept(n: Node) -> int { kept_cells(n) }
+    fn gap_x(z: Size) -> int { gap_cols(z) }
+    fn gap_y(z: Size) -> int { gap_rows(z) }
+    fn pad_x(z: Size) -> int { pad_cols(z) }
+    fn pad_y(z: Size) -> int { gap_rows(z) }
+    fn flows() -> bool { true }
+}
+
+/// The widest line and the line count.
+fn extent_of(ls: List<string>) -> Extent { Extent { w: [cells(l) for l in ls].max() ?? 0, h: ls.length } }
