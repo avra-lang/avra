@@ -1,0 +1,49 @@
+//! What one paint of the bench costs natively, by phase. Arguments: the
+//! number of rows.
+use @ui.bench.{fill, tick, view}
+use @std.ui.app.{plain}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.page.{paged}
+use @std.ui.realize.html.element.{Element}
+use @std.ui.tree.view.{tree_of}
+use @std.text.{parse_int}
+use @std.io.{env}
+use @std.time.{now_ms}
+
+/// How many elements a run of them holds, nested ones too.
+fn count_all(run: List<Element>) -> int {
+    run.fold(0, (a: int, e: Element) -> a + 1 + count_in(e))
+}
+
+fn count_in(e: Element) -> int {
+    let el? = e.tagged() else { return 0 }
+    count_all(el.kids)
+}
+
+let n = parse_int(env("ROWS") ?? "1000") ?? 1000
+fill(n)
+let sent: Cell<int> = Cell.new(0)
+let page = live()
+let made = paged(view, plain, page, (b: Bytes) -> sent.set(b.length))
+let w0 = now_ms()
+let tree = tree_of(view())
+println("tree root children ${tree.children.length}")
+let w1 = now_ms()
+println("rows ${n}")
+println("walk (view + describe) ${w1 - w0} ms")
+let p0 = now_ms()
+made.app.paint()
+let p1 = now_ms()
+println("first paint (walk + lower + diff + frame) ${p1 - p0} ms, frame ${sent.get()} bytes")
+println("page elements ${count_all(page.page.get())}")
+tick(0)
+sent.set(0)
+let c0 = now_ms()
+made.app.paint()
+let c1 = now_ms()
+println("one row ticked: paint ${c1 - c0} ms, frame ${sent.get()} bytes")
+sent.set(0)
+let s0 = now_ms()
+made.app.paint()
+let s1 = now_ms()
+println("nothing changed: paint ${s1 - s0} ms, frame ${sent.get()} bytes")
