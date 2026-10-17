@@ -1,0 +1,44 @@
+// proves: the edges of the door. A post with no loop runs as a turn and a
+// job is refused; after the loop closes both are refused; closing twice
+// and closing with no loop say nothing; a period started under one loop
+// never posts into the next loop of the same screen — eval == native.
+use @std.ui.components.{text}
+use @std.ui.headless.{headless}
+use @std.ui.native.sources.{later, repeating}
+use @std.time.{ms}
+
+let n = Cell.new(0)
+let screen = headless(() -> text "n=${n.get()}")
+let app = screen.shown.app
+
+fn bump(by: Cell<int>) -> bool {
+    by.set(by.get() + 1)
+    true
+}
+
+app.close()
+println("close with no loop: ${screen.text()}")
+println(
+    "no loop: post=${app.post(() -> bump(n))} n=${n.get()} start=${app.start(() -> true)} later=${later(ms(1), () -> true)}",
+)
+
+screen
+    .running(
+        () -> {
+            let _ = repeating(ms(10), () -> bump(n))
+            screen.advance(ms(35))
+        },
+    )
+let first = n.get()
+println("first loop ticked: ${first >= 3}")
+println("after close: post=${app.post(() -> true)} start=${app.start(() -> true)}")
+app.close()
+app.close()
+
+screen
+    .running(
+        () -> {
+            screen.advance(ms(100))
+            println("second loop, the first one's period is silent: ${n.get() == first}")
+        },
+    )

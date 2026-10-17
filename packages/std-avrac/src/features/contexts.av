@@ -520,7 +520,15 @@ impl TypeCx {
     fn name_at(e: ExprId) -> string { self.view.types.name_of(self.type_at(e)) }
     fn loc_of(e: ExprId) -> Loc? { self.view.loc_of(e) }
     fn stmt_loc(s: StmtId) -> Loc? { self.view.stmt_loc(s) }
-    fn emit(d: Diag) { self.facts.speak(d) }
+    fn emit(d: Diag) { self.facts.speak(self.told(d)) }
+
+    /// A refusal spoken while a sugar's minted node is typed also says
+    /// what the sugar means, at the sugar the author wrote.
+    fn told(d: Diag) -> Diag {
+        let sugar? = self.rewriting else { return d }
+        let note? = self.view.store.means_note(sugar) else { return d }
+        d with { secondary: d.secondary.concat([Frame { label: note, loc: self.loc_of(sugar) }]) }
+    }
     fn stmt_sig(s: StmtId) -> FnSig? {
         let d? = self.view.decls.decl_of(self.view.file, s) else { return null }
         self.view.decls.sig(d)?.fn_sig()

@@ -3,10 +3,31 @@
 //! DOOR, `turn`: whatever may change the state — a control speaking, a
 //! timer, an answer arriving — runs through it, and a paint follows only
 //! when it ran.
-use tree.node.{Node}
+use tree.node.{Node, Prim, Attribute, Urgency}
+use style.box.{Box}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use style.theme.{Theme, default_theme}
+
+/// Whatever may change the program's state, as the door takes it: it
+/// answers whether it ran.
+export alias Act = fn() -> bool
+
+/// Work that waits and then leaves an `Act` behind. It runs as a task the
+/// loop owns, so it ends with the loop.
+export alias Job = fn() -> bool
+
+/// What the inbox carries: a turn to run, a job to start, or a job's
+/// word that it has finished (the loop's own).
+export enum Msg {
+    Turn(act: Act)
+    Start(job: Job)
+    Ended
+}
+
+/// The way into a running loop: where a message goes, and how the loop is
+/// told to end. A target with no tasks has none.
+export type Door = { send: fn(Msg) -> bool, close: fn() -> void }
 
 /// An app on one target. `show` is the target's own paint: the tree as it
 /// stands and the theme it wears, in; whatever the target does with them.
@@ -14,13 +35,45 @@ use style.theme.{Theme, default_theme}
 /// when it is given another view to show. `stands` is where its walk
 /// starts: every component instance on the app is kept under it, and
 /// nowhere else. `told` is what its walk has said that a target already
-/// passed on.
+/// passed on. `looping` is whether a loop serves it; `door` is where every source that is not a control —
+/// a timer, an answer, a stream — leaves its message once a loop runs;
+/// its writers never wait. A target with no loop runs an `Act` as a turn
+/// at once and starts no job. `jobs` is how many tasks the loop holds.
+/// `guard` runs a turn's action and answers whether it ran, or the words
+/// of the failure that ended it; `failed` is the last turn's failure
+/// until a turn runs again, and `unsaid` is the part of it no target has
+/// passed on yet.
 export type App = {
     view: Cell<fn(Standing) -> Node>,
     theme: Cell<fn() -> Theme>,
     show: fn(Node, Theme) -> void,
     stands: Standing,
     told: Cell<List<string>>,
+    door: Cell<Door?>,
+    looping: Cell<bool>,
+    jobs: Cell<int>,
+    failed: Cell<string?>,
+    unsaid: Cell<string?>,
+    guard: Cell<fn(fn() -> bool) -> Result<bool, string>>,
+    noticed: Cell<fn(string?) -> void>,
+}
+
+/// A target with nowhere to show a notice beside the view.
+fn unnoticed(_words: string?) {}
+
+/// A turn that nothing contains: the action runs and its answer stands.
+fn uncontained(act: fn() -> bool) -> Result<bool, string> { .Ok(act()) }
+
+/// The notice a target that draws one shows beside the view while the
+/// last turn failed: an assertive alert naming the failure, under a key
+/// of its own so it is never mistaken for the view's root.
+export fn notice_node(words: string) -> Node {
+    Node {
+        prim: Prim.Alert,
+        attrs: [.Text("turn failed: ${words}"), .Urgency(Urgency.Assertive)],
+        box: Box { key: "notice" },
+        children: [],
+    }
 }
 
 /// The theme of an app that names none.
@@ -30,12 +83,21 @@ export fn plain() -> Theme { default_theme }
 export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, Theme) -> void) -> App {
     let drawn: fn(Standing) -> Node = (at: Standing) -> rooted(view().describe(at))
     let untold: List<string> = []
+    let nodoor: Door? = null
+    let nothing: string? = null
     App {
         view: Cell.new(drawn),
         theme: Cell.new(theme),
         show: show,
         stands: standing(),
         told: Cell.new(untold),
+        door: Cell.new(nodoor),
+        looping: Cell.new(false),
+        jobs: Cell.new(0),
+        failed: Cell.new(nothing),
+        unsaid: Cell.new(nothing),
+        guard: Cell.new(uncontained),
+        noticed: Cell.new(unnoticed),
     }
 }
 
@@ -76,7 +138,25 @@ impl App {
     /// terminal's, a page's console.
     fn warn() {
         for w in self.said_anew() { eprintln("ui: ${w}") }
+        let words? = self.unsaid.get() else { return }
+        self.unsaid.set(null)
+        eprintln("ui: turn failed: ${words}")
     }
+
+    /// The turn's failure, or its absence, kept and passed on to the target.
+    fn said_failure(words: string?) {
+        self.failed.set(words)
+        if words != null { self.unsaid.set(words) }
+        (self.noticed.get())(words)
+    }
+
+    /// `to` hears the failure of each turn that fails, and null when a turn
+    /// runs after one: a target that shows a notice beside its view keeps it.
+    fn noticing(to: fn(string?) -> void) { self.noticed.set(to) }
+
+    /// `by` contains every turn from now on: it runs the action and
+    /// answers whether it ran, or the failure's words.
+    fn guarded(by: fn(fn() -> bool) -> Result<bool, string>) { self.guard.set(by) }
 
     /// How many component instances the app keeps — the lifetime
     /// witness.
@@ -85,10 +165,70 @@ impl App {
     /// THE ONE DOOR INTO THE LOOP. `act` is whatever may change the
     /// program's state; it answers whether it ran, and a paint follows
     /// only then. What the paint says is the target's to decide — a page
-    /// that did not change is sent nothing.
+    /// that did not change is sent nothing. A FAILURE IS CONTAINED TO ITS
+    /// TURN: it is kept in `failed`, the state stands as the handler
+    /// left it, the view is painted as it stands, and the target is told
+    /// so it can show a notice beside the view. The next turn to run
+    /// clears it.
     fn turn(act: fn() -> bool) -> bool {
-        let ran = act()
-        if ran { self.paint() }
-        ran
+        match (self.guard.get())(act) {
+            .Ok(ran) -> {
+                if ran {
+                    self.said_failure(null)
+                    self.paint()
+                }
+                ran
+            },
+            .Err(words) -> {
+                self.said_failure(words)
+                self.paint()
+                false
+            },
+        }
+    }
+
+    /// A source leaves `act` for the loop to run as a turn. False when
+    /// the loop has ended.
+    fn post(act: Act) -> bool { self.send(Msg.Turn(act)) }
+
+    /// A source leaves `job` for the loop to start as a task it owns.
+    /// False when the loop has ended.
+    fn start(job: Job) -> bool { self.send(Msg.Start(job)) }
+
+    fn send(msg: Msg) -> bool {
+        let door? = self.door.get() else { return self.direct(msg) }
+        door.send(msg)
+    }
+
+    /// Where messages go now: the running loop's inbox, held — a source
+    /// started under one loop keeps leaving its messages there, whatever
+    /// loop the app runs next.
+    fn sender() -> fn(Msg) -> bool {
+        let door? = self.door.get() else { return (m: Msg) -> self.direct(m) }
+        door.send
+    }
+
+    /// A message with no loop to take it: a turn runs at once, a job has
+    /// nowhere to run.
+    fn direct(msg: Msg) -> bool {
+        match msg { .Turn(act) -> self.turn(act), .Start(_) or .Ended -> false }
+    }
+
+    /// The loop ends once what stands in the inbox has run.
+    fn close() {
+        let door? = self.door.get() else { return }
+        door.close()
     }
 }
+
+/// The app whose loop is running: where a handler's `later` and
+/// `repeating` leave their jobs.
+once fn afoot() -> Cell<App?> { Cell.new(null) }
+
+/// `on` is the app whose loop runs from now, or none. A loop's owner says
+/// so before the loop starts and puts back what it replaced when the
+/// loop ends, so loops nest without crossing.
+export fn stood(on: App?) { afoot().set(on) }
+
+/// The app whose loop runs, if any.
+export fn running() -> App? { afoot().get() }

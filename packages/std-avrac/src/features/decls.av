@@ -580,6 +580,9 @@ export type Decls = {
     // `Here` for a written node and for one whose name came through a
     // hole; dense by FileId, then by arena index
     origins: Cell<List<Origins>>,
+    // the expression a field's written default crossed as — by file and
+    // offset, where `Field.default`'s template reads it back
+    written_defaults: Cell<Map<string, int>>,
     // what a file's expansions REFUSED — generated source that did not
     // parse, spoken at the template that wrote it; dense by FileId
     /// TWO LAYERS SHARED — see `module_files`.
@@ -842,6 +845,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         expr_owners: Cell.new(no_expr_owners),
         generations: Cell.new(no_generations),
         origins: Cell.new(no_origins),
+        written_defaults: map_cell(),
         expansion_voices: Cell.new(no_expansion_voices),
         meta_ids: map_cell(),
         held: map_cell(),
@@ -1255,6 +1259,18 @@ impl Decls {
                 [PatId { index: i } for i in runs.pats.lo..runs.pats.hi],
                 origin,
             )
+    }
+
+    /// The default expression `e`, written at offset `at` of file `f`,
+    /// crossed as a template.
+    fn note_default(f: FileId, e: ExprId, at: int) {
+        self.written_defaults.put("${f.index}:${at}", e.index)
+    }
+
+    /// The written default whose template names offset `at` of file `f`.
+    fn default_at(f: FileId, at: int) -> ExprId? {
+        let i? = self.written_defaults.get().get("${f.index}:${at}") else { return null }
+        ExprId { index: i }
     }
 
     /// A generated node's own name resolves at `origin` — the file
