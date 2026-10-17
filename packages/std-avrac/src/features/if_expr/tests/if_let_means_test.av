@@ -1,0 +1,48 @@
+// An `if` that binds keeps its own node; what it means is the `match`
+// minted beside it, and a refusal about that match says so at the `if`.
+use @std.avrac.core.{SyntaxArena, ExprId}
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.testing.{shown}
+
+const prelude: string = "enum E { A(int), B }\nlet e: E = .A(4)\n"
+
+fn root_of(source: string) -> ExprId? {
+    let p = parse_source(source)
+    let last? = p.stmts.last() else { return null }
+    p.store.stmt_value(last)
+}
+
+spec "features/if_expr — an `if` that binds is a sugar" {
+    given "the expression form" {
+        then "parses to its own node, not to the match it means" {
+            let p = parse_source("${prelude}if e is .A(n) { n } else { 0 }")
+            let root = p.store.stmt_value(p.stmts.last()!)!
+            p.voices.list.length == 0 && p.store.expr(root) is .IfLet
+        }
+        then "means a match over the tested subject" {
+            let p = parse_source("${prelude}if e is .A(n) { n } else { 0 }")
+            let root = p.store.stmt_value(p.stmts.last()!)!
+            let meant? = p.store.meant(root) else { return false }
+            p.store.expr(meant) is .Match
+        }
+        then "the statement notes what it means" {
+            let p = parse_source("${prelude}if e is .A(n) { n } else { 0 }")
+            p.store.means_in(p.stmts.last()!).join("|") == "an `if` that binds means `match e { … -> …, _ -> … }`"
+        }
+        then "answers what the match answers" {
+            shown("${prelude}if e is .A(n) { n + 1 } else { 0 }") == "5"
+        }
+    }
+    given "the statement form without an else" {
+        then "carries an empty block as its other side and still runs" {
+            shown("${prelude}mut total = 0\nif e is .A(n) { total = n }\ntotal") == "4"
+        }
+    }
+    given "a plain `if`" {
+        then "is no sugar" {
+            let p = parse_source("let a = true\nif a { 1 } else { 2 }")
+            let root = p.store.stmt_value(p.stmts.last()!)!
+            p.store.meant(root) == null && p.store.expr(root) is .If
+        }
+    }
+}

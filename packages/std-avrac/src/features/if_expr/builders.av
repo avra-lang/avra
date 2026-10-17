@@ -1,35 +1,29 @@
-//! Parse-time lowering: three captured expressions -> the If node;
-//! a payload `is` condition desugars into the Match it means.
-use core.{Expr, ExprId, Stmt, Arm, Pat, PatId, PayloadIs}
+//! Parse-time lowering: three captured expressions -> the If node; a
+//! payload `is` condition is the `IfLet` sugar, which means a `match`.
+use core.{Expr, ExprId, PatId, Stmt}
 use features.{LangNode, Builder}
 
 fn build_if(b: Builder) -> Result<LangNode, string> {
     let c = b.expr(0)?
     let t = b.expr(1)?
     let e = b.expr(2)?
-    let payload? = b.store.is_payload(c) else { return b.make_expr(Expr.If(c, t, e)) }
-    desugared(b, c, payload, bound_arms(b, payload.pat, t, e))
+    let pat? = b.store.binding_pat(c) else { return b.make_expr(Expr.If(c, t, e)) }
+    b.wrap_expr(if_let(b, c, pat, t, e))
 }
 
-/// `if x is .V(p) { A } else { B }` is `match x { .V(p) -> A, _ -> B }`
-/// — the binding law's one meaning, spelled by the machinery that
-/// already carries it (spec 10.4: bind-fresh, scoped to the arm).
-fn bound_arms(b: Builder, pat: PatId, taken: ExprId, other: ExprId) -> List<Arm> {
-    let rest = b.store.alloc_pat(Pat.Wild, b.span)
-    [
-        Arm { pats: [pat], guard: null, value: taken },
-        Arm { pats: [rest], guard: null, value: other },
-    ]
+/// `if x is .V(p) { A } else { B }` keeps its own node; what it MEANS
+/// is `match x { .V(p) -> A, _ -> B }` — the binding law's one meaning,
+/// spelled by the machinery that already carries it (spec 10.4:
+/// bind-fresh, scoped to the arm).
+fn if_let(b: Builder, c: ExprId, pat: PatId, taken: ExprId, other: ExprId) -> ExprId {
+    let subject = b.store.is_subject(c) ?? c
+    let sugar = b.expr_node(Expr.IfLet(subject, pat, taken, other))
+    let _ = b.store.mean(sugar, if_let_means(b.source_of(subject)), b.words.door)
+    sugar
 }
 
-/// The desugared Match, MARKED with the payload and whether an else was
-/// written — the printer spells `if x is .V(p) { A }` back from the
-/// mark rather than losing the form (a bare `match` would move tokens
-/// `fmt` refuses).
-fn desugared(b: Builder, c: ExprId, payload: PayloadIs, arms: List<Arm>) -> Result<LangNode, string> {
-    let m = b.expr_node(Expr.Match(b.store.is_subject(c) ?? c, arms))
-    b.store.mark_is_payload(m, payload.pat, payload.has_else)
-    b.wrap_expr(m)
+fn if_let_means(subject: string) -> string {
+    "an `if` that binds means `match ${subject} { … -> …, _ -> … }`"
 }
 
 /// The STATEMENT form: a guard, or a chain — `else { … }` and
@@ -41,13 +35,10 @@ fn build_if_stmt(b: Builder) -> Result<LangNode, string> {
     let c = b.expr(0)?
     let t = b.stmts(1)?
     let e = b.stmts(2)?
-    let payload? = b.store.is_payload(c) else { return b.make_stmt(Stmt.IfStmt(c, t, e)) }
+    let pat? = b.store.binding_pat(c) else { return b.make_stmt(Stmt.IfStmt(c, t, e)) }
     // `block_of` — not a valueless block — so a branch that ANSWERS keeps
     // its value when the whole guard stands in tail position, exactly as
     // `chain_value` promotes a plain `if` statement; a branch whose tail
     // is no value (or leaves) is void either way, and the arms agree.
-    let arms = bound_arms(b, payload.pat, b.block_of(t), b.block_of(e))
-    let m = b.expr_node(Expr.Match(b.store.is_subject(c) ?? c, arms))
-    b.store.mark_is_payload(m, payload.pat, !e.is_empty())
-    b.make_stmt(Stmt.ExprStmt(m))
+    b.make_stmt(Stmt.ExprStmt(if_let(b, c, pat, b.block_of(t), b.block_of(e))))
 }

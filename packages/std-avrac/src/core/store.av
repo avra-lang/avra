@@ -39,11 +39,6 @@ fn no_stmt_marks() -> StmtMarks {
 /// back what was written.
 export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 
-/// A payload `is`: the variant pattern it names (`.V(p, q)`), and — on
-/// the Match an `if` desugared it into — whether the source wrote an
-/// `else`, so the printer can spell an elseless guard back.
-export type PayloadIs = { pat: PatId, has_else: bool }
-
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
@@ -132,10 +127,6 @@ export type SyntaxArena = {
     // sentence `avra expand` prints and a refusal about a minted
     // node carries
     means_notes: Cell<List<string?>>,
-    // the variant pattern an `if` that binds desugared into a Match
-    // (`.V(p, q)`) — the binder list a match arm would take, kept
-    // beside the node so the printer can spell the `if` back
-    is_payloads: Cell<List<PayloadIs?>>,
     // a component instance's WRAPPING STATEMENT — where its `///`
     // and `@name(args)` annotations live, attached from OUTSIDE once
     // the instance's own expression already stands; absent for an
@@ -216,7 +207,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         minted_by: list_cell(),
         meaning: list_cell(),
         means_notes: list_cell(),
-        is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
         tables: list_cell(),
@@ -290,7 +280,6 @@ impl SyntaxArena {
         self.minted_by.push(null)
         self.meaning.push(null)
         self.means_notes.push(null)
-        self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
         self.tables.push(null)
@@ -528,29 +517,19 @@ impl SyntaxArena {
         self.sugar_matches.get()[e.index]
     }
 
-    /// The pattern of the Match an `if` desugared a payload `is` into.
-    fn mark_is_payload(e: ExprId, p: PatId, has_else: bool) {
-        self.is_payloads.set_at(e.index, PayloadIs { pat: p, has_else: has_else })
-    }
-
-    fn payload_marked(e: ExprId) -> PayloadIs? {
-        self.is_payloads.get()[e.index]
-    }
-
     /// `x is .V(p, q)` — the pattern that binds, or null for a bare
-    /// `is` and for every other node; a desugared `if`'s Match answers
-    /// its marked one. One question answered here so the `if` that
-    /// BINDS, the enum law that REFUSES and the printer that spells the
-    /// `if` back read the same fact.
-    fn is_payload(e: ExprId) -> PayloadIs? {
-        match self.expr(e) { .Is(_, asked) -> self.binding_ask(asked), _ -> self.payload_marked(e) }
+    /// `is` and for every other node. One question answered here so the
+    /// `if` that BINDS and the enum law that REFUSES read the same fact.
+    fn binding_pat(e: ExprId) -> PatId? {
+        match self.expr(e) { .Is(_, asked) -> if self.binds(asked) { asked } else { null }, _ -> null }
     }
 
-    fn binding_ask(asked: PatId) -> PayloadIs? {
+    /// Whether an `is` pattern takes a name: a payload list or a bound type.
+    fn binds(asked: PatId) -> bool {
         match self.pat(asked) {
-            .Variant(_, args) -> if args.is_empty() { null } else { PayloadIs { pat: asked, has_else: true } },
-            .Typed(_, _) -> PayloadIs { pat: asked, has_else: true },
-            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> null,
+            .Variant(_, args) -> !args.is_empty(),
+            .Typed(_, _) -> true,
+            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> false,
         }
     }
 
