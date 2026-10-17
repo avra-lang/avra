@@ -258,6 +258,9 @@ type Hold = {
     file_ready: Table<bool>,
     row_filled: Table<bool>,
     holds_settled: Cell<bool>,
+    /// Set while the held modules' records register their files: those files wait for the holds
+    /// to settle before they meet their siblings.
+    registering: Cell<bool>,
     /// THE PRODUCER INDEX: for each held module, every declaration NAME,
     /// WORD and MARK its record lines carry, and each extern it declares. A bucket
     /// reader mints the modules listed for its value before it reads the bucket, so a
@@ -350,6 +353,7 @@ fn new_hold() -> Hold {
         file_ready: new_table<bool>(),
         row_filled: new_table<bool>(),
         holds_settled: Cell.new(false),
+        registering: Cell.new(false),
         named_by: Cell.new(no_producers),
         worded_by: Cell.new(no_producers),
         marked_by: Cell.new(no_producers),
@@ -1337,16 +1341,16 @@ impl Workspace {
     fn file_id(path: string) -> FileId {
         let known? = self.decls.known_file_id(path) else {
             let f = self.minted_file(path)
-            if self.hold.holds_settled.get() { self.siblings_met(f, path) }
+            if !self.hold.registering.get() { self.siblings_met(f, path) }
             return f
         }
         known
     }
 
     /// WHAT A READ FILE REACHES, met: its module's files and the components its directory
-    /// declares. Asked once the holds are settled — a file registered before then is held
-    /// or not by what the settling decides, and a held file reaches only itself, so asking
-    /// early scanned every file of every held module for a verdict nobody needed.
+    /// declares. A file a held module's record registers waits (`registering`) for the holds
+    /// to settle: a held file reaches only itself, so meeting its siblings at registration
+    /// scanned every file of every held module for a verdict nobody needed.
     fn siblings_met(f: FileId, path: string) {
         if self.lone || self.is_held(f) || !self.reads_as_source(path) { return }
         // listed, not `module_files`: its cache would answer the query that

@@ -684,7 +684,9 @@ impl Workspace {
             // ON-DEMAND: the records are read for their NAMES alone — every file is
             // registered and every module's impl/trait names indexed — and only the
             // modules a file whose rows no longer stand sits in are loaded for real.
+            self.hold.registering.set(true)
             for m in roots { bare_interface(self, store, m, at.entry, at.want) }
+            self.hold.registering.set(false)
             let must_read = self
                 .hold
                 .forced
@@ -702,6 +704,7 @@ impl Workspace {
                 if self.hold.forced.get().get(fi.path) != null { continue }
                 self.hold_only(fi.path)
             }
+            self.met_unheld_siblings()
             self.timed("interfaces", interfaces)
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
@@ -710,7 +713,6 @@ impl Workspace {
         self.hold.warm.set(!held_paths(self).is_empty())
         self.host.reads_ahead(self.reads_ahead())
         self.hold.holds_settled.set(true)
-        self.met_unheld_siblings()
         store
     }
 
