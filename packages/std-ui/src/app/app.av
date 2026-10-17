@@ -7,6 +7,21 @@ use tree.node.{Node}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use style.theme.{Theme, default_theme}
+use @std.task.{Channel, unbounded_channel}
+
+/// Whatever may change the program's state, as the door takes it: it
+/// answers whether it ran.
+export alias Act = fn() -> bool
+
+/// Work that waits and then leaves an `Act` behind. It runs as a task the
+/// loop owns, so it ends with the loop.
+export alias Job = fn() -> bool
+
+/// What a source leaves in the inbox: a turn to run, or a job to start.
+export enum Msg {
+    Turn(act: Act)
+    Start(job: Job)
+}
 
 /// An app on one target. `show` is the target's own paint: the tree as it
 /// stands and the theme it wears, in; whatever the target does with them.
@@ -14,13 +29,16 @@ use style.theme.{Theme, default_theme}
 /// when it is given another view to show. `stands` is where its walk
 /// starts: every component instance on the app is kept under it, and
 /// nowhere else. `told` is what its walk has said that a target already
-/// passed on.
+/// passed on. `inbox` is where every source that is not a control —
+/// a timer, an answer, a stream — leaves its `Act`; its writers never
+/// wait.
 export type App = {
     view: Cell<fn(Standing) -> Node>,
     theme: Cell<fn() -> Theme>,
     show: fn(Node, Theme) -> void,
     stands: Standing,
     told: Cell<List<string>>,
+    inbox: Channel<Msg>,
 }
 
 /// The theme of an app that names none.
@@ -36,6 +54,7 @@ export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, The
         show: show,
         stands: standing(),
         told: Cell.new(untold),
+        inbox: unbounded_channel<Msg>(),
     }
 }
 
@@ -91,4 +110,30 @@ impl App {
         if ran { self.paint() }
         ran
     }
+
+    /// A source leaves `act` for the loop to run as a turn. False when
+    /// the loop has ended.
+    fn post(act: Act) -> bool { self.send(Msg.Turn(act)) }
+
+    /// A source leaves `job` for the loop to start as a task it owns.
+    /// False when the loop has ended.
+    fn start(job: Job) -> bool { self.send(Msg.Start(job)) }
+
+    fn send(msg: Msg) -> bool {
+        match self.inbox.sink.post(msg) { .Taken or .Full -> true, .Ended -> false }
+    }
+
+    /// The loop ends once what stands in the inbox has run.
+    fn close() { self.inbox.sink.close() }
 }
+
+/// The app whose loop is running: where a handler's `later` and
+/// `repeating` leave their jobs.
+once fn afoot() -> Cell<App?> { Cell.new(null) }
+
+/// `on` is the app whose loop runs from now: its loop's owner says so
+/// before the loop starts.
+export fn stood(on: App) { afoot().set(on) }
+
+/// The app whose loop runs, if any.
+export fn running() -> App? { afoot().get() }

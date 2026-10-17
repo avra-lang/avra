@@ -1,0 +1,70 @@
+//! `native/sources.av` — the loop and the sources that wait, on a target
+//! that has tasks. A source is a `Job` the loop starts as a task it owns:
+//! it parks, then leaves an `Act` in the app's inbox, so what it does
+//! runs inside `App.turn` like a control's word, and it ends when the
+//! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
+//! a source is anything that posts an `Act`, and the page's host does it
+//! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
+use app.{Act, App, Msg, running, stood}
+use @std.time.{Duration, every, sleep}
+use @std.task.{Sink}
+
+/// A paint that shows nothing further.
+export fn unshown() {}
+
+/// THE LOOP: each act in the inbox is a turn and each job a task this
+/// block owns, until the inbox ends. `painted` runs after a turn that
+/// ran.
+export fn served(on: App, painted: fn() -> void) {
+    mut work: List<Task<bool>> = []
+    mut going = true
+    while going {
+        going = select {
+            msg in on.inbox.source -> {
+                match msg {
+                    .Turn(act) -> {
+                        if on.turn(act) { painted() }
+                    },
+                    .Start(job) -> { work.push(spawn job()) },
+                }
+                true
+            }
+            on.inbox.source.ended -> false
+        }
+    }
+}
+
+/// `act` runs as a turn once `span` has gone by. False when no loop runs.
+export fn later(span: Duration, act: Act) -> bool {
+    let on? = running() else { return false }
+    let sink = on.inbox.sink
+    on.start(() -> waited(sink, span, act))
+}
+
+/// `act` runs as a turn every `period`, until the loop ends. False when
+/// no loop runs.
+export fn repeating(period: Duration, act: Act) -> bool {
+    let on? = running() else { return false }
+    let sink = on.inbox.sink
+    on.start(() -> ticked(sink, period, act))
+}
+
+fn waited(sink: Sink<Msg>, span: Duration, act: Act) -> bool {
+    sleep(span)
+    let _ = sink.post(Msg.Turn(act))
+    true
+}
+
+fn ticked(sink: Sink<Msg>, period: Duration, act: Act) -> bool {
+    let beat = every(period)
+    while true {
+        beat.wait()
+        match sink.post(Msg.Turn(act)) {
+            .Ended -> {
+                return true
+            },
+            .Taken or .Full -> {},
+        }
+    }
+    true
+}
