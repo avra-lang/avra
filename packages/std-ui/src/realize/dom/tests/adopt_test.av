@@ -8,7 +8,7 @@ use @std.ui.realize.dom.tests.support.{records}
 use @std.ui.realize.dom.wire.{frame}
 use @std.ui.realize.html.element.{lowered}
 use @std.ui.realize.html.html.{hydration}
-use @std.ui.realize.html.print.{kinds_of}
+use @std.ui.realize.html.print.{kinds_of, words_of}
 use @std.ui.realize.html.writer.{HtmlOp, source}
 use @std.ui.style.theme.{default_theme}
 use @std.ui.tree.node.{Node}
@@ -33,13 +33,13 @@ fn adopted_over(print: int, root: Node) -> List<Patch> {
 fn is_listen(p: Patch) -> bool {
     match p {
         .Listen(_, _) -> true,
-        .Create(_, _) or .CreateText(_, _) or .Place(_, _, _) or .Remove(_) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Unlisten(_, _) or .Style(_) or .Call(_, _) or .Adopt(_) -> false,
+        .Create(_, _) or .CreateText(_, _) or .Place(_, _, _) or .Remove(_) or .SetAttr(_, _, _) or .DropAttr(_, _) or .SetProp(_, _, _) or .SetText(_, _) or .Unlisten(_, _) or .Style(_) or .Call(_, _) or .Adopt(_, _) -> false,
     }
 }
 
 fn kept_kinds(p: Patch?) -> List<string>? {
     let first? = p else { return null }
-    match first { .Adopt(names) -> names, _ -> null }
+    match first { .Adopt(names, _) -> names, _ -> null }
 }
 
 spec "std/ui dom — a server's page, adopted" {
@@ -109,13 +109,24 @@ spec "std/ui dom — a server's page, adopted" {
     }
     given "the wire" {
         then "an adoption is its elements' kinds, in order" {
-            records(frame([Patch.Adopt(["div", "#text", "b"])])).join(";") == "adopt div,#text,b"
+            records(frame([Patch.Adopt(["div", "#text", "b"], 7)])).join(";") == "adopt 7 div,#text,b"
         }
-        then "an empty adoption is no kinds" { records(frame([Patch.Adopt([])])).join(";") == "adopt " }
+        then "an empty adoption is no kinds" { records(frame([Patch.Adopt([], 0)])).join(";") == "adopt 0 " }
     }
     given "the kinds a host checks" {
-        then "a text is named with the octets of its words" {
-            kinds_of(lowered(counting(1))).any(it == "#text:1")
+        then "a text is named by its kind alone" {
+            kinds_of(lowered(counting(1))).any(it == "#text")
+        }
+    }
+    given "the words a host folds" {
+        then "differ for a word of the same length" {
+            words_of(lowered(tree_of(text "ab"))) != words_of(lowered(tree_of(text "ac")))
+        }
+        then "are the same for the same words" {
+            words_of(lowered(counting(1))) == words_of(lowered(counting(1)))
+        }
+        then "differ for a first newline dropped" {
+            words_of(lowered(tree_of(text "\nab"))) != words_of(lowered(tree_of(text "ab")))
         }
     }
 }

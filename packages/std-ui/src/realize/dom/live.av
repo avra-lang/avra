@@ -5,7 +5,7 @@
 use tree.identity.{NodeId}
 use tree.node.{Node, Action, EventKind, Said}
 use realize.html.element.{Element, lowered}
-use realize.html.print.{kinds_of, print_of}
+use realize.html.print.{kinds_of, print_of, words_of}
 use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars}
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
@@ -29,7 +29,7 @@ export type Live = {
     bound: Cell<List<Bound>> = Cell.new([]),
     heard: Cell<List<Heard>> = Cell.new([]),
     stood: Cell<int> = Cell.new(0),
-    adopting: Cell<List<string>?> = Cell.new(null),
+    adopting: Cell<Patch?> = Cell.new(null),
 }
 
 /// A page nothing was painted on.
@@ -56,9 +56,9 @@ fn unheard(e: Element) -> Element {
 }
 
 /// The patch that opens a first frame over a server's page, none otherwise.
-fn present_adopt(kinds: List<string>?) -> List<Patch> {
-    let said? = kinds else { return [] }
-    [Patch.Adopt(said)]
+fn present_adopt(adopting: Patch?) -> List<Patch> {
+    let said? = adopting else { return [] }
+    [said]
 }
 
 /// Every handler an element and what it holds bound, by who hears it.
@@ -109,7 +109,7 @@ impl Live {
         let run = lowered(root)
         let rules = distinct_rules(rules_of(root))
         if print_of(run, page_sheet(rules, theme, [])) != print {
-            self.adopting.set([])
+            self.adopting.set(Patch.Adopt([], 0))
             return
         }
         let placed = diff([], run, [], 0)
@@ -117,7 +117,7 @@ impl Live {
         self.next.set(placed.next)
         self.rules.set(rules)
         self.worn.set(root_vars(theme))
-        self.adopting.set(kinds_of(placed.page))
+        self.adopting.set(Patch.Adopt(kinds_of(placed.page), words_of(placed.page)))
     }
 
     /// The page as the module first drew it: nothing built, nothing held —
