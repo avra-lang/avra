@@ -559,7 +559,7 @@ jobs:
           # tree's rusage, which needs nothing from the shell.
           peak() {
             peak_label="$1"; shift
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS, cpu user %.0f s sys %.0f s" % (sys.argv[1], u.ru_maxrss, u.ru_utime, u.ru_stime)); sys.exit(rc)' "$peak_label" "$@"
           }
           ta=$(date +%s)
           peak keepers-a${{ matrix.group }} make -s -o avra keepers-a${{ matrix.group }} || a=1
@@ -621,7 +621,7 @@ jobs:
           # tree's rusage, which needs nothing from the shell.
           peak() {
             peak_label="$1"; shift
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS, cpu user %.0f s sys %.0f s" % (sys.argv[1], u.ru_maxrss, u.ru_utime, u.ru_stime)); sys.exit(rc)' "$peak_label" "$@"
           }
           peak keepers-b make -s -o avra keepers-b || exit 1
   # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
@@ -822,7 +822,7 @@ jobs:
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 AVRA_EMIT_TIMES=1 build/avra test --time "packages/$p" 2>&1 | grep -aE '^(time:|EMIT)' || { fail=1; echo "::error::suite $p failed"; }
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS, cpu user %.0f s sys %.0f s" % (sys.argv[1], u.ru_maxrss, u.ru_utime, u.ru_stime)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 AVRA_EMIT_TIMES=1 build/avra test --time "packages/$p" 2>&1 | grep -aE '^(time:|EMIT|[a-z/@_-]+: peak)' || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
           done

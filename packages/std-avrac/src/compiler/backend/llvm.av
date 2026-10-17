@@ -29,6 +29,7 @@ use core.{
     fp_str,
 }
 use features.{nothing}
+use @std.time.{now_ns}
 use compiler.lower.{Body, Lowered}
 use compiler.lower.{Body, Lowered}
 
@@ -268,7 +269,13 @@ export fn not_closed(missing: string) -> string {
     "internal compiler error: nothing declares `${missing}` — the program is not closed"
 }
 
+once fn split_tally() -> Cell<List<int>> { Cell.new([0, 0, 0]) }
+
+/// A probe's tally: nanoseconds spent building modules, handing them over, and how many were built.
+export fn emit_split() -> List<int> { split_tally().get() }
+
 fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: string) -> string? {
+    let began = now_ns()
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     // the target IS part of the module, not of the code generator that runs
@@ -311,11 +318,14 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
         if failure != null { return wreck(m, path, failure!) }
     }
     avra_llvm_dispose_builder(b)
+    let built = now_ns()
     let written = match form {
         .Text -> avra_llvm_print_module_to_file(m, path),
         .Bitcode -> avra_llvm_write_bitcode_to_file(m, path),
         .Object(opt) -> avra_llvm_emit_object_later_targeted(m, lc, path, opt, emit_width(), target),
     }
+    let t = split_tally().get()
+    split_tally().set([t[0] + built - began, t[1] + now_ns() - built, t[2] + 1])
     // a handed module's context is its worker's
     if !(form is .Object) { avra_llvm_context_dispose(lc) }
     if written == 0 { null } else { "cannot write `${path}`" }
