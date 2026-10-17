@@ -90,9 +90,7 @@ impl Workspace {
     /// nothing here calls it by name: its body may be reached through a
     /// value, and a build that holds it must answer as one that parsed it.
     fn held_link_scheduler() -> bool {
-        self
-            .decls
-            .held_files()
+        [self.file_id(p) for p in self.hold.linked_by.get() if self.held_path(p)]
             .any((f) -> self.decls.decls_of_file(f).any((d) -> self.held_links(d)))
     }
 
@@ -206,9 +204,7 @@ impl Workspace {
     /// What `explain` says of every fn named `name`: whether a call to it
     /// may reach a cancel point, then each bit with what earned it.
     fn cancel_lines(name: string) -> List<string> {
-        flatten(
-            [self.cancel_said(x.id) for x in self.decls.all_decls() if x.name == name && calls_kind(x.kind)],
-        )
+        flatten([self.cancel_said(x.id) for x in self.decls.named(name) if calls_kind(x.kind)])
     }
 
     fn cancel_said(d: DeclId) -> List<string> {
