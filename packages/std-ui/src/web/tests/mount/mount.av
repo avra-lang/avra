@@ -17,6 +17,14 @@ extern fn avra_dom_frame(frame: Bytes) {
 /// The web module's echo, named as the page's glue names it.
 extern fn avra_ui_event(who: int, what: int, tag: int, num: int, len: int)
 
+extern fn avra_ui_next_paint() {
+    println("next paint asked")
+}
+
+extern fn avra_ui_painted()
+
+extern fn avra_ui_walks() -> int
+
 fn view() -> column {
     column {
         items: [text "pressed ${presses}", button "More" { on press { presses = presses + 1 } }]
@@ -26,7 +34,10 @@ fn view() -> column {
 mount(view)
 println("── every element is told every kind once")
 for who in 0..8 {
-    for what in 0..12 { avra_ui_event(who, what, 0, 0, 0) }
+    for what in 0..12 {
+        avra_ui_event(who, what, 0, 0, 0)
+        avra_ui_painted()
+    }
 }
 println("── mounted again")
 mount(view)
@@ -96,34 +107,49 @@ fn vanish() -> item {
 
 println("── a stranger's fire says nothing")
 avra_ui_fired(-1)
+avra_ui_painted()
 avra_ui_fired(9999999)
+avra_ui_painted()
 mount(timed)
 println("── a press asks for two timers")
 avra_ui_event(7, 1, 0, 0, 0)
+avra_ui_painted()
 println("── the period fires twice, the wait once")
 avra_ui_fired(2)
+avra_ui_painted()
 avra_ui_fired(2)
+avra_ui_painted()
 avra_ui_fired(1)
+avra_ui_painted()
 println("── ${waited} waited, ${ticks} ticks")
 println("── a late fire of the wait is ignored")
 avra_ui_fired(1)
+avra_ui_painted()
 println("── ${waited} waited, ${ticks} ticks")
 println("── a press asks again, and the control leaves: both timers are disarmed")
 avra_ui_event(7, 1, 0, 0, 0)
+avra_ui_painted()
 mount(leaves)
 println("── then a late fire is ignored")
 avra_ui_fired(4)
+avra_ui_painted()
 println("── ${waited} waited, ${ticks} ticks")
 
 println(
     "── a control that hides itself in the press that asks: both timers are disarmed at once",
 )
 mount(vanish)
-for who in 8..40 { avra_ui_event(who, 1, 0, 0, 0) }
+for who in 8..40 {
+    avra_ui_event(who, 1, 0, 0, 0)
+    avra_ui_painted()
+}
 println("── then a fire of either is ignored")
 avra_ui_fired(4)
+avra_ui_painted()
 avra_ui_fired(5)
+avra_ui_painted()
 avra_ui_fired(6)
+avra_ui_painted()
 println("── ${waited} waited, ${ticks} ticks")
 
 // ── sources: the page's requests ──
@@ -159,23 +185,62 @@ fn gone() -> column {
 
 mount(requesting)
 println("── a press asks for a request: the host is given one frame")
-for who in 0..160 { avra_ui_event(who, 1, 0, 0, 0) }
+for who in 0..160 {
+    avra_ui_event(who, 1, 0, 0, 0)
+    avra_ui_painted()
+}
 println("── loading: ${words(profile.state())}")
 println("── the host answers 200, an empty body")
 avra_ui_answered(7, 200, 0)
+avra_ui_painted()
 println("── ${words(profile.state())}")
 println("── a second answer for the same request is ignored")
 avra_ui_answered(7, 500, 0)
+avra_ui_painted()
 println("── ${words(profile.state())}")
 println("── an older ask answering after a newer one is dropped")
-for who in 0..160 { avra_ui_event(who, 1, 0, 0, 0) }
-for who in 0..160 { avra_ui_event(who, 1, 0, 0, 0) }
+for who in 0..160 {
+    avra_ui_event(who, 1, 0, 0, 0)
+    avra_ui_painted()
+}
+for who in 0..160 {
+    avra_ui_event(who, 1, 0, 0, 0)
+    avra_ui_painted()
+}
 avra_ui_answered(8, 200, 0)
+avra_ui_painted()
 println("── older answer: ${words(profile.state())}")
 avra_ui_answered(9, -1, 0)
+avra_ui_painted()
 println("── newer answer: ${words(profile.state())}")
 println("── a request in flight when its control leaves is aborted")
-for who in 0..160 { avra_ui_event(who, 1, 0, 0, 0) }
+for who in 0..160 {
+    avra_ui_event(who, 1, 0, 0, 0)
+    avra_ui_painted()
+}
 mount(gone)
 avra_ui_answered(10, 200, 0)
+avra_ui_painted()
 println("── then its late answer is ignored: ${words(profile.state())}")
+
+// ── the frame: turns that land together are one paint ──
+mount(timed)
+avra_ui_painted()
+for who in 0..200 { avra_ui_event(who, 1, 0, 0, 0) }
+avra_ui_painted()
+println("── a period fires three times and a wait once before the frame comes")
+let walked = avra_ui_walks()
+avra_ui_fired(12)
+avra_ui_fired(12)
+avra_ui_fired(12)
+avra_ui_fired(11)
+println("── nothing is shown yet: ${avra_ui_walks() - walked} walks")
+avra_ui_painted()
+println("── the frame: ${avra_ui_walks() - walked} walk, ${waited} waited, ${ticks} ticks")
+avra_ui_painted()
+println("── a frame nothing asked for walks nothing: ${avra_ui_walks() - walked} walk in all")
+println("── a timer then a press before the frame: the press meets the screen the user saw")
+avra_ui_fired(12)
+for who in 0..200 { avra_ui_event(who, 1, 0, 0, 0) }
+avra_ui_painted()
+println("── ${avra_ui_walks() - walked} walks in all")
