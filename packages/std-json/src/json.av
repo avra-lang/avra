@@ -481,17 +481,22 @@ export enum Cause {
 /// A refusal: its cause and the offset it stands at.
 export type Refusal = { cause: Cause, at: int }
 
+/// What a scan that is asked to explain carries: where it records the
+/// refusal, and how it judges a float's range — handed in, so the scans
+/// themselves name no float parser and a page that only reads text links none.
+export type Explain = { found: Cell<Refusal?>, floats: fn(string) -> bool }
+
 /// Record a refusal in `why` — the first only, the one nearest the start —
 /// and answer -1. A scan given no `why` just answers -1.
-fn refused(why: Cell<Refusal?>?, cause: Cause, at: int) -> int {
+fn refused(why: Explain?, cause: Cause, at: int) -> int {
     let w? = why else { return -1 }
-    if w.get() == null { w.set(Refusal { cause: cause, at: at }) }
+    if w.found.get() == null { w.found.set(Refusal { cause: cause, at: at }) }
     -1
 }
 
 /// Past the string whose quote is at `i`; -1 when it is not one, and `why`
 /// says how (never closes, a raw control octet, an escape that names nothing).
-export fn string_end(b: Bytes, i: int, why: Cell<Refusal?>? = null) -> int {
+export fn string_end(b: Bytes, i: int, why: Explain? = null) -> int {
     mut j = i + 1
     while j < b.length {
         j = b.run(j, plain)
@@ -567,9 +572,8 @@ export fn int_of(text: string, b: Bytes, i: int, end: int) -> int {
 /// Past the number at `i` — `-`? an integer part with no leading zero, then
 /// a fraction and an exponent each optional — or -1, and `why` says how. An
 /// integer past what an int holds is refused; a float's RANGE is its
-/// reader's to judge (`parse_float`), except when `why` is given, the
-/// explaining scan, which judges it too.
-export fn number_end(b: Bytes, i: int, why: Cell<Refusal?>? = null) -> int {
+/// reader's to judge (`parse_float`).
+export fn number_end(b: Bytes, i: int, why: Explain? = null) -> int {
     let from = if i < b.length && b.at(i) == 45 { i + 1 } else { i }
     let whole = b.run(from, digits)
     if whole == from { return refused(why, Cause.WantsDigit, from) }
@@ -590,12 +594,13 @@ export fn number_end(b: Bytes, i: int, why: Cell<Refusal?>? = null) -> int {
         if whole - from >= 19 && !fits(b, i, end) { return refused(why, Cause.Overflow, i) }
         return end
     }
-    if why != null && parse_float(b.slice(i, end).text() ?? "") == null { return refused(why, Cause.PastFloat, i) }
+    let judged? = why else { return end }
+    if !judged.floats(b.slice(i, end).text() ?? "") { return refused(why, Cause.PastFloat, i) }
     end
 }
 
 /// Past `true`, `false` or `null` at `i`; -1 for any other word.
-export fn word_end(b: Bytes, i: int, why: Cell<Refusal?>? = null) -> int {
+export fn word_end(b: Bytes, i: int, why: Explain? = null) -> int {
     let j = b.run(i, letters)
     let known = b.eq_at(i, j, "true".bytes()) ||
         b.eq_at(i, j, "false".bytes()) ||
@@ -610,7 +615,7 @@ export fn word_end(b: Bytes, i: int, why: Cell<Refusal?>? = null) -> int {
 /// a list and never the call stack. THE ONE SCANNER: `parse` validates with
 /// it, builds from what it passed, and asks it again, with `why`, to explain
 /// a refusal.
-export fn skip(b: Bytes, i: int, room: int, why: Cell<Refusal?>? = null) -> int {
+export fn skip(b: Bytes, i: int, room: int, why: Explain? = null) -> int {
     let owed: Cell<List<int>> = Cell.new([])
     mut depth = 0
     mut j = i
@@ -676,7 +681,7 @@ export fn skip(b: Bytes, i: int, room: int, why: Cell<Refusal?>? = null) -> int 
 
 /// Past an object member's name and its colon, where its value starts; -1,
 /// and `why`, where there is none.
-fn member_start(b: Bytes, j: int, why: Cell<Refusal?>?) -> int {
+fn member_start(b: Bytes, j: int, why: Explain?) -> int {
     if j >= b.length || b.at(j) != 34 { return refused(why, Cause.WantsFieldName, j) }
     let key_end = string_end(b, j, why)
     if key_end < 0 { return -1 }
@@ -695,9 +700,9 @@ export fn parse(text: string) -> Result<Json, JsonError> {
     if end < 0 { fail explained(b, from) }
     let tail = space(b, end)
     if tail < b.length { fail JsonError.Trailing(tail) }
-    let lost: Cell<bool> = Cell.new(false)
-    let v = built(text, b, from, lost)
-    if lost.get() { fail explained(b, from) }
+    let past: Cell<int> = Cell.new(-1)
+    let v = built(text, b, from, past)
+    if past.get() >= 0 { fail explained(b, from) }
     v.json
 }
 
@@ -718,9 +723,10 @@ fn unexpected_at(b: Bytes, i: int, wanted: string) -> JsonError {
 /// Why the scanner refused the value at `from`: asked again, with a place to
 /// say so, and the words made here.
 fn explained(b: Bytes, from: int) -> JsonError {
-    let why: Cell<Refusal?> = Cell.new(null)
+    let found: Cell<Refusal?> = Cell.new(null)
+    let why = Explain { found: found, floats: (t: string) -> parse_float(t) != null }
     let _ = skip(b, from, MAX_DEPTH, why)
-    let r? = why.get() else { return JsonError.Unexpected(from, "the end of the text") }
+    let r? = found.get() else { return JsonError.Unexpected(from, "the end of the text") }
     match r.cause {
         .EndOfText -> JsonError.Unexpected(r.at, "the end of the text"),
         .Unterminated -> JsonError.Unterminated(r.at),
@@ -746,21 +752,20 @@ fn explained(b: Bytes, from: int) -> JsonError {
 type Built = { json: Json, next: int }
 
 /// The value at `i` of text the scanner passed. Only a float past the
-/// largest float is still unjudged: it sets `lost`, and `parse` asks the
-/// scanner to explain.
-fn built(text: string, b: Bytes, i: int, lost: Cell<bool>) -> Built {
+/// largest float is still unjudged: it records where, and `parse` refuses with it.
+fn built(text: string, b: Bytes, i: int, past: Cell<int>) -> Built {
     let c = b.at(i)
     if c == 34 {
         let end = string_end(b, i)
         return Built { json: Json.Str(text_of(text, b, i, end)), next: end }
     }
-    if c == 123 { return built_object(text, b, i, lost) }
-    if c == 91 { return built_array(text, b, i, lost) }
+    if c == 123 { return built_object(text, b, i, past) }
+    if c == 91 { return built_array(text, b, i, past) }
     if c == 45 || is_digit(c) {
         let end = number_end(b, i)
         if int_end(b, i) == end { return Built { json: Json.Int(int_of(text, b, i, end)), next: end } }
         let x? = parse_float(text.substring(i, end)) else {
-            lost.set(true)
+            if past.get() < 0 { past.set(i) }
             return Built { json: Json.Null, next: end }
         }
         return Built { json: Json.Float(x), next: end }
@@ -770,13 +775,13 @@ fn built(text: string, b: Bytes, i: int, lost: Cell<bool>) -> Built {
     Built { json: json, next: end }
 }
 
-fn built_array(text: string, b: Bytes, i: int, lost: Cell<bool>) -> Built {
+fn built_array(text: string, b: Bytes, i: int, past: Cell<int>) -> Built {
     mut items: List<Json> = []
     mut j = space(b, i + 1)
     if b.at(j) == 93 { return Built { json: Json.Arr([]), next: j + 1 } }
     // LICENSED loops.push_loop: items are built in the order they stand, each from where the last ended
     while true {
-        let v = built(text, b, j, lost)
+        let v = built(text, b, j, past)
         items.push(v.json)
         j = space(b, v.next)
         if b.at(j) == 93 { break }
@@ -785,7 +790,7 @@ fn built_array(text: string, b: Bytes, i: int, lost: Cell<bool>) -> Built {
     Built { json: Json.Arr(items), next: j + 1 }
 }
 
-fn built_object(text: string, b: Bytes, i: int, lost: Cell<bool>) -> Built {
+fn built_object(text: string, b: Bytes, i: int, past: Cell<int>) -> Built {
     mut fields: List<Field> = []
     mut j = space(b, i + 1)
     if b.at(j) == 125 { return Built { json: Json.Obj([]), next: j + 1 } }
@@ -793,7 +798,7 @@ fn built_object(text: string, b: Bytes, i: int, lost: Cell<bool>) -> Built {
     while true {
         let key_end = string_end(b, j)
         let key = text_of(text, b, j, key_end)
-        let v = built(text, b, space(b, space(b, key_end) + 1), lost)
+        let v = built(text, b, space(b, space(b, key_end) + 1), past)
         fields.push(field(key, v.json))
         j = space(b, v.next)
         if b.at(j) == 125 { break }
