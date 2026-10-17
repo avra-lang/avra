@@ -1898,28 +1898,43 @@ gets its tally where it is done, a row in the budget, and the ratchet holds it.
 
 ## A sugar keeps its node and answers for its meaning
 
-`~x` parses to `Bitnot { rewrite }`, not to its rewrite alone: the node
-is what the author wrote, `rewrite` (`x ^ -1`) is what it MEANS, minted
-with it and walked in its place (`kids() = [rewrite]`, typing answers
-`type_at(rewrite)`, lowering `reg_of(rewrite)`). Three facts hang off
-the pair, each read through ONE verb and never kept twice:
+`~x` parses to `Bitnot { value }` — exactly what the author wrote. What it
+MEANS is a template the node itself states, in its `NodeFacts`
+(core/expr/facts.av): `fn means() -> Rewrite? { quote { ${self.value} ^ -1 } }`.
+The holes are the node's own fields, read as arena ids, so the template is
+never run on a program's values. The language, which alone can read a
+template, opens the door (`compiler/sugars.av`): it parses the template
+once per process, keyed by its text, and splices a copy beside the sugar
+with the holes filled by the node's own ids — the same copier components
+use. `store.mean(sugar, note, door)` is the one call a builder and a template
+copy both make: a copy of a sugar RE-MINTS its meaning from the copied
+sugar and never copies it.
 
-- `store.mint_for(sugar, nodes, note)` — every minted node answers for
-  its sugar (`minted_for`), and the sugar says its meaning in one
-  sentence (`means_note`).
-- A refusal spoken while a minted node types carries that sentence as a
-  second frame at the sugar (`TypeCx.rewriting`, set in `type_node`) —
-  the rewrite's own words stay, the sugar says what it was.
+What `mean` records: the minted nodes answer for the sugar (`minted_for`), the
+root is `store.meant(e)`, and `note` is the one sentence that says what the
+sugar means.
+
+Walks go through ONE verb. `store.walked(e)` is the children a walk
+descends into — a sugar walks as its rewrite, every other node as its
+kids — and `store.heired(e)` the nodes a planted want flows into, by the
+same rule; `post_order`, typing's hunger and want, and lowering's inline
+test all read them, and no walker reads `meant` itself. `kids()` and
+`heirs()` stay derived over the node's own fields.
+
+- Typing answers `type_at(meant)`, lowering `reg_of(meant)`.
+- A refusal spoken while a minted node types carries the sentence as a
+  second frame at the sugar (`TypeCx.rewriting`, set in `type_node`) — the
+  rewrite's own words stay, the sugar says what it was.
 - `avra expand` prints the same sentence under the statement, and `fmt`
-  prints the node, so a sugar is no longer rewritten into its meaning
-  by the formatter.
-
-THE OPERAND IS HELD ONCE. `Bitnot { rewrite }` has no `value` field: a
-`~` is invertible, so its operand is read OFF the rewrite
-(`store.bitnot_operand`), and a copy in a template (`Rebuilder.minted_expr`)
-copies the rewrite once and re-links the copy's minted nodes and sentence
-to the copy's own sugar (`means_test.av` counts the operand's copies: one).
-A sugar that is NOT invertible keeps both fields and its rewrite is a
-DERIVED field — re-minted from the others at a splice, never copied —
-named once through the field-mark registry (`field_route`, next to
-`@local` and `@facet`), when the first such sugar lands.
+  prints the node, so a sugar is no longer rewritten into its meaning by
+  the formatter.
+- A language with no `quote` cannot read a template: its sugar stays
+  unmeant and says so (`language.defect`).
+- A meaning that depends on what stands around the sugar — a pipe into
+  whatever stage was written — is COMPUTED: the node answers
+  `minted(store, span)` instead of `means()`, through the same door.
+  `Pipe { value, stage }` keeps `value |> stage` as written, so the
+  printer prints it natively (the `is_piped` mark and its walk are gone,
+  and `x |> f()` stays as written) and the call it means is minted beside
+  it. A stage that is no call means nothing and is refused where it is
+  written.
