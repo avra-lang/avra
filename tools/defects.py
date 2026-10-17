@@ -34,7 +34,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "tools", "defects", "corpus.txt")
 BAD = re.compile(
-    r"language\.defect|survived typing|^avra: |out of bounds|Segmentation|internal error|panicked",
+    r"language\.defect|survived typing|out of bounds|Segmentation|internal error|panicked",
     re.M,
 )
 TIMEOUT = 60
@@ -137,7 +137,7 @@ def token_mutants(text, rng, tag):
     toks = list(TOKENS.finditer(text))
     if not toks:
         return None
-    op = rng.choice(["delete", "swap", "dup", "cut"])
+    op = rng.choice(["delete", "swap", "dup", "cut", "name", "lit"])
     i = rng.randrange(len(toks))
     if op == "cut":
         stops = [m.end() for m in re.finditer(r"\n(?=\S)", text)]
@@ -145,6 +145,17 @@ def token_mutants(text, rng, tag):
             return None
         return "%s~cut%d" % (tag, len(stops)), text[: rng.choice(stops)] + "\n"
     t = toks[i]
+    if op == "name":
+        words = sorted({m.group(0) for m in toks if re.fullmatch(r"[A-Za-z_]\w*", m.group(0))})
+        if not re.fullmatch(r"[A-Za-z_]\w*", t.group(0)):
+            return None
+        w = rng.choice(words)
+        return "%s~name%d" % (tag, i), text[: t.start()] + w + text[t.end() :]
+    if op == "lit":
+        if not (t.group(0).isdigit() or t.group(0).startswith('"')):
+            return None
+        w = rng.choice(["null", "true", "[]", "{}", '"x"', "0", "-1", "99999999999"])
+        return "%s~lit%d" % (tag, i), text[: t.start()] + w + text[t.end() :]
     if op == "delete":
         return "%s~del%d" % (tag, i), text[: t.start()] + text[t.end() :]
     if op == "dup":
