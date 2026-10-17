@@ -19,6 +19,7 @@ use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
 use compiler.{avra, new_workspace, one_shot_let_go}
 use compiler.host.{memory_host}
+use testing.{vendored_meta, vendored_prelude}
 
 /// How a code is witnessed. ABSENCE HAS TWO CAUSES and they are named
 /// apart: a code nobody has written a witness for is a DEBT, and one
@@ -92,15 +93,20 @@ fn rendered_over(w: Witness) -> string {
 
 /// A package witness's files, each under its path.
 fn package_text(files: Map<string, string>) -> string {
-    joined(["// ${path}\n${text}" for path, text in files], "\n")
+    joined(["// ${path}\n${text}" for path, text in files if !is_carried(path)], "\n")
 }
+
+/// Whether a package witness's file is the toolchain's, laid out beside the
+/// program — never the witness itself, so a golden does not print it.
+fn is_carried(path: string) -> bool { path.starts_with("/w/vendor/") || path.starts_with("/std/") }
 
 /// A package witness compiled: its files laid out in memory at `/w`,
 /// and what the program there says. One one-shot workspace is alive at a
 /// time, so the one before is let go.
 fn package_report(files: Map<string, string>) -> string {
     one_shot_let_go()
-    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    let host = memory_host(files, files.keys())
+    let ws = new_workspace(if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host }, "/w", avra())
     ws.alone()
     ws.program("/w/src/main.av").report()
 }
@@ -728,8 +734,6 @@ fn witnesses() -> List<CodeWitness> {
                     "export component widget {\n    run: fn(int) -> int?\n}\nexport widget a { n -> null }\ncollect enum S = widget in closure by it.name\n1",
                 ),
         },
-        CodeWitness { code: "collect.order_mixed", witness: Witness.Beyond(marks_golden) },
-        CodeWitness { code: "collect.dense", witness: Witness.Beyond(marks_golden) },
         CodeWitness {
             code: "collect.closure_fold",
             witness: Witness
@@ -737,11 +741,7 @@ fn witnesses() -> List<CodeWitness> {
                     "a lone program always has its entry, and the law reads a library with none — the golden is features/collects/tests/collects_test.av, which says so",
                 ),
         },
-        CodeWitness { code: "collect_enum.tie", witness: Witness.Beyond(marks_golden) },
-        CodeWitness { code: "collect_enum.member", witness: Witness.Beyond(marks_golden) },
-        CodeWitness { code: "collect_enum.variant", witness: Witness.Beyond(marks_golden) },
         CodeWitness {
-            code: "collect_enum.self",
             witness: Witness
                 .Beyond(
                     "delegation reads `@std/meta`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av",
@@ -763,7 +763,6 @@ fn witnesses() -> List<CodeWitness> {
                 ),
         },
         CodeWitness {
-            code: "const.reach",
             witness: Witness
                 .Beyond(
                     "a lone source has no prelude to print through, and a const reads the world only through one — the golden is compiler/tests/settle_test.av",
@@ -803,7 +802,6 @@ fn witnesses() -> List<CodeWitness> {
                 ),
         },
         CodeWitness {
-            code: "type.quote_pat_run",
             witness: Witness
                 .Beyond(
                     "a `quote` pattern reads `@std/meta`'s `Code`, which a lone source cannot import — the golden is features/quote/tests/quote_pattern_test.av",
@@ -822,6 +820,23 @@ fn witnesses() -> List<CodeWitness> {
             witness: manifest(app_manifest + "\n[lifted]\nsteps = 0\n"),
         },
         CodeWitness { code: "manifest.borrowed_raw", witness: borrowed_raw() },
+        CodeWitness { code: "collect.order_mixed", witness: with_meta("use @std.meta.{Named}\ntrait Mark {\n    fn label() -> string\n}\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\nimpl Mark for string {\n    fn label() -> string { self }\n}\nfn mark(what: Named, label: dyn Mark) -> void {}\n@mark(\"a\")\nfn alpha() {}\n@mark(1)\nfn beta() {}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]\n1") },
+        CodeWitness { code: "collect.dense", witness: with_meta("use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\nfn a() {}\n@numbered(2)\nfn b() {}\ntype MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense\n1") },
+        CodeWitness { code: "collect_enum.tie", witness: with_meta("use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\ntype Dot = {}\n@numbered(0)\ntype Line = { to: int }\ncollect enum Shape = @numbered in self by it.mark.args[0]\n1") },
+        CodeWitness { code: "collect_enum.member", witness: with_meta("use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\ntype Wrap<T> = { held: T }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1") },
+        CodeWitness { code: "collect_enum.variant", witness: with_meta_modules("use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\ncollect enum Command = @tag in package by it.name\n1", {"/w/src/a/a.av": "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n@tag(\"one\")\nfn run() {}\n", "/w/src/b/b.av": "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n@tag(\"two\")\nfn run() {}\n"}) },
+        CodeWitness { code: "collect_enum.self", witness: with_meta("use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\ntrait Rank {\n    fn versus(other: Self) -> int\n}\n@numbered(0)\ntype Dot = { at: int }\nimpl Rank for Dot {\n    fn versus(other: Dot) -> int { self.at - other.at }\n}\ncollect enum Item: Rank = @numbered in self by it.mark.args[0] dense\n1") },
+        CodeWitness { code: "type.quote_pat_subj", witness: Witness.Source("match 1 { quote { 1 } -> true, _ -> false }") },
+        CodeWitness { code: "type.quote_pat_shape", witness: Witness.Source("match 1 { quote { 1\n2 } -> true, _ -> false }") },
+        CodeWitness { code: "type.quote_pat_hole", witness: Witness.Source("match 1 { quote { \${1 + 1} } -> true, _ -> false }") },
+        CodeWitness { code: "type.quote_pat_type", witness: Witness.Source("match 1 { quote { let x: \${T}? = null } -> true, _ -> false }") },
+        CodeWitness { code: "type.quote_pat_seat", witness: Witness.Source("match 1 { quote { let l\${x}_y = 1 } -> true, _ -> false }") },
+        CodeWitness { code: "type.quote_pat_mixed", witness: Witness.Source("match 1 { quote { \${x}(\${x}) } -> true, _ -> false }") },
+        CodeWitness { code: "type.quote_pat_run", witness: Witness.Source("match 1 { quote { f(\${..a}, \${..b}) } -> true, _ -> false }") },
+        CodeWitness {
+            code: "const.reach",
+            witness: with_prelude("fn noisy() -> int {\n    println(\"x\")\n    1\n}\nconst n: int = noisy()\nn"),
+        },
     ]
     rows
 }
@@ -829,9 +844,24 @@ fn witnesses() -> List<CodeWitness> {
 /// A lawful manifest, for a witness to add one wrong line to.
 const app_manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
 
-/// Where the mark-reading collect laws are witnessed: a mark's receiver is
-/// `@std/meta`'s `Named`, which a lone source cannot import.
-const marks_golden: string = "a mark's receiver is `@std/meta`'s own `Named`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av"
+/// A package witness whose program sees `@std/meta`, vendored in memory.
+fn with_meta(main: string) -> Witness { with_meta_modules(main, {}) }
+
+/// `with_meta`, with more files of the program's own beside the entry.
+fn with_meta_modules(main: string, more: Map<string, string>) -> Witness {
+    mut files = {
+        "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+        "/w/src/main.av": main,
+    }
+    for path, text in more { files.set(path, text) }
+    Witness.Package(vendored_meta(files))
+}
+
+/// A package witness whose toolchain carries the real `@std/prelude`, so
+/// its program reads `println` as a file in a package does.
+fn with_prelude(main: string) -> Witness {
+    Witness.Package(vendored_prelude({"/w/avra.toml": app_manifest, "/w/src/main.av": main}))
+}
 
 /// A dependency that asks for raw linker options, under an app that names it.
 fn borrowed_raw() -> Witness {
