@@ -621,3 +621,31 @@ around `climb`'s `ceil` change):
 6. Tests: the existing `operators_diff_test.av` extended with `= Variant` words (tree and
    diagnostics unchanged), a tier-build binding test beside `node_grammar_fold_test.av`,
    the validator refusal, render round trip, and a `parse_test.av` row.
+
+## 6.1 As built — section 6 superseded where it differs
+
+Built on this branch, not as 6 planned. The `= Variant` word syntax is NOT built
+(owner decision 3 revised, reported to team-lead and nodes-operators): reading the
+climb showed the word itself already names the variant through `op_symbol`.
+
+| piece | built |
+|---|---|
+| `op` | the climb binds `op` as the word it took: its one token, or — for a multi-token word (`>` `>`) — the word's text as one stated token (`executor.av` `operator_capture`; `Taken.op_words`). `bitwise_symbol` is dead weight |
+| `BinOp` payload | `core.binop_of` (inverse of `op_symbol`, one source); `Slots.op_of`; `Makes` knows `"BinOp"`; `Binary` is now makeable |
+| node-build tiers | `validate.av` accepts `.Node` in a tier; `node_grammar.av` binds and judges tier builds (and the branch's build for every tier it serves) against the branch's `l`/`op`/`r`; a build need not read `op`/`r` (`Seq.written_labels`) |
+| the assembly refuses | a word a `BinOp`-payload build serves that names no operator ("`+=`, which spells no operator") |
+| payload names | `Binary { op, l, r }` and `Coalesce { l, r }` — labels are payload names, and the climb's are `l`/`op`/`r`; the two `self.left`/`self.right` readers (expr_spine, nullable semantics) follow |
+| not built | `is` as a tier suffix with its pattern kept as `Is`'s field (step 5 `@facet`); `pipe` (means) |
+
+nodes-operators can now write `left "+" "-" … } -> Expr.Binary` with plain words and
+drop `build_binary`, `build_bitwise`, `binary_of`, `bitwise_symbol`, `build_coalesce`
+(`left "??" -> Expr.Coalesce`), and the local `binop_of` (use `core.binop_of`).
+`build_compare`/`asked_expr` wait on the `Is` facet; `build_unmixed_bitwise` and
+`build_pipe` stay.
+
+Proofs (avra-nodes1b, gen-2 compiler, `make avra` twice): grammar tests 147/147,
+features/tests 209/209 + 29 programs, expr_spine 718/718, nullable 421/421, idioms
+baseline clean, fmt clean. One observation: a warm `.avra-cache` left by an earlier
+build of the changing tree trapped `avra test` with "index 129 is out of bounds
+(length 124)" until the cache was moved aside; not reproduced on a cold cache, cause
+not found.
