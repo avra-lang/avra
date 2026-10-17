@@ -269,7 +269,7 @@ export fn not_closed(missing: string) -> string {
     "internal compiler error: nothing declares `${missing}` — the program is not closed"
 }
 
-once fn split_tally() -> Cell<List<int>> { Cell.new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) }
+once fn split_tally() -> Cell<List<int>> { Cell.new([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) }
 
 /// A probe's tally: nanoseconds spent building modules, handing them over, and how many were built.
 export fn emit_split() -> List<int> { split_tally().get() }
@@ -283,6 +283,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     // entry symbol — and it is written into the text a reader inspects
     if target != "" { avra_llvm_set_module_target(m, target) }
     let b = avra_llvm_create_builder(lc)
+    let tz = now_ns()
     let own = [bd for bd in l.fns if which.defines(bd)]
     // the entry is carried beside `l.fns`, and it names what it calls
     let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
@@ -290,7 +291,9 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned, l.statics) }
     mut mine: Map<string, bool> = {}
     for bd in own { mine.set(bd.name, true) }
+    let t1 = now_ns()
     declare_runtime(lc, m)
+    let t2 = now_ns()
     mut own: Map<string, bool> = {}
     for bd in l.fns {
         if bd.hosted { own.set(bd.name, true) }
@@ -302,6 +305,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     let carried = [st for st in l.statics if carries(refs, refs.statics, st.name)]
     for st in in_read_order(carried, scanned, refs) { emit_static(lc, m, st) }
     let rt = rt_index()
+    let t3 = now_ns()
     for bd in l.fns {
         if mine.get(bd.name) != null {
             let f = avra_llvm_get_named_function(m, mangled(bd.name))
@@ -319,6 +323,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     }
     avra_llvm_dispose_builder(b)
     let built = now_ns()
+    let parts = [t1 - tz, t2 - t1, t3 - t2, built - t3]
     let written = match form {
         .Text -> avra_llvm_print_module_to_file(m, path),
         .Bitcode -> avra_llvm_write_bitcode_to_file(m, path),
@@ -328,9 +333,9 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: stri
     let size = mine.length
     let bin = if size <= 2 { 3 } else if size <= 10 { 5 } else { 7 }
     let took = built - began
-    let adds = [took, now_ns() - built, 1, 0, 0, 0, 0, 0, 0, 0]
-    let binned = [if i == bin { 1 } else if i == bin + 1 { took } else { adds[i] } for i in 0..10]
-    split_tally().set([t[i] + binned[i] for i in 0..10])
+    let adds = [took, now_ns() - built, 1, 0, 0, 0, 0, 0, 0, 0, parts[0], parts[1], parts[2], parts[3]]
+    let binned = [if i == bin { 1 } else if i == bin + 1 { took } else { adds[i] } for i in 0..14]
+    split_tally().set([t[i] + binned[i] for i in 0..14])
     // a handed module's context is its worker's
     if !(form is .Object) { avra_llvm_context_dispose(lc) }
     if written == 0 { null } else { "cannot write `${path}`" }
