@@ -352,6 +352,26 @@ impl SyntaxArena {
         self.type_lits.get()[e.index]
     }
 
+    /// Whether this value is a type literal, or the chain over one
+    /// (`a?.type(T)`) — a literal is no call, so no block follows it.
+    fn spells_a_type(e: ExprId) -> bool {
+        match self.expr(e) {
+            .MatchOpt(_, _, call, _) -> self.is_type_lit(call),
+            _ -> self.is_type_lit(e),
+        }
+    }
+
+    /// Whether this is a call whose last argument is a trailing block.
+    fn ends_in_block(e: ExprId) -> bool {
+        match self.expr(e) {
+            .Call(_, _, args) or .MethodCall(_, _, args) or .CallValue(_, args) -> {
+                let last: ExprId? = args.last()
+                last != null && self.is_trailing(last!)
+            },
+            _ -> false,
+        }
+    }
+
     /// A string written `"""raw"""` — the mark is part of the node:
     /// the printer spells its own delimiters back, never the escaped
     /// form its twin reads identically.
