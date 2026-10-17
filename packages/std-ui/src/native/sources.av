@@ -5,7 +5,7 @@
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
-use app.{Act, App, Door, Job, Msg, running}
+use app.{Act, App, Async, Door, Job, Msg, running}
 use @std.time.{Duration, every, sleep}
 use @std.task.{Channel, Posted, Source, unbounded_channel}
 
@@ -107,6 +107,54 @@ fn ticked(send: fn(Msg) -> bool, period: Duration, act: Act) -> bool {
         if !send(Msg.Turn(act)) { return true }
     }
     true
+}
+
+/// `work` runs as a task the loop owns, and `landed` runs as a turn with its
+/// answer. False when no loop runs.
+export fn answered<T>(work: fn() -> T, landed: fn(T) -> bool) -> bool {
+    let on? = running() else { return false }
+    let send = on.sender()
+    on.start(() -> told(send, work, landed))
+}
+
+fn told<T>(send: fn(Msg) -> bool, work: fn() -> T, landed: fn(T) -> bool) -> bool {
+    let answer = work()
+    let _ = send(Msg.Turn(() -> landed(answer)))
+    true
+}
+
+/// Each item `source` yields runs `on_item` as a turn, until the source
+/// ends or the loop does. False when no loop runs.
+export fn watching<T>(source: Source<T>, on_item: fn(T) -> bool) -> bool {
+    let on? = running() else { return false }
+    let send = on.sender()
+    on.start(() -> carried(send, source, on_item))
+}
+
+fn carried<T>(send: fn(Msg) -> bool, source: Source<T>, on_item: fn(T) -> bool) -> bool {
+    for item in source {
+        if !send(Msg.Turn(() -> on_item(item))) { return true }
+    }
+    true
+}
+
+/// `held` is loading now, and becomes what `work` answers: `Ready` with
+/// its answer, or `Failed` with its refusal. False when no loop runs.
+export fn fetched<T>(held: Cell<Async<T>>, work: fn() -> Result<T, string>) -> bool {
+    held.set(Async.Loading)
+    let started = answered(
+        work,
+        (r: Result<T, string>) -> {
+            held.set(settled(r))
+            true
+        },
+    )
+    if !started { held.set(Async.Idle) }
+    started
+}
+
+fn settled<T>(r: Result<T, string>) -> Async<T> {
+    match r { .Ok(v) -> Async.Ready(v), .Err(m) -> Async.Failed(m) }
 }
 
 // ── voices ──────────────────────────────────────────────────────
