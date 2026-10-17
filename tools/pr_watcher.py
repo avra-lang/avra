@@ -15,6 +15,12 @@ watcher closes the gap between "green" and "landed", deterministically:
       so "up to date" is met without a human. The refresh is deduped per
       head: the update moves the head, so the next pass refreshes only if
       `main` moved again;
+  (m) A RED PR BEHIND `main` is refreshed ONCE PER NEW `main` SHA, at the back of the
+      queue: a PR that failed only on an infra fault main has since fixed (a size
+      budget, a dead lock) would otherwise sit red forever, since only a push moves
+      it and the order skips red PRs. Only while nothing is landing and no green PR
+      is next, one PR a pass, never twice for one sha, never a held, draft or
+      conflicting one;
   (l) THE ORDER IS ONE PR AT A TIME, which is what "require up to date"
       already makes it: every merge puts every other PR BEHIND, so arming
       and refreshing them all re-ran every gate once per merge (N armed PRs
@@ -230,6 +236,9 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
                              f"{branch} — its PR is no longer open"})
 
     front = next_in_order(prs)
+    # THE BACK OF THE QUEUE: nothing landing and no green PR waiting for its turn.
+    queue_idle = front is None and not any(_landing(p) for p in prs)
+    red_refreshed = False
     for p in prs:
         n, head = p["number"], p["headRefOid"]
         t = p.get("test")
@@ -264,6 +273,16 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
             if want_rerun:
                 acts.append({"do": "rerun", "run": t["runId"],
                              "mark": ("rerun", f"rerun:{n}:{head}")})
+
+        # (m) a red PR that is behind main gets one refresh per new main sha.
+        if (failed and behind and open_ and not draft and not _held(p) and trunk and queue_idle
+                and not red_refreshed):
+            key = f"refresh-red:{n}:{trunk['sha']}"
+            if key not in told:
+                red_refreshed = True
+                acts.append({"do": "refresh", "pr": n, "key": key, "mark": ("told", key),
+                             "text": f"#{n} is red and behind main {trunk['sha'][:7]} — "
+                                     f"updating the branch once for it"})
 
         # (d) a conflict is named, so its owner is told rather than guessing.
         if conflicted:
@@ -442,6 +461,24 @@ def failing_job(repo, run_id):
     return {"job": j["name"], "line": first_cause(log)}
 
 
+def merge_state(mss, behind_by):
+    """A PR's merge state as the order should read it. GitHub computes `mergeStateStatus`
+    lazily, so a green PR can read CLEAN (or BLOCKED) for a while after `main` moved;
+    the compare answer — how many commits of `main` the head lacks — is exact. A head
+    that lacks any is BEHIND, whatever the field says: that is the state its next step
+    (a refresh) is keyed on, and a PR that reads CLEAN there is neither landed nor
+    refreshed."""
+    if behind_by and behind_by > 0:
+        return "BEHIND"
+    return (mss or "CLEAN").upper()
+
+
+def behind_by(repo, trunk, head):
+    """How many commits of `trunk` `head` lacks, or None when the compare is unanswered."""
+    out = _gh(["api", f"repos/{repo}/compare/{trunk}...{head}", "--jq", ".behind_by"], check=False).strip()
+    return int(out) if out.isdigit() else None
+
+
 def open_prs(repo):
     return _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
                      "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
@@ -516,6 +553,12 @@ def collect(repo, state):
                              for c in raw.get("statusCheckRollup") or []
                              if (c.get("name") or c.get("context")) == "test")
         prs.append(p)
+    # A green, armed-or-armable PR's merge state is read from the compare, never trusted from
+    # the lazily computed field.
+    for p in prs:
+        if (p["state"] == "OPEN" and not p.get("isDraft") and p.get("mergeable") != "CONFLICTING"
+                and p.get("test") and p["test"]["conclusion"] == "SUCCESS"):
+            p["mergeStateStatus"] = merge_state(p.get("mergeStateStatus"), behind_by(repo, "main", p["headRefOid"]))
     # Enrich only a failing PR that will be acted on (untold, or attempt 1).
     detail = 0
     for p in prs:
@@ -730,6 +773,32 @@ SELFTEST = [
                _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
           runs=[], state=_empty_state()),
      [("comment", 2), ("note", 3)]),
+    # (m) a red PR behind main is refreshed once per new main sha, at the back of the queue.
+    ("red-behind-refreshed-once-per-main",
+     dict(prs=[_pr(1, "FAILURE", mergeStateStatus="BEHIND")], runs=[],
+          state={RERUN: {"rerun:1:h1": True}, TOLD: {"told:1:h1": True}},
+          trunk={"sha": "m1" * 20, "age": 10, "checked": True}),
+     [("note", 1), ("refresh", 1)]),
+    ("red-behind-not-refreshed-twice",
+     dict(prs=[_pr(1, "FAILURE", mergeStateStatus="BEHIND")], runs=[],
+          state={RERUN: {"rerun:1:h1": True}, TOLD: {"told:1:h1": True, "refresh-red:1:" + "m1" * 20: True}},
+          trunk={"sha": "m1" * 20, "age": 10, "checked": True}),
+     [("note", 1)]),
+    ("red-behind-refreshed-again-for-a-new-main",
+     dict(prs=[_pr(1, "FAILURE", mergeStateStatus="BEHIND")], runs=[],
+          state={RERUN: {"rerun:1:h1": True}, TOLD: {"told:1:h1": True, "refresh-red:1:" + "m1" * 20: True}},
+          trunk={"sha": "m2" * 20, "age": 10, "checked": True}),
+     [("note", 1), ("refresh", 1)]),
+    ("red-behind-waits-while-a-green-pr-is-next",
+     dict(prs=[_pr(1, "FAILURE", mergeStateStatus="BEHIND"), _pr(2, "SUCCESS", mergeStateStatus="BEHIND")], runs=[],
+          state={RERUN: {"rerun:1:h1": True}, TOLD: {"told:1:h1": True}},
+          trunk={"sha": "m1" * 20, "age": 10, "checked": True}),
+     [("note", 1), ("arm", 2), ("refresh", 2)]),
+    ("red-behind-one-a-pass",
+     dict(prs=[_pr(1, "FAILURE", mergeStateStatus="BEHIND"), _pr(3, "FAILURE", mergeStateStatus="BEHIND")], runs=[],
+          state={RERUN: {"rerun:1:h1": True, "rerun:3:h3": True}, TOLD: {"told:1:h1": True, "told:3:h3": True}},
+          trunk={"sha": "m1" * 20, "age": 10, "checked": True}),
+     [("note", 1), ("refresh", 1), ("note", 3)]),
     # a RED armed PR (a job failed, `test` not reported yet) is not landing: the next green one is the front.
     ("order-red-armed-not-landing",
      dict(prs=[_pr(2, None, autoMerge=True, mergeStateStatus="BLOCKED", red=True, live=True, labels=["priority"]),
@@ -804,10 +873,19 @@ SELFTEST = [
 
 def selftest():
     for name, world, want in SELFTEST:
-        acts = plan(world["prs"], world["runs"], world["state"])
+        acts = plan(world["prs"], world["runs"], world["state"], world.get("trunk"))
         got = [(a["do"], a.get("pr", a.get("run"))) for a in acts]
         if got != want:
             sys.exit(f"pr-watcher: self-test failed on `{name}`: got {got}, want {want}")
+    # a lazily computed CLEAN or BLOCKED over a head that lacks main's commits reads BEHIND.
+    for field, lacks, want in (("CLEAN", 3, "BEHIND"), ("BLOCKED", 1, "BEHIND"), ("CLEAN", 0, "CLEAN"),
+                               ("BLOCKED", 0, "BLOCKED"), ("", None, "CLEAN")):
+        if merge_state(field, lacks) != want:
+            sys.exit(f"pr-watcher: self-test — merge_state({field!r}, {lacks}) is {merge_state(field, lacks)}, want {want}")
+    # the front that read CLEAN but is behind is refreshed, not left landing.
+    stale = [_pr(7, "SUCCESS", autoMerge=True, mergeStateStatus=merge_state("CLEAN", 2))]
+    if [a["do"] for a in plan(stale, [], _empty_state())] != ["refresh"]:
+        sys.exit("pr-watcher: self-test — a green front that lacks main's commits was not refreshed")
     # THE TREADMILL: five green PRs all behind main cost ONE refresh a pass, never five.
     five = [_pr(n, "SUCCESS", mergeStateStatus="BEHIND", autoMerge=True) for n in (4, 6, 7, 8, 9)]
     refreshed = [a["pr"] for a in plan(five, [], _empty_state()) if a["do"] == "refresh"]

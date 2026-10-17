@@ -1472,6 +1472,52 @@ No witness yet.
 
 No witness yet.
 
+## manifest.bad_tool_from
+
+a `[process.tools]` row comes from `path`, `env` or `abs`
+
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[process.tools]
+git = { from = "nowhere" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_tool_from]: `git` comes from `nowhere` — a tool comes from `path`, `env` or `abs`
+  ╭─[/w/avra.toml:6:1]
+6 │ git = { from = "nowhere" }
+  · ┬
+  · ╰── here
+──╯
+help: write `from = "path"`, `"env"` or `"abs"`
+```
+
+## manifest.tool_env_var
+
+an `env` tool names its `var`
+
+No witness yet.
+
+## manifest.tool_abs_at
+
+an `abs` tool names its `at`
+
+No witness yet.
+
+## manifest.unknown_process_key
+
+`[process]` takes only the keys it reads — a typo there is refused, never ignored
+
+No witness yet.
+
 ## manifest.unknown_section
 
 an unknown section is ignored with a warning
@@ -1966,6 +2012,25 @@ error[collect_enum.variant]: `Command` declares `run` more than once
   · ╰── in this declaration
 ──╯
 help: rename one of them
+```
+
+## collect_enum.empty
+
+a collected enum gathers at least one member
+
+```avra
+collect enum Shape = @numbered in self by it.name
+1
+```
+
+```
+error[collect_enum.empty]: `Shape` gathers no member, and an enum names at least one variant
+  ╭─[witness.av:1:1]
+1 │ collect enum Shape = @numbered in self by it.name
+  · ┬
+  · ╰── this gathering is empty
+──╯
+help: declare a member this `collect enum` gathers, or drop the enum
 ```
 
 ## collect_enum.empty
