@@ -118,18 +118,18 @@ fn declared_rebuild(t: MetaType, k: Kind, n: string, e: Code, entered: List<stri
             acc
         },
         .Enum(variants) -> {
-            let arms = [variant_rebuild(t, v, inside) for v in variants]
+            let arms = [variant_rebuild(t, n, v, inside) for v in variants]
             quote { (match ${e} { ${arms} }) }
         },
     }
 }
 
 /// One variant of a declared enum, built again from its payloads.
-fn variant_rebuild(t: MetaType, v: MetaVariant, entered: List<string>) -> Arms {
-    if v.fields.is_empty() { return quote { .${v} -> .${v} } }
+fn variant_rebuild(t: MetaType, owner: string, v: MetaVariant, entered: List<string>) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${name(owner)}.${v} } }
     let bound = ["${f.name}_held" for f in v.fields if carried(f)]
     let args = [rebuilt_arg_inside(t, f, "${f.name}_held", entered) for f in v.fields if carried(f)]
-    built(v, bound, args)
+    quote { .${v}(${bound}) -> ${name(owner)}.${v}(${..args}) }
 }
 
 fn rebuilt_arg_inside(t: MetaType, f: Field, binder: string, entered: List<string>) -> Code {
