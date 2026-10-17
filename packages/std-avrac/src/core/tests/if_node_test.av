@@ -1,0 +1,49 @@
+// An `if` answers a plain `If`, or — when its condition binds — the
+// Match that means it, whichever door builds it: the builder or the
+// tail promotion of an `if` statement chain.
+use @std.avrac.core.{new_node_store, SyntaxArena, Expr, Stmt, Pat, Plain, Scoped, ExprId, PatId}
+
+/// `subject is .V(x)`, allocated whole.
+fn binding_test(mut s: SyntaxArena, subject: ExprId) -> ExprId {
+    let bind = s.alloc_pat(Pat.Bind(Scoped("x")))
+    s.alloc_expr(Expr.Is(subject, s.alloc_pat(Pat.Variant(Plain("V"), [bind]))))
+}
+
+spec "core/store — an if's meaning" {
+    given "a plain condition" {
+        then "the node is an `If`" {
+            mut s = new_node_store()
+            let c = s.alloc_expr(Expr.BoolLit(true))
+            let a = s.alloc_expr(Expr.IntLit(1))
+            let b = s.alloc_expr(Expr.IntLit(2))
+            s.expr(s.if_node(c, a, b, true, null)) is .If
+        }
+    }
+    given "a binding condition" {
+        then "the node is a Match over the tested subject, marked with its pattern" {
+            mut s = new_node_store()
+            let subject = s.alloc_expr(Expr.IntLit(0))
+            let c = binding_test(s, subject)
+            let a = s.alloc_expr(Expr.IntLit(1))
+            let b = s.alloc_expr(Expr.IntLit(2))
+            let m = s.if_node(c, a, b, false, null)
+            match s.expr(m) {
+                .Match(on, arms) -> on.index == subject.index &&
+                    arms.length == 2 &&
+                    s.is_payload(m) != null &&
+                    !s.is_payload(m)!.has_else,
+                _ -> false,
+            }
+        }
+        then "a statement chain answering in tail position promotes to that same Match" {
+            mut s = new_node_store()
+            let subject = s.alloc_expr(Expr.IntLit(0))
+            let c = binding_test(s, subject)
+            let yes = s.alloc_stmt(Stmt.ExprStmt(s.alloc_expr(Expr.IntLit(1))))
+            let no = s.alloc_stmt(Stmt.ExprStmt(s.alloc_expr(Expr.IntLit(2))))
+            let chain = s.alloc_stmt(Stmt.IfStmt(c, [yes], [no]))
+            let promoted? = s.answer_of(chain) else { return false }
+            s.expr(promoted) is .Match
+        }
+    }
+}

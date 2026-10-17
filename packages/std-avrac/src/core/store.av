@@ -814,7 +814,27 @@ impl SyntaxArena {
         if tv == null || ev == null { return null }
         let span = self.stmt_span(s)
         if e.length == 1 && span != null { self.mark_written_close(ev!, span!.hi) }
-        self.alloc_expr(Expr.If(c, tv!, ev!), span)
+        self.if_node(c, tv!, ev!, true, span)
+    }
+
+    /// The expression an `if` over `c` answers: a plain `If`, or — when
+    /// `c` binds (`x is .V(p)`) — the Match that means it, `match x {
+    /// .V(p) -> t, _ -> e }`: the binding law's one meaning, spelled by
+    /// the machinery that already carries it (spec 10.4). The Match is
+    /// MARKED with the pattern and whether an else was written, so the
+    /// printer spells the `if` back. One door for the builders and the
+    /// tail promotion, so a binding `if` means the same wherever it
+    /// answers.
+    fn if_node(c: ExprId, t: ExprId, e: ExprId, has_else: bool, span: Span?) -> ExprId {
+        let bound? = self.is_payload(c) else { return self.alloc_expr(Expr.If(c, t, e), span) }
+        let rest = self.alloc_pat(Pat.Wild, span)
+        let arms = [
+            Arm { pats: [bound.pat], guard: null, value: t },
+            Arm { pats: [rest], guard: null, value: e },
+        ]
+        let m = self.alloc_expr(Expr.Match(self.is_subject(c) ?? c, arms), span)
+        self.mark_is_payload(m, bound.pat, has_else)
+        m
     }
 
     /// THE TAIL LAW: a scope's tail STATEMENT already answered a
