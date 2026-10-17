@@ -1,0 +1,271 @@
+//! A MODULE'S PRODUCERS: what its record files for a bucket reader, and what the load
+//! walk needs to reach its neighbours — read from the record's lines once, kept as one
+//! small row beside the record, and read back in place so a names-only walk decodes no
+//! record line (docs/2026_10_06_COMPILER_DB.md, "load: the rest": records read in place).
+use core.{distinct, flatten, joined, ModulePath}
+use core.debug.{db_verified_producers}
+use features.{ExternNote, DeclFacts, implements_kind}
+use compiler.store.{Store}
+
+/// One value a file files under: a declaration name, a word or a mark.
+type Filed = { value: string, path: string }
+
+/// What a record says to the load walk and the bucket readers, and nothing else.
+type Producers = {
+    /// "" when the record rebuilds whole, else the one declaration that made it short.
+    fault: string,
+    /// Every file a declaration line names.
+    declared: List<string>,
+    /// Every file the record places.
+    placed: List<string>,
+    /// The `import` and `gathers` lines in the order the record wrote them: the walk the
+    /// load takes to a module's neighbours. `reexports` are the `reexport` lines.
+    walk: List<List<string>>,
+    reexports: List<List<string>>,
+    names: List<Filed>,
+    words: List<Filed>,
+    marks: List<Filed>,
+    externs: List<ExternNote>,
+    links: List<string>,
+    /// Every file declaring a kind that implements a trait for a type.
+    implementors: List<string>,
+    /// Each file a `ref` line names, with the files whose lines name it: value the target, path the source.
+    refs: List<Filed>,
+}
+
+/// THE ONE READER OF A RECORD'S PRODUCER LINES: the fields are the ones `read_row` and
+/// `facts_unblocked` already decode.
+// LICENSED compiler.free_state_verb: a record's fields and its module in, the producers out.
+export fn producers_of(m: ModulePath, fields: List<List<string>>) -> Producers {
+    let rows = [FiledRow { parts: parts, row: read_row(parts) } for parts in fields if declares(parts)]
+    let decoded = [d for d in rows if d.row != null && facts_unblocked(d.row!.facts) != null]
+    Producers {
+        fault: record_complete(fields) ?? "",
+        declared: distinct([p[1] for p in fields if declares(p)]),
+        placed: distinct([p[1] for p in fields if places_file(p)]),
+        walk: [p for p in fields if p[0] == "import" || p[0] == "gathers"],
+        reexports: [p for p in fields if p.length >= 5 && p[0] == "reexport"],
+        names: [Filed { value: d.row!.name, path: d.parts[1] } for d in decoded],
+        words: flatten([some_filed(facts_unblocked(d.row!.facts)!.word, d.parts[1]) for d in decoded]),
+        marks: flatten(
+            [[Filed { value: a.name, path: d.parts[1] } for a in facts_unblocked(d.row!.facts)!.annotations] for d in decoded],
+        ),
+        externs: [extern_note(m, d.row!, facts_unblocked(d.row!.facts)!) for d in decoded if facts_unblocked(d.row!.facts)!.external],
+        links: distinct([d.parts[1] for d in decoded if links_a_scheduler(d.row!)]),
+        implementors: distinct([d.parts[1] for d in decoded if implements_a_type(d.row!)]),
+        refs: distinct_filed(
+            [Filed { value: ref_target(p), path: p[1] } for p in fields if is_ref_row(p)],
+        ),
+    }
+}
+
+/// The filings with each pair once.
+fn distinct_filed(fs: List<Filed>) -> List<Filed> {
+    let seen: Cell<Map<string, bool>> = Cell.new({})
+    [f for f in fs if !claimed(seen, "${f.value}\t${f.path}")]
+}
+
+/// Whether `key` was already claimed in `seen`, claiming it.
+fn claimed(seen: Cell<Map<string, bool>>, key: string) -> bool {
+    if seen.get().has(key) { return true }
+    seen.put(key, true)
+    false
+}
+
+type FiledRow = { parts: List<string>, row: Row? }
+
+fn some_filed(value: string?, path: string) -> List<Filed> {
+    let v? = value else { return [] }
+    [Filed { value: v, path: path }]
+}
+
+fn extern_note(m: ModulePath, row: Row, facts: DeclFacts) -> ExternNote {
+    ExternNote { module: m.text(), path: row.path, name: row.name, hosted: facts.hosted }
+}
+
+/// Whether a row is a declaration of a kind that implements a trait for a type.
+fn implements_a_type(row: Row) -> bool {
+    let kind? = declared_kind(row.shape, row.kind) else { return false }
+    implements_kind(kind)
+}
+
+/// Whether a row is a fn whose record says it links a scheduler.
+fn links_a_scheduler(row: Row) -> bool {
+    let kind? = declared_kind(row.shape, row.kind) else { return false }
+    records_cancel(kind) && row.reach().links
+}
+
+/// THE PRODUCERS FILED, each bucket reader's index and the load walk's: the one place a
+/// module's filings reach the hold.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a module and its producers in.
+export fn note_producers(ws: Workspace, p: Producers) {
+    for f in p.names { filed_under(ws.hold.named_by, f) }
+    for f in p.words { filed_under(ws.hold.worded_by, f) }
+    for f in p.marks { filed_under(ws.hold.marked_by, f) }
+    for n in p.externs { ws.hold.externed_by.push(n) }
+    ws.hold.linked_by.set(distinct(ws.hold.linked_by.get().concat(p.links)))
+    for f in p.refs { filed_under(ws.hold.refs_by_target, f) }
+    for path in p.implementors { if !ws.hold.typed_by.get().contains(path) { ws.hold.typed_by.push(path) } }
+    for path in distinct([r[1] for r in p.reexports]) { ws.hold.reexports.put(path, reexports_in(p.reexports, path)) }
+}
+
+fn filed_under(map: Cell<Map<string, List<string>>>, f: Filed) {
+    map.put(f.value, distinct((map.get().get(f.value) ?? []).concat([f.path])))
+}
+
+/// WHY A RECORD CANNOT BE LOADED: "" when it is whole and names no file the module has
+/// lost, else the reason.
+fn fault_of(p: Producers, here: List<string>) -> string {
+    if p.fault != "" { return p.fault }
+    let stray? = p.declared.find((path) -> !here.contains(path)) else { return "" }
+    "names `${stray}`, which the module no longer has"
+}
+
+// ── THE ROW ─────────────────────────────────────────────────────────
+
+/// The row's version line: a row of another shape is no row.
+fn producers_head() -> string { "producers\t1" }
+
+/// The row's last line: a row cut short never ends in it.
+fn producers_end() -> string { "end" }
+
+/// The row as text, one line per fact. A value is a field and a field is escaped; the
+/// record's own lines ride as the record wrote them.
+export fn producers_text(p: Producers) -> string {
+    let lines = [
+        producers_head(),
+        if p.fault == "" { "complete" } else { "fault\t${field_text(p.fault)}" },
+    ]
+        .concat([path_line("declared", path) for path in p.declared])
+        .concat([path_line("placed", path) for path in p.placed])
+        .concat([joined(l, "\t") for l in p.walk])
+        .concat([joined(l, "\t") for l in p.reexports])
+        .concat([filed_line("name", f) for f in p.names])
+        .concat([filed_line("word", f) for f in p.words])
+        .concat([filed_line("mark", f) for f in p.marks])
+        .concat(
+            [joined(["extern", field_text(n.path), field_text(n.name), bit_word(n.hosted)], "\t") for n in p.externs],
+        )
+        .concat([path_line("link", path) for path in p.links])
+        .concat([path_line("implementor", path) for path in p.implementors])
+        .concat([filed_line("refs", f) for f in p.refs])
+        .concat([producers_end()])
+    joined(lines, "\n")
+}
+
+/// A line a file stands on alone: no value follows, so no field of it can end empty.
+fn path_line(tag: string, path: string) -> string { joined([tag, field_text(path)], "\t") }
+
+/// A line a file files a value on: the path last, which is never empty.
+fn filed_line(tag: string, f: Filed) -> string { joined([tag, field_text(f.value), field_text(f.path)], "\t") }
+
+/// The producers a row spells, absent for a row that is not whole: another version, an
+/// unknown line, a line short of its fields, or no last line.
+export fn producers_read(m: ModulePath, text: string) -> Producers? {
+    let lines = text.split("\n")
+    if lines.first() ?? "" != producers_head() || lines.last() ?? "" != producers_end() { return null }
+    let rows = [l.split("\t") for l in lines.slice(1, lines.length - 1)]
+    if rows.any((r) -> !producer_line(r)) { return null }
+    if rows.filter(it[0] == "complete" || it[0] == "fault").length != 1 { return null }
+    Producers {
+        fault: faulted(rows),
+        declared: tagged_paths(rows, "declared"),
+        placed: tagged_paths(rows, "placed"),
+        walk: [r for r in rows if r[0] == "import" || r[0] == "gathers"],
+        reexports: [r for r in rows if r[0] == "reexport"],
+        names: filings(rows, "name"),
+        words: filings(rows, "word"),
+        marks: filings(rows, "mark"),
+        externs: [ExternNote {
+            module: m.text(),
+            path: text_of_field(r[1]),
+            name: text_of_field(r[2]),
+            hosted: r[3] == "1",
+        } for r in rows if r[0] == "extern"],
+        links: tagged_paths(rows, "link"),
+        implementors: tagged_paths(rows, "implementor"),
+        refs: filings(rows, "refs"),
+    }
+}
+
+/// Whether a split line is one a row may hold, with the fields its tag owes.
+fn producer_line(r: List<string>) -> bool {
+    match r[0] {
+        "complete" -> r.length == 1,
+        "fault" or "declared" or "placed" or "link" or "implementor" -> r.length == 2,
+        "name" or "word" or "mark" or "refs" -> r.length == 3,
+        "extern" -> r.length == 4,
+        "import" or "gathers" -> r.length >= 2,
+        "reexport" -> r.length >= 5,
+        _ -> false,
+    }
+}
+
+fn faulted(rows: List<List<string>>) -> string {
+    let r? = rows.find((r) -> r[0] == "fault") else { return "" }
+    text_of_field(r[1])
+}
+
+fn tagged_paths(rows: List<List<string>>, tag: string) -> List<string> {
+    [text_of_field(r[1]) for r in rows if r[0] == tag]
+}
+
+fn filings(rows: List<List<string>>, tag: string) -> List<Filed> {
+    [Filed { value: text_of_field(r[1]), path: text_of_field(r[2]) } for r in rows if r[0] == tag]
+}
+
+// ── WHERE IT STANDS ─────────────────────────────────────────────────
+
+/// Where a module's producer row stands: beside its record, under the same interface.
+fn producers_key(ws: Workspace, m: ModulePath, iface: string) -> string {
+    ws.record_bodies().key("producers ${m.text()}", iface)
+}
+
+/// A module's producers as its kept row says — absent when no row stands for the
+/// record's interface, or the row is not whole. Under `AVRA_DB_VERIFY=producers` a row
+/// that stands is judged against the producers its record's own lines make.
+fn kept_producers(ws: Workspace, store: Store, m: ModulePath) -> Producers? {
+    let iface = ws.db.sig(store, ws.record_key(m)) ?? ""
+    if iface == "" { return null }
+    let row = ws.db.sig(store, producers_key(ws, m, iface)) ?? ""
+    let kept = producers_read(m, row)
+    if kept != null &&
+        db_verified_producers() &&
+        row != producers_text(producers_of(m, record_fields(ws, store, m))) {
+        ws.defect(producers_disagree(m))
+    }
+    kept
+}
+
+/// A module's producers: its kept row, or the record's own lines where none stands —
+/// absent for a module with no record. Decoded once per build.
+fn producers_for(ws: Workspace, store: Store, m: ModulePath) -> Producers? {
+    let key = ws.record_key(m)
+    let known: Producers? = ws.records.record_producers.get().get(key)
+    if known != null { return known }
+    let made = kept_producers(ws, store, m) ?? recorded_producers(ws, store, m)
+    let found? = made else { return null }
+    ws.records.record_producers.put(key, found)
+    found
+}
+
+/// The producers the record's own lines say — absent for a module with no record.
+fn recorded_producers(ws: Workspace, store: Store, m: ModulePath) -> Producers? {
+    if record_cached(ws, store, m) == "" { return null }
+    producers_of(m, record_fields(ws, store, m))
+}
+
+/// A record just written: its producers read from the lines it was made of, kept beside
+/// it and stood in for the one decoded earlier.
+fn keep_producers(ws: Workspace, store: Store, m: ModulePath, iface: string) {
+    let made = producers_of(m, record_fields(ws, store, m))
+    ws.records.record_producers.put(ws.record_key(m), made)
+    ws.db.insert_sig(store, producers_key(ws, m, iface), producers_text(made))
+}
+
+// ── VOICES ──────────────────────────────────────────────────────────
+
+/// A kept row whose producers are not the ones its record makes.
+fn producers_disagree(m: ModulePath) -> string {
+    "the producer row kept for module `${m.text()}` is not what its record makes — a row and its record are written together, so one of them was written by something else"
+}
