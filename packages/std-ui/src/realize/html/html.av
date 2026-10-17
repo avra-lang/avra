@@ -10,8 +10,10 @@
 use tree.node.{Node}
 use realize.html.tags.{HtmlAttr}
 use realize.html.element.{Element, lowered}
-use realize.html.writer.{HtmlOp, Head, document, page_source, source}
+use realize.html.writer.{HtmlOp, Head, Takeover, document, page_source, source, takeover_source}
+use realize.html.print.{print_of}
 use realize.html.css.{CssRule, CssVar, distinct_rules, page_sheet, rules_of}
+use tree.lists.{flatten}
 use style.theme.{Theme}
 use env.{Env}
 
@@ -24,15 +26,26 @@ type Drawn = { ops: List<HtmlOp>, vars: List<List<CssVar>> }
 
 /// The elements as ops, the first of them standing after `before` that
 /// write custom properties.
+/// TWO RUNS OF TEXT SIDE BY SIDE WOULD BE ONE NODE TO A PARSER, so a marker
+/// stands between them: the DOM holds the elements the lowering made, in its
+/// order, and an adopted page's numbers count out the same.
 fn drawn_all(es: List<Element>, before: int) -> Drawn {
     mut ops: List<HtmlOp> = []
     mut vars: List<List<CssVar>> = []
+    mut prev_text = false
     for e in es {
+        let text = is_text(e)
+        if text && prev_text { ops = ops.concat([HtmlOp.Marker]) }
         let d = drawn_one(e, before + vars.length)
         ops = ops.concat(d.ops)
         vars = vars.concat(d.vars)
+        prev_text = text
     }
     Drawn { ops: ops, vars: vars }
+}
+
+fn is_text(e: Element) -> bool {
+    match e { .Text(_) -> true, .Tag(_) -> false }
 }
 
 /// One element as ops: opened, what it holds, closed.
@@ -59,6 +72,9 @@ fn vars_attr(own: List<List<CssVar>>, at: int) -> List<HtmlAttr> {
 
 /// A tree as the writer's ops and the custom properties it writes.
 fn drawn(root: Node) -> Drawn { drawn_all(lowered(root), 0) }
+
+/// A run of elements as the writer's ops alone.
+fn run_ops(run: List<Element>) -> List<HtmlOp> { drawn_all(run, 0).ops }
 
 /// The rule that writes one element's custom properties.
 fn vars_rule(at: int, vars: List<CssVar>) -> string {
@@ -99,5 +115,32 @@ export fn page(p: Page, root: Node) -> string {
         sheet_of(root, p.env.theme, p.alternates, d),
         p.nonce,
         d.ops,
+    )
+}
+
+/// A page a module can ADOPT: the tree as HTML, the sheet the live page
+/// draws for it, and the print both are folded to.
+export type Hydration = { html: string, css: string, print: int }
+
+/// The server's first frame for `root` under `theme`: what a page holds
+/// before its module runs and what the module checks itself against.
+export fn hydration(root: Node, theme: Theme) -> Hydration {
+    let run = lowered(root)
+    let css = page_sheet(distinct_rules(rules_of(root)), theme, [])
+    Hydration { html: source(run_ops(run)), css: css, print: print_of(run, css) }
+}
+
+/// A complete document the module at `module` takes over: the tree drawn
+/// for the first paint under the sheet the live page wears, stamped with the
+/// print the module checks itself against. `host` is where the host's
+/// scripts (`bootstrap.js`, `wasi.js`) are served.
+export fn takeover(p: Page, root: Node, module: string, host: string) -> string {
+    let run = lowered(root)
+    let css = page_sheet(distinct_rules(rules_of(root)), p.env.theme, [])
+    takeover_source(
+        Head { title: p.title, locale: p.env.locale, direction: p.env.direction },
+        css,
+        run_ops(run),
+        Takeover { print: print_of(run, css), module: module, host: host },
     )
 }
