@@ -408,7 +408,16 @@ fn match_rule<T, N>(mut cx: MatchContext<T, N>, name: string, cursor: int, cappe
     let at = (ordinal * cx.memo.stride + cursor) * 2 + if capped { 1 } else { 0 }
     let known = cx.memo.slots[at]
     if known > 0 { return cx.memo.results[known - 1] }
-    let fresh = match_alt<T, N>(cx, name, cx.g.rules[ordinal].body, cursor, [], false, capped, cursor)
+    let fresh = match_alt<T, N>(
+        cx,
+        name,
+        cx.g.rules[ordinal].body,
+        cursor,
+        [],
+        false,
+        capped,
+        cursor,
+    )
     if plain_miss<T, N>(fresh) {
         cx.memo.slots.set(at, 1)
         return fresh
@@ -880,14 +889,21 @@ fn match_fold<T, N>(
         }
         if r.status != MatchStatus.Hit { break }
         if r.cursor == cursor {
-            diagnostics.push(defect(rule_name, "a fold's turn matched without consuming input; stopped"))
+            diagnostics
+                .push(defect(rule_name, "a fold's turn matched without consuming input; stopped"))
             break
         }
         diagnostics = diagnostics.concat(r.diagnostics)
         acc = r.value
         cursor = r.cursor
     }
-    matched<T, N>(cursor, [b.rebound(field, acc, false) for b in bindings], acc, diagnostics, farthest)
+    matched<T, N>(
+        cursor,
+        [b.rebound(field, acc, false) for b in bindings],
+        acc,
+        diagnostics,
+        farthest,
+    )
 }
 
 /// A repeated item's own label, bound to everything collected so

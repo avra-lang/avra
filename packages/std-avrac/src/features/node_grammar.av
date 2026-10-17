@@ -51,7 +51,9 @@ fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
 fn bound_prim(rname: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
     match p {
         .Group(inner) -> Prim
-            .Group(inner with { branches: [bound_seq(rname, b, b.scope(outer), rows) for b in inner.branches] }),
+            .Group(
+                inner with { branches: [bound_seq(rname, b, b.scope(outer), rows) for b in inner.branches] },
+            ),
         .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
     }
 }
@@ -109,9 +111,12 @@ type Judged = { seq: Seq, scope: Seq }
 /// turn, which is its own (a turn reads its seed and its own labels,
 /// never a sibling turn's).
 fn judged_seqs(s: Seq, scope: Seq) -> List<Judged> {
-    [Judged { seq: s, scope: scope }].concat(
-        flatten([judged_seqs(b, b.scope(scope)) for m in s.items for b in (m.prim.group_alt()?.branches ?? [])]),
-    )
+    [Judged { seq: s, scope: scope }]
+        .concat(
+            flatten(
+                [judged_seqs(b, b.scope(scope)) for m in s.items for b in m.prim.group_alt()?.branches ?? []],
+            ),
+        )
 }
 
 fn seq_defects(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {
