@@ -141,7 +141,10 @@ Five attempts to lift a handler into a generated message failed.
    target (`native/sources.av`) loops over the inbox: a handler's
    `later`/`repeating` leave a job, the loop spawns it, the job parks
    and posts, and what it posted runs as a turn; the loop block owns
-   every task it started, so they end with it. The terminal's standard
+   every task it started, so they end with it. WORK BELONGS TO THE
+   CONTROL THAT ASKED (its path, `tree/identity.av`'s canonical text):
+   after a paint, a worker whose control left the screen is cancelled and
+   what that control left in the inbox is dropped unrun. The terminal's standard
    input is such a source. A target WITHOUT TASKS (the page) realizes
    the same seam from its host's callbacks: `setTimeout` or a `fetch`
    answer re-enters through an exported fn that posts the `Act` and

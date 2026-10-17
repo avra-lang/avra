@@ -34,7 +34,16 @@ use core.{
     SeatMark,
     Span,
 }
-use features.{DeclSig, DeclFacts, AnnotationFact, LitArg, LitKind, CancelReach}
+use features.{
+    implements_kind,
+    ExternNote,
+    DeclSig,
+    DeclFacts,
+    AnnotationFact,
+    LitArg,
+    LitKind,
+    CancelReach,
+}
 use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
 use @std.meta.{code_hash}
@@ -755,19 +764,46 @@ fn load_imports(
         }
         if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want) }
     }
-    // a method table wants EVERY impl of a name, and a held impl names its trait by
-    // name: where those live is known before any module is minted
+    note_producers(ws, m, fields)
+}
+
+/// THE PRODUCER INDEX: every declaration NAME, WORD and MARK a held
+/// module's record lines carry, each extern it declares and each file's re-exports — filed while the record
+/// is read for its names alone, so a bucket reader can mint the modules that would file a
+/// row there BEFORE its own read. The fields are the ones `read_row` and `facts_unblocked`
+/// already decode, so nothing is parsed a second time.
+// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a module and its record lines in.
+export fn note_producers(ws: Workspace, m: ModulePath, fields: List<List<string>>) {
     for parts in fields {
-        if parts.length > 6 && (parts[6] == "impl" || parts[6] == "trait") {
+        if !declares(parts) { continue }
+        let row? = read_row(parts) else { continue }
+        let f? = facts_unblocked(row.facts) else { continue }
+        filed_under(ws.hold.named_by, row.name, parts[1])
+        if f.word != null { filed_under(ws.hold.worded_by, f.word!, parts[1]) }
+        for a in f.annotations { filed_under(ws.hold.marked_by, a.name, parts[1]) }
+        if f.external {
             ws
                 .hold
-                .named_in
-                .put(
-                    parts[5],
-                    distinct((ws.hold.named_in.get().get(parts[5]) ?? []).concat([m.text()])),
+                .externed_by
+                .push(
+                    ExternNote {
+                        module: m.text(),
+                        path: row.path,
+                        name: row.name,
+                        hosted: f.hosted,
+                    },
                 )
         }
+        let kind? = declared_kind(row.shape, row.kind) else { continue }
+        if implements_kind(kind) && !ws.hold.typed_by.get().contains(parts[1]) { ws.hold.typed_by.push(parts[1]) }
+        if records_cancel(kind) && row.reach().links { ws.hold.linked_by.set(distinct(ws.hold.linked_by.get().concat([parts[1]]))) }
     }
+    for path in distinct([p[1] for p in fields if p.length >= 5 && p[0] == "reexport"]) { ws.hold.reexports.put(path, reexports_in(fields, path)) }
+}
+
+/// One file filed under a value in a producer map, once.
+fn filed_under(map: Cell<Map<string, List<string>>>, value: string, path: string) {
+    map.put(value, distinct((map.get().get(value) ?? []).concat([path])))
 }
 
 /// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
