@@ -894,12 +894,13 @@ jobs:
       - name: build twice, compare objects
         run: |
           tar -xf avra-build.tar
-          for pkg in packages/std-http packages/cli; do
+          for pkg in packages/std-avrac/src/diagnostics packages/cli; do
             for which in old new; do
               rm -rf .avra-cache
               if [ "$which" = old ]; then cp /tmp/avra-old build/avra; else cp new/avra build/avra; fi
               s=$(date +%s)
-              build/avra build "$pkg" > /tmp/build-$which.log 2>&1 || { cat /tmp/build-$which.log; exit 1; }
+              if [ "$pkg" = packages/cli ]; then verb=build; else verb=test; fi
+              build/avra $verb "$pkg" > /tmp/build-$which.log 2>&1 || { cat /tmp/build-$which.log; exit 1; }
               echo "$pkg $which: $(( $(date +%s) - s )) s, $(ls .avra-cache/obj/*.o | wc -l) objects"
               mkdir -p "/tmp/obj-$which"
               rm -f /tmp/obj-$which/*
