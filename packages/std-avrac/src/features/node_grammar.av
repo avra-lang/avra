@@ -18,7 +18,7 @@
 //! `Field.kind` answers "is this a list", "is this text-filled"
 //! structurally, so the answer holds under renaming and cannot forget
 //! the next declared type the way a string table would.
-use core.{flatten, joined, PayloadRow, row_for, binop_of}
+use core.{flatten, joined, PayloadRow, row_for, binop_of, facet_table}
 use @std.meta.{Field, Kind}
 use @std.grammar.{
     Grammar,
@@ -247,11 +247,13 @@ fn absence_is_a_value(k: Kind) -> bool {
 }
 
 /// Each payload's SHAPE against what its label matches: a node payload
-/// is built by a rule, text is carried by a terminal. Refused only
+/// is built by a rule, text is carried by a terminal. A `@facet` payload
+/// is judged by nothing — its label is read by PRESENCE, and its shape
+/// does not cross. Refused only
 /// where the branch PROVES the mismatch — a literal captures nothing
 /// and a group may answer either, so neither is judged.
 fn shape_defects(rname: string, s: Seq, row: PayloadRow) -> List<Diagnostic> {
-    flatten([payload_shape(rname, s, row, p) for p in row.payloads])
+    flatten([payload_shape(rname, s, row, p) for p in row.payloads if facet_table(p) == null])
 }
 
 fn payload_shape(rname: string, s: Seq, row: PayloadRow, p: Field) -> List<Diagnostic> {
