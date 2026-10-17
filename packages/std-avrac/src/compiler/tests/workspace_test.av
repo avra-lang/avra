@@ -332,6 +332,19 @@ spec "compiler/workspace" {
                 a.report().contains("this module fails to parse here, so its names are unread: expected `}` to close the block") &&
                 !a.report().contains("did you mean")
         }
+        then "an aliased item of an unread module — the alias's reads are silent too" {
+            let a = with_unread_solo("use solo.{only as one}\none(true, true)\n").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("`solo` does not export `only`")
+        }
+        then "a local declaration of a refused name still answers its reads" {
+            let a = with_unread_solo("use solo.{only}\nfn only(a: bool, b: bool) -> bool { a }\nonly(true, true)\n")
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && !a.report().contains("no `fn only`")
+        }
+        then "an item the unread module never named is refused with the parse error beside it" {
+            let a = with_unread_solo("use solo.{nope}\n1\n").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("fix the parse error first") && !a.report().contains("its exports: ")
+        }
         then "a package the manifest does not declare — a root without one declares nothing" {
             main_refuses(
                 "use @std.errors.{Loc}\n2\n",
