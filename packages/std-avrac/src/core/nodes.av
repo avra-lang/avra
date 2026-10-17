@@ -370,6 +370,7 @@ export fn node_payload_rows() -> List<PayloadRow> {
         .concat(grammar_payloads_Stmt())
         .concat(grammar_payloads_ParamSyntax())
         .concat(grammar_payloads_VariantSyntax())
+        .concat(grammar_payloads_CatchArm())
 }
 
 /// Every flat expression variant's maker, read off `Expr` by
@@ -432,7 +433,7 @@ export fn literal_form(e: Expr) -> bool {
     match e {
         .Body(word, _, _, _) -> body_literal(word),
         .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) or .Range(_, _) -> true,
-        .Ident(_) or .Receiver or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error or .Env(_) -> false,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _) or .MethodCall(_, _, _) or .Error or .Env(_) -> false,
     }
 }
 
@@ -772,6 +773,13 @@ export fn binds(h: Hole) -> bool {
 export fn bound_names(parts: List<FormatPart>) -> List<string> {
     [p.hole.name for p in parts if binds(p.hole)]
 }
+
+/// One `catch` arm: the failure variant it names (a union member's name for
+/// a union catch, `""` for a catch-all or a bare value), the name its
+/// payload binds (`""` binds nothing), and the value it recovers to.
+@derive(Identity)
+@derive(Grammar)
+export type CatchArm = { variant: Plain = "", bind: Scoped = "", value: ExprId }
 
 /// One match arm: its alternatives (`a or b`), an optional guard, and
 /// its value. A false guard tries the next arm; a guarded arm covers
