@@ -167,13 +167,36 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   };
 }
 
+// A MODULE WITH CLEANUP FRAMES USES WEBASSEMBLY EXCEPTION HANDLING, in the
+// standard exnref encoding. This is the smallest module that needs it: an
+// engine that validates it can run any module this toolchain builds.
+const EH_PROBE = new Uint8Array([0, 0x61, 0x73, 0x6d, 1, 0, 0, 0, 1, 4, 1, 0x60, 0, 0, 3, 2, 1, 0, 10, 13, 1, 11, 0, 2, 0x40, 0x1f, 0x40, 1, 2, 0, 0x0b, 0x0b, 0x0b]);
+
+// Whether this engine runs WebAssembly exception handling (exnref).
+export function hasExceptionHandling() {
+  return WebAssembly.validate(EH_PROBE);
+}
+
+// Compile `bytes`; a module this engine cannot compile for want of exception
+// handling is refused BY THAT NAME, never as an engine's opaque compile error.
+async function compiled(bytes) {
+  try {
+    return await WebAssembly.compile(bytes);
+  } catch (e) {
+    if (e instanceof WebAssembly.CompileError && !hasExceptionHandling()) {
+      throw new Error("this browser lacks WebAssembly exception handling (exnref) — the app needs a current Chrome, Firefox or Safari");
+    }
+    throw e;
+  }
+}
+
 // Load the module and run it in a page. The host supplies `rt` (its own
 // rows for module `avra:rt`) and `wasi` (preview1). An import NO host row
 // answers REFUSES by name — a missing row must never be a silent no-op.
 export async function instantiate(source, host) {
   // A URL in a page, the bytes themselves in a test or a node harness.
   const bytes = source instanceof Uint8Array ? source : await (await fetch(source)).arrayBuffer();
-  const module = await WebAssembly.compile(bytes);
+  const module = await compiled(bytes);
   const imports = {};
   const unknown = [];
   for (const im of WebAssembly.Module.imports(module)) {
