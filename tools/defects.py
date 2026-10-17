@@ -195,6 +195,7 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--generate", type=int, default=0, metavar="N")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--progress", type=int, default=0, metavar="K", help="say where it is every K programs")
     ap.add_argument("--show", action="store_true", help="print every run's output")
     a = ap.parse_args()
     all_cases = cases(open(CORPUS, encoding="utf-8").read())
@@ -223,7 +224,9 @@ def main():
         os.makedirs(os.path.join(d, "src"))
         with open(os.path.join(d, "avra.toml"), "w", encoding="utf-8") as f:
             f.write(MANIFEST)
-        for n, verbs, body, mutant in work:
+        for k, (n, verbs, body, mutant) in enumerate(work):
+            if a.progress and k % a.progress == 0:
+                print("defects: %d/%d" % (k, len(work)), flush=True)
             with open(os.path.join(d, "src", "main.av"), "w", encoding="utf-8") as f:
                 f.write(body)
             clean = False
@@ -237,8 +240,8 @@ def main():
                     print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
                 if why:
                     bad.append((n, why))
-                    print("defects: %s (%s) — %s" % (n, verb, why))
-                    print("    " + "\n    ".join(out.strip().split("\n")[:6]))
+                    print("defects: %s (%s) — %s" % (n, verb, why), flush=True)
+                    print("    " + "\n    ".join(out.strip().split("\n")[:6]), flush=True)
     print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len({n for n, _ in bad})))
     return 1 if bad else 0
 
