@@ -81,6 +81,7 @@ export type App = {
     asking: Cell<string?>,
     standing: Cell<List<string>>,
     dirty: Cell<bool>,
+    scrolling: Cell<bool>,
     holding: Cell<bool>,
     asked: Cell<bool>,
     framer: Cell<fn() -> void>,
@@ -151,6 +152,7 @@ export fn owned_app<V: View>(
         asking: Cell.new(nobody),
         standing: on_screen,
         dirty: Cell.new(false),
+        scrolling: Cell.new(false),
         holding: Cell.new(false),
         asked: Cell.new(false),
         framer: Cell.new(nobody_asks),
@@ -178,6 +180,8 @@ impl App {
         let view = self.view.get()
         let theme = self.theme.get()
         self.stands.begun()
+        if !self.scrolling.get() { self.stands.moves() }
+        self.scrolling.set(false)
         let before = self.standing.get().join("\n")
         self.show(view(self.stands), theme())
         if self.standing.get().join("\n") != before { self.woken() }
@@ -186,6 +190,25 @@ impl App {
     /// State moved: the next frame shows it. A target that paints at each
     /// turn does at once; one that holds asks for its frame, once.
     fn mark() {
+        self.scrolling.set(false)
+        self.request_frame()
+    }
+
+    /// A target scrolled the windowed list standing at `path` to rows `from`
+    /// up to `to`: a frame follows, and it moves no state, so a list audits
+    /// nothing for it. A scroll in a frame beside a turn that moved state
+    /// leaves the frame a state frame.
+    fn scrolled(path: string, from: int, to: int) -> bool {
+        let list? = self.stands.find(path) else { return false }
+        if !self.dirty.get() { self.scrolling.set(true) }
+        list.windowed(from, to)
+        self.request_frame()
+        true
+    }
+
+    /// The frame is asked for: at once, or at the target's frame when it
+    /// holds.
+    fn request_frame() {
         self.dirty.set(true)
         if !self.holding.get() {
             let _ = self.flush()

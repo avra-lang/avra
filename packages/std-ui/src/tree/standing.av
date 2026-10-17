@@ -46,16 +46,9 @@ export type Standing = {
     said: Cell<List<string>>,
     window: Cell<Window?>,
     counted: Cell<int>,
-    audit: Cell<Audit>,
+    audit: Cell<int>,
+    moved: Cell<int>,
 }
-
-/// When a windowed list last checked its kept rows against its source: how
-/// many rows it had then, and how many paints ago.
-type Audit = { rows: int, paints: int }
-
-/// How many paints a windowed list lets pass before it checks its kept
-/// rows against the source again, when the number of rows has not moved.
-export const audit_every: int = 32
 
 /// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
 export type Window = { from: int, to: int }
@@ -67,11 +60,11 @@ export const first_window: int = 40
 /// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
     let nothing: List<string> = []
-    stands_in(Cell.new(nothing), Cell.new(0))
+    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(0))
 }
 
 /// A standing nothing has stood at, in the walk that says into `said`.
-fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
+fn stands_in(said: Cell<List<string>>, counted: Cell<int>, moved: Cell<int>) -> Standing {
     let none: Hold? = null
     let nowhere: string? = null
     let empty: List<Under> = []
@@ -86,7 +79,8 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
         said: said,
         window: Cell.new(unwindowed),
         counted: counted,
-        audit: Cell.new(Audit { rows: -1, paints: 0 }),
+        audit: Cell.new(-1),
+        moved: moved,
     }
 }
 
@@ -123,7 +117,7 @@ impl Standing {
     fn children(steps: List<string>, shared: List<bool>, drawn: bool) -> List<Standing> {
         mut stood: Map<string, Standing> = {}
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
-        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said, self.counted) } for s in steps]
+        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said, self.counted, self.moved) } for s in steps]
         let above = if drawn { null } else { self.step.get() }
         for j, u in now {
             u.standing.opened()
@@ -144,7 +138,7 @@ impl Standing {
     > {
         let opened = self.children(steps, shared, false)
         let in_window = told_set(steps)
-        let carried = [u for u in self.was_under.get() if !in_window.has(u.step) && kept(u.step)]
+        let carried = [u for u in self.was_under.get() if !in_window.has(u.step) && u.standing.held() > 0 && kept(u.step)]
         self.under.set(self.under.get().concat(carried))
         opened
     }
@@ -171,21 +165,18 @@ impl Standing {
         Window { from: if from < 0 { 0 } else { from }, to: to }
     }
 
-    /// Whether the rows this list kept, outside its window, are to be checked
-    /// against the source now: when the number of rows moved, and every
-    /// `audit_every` paints otherwise. A check is a pass over every key, so a
-    /// scroll that moved nothing else pays it rarely; a row deleted and
-    /// another added in one paint is found by the next audit at the latest.
-    fn auditing(rows: int) -> bool {
-        let last = self.audit.get()
-        let due = last.rows != rows || last.paints >= audit_every
-        self
-            .audit
-            .set(
-                if due { Audit { rows: rows, paints: 0 } } else { Audit { rows: rows, paints: last.paints + 1 } },
-            )
+    /// Whether the rows this list kept, outside its window, are to be
+    /// checked against the source now: when anything but a scroll has moved
+    /// since the last check. A scroll moves no state, so it pays no pass over
+    /// the keys; any other turn may have changed the source, and pays one.
+    fn auditing() -> bool {
+        let due = self.audit.get() != self.moved.get()
+        self.audit.set(self.moved.get())
         due
     }
+
+    /// A turn that is not a scroll ran: the source may have moved.
+    fn moves() { self.moved.set(self.moved.get() + 1) }
 
     /// A target tells the list standing here which rows to build.
     fn windowed(from: int, to: int) { self.window.set(Window { from: from, to: to }) }
@@ -211,6 +202,14 @@ impl Standing {
     fn windows() -> List<string> {
         let own = if self.window.get() == null { [] } else { [self.step.get() ?? ""] }
         own.concat(flatten([u.standing.windows() for u in self.under.get()]))
+    }
+
+    /// How many standings stand here and below, this one included: what a
+    /// paint keeps of the walk.
+    fn standings() -> int {
+        mut below = 1
+        for u in self.under.get() { below = below + u.standing.standings() }
+        below
     }
 
     /// How many instances stand here and below — the lifetime witness.

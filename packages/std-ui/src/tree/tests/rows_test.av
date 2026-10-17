@@ -14,6 +14,13 @@ component tapper(n: int) {
     }
 }
 
+/// A row that holds no state of its own.
+component plain(n: int) {
+    row {
+        text "plain ${self.n}"
+    }
+}
+
 fn keyed(i: int) -> string { "k${i}" }
 
 fn rows_of(count: int) -> List<int> { [i for i in 0..count] }
@@ -86,8 +93,37 @@ spec "tree/rows — a list builds only its window" {
             s.scroll(path, 100, 140) && s.text().contains("row 100 taps 0")
         }
     }
+    given "rows that hold nothing" {
+        then "are not kept once they leave the window" {
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(10000),
+                            (i: int) -> keyed(i),
+                            (i: int) -> plain i { key: keyed(i) },
+                        )
+                    }
+                },
+            )
+            let path = s.windows()[0]
+            let before = s.standings()
+            let swept = s.scroll(path, 1000, 1040) &&
+                s.scroll(path, 4000, 4040) &&
+                s.scroll(path, 9000, 9040)
+            swept && s.standings() <= before
+        }
+        then "and rows that hold an instance are kept" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let before = s.standings()
+            let tapped = s.press("Tap 3")
+            let swept = s.scroll(path, 1000, 1040) && s.scroll(path, 4000, 4040)
+            tapped && swept && s.standings() > before
+        }
+    }
     given "a row whose key leaves the source" {
-        then "loses what it held, and a row of that key added later starts fresh" {
+        then "loses what it held, and a row of that key added in the next paint starts fresh" {
             let src: Cell<List<int>> = Cell.new(rows_of(10))
             let s = headless(
                 () -> column {
