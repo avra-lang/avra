@@ -2,14 +2,14 @@
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
 use @std.meta.{identity}
 
-/// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
-/// fn-shaped keywords a declaration wears, one bitset instead of four
-/// parallel `List<bool>` keyed alike. `grammars` does NOT fold in here
+/// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn`,
+/// `view` — the fn-shaped keywords a declaration wears, one bitset
+/// instead of parallel `List<bool>` keyed alike. `grammars` does NOT fold in here
 /// despite sharing the same StmtId key: it carries a PAYLOAD (the format a
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_view: bool = false }
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks { is_exported: false, is_mutating: false, is_once: false, is_static: false }
@@ -39,6 +39,9 @@ export type SyntaxArena = {
     // an impl's own written type-parameter lists, by its statement —
     // printing only, absent on a plain (non-generic) impl
     impl_tparams: Cell<List<ImplTypeParams?>>,
+    // a `state`'s slot in the view that owns it, by its statement —
+    // -1 for one no view body holds
+    state_slots: Cell<List<int>>,
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
     hoisted: Cell<List<StmtId>>,
@@ -126,6 +129,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         grammars: list_cell(),
         component_insts: list_cell(),
         impl_tparams: list_cell(),
+        state_slots: list_cell(),
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
@@ -518,7 +522,7 @@ impl SyntaxArena {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _) or .Error -> null,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _) or .State(_, _, _) or .Error -> null,
         }
     }
 
@@ -697,6 +701,7 @@ impl SyntaxArena {
         self.grammars.push(null)
         self.component_insts.push(null)
         self.impl_tparams.push(null)
+        self.state_slots.push(-1)
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -849,6 +854,27 @@ impl SyntaxArena {
     }
 
     fn is_static(s: StmtId) -> bool { if s.index < self.marks.get().length { self.marks_at(s).is_static } else { true } }
+
+    /// `view` declared this fn — it answers a `View`, and its last seat
+    /// is the instance's context, which a call inside a view fills.
+    fn mark_view(s: StmtId) {
+        self.update_marks(s, (m) -> m with { is_view: true })
+        self.restamp(s, 153)
+    }
+
+    fn is_view(s: StmtId) -> bool { self.marks_at(s).is_view }
+
+    /// A view body holds this `state` as its slot `n`.
+    fn hold_state(s: StmtId, n: int) {
+        self.state_slots.set_at(s.index, n)
+    }
+
+    /// The slot a `state` holds in its view, or null when no view
+    /// body holds it.
+    fn state_slot(s: StmtId) -> int? {
+        let n = self.state_slots.get()[s.index]
+        if n < 0 { null } else { n }
+    }
 
     /// `grammar Name = "…"` declared this record — the format it
     /// reads, which the record's fields cannot spell. The mark's code

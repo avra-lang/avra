@@ -1,0 +1,75 @@
+//! Parse-time lowering: a view is a fn DECLARATION wearing the `view`
+//! mark, its written seats followed by its context seat, answering a
+//! `View`; a `state` is its own statement, claimed by the view body
+//! that holds it directly. Each rule's first word arrives as a NAME
+//! and is checked here — a keyword literal would take the word from
+//! every program that names something `view` or `state`.
+use core.{Expr, Stmt, Param, TypeRef, Scoped, named_ref, plain_mark}
+use grammar.{Token}
+use features.{LangNode, Builder, aligned_param_types, marked_seats, placing}
+
+fn build_view(b: Builder) -> Result<LangNode, string> {
+    let w = b.token(0)?
+    if w.text != "view" { return .Err(unknown_word(w.text)) }
+    let n = b.token(1)?
+    let marks = b.tokens(4)?
+    let stray? = marks.find(it.text != "state") else { return declared_view(b, n) }
+    .Err(unknown_mark(stray.text))
+}
+
+/// The view's declaration: its seats, its context, its answer — and
+/// every `state` its body holds directly, claimed in written order.
+fn declared_view(b: Builder, n: Token) -> Result<LangNode, string> {
+    let ps = b.tokens(5)?
+    let body = b.expr(8)?
+    let ends? = b.span_end() else {
+        return .Err("defect: a view declaration without a span — the arena and the grammar disagree")
+    }
+    let written = placing(
+        marked_seats(b.store, ps, aligned_param_types(ps, b.type_refs(6)?, ends), b.tokens(3)?, b.tokens(2)?, n.span.lo),
+        ps,
+        b.tokens(4)?,
+        n.span.lo,
+    )
+    let seats = b.defaulted(ps, written, b.exprs(7)?).concat([context_seat(b, n)])
+    let s = b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), [], seats, answer_of_view(n), body), b.span)
+    b.store.mark_view(s)
+    for j, st in [st for st in b.store.block_stmts(body) ?? [] if b.store.state_seed(st) != null] {
+        b.store.hold_state(st, j)
+    }
+    b.wrap_stmt(s)
+}
+
+/// `cx: ViewCx = root()` — the instance context every view takes
+/// last: a fresh tree unless a calling view hands its own child.
+fn context_seat(b: Builder, n: Token) -> Param {
+    Param {
+        name: Scoped("cx"),
+        ty: named_ref("ViewCx"),
+        default: b.store.alloc_expr(Expr.Call(Scoped("root"), [], []), null),
+        promises: plain_mark with { context: true },
+        id: b.store.alloc_param_id(n.span),
+    }
+}
+
+/// `dyn View` — what every view answers.
+fn answer_of_view(n: Token) -> TypeRef {
+    named_ref("View") with { dynamic: true, span: n.span }
+}
+
+fn build_state(b: Builder) -> Result<LangNode, string> {
+    let w = b.token(0)?
+    if w.text != "state" { return .Err(unknown_word(w.text)) }
+    let n = b.token(1)?
+    b.make_stmt(Stmt.State(Scoped(n.text), (b.type_refs(2)?).first(), b.expr(3)?))
+}
+
+// ── voices ──
+
+fn unknown_word(word: string) -> string {
+    "`${word}` opens no statement — a declaration here opens with `view`, a place with `state`"
+}
+
+fn unknown_mark(word: string) -> string {
+    "`${word}` marks no seat — a seat is marked `const`, `mut` or `state`"
+}

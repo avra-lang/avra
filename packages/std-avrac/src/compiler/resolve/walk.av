@@ -107,6 +107,7 @@ impl ResolveCx {
             self.bind_use(e, b)
             self.note_mut_seat(e, b)
             self.note_settled_seat(e, b)
+            if self.place_rooted(b) { self.facts.mark_place_read(e) }
             return
         }
         let at = self.loc_of(e)
@@ -194,6 +195,18 @@ impl ResolveCx {
                 if self.seat_is_settled(i) { self.facts.mark_settled_read(e) }
             },
             rest -> nothing(),
+        }
+    }
+
+    /// Whether a binding is a PLACE — a `state`, a `state` seat, or a
+    /// capture of either, read through the lanes to the binding the
+    /// lambdas captured.
+    fn place_rooted(b: Binding) -> bool {
+        match b {
+            .Def(s) -> self.view.store.state_seed(s) != null,
+            .Param(i) -> self.at_seat(i, (m: SeatMark) -> m.place),
+            .Capture(lam, j) -> self.place_rooted(self.facts.capture(lam)!.sources[j]),
+            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Index(_) or .Decl(_) -> false,
         }
     }
 

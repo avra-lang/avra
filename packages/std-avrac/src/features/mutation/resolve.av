@@ -1,6 +1,6 @@
 //! The assignment's resolve rule: the target is a PLACE — a path
-//! rooted in a name — and that name must land on a `mut` binding;
-//! params and plain lets refuse with the remedy. The path itself
+//! rooted in a name — and that name must land on a `mut` binding or
+//! a `state`; params and plain lets refuse with the remedy. The path itself
 //! resolves like any expression.
 use core.{StmtId, ExprId, DeclId, same_expr}
 use features.{ResolveCx, nothing}
@@ -19,6 +19,9 @@ export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
     // name-keyed table holds locals alone and would let a fn's
     // name through as a place
     let b? = cx.facts.binding(r) else { return }
+    // a PLACE is written whole or along a path, from anywhere that
+    // reads it — its binding is the cell every reader shares
+    if cx.facts.reads_place(r) { return }
     match b {
         // a method writes through its receiver: a PATH under `self`,
         // never `self` itself

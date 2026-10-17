@@ -398,6 +398,7 @@ impl SourceText {
                 ]
             },
             .FnDecl(name, tparams, params, ret, body) -> {
+                if self.store.is_view(s) { return [self.view_decl(s, exported, name.of, params, body, depth)] }
                 let head = "${exported}${self.fn_mark(s)}fn ${source_name(name.of)}${self.type_params(tparams)}"
                 let sig = "${head}${self.params_wrapped(params, depth, col_after(head, depth * 4))}"
                 [
@@ -580,7 +581,26 @@ impl SourceText {
             ],
             .CollectEnum(name, kind, scope, order) -> [source_line(depth, self.collect_enum_decl(exported, name.of, kind, scope, order))],
             .Error -> [source_line(depth, "__error")],
+            .State(name, ty, seed) -> {
+                let name_part = "state ${source_name(name.of)}"
+                let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
+                [
+                    source_line(
+                        depth,
+                        "${prefix}${self.expression(seed, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                    ),
+                ]
+            },
         }
+    }
+
+    /// `view name(seats) { … }` — the seats as written, the context
+    /// seat and the `View` answer being the declaration's own.
+    mut fn view_decl(s: StmtId, exported: string, name: string, params: List<Param>, body: ExprId, depth: int) -> string {
+        let head = "${exported}view ${source_name(name)}"
+        let written = params.slice(0, params.length - 1)
+        let sig = "${head}${self.params_wrapped(written, depth, col_after(head, depth * 4))}"
+        source_line(depth, "${sig} ${self.block(body, self.stmt_flat(s), depth)}")
     }
 
     fn stmt_end(s: StmtId) -> int { end_of(self.store.stmt_span(s)) }

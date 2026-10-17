@@ -964,6 +964,11 @@ export enum Stmt {
     /// own declaration name. `order` is the `by` list's `it.field`
     /// paths, the same currency `Collect` orders by.
     CollectEnum(name: Scoped, kind: CollectKind, scope: CollectScope, order: List<Plain>)
+    /// `state name: T = seed` — a PLACE with its view instance's
+    /// identity: the binding is a `Cell<T>` its view's store keeps, the
+    /// seed runs once per instance, and a read of the name is what the
+    /// cell holds.
+    State(name: Scoped, ty: TypeRef?, seed: ExprId)
 }
 
 /// The language AST's arenas plus their fingerprint side tables. A
@@ -1048,7 +1053,7 @@ fn greed_fp(greedy: bool) -> int { if greedy { 1 } else { 0 } }
 /// `x`, so the marks ride the identity as the interner's key already
 /// says they ride the type.
 fn mark_fp(m: SeatMark) -> int {
-    fp(126, [flagged(m.mutable), flagged(m.settled), flagged(m.unshared)])
+    fp(126, [flagged(m.mutable), flagged(m.settled), flagged(m.unshared), flagged(m.place), flagged(m.context)])
 }
 
 /// A written type's identity: absence is its own value, and the `?`,
@@ -1140,7 +1145,7 @@ fn exact_scopeds(a: List<Scoped>, b: List<Scoped>) -> bool {
 }
 
 fn exact_seat_mark(a: SeatMark, b: SeatMark) -> bool {
-    a.mutable == b.mutable && a.settled == b.settled && a.unshared == b.unshared
+    a.mutable == b.mutable && a.settled == b.settled && a.unshared == b.unshared && a.place == b.place && a.context == b.context
 }
 
 fn exact_seat_marks(a: List<SeatMark>, b: List<SeatMark>) -> bool {

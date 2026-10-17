@@ -100,7 +100,13 @@ impl LowerCx {
         Place.Slot(self.unique_box(subject), self.field_slot(subject, name))
     }
 
-    fn cell_place(e: ExprId) -> Place? {
+    /// A bare name's place: a `mut` local's memory cell, or a PLACE's
+    /// `Cell` — its one slot, written in place for every reader.
+    mut fn cell_place(e: ExprId) -> Place? {
+        if self.names.reads_place(e) {
+            let held? = self.place_cell(e) else { return null }
+            return Place.Slot(held, self.const_int(0))
+        }
         let cell? = self.cell_of(e) else { return null }
         Place.Cell(cell)
     }
@@ -130,6 +136,12 @@ impl LowerCx {
     mut fn unique_box(s: ExprId) -> Reg {
         let step? = self.view.store.place_step(s) else { return self.lower_defect(s, "a mutation through a value survived resolve") }
         match step {
+            // a place's value opens inside its cell — the cell itself
+            // is the identity every reader shares, never copied
+            .Root(_) if self.names.reads_place(s) -> {
+                let held? = self.place_cell(s) else { return self.lower_defect(s, "a place with no cell survived resolve") }
+                self.slot_opened(s, held, self.const_int(0))
+            },
             .Root(_) -> {
                 let cell: Reg? = self.cell_of(s)
                 if cell != null {

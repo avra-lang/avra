@@ -174,7 +174,7 @@ export type Cap = { names: List<string>, sources: List<Binding> }
 /// are plain local methods once the caller holds it, never a second
 /// Kernel ask, so nothing here risks the per-node recording cost
 /// §6.11 warns against.
-export type NameFacts = { bindings: SideTable<Binding?>, captures: SideTable<Cap?>, mut_reads: SideTable<bool>, settled_reads: SideTable<bool>, names: Namespace, voices: Voices }
+export type NameFacts = { bindings: SideTable<Binding?>, captures: SideTable<Cap?>, mut_reads: SideTable<bool>, settled_reads: SideTable<bool>, place_reads: SideTable<bool>, names: Namespace, voices: Voices }
 
 /// Born total over the file's expressions: nothing bound, nothing
 /// captured, no seat read yet.
@@ -184,6 +184,7 @@ export fn new_name_facts(exprs: int, names: Namespace) -> NameFacts {
         captures: side_table<Cap?>("captures", 0, exprs, null),
         mut_reads: side_table("mut_reads", 0, exprs, false),
         settled_reads: side_table("settled_reads", 0, exprs, false),
+        place_reads: side_table("place_reads", 0, exprs, false),
         names: names,
         voices: no_voices(),
     }
@@ -203,6 +204,15 @@ impl NameFacts {
     /// Whether this parameter read names a `const` (settled) seat —
     /// the resolver marks it as it binds, the way it marks `mut`.
     fn reads_settled_seat(e: ExprId) -> bool { self.settled_reads.get(e.index) }
+
+    /// Whether this name reads a PLACE — a `state`, or a `state` seat,
+    /// directly or through a capture: its binding is the `Cell`, and
+    /// the read is what the cell holds.
+    fn reads_place(e: ExprId) -> bool { self.place_reads.get(e.index) }
+
+    fn mark_place_read(e: ExprId) {
+        self.place_reads.set(e.index, true)
+    }
 
     fn mark_settled_read(e: ExprId) {
         self.settled_reads.set(e.index, true)

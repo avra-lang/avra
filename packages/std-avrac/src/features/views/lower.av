@@ -1,0 +1,56 @@
+//! Views in the IR. A view's body reads its own context from its
+//! last seat. A `state` asks that context for the cell its slot holds
+//! and, the first time, runs its seed into a fresh cell and keeps it —
+//! the store is `@std/ui`'s, reached through `ViewCx`'s own methods,
+//! which carry every cell as `Slot` and the compiler reads back as the
+//! `Cell<T>` the `state` declares. A view called inside a view takes
+//! the calling view's child for the call site.
+use core.{StmtId, ExprId, TypeId, Reg}
+use features.{LowerCx}
+
+/// The cell a `state` names: its instance's, kept across renders, or
+/// made from its seed and kept. Answers the cell as the statement's
+/// register, so every read of the name finds it.
+export fn lower_state(mut cx: LowerCx, s: StmtId) -> Reg? {
+    let seed? = cx.view.store.state_seed(s) else { return null }
+    let n? = cx.view.store.state_slot(s) else { return unheld(cx, "a `state` no view holds survived typing") }
+    let own? = own_context(cx) else { return unheld(cx, "a `state` outside its view's own body survived typing") }
+    let cell = cx.concrete(cx.def_ty(s))
+    let maybe = cx.view.types.type(cell?)
+    let kept? = context_call(cx, own, "held", [cx.const_int(n)], maybe) else { return null }
+    cx
+        .region_as(cx.presence_of(kept, maybe), cell) { cx -> cx.carried_of(kept, maybe) } else { cx ->
+            let made = cx.grown_box(cx.view.types.shape_of(cell), cx.box_size(1), [cx.reg_of(seed)])
+            let _ = context_call(cx, own, "keep", [cx.const_int(n), made], cx.type(void))
+            made
+        }
+}
+
+/// The context a view called at `e` takes when a view calls it: the
+/// calling view's child for this site. Null outside a view's own body,
+/// where the seat's default starts a fresh tree.
+export fn child_context(mut cx: LowerCx, e: ExprId, answer: TypeId) -> Reg? {
+    let own? = own_context(cx) else { return null }
+    context_call(cx, own, "child", [cx.const_int(e.index), cx.const_int(0)], answer)
+}
+
+/// The body's own view context — its last seat, when that seat is one.
+fn own_context(cx: LowerCx) -> Reg? {
+    let last? = cx.seat_marks.last() else { return null }
+    if !last.context { return null }
+    cx.seat_reg(cx.seat_marks.length - 1)
+}
+
+/// `ViewCx`'s method `name`, called on `own` — the one door the store
+/// is reached through.
+fn context_call(mut cx: LowerCx, own: Reg, name: string, args: List<Reg>, answer: TypeId) -> Reg? {
+    let ty = cx.out.type_of_reg(own)
+    let m? = cx.method_of(ty, name) else { return unheld(cx, "a view context without `${name}` survived typing") }
+    cx.call_decl(answer, cx.method_symbol(m, null, ty), [own].concat(args))
+}
+
+/// A defect spoken, and no register — the statement lowers to nothing.
+fn unheld(mut cx: LowerCx, what: string) -> Reg? {
+    cx.defect(what)
+    null
+}

@@ -1,0 +1,40 @@
+//! `@std.ui.view` — a view INSTANCE's identity. The compiler hands
+//! every `view` a `ViewCx` as its last seat: a call from a plain fn
+//! starts a fresh tree with `root()`, and a call inside a view takes
+//! the calling view's `child` for that site. Every `state` a view
+//! declares is a cell this store keeps under the instance's path, so
+//! it survives the next render of the same tree.
+//!
+//!     use @std.ui.view.{ViewCx, root}
+//!
+//! Docs: docs/2026_09_29_UI.md §18.
+
+/// One `state` cell with its held type erased: the compiler reads a
+/// slot back as the `Cell<T>` its `state` declares.
+export alias Slot = Cell<int>
+
+/// A view instance's identity: the store every `state` of its tree
+/// lives in, and the path that names this instance there.
+export type ViewCx = { cells: Cell<Map<string, Slot>>, path: string }
+
+/// A fresh tree: a store of its own, and the root's empty path.
+export fn root() -> ViewCx {
+    let fresh: Map<string, Slot> = {}
+    ViewCx { cells: Cell.new(fresh), path: "" }
+}
+
+impl ViewCx {
+    /// The instance a view called at `site` makes, for the item `key`
+    /// of the loop around it (0 outside one).
+    fn child(site: int, key: int) -> ViewCx { self with { path: "${self.path}/${site}:${key}" } }
+
+    /// The cell this instance keeps as slot `n`, when one was kept.
+    fn held(n: int) -> Slot? { self.cells.get().get(self.slot_path(n)) }
+
+    /// Keeps `cell` as this instance's slot `n`.
+    fn keep(n: int, cell: Slot) {
+        self.cells.put(self.slot_path(n), cell)
+    }
+
+    fn slot_path(n: int) -> string { "${self.path}#${n}" }
+}

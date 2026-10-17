@@ -18,10 +18,12 @@ use core.{
     SeatMark,
     is_literal,
     settled_mark,
+    context_mark,
     Static,
     StaticBox,
 }
 use diagnostics.{loc_at, refusal, Diag}
+use features.views.{child_context}
 use features.{
     LowerCx,
     capture_lane,
@@ -82,13 +84,24 @@ impl LowerCx {
 
     /// A declared call's registers in SEAT order: each written
     /// argument's — lowered by the caller in written order — and a
-    /// call to its own default body for each seat no argument writes.
-    /// Typing held every unwritten seat to a default.
+    /// call to its own default body for each seat no argument writes,
+    /// save a view's context, which a calling view fills with its
+    /// child. Typing held every unwritten seat to a default.
     mut fn seated_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
         let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
         if seats.length < regs.length { return regs }
         let defaults = self.view.decls.seat_defaults(d)
-        [if i >= 0 { regs[i] } else { self.default_reg(e, defaults[j]) } for j, i in self.view.store.seat_plan(args, seats)]
+        let marks = self.view.decls.marks_of(d, seats.length)
+        [if i >= 0 { regs[i] } else { self.unwritten_reg(e, d, j, context_mark(marks, j), defaults[j]) } for j, i in self.view.store.seat_plan(args, seats)]
+    }
+
+    /// Seat `j` no argument wrote: a view's context takes the calling
+    /// view's child, and every other seat — a context outside a view
+    /// included — runs its default.
+    mut fn unwritten_reg(e: ExprId, d: DeclId, j: int, context: bool, body: DeclId?) -> Reg {
+        let seats: List<TypeId> = self.view.decls.sig(d)?.fn_sig()?.params ?? []
+        if !context || j >= seats.length { return self.default_reg(e, body) }
+        child_context(self, e, seats[j]) ?? self.default_reg(e, body)
     }
 
     mut fn default_reg(e: ExprId, body: DeclId?) -> Reg {
@@ -302,14 +315,29 @@ impl LowerCx {
     /// answers here; the capture pack, whose node is the lambda,
     /// names the type itself.
     fn read_binding(e: ExprId, b: Binding) -> Reg? {
-        self.read_wearing(e, b, self.concrete(self.facts.type_at(e)))
+        let ty = self.concrete(self.facts.type_at(e))
+        if !self.names.reads_place(e) { return self.read_wearing(e, b, ty) }
+        let cell? = self.place_cell(e) else { return null }
+        self.slot_read(cell, 0, ty)
+    }
+
+    /// The `Cell` a place read names — its binding's own register.
+    fn place_cell(e: ExprId) -> Reg? {
+        let b? = self.names.binding(e) else { return null }
+        self.read_wearing(e, b, self.view.types.intern(Type.Cell(self.concrete(self.facts.type_at(e)))))
+    }
+
+    /// Seat `i`'s register: a seeded seat's materialization, else the
+    /// param itself — params ARE registers 0..N-1.
+    fn seat_reg(i: int) -> Reg {
+        if i < self.seat_regs.length { self.seat_regs[i] } else { Reg { index: i } }
     }
 
     /// A binding's VALUE in the current body, minted at `ty` where
     /// the read mints — a boxed slot's load, a capture lane.
     fn read_wearing(e: ExprId, b: Binding, ty: TypeId) -> Reg? {
         match b {
-            .Param(i) -> if i < self.seat_regs.length { self.seat_regs[i] } else { Reg { index: i } },
+            .Param(i) -> self.seat_reg(i),
             .Receiver -> first_seat,
             .Def(s) -> self.defined_reg(e, s, ty),
             .Pattern(v, j) -> self.body.pattern_reg(v, j),

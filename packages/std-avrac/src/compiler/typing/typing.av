@@ -453,9 +453,17 @@ impl TypeCx {
     /// An ident's type, by its binding kind — NARROWED when a
     /// presence test proved this binding present in the branch
     /// being walked (the narrow is recorded for lowering, which
-    /// unwraps the read at its one edge). No binding means resolve
-    /// already spoke — Error, silently.
+    /// unwraps the read at its one edge). A PLACE's read answers what
+    /// its cell holds. No binding means resolve already spoke — Error,
+    /// silently.
     mut fn target_type(e: ExprId) -> TypeId {
+        let bound = self.bound_type(e)
+        if !self.names.reads_place(e) { return bound }
+        self.view.types.cell_inner(bound) ?? self.error_type
+    }
+
+    /// The type an ident's binding wears — a place's is its `Cell`.
+    mut fn bound_type(e: ExprId) -> TypeId {
         let b? = self.names.binding(e) else { return self.error_type }
         match b {
             .Param(i) -> self.narrowed_param(e, i) ?? self.seat_type(i),

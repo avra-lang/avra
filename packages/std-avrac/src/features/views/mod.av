@@ -1,0 +1,34 @@
+//! Views — `view f(params) { … }` declares a fn answering a `View`
+//! that may own state, and `state x: T = v` inside its body declares
+//! a PLACE: a `Cell<T>` the view instance's store keeps, seeded by
+//! `v` once per instance. A read of `x` is what the cell holds, and
+//! `x = e` writes it. A view's last seat is its instance context,
+//! `cx: ViewCx = root()`: a call from a plain fn gets a fresh tree, and
+//! a call inside a view gets the calling view's child for that site
+//! (docs/2026_09_29_UI.md §18). `view` and `state` are NAMES, never
+//! keywords — each branch reads its first word as a NAME and the
+//! builder checks it, so `state` and `view` stay free as names.
+use features.{LanguageFeature, BuilderRow}
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn views() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name         | build
+        "view_decl"  | build_view
+        "state_stmt" | build_state
+    }
+    let codes = table<DiagCode> {
+        kind               | summary
+        "view.state_owner" | "a `state` lives directly in a `view` body"
+    }
+    LanguageFeature views {
+        gram: grammar {
+            stmt = w:NAME n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ( sk:NAME ps:NAME | ps:NAME ) ( ":" pt:type )? ( "=" pd:expression )? ( "," ( ck:"const" )? ( mk:"mut" )? ( sk:NAME ps:NAME | ps:NAME ) ( ":" pt:type )? ( "=" pd:expression )? )* ","? )? ")" b:block END -> view_decl(w, n, ck, mk, sk, ps, pt, pd, b)
+            stmt = w:NAME n:NAME ( ":" t:type )? "=" v:expression END -> state_stmt(w, n, t, v)
+        }
+        builders: rows
+        diags: codes
+    }
+    views
+}

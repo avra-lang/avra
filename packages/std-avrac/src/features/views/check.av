@@ -1,0 +1,37 @@
+//! The `state` statement's typing: the seed is what the cell holds —
+//! its declared type when one is written — and the BINDING is the
+//! cell, so a capture carries the place and a read answers its value.
+use core.{StmtId, TypeId, TypeRef, Type}
+use features.{TypeCx}
+use diagnostics.{refusal}
+
+export fn check_state(mut cx: TypeCx, s: StmtId) {
+    let seed? = cx.view.store.state_seed(s) else { return }
+    if cx.view.store.state_slot(s) == null { state_without_view(cx, s) }
+    let ann: TypeRef? = cx.view.store.binding_ty(s)
+    let declared: TypeId? = if ann == null { null } else { cx.annotated(s, ann) }
+    if declared != null { cx.plant_want(seed, declared!) }
+    cx.walk(seed)
+    if cx.refuses_type_value(seed) || cx.refuses_void_value(seed) {
+        cx.record_binding(s, cx.error_type)
+        return
+    }
+    if declared != null { cx.declared_binding(seed, cx.view.store.let_name(s) ?? "this state", declared!) }
+    let held = declared ?? cx.type_at(seed)
+    cx.record_binding(s, cx.view.types.intern(Type.Cell(held)))
+}
+
+// ── voices ──
+
+fn state_without_view(mut cx: TypeCx, s: StmtId) {
+    cx
+        .emit(
+            refusal(
+                "view.state_owner",
+                cx.stmt_loc(s),
+                "`state` lives in a `view` — a fn's local is `let` or `mut`",
+                "declared here",
+                "bind it with `let` or `mut`, or move it directly into a `view` body",
+            ),
+        )
+}
