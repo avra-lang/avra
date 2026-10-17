@@ -134,8 +134,20 @@ Five attempts to lift a handler into a generated message failed.
    page's exports and its one import are the web module's own
    (`web/web.av`), and the program's statements are its start. THE LOOP
    IS ONE DOOR (`App.turn`, `app/app.av`): whatever may change the
-   state runs through it — a control speaking, later a timer or an
-   answer arriving — and a paint follows only when it ran. A target is
+   state runs through it — a control speaking, a timer, an answer
+   arriving — and a paint follows only when it ran. EVERY SOURCE
+   RE-ENTERS BY POSTING AN `Act` to the app's inbox (`Msg.Turn`), or a
+   `Job` the loop starts as a task it owns (`Msg.Start`). A native
+   target (`native/sources.av`) loops over the inbox: a handler's
+   `later`/`repeating` leave a job, the loop spawns it, the job parks
+   and posts, and what it posted runs as a turn; the loop block owns
+   every task it started, so they end with it. The terminal's standard
+   input is such a source. A target WITHOUT TASKS (the page) realizes
+   the same seam from its host's callbacks: `setTimeout` or a `fetch`
+   answer re-enters through an exported fn that posts the `Act` and
+   runs one turn, as `avra_ui_event` does for a control. The headless
+   screen runs the same native loop under the virtual clock
+   (`screen.running`, `screen.advance`). A target is
    what the door paints on: a page sent patches, a screen held in
    memory. Text a control says crosses in a seat the program hands out
    for exactly its octets, so no text has a longest length.
