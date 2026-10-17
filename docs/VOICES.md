@@ -20,13 +20,13 @@ which only shrinks.
 | type | 119 | 71 | 71 | 6 |
 | flow | 17 | 11 | 11 | 0 |
 | annotation | 17 | 2 | 2 | 0 |
-| manifest | 30 | 19 | 19 | 0 |
+| manifest | 30 | 20 | 20 | 0 |
 | collect | 14 | 14 | 14 | 0 |
 | collect_enum | 7 | 7 | 7 | 0 |
 | const | 6 | 5 | 5 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 260 | 151 | 151 | 8 |
+| **all** | 260 | 152 | 152 | 8 |
 
 ## Rules
 
