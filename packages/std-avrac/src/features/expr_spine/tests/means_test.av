@@ -1,0 +1,92 @@
+// A sugar keeps its own node and answers for its meaning: `~x` is
+// `Bitnot`, minted with `x ^ -1`, and a refusal that meaning causes
+// says what the sugar means at the sugar the author wrote.
+use @std.avrac.core.{SyntaxArena, ExprId}
+use @std.avrac.compiler.{parse_source, analyze_source}
+use @std.avrac.testing.{shown, refused_with, provided, answered}
+use @std.avrac.compiler.{avra}
+use @std.avrac.diagnostics.{new_source_file}
+
+/// A provider whose template holds a sugar over a hole: the splice
+/// copies the sugar, and its meaning must follow the copy.
+fn inverting() -> string {
+    "export component inverted(head: Code) {\n    body: Code\n    fn expand() -> Code {\n        quote {\n            ~7 + ~\${self.head} + \${self.body}\n        }\n    }\n}\n"
+}
+
+/// Whether expression `i` of the store is the literal 7.
+fn is_seven(store: SyntaxArena, i: int) -> bool {
+    match store.expr(ExprId { index: i }) { .IntLit(v) -> v == 7, rest -> false }
+}
+
+spec "features/expr_spine — a sugar's meaning" {
+    given "`~x`" {
+        then "it parses to its own node, not to its rewrite" {
+            let p = parse_source("let x = 1\n~x")
+            let root = p.store.stmt_value(p.stmts[1])!
+            p.voices.list.length == 0 && p.store.expr(root) is .Bitnot
+        }
+        then "it answers what `x ^ -1` answers" {
+            shown("let x = 5\n~x") == "-6"
+        }
+        then "its minted nodes answer for the sugar" {
+            let p = parse_source("let x = 1\n~x")
+            let root = p.store.stmt_value(p.stmts[1])!
+            match p.store.expr(root) {
+                .Bitnot(rewrite) -> p.store.minted_for(rewrite)?.index ?? 0 - 1 == root.index &&
+                    p.store.minted_for(root) == null &&
+                    p.store.sugars().length == 1 &&
+                    p.store.sugars().first()?.index ?? 0 - 1 == root.index,
+                _ -> false,
+            }
+        }
+        then "the statement notes what it means" {
+            let p = parse_source("let x = 1\n~x")
+            p.store.means_in(p.stmts[1]).join("|") == "`~x` means `x ^ -1`"
+        }
+    }
+    given "`~s` over a string" {
+        then "the refusal about the rewrite also says what the sugar means" {
+            refused_with("let s = \"x\"\n~s", "`~s` means `s ^ -1`")
+        }
+        then "the whole refusal, rendered" {
+            let expected = """error[type.mismatch]: `^` needs `int` operands, found `string`
+  ╭─[app.av:2:2]
+2 │ ~s
+  ·  ┬
+  ·  ╰── this is `string`
+──╯
+  ╭─[app.av:2:1]
+2 │ ~s
+  · ┬
+  · ╰── `~s` means `s ^ -1`
+──╯"""
+            avra().check(new_source_file("app.av", "let s = \"x\"\n~s")) == expected
+        }
+        then "and keeps the rewrite's own words" {
+            refused_with("let s = \"x\"\n~s", "`^` needs `int` operands, found `string`")
+        }
+    }
+    given "a sugar inside a template" {
+        then "the copy keeps its meaning and runs it once" {
+            answered(provided("use @x.c.{inverted}\ninverted 5 { 1 }", inverting())) == "-13"
+        }
+        then "its operand is copied once, never twice" {
+            let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
+            let store = p.ws.parsed(p.ws.file_id("/w/src/main.av")).store
+            [i for i in 0..store.expr_count() if is_seven(store, i)].length == 1
+        }
+        then "the copy's minted nodes answer for the copy" {
+            let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
+            let store = p.ws.parsed(p.ws.file_id("/w/src/main.av")).store
+            store.sugars().length == 2 &&
+                store.sugars().all((s) -> store.minted_nodes(s).length == 2)
+        }
+        then "and the instance's expansion is noted as written" {
+            let p = provided("use @x.c.{inverted}\nlet v = inverted 5 { 1 }\nv", inverting())
+            let shown_text = p.expanded_source(p.ws.file_id("/w/src/main.av"))
+            shown_text.contains("~7") &&
+                shown_text.contains("~5") &&
+                shown_text.contains("`~7` means `7 ^ -1`")
+        }
+    }
+}
