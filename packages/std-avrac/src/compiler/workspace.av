@@ -198,8 +198,7 @@ fn new_keys() -> Keys {
 /// each with why (`read_files`); the held modules minted so far, by name
 /// (`minted`); the files whose declarations stand, read or minted
 /// (`file_ready`); whether the holds are settled, before which no file's
-/// standing is known (`holds_settled`); where every impl and trait of a
-/// name lives, since a method table wants them all (`named_in`); which
+/// standing is known (`holds_settled`); which
 /// held module files a declaration under each bucket value its record
 /// carries — name, word, mark, extern — so a bucket read mints its
 /// producer before it reads (`named_by`, `worded_by`, `marked_by`,
@@ -256,8 +255,7 @@ type Hold = {
     file_ready: Table<bool>,
     row_filled: Table<bool>,
     holds_settled: Cell<bool>,
-    named_in: Cell<Map<string, List<string>>>,
-    /// THE PRODUCER INDEX, BESIDE `named_in`: for each held module, every declaration NAME,
+    /// THE PRODUCER INDEX: for each held module, every declaration NAME,
     /// WORD and MARK its record lines carry, and each extern it declares. A bucket
     /// reader mints the modules listed for its value before it reads the bucket, so a
     /// held module's row exists before the read that wants it — never eagerly, never late.
@@ -320,7 +318,7 @@ fn new_hold() -> Hold {
     let no_seeds: List<ReadFile> = []
     let no_read_files: List<ReadFile> = []
     let no_minted: Map<string, bool> = {}
-    let no_named_in: Map<string, List<string>> = {}
+    let no_producers: Map<string, List<string>> = {}
     let no_flat: List<TypeId> = []
     let no_moved: Map<string, List<PartMoved>> = {}
     let no_reexports: Map<string, List<Reexport>> = {}
@@ -348,10 +346,9 @@ fn new_hold() -> Hold {
         file_ready: new_table<bool>(),
         row_filled: new_table<bool>(),
         holds_settled: Cell.new(false),
-        named_in: Cell.new(no_named_in),
-        named_by: Cell.new(no_named_in),
-        worded_by: Cell.new(no_named_in),
-        marked_by: Cell.new(no_named_in),
+        named_by: Cell.new(no_producers),
+        worded_by: Cell.new(no_producers),
+        marked_by: Cell.new(no_producers),
         externed_by: list_cell(),
         held_refs: map_cell(),
         held_flat: Cell.new(no_flat),
@@ -1166,19 +1163,15 @@ impl Workspace {
         }
     }
 
-    /// Every source file of the package `f` stands in admitted — its
-    /// tests aside, a held file minted rather than parsed.
+    /// Every read source file of the package `f` stands in admitted, its tests aside. A held
+    /// file stands for its record: the producer doors mint it when a read wants its rows.
     fn package_admitted(f: FileId) {
         let path = self.decls.file(f).path
         let pkg? = self.packages().find((k) -> path.starts_with("${k.src}/")) else { return }
-        for p in [p for p in self.all_files(pkg.src) if !self.is_test_path(p)] {
-            let g = self.file_id(p)
-            if self.is_held(g) { self.file_ensured(g) } else { let _ = self.items(g) }
+        for p in [p for p in self.all_files(pkg.src) if !self.is_test_path(p) && self.decls.held.get().get(p) == null] {
+            let _ = self.items(self.file_id(p))
         }
     }
-
-    /// Every held module that declares an impl or a trait of this name, minted.
-    fn named_minted(name: string) { self.minted_modules(self.hold.named_in.get().get(name) ?? []) }
 
     /// THE PRODUCER INDEX'S FOUR DOORS: a bucket reader asks for the value it is about to
     /// read, and every held module whose record files a row there is minted first — so the
@@ -2104,7 +2097,7 @@ impl Workspace {
         // its record, so its table is whole without a parse.
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
-        self.named_minted(self.decls.decl(target).name)
+        self.decls.hold_named(self.decls.decl(target).name)
         let blocks = self
             .decls
             .children_of(target)
@@ -2237,7 +2230,6 @@ impl Workspace {
     fn held_trait(block: DeclId) -> DeclId? {
         let of? = self.decls.facts_of(block)?.of else { return null }
         if of == "" { return null }
-        self.named_minted(of)
         let named = [d.id for d in self.decls.named_rows(of) if d.kind is .Trait]
         if named.length == 1 { named.first() } else { null }
     }
