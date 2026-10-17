@@ -763,6 +763,22 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       while runs repeat, and a poller that read nothing is no witness.
       Not ratcheted: no grep tells a path others read from one nobody does.
 
+## A `Tasks` owner is JOINED at its scope's exit, a `List<Task>` is CANCELLED
+
+Two owners settle differently, and the difference is silent until a task
+is parked. A `List<Task<T>>` (or a bound task) is cancelled, then joined,
+at its scope's exit; a `Tasks` group is only JOINED, so a member parked
+in a wait nobody wakes holds the exit for ever (the runtime reports
+"every task is waiting — deadlock"). `packages/std-ui/src/native/sources.av`
+hit it: a worker's inner job outlived its loop until the worker cancelled
+the job itself (`run.cancel()` in the cut arm and the ended arm). The
+idiom: when a fn owns tasks through a `Tasks` group, every exit path of
+the fn gives each member a way to END — close its source, send its cut,
+or cancel it — because the group will not do it. Pick `Tasks` when the
+set must be handed to a helper; pick a local list when the exit should
+cancel for you. (Reported to CHANNELS as the join-without-cancel
+asymmetry.)
+
 ## A scan that ACCEPTS beside a parser that EXPLAINS
 
 A hot reader over a grammar answers a position, or -1 where the text
