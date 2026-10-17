@@ -47,6 +47,8 @@ export type Standing = {
     window: Cell<Window?>,
     counted: Cell<int>,
     placed: Cell<Map<string, int>>,
+    extent: Cell<int>,
+    geometry: Cell<bool>,
 }
 
 /// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
@@ -59,11 +61,11 @@ export const first_window: int = 40
 /// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
     let nothing: List<string> = []
-    stands_in(Cell.new(nothing), Cell.new(0))
+    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(false))
 }
 
 /// A standing nothing has stood at, in the walk that says into `said`.
-fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
+fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>) -> Standing {
     let nowhere_placed: Map<string, int> = {}
     let none: Hold? = null
     let nowhere: string? = null
@@ -80,6 +82,8 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
         window: Cell.new(unwindowed),
         counted: counted,
         placed: Cell.new(nowhere_placed),
+        extent: Cell.new(0),
+        geometry: geometry,
     }
 }
 
@@ -116,7 +120,10 @@ impl Standing {
     fn children(steps: List<string>, shared: List<bool>, drawn: bool) -> List<Standing> {
         mut stood: Map<string, Standing> = {}
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
-        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said, self.counted) } for s in steps]
+        let now = [Under {
+            step: s,
+            standing: stood.get(s) ?? stands_in(self.said, self.counted, self.geometry),
+        } for s in steps]
         let above = if drawn { null } else { self.step.get() }
         for j, u in now {
             u.standing.opened()
@@ -179,6 +186,21 @@ impl Standing {
         let from = if told.from > to { to } else { told.from }
         Window { from: if from < 0 { 0 } else { from }, to: to }
     }
+
+    /// The target keeps room for rows a list leaves unbuilt (a page's
+    /// scroll height): a windowed list stands a spacer for them from its
+    /// first paint, so the target finds the list and measures it.
+    fn geometric() { self.geometry.set(true) }
+
+    /// Whether a windowed list stands spacers for its unbuilt rows.
+    fn spaces() -> bool { self.geometry.get() || self.extent.get() > 0 }
+
+    /// How tall a row stands in the target's measure, as the target last
+    /// measured it: none (zero) until it has.
+    fn extent_of() -> int { self.extent.get() }
+
+    /// A target tells the list standing here how tall its rows measure.
+    fn measured(extent: int) { self.extent.set(extent) }
 
     /// A target tells the list standing here which rows to build.
     fn windowed(from: int, to: int) { self.window.set(Window { from: from, to: to }) }

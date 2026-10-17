@@ -3,5 +3,5 @@ export const WIRE_VERSION = 10;
 export const NO_ID = -1;
 export const OP = { create: 1, create_text: 2, place: 3, remove: 4, set_attr: 5, drop_attr: 6, set_prop: 7, set_text: 8, listen: 9, unlisten: 10, style: 11, call: 12, adopt: 13 };
 export const SAYS = { nothing: 0, number: 1, flag: 2, text: 3 };
-export const HOST = { entry: "avra_main", event: "avra_ui_event", seat: "avra_ui_seat", fired: "avra_ui_fired", answered: "avra_ui_answered", painted: "avra_ui_painted", repaired: "avra_ui_repaired", said: "avra_ui_said", took: "avra_ui_took", state_said: "avra_ui_state_said", stated: "avra_ui_stated", walks: "avra_ui_walks" };
+export const HOST = { entry: "avra_main", event: "avra_ui_event", seat: "avra_ui_seat", fired: "avra_ui_fired", answered: "avra_ui_answered", painted: "avra_ui_painted", repaired: "avra_ui_repaired", said: "avra_ui_said", took: "avra_ui_took", state_said: "avra_ui_state_said", stated: "avra_ui_stated", walks: "avra_ui_walks", scrolled: "avra_ui_scrolled" };
 export const ROWS = { frame: "avra_dom_frame", arm: "avra_ui_arm", disarm: "avra_ui_disarm", stood: "avra_ui_stood", get: "avra_ui_get", abort: "avra_ui_abort", next_paint: "avra_ui_next_paint" };

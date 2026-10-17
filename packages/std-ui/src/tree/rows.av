@@ -17,7 +17,8 @@
 //! the list finds a row by must be the key the row stands under.
 use tree.identity.{Stand, Step, steps, shared}
 use tree.lists.{flatten}
-use tree.node.{Node}
+use tree.node.{Node, Prim, Attribute}
+use style.box.{Box}
 use tree.standing.{Standing}
 use tree.view.{View}
 
@@ -47,7 +48,9 @@ impl View for Rows {
                 () -> self.present(),
             )
         at.tally(built.length)
-        flatten([v.describe(stands[j]) for j, v in built])
+        skipped(at, "before", w.from)
+            .concat(flatten([v.describe(stands[j]) for j, v in built]))
+            .concat(skipped(at, "after", self.count - w.to))
     }
 }
 
@@ -63,6 +66,20 @@ impl Rows {
         for i in 0..self.count { at.set(self.step_at(i), i) }
         at
     }
+}
+
+/// The room `rows` unbuilt rows would take where the target keeps room for
+/// them: nothing where none is unbuilt.
+fn skipped(at: Standing, side: string, rows: int) -> List<Node> {
+    if rows <= 0 || !at.spaces() { return [] }
+    [
+        Node {
+            prim: Prim.Item,
+            attrs: [Attribute.Skipped(at.step.get() ?? "", rows, at.extent_of())],
+            box: Box { key: "~skipped-${side}" },
+            children: [],
+        },
+    ]
 }
 
 /// A row's stand, under the key the list found it by. A row that says
