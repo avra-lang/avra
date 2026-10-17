@@ -845,7 +845,7 @@ impl SourceText {
     mut fn block(body: ExprId, one_line: bool, depth: int) -> string {
         let end = self.block_end(body)
         match self.store.expr(body) {
-            .Block(stmts, value) -> self.braced("", stmts, value, end, one_line, depth),
+            .Block(stmts, _) -> self.braced("", stmts, self.store.tail_of(body), end, one_line, depth),
             rest -> self.braced("", [], body, end, one_line, depth),
         }
     }
@@ -1436,7 +1436,7 @@ impl SourceText {
                 atom_tier,
                 parent,
             ),
-            .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
+            .Block(stmts, _) -> grouped(self.block_expr(stmts, self.store.tail_of(id), id, depth), atom_tier, parent),
             .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
             .Emit(value) -> grouped("yield ${self.expression(value, loosest_tier, depth, c)}", atom_tier, parent),
             .Produce(elem, cap, body) -> grouped(self.produce_group(elem, cap, body, id, depth), atom_tier, parent),
@@ -1956,10 +1956,10 @@ impl SourceText {
             // apart by `written_close` (`block_end`): a real brace sits
             // STRICTLY PAST the wrapped value's own span, where a
             // synthetic wrap's end IS that span — see through only then.
-            .Block(stmts, value) -> if stmts.is_empty() &&
-                value != null &&
-                self.block_end(no) == end_of(self.store.expr_span(value!)) {
-                self.chained_if(value!, depth)
+            .Block(stmts, _) -> if stmts.is_empty() &&
+                self.store.tail_of(no) != null &&
+                self.block_end(no) == end_of(self.store.expr_span(self.store.tail_of(no)!)) {
+                self.chained_if(self.store.tail_of(no)!, depth)
             } else {
                 null
             },
@@ -2429,7 +2429,7 @@ impl SourceText {
             let one = self.span_flat(self.store.expr_span(id))
             let end = self.block_end(body)
             return match self.store.expr(body) {
-                .Block(stmts, value) -> self.braced(head, stmts, value, end, one, depth),
+                .Block(stmts, _) -> self.braced(head, stmts, self.store.tail_of(body), end, one, depth),
                 rest -> self.braced(head, [], body, end, one, depth),
             }
         }
