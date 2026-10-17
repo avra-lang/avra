@@ -101,6 +101,8 @@ def judge(measured, ceilings):
             refusals.append((name, "%d against a ceiling of %d (over by %d)" % (now, was, now - limit)))
         elif now < was:
             words.append("%s: %d under a ceiling of %d — `make work-accept` lowers it" % (name, now, was))
+        elif now > was:
+            words.append("%s: %d, %d over its ceiling and inside the growth slack" % (name, now, now - was))
         else:
             words.append("%s: %d, at its ceiling" % (name, now))
     for key in sorted(set(ceilings) - set(measured)):
