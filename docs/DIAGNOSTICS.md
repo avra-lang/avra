@@ -365,7 +365,19 @@ No witness here: `@unbroken` resolves to `@std/meta`'s own declaration, which a 
 
 `yield` sends into the producer it stands in
 
-No witness yet.
+```avra
+yield 1
+```
+
+```
+error[flow.yield]: `yield` sends into the producer it stands in, and no producer encloses it
+  ╭─[witness.av:1:1]
+1 │ yield 1
+  · ┬
+  · ╰── no producer here
+──╯
+help: `yield` belongs inside a producer — write `produce<T>(n) { … yield … }`
+```
 
 ## flow.produce
 
@@ -1840,7 +1852,20 @@ No witness yet.
 
 a const's value asks for its own type
 
-No witness yet.
+```avra
+const a = a + 1
+1
+```
+
+```
+error[const.cycle]: a const's value asks for its own type
+  ╭─[witness.av:1:1]
+1 │ const a = a + 1
+  · ┬
+  · ╰── `a` reads itself here
+──╯
+help: a const settles from what is written and from other consts — not from its own value
+```
 
 ## type.method
 
@@ -1896,7 +1921,22 @@ help: declare `Nope` first — `type` or `enum`
 
 an impl lives in its type's package, or its trait's
 
-No witness yet.
+```avra
+impl int {
+    fn f() -> int { 1 }
+}
+1
+```
+
+```
+error[type.orphan]: `int` is the language's own type — a package adds to it only by implementing its own trait
+  ╭─[witness.av:1:1]
+1 │ impl int {
+  · ┬
+  · ╰── this impl
+──╯
+help: declare a trait here and write `impl YourTrait for int`, or write a free fn
+```
 
 ## type.builtin_name
 
@@ -2512,7 +2552,20 @@ help: rename one of them
 
 a spread places another record's fields
 
-No witness yet.
+```avra
+type A = { x: int, ..A }
+1
+```
+
+```
+error[type.spread]: `A` spreads itself
+  ╭─[witness.av:1:1]
+1 │ type A = { x: int, ..A }
+  · ┬
+  · ╰── declared here
+──╯
+help: a spread places ANOTHER record's fields — a record cannot hold its own
+```
 
 ## type.struct_fields
 
@@ -2548,7 +2601,21 @@ fix (high): interpolate it — `"${5}"`
 
 a literal's written type arguments pin the record's parameters
 
-No witness yet.
+```avra
+type Box<T> = { v: T }
+let b = Box<int, int> { v: 1 }
+b.v
+```
+
+```
+error[type.struct_targs]: `Box` takes 1 type argument, and this literal writes 2
+  ╭─[witness.av:2:9]
+2 │ let b = Box<int, int> { v: 1 }
+  ·         ┬
+  ·         ╰── written here
+──╯
+help: write `Box<T> { … }`
+```
 
 ## type.with_struct
 
@@ -2593,13 +2660,40 @@ help: a named type stands over a shape it does not name — following the names 
 
 an alias names one type that is not itself
 
-No witness yet.
+```avra
+alias L<T> = List<T>
+let x: L<void> = []
+1
+```
+
+```
+error[type.alias]: `L<...>` is given `void`, which is no value
+  ╭─[witness.av:2:1]
+2 │ let x: L<void> = []
+  · ┬
+  · ╰── applied here
+──╯
+help: an alias's type arguments are the types of values
+```
 
 ## type.tparam
 
 a declaration's type parameters are fresh, distinct names
 
-No witness yet.
+```avra
+type P<int> = { x: int }
+1
+```
+
+```
+error[type.tparam]: a type parameter cannot take `int`'s name — the language owns it
+  ╭─[witness.av:1:1]
+1 │ type P<int> = { x: int }
+  · ┬
+  · ╰── declared here
+──╯
+help: pick another name — `T`, `E`, `Elem`
+```
 
 ## type.identity_field
 
@@ -2769,7 +2863,23 @@ fix (high): drop the `??` and its right side
 
 a format pattern reads text — a `string` or a `Bytes`
 
-No witness yet.
+```avra
+let n = 3
+match n {
+    "a{x}" -> 1
+    _ -> 2
+}
+```
+
+```
+error[type.format]: a format pattern reads text, found `int`
+  ╭─[witness.av:3:5]
+3 │     "a{x}" -> 1
+  ·     ┬
+  ·     ╰── this is `int`
+──╯
+help: a format matches a `string` or a `Bytes`
+```
 
 ## type.format_repeat
 
@@ -2793,7 +2903,26 @@ No witness yet.
 
 a type pattern narrows a `dyn` to a type that implements its trait
 
-No witness yet.
+```avra
+trait Show {
+    fn show() -> string
+}
+let n = 3
+match n {
+    s: int -> 1
+    _ -> 2
+}
+```
+
+```
+error[type.narrow]: a type pattern narrows a `dyn` — this is `int`
+  ╭─[witness.av:6:5]
+6 │     s: int -> 1
+  ·     ┬
+  ·     ╰── this is `int`
+──╯
+help: only a `dyn` hides which type it holds; match this value by its own shape
+```
 
 ## type.enum_decl
 
@@ -2862,7 +2991,25 @@ help: write `S.a(<value>)`
 
 a payload `is` binds only in an `if` condition
 
-No witness yet.
+```avra
+enum E {
+    a(int)
+    b
+}
+let v = E.a(1)
+let w = v is .a(r)
+w
+```
+
+```
+error[type.is_bind]: a payload `is` binds only in an `if` condition
+  ╭─[witness.av:6:9]
+6 │ let w = v is .a(r)
+  ·         ┬
+  ·         ╰── this `is`
+──╯
+help: write the `match`, or test the variant bare and extract under it — `if a is .V(r) { … }`
+```
 
 ## type.enum_payload
 
@@ -3067,7 +3214,23 @@ help: annotate the binding, return it from a fn that declares the type, or write
 
 `all` lists an enum whose variants carry nothing
 
-No witness yet.
+```avra
+enum E {
+    a(int)
+    b
+}
+E.all()
+```
+
+```
+error[type.enum_all]: `all` lists an enum whose variants carry nothing, and `E.a` carries a payload
+  ╭─[witness.av:5:1]
+5 │ E.all()
+  · ┬
+  · ╰── listed here
+──╯
+help: list the values you mean — or read a variant's word with `.name`, which every enum answers
+```
 
 ## type.fail
 
@@ -3119,7 +3282,23 @@ No witness yet.
 
 `defer` drops its body's answer — a `Result` there would fail unheard
 
-No witness yet.
+```avra
+fn g() -> Result<int, string> { .Ok(1) }
+fn f() {
+    defer g()
+}
+f()
+```
+
+```
+error[type.defer]: `defer` drops what its body answers, and this one answers `Result<int, string>` — a failure nobody would hear
+  ╭─[witness.av:3:5]
+3 │     defer g()
+  ·     ┬
+  ·     ╰── deferred here
+──╯
+help: recover it with `catch`, or discard it on purpose: `defer { let _ = … }`
+```
 
 ## type.defer_inert
 
@@ -3143,7 +3322,21 @@ help: call something — `defer child.stop()` — or write the work in a block: 
 
 `errdefer` runs when the enclosing fn fails, so it needs one that can
 
-No witness yet.
+```avra
+fn g() {
+}
+errdefer g()
+```
+
+```
+error[type.errdefer]: an `errdefer` runs when the enclosing fn fails, and there is none enclosing
+  ╭─[witness.av:3:1]
+3 │ errdefer g()
+  · ┬
+  · ╰── deferred here
+──╯
+help: at the top level there is no failure channel — `defer` runs regardless
+```
 
 ## flow.unbounded_cleanup
 
@@ -3288,7 +3481,22 @@ help: a `once` value is one the runtime owns — a string, a list, a map, an enu
 
 a `const` seat is filled by a value that settles at compile time
 
-No witness yet.
+```avra
+fn f(const n: int) -> int { n }
+let x = 1
+let y = x + 1
+f(y)
+```
+
+```
+error[type.const_seat]: `n` is a `const` seat — `f` settles it at compile time, and this is computed at run time
+  ╭─[witness.av:4:3]
+4 │ f(y)
+  ·   ┬
+  ·   ╰── computed here
+──╯
+help: fill it with a literal or a `const` — a value that settles at compile time
+```
 
 ## type.host_seat
 
@@ -3300,7 +3508,20 @@ No witness yet.
 
 an extern that names a runtime row wears the row's shape — its seat count, and the box each pointer seat reads
 
-No witness yet.
+```avra
+extern fn avra_array_new(a: int) -> ptr
+1
+```
+
+```
+error[type.row_shape]: `avra_array_new` is a runtime row of 0 seats, declared here with 1
+  ╭─[witness.av:1:1]
+1 │ extern fn avra_array_new(a: int) -> ptr
+  · ┬
+  · ╰── this extern
+──╯
+help: declare the row's seats, or name a fn the runtime does not carry
+```
 
 ## type.host_absence
 
@@ -3566,7 +3787,20 @@ help: a file in a package sees the prelude — or walk the pairs, `for k, v in m
 
 `put` needs a cell holding a map
 
-No witness yet.
+```avra
+let c = Cell.new(1)
+c.put("a", 1)
+```
+
+```
+error[type.cell_map]: `put` inserts into the map a cell holds, and this cell holds `int`
+  ╭─[witness.av:2:1]
+2 │ c.put("a", 1)
+  · ┬
+  · ╰── not a map
+──╯
+help: put values in through a `Cell<Map<string, V>>`
+```
 
 ## type.interp_hole
 
