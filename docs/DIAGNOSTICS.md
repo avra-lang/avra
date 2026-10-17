@@ -1271,14 +1271,6 @@ error[manifest.syntax]: `[package]` is declared twice — the first stays, and t
   · ╰── here
 ──╯
 help: a manifest is TOML — `key = value` lines under `[section]` headers
-
-error[manifest.syntax]: duplicate key `name`
-  ╭─[/w/avra.toml:6:1]
-6 │ name = "other"
-  · ┬
-  · ╰── here
-──╯
-help: a manifest is TOML — `key = value` lines under `[section]` headers
 ```
 
 ## manifest.bad_tool_from
