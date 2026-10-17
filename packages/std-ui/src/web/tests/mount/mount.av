@@ -3,7 +3,7 @@
 // `mount` paints into it, the page's echo (`avra_ui_event`) runs the handler
 // the paint bound, and each repaint is a frame, evaluated and native alike.
 use @std.ui.app.{after_ms, every_ms}
-use @std.ui.components.{button, column, text}
+use @std.ui.components.{button, column, item, text}
 use @std.ui.web.{mount}
 
 state presses: int = 0
@@ -72,6 +72,20 @@ fn leaves() -> column {
     column { items: [text "waited ${waited} ticks ${ticks}"] }
 }
 
+state vanishing: int = 1
+
+fn vanishes() {
+    vanishing = 0
+    asks()
+}
+
+fn vanish() -> item {
+    item { items: [button "Self" { on press { vanishes() } } for _n in 0..vanishing] }
+}
+
+println("── a stranger's fire says nothing")
+avra_ui_fired(-1)
+avra_ui_fired(9999999)
 mount(timed)
 println("── a press asks for two timers")
 avra_ui_event(7, 1, 0, 0, 0)
@@ -88,4 +102,15 @@ avra_ui_event(7, 1, 0, 0, 0)
 mount(leaves)
 println("── then a late fire is ignored")
 avra_ui_fired(4)
+println("── ${waited} waited, ${ticks} ticks")
+
+println(
+    "── a control that hides itself in the press that asks: both timers are disarmed at once",
+)
+mount(vanish)
+for who in 8..40 { avra_ui_event(who, 1, 0, 0, 0) }
+println("── then a fire of either is ignored")
+avra_ui_fired(4)
+avra_ui_fired(5)
+avra_ui_fired(6)
 println("── ${waited} waited, ${ticks} ticks")
