@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { createApplier, parseFrame, sendEvent, run, HOST, WIRE_VERSION } from "./bootstrap.js";
+import { createApplier, createTimers, parseFrame, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { NO_ID, OP, SAYS } from "./wire.gen.js";
 import { stubDocument, stubElement, textOf } from "./stub_dom.js";
 
@@ -234,6 +234,58 @@ check("a seat is asked for by the text's own octets, however many", asked.map(St
 check("a long text arrives whole", [seat(32, 10000) === long, String(calls[4][4])], [true, "10000"]);
 sendEvent(fakeMod, 0, 2, { says: SAYS.text, value: "" });
 check("an empty text is text, of no octets", calls[5].map(String), ["0", "2", String(SAYS.text), "0", "0"]);
+
+// ── the page's timers ──
+// A clock a test turns by hand: a timer is due at a time and fires when the
+// clock reaches it; an interval fires again each period.
+const clockAt = () => {
+  const due = new Map();
+  let now = 0;
+  let next = 1;
+  return {
+    setTimeout: (fn, ms) => { due.set(next, { at: now + ms, fn, every: null }); return next++; },
+    setInterval: (fn, ms) => { due.set(next, { at: now + ms, fn, every: ms }); return next++; },
+    clearTimeout: (h) => due.delete(h),
+    clearInterval: (h) => due.delete(h),
+    advance: (ms) => {
+      const to = now + ms;
+      for (;;) {
+        const ready = [...due.entries()].filter(([, t]) => t.at <= to).sort((a, b) => a[1].at - b[1].at)[0];
+        if (!ready) break;
+        const [h, t] = ready;
+        now = t.at;
+        if (t.every === null) due.delete(h); else t.at += t.every;
+        t.fn();
+      }
+      now = to;
+    },
+    pending: () => due.size,
+  };
+};
+{
+  const clock = clockAt();
+  const fired = [];
+  const timers = createTimers(clock, (t) => fired.push(t));
+  timers.arm(1n, 10n, 0n);
+  timers.arm(2n, 10n, 1n);
+  clock.advance(9);
+  check("a timer does not fire before its time", fired, []);
+  clock.advance(1);
+  check("a one-shot and a period fire at their time, in the order armed", fired, [1, 2]);
+  check("a one-shot forgets itself, a period stays", [timers.count(), clock.pending()], [1, 1]);
+  clock.advance(25);
+  check("a period fires every period and a one-shot never again", fired, [1, 2, 2, 2]);
+  timers.disarm(2n);
+  clock.advance(100);
+  check("a disarmed period never fires again, and nothing is left on the clock", [fired.length, timers.count(), clock.pending()], [4, 0, 0]);
+  timers.arm(3n, 5n, 0n);
+  timers.disarm(3n);
+  timers.disarm(3n);
+  timers.disarm(99n);
+  clock.advance(10);
+  check("a disarmed one-shot never fires; disarming twice, or a stranger, says nothing", [fired.length, timers.count()], [4, 0]);
+  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["arm", "disarm", "frame"]);
+}
 
 // ── a page runs a program that mounts ──
 const empty = Uint8Array.from([0, 97, 115, 109, 1, 0, 0, 0]);

@@ -8,9 +8,9 @@
 // program's own declarations — see realize/dom/wire.av.
 //
 // Same file for every app.
-import { WIRE_VERSION, NO_ID, OP, SAYS, HOST } from "./wire.gen.js";
+import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS } from "./wire.gen.js";
 
-export { WIRE_VERSION, HOST };
+export { WIRE_VERSION, HOST, ROWS };
 
 // A frame's patches, in order. An id is a number in eight little-endian
 // bytes — the same width however deep its element sits — and `NO_ID` where
@@ -214,6 +214,32 @@ export function sendEvent(mod, who, what, said) {
   event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
 }
 
+// The page's timers, for the program's asks. The program names a timer by
+// a number it counted out (`arm(token, ms, repeat)`), the host keeps the
+// handle, and `fired(token)` re-enters the program as a turn. A timer let
+// go (`disarm`) never fires; a one-shot forgets itself once it has. `clock`
+// is the page's `{ setTimeout, setInterval, clearTimeout, clearInterval }`,
+// or a test's.
+export function createTimers(clock, fired) {
+  const held = new Map();
+  return {
+    arm: (token, ms, repeat) => {
+      const t = Number(token);
+      const again = Number(repeat) !== 0;
+      const fire = () => { if (!again) held.delete(t); fired(t); };
+      held.set(t, { again, handle: (again ? clock.setInterval : clock.setTimeout)(fire, Number(ms)) });
+    },
+    disarm: (token) => {
+      const t = Number(token);
+      const timer = held.get(t);
+      if (!timer) return;
+      (timer.again ? clock.clearInterval : clock.clearTimeout)(timer.handle);
+      held.delete(t);
+    },
+    count: () => held.size,
+  };
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
@@ -221,14 +247,19 @@ export function sendEvent(mod, who, what, said) {
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
 // the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {} }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis }) {
   let mod = null;
+  const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
   const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
     // The seat is a Bytes: the pointer names its box, and the LENGTH comes
     // from the runtime's own reader, exported by the module.
-    rt: { avra_dom_frame: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); } },
+    rt: {
+      [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); },
+      [ROWS.arm]: timers.arm,
+      [ROWS.disarm]: timers.disarm,
+    },
   });
   const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
   if (lacks.length > 0) {

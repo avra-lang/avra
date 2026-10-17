@@ -15,6 +15,8 @@ use @std.io.{write_text}
 use @std.avrac.compiler.{Program, Application, fix_applied, fighting_pair, analysed, rule_doc}
 use @std.avrac.core.{joined}
 use @std.errors.{Edit}
+use @std.avrac.features.{Analysed}
+use @std.avrac.diagnostics.{Diag}
 use @std.json.{Json, field, to_text}
 
 type FixCmd = {}
@@ -34,16 +36,15 @@ impl Runnable for FixCmd {
 }
 
 fn fixed(p: Program, args: CliResult) -> Result<int, string> {
-    if !p.clean() { fail p.report() }
+    let repair = args.has_flag("repair")
+    if !p.clean() && !repair { fail p.report() }
     let a? = p.entry_file() else { fail "the program is empty" }
     let named = args.option("only")
     let only = if named == "" { null } else { named }
     let json = args.has_flag("json")
     let path = a.view.source.file
     let an = analysed(a)
-    let apps = p
-        .fix_applications(path, an, only)
-        .concat(p.suggestion_applications(path, an, a.diagnostics, only))
+    let apps = applications(p, path, an, a.diagnostics, only, repair)
     let text = a.view.source.text
     report(text, apps, json)
     if apps.is_empty() { return 0 }
@@ -60,6 +61,21 @@ fn fixed(p: Program, args: CliResult) -> Result<int, string> {
         .Ok(_) -> 0,
         .Err(e) -> host_refused(e.describe().message),
     }
+}
+
+/// What this run may apply: the repair door alone on a program with
+/// errors, else the proved tier — a rule's rewrite and any warning's own
+/// suggestion.
+fn applications(
+    p: Program,
+    path: string,
+    an: Analysed,
+    diags: List<Diag>,
+    only: string?,
+    repair: bool,
+) -> List<Application> {
+    if repair { return p.repair_applications(path, an, diags, only) }
+    p.fix_applications(path, an, only).concat(p.suggestion_applications(path, an, diags, only))
 }
 
 /// The findings, printed either as prose lines or as one JSON array
@@ -86,6 +102,7 @@ fn application_json(text: string, ap: Application) -> Json {
                 field("kind", Json.Str(ap.kind)),
                 field("proved", Json.Bool(ap.proved)),
                 field("by_law", opt_json(ap.by_law)),
+                field("repaired", Json.Bool(ap.repaired)),
                 field("edits", Json.Arr([edit_json(text, e) for e in ap.edits])),
                 field("doc", opt_json(rule_doc(ap.kind))),
                 field("docs_cmd", Json.Str("avra docs ${ap.kind}")),
@@ -128,11 +145,13 @@ fn application_line(ap: Application) -> string {
     "${ap.kind} (${tier_word(ap)}): ${joined([edit_summary(e) for e in ap.edits], ", ")}"
 }
 
-/// The three tiers a reader sees: the IR proof held, a rule's own
-/// law was trusted instead (its wording named, never just "law"),
-/// or neither — `check` already showed it, `fix` leaves it alone.
+/// The tiers a reader sees: the IR proof held, a rule's own law was
+/// trusted instead (its wording named, never just "law"), the repair
+/// cleared its error, or none — `check` already showed it, `fix`
+/// leaves it alone.
 fn tier_word(ap: Application) -> string {
     if ap.proved { return "proved" }
+    if ap.repaired { return "repaired: the splice clears this error and mints none" }
     match ap.by_law {
         law? -> "by law: ${law}"
         null -> "shown, not applied"
@@ -156,6 +175,7 @@ export command fix {
     description: "Apply every proved rewrite, splicing it into the source"
     flags: [time]
     flag dry { description: "print what would change, write nothing" }
+    flag repair { description: "on a program with errors: apply each error's high-confidence suggestion whose splice clears that error and mints none" }
     flag json { description: "print findings as one JSON array (kind, edits, doc, docs_cmd)" }
     args: [file]
     option only { description: "apply only this kind (a rule's <module>.<name>, or a diagnostic's own kind)" }
