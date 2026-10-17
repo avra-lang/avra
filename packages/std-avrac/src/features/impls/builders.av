@@ -2,33 +2,10 @@
 //! statements. An impl's contained statements must each be fn
 //! declarations; a trait's SIGS mint as BODYLESS FnDecls (the body
 //! is a hole no pass walks), so declare and totality reuse the fn
-//! machinery whole.
-use core.{
-    Expr,
-    Stmt,
-    StmtId,
-    Param,
-    TypeRef,
-    Span,
-    ExprId,
-    SyntaxArena,
-    Nominal,
-    Scoped,
-    Plain,
-    spelled,
-}
-use features.{
-    LangNode,
-    Builder,
-    params_at,
-    window_end,
-    aligned_param_types,
-    void_ref,
-    marked_seats,
-    between,
-    ref_within,
-}
-use grammar.{Token}
+//! machinery whole. A trait's members arrive built, one
+//! `trait_member` each.
+use core.{Expr, Stmt, StmtId, Span, Nominal, Scoped, Plain, spelled}
+use features.{LangNode, Builder, params_at}
 /// `mut fn name(params) -> ret { body }` — a fn declaration that
 /// DECLARES its receiver written: the store flag carries the word,
 /// and the declare pass judges its placement (a method, or a stray).
@@ -111,91 +88,45 @@ fn is_fn(b: Builder, s: StmtId) -> bool {
     b.store.stmt(s) is .FnDecl
 }
 
-/// The trait's sig lines, each minted as a bodyless FnDecl — the
-/// method anchors window their own params, the rets zip.
+/// The trait's members, built by `build_trait_member`, and its own
+/// type parameters.
 fn build_trait(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let statics = b.tokens(1)?
-    let muts = b.tokens(2)?
-    let mn = b.tokens(3)?
-    let consts = b.tokens(4)?
-    let seat_marks = b.tokens(5)?
-    let ps = b.tokens(6)?
-    let tys = b.type_refs(7)?
-    let rets = b.type_refs(8)?
-    let bodies = b.exprs(9)?
-    let ends? = b.span_end() else {
-        return .Err(
-            "defect: a trait declaration without a span — the arena and the grammar disagree",
-        )
-    }
-    mut fns: List<StmtId> = []
-    for j, m in mn {
-        let upto = window_end(mn, j, ends)
-        let sig = member_stmt(
-            b,
-            m,
-            params_between(b.store, ps, tys, seat_marks, consts, m.span.lo, upto),
-            ret_between(rets, m.span.lo, upto),
-            body_between(b.store, bodies, m.span.lo, upto),
-        )
-        // a `mut` between the previous sig and this name is this sig's
-        let since = if j == 0 { n.span.lo } else { mn[j - 1].span.lo }
-        if muts.any(between(it.span.lo, since, m.span.lo)) { b.store.mark_mutating(sig) }
-        if statics.any(between(it.span.lo, since, m.span.lo)) { b.store.mark_static(sig) }
-        fns.push(sig)
-    }
-    let s = b.store.alloc_stmt(Stmt.TraitDecl(Scoped(n.text), fns), b.span)
-    let own = b.tokens(10)?
+    let s = b.store.alloc_stmt(Stmt.TraitDecl(Scoped(n.text), b.stmts(2)?), b.span)
+    let own = b.tokens(1)?
     if !own.is_empty() { b.store.mark_trait_tparams(s, [t.text for t in own]) }
     .Ok(LangNode.NStmt(s))
 }
 
-/// One sig's params — the names inside the window, each typed by
-/// its own inner window, marked `mut` by the marks inside it.
-fn params_between(
-    store: SyntaxArena,
-    ps: List<Token>,
-    tys: List<TypeRef>,
-    muts: List<Token>,
-    consts: List<Token>,
-    after: int,
-    before: int,
-) -> List<Param> {
-    let mine = [p for p in ps if between(p.span.lo, after, before)]
-    marked_seats(store, mine, aligned_param_types(mine, tys, before), muts, consts, after)
-}
-
-/// A trait's member: a sig with a HOLE body, or a DEFAULT with the
+/// One trait member: a sig with a HOLE body, or a DEFAULT with the
 /// block written under it — spanning name to body's end, so the
-/// body's expressions are the member's own range.
-fn member_stmt(b: Builder, name: Token, params: List<Param>, ret: TypeRef, body: ExprId?) -> StmtId {
-    if body == null { return sig_stmt(b, name, params, ret) }
-    let bsp: Span? = b.store.expr_span(body!)
-    let whole = Span { lo: name.span.lo, hi: bsp?.hi ?? name.span.hi }
-    b.store.alloc_stmt(Stmt.FnDecl(Scoped(name.text), [], params, ret, body!), whole)
+/// body's expressions are the member's own range. A sig wears its
+/// name's span, so a refusal at it lands on the line.
+fn build_trait_member(b: Builder) -> Result<LangNode, string> {
+    let name = b.token(2)?
+    let body? = (b.exprs(5)?).first() else {
+        let hollow = b.store.alloc_expr(Expr.Error)
+        return b
+            .member(
+                Stmt.FnDecl(Scoped(name.text), [], params_at(b.args, 3), b.answer(4), hollow),
+                name.span,
+            )
+    }
+    let ends: Span? = b.store.expr_span(body)
+    b
+        .member(
+            Stmt.FnDecl(Scoped(name.text), [], params_at(b.args, 3), b.answer(4), body),
+            Span { lo: name.span.lo, hi: ends?.hi ?? name.span.hi },
+        )
 }
 
-/// A bodyless fn: the body is a HOLE no pass walks. The sig wears
-/// its name's span, so a refusal at it lands on the line.
-fn sig_stmt(b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
-    let hollow = b.store.alloc_expr(Expr.Error)
-    b.store.alloc_stmt(Stmt.FnDecl(Scoped(name.text), [], params, ret, hollow), name.span)
-}
-
-/// The block written inside one sig's window — the member's
-/// default body, when it has one.
-fn body_between(store: SyntaxArena, bodies: List<ExprId>, after: int, before: int) -> ExprId? {
-    bodies.find(expr_within(store, it, after, before))
-}
-
-fn expr_within(store: SyntaxArena, e: ExprId, after: int, before: int) -> bool {
-    let sp: Span? = store.expr_span(e)
-    sp != null && sp!.lo > after && sp!.lo < before
-}
-
-/// The return written inside one sig's window — `void` when none.
-fn ret_between(rets: List<TypeRef>, after: int, before: int) -> TypeRef {
-    let mine: TypeRef? = rets.find(ref_within(it, after, before))
-    mine ?? void_ref
+impl Builder {
+    /// The member's statement, carrying the `static` and `mut` words
+    /// written before its `fn`.
+    fn member(d: Stmt, at: Span) -> Result<LangNode, string> {
+        let sig = self.store.alloc_stmt(d, at)
+        if !(self.tokens(0)?).is_empty() { self.store.mark_static(sig) }
+        if !(self.tokens(1)?).is_empty() { self.store.mark_mutating(sig) }
+        .Ok(LangNode.NStmt(sig))
+    }
 }

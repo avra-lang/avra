@@ -157,6 +157,76 @@ spec "features/structs (adversarial)" {
             )
         }
     }
+    given "the field carrier — a field's own record" {
+        then "field order is the declaration's, defaults riding their own field" {
+            shown(
+                "type Q = { a: int = 1, b: int, c: int = 3 }\nlet q = Q { b: 2 }\nq.a * 100 + q.b * 10 + q.c",
+            ) == "123"
+        }
+        then "a record spread lands after the fields written before it" {
+            shown(
+                "type A = { x: int, y: int }\ntype B = { p: int, ..A, q: int }\nlet b = B { p: 1, x: 2, y: 3, q: 4 }\nb.p * 1000 + b.x * 100 + b.y * 10 + b.q",
+            ) == "1234"
+        }
+        then "a leading record spread places its fields first" {
+            shown(
+                "type A = { x: int }\ntype B = { ..A, q: int }\nlet b = B { x: 5, q: 6 }\nb.x * 10 + b.q",
+            ) == "56"
+        }
+        then "a record of only a spread declares" {
+            shown("type A = { x: int }\ntype B = { ..A }\nB { x: 8 }.x") == "8"
+        }
+        then "a trailing comma after the last field parses" {
+            shown("type Q = { a: int, b: int, }\nlet q = Q { a: 1, b: 2 }\nq.a + q.b") == "3"
+        }
+        then "line-separated fields parse beside comma-separated ones" {
+            shown(
+                "type Q = {\n    a: int, b: int\n    c: int\n}\nlet q = Q { a: 1, b: 2, c: 3 }\nq.c",
+            ) == "3"
+        }
+        then "a state field keeps its place among plain ones" {
+            shown(
+                "type Q = {\n    a: int = 1\n    state n: int = 2\n    c: int = 3\n}\nlet q = Q { }\nq.n = 5\nq.a + q.n * 10 + q.c * 100",
+            ) == "351"
+        }
+        then "a field naming no type refuses" {
+            refusals("type Q = { a: }\n1") == 1
+        }
+        then "a field with no colon refuses" {
+            refusals("type Q = { a int }\n1") == 1
+        }
+        then "a three-dot spread says the two-dot spelling" {
+            refused_with("type A = { x: int }\ntype B = { ...A }\n1", "a spread is written `..R`")
+        }
+        then "a `state` mark after the name refuses" {
+            refusals("type Q = { a state: int }\n1") == 1
+        }
+        then "a literal where a field type belongs refuses" {
+            refusals("type Q = { a: 1 }\n1") == 1
+        }
+        then "a keyword where a field name belongs refuses" {
+            refusals("type Q = { if: int }\n1") == 1
+        }
+        then "a default of the wrong type refuses" {
+            refusals("type Q = { a: int = \"s\" }\nQ { }.a") == 1
+        }
+        then "a default naming no value refuses" {
+            refusals("type Q = { a: int = }\n1") == 1
+        }
+        then "a doubled comma between fields refuses" {
+            refusals("type Q = { a: int,, b: int }\n1") == 1
+        }
+        then "a managed default is read back whole" {
+            shown(
+                "type Q = { s: string = \"a\" + \"b\", n: int }\nlet q = Q { n: 1 }\n\"\${q.s}\${q.n}\"",
+            ) == "ab1"
+        }
+        then "a field typed as another record keeps its place" {
+            shown(
+                "type A = { x: int }\ntype B = { a: A, y: int }\nlet b = B { a: A { x: 4 }, y: 5 }\nb.a.x * 10 + b.y",
+            ) == "45"
+        }
+    }
     given "a default is a body of its own" {
         then "it cannot read the top level's run-time bindings — one refusal, the floor's" {
             refused_with(
