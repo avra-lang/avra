@@ -623,6 +623,7 @@ cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/stamp_attack.sh
 	@sh tools/expanded_attack.sh
+	@sh tools/held_generated_attack.sh
 	@sh tools/store_quiet_attack.sh
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
