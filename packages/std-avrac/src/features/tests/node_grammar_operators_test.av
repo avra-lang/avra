@@ -57,13 +57,19 @@ fn op_build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> Re
     Captured<Token, string>,
     string,
 > {
-    let built: Captured<Token, string> = Captured.Node("(${name} ${joined([op_text(a) for a in args], " ")})")
+    let built: Captured<Token, string> = Captured
+        .Node("(${name} ${joined([op_text(a) for a in args], " ")})")
     Result.Ok(built)
 }
 
 fn op_run(src: string, text: string) -> string {
     let g = bind_nodes(op_grammar(src), op_rows()).g
-    let o = run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_source(text).tokens, avra_lexeme(), op_build)
+    let o = run_grammar<Token, string>(
+        ready(g, avra_known_terminals()),
+        lex_source(text).tokens,
+        avra_lexeme(),
+        op_build,
+    )
     let said = joined([d.message for d in o.diagnostics], " ;; ")
     if o.result == null { return "<none> |${said}" }
     "${op_text(o.result!)} |${said}"
@@ -87,15 +93,25 @@ spec "features/node_grammar — an operator table's builds" {
     }
     given "a word that names no operator" {
         then "is refused where the table is assembled" {
-            op_refuses("e = l:operand @operators { left \"+=\" } -> E.Bin\noperand = v:NAME -> lit(v)\n", "the word `+=`, which spells no operator")
+            op_refuses(
+                "e = l:operand @operators { left \"+=\" } -> E.Bin\noperand = v:NAME -> lit(v)\n",
+                "the word `+=`, which spells no operator",
+            )
         }
         then "but not for a node with no operator payload" {
-            !op_refuses("e = l:operand @operators { left \"+=\" -> E.Co }\noperand = v:NAME -> lit(v)\n", "spells no operator")
+            !op_refuses(
+                "e = l:operand @operators { left \"+=\" -> E.Co }\noperand = v:NAME -> lit(v)\n",
+                "spells no operator",
+            )
         }
     }
     given "a tier build naming a node that is not there" {
         then "is refused like any node build" {
-            op_refuses("e = l:operand @operators { left \"+\" -> E.Nope } -> E.Bin\noperand = v:NAME -> lit(v)\n", "no such variant is declared")
+            op_refuses(
+                "e = l:operand @operators { left \"+\" -> E.Nope } -> E.Bin\noperand = v:NAME -> lit(v)\n",
+                "no such variant is declared",
+            )
         }
     }
 }
+sprite-run: ended 0; the Sprite's available memory was never under 7431 MB

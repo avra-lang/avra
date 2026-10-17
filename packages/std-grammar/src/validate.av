@@ -135,12 +135,14 @@ fn fold_defects(rule_name: string, s: Seq) -> List<Diagnostic> {
     let field? = s.fold else { return [] }
     let seed_ok = s.items.length == 2 && s.items[0].label == field && s.items[0].rep == Rep.One
     let group_ok = s.items.length == 2 && s.items[1].rep == Rep.Star && is_group(s.items[1].prim)
-    if !seed_ok || !group_ok { return [
+    if !seed_ok || !group_ok {
+        return [
             defect(
                 rule_name,
                 "@fold(${field}) wants a seed captured as `${field}` and then one repeated group — `${field}:operand ( turn | turn )*`",
             ),
-        ] }
+        ]
+    }
     let turns = group_turns(s.items[1].prim)
     let missing = [defect(rule_name, "a @fold turn builds a node or calls a builder — it has no build") for t in turns if t.build == null]
     let passing = [defect(rule_name, "a @fold turn builds a node or calls a builder, not a bare capture") for t in turns if is_var(t.build)]
@@ -152,12 +154,16 @@ fn fold_defects(rule_name: string, s: Seq) -> List<Diagnostic> {
         rule_name,
         "a @fold turn captures `${field}` again — the label is the value so far, so a turn reads it and never rebinds it",
     ) for t in turns if t.deep_items().any(it.label == field)]
-    let climbing = if s.operators == null { [] } else { [
+    let climbing = if s.operators == null {
+        []
+    } else {
+        [
             defect(
                 rule_name,
                 "a branch folds or climbs, never both — @fold and @operators are two spellings of one left-to-right build",
             ),
-        ] }
+        ]
+    }
     let answer = if is_answer(s.build, field) { [] } else { [defect(rule_name, "a @fold branch answers the fold — end it `-> ${field}`")] }
     missing.concat(passing).concat(unseeded).concat(shadowing).concat(climbing).concat(answer)
 }
@@ -232,3 +238,4 @@ impl Grammar {
             .concat(first_defects(self))
     }
 }
+sprite-run: ended 0; the Sprite's available memory was never under 7352 MB

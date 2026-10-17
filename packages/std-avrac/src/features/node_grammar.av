@@ -45,11 +45,7 @@ fn bound_alt(rname: string, a: Alt, rows: List<PayloadRow>) -> Alt {
 /// escapes its group into that branch, so a nested build reads the
 /// same names the engine will hand it.
 fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
-    s with {
-        items: [m with { prim: bound_prim(rname, m.prim, outer, rows) } for m in s.items],
-        build: bound_build(s.build, outer, rows),
-        operators: bound_operators(s.operators, outer, rows),
-    }
+    s with { items: [m with { prim: bound_prim(rname, m.prim, outer, rows) } for m in s.items], build: bound_build(s.build, outer, rows), operators: bound_operators(s.operators, outer, rows) }
 }
 
 /// An `@operators` branch's tiers, each build bound against the
@@ -140,7 +136,13 @@ fn seq_defects(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Lis
 /// One build judged against the node it names; `words` are the operator
 /// words it is built for: a tier's own, or every word of the tiers the
 /// branch's build serves.
-fn build_defects(rname: string, held: Build?, outer: Seq, rows: List<PayloadRow>, words: List<List<string>>) -> List<Diagnostic> {
+fn build_defects(
+    rname: string,
+    held: Build?,
+    outer: Seq,
+    rows: List<PayloadRow>,
+    words: List<List<string>>,
+) -> List<Diagnostic> {
     let b? = held else { return [] }
     match b {
         .Node(owner, variant, fixed, _) -> node_defects(rname, outer, owner, variant, fixed, rows, words),
@@ -164,7 +166,9 @@ fn node_defects(
 /// A payload that is an operator (`BinOp`) is filled from the word the
 /// climb took, so every word its tier spells must name one — a word
 /// that names none is refused where the grammar is assembled.
-fn operator_words_defects(rname: string, row: PayloadRow, words: List<List<string>>) -> List<Diagnostic> {
+fn operator_words_defects(rname: string, row: PayloadRow, words: List<List<string>>) -> List<
+    Diagnostic,
+> {
     if !row.payloads.any(is_operator(it)) { return [] }
     [node_refusal(rname, names_no_operator(row, w.join(""))) for w in words if binop_of(w.join("")) == null]
 }
