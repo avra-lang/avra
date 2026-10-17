@@ -352,6 +352,16 @@ jobs:
           before=$(du -sm .avra-cache | cut -f1)
           find .avra-cache/obj .avra-cache/bin -type f -printf '%T@ %s %p\n' 2>/dev/null | sort -rn \
             | awk -v cap=314572800 '{ acc += $2; if (acc > cap) print $3 }' | xargs -r rm -f
+          # THE STORE KEEPS TWO REVISIONS AND AT MOST 600 MB. Each revision is one compiler's rows, and
+          # a cache that restores and saves the store every main run only grows: 1.1 GB of dead
+          # generations rode into the hand-down tar and broke its 1 GB budget. The newest two are what
+          # a run reads (the compiler it built wrote them last).
+          if [ -d .avra-cache/store ]; then
+            chmod +x build/avra
+            echo "store before: $(du -sm .avra-cache/store | cut -f1) MB"
+            AVRA_STORE_REVISIONS=2 AVRA_STORE_MAX_MB=600 build/avra cache clean || echo "::warning::the bounded cache clean failed"
+            echo "store after: $(du -sm .avra-cache/store | cut -f1) MB"
+          fi
           echo "prune: .avra-cache $before MB -> $(du -sm .avra-cache | cut -f1) MB"
       # A CACHE IS SCOPE-BOUND, AND ONLY THE DEFAULT BRANCH CROSSES RUNS: a run
       # restores caches from its own branch and `main`, never a sibling's, and
