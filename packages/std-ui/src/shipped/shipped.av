@@ -1,0 +1,102 @@
+//! `shipped/shipped.av` — the state a page carries from the module that
+//! stood down to the one that starts: the server's render state on a first
+//! load, the old module's on a hot swap. A program ships a `state` place by
+//! naming it once, at module level and before `mount`:
+//!
+//!     state filter: Show = .All
+//!     ship("filter", Show.json_shape(), () -> to_text(filter.to_json()), (j: string) -> {
+//!         filter = Show.from_json(parse(j)!)!
+//!         true
+//!     })
+//!
+//! The shape is the type's STRUCTURE (`@json`'s `json_shape`), so a field
+//! added to a record moves it even when its name holds. Shipping is opt-in:
+//! a state nobody named is never written into a page, and a view that reads
+//! one the server did not ship simply fails its print and is drawn again.
+//! `mount` closes the registry, and a `ship` after it traps: a state
+//! registered late would be shipped by the server and missed by the module.
+use @std.json.{Json, field, parse, to_text}
+
+extern fn avra_trap(message: string)
+
+/// One state a program ships: its name, the shape of its value, how it is
+/// read as JSON text and how JSON text is written back (false when it does
+/// not fit).
+export type Slot = { name: string, shape: string, read: fn() -> string, write: fn(string) -> bool }
+
+once fn slots() -> Cell<List<Slot>> { Cell.new([]) }
+
+once fn closed() -> Cell<bool> { Cell.new(false) }
+
+/// Name a state to ship. A name is shipped once and only before `mount`.
+export fn ship(name: string, shape: string, read: fn() -> string, write: fn(string) -> bool) {
+    if closed().get() { avra_trap(late_voice(name)) }
+    if slots().get().any(it.name == name) { avra_trap(twice_voice(name)) }
+    slots().push(Slot { name: name, shape: shape, read: read, write: write })
+}
+
+/// The registry is closed: what `mount` does before its first paint.
+export fn close() { closed().set(true) }
+
+/// Every shipped state as one JSON document, `<` written `<` so it
+/// stands inside a `script` element; empty when nothing is shipped.
+export fn document() -> string {
+    if slots().get().is_empty() { return "" }
+    let members = [field(s.name, state_json(s)) for s in slots().get()]
+    to_text(Json.Obj(members)).replace("<", "\\u003c")
+}
+
+fn state_json(s: Slot) -> Json {
+    let value = parse(s.read()) catch Json.Null
+    Json.Obj([field("shape", Json.Str(s.shape)), field("value", value)])
+}
+
+/// A document written into the states it names. A state it does not name
+/// keeps its initializer; one whose shape moved, or whose value does not
+/// fit, is DROPPED and spoken. Answers the names it dropped.
+export fn applied(text: string) -> List<string> {
+    if text == "" { return [] }
+    match parse(text) {
+        .Ok(doc) -> [s.name for s in slots().get() if dropped(s, doc)],
+        .Err(_) -> {
+            warn(unreadable_voice())
+            []
+        },
+    }
+}
+
+/// Whether `s` is named by `doc` and was not written: the shape moved or the
+/// value did not fit. A state the document does not name is untouched.
+fn dropped(s: Slot, doc: Json) -> bool {
+    let member? = doc.get(s.name) else { return false }
+    let shape = member.get("shape")?.text() ?? ""
+    if shape != s.shape {
+        warn(moved_voice(s.name, shape, s.shape))
+        return true
+    }
+    let value? = member.get("value") else {
+        warn(misfit_voice(s.name))
+        return true
+    }
+    if s.write(to_text(value)) { return false }
+    warn(misfit_voice(s.name))
+    true
+}
+
+fn warn(message: string) { eprintln("avra: ${message}") }
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn late_voice(name: string) -> string {
+    "`ship(\"${name}\")` came after `mount`: a state shipped late is written by the server and missed by the module — name every state before `mount`"
+}
+
+fn twice_voice(name: string) -> string { "`${name}` is shipped twice: a name is one state" }
+
+fn unreadable_voice() -> string { "the shipped state is no JSON, so no state was written" }
+
+fn moved_voice(name: string, was: string, now: string) -> string {
+    "`${name}` was shipped as ${was} and is ${now} now: its type moved, so the state starts over"
+}
+
+fn misfit_voice(name: string) -> string { "`${name}`'s shipped value does not fit its type: the state starts over" }

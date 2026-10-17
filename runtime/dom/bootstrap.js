@@ -599,6 +599,13 @@ export function printOf(mount) {
   return /^[1-9][0-9]{0,15}$/.test(text ?? "") ? Number(text) : 0;
 }
 
+// The state a server shipped into the page, as octets: none for a page that
+// carries none.
+export function stateOf(doc) {
+  const block = doc && doc.getElementById ? doc.getElementById("avra-state") : null;
+  return block ? new TextEncoder().encode(block.textContent) : new Uint8Array(0);
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
@@ -609,7 +616,7 @@ export function printOf(mount) {
 // module under the page: `swap(source)` asks the running module to say its
 // page, lets go of what it armed and asked, and starts the new one over the
 // elements the page holds — so its first paint is a diff against them.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, failed = (e) => { throw e; }, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb), hot = null }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, failed = (e) => { throw e; }, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb), hot = null, state = null }) {
   // The module events, answers and fires reach: the one running now.
   let mod = null;
   const into = guarded(failed);
@@ -621,7 +628,9 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
 
   // Start a module. Its rows reach IT, not the module running before it.
   // `left` is the page that module said: none for a first start.
-  const start = async (from, left) => {
+  // `state` is the shipped state it takes: the document a server wrote into the
+  // page, or the one the module that stood down said.
+  const start = async (from, left, state) => {
     const own = { module: null };
     const exports = await instantiate(from, {
       wasi: wasi(() => own.module.memory),
@@ -650,21 +659,27 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       new Uint8Array(exports.memory.buffer, at, left.length).set(left);
       exports[HOST.took](BigInt(left.length));
     }
+    if (state && state.length > 0) {
+      const at = Number(exports[HOST.seat](BigInt(state.length)));
+      new Uint8Array(exports.memory.buffer, at, state.length).set(state);
+      exports[HOST.stated](BigInt(state.length));
+    }
     mod = exports;
     const code = exports[HOST.entry]();
     if (code !== 0) throw new Error(`the program's statements answered ${code}`);
     return exports;
   };
 
-  const first = await start(source, null);
+  const first = await start(source, null, state ?? stateOf(document));
   // Said last: a reader of the page knows the module stands and has painted.
   if (document.documentElement) document.documentElement.setAttribute("data-avra", "ready");
   if (hot) {
     hot(async (next) => {
       const said = frameOf(mod.memory, Number(mod[HOST.said]()), mod.avra_bytes_len).slice();
+      const shipped = frameOf(mod.memory, Number(mod[HOST.state_said]()), mod.avra_bytes_len).slice();
       timers.clear();
       fetches.clear();
-      return start(next, said);
+      return start(next, said, shipped);
     });
   }
   return { mod: first, ears: apply.ears };

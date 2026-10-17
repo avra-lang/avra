@@ -181,9 +181,11 @@ if (source) {
   claim("the dev page names the module it loaded", (await read(`document.querySelector('meta[name="avra-module"]').content`)).length > 0);
 
   await read(`(window.witness = "kept", 1)`);
+  const ticked = (await rows())[1].done;
   fs.writeFileSync(source, written.replace(`fn title() -> string { "Tasks" }`, `fn title() -> string { "Chores" }`));
   claim("a view edited where it stands reaches the running page", await until(says("Chores")) && !(await read(says("Tasks"))));
   claim("and the page was not reloaded to show it", await read(`window.witness`) === "kept");
+  claim("and the state the page had comes through the edit: a ticked box stays ticked", ticked === true && (await rows())[1].done === true, await rows());
   await shot("edited");
 
   fs.writeFileSync(source, `${written}\nfn broken( {\n`);
@@ -191,7 +193,7 @@ if (source) {
   claim("a build that fails is shown over the page, naming the file", await until(`${failure} && !${failure}.hidden && ${failure}.textContent.includes(${JSON.stringify(path.basename(source))})`));
   await shot("failed");
   await press(named("Wire the event channel"));
-  claim("the last good page keeps running under it", await read(says("Chores")) && (await rows())[1].done);
+  claim("the last good page keeps running under it", await read(says("Chores")) && (await rows())[1].done === false);
 
   fs.writeFileSync(source, written);
   claim("the mended source is served, and the failure is gone", await until(`${says("Tasks")} && !(${failure} && !${failure}.hidden)`));
@@ -224,17 +226,18 @@ if (hydrated) {
   const total = await asked(`document.querySelectorAll("#app *").length`);
   const kept = await asked(`[...document.querySelectorAll("#app *")].filter((el) => el.__served === true).length`);
   claim("the module took the server's elements over and built none", kept === total, `${kept} of ${total}`);
-  await adopted.press(`document.querySelector('[aria-label="Dark mode"]')`);
-  claim("and the page answers a press through the adopted elements", await asked(`document.querySelector('[aria-label="Light mode"]') !== null`));
+  claim("the module started from the state the server shipped: the done tasks, in the dark", (await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`)).join() === "t1,t4" && await asked(`getComputedStyle(document.body).backgroundColor`) === "rgb(18, 18, 18)");
+  await adopted.press(`document.querySelector('[aria-label="Light mode"]')`);
+  claim("and the page answers a press through the adopted elements", await asked(`document.querySelector('[aria-label="Dark mode"]') !== null`));
   claim("nothing reached the console while the server's page was adopted", adopted.complaints().length === 0, adopted.complaints());
   await adopted.close();
 }
 if (tampered) {
   const torn = await openPage(firefoxBinary(), tampered);
   await standing(torn);
-  claim("a page the module did not draw is drawn again whole", await torn.read(`document.querySelectorAll('#app [aria-label]').length >= 5 && document.querySelector('[aria-label="Dark mode"]') !== null`));
-  await torn.press(`document.querySelector('[aria-label="Dark mode"]')`);
-  claim("and it answers a press", await torn.read(`document.querySelector('[aria-label="Light mode"]') !== null`));
+  claim("a page the module did not draw is drawn again whole", await torn.read(`document.querySelectorAll('#app [aria-label]').length >= 5 && document.querySelector('[aria-label="Light mode"]') !== null`));
+  await torn.press(`document.querySelector('[aria-label="Light mode"]')`);
+  claim("and it answers a press", await torn.read(`document.querySelector('[aria-label="Dark mode"]') !== null`));
   await torn.close();
 }
 console.log(failed === 0 ? "ui-browser: every claim holds" : `ui-browser: ${failed} claim(s) FAILED`);

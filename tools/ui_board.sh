@@ -64,7 +64,7 @@ if ! sent=$("$avra" run "$work/server/tools/ui-board" 2>"$work/hydrate.err"); th
     cat "$work/hydrate.err"; echo "ui-board: the server's page did not draw"; exit 1
 fi
 
-if ! out=$(node "$tree/tools/ui-board/demo.mjs" "$wasm" "$(echo "$sent" | sed -n 1p)" "$(echo "$sent" | sed -n 2p)" "$edited" 2>&1); then
+if ! out=$(node "$tree/tools/ui-board/demo.mjs" "$wasm" "$(echo "$sent" | sed -n 1p)" "$(echo "$sent" | sed -n 2p)" "$edited" "$(echo "$sent" | sed -n 3p)" 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-board: the board failed on the page"; exit 1
 fi
 # WHAT THE HOST MAY CALL, and whose word each is: the module's host fns.

@@ -70,7 +70,7 @@ export fn page_source(head: Head, css: string, nonce: string?, ops: List<HtmlOp>
 
 /// What a module needs to take a page over: the print the server folded,
 /// where the module is served and where the host's scripts are.
-export type Takeover = { print: int, module: string, host: string }
+export type Takeover = { print: int, module: string, host: string, state: string = "" }
 
 /// The script that starts the module on the mount. It is the same for every
 /// page; what is page-specific rides the mount's attributes, escaped.
@@ -80,5 +80,13 @@ const starter = "const m = document.getElementById(\"app\"); const base = m.data
 /// writes to, the tree inside the mount the print is stamped on, and the
 /// script that runs the module over it.
 export fn takeover_source(head: Head, css: string, ops: List<HtmlOp>, t: Takeover) -> string {
-    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>${entities(head.title)}</title><style id=\"avra-style\">${css_safe(css)}</style></head><body><div id=\"app\" data-avra-print=\"${t.print}\" data-avra-module=\"${entities(t.module)}\" data-avra-host=\"${entities(t.host)}\">${source(ops)}</div><script type=\"module\">${starter}</script></body></html>"
+    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>${entities(head.title)}</title><style id=\"avra-style\">${css_safe(css)}</style></head><body><div id=\"app\" data-avra-print=\"${t.print}\" data-avra-module=\"${entities(t.module)}\" data-avra-host=\"${entities(t.host)}\">${source(ops)}</div>${state_tag(t.state)}<script type=\"module\">${starter}</script></body></html>"
+}
+
+/// The shipped state, as a data block the module reads before it runs:
+/// none when nothing is shipped. `state` is JSON with `<` already written
+/// `\u003c`, so it cannot end the element.
+fn state_tag(state: string) -> string {
+    if state == "" { return "" }
+    "<script type=\"application/json\" id=\"avra-state\">${state}</script>"
 }
