@@ -80,13 +80,20 @@ export type BranchStart = {
 /// pass-through of the single sub-result. `start` is computed at
 /// `ready`, never authored. `operators` turns the branch into a
 /// precedence climb over its one operand item: the build is the
-/// default of every tier, called with the captures `l`, `op` and `r`.
+/// default of every tier, called with the captures `left`, `op` and `right`.
+/// `fold` makes the branch a left fold: its two items are a seed
+/// labeled `fold` and a repeated group, each branch of which (a TURN)
+/// builds a node reading the value so far under that label. A turn
+/// carries the label it reads as `seed`, resolved at parse so the
+/// notation says only `@fold(label)`.
 export type Seq = {
     items: List<Item>,
     build: Build?,
     recover: Recover?,
     start: BranchStart? = null,
     operators: Operators? = null,
+    fold: string? = null,
+    seed: string? = null,
 }
 
 /// How a tier groups its own operators. `Single` leaves a second
@@ -227,9 +234,10 @@ fn listed_prim(s: Seq, p: Prim) -> Prim {
     }
 }
 
-/// A group's branch, its items judged by the ENCLOSING branch.
+/// A group's branch, its items judged by the ENCLOSING branch — or by
+/// itself when it is a fold's turn, which is one scope per turn.
 fn nested_seq(outer: Seq, inner: Seq) -> Seq {
-    inner with { items: [listed_item(outer, m) for m in inner.items] }
+    inner with { items: [listed_item(inner.scope(outer), m) for m in inner.items] }
 }
 
 /// How many times an Item may appear: exactly once, `*` zero or more,
@@ -265,6 +273,14 @@ impl Prim {
         }
     }
 
+    /// The alternation a group opens; nothing else opens one.
+    fn group_alt() -> Alt? {
+        match self {
+            .Group(inner) -> inner,
+            .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> null,
+        }
+    }
+
     /// True when an `@expect` naming `token` guards this atom.
     fn answers_to(token: string) -> bool {
         let tn? = self.token_name() else { return false }
@@ -281,6 +297,12 @@ impl Seq {
     /// This branch's items, nested groups opened.
     fn deep_items() -> List<Item> {
         flatten([s.items for s in self.seqs()])
+    }
+
+    /// The branch whose labels this one is judged by: itself when it
+    /// is a fold's turn (every turn is its own scope), else `outer`.
+    fn scope(outer: Seq) -> Seq {
+        if self.seed == null { outer } else { self }
     }
 }
 

@@ -8,15 +8,17 @@
 //! held text and the character, and a view that does not keep what it was
 //! told shows none of it.
 use @std.text.{codepoints, from_codepoints}
-use app.{Shown, shown}
+use app.{Act, Shown, running, shown, stood}
 use tree.controls.{Control}
 use tree.node.{Said}
 use realize.tui.said.{said_of}
 use realize.tui.tui.{focused}
 use tree.view.{View}
+use native.sources.{opened, served}
 use terminal.keys.{Key, heard, keys}
 
 extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
 
 /// Who holds the focus: the path the control stands at, and its place
@@ -101,6 +103,9 @@ impl Terminal {
         on[at]
     }
 
+    /// `act` runs as a turn: a paint follows when it ran.
+    fn turn(act: Act) -> bool { self.shown.app.turn(act) }
+
     /// The focus moves `by` controls on, around the ends.
     fn move(by: int) {
         let on = self.reachable()
@@ -118,10 +123,6 @@ impl Terminal {
         self.focus.set(Focus { path: on[at].path, at: at })
         self.shown.app.turn(() -> by(on[at]))
     }
-
-    /// The state changed outside a key — a timer, an answer arriving — and
-    /// the screen is painted again.
-    fn repaint() { self.shown.app.paint() }
 
     /// One key. True when a handler ran.
     fn key(k: Key) -> bool {
@@ -171,22 +172,56 @@ impl Terminal {
 const input = 0
 const chunk = 4096
 
-/// THE APP: `view` in this terminal, drawn now and after every run of
-/// keys, until the input ends. What a run leaves unfinished — a character
-/// or an escape sequence cut by the read — stands before the next run.
+impl Terminal {
+    /// The screen as the terminal prints it after a turn, and what the
+    /// walk said of the tree.
+    fn printed() {
+        println("")
+        println(self.screen())
+        self.shown.app.warn()
+    }
+}
+
+/// The act of a read: the keys `bytes` finishes, each in turn. What the
+/// read leaves unfinished — a character or an escape sequence it cut —
+/// stands in `held` before the next. A turn that ends the input ends the
+/// loop.
+fn keyed(on: Terminal, held: Cell<Bytes>, bytes: Bytes) -> Act {
+    () -> {
+        let run = heard(held.get().concat(bytes))
+        held.set(run.held)
+        on.press(run.keys)
+        if on.ended.get() { on.shown.app.close() }
+        true
+    }
+}
+
+/// The standard input as a source: each read it parks for becomes an
+/// act in the app's inbox, and its end ends the loop.
+fn read(on: Terminal) -> bool {
+    let held: Cell<Bytes> = Cell.new("".bytes())
+    while true {
+        let _ = avra_fiber_park_fd(input, 0, -1)
+        let token = avra_fd_read(input, chunk)
+        if token <= 0 {
+            on.shown.app.close()
+            return true
+        }
+        if !on.shown.app.post(keyed(on, held, avra_fd_taken(token))) { return true }
+    }
+    true
+}
+
+/// THE APP: `view` in this terminal, drawn now and after every turn
+/// that ran — a key, a timer, an answer — until the input ends.
 export fn mount<V: View>(view: fn() -> V, width: int = 80) {
     let on = terminal(view, width)
     println(on.screen())
     on.shown.app.warn()
-    mut held: Bytes = "".bytes()
-    mut token = avra_fd_read(input, chunk)
-    while token > 0 && !on.ended.get() {
-        let run = heard(held.concat(avra_fd_taken(token)))
-        held = run.held
-        on.press(run.keys)
-        println("")
-        println(on.screen())
-        on.shown.app.warn()
-        if !on.ended.get() { token = avra_fd_read(input, chunk) }
-    }
+    let before = running()
+    stood(on.shown.app)
+    let inbox = opened(on.shown.app)
+    let _ = spawn read(on)
+    served(on.shown.app, inbox, () -> on.printed())
+    stood(before)
 }
