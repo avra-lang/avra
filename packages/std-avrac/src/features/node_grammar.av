@@ -40,7 +40,8 @@ fn bound_alt(rname: string, a: Alt, rows: List<PayloadRow>) -> Alt {
 }
 
 /// One branch bound, and every branch nested in its groups — all of
-/// them against `visible`, the ENCLOSING branch's labels. A capture
+/// them against `visible`, the ENCLOSING branch's labels (a fold's turn is
+/// its own enclosing branch). A capture
 /// escapes its group into that branch, so a nested build reads the
 /// same names the engine will hand it.
 fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
@@ -50,7 +51,7 @@ fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
 fn bound_prim(rname: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
     match p {
         .Group(inner) -> Prim
-            .Group(inner with { branches: [bound_seq(rname, b, outer, rows) for b in inner.branches] }),
+            .Group(inner with { branches: [bound_seq(rname, b, b.scope(outer), rows) for b in inner.branches] }),
         .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
     }
 }
@@ -97,7 +98,20 @@ fn alt_defects(rname: string, a: Alt, rows: List<PayloadRow>) -> List<Diagnostic
 /// One branch and every branch nested in it, all judged by THIS
 /// branch's labels — the set the engine binds into.
 fn branch_defects(rname: string, s: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {
-    flatten([seq_defects(rname, nested, s, rows) for nested in s.seqs()])
+    flatten([seq_defects(rname, j.seq, j.scope, rows) for j in judged_seqs(s, s)])
+}
+
+/// A branch with the scope its labels are judged by.
+type Judged = { seq: Seq, scope: Seq }
+
+/// A branch and every branch nested in its groups, each with the
+/// scope it is judged by: the enclosing branch's, except a fold's
+/// turn, which is its own (a turn reads its seed and its own labels,
+/// never a sibling turn's).
+fn judged_seqs(s: Seq, scope: Seq) -> List<Judged> {
+    [Judged { seq: s, scope: scope }].concat(
+        flatten([judged_seqs(b, b.scope(scope)) for m in s.items for b in (m.prim.group_alt()?.branches ?? [])]),
+    )
 }
 
 fn seq_defects(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {

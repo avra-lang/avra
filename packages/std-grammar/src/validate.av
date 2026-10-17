@@ -10,7 +10,7 @@
 //! passes its own.
 
 use util.{flatten, some_list}
-use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Tier, Build}
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Tier, Build}
 use diagnostics.{Diagnostic, defect}
 use first.{first_defects}
 impl Seq {
@@ -18,7 +18,9 @@ impl Seq {
     /// groups — capture accumulation makes them all visible to the
     /// build.
     fn labels() -> List<string> {
-        flatten([some_list(m.label) for m in self.deep_items()]).concat(self.operator_labels())
+        flatten([some_list(m.label) for m in self.deep_items()])
+            .concat(self.operator_labels())
+            .concat(some_list(self.seed))
     }
 
     /// The captures an `@operators` branch's builds read besides its operand.
@@ -126,6 +128,41 @@ fn tier_build_defects(rule_name: string, b: Build?) -> List<Diagnostic> {
     }
 }
 
+/// A `@fold` branch's own shape: a seed item labeled `field` read once,
+/// then one repeated group, every turn of which builds.
+fn fold_defects(rule_name: string, s: Seq) -> List<Diagnostic> {
+    let field? = s.fold else { return [] }
+    let seed_ok = s.items.length == 2 && s.items[0].label == field && s.items[0].rep == Rep.One
+    let group_ok = s.items.length == 2 && s.items[1].rep == Rep.Star && is_group(s.items[1].prim)
+    if !seed_ok || !group_ok { return [defect(rule_name, "@fold(${field}) wants a seed captured as `${field}` and then one repeated group — `${field}:operand ( turn | turn )*`")] }
+    let turns = group_turns(s.items[1].prim)
+    let missing = [defect(rule_name, "a @fold turn builds a node or calls a builder — it has no build") for t in turns if t.build == null]
+    let passing = [defect(rule_name, "a @fold turn builds a node or calls a builder, not a bare capture") for t in turns if is_var(t.build)]
+    let unseeded = [defect(rule_name, "a @fold turn reads the fold's `${field}` — attach it with `@fold(${field})`") for t in turns if t.seed != field]
+    let shadowing = [defect(rule_name, "a @fold turn captures `${field}` again — the label is the value so far, so a turn reads it and never rebinds it") for t in turns if t.deep_items().any(it.label == field)]
+    let climbing = if s.operators == null { [] } else { [defect(rule_name, "a branch folds or climbs, never both — @fold and @operators are two spellings of one left-to-right build")] }
+    let answer = if is_answer(s.build, field) { [] } else { [defect(rule_name, "a @fold branch answers the fold — end it `-> ${field}`")] }
+    missing.concat(passing).concat(unseeded).concat(shadowing).concat(climbing).concat(answer)
+}
+
+fn is_group(p: Prim) -> bool {
+    match p { .Group(_) -> true, .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> false }
+}
+
+fn group_turns(p: Prim) -> List<Seq> {
+    match p { .Group(inner) -> inner.branches, .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> [] }
+}
+
+fn is_var(b: Build?) -> bool {
+    let held? = b else { return false }
+    match held { .Var(_) -> true, .Call(_, _) or .Node(_, _, _, _) -> false }
+}
+
+fn is_answer(b: Build?, field: string) -> bool {
+    let held? = b else { return false }
+    match held { .Var(name) -> name == field, .Call(_, _) or .Node(_, _, _, _) -> false }
+}
+
 /// One branch's defects: its items', then its build's.
 fn seq_defects(
     rule_name: string,
@@ -139,6 +176,7 @@ fn seq_defects(
     )
         .concat(build_defects(rule_name, s, value_needed))
         .concat(operator_defects(rule_name, s, names))
+        .concat(fold_defects(rule_name, s))
 }
 
 /// The executor indexes rules by name; a duplicate would silently

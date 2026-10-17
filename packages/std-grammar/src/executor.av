@@ -34,6 +34,7 @@ use ast.{
     Seq,
     Item,
     Prim,
+    Rep,
     BranchStart,
     StartTerm,
     Slot,
@@ -407,7 +408,7 @@ fn match_rule<T, N>(mut cx: MatchContext<T, N>, name: string, cursor: int, cappe
     let at = (ordinal * cx.memo.stride + cursor) * 2 + if capped { 1 } else { 0 }
     let known = cx.memo.slots[at]
     if known > 0 { return cx.memo.results[known - 1] }
-    let fresh = match_alt<T, N>(cx, name, cx.g.rules[ordinal].body, cursor, [], false, capped)
+    let fresh = match_alt<T, N>(cx, name, cx.g.rules[ordinal].body, cursor, [], false, capped, cursor)
     if plain_miss<T, N>(fresh) {
         cx.memo.slots.set(at, 1)
         return fresh
@@ -490,6 +491,9 @@ fn kind_in<T>(lex: Lexeme<T>, kinds: List<int>, term: string, slot: int) -> int 
 /// consume it, so it fails at the cursor: it is skipped, and its own
 /// expectations join the farthest point in branch order — a skip must
 /// say what the branch would have.
+/// `origin` is where the value built from a matched branch is said to
+/// begin: the branch's own start, except for a fold's turn, whose node
+/// begins where the fold's seed did.
 fn match_alt<T, N>(
     mut cx: MatchContext<T, N>,
     rule_name: string,
@@ -498,6 +502,7 @@ fn match_alt<T, N>(
     bindings: List<Binding<T, N>>,
     acc: bool,
     capped: bool,
+    origin: int,
 ) -> MatchResult<T, N> {
     mut farthest: FarthestFailure? = null
     mut fb_diags: List<Diagnostic>? = null
@@ -506,7 +511,7 @@ fn match_alt<T, N>(
         if cannot_take(cx.lex, cx.kinds, cx.masks, cursor, br.start, tok) {
             if cx.tracking { farthest = far_merge(farthest, skip_point(br.start!, cursor)) }
         } else {
-            let r = match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped)
+            let r = match_seq<T, N>(cx, rule_name, br, cursor, bindings, acc, capped, origin)
             farthest = far_merge(farthest, r.farthest)
             if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
                 return r with { farthest: farthest }
@@ -555,6 +560,7 @@ fn match_seq<T, N>(
     entry_bindings: List<Binding<T, N>>,
     acc: bool,
     capped: bool,
+    origin: int,
 ) -> MatchResult<T, N> {
     mut cursor = entry
     mut bindings = entry_bindings
@@ -566,7 +572,13 @@ fn match_seq<T, N>(
     // delimiter the sequence consumes opens the rest of it
     mut open = !capped
     for member in s.items {
-        let r = if member.trailer && !open { missed<T, N>(cx, cursor, bindings, cx.silence, null) } else { match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open) }
+        let r = if member.trailer && !open {
+            missed<T, N>(cx, cursor, bindings, cx.silence, null)
+        } else if s.fold != null && member.rep == Rep.Star {
+            match_fold<T, N>(cx, rule_name, s.fold!, entry, member, cursor, bindings, !open)
+        } else {
+            match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open)
+        }
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit {
             diagnostics = diagnostics.concat(r.diagnostics)
@@ -636,7 +648,7 @@ fn match_seq<T, N>(
     // A BUILDER'S WORDS ARE ITS CLAIM, carried whole: the words say
     // the law or the defect, `Cause` says the category, and neither
     // restates the other.
-    let branch = consumed_loc<T>(cx.lex, cx.tokens, entry, cursor)
+    let branch = consumed_loc<T>(cx.lex, cx.tokens, origin, cursor)
     match built<T, N>(cx, s.build, bindings, vals, branch) {
         .Ok(v) -> matched<T, N>(cursor, bindings, v, diagnostics, farthest),
         // a branch that already spoke has said why — the build it spoils says nothing new
@@ -823,6 +835,61 @@ fn match_repetition<T, N>(
     )
 }
 
+/// A fold's repeated group: each turn is matched with the seed's label
+/// bound to the value so far, and the node it builds becomes that
+/// value. `origin` is where the fold's branch began, so a turn's node
+/// spans the seed and everything folded into it. A turn's own labels
+/// die with the turn — what a later turn reads is the value so far and
+/// nothing else. Iterations speculate as a repetition's do.
+fn match_fold<T, N>(
+    mut cx: MatchContext<T, N>,
+    rule_name: string,
+    field: string,
+    origin: int,
+    member: Item,
+    entry: int,
+    bindings: List<Binding<T, N>>,
+    capped: bool,
+) -> MatchResult<T, N> {
+    let turns = member.prim.group_alt() ?? Alt { branches: [] }
+    mut cursor = entry
+    mut acc: Captured<T, N> = binding_for<T, N>(bindings, field) ?? cx.absent
+    mut diagnostics: List<Diagnostic> = []
+    mut farthest: FarthestFailure? = null
+    while true {
+        let r = match_alt<T, N>(
+            cx,
+            rule_name,
+            turns,
+            cursor,
+            [b.rebound(field, acc, false) for b in bindings],
+            false,
+            capped,
+            origin,
+        )
+        farthest = far_merge(farthest, r.farthest)
+        if r.status == MatchStatus.Fatal {
+            diagnostics = diagnostics.concat(r.diagnostics)
+            return fatal_defect<T, N>(
+                cx,
+                cursor,
+                [b.rebound(field, acc, false) for b in bindings],
+                diagnostics,
+                farthest,
+            )
+        }
+        if r.status != MatchStatus.Hit { break }
+        if r.cursor == cursor {
+            diagnostics.push(defect(rule_name, "a fold's turn matched without consuming input; stopped"))
+            break
+        }
+        diagnostics = diagnostics.concat(r.diagnostics)
+        acc = r.value
+        cursor = r.cursor
+    }
+    matched<T, N>(cursor, [b.rebound(field, acc, false) for b in bindings], acc, diagnostics, farthest)
+}
+
 /// A repeated item's own label, bound to everything collected so
 /// far — `bindings` unchanged when it carries none, AND unchanged
 /// when nothing was collected: a star that never turned binds
@@ -897,7 +964,7 @@ fn match_prim<T, N>(
         .Group(inner) -> {
             // Captures inside a group escape to the branch's scope; the
             // group's own value exists only when the item is labeled.
-            let r = match_alt<T, N>(cx, rule_name, inner, cursor, bindings, acc, capped)
+            let r = match_alt<T, N>(cx, rule_name, inner, cursor, bindings, acc, capped, cursor)
             if r.status != MatchStatus.Hit { return r }
             let v = if member.label != null { r.value } else { cx.absent }
             r with { value: v }

@@ -61,6 +61,8 @@ export enum PendingAnnot {
     ATrailer(label: string)
     /// `@operators { … }` — the branch's tiers, loosest first.
     AOperators(tiers: List<Tier>)
+    /// `@fold(label)` — the branch folds its repeated group's turns over the seed `label`.
+    AFold(label: string)
 }
 
 /// All-caps-and-underscores: the convention marking a lexer terminal
@@ -217,6 +219,7 @@ fn fixed_needs_a_node(name: string) -> string {
 fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> {
     mut out = [m for m in items]
     mut rec: Recover? = null
+    mut folded: string? = null
     for an in annots {
         match an {
             .AExpect(token, message) -> {
@@ -230,20 +233,44 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
                 rec = Recover { sync_to: sync_to }
             },
             .AOperators(_) -> nothing_attached(),
+            .AFold(label) -> {
+                if folded != null { return .Err("duplicate @fold on one branch") }
+                folded = label
+            },
             .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? },
             .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? },
         }
     }
     let blocks = [t for an in annots for t in operator_blocks(an)]
     if blocks.length > 1 { return .Err("duplicate @operators on one branch") }
-    .Ok(Seq { items: out, build: null, recover: rec, operators: written_operators(blocks) })
+    .Ok(
+        Seq {
+            items: if folded == null { out } else { seeded(out, folded!) },
+            build: null,
+            recover: rec,
+            operators: written_operators(blocks),
+            fold: folded,
+        },
+    )
+}
+
+/// The turns of a fold's group, each marked with the label it reads.
+fn seeded(items: List<Item>, label: string) -> List<Item> {
+    [if i == 1 { m with { prim: seeded_prim(m.prim, label) } } else { m } for i, m in items]
+}
+
+fn seeded_prim(p: Prim, label: string) -> Prim {
+    match p {
+        .Group(inner) -> Prim.Group(inner with { branches: [t with { seed: label } for t in inner.branches] }),
+        .Ref(_) or .Lit(_) or .Named(_) or .NotChar(_) -> p,
+    }
 }
 
 /// The tiers an `@operators` annotation writes; none for any other.
 fn operator_blocks(an: PendingAnnot) -> List<List<Tier>> {
     match an {
         .AOperators(tiers) -> [tiers],
-        .AExpect(_, _) or .ARecover(_) or .AHead(_) or .ATrailer(_) -> [],
+        .AExpect(_, _) or .ARecover(_) or .AHead(_) or .ATrailer(_) or .AFold(_) -> [],
     }
 }
 
@@ -403,6 +430,10 @@ export fn grammar_build<T>(
         "build_trailer" -> {
             let label = tok_text(lex, args[0], "the trailer's label")?
             ok<T>(GrammarNode.NAnnot(PendingAnnot.ATrailer(label)))
+        },
+        "build_fold" -> {
+            let label = tok_text(lex, args[0], "the fold's seed label")?
+            ok<T>(GrammarNode.NAnnot(PendingAnnot.AFold(label)))
         },
         "build_operators" -> ok<T>(GrammarNode.NAnnot(PendingAnnot.AOperators(as_tiers(args[0])?))),
         "build_tier" -> {
