@@ -877,15 +877,20 @@ jobs:
         with: { name: avra-compiler, path: new }
       - uses: actions/download-artifact@v4
         with: { name: avra-build }
-      - name: main's compiler
+      - name: main's logic, built by this branch's compiler
         run: |
           git config --global --add safe.directory "$PWD"
           git fetch -q origin main
           git worktree add -q /tmp/mainwt origin/main
-          key=$(cd /tmp/mainwt && sh tools/compiler_paths.sh --key)
-          echo "main's compiler key: $key"
-          python3 tools/compiler_release.py fetch "avrac-$key" /tmp/avra-old || python3 tools/compiler_release.py fetch "$key" /tmp/avra-old
-          chmod +x /tmp/avra-old new/avra
+          cp avra-build.tar /tmp/mainwt/
+          cd /tmp/mainwt
+          tar -xf avra-build.tar
+          cp "$GITHUB_WORKSPACE/new/avra" build/avra
+          chmod +x build/avra
+          find build -type f -exec touch {} +
+          timeout 1500 make -s avra
+          cp build/avra /tmp/avra-old
+          chmod +x /tmp/avra-old "$GITHUB_WORKSPACE/new/avra"
       - name: build twice, compare objects
         run: |
           tar -xf avra-build.tar
