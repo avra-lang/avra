@@ -736,16 +736,7 @@ impl SyntaxArena {
     /// arguments — a trailing block is a call's LAST argument, and a
     /// name or a field read with no parentheses is a call with none.
     /// Null for every shape that is not a call.
-    fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? {
-        match self.expr(e) {
-            .Call(callee, pins, args) -> Expr.Call(callee, pins, args.concat(blocks)),
-            .MethodCall(subject, name, args) -> Expr.MethodCall(subject, name, args.concat(blocks)),
-            .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
-            .Ident(name) -> Expr.Call(name, [], blocks),
-            .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
-        }
-    }
+    fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? { self.expr(e).called_with(blocks) }
 
     /// THE PIPE PROTOCOL: `value |> stage` IS the stage's call with
     /// `value` as its FIRST argument — the call protocol's other end.
@@ -754,17 +745,7 @@ impl SyntaxArena {
     /// as any argument written in its parentheses is seated. A free
     /// stage's own arguments ride the pronoun (`stage_args`). Null
     /// for every shape that is not a call.
-    fn called_on(stage: ExprId, value: ExprId) -> Expr? {
-        match self.expr(stage) {
-            .Call(callee, pins, args) -> Expr.Call(callee, pins, [value].concat(self.stage_args(args))),
-            .MethodCall(subject, name, args) -> Expr.MethodCall(subject, name, [self.pronouned(value)].concat(args)),
-            .CallValue(subject, args) -> Expr.CallValue(subject, [value].concat(self.stage_args(args))),
-            .Ident(name) -> Expr.Call(name, [], [value]),
-            .Prop(subject, name) -> Expr.MethodCall(subject, name, [self.pronouned(value)]),
-            .Lambda(_, _) -> Expr.CallValue(stage, [value]),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
-        }
-    }
+    fn called_on(stage: ExprId, value: ExprId) -> Expr? { self.expr(stage).called_on(self, stage, value) }
 
     /// A STAGE'S CALL BINDS THE PRONOUN AS A METHOD CALL DOES: the
     /// arguments written in a stage's parentheses each ride `it` —
@@ -1385,16 +1366,7 @@ impl SyntaxArena {
     /// (`h.r!` — a path runs through what the nullable carries). The one
     /// projection for the place category — every other shape is a
     /// value, not a place.
-    fn place_step(e: ExprId) -> PlaceStep? {
-        match self.expr(e) {
-            .Ident(name) -> PlaceStep.Root(name),
-            .Receiver -> PlaceStep.Root("self"),
-            .Prop(subject, name) -> PlaceStep.Field(subject, name),
-            .Index(subject, index) -> PlaceStep.At(subject, index),
-            .Force(subject) -> PlaceStep.Unwrap(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
-        }
-    }
+    fn place_step(e: ExprId) -> PlaceStep? { self.expr(e).place_step() }
 
     /// A record literal's TURN among the literals written ALIKE in its
     /// file: how many of them stand before it. A template's literal and
@@ -1416,11 +1388,10 @@ impl SyntaxArena {
     /// literal's name, its brace the next token. As an instance's head
     /// that brace would be read as the instance's block.
     fn opens_with_literal(e: ExprId) -> bool {
-        match self.expr(e) {
-            .StructLit(_, _, _) -> true,
-            .Binary(_, left, _) or .Coalesce(left, _) -> self.opens_with_literal(left),
-            .Force(held) or .Propagate(held) or .Prop(held, _) or .Chain(held, _) or .Is(held, _) or .Index(held, _) or .MethodCall(held, _, _) or .With(held, _, _) or .CallValue(held, _) -> self.opens_with_literal(held),
-            .Bitnot(_) or .Not(_) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
+        match self.expr(e).leftmost() {
+            .Nothing -> false,
+            .Literal -> true,
+            .Operand(held) -> self.opens_with_literal(held),
         }
     }
 

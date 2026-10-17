@@ -1,0 +1,188 @@
+//! What each node answers about itself (`NodeFacts`, core/facts_derive.av):
+//! one impl per node that answers anything but the defaults. A node absent
+//! here is no literal form, needs parentheses, admits no purity, is no call,
+//! no place and begins with no operand — which is what a sugar answers until
+//! it says more.
+use core.{
+    ExprId,
+    Expr,
+    NodeFacts,
+    Purity,
+    Leftmost,
+    PlaceStep,
+    SyntaxArena,
+    body_literal,
+    flatten,
+}
+
+impl NodeFacts for IntLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for FloatLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for StrLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for BytesLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for BoolLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for NullLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for ListLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for MapLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for VariantLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for StructLit {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+    fn leftmost() -> Leftmost { Leftmost.Literal }
+}
+impl NodeFacts for Range {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for Comp {
+    fn literal_form() -> bool { true }
+}
+impl NodeFacts for Collect {
+    fn literal_form() -> bool { true }
+    fn atomic() -> bool { true }
+}
+impl NodeFacts for Lambda {
+    fn literal_form() -> bool { true }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? { Expr.CallValue(stage, [value]) }
+}
+impl NodeFacts for Body {
+    fn literal_form() -> bool { body_literal(self.word) }
+}
+impl NodeFacts for Env {
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for Block {
+    fn atomic() -> bool { true }
+}
+impl NodeFacts for Receiver {
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+    fn place_step() -> PlaceStep? { PlaceStep.Root("self") }
+}
+impl NodeFacts for Ident {
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+    fn place_step() -> PlaceStep? { PlaceStep.Root(self.name) }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.Call(self.name, [], blocks) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? { Expr.Call(self.name, [], [value]) }
+}
+impl NodeFacts for Prop {
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+    fn place_step() -> PlaceStep? { PlaceStep.Field(self.subject, self.name) }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.MethodCall(self.subject, self.name, blocks) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? {
+        Expr.MethodCall(self.subject, self.name, [store.pronouned(value)])
+    }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Index {
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+    fn place_step() -> PlaceStep? { PlaceStep.At(self.subject, self.index) }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Force {
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+    fn place_step() -> PlaceStep? { PlaceStep.Unwrap(self.value) }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.value) }
+}
+impl NodeFacts for With {
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.Always }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Call {
+    fn atomic() -> bool { true }
+    fn args_after() -> int? { 0 }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.Call(self.callee, self.pins, flatten([self.args, blocks])) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? {
+        Expr.Call(self.callee, self.pins, flatten([[value], store.stage_args(self.args)]))
+    }
+}
+impl NodeFacts for MethodCall {
+    fn atomic() -> bool { true }
+    fn purity() -> Purity { Purity.ByRow }
+    fn args_after() -> int? { 1 }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.MethodCall(self.subject, self.name, flatten([self.args, blocks])) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? {
+        Expr.MethodCall(self.subject, self.name, flatten([[store.pronouned(value)], self.args]))
+    }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for CallValue {
+    fn atomic() -> bool { true }
+    fn args_after() -> int? { 1 }
+    fn called_with(blocks: List<ExprId>) -> Expr? { Expr.CallValue(self.subject, flatten([self.args, blocks])) }
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? {
+        Expr.CallValue(self.subject, flatten([[value], store.stage_args(self.args)]))
+    }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Binary {
+    fn purity() -> Purity { Purity.Always }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.left) }
+}
+impl NodeFacts for Coalesce {
+    fn purity() -> Purity { Purity.Always }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.left) }
+}
+impl NodeFacts for Not {
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for Bitnot {
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for Chain {
+    fn purity() -> Purity { Purity.Always }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Is {
+    fn purity() -> Purity { Purity.Always }
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+}
+impl NodeFacts for Named {
+    fn purity() -> Purity { Purity.Always }
+}
+impl NodeFacts for Propagate {
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.value) }
+}
