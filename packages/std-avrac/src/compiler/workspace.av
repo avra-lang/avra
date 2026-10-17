@@ -1587,10 +1587,10 @@ impl Workspace {
     }
 
     /// A refusal near a component word this file does NOT import names
-    /// the `use` that would bring it; an imported word's refusal is its own.
+    /// the `use` that would bring it, in place of the parse's generic help;
+    /// an imported word's refusal is its own.
     fn import_remedy(p: Parsed, d: Diag, words: BlockWords) -> Diag {
         let at? = d.primary.loc else { return d }
-        if d.help != null { return d }
         let near = names_near(p.source.text, at.lo)
         let own = self.module_at(p.source.file)
         let homes = flatten(
@@ -1891,10 +1891,12 @@ impl Workspace {
         let p = self.parsed(f)
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
+        mut refused: List<string> = []
         for u in use_lines(p) {
             let line = self.imported_line(p, u)
             imports = imports.concat(line.imports)
             diags = diags.concat(line.diagnostics)
+            refused = refused.concat(line.refused)
         }
         let names = self
             .decls
@@ -1905,7 +1907,7 @@ impl Workspace {
                 self.prelude_imports(f),
                 (path: string) -> self.shown(path),
             )
-        let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
+        let out = names with { refused: refused, voices: Voices { list: diags.concat(names.voices.list) } }
         let ids = self.decls.ids()
         visible_of(
             self
@@ -1994,6 +1996,7 @@ impl Workspace {
         Elsewhere {
             generated: (name: string) -> self.generated_named(f, name),
             written_in: (origin: FileId) -> self.visible(origin),
+            unread: () -> self.unread_source(self.module_path_of(self.decls.file(f).path)),
         }
     }
 
