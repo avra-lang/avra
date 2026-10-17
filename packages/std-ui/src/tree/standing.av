@@ -21,6 +21,7 @@
 //! so a reorder hands one's state to another. The walk cannot refuse a
 //! tree it is handed; it says so (`warnings`), once a component a paint.
 use tree.identity.{under}
+use tree.lists.{flatten}
 
 /// A kept instance as its standing holds it: which component's it is,
 /// and the fn that hands it to that component's seat.
@@ -43,19 +44,29 @@ export type Standing = {
     by_order: Cell<bool>,
     step: Cell<string?>,
     said: Cell<List<string>>,
+    window: Cell<Window?>,
+    counted: Cell<int>,
 }
+
+/// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
+export type Window = { from: int, to: int }
+
+/// How many rows a windowed list builds before a target has told it its
+/// window: a screenful and a little over.
+export const first_window: int = 40
 
 /// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
     let nothing: List<string> = []
-    stands_in(Cell.new(nothing))
+    stands_in(Cell.new(nothing), Cell.new(0))
 }
 
 /// A standing nothing has stood at, in the walk that says into `said`.
-fn stands_in(said: Cell<List<string>>) -> Standing {
+fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
     let none: Hold? = null
     let nowhere: string? = null
     let empty: List<Under> = []
+    let unwindowed: Window? = null
     Standing {
         hold: Cell.new(none),
         under: Cell.new(empty),
@@ -64,6 +75,8 @@ fn stands_in(said: Cell<List<string>>) -> Standing {
         by_order: Cell.new(false),
         step: Cell.new(nowhere),
         said: said,
+        window: Cell.new(unwindowed),
+        counted: counted,
     }
 }
 
@@ -72,6 +85,7 @@ impl Standing {
     /// yet, and what stands becomes what stood.
     fn begun() {
         self.said.set([])
+        self.counted.set(0)
         self.opened()
     }
 
@@ -99,7 +113,7 @@ impl Standing {
     fn children(steps: List<string>, shared: List<bool>, drawn: bool) -> List<Standing> {
         mut stood: Map<string, Standing> = {}
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
-        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said) } for s in steps]
+        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said, self.counted) } for s in steps]
         let above = if drawn { null } else { self.step.get() }
         for j, u in now {
             u.standing.opened()
@@ -110,6 +124,69 @@ impl Standing {
         [u.standing for u in now]
     }
 
+    /// `children`, for the rows of a WINDOWED list: `steps` are the rows in
+    /// the window, opened as `children` opens them. A standing that stood at
+    /// a step outside the window, and `kept` says its row is still in the
+    /// source, stands on unopened — what a row's instance holds survives its
+    /// scrolling away, and goes only when its key leaves the source.
+    fn children_windowed(steps: List<string>, shared: List<bool>, kept: fn(string) -> bool) -> List<
+        Standing,
+    > {
+        let opened = self.children(steps, shared, false)
+        let in_window = told_set(steps)
+        let carried = [u for u in self.was_under.get() if !in_window.has(u.step) && kept(u.step)]
+        self.under.set(self.under.get().concat(carried))
+        opened
+    }
+
+    /// Whether any standing under this one stood at a step outside `steps`.
+    fn stood_outside(steps: List<string>) -> bool {
+        let in_window = told_set(steps)
+        self.was_under.get().any((u) -> !in_window.has(u.step))
+    }
+
+    /// The window a list stands with, for `count` rows: the one a target
+    /// told it, kept inside the rows there are — else the first screenful.
+    fn window_of(count: int) -> Window {
+        let told? = self.window.get() else {
+            let first = Window {
+                from: 0,
+                to: if count < first_window { count } else { first_window },
+            }
+            self.window.set(first)
+            return first
+        }
+        let to = if told.to > count { count } else { told.to }
+        let from = if told.from > to { to } else { told.from }
+        Window { from: if from < 0 { 0 } else { from }, to: to }
+    }
+
+    /// A target tells the list standing here which rows to build.
+    fn windowed(from: int, to: int) { self.window.set(Window { from: from, to: to }) }
+
+    /// Rows a windowed list built this paint, summed over the walk: the
+    /// witness that a long list builds a bounded number.
+    fn tally(rows: int) { self.counted.set(self.counted.get() + rows) }
+
+    /// How many rows windowed lists built this walk.
+    fn built() -> int { self.counted.get() }
+
+    /// The standing at `path` below this one, the path a standing stands at.
+    fn find(path: string) -> Standing? {
+        if self.step.get() == path { return self }
+        for u in self.under.get() {
+            let hit? = u.standing.find(path) else { continue }
+            return hit
+        }
+        null
+    }
+
+    /// The paths of the windowed lists at and below this standing.
+    fn windows() -> List<string> {
+        let own = if self.window.get() == null { [] } else { [self.step.get() ?? ""] }
+        own.concat(flatten([u.standing.windows() for u in self.under.get()]))
+    }
+
     /// How many instances stand here and below — the lifetime witness.
     fn held() -> int {
         let own = if self.hold.get() == null { 0 } else { 1 }
@@ -117,6 +194,13 @@ impl Standing {
         for u in self.under.get() { below = below + u.standing.held() }
         own + below
     }
+}
+
+/// The steps as a set, to ask of one whether it is among them.
+fn told_set(steps: List<string>) -> Map<string, bool> {
+    mut set: Map<string, bool> = {}
+    for s in steps { set.set(s, true) }
+    set
 }
 
 /// The typed seat ONE component's instances are handed across, the

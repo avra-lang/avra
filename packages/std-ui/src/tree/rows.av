@@ -1,0 +1,72 @@
+//! `tree/rows.av` — A LIST OF ROWS THAT BUILDS ONLY THE ONES ON SCREEN. A
+//! `Rows` knows how many rows there are, each row's key, and how to build
+//! the row at an index; it is a view, and where it stands it describes the
+//! rows of its WINDOW and no others. The window is a target's to tell
+//! (`Standing.windowed`: a scroll position, a screen's rows); until it has,
+//! the first screenful stands.
+//!
+//!     list { windowed(rows, (r) -> r.id, (r) -> bench_row r { key: r.id }) }
+//!
+//! This is the door the `for` lowering of a `list` goes through: the author
+//! writes `list { for r in rows { … } }` and nothing else. A row is keyed,
+//! so a window that slides makes the rows at its edges and moves none; an
+//! instance a row holds survives its scrolling out of the window for as long
+//! as its key is in the source.
+//!
+//! A row whose own key is not the key the list was given is SAID: the key
+//! the list finds a row by must be the key the row stands under.
+use tree.identity.{Stand, steps, shared}
+use tree.lists.{flatten}
+use tree.node.{Node}
+use tree.standing.{Standing}
+use tree.view.{View}
+
+/// The rows of a list: how many, the key of the one at an index, and the
+/// view of it. Nothing here is built until a window asks.
+export type Rows = { count: int, key_at: fn(int) -> string, at: fn(int) -> dyn View }
+
+/// `xs` as rows: `key` names a row, `build` makes its view.
+export fn windowed<T>(xs: List<T>, key: fn(T) -> string, build: fn(T) -> dyn View) -> dyn View {
+    Rows { count: xs.length, key_at: (i: int) -> key(xs[i]), at: (i: int) -> build(xs[i]) }
+}
+
+impl View for Rows {
+    fn stand() -> Stand { Stand {} }
+
+    fn describe(at: Standing) -> List<Node> {
+        let w = at.window_of(self.count)
+        let built = [self.at(i) for i in w.from..w.to]
+        let said = [lent(v.stand(), self.key_at(w.from + j), at) for j, v in built]
+        let seats = [s.spelled() for s in steps(said)]
+        let present = if at.stood_outside(seats) { self.present() } else { none_present() }
+        let stands = at.children_windowed(seats, shared(said), (step: string) -> present.has(step))
+        at.tally(built.length)
+        flatten([v.describe(stands[j]) for j, v in built])
+    }
+}
+
+impl Rows {
+    /// The step of every row in the source, as a set: asked once a paint, and
+    /// only when a row outside the window has something to keep.
+    fn present() -> Map<string, bool> {
+        mut set: Map<string, bool> = {}
+        for s in steps([Stand { key: self.key_at(i) } for i in 0..self.count]) { set.set(s.spelled(), true) }
+        set
+    }
+}
+
+fn none_present() -> Map<string, bool> {
+    let none: Map<string, bool> = {}
+    none
+}
+
+/// A row's stand, under the key the list found it by. A row that says
+/// another key of its own is said.
+fn lent(own: Stand, key: string, at: Standing) -> Stand {
+    if own.key != null && own.key != key { at.says(told_apart(key)) }
+    own with { key: key }
+}
+
+fn told_apart(key: string) -> string {
+    "the row the list calls `${key}` says another key of its own: give `windowed` the key the row stands under"
+}

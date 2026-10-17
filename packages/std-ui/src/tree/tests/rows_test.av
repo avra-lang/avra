@@ -1,0 +1,105 @@
+//! A list of rows builds only its window: how many a paint built is counted,
+//! the window slides by key, and an instance a row holds outlives its
+//! scrolling away.
+use @std.ui.components.{button, column, list, row, text}
+use @std.ui.headless.{Screen, headless}
+use @std.ui.tree.rows.{windowed}
+
+/// A row with a button of its own words and an instance state of its own.
+component tapper(n: int) {
+    state mine: int = 0
+    row {
+        text "row ${self.n} taps ${self.mine}"
+        button "Tap ${self.n}" { on press { self.mine = self.mine + 1 } }
+    }
+}
+
+fn keyed(i: int) -> string { "k${i}" }
+
+fn rows_of(count: int) -> List<int> { [i for i in 0..count] }
+
+fn listing(count: int) -> Screen {
+    headless(
+        () -> column {
+            list {
+                windowed(
+                    rows_of(count),
+                    (i: int) -> keyed(i),
+                    (i: int) -> tapper i { key: keyed(i) },
+                )
+            }
+        },
+    )
+}
+
+fn words(s: Screen) -> List<string> { s.text().split("\n") }
+
+spec "tree/rows — a list builds only its window" {
+    given "ten thousand rows" {
+        then "the first paint builds the first screenful, not the rows" {
+            let s = listing(10000)
+            s.built() == 40
+        }
+        then "the screen holds those rows and no others" {
+            let s = listing(10000)
+            let seen = s.text()
+            seen.contains("row 0 taps 0") &&
+                seen.contains("row 39 taps 0") &&
+                !seen.contains("row 40 ")
+        }
+        then "a repaint builds the same bounded number" {
+            let s = listing(10000)
+            s.press("Tap 3") && s.built() == 40
+        }
+    }
+    given "a window the target tells" {
+        then "builds exactly those rows" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            s.scroll(path, 5000, 5030) &&
+                s.built() == 30 &&
+                s.text().contains("row 5000 taps 0") &&
+                !s.text().contains("row 0 ")
+        }
+        then "past the rows there are is kept inside them" {
+            let s = listing(10)
+            let path = s.windows()[0]
+            s.scroll(path, 8, 500) && s.built() == 2 && s.text().contains("row 9 ")
+        }
+        then "an empty source builds nothing" {
+            let s = listing(0)
+            s.built() == 0
+        }
+    }
+    given "a row that holds an instance" {
+        then "keeps it while its key stays in the source, though it scrolled away" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let tapped = s.press("Tap 3") && s.press("Tap 3")
+            let away = s.scroll(path, 5000, 5030) && !s.text().contains("row 3 ")
+            let back = s.scroll(path, 0, 40)
+            tapped && away && back && s.text().contains("row 3 taps 2")
+        }
+        then "and a row that never stood starts fresh" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            s.scroll(path, 100, 140) && s.text().contains("row 100 taps 0")
+        }
+    }
+    given "a row key that is not the one the list found it by" {
+        then "is said, once" {
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(3),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: "other${i}" },
+                        )
+                    }
+                },
+            )
+            !s.warnings().is_empty()
+        }
+    }
+}
