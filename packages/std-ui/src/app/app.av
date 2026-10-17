@@ -59,7 +59,8 @@ export type Door = { send: fn(Msg) -> bool, ask: fn(Want, Act, string?) -> bool,
 /// `dirty` is whether state moved since the last paint, `holding` whether a
 /// target paints on its own frame (a page's, a loop's drained inbox) instead
 /// of at each turn, `asked` whether a frame is already asked for, `framer`
-/// how a target is asked, and `walks` how many times the view was walked.
+/// how a target is asked, `walks` how many times the view was walked and `frames` how many frames
+/// a loop's own frame task brought.
 /// `guard` runs a turn's action and answers whether it ran, or the words
 /// of the failure that ended it; `failed` is the last turn's failure
 /// until a turn runs again, and `unsaid` is the part of it no target has
@@ -84,6 +85,7 @@ export type App = {
     asked: Cell<bool>,
     framer: Cell<fn() -> void>,
     walks: Cell<int>,
+    frames: Cell<int>,
 }
 
 /// A target that is asked for no frame.
@@ -153,6 +155,7 @@ export fn owned_app<V: View>(
         asked: Cell.new(false),
         framer: Cell.new(nobody_asks),
         walks: Cell.new(0),
+        frames: Cell.new(0),
     }
 }
 
@@ -170,6 +173,7 @@ impl App {
     /// app's standing, so an instance this paint does not reach is gone
     /// with it.
     fn paint() {
+        self.dirty.set(false)
         self.walks.set(self.walks.get() + 1)
         let view = self.view.get()
         let theme = self.theme.get()
@@ -197,7 +201,6 @@ impl App {
     fn flush() -> bool {
         self.asked.set(false)
         if !self.dirty.get() { return false }
-        self.dirty.set(false)
         self.paint()
         true
     }
