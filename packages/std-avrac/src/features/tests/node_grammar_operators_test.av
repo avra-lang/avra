@@ -1,6 +1,6 @@
 // AN OPERATOR TABLE NAMES ITS NODE. A tier's build (or the branch's, for
 // every tier) is a node build whose slots are the climb's own captures —
-// `l`, `op` and `r` — and `op` is the WORD the climb took, whole, so a
+// `left`, `op` and `right` — and `op` is the WORD the climb took, whole, so a
 // payload that is an operator is filled from the words the table spells.
 // Against a node model of made-up variants.
 use @std.errors.{Loc}
@@ -17,16 +17,16 @@ fn op_rows() -> List<PayloadRow> {
             variant: "Bin",
             payloads: [
                 Field { name: "op", ty: "BinOp", at: null, kind: .Named("BinOp", []) },
-                Field { name: "l", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
-                Field { name: "r", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "left", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "right", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
             ],
         },
         PayloadRow {
             owner: "E",
             variant: "Co",
             payloads: [
-                Field { name: "l", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
-                Field { name: "r", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "left", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "right", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
             ],
         },
     ]
@@ -75,7 +75,7 @@ fn op_run(src: string, text: string) -> string {
     "${op_text(o.result!)} |${said}"
 }
 
-const op_table: string = "prog = x:e ( BREAK )* EOF -> x\ne = l:operand @operators { left \"+\" \"-\" left ( \">\" \">\" ) \"<<\" left \"??\" -> E.Co } -> E.Bin\noperand = v:NAME -> lit(v)\n"
+const op_table: string = "prog = x:e ( BREAK )* EOF -> x\ne = left:operand @operators { left \"+\" \"-\" left ( \">\" \">\" ) \"<<\" left \"??\" -> E.Co } -> E.Bin\noperand = v:NAME -> lit(v)\n"
 
 spec "features/node_grammar — an operator table's builds" {
     given "a branch build and a tier build over a table" {
@@ -94,13 +94,17 @@ spec "features/node_grammar — an operator table's builds" {
     given "a word that names no operator" {
         then "is refused where the table is assembled" {
             op_refuses(
-                "e = l:operand @operators { left \"+=\" } -> E.Bin\noperand = v:NAME -> lit(v)\n",
+                "e = left:operand @operators { left \"+=\" } -> E.Bin\noperand = v:NAME -> lit(v)\n",
                 "the word `+=`, which spells no operator",
             )
         }
+        then "says so in the table's own words" {
+            let said = op_refusals("e = left:operand @operators { left \"+=\" } -> E.Bin\noperand = v:NAME -> lit(v)\n")
+            said.length == 1 && said[0].message == "rule `e` builds `E.Bin` for the word `+=`, which spells no operator"
+        }
         then "but not for a node with no operator payload" {
             !op_refuses(
-                "e = l:operand @operators { left \"+=\" -> E.Co }\noperand = v:NAME -> lit(v)\n",
+                "e = left:operand @operators { left \"+=\" -> E.Co }\noperand = v:NAME -> lit(v)\n",
                 "spells no operator",
             )
         }
@@ -108,7 +112,7 @@ spec "features/node_grammar — an operator table's builds" {
     given "a tier build naming a node that is not there" {
         then "is refused like any node build" {
             op_refuses(
-                "e = l:operand @operators { left \"+\" -> E.Nope } -> E.Bin\noperand = v:NAME -> lit(v)\n",
+                "e = left:operand @operators { left \"+\" -> E.Nope } -> E.Bin\noperand = v:NAME -> lit(v)\n",
                 "no such variant is declared",
             )
         }

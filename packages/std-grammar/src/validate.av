@@ -29,7 +29,7 @@ impl Seq {
 
     /// The captures an `@operators` branch's builds read besides its operand.
     fn operator_labels() -> List<string> {
-        if self.operators == null { [] } else { ["op", "r"] }
+        if self.operators == null { [] } else { ["op", "right"] }
     }
 }
 
@@ -92,15 +92,15 @@ fn alt_defects(
     flatten([seq_defects(rule_name, s, names, known_terminals, value_needed) for s in a.branches])
 }
 
-/// An `@operators` branch's own shape: one operand item labeled `l`,
+/// An `@operators` branch's own shape: one operand item labeled `left`,
 /// at least one tier, each tier naming an operator, and builds
 /// that read only what the climb captures.
 fn operator_defects(rule_name: string, s: Seq, names: List<string>) -> List<Diagnostic> {
     let ops? = s.operators else { return [] }
-    let shape = if s.items.length == 1 && s.items[0].label == "l" {
+    let shape = if s.items.length == 1 && s.items[0].label == "left" {
         []
     } else {
-        [defect(rule_name, "an @operators branch has one item, its operand, captured as `l`")]
+        [defect(rule_name, "an @operators branch has one item, its operand, captured as `left`")]
     }
     let none = if ops.tiers.is_empty() { [defect(rule_name, "@operators holds no tier")] } else { [] }
     shape.concat(none).concat(flatten([tier_defects(rule_name, l, names) for l in ops.tiers]))
@@ -122,7 +122,7 @@ fn tier_build_defects(rule_name: string, b: Build?) -> List<Diagnostic> {
                 "an @operators tier builds by a call or a node, not by returning a capture",
             ),
         ],
-        .Call(_, args) -> [defect(rule_name, "an @operators build reads `l`, `op` and `r`, not `${a}`") for a in args if !["l", "op", "r"].contains(a)],
+        .Call(_, args) -> [defect(rule_name, "an @operators build reads `left`, `op` and `right`, not `${a}`") for a in args if !["left", "op", "right"].contains(a)],
         // a node build's labels are checked against the NODE's payloads,
         // by whoever holds the node model — never here
         .Node(_, _, _, _) -> [],
