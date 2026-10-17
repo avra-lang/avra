@@ -133,12 +133,13 @@ fn judged_seqs(s: Seq, scope: Seq) -> List<Judged> {
 
 fn seq_defects(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {
     let tiers = s.operators?.tiers ?? []
-    build_defects(rname, s.build, outer, rows, [])
+    build_defects(rname, s.build, outer, rows, flatten([t.words for t in tiers if t.build == null]))
         .concat(flatten([build_defects(rname, t.build, outer, rows, t.words) for t in tiers]))
 }
 
 /// One build judged against the node it names; `words` are the operator
-/// words it is built for, when it is a tier's.
+/// words it is built for: a tier's own, or every word of the tiers the
+/// branch's build serves.
 fn build_defects(rname: string, held: Build?, outer: Seq, rows: List<PayloadRow>, words: List<List<string>>) -> List<Diagnostic> {
     let b? = held else { return [] }
     match b {
