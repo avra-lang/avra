@@ -17,8 +17,7 @@ use core.{
 use features.{
     LangNode,
     Builder,
-    token_at,
-    pat_ids_at,
+    void_ref,
     zip_defect,
     aligned_binds,
     between,
@@ -36,43 +35,44 @@ fn build_int_lit(b: Builder) -> Result<LangNode, string> {
     // here is a defect, not a program's mistake
     b.make_expr(Expr.IntLit(t.int_value() ?? 0))
 }
-/// `l (op r)*` folds left: each pair wraps the accumulator, so
-/// `1 + 2 - x` is `(1 + 2) - x`.
-fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
-    mut acc = b.expr(0)?
-    let ops = b.tokens(1)?
-    let rights = b.exprs(2)?
-    for i, t in ops {
-        let op = want(binop_of(t.text), "a binary operator")?
-        acc = b.store.alloc_expr(Expr.Binary(op, acc, rights[i]), b.cover(acc, rights[i]))
-    }
-    b.wrap_expr(acc)
+/// `l op r` over the arithmetic and logical bands: the climb has
+/// grouped the pair, so `1 + 2 - x` arrives as `(1 + 2) - x`.
+fn build_binary(b: Builder) -> Result<LangNode, string> {
+    binary_of(b, (b.token(1)?).text, "a binary operator")
 }
 
-/// `l (op r)*` over the BITWISE band. One law lives here and it is
-/// the reason the band is one rule rather than five: A RUN THAT MIXES
-/// TWO DIFFERENT BITWISE OPERATORS IS REFUSED. `a | b & c` has two
-/// readings a reader must know a table to choose between, and a
-/// generated one is as likely to mean either — so it names both and
-/// asks for parentheses instead of picking.
+/// `l op r` over the BITWISE band. One law lives with it and it is
+/// the reason the band is one tier rather than five: A RUN THAT MIXES
+/// TWO DIFFERENT BITWISE OPERATORS IS REFUSED (`unmixed_bitwise`).
+/// `a | b & c` has two readings a reader must know a table to choose
+/// between, and a generated one is as likely to mean either — so it
+/// names both and asks for parentheses instead of picking.
 ///
-/// Only the run is visible here, which is exactly the right reach:
+/// Only the run is visible there, which is exactly the right reach:
 /// `a << 1 + 2` is a DIFFERENT level (the additive arrives already
 /// built) and reads as C reads it, because C is arbitrary there
 /// rather than wrong. What C gets wrong is `a & b == c`, and the
-/// band's PLACE in the ladder — tighter than comparison — fixes that
+/// band's PLACE in the table — tighter than comparison — fixes that
 /// without any law at all.
-fn build_fold_bitwise(b: Builder) -> Result<LangNode, string> {
-    mut acc = b.expr(0)?
-    let ops = b.tokens(1)?
-    let rights = b.exprs(2)?
-    let mixed: Token? = ops.find(it.text != ops[0].text)
-    if mixed != null { return .Err(mixed_bitwise(ops[0].text, mixed!.text)) }
-    for i, t in ops {
-        let op = want(binop_of(bitwise_symbol(t.text)), "a bitwise operator")?
-        acc = b.store.alloc_expr(Expr.Binary(op, acc, rights[i]), b.cover(acc, rights[i]))
-    }
-    b.wrap_expr(acc)
+fn build_bitwise(b: Builder) -> Result<LangNode, string> {
+    binary_of(b, bitwise_symbol((b.token(1)?).text), "a bitwise operator")
+}
+
+/// A run's agreement: its first operator and the one just taken. The
+/// climb reads only a refusal, so agreement answers a placeholder.
+fn build_unmixed_bitwise(b: Builder) -> Result<LangNode, string> {
+    let first = (b.token(0)?).text
+    let second = (b.token(1)?).text
+    if first != second { return .Err(mixed_bitwise(first, second)) }
+    b.make_type(void_ref)
+}
+
+/// `l op r` for the operator whose source symbol is `symbol`.
+fn binary_of(b: Builder, symbol: string, what: string) -> Result<LangNode, string> {
+    let op = want(binop_of(symbol), what)?
+    let l = b.expr(0)?
+    let r = b.expr(2)?
+    b.wrap_expr(b.store.alloc_expr(Expr.Binary(op, l, r), b.cover(l, r)))
 }
 
 /// A captured operator's SYMBOL. Shift-right arrives as a lone `>`
@@ -102,18 +102,15 @@ fn build_bitnot(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Binary(xor, v, ones))
 }
 
-/// `l (op r)?` — at most one comparison, never a chain; or `l is
-/// .variant`, the tag test, which enums give meaning.
-fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
-    let l = b.expr(0)?
-    let asked: Token? = token_at(b.args, 3)
-    if asked != null { return asked_expr(b, l, asked!, pat_ids_at(b.args, 4)) }
-    let narrowed: Token? = token_at(b.args, 5)
-    if narrowed != null { return narrowed_expr(b, l, narrowed!, b.type_ref(6)?) }
-    let op_tok? = token_at(b.args, 1) else { return b.wrap_expr(l) }
-    let r = b.expr(2)?
-    let op = want(binop_of(op_tok.text), "a comparison operator")?
-    b.make_expr(Expr.Binary(op, l, r))
+/// `l op r` or `l is …` — at most one, never a chain. The right side
+/// says which: a value is a comparison's, and the PATTERN the `is`
+/// rule built is a tag test (`.V`, `.V(x)`) or a type test (`c: T`).
+fn build_compare(b: Builder) -> Result<LangNode, string> {
+    match b.args[2] {
+        .Node(.NExpr(_)) -> binary_of(b, (b.token(1)?).text, "a comparison operator"),
+        .Node(.NPat(p)) -> asked_expr(b, b.expr(0)?, p),
+        rest -> .Err(compare_without_right_side()),
+    }
 }
 
 /// One seat of a payload `is` — a bare name or `_`, spelled here so a
@@ -126,25 +123,24 @@ fn build_asked_bind(b: Builder) -> Result<LangNode, string> {
     if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
     b.make_pat(Pat.Bind(Scoped(n.text)))
 }
-/// `l is .V` — the tag test — and, when a payload list is written,
-/// the variant PATTERN that list names, kept beside the node. The
-/// `if` that means to bind reads the pattern and desugars to a match;
-/// a payload `is` anywhere else has enums name it and refuse.
-fn asked_expr(b: Builder, l: ExprId, asked: Token, payload: List<PatId>) -> Result<LangNode, string> {
-    let id = b.expr_node(Expr.Is(l, Plain(asked.text)))
-    if !payload.is_empty() {
-        let pat = b.store.alloc_pat(Pat.Variant(Plain(asked.text), payload), b.span)
-        b.store.mark_is_payload(id, pat, true)
+/// `l is …`, the tag or type test the pattern names. A payload list
+/// or a bound type is kept beside the node as that pattern: the `if`
+/// that means to bind desugars it to a match, and a payload `is`
+/// anywhere else has enums name it and refuse.
+fn asked_expr(b: Builder, l: ExprId, asked: PatId) -> Result<LangNode, string> {
+    match b.store.pat(asked) {
+        .Variant(name, args) -> tag_test(b, l, name, asked, !args.is_empty()),
+        .Typed(_, ty) -> tag_test(b, l, Plain(ty.name), asked, true),
+        rest -> .Err(compare_without_right_side()),
     }
-    b.wrap_expr(id)
 }
 
-/// `l is c: T` — a type test that binds, kept beside the node as the
-/// `Pat.Typed` it names: the `if` that means to bind desugars it to a
-/// match, exactly as a payload `is`.
-fn narrowed_expr(b: Builder, l: ExprId, name: Token, ty: TypeRef) -> Result<LangNode, string> {
-    let id = b.expr_node(Expr.Is(l, Plain(ty.name)))
-    b.store.mark_is_payload(id, b.store.alloc_pat(Pat.Typed(Scoped(name.text), ty), b.span), true)
+fn tag_test(b: Builder, l: ExprId, tag: Plain, asked: PatId, binds: bool) -> Result<
+    LangNode,
+    string,
+> {
+    let id = b.expr_node(Expr.Is(l, tag))
+    if binds { b.store.mark_is_payload(id, asked, true) }
     b.wrap_expr(id)
 }
 
@@ -174,15 +170,12 @@ fn force_link(link: string, value: ExprId) -> Expr {
     Expr.Force(value)
 }
 
-/// `l ( ?? r )*` folds left: `a ?? b ?? c` is `(a ?? b) ?? c`. The
-/// LADDER owns this parse; the node's meaning lives in `nullable`.
-fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {
-    mut acc = b.expr(0)?
-    let rights = b.exprs(1)?
-    for r in rights {
-        acc = b.store.alloc_expr(Expr.Coalesce(acc, r), b.cover(acc, r))
-    }
-    b.wrap_expr(acc)
+/// `l ?? r` — the pair the climb grouped, so `a ?? b ?? c` arrives
+/// as `(a ?? b) ?? c`. The node's meaning lives in `nullable`.
+fn build_coalesce(b: Builder) -> Result<LangNode, string> {
+    let l = b.expr(0)?
+    let r = b.expr(2)?
+    b.wrap_expr(b.store.alloc_expr(Expr.Coalesce(l, r), b.cover(l, r)))
 }
 
 /// `v ( .name | .name(args) | ?.name | [i] | (args) | ?.(args) | { … } | .type(T) )*`
@@ -482,6 +475,10 @@ fn more_links(
 fn prop_link(link: string, subject: ExprId, name: string) -> Expr {
     if link == "?." { return Expr.Chain(subject, Plain(name)) }
     Expr.Prop(subject, Plain(name))
+}
+
+fn compare_without_right_side() -> string {
+    "a comparison's right side is a value, or the pattern an `is` names"
 }
 
 /// The operator a source token names — derived from core's roster,
