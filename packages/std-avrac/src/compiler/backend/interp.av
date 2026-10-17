@@ -257,7 +257,7 @@ type Resume = { place: Place, dst: Reg }
 
 /// An open guarded run: the task that opened it and the depth its call
 /// stack stood at once the guarded closure was entered.
-type Guard = { task: int, depth: int }
+type Guard = { task: int, depth: int, unwinding: bool }
 
 /// The caller waiting at `pc` in `body` for a call answering into `dst`.
 fn resumed_at(body: Body, pc: int, dst: Reg) -> Resume {
@@ -942,7 +942,7 @@ impl Machine {
         }
         self.callers.push(caller)
         self.frames.push(self.frame_for(target, [closure]))
-        self.guards.push(Guard { task: self.running, depth: self.callers.length })
+        self.guards.push(Guard { task: self.running, depth: self.callers.length, unwinding: false })
         Place { body: target, pc: 0 }
     }
 
@@ -960,6 +960,7 @@ impl Machine {
         let g? = self.guards.last() else { return null }
         if g.task != self.running || g.depth != self.callers.length { return null }
         let _ = self.guards.pop()
+        if g.unwinding { return null }
         Val.I(0)
     }
 
@@ -972,19 +973,26 @@ impl Machine {
         let opened = [j for j, g in self.guards if g.task == self.running]
         let at? = opened.last() else { return false }
         let g = self.guards[at]
-        self.guards = self.guards.slice(0, at)
+        if g.unwinding {
+            self.failures = [
+                "a deferred call trapped while a trap was unwinding: ${self.failures.first() ?? ""}",
+            ]
+            return false
+        }
         let back = self.callers[g.depth - 1]
         let cleanups = self.unwinding_cleanups(g.depth, body, pc)
         self.unwound(g.depth - 1)
         self.caught = self.failures.first() ?? ""
         self.failures = []
         if cleanups.is_empty() {
+            self.guards = self.guards.slice(0, at)
             self.resume = Place {
                 body: back.place.body,
                 pc: self.put_at(back.dst, Val.I(1), back.place.pc),
             }
             return true
         }
+        self.guards.set(at, g with { unwinding: true })
         let thunk = unwind_thunk(cleanups, back.place.body.reg_types[back.dst.index])
         self.callers.push(back)
         self.frames.push(self.frame_for(thunk.body, thunk.args))
@@ -1009,7 +1017,7 @@ impl Machine {
         mut out: List<Cleaning> = []
         for ci in reversed(cleanups_open(at.body.ins)[at.pc]) {
             match at.body.ins[ci] {
-                .Cleanup(callee, args) -> out
+                .Cleanup(callee, args, _) -> out
                     .push(Cleaning { callee: callee, args: [regs[r.index] ?? Val.I(0) for r in args] }),
                 rest -> nothing(),
             }
@@ -1053,7 +1061,7 @@ impl Machine {
             .Alloca(d) -> self.put_at(d, self.slot_cell(d), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
-            .ScopeEnter(_) or .ScopeExit(_) or .Cleanup(_, _) -> pc + 1,
+            .ScopeEnter(_) or .ScopeExit(_) or .Cleanup(_, _, _) -> pc + 1,
             .Retain(r) -> {
                 self.retain_reg(r)
                 pc + 1

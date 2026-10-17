@@ -1067,6 +1067,13 @@ typedef struct Guard {
     jmp_buf at;
     int64_t task;
     struct Guard* up;
+    // a trap this run caught is unwinding toward it: a trap raised by a
+    // deferred call meanwhile has no frame left to be caught by
+    int unwinding;
+#ifndef __wasm__
+    // the unwind in flight, owned by the run that started it
+    struct _Unwind_Exception exc;
+#endif
 } Guard;
 
 typedef _Bool (*GuardCode)(void*);
@@ -1097,25 +1104,34 @@ static _Unwind_Reason_Code guard_stop(int version, _Unwind_Action actions, _Unwi
 
 // A trap: the innermost run this task opened takes it, with the words. The
 // frames between the trap and the run make their cleanups first (a native
-// walk over the unwind tables); where the walk finds no way, the jump is
-// direct.
-static void guard_caught(const char* msg) {
+// walk over the unwind tables, a wasm exception through the cleanup
+// funclets); where the walk finds no way, the jump is direct. A trap raised
+// by a cleanup while its run is unwinding is nobody's to catch: it answers the
+// words the process dies with.
+static const char* guard_caught(const char* msg) {
     int64_t me = avra_task_id();
     for (Guard* g = g_guard; g; g = g->up) {
         if (g->task != me) continue;
+        if (g->unwinding) {
+            static char fatal[600];
+            snprintf(fatal, sizeof fatal, "a deferred call trapped while a trap was unwinding: %s", msg);
+            return fatal;
+        }
+        g->unwinding = 1;
         snprintf(g_guard_text, sizeof g_guard_text, "%s", msg);
 #ifndef __wasm__
-        static struct _Unwind_Exception unwinding;
-        memset(&unwinding, 0, sizeof unwinding);
-        unwinding.exception_class = 0x4156524100000000ULL;
-        (void)_Unwind_ForcedUnwind(&unwinding, guard_stop, g);
+        memset(&g->exc, 0, sizeof g->exc);
+        g->exc.exception_class = 0x4156524100000000ULL;
+        (void)_Unwind_ForcedUnwind(&g->exc, guard_stop, g);
 #endif
         longjmp(g->at, 1);
     }
+    return msg;
 }
 
 int64_t avra_guard_run(void* body) {
     Guard g;
+    g.unwinding = 0;
     g.task = avra_task_id();
     g.up = g_guard;
     g_guard = &g;
@@ -1157,7 +1173,7 @@ int64_t avra_case_schedule = -1;
 char avra_case_path[128] = {0};
 
 void avra_trap(const char* msg) {
-    guard_caught(msg);
+    msg = guard_caught(msg);
     fflush(stdout);
     if (g_case) {
         fputs("avra: while running ", stderr);

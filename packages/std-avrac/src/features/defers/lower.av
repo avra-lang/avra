@@ -30,27 +30,18 @@ fn direct_call(mut cx: LowerCx, s: StmtId) -> DirectCall? {
     direct_free_call(cx, lam, body) ?? direct_method_call(cx, lam, body)
 }
 
-/// A FREE call: the callee bound by name, an extern one kept to a
-/// void answer (its row's the only shape `run_direct` calls void),
-/// a declared one free to answer anything — dropped either way.
+/// A FREE call: the callee bound by name, a declared one free to answer
+/// anything — dropped either way. An extern one is no body to call, so it
+/// takes the lifted body like any larger defer.
 fn direct_free_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall? {
     let call = cx.view.store.call_parts(body)?
     if !call.args.all(fixed_early(cx, it)) { return null }
     let d = bound_decl_of(cx.names, body)?
     let seats = seats_of(cx, d)?
     if skips_a_default(seats, call.args, false) { return null }
-    let host: string? = cx.extern_callee(body)
-    if host != null && !(cx.shape_at(body) is .Void) { return null }
+    if cx.extern_callee(body) != null { return null }
     let captured = cx.capture_regs(lam)
-    built(
-        cx,
-        host ?? cx.callee_of(body, call.callee),
-        host != null,
-        captured,
-        null,
-        call.args,
-        cx.type_at(body),
-    )
+    built(cx, cx.callee_of(body, call.callee), captured, null, call.args, cx.type_at(body))
 }
 
 /// A METHOD call on the impl table — a callee whose first argument is
@@ -70,7 +61,6 @@ fn direct_method_call(mut cx: LowerCx, lam: ExprId, body: ExprId) -> DirectCall?
     built(
         cx,
         cx.method_symbol(m, body, recv_ty),
-        false,
         captured,
         captured[j],
         call.args,
@@ -98,7 +88,6 @@ fn skips_a_default(seats: List<TypeId>, args: List<ExprId>, self_seat: bool) -> 
 fn built(
     mut cx: LowerCx,
     callee: string,
-    host: bool,
     captured: List<Reg>,
     recv: Reg?,
     args: List<ExprId>,
@@ -107,7 +96,6 @@ fn built(
     let seated: List<Reg> = if recv != null { [recv!] } else { [] }
     DirectCall {
         callee: callee,
-        host: host,
         args: seated.concat([fixed_now(cx, captured, a) for a in args]),
         ret: ret,
     }
