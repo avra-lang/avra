@@ -47,12 +47,12 @@ fn embed_refusals(path: string) -> List<string> {
     }
 }
 
-/// Every refusal `avra check` speaks of the package embedding `path` as octets.
+/// Every refusal `avra check` speaks of the package providing `path` (from its root) to a kind.
 fn octets_refusals(path: string) -> List<string> {
     let pkg = "${embed_root()}/pkg"
     let _ = write_text(
         "${pkg}/src/main.av",
-        "use @std.meta.{embed_octets}\nconst A: Bytes = embed_octets(\"${path}\")\nA.length\n",
+        "use @std.meta.{provided, Provider}\ntype K = { n: int }\nimpl Provider for K {\n    static fn provide(path: string, octets: Bytes) -> K? { K { n: octets.length } }\n}\nconst A: K = provided<K>(\"${path}\")\nA.n\n",
     )
     match avra_ran(["check", pkg]) {
         .Ok(o) -> [l for l in o.out.stdout.split("\n") if l.starts_with("error[")],
@@ -83,16 +83,16 @@ spec "avra — embed on a disk" {
             embed_refusals("sub").join("|") == "error[type.embed_file]: `embed` could not read its file — `src/sub` is not a file"
         }
     }
-    given "octets embedded beside the source" {
-        then "a file that is not text is accepted" { octets_refusals("bad.bin").is_empty() }
+    given "octets provided from the package root" {
+        then "a file that is not text is accepted" { octets_refusals("src/bad.bin").is_empty() }
         then "a linked file refuses at the literal, as embed's does" {
-            octets_refusals("link.txt").join("|") == "error[type.embed_place]: `embed` follows no link — one stands on the way to `link.txt`"
+            octets_refusals("src/link.txt").join("|") == "error[type.embed_place]: `embed` follows no link — one stands on the way to `src/link.txt`"
         }
         then "a file under a linked directory refuses the same way" {
-            octets_refusals("ldir/secret.txt").join("|") == "error[type.embed_place]: `embed` follows no link — one stands on the way to `ldir/secret.txt`"
+            octets_refusals("src/ldir/secret.txt").join("|") == "error[type.embed_place]: `embed` follows no link — one stands on the way to `src/ldir/secret.txt`"
         }
         then "a path out of the package refuses" {
-            octets_refusals("../../outside/secret.txt")
+            octets_refusals("../outside/secret.txt")
                 .join("|")
                 .starts_with("error[type.embed_place]: `embed` reads inside its own package")
         }
