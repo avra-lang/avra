@@ -19,6 +19,8 @@ use core.{
     StmtId,
     ExprId,
     SeatMark,
+    qtrace,
+    traced,
 }
 use features.{
     Decl,
@@ -321,22 +323,25 @@ impl Workspace {
         if ordinal < rows.length { self.fill_row(store, m, ids, rows[ordinal]) }
     }
 
-    /// ONE HELD MODULE, MINTED: every held file's declarations from its record lines,
-    /// each adopted by its parent — names before shapes, since a shape names a type
-    /// of its own module. A shape naming ANOTHER module's type mints that module on
-    /// the way (`Decls.decls_of_file` asks), and the flag stands before the work
-    /// does, so two modules that name each other meet once. SHAPES ARE NOT FILLED
+    /// HELD FILES OF ONE MODULE, MINTED: each file's declarations from its record
+    /// lines, adopted by their parents — names before shapes, since a shape names a
+    /// type of its own module. A file stands once, and its flag stands before the
+    /// work does, so two files that name each other meet once. SHAPES ARE NOT FILLED
     /// HERE: `fill_ensured` fills each row lazily, on the ask that names it.
-    fn mint_module(store: Store, m: ModulePath) {
-        if self.hold.minted.get().get(m.text()) != null { return }
-        self.hold.minted.put(m.text(), true)
+    fn mint_files(store: Store, m: ModulePath, paths: List<string>) {
+        let held = [p for p in paths if self.decls.held.get().get(p) != null && self.hold.minted.get().get(p) == null]
+        if held.is_empty() { return }
+        for path in held {
+            if traced() { qtrace("Q\tmint\t${m.text()}\t${path}\n") }
+            self.hold.minted.put(path, true)
+        }
         work_module_minted()
         let fields = record_fields(self, store, m)
         let places = record_places(self, store, m)
-        let held = [path for path in self.module_files(m) if self.decls.held.get().get(path) != null]
         for path in held { self.mint_file(path, file_rows(fields, places.get(path)), makers_in(fields, path)) }
-        for path in held { self.hold.reexports.put(path, reexports_in(fields, path)) }
         for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
+        let lead? = held.first() else { return }
+        self.decls.note_module_rows(self.decls.file(self.file_id(lead)).module_id, 2)
     }
 
     /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The

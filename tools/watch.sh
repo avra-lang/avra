@@ -62,6 +62,19 @@ tree_mem() {
         }
         END { print int(s) }'
 }
+# WHETHER A SLOT OR A TICKET HAS NO LIVE HOLDER. A holder writes its pid a moment after it
+# makes the directory, so a process killed in between (a Sprite's OOM kill) leaves a directory
+# with an EMPTY pid, and reading "no pid" as "alive" stalled every later build until someone
+# moved it by hand. A dead pid is gone; an empty or missing one is gone once the directory has
+# stood a minute, far longer than the moment it is written in.
+holder_gone() {
+    h=$(cat "$1/pid" 2>/dev/null)
+    if [ -n "$h" ]; then
+        ! kill -0 "$h" 2>/dev/null
+        return
+    fi
+    [ -n "$(find "$1" -maxdepth 0 -mmin +1 2>/dev/null)" ]
+}
 tree_kill() {
     ps -eo pid=,pgid= | tree_pids "$1" | xargs kill -9 2>/dev/null
 }
@@ -221,7 +234,20 @@ self_test() {
         kill -9 "$lead" 2>/dev/null
         return 1
     fi
-    echo "watch: self-test passed — 4 fixtures"
+    # fixture 5: the empty-pid slot a killed holder leaves. Reaped once it is old, never while
+    # it is young (a holder may be about to write), and a live or dead pid is judged by the pid.
+    held_dir="$tmp/slot"
+    mkdir "$held_dir"
+    holder_gone "$held_dir" && { echo "watch: self-test: fixture 5 — a young empty slot was reaped"; return 1; }
+    touch -t 200001010000 "$held_dir"
+    holder_gone "$held_dir" || { echo "watch: self-test: fixture 5 — an old empty slot was held forever"; return 1; }
+    echo "$$" > "$held_dir/pid"
+    holder_gone "$held_dir" && { echo "watch: self-test: fixture 5 — a live holder's slot was reaped"; return 1; }
+    sleep 0 & dead=$!
+    wait "$dead"
+    echo "$dead" > "$held_dir/pid"
+    holder_gone "$held_dir" || { echo "watch: self-test: fixture 5 — a dead holder's slot was kept"; return 1; }
+    echo "watch: self-test passed — 5 fixtures"
 }
 if [ "$1" = "--self-test" ]; then
     self_test
@@ -305,7 +331,7 @@ slot_holders() {
             *) n="${cand##*.}" ;;
         esac
         h=$(cat "$cand/pid" 2>/dev/null)
-        if [ -n "$h" ] && kill -0 "$h" 2>/dev/null; then
+        if ! holder_gone "$cand"; then
             c=$(cat "$cand/cmd" 2>/dev/null)
             echo "watch:   slot $n: pid $h — ${c:-?}" >&2
         fi
@@ -317,8 +343,7 @@ while [ -z "$held" ]; do
     ahead=no
     for t in "$qdir"/*; do
         [ -d "$t" ] || continue
-        h=$(cat "$t/pid" 2>/dev/null)
-        if [ -n "$h" ] && ! kill -0 "$h" 2>/dev/null; then
+        if holder_gone "$t"; then
             rm -rf "$t"
             continue
         fi
@@ -330,8 +355,7 @@ while [ -z "$held" ]; do
         while [ "$n" -le "$slots" ]; do
             [ "$n" = 1 ] && cand="$lock" || cand="$lock.$n"
             if mkdir "$cand" 2>/dev/null; then held="$cand"; break; fi
-            holder=$(cat "$cand/pid" 2>/dev/null)
-            if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+            if holder_gone "$cand"; then
                 rm -rf "$cand"
                 continue
             fi
