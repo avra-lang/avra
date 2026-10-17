@@ -59,10 +59,11 @@ void avra_task_slot_set(int64_t key, void* v);
 // The running task's id; 0 for `main`.
 int64_t avra_task_id(void);
 
-// A GUARDED RUN: `body` (a closure box, as a task's) runs under a catch
-// point; a trap on this task while it runs answers NULL, and the trap's
-// words are `avra_guard_words`, owned text. Writes the body made stand.
-void* avra_guard_run(void* body);
+// A GUARDED RUN: `body` (a closure box answering a bool) runs under a
+// catch point. Answers 0 or 1 for the bool, or 2 when a trap on this task
+// ended it, the trap's words being `avra_guard_words` (owned text) and the
+// writes the body made standing.
+int64_t avra_guard_run(void* body);
 const char* avra_guard_words(void);
 // Room for at least `spare` more cells without another grow.
 void avra_array_reserve(void* arr, int64_t spare);

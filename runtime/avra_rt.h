@@ -747,8 +747,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_pid_alive(AVRA_RT_I6
     "avra_pid_alive: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_own_pid()), int64_t),
     "avra_own_pid: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_classify_type(avra_guard_run(AVRA_RT_PTR)) == AVRA_RT_POINTER,
-    "avra_guard_run: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_guard_run(AVRA_RT_PTR)), int64_t),
+    "avra_guard_run: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_guard_words()) == AVRA_RT_POINTER,
     "avra_guard_words: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_task_spawn(AVRA_RT_PTR)) == AVRA_RT_POINTER,

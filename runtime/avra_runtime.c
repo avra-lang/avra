@@ -1066,7 +1066,7 @@ typedef struct Guard {
     struct Guard* up;
 } Guard;
 
-typedef void* (*GuardCode)(void*);
+typedef int64_t (*GuardCode)(void*);
 
 static Guard* g_guard = NULL;
 static char g_guard_text[512];
@@ -1089,18 +1089,18 @@ static void guard_caught(const char* msg) {
     }
 }
 
-void* avra_guard_run(void* body) {
+int64_t avra_guard_run(void* body) {
     Guard g;
     g.task = avra_task_id();
     g.up = g_guard;
     g_guard = &g;
     if (setjmp(g.at) != 0) {
         guard_close(&g);
-        return NULL;
+        return 2;
     }
-    void* answer = ((GuardCode)(uintptr_t)((AvraArray*)body)->data[0])(body);
+    int64_t answered = ((GuardCode)(uintptr_t)((AvraArray*)body)->data[0])(body);
     guard_close(&g);
-    return answer;
+    return answered & 1;
 }
 
 const char* avra_guard_words(void) { return str_owned(g_guard_text, strlen(g_guard_text)); }
