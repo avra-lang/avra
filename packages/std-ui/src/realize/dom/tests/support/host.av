@@ -28,6 +28,7 @@ enum Rec {
     Call(id: int, verb: string)
     SetVar(id: int, at: Pair)
     DropVar(id: int, name: string)
+    Kept(kinds: List<string>, words: int)
 }
 
 // ── reading a frame ─────────────────────────────────────────────
@@ -125,6 +126,10 @@ impl Reader {
             .Call -> Rec.Call(self.id(), self.text()),
             .SetVar -> Rec.SetVar(self.id(), Pair { name: self.text(), value: self.text() }),
             .DropVar -> Rec.DropVar(self.id(), self.text()),
+            .Adopt -> {
+                let words = self.int()
+                Rec.Kept([self.text() for j in 0..self.int()], words)
+            },
         }
     }
 }
@@ -376,6 +381,9 @@ impl Host {
                 ),
             .DropVar(id, name) -> self
                 .rewrite(id, "drop_var", (s) -> s with { vars: [v for v in s.vars if v.name != name] }),
+            .Kept(names, _) -> {
+                if !names.is_empty() { self.fault("adopt: this model holds no server page") }
+            },
         }
     }
 
@@ -435,5 +443,6 @@ fn rec_line(r: Rec) -> string {
         .Call(id, verb) -> "call ${id} ${verb}",
         .SetVar(id, at) -> "var ${id} ${at.name}=${quoted(at.value)}",
         .DropVar(id, name) -> "unvar ${id} ${name}",
+        .Kept(names, _) -> "adopt ${names.join(",")}",
     }
 }

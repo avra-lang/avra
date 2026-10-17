@@ -8,6 +8,7 @@ use tree.seats.{Seat}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use realize.html.element.{Element, lowered}
+use realize.html.print.{kinds_of, print_of, words_of}
 use realize.html.css.{CssRule, distinct_rules, page_sheet, root_vars, rules_of}
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
@@ -22,7 +23,9 @@ type Bound = { id: NodeId, action: Action, ordered: bool }
 /// A page as last painted: its elements, the next number it will give
 /// one, every rule a paint has named so far and the theme's variables
 /// the sheet was last written with, the handlers its elements bound, and
-/// what the user was heard to do to it since.
+/// what the user was heard to do to it since. `stood` is the print of the page
+/// a server sent, none when it sent none, and `adopting` the elements the
+/// first frame tells the host it keeps.
 export type Live = {
     page: Cell<List<Element>> = Cell.new([]),
     next: Cell<int> = Cell.new(0),
@@ -36,6 +39,8 @@ export type Live = {
     answered: Cell<int> = Cell.new(0),
     declined: Cell<int> = Cell.new(0),
     stands: Standing = standing(),
+    stood: Cell<int> = Cell.new(0),
+    adopting: Cell<Patch?> = Cell.new(null),
 }
 
 /// A page nothing was painted on.
@@ -54,6 +59,21 @@ once fn exact_mode() -> string { env("AVRA_EXACT") ?? "" }
 fn rules_of_notice(notice: Node?) -> List<CssRule> {
     let node? = notice else { return [] }
     rules_of(node)
+}
+
+/// An element and what it holds, hearing nothing: the page as a server's
+/// HTML stands before any listener is on it.
+fn unheard(e: Element) -> Element {
+    match e {
+        .Text(_) -> e,
+        .Tag(el) -> Element.Tag(el with { hears: [], kids: [unheard(k) for k in el.kids] }),
+    }
+}
+
+/// The patch that opens a first frame over a server's page, none otherwise.
+fn present_adopt(adopting: Patch?) -> List<Patch> {
+    let said? = adopting else { return [] }
+    [said]
 }
 
 /// Every handler an element and what it holds bound, by who hears it.
@@ -91,15 +111,23 @@ impl Live {
     /// over this page's `stands` is a snapshot: it is painted whole and the
     /// page stops watching, so the exact path never answers for it.
     fn patches(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        let adopted = self.adopted(root, theme)
         let full = self.painted(root, theme, notice)
         self.unwatched()
-        full
+        adopted.concat(full)
     }
 
     /// `patches`, for a tree drawn by a walk over this page's `stands` — the
     /// walk an app opens, or `paint_view` — whose instances are the ones the
     /// page's readings watch. The exact path may answer for it.
     fn patches_drawn(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        let adopted = self.adopted(root, theme)
+        adopted.concat(self.drawn_turn(root, theme, notice))
+    }
+
+    /// The turn a tree drawn over this page's `stands` paints, by the exact
+    /// path or the full one.
+    fn drawn_turn(root: Node, theme: Theme, notice: Node?) -> List<Patch> {
         if exact_mode() == "" { return self.painted(root, theme, notice) }
         if exact_mode() != "check" { return self.exactly(root, theme, notice) }
         let exact = self.exact_turn()
@@ -162,6 +190,40 @@ impl Live {
         self.watch.set(watching(self.page.get()))
     }
 
+    /// The page a server sent, adopted as this paint opens: the patch that
+    /// tells a host which elements it keeps, or none when no page stood.
+    fn adopted(root: Node, theme: Theme) -> List<Patch> {
+        let print = self.stood.get()
+        if print == 0 { return [] }
+        self.stood.set(0)
+        self.adopt(root, theme, print)
+        let said = self.adopting.get()
+        self.adopting.set(null)
+        present_adopt(said)
+    }
+
+    /// THE PAGE A SERVER SENT, ADOPTED: when the tree this module draws folds
+    /// to the print the server stamped, the page stands as that tree with its
+    /// numbers counted out as a first paint counts them — hearing nothing yet,
+    /// wearing the sheet — and the paint after it is the ordinary diff against
+    /// it: listeners and nothing built. When it does not, the page stays empty
+    /// and the first frame tells the host to clear what it holds, so the two
+    /// never diverge in silence.
+    fn adopt(root: Node, theme: Theme, print: int) {
+        let run = lowered(root)
+        let rules = distinct_rules(rules_of(root))
+        if print_of(run, page_sheet(rules, theme, [])) != print {
+            self.adopting.set(Patch.Adopt([], 0))
+            return
+        }
+        let placed = diff([], run, [], 0)
+        self.page.set([unheard(e) for e in placed.page])
+        self.next.set(placed.next)
+        self.rules.set(rules)
+        self.worn.set(root_vars(theme))
+        self.adopting.set(Patch.Adopt(kinds_of(placed.page), words_of(placed.page)))
+    }
+
     /// The full paint, as it always was.
     fn painted(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
         let restyled = self.restyled(root, theme, notice)
@@ -195,6 +257,8 @@ impl Live {
         self.bound.set([])
         self.heard.set([])
         self.told.set([])
+        self.adopting.set(null)
+        self.stood.set(0)
     }
 
     /// The owner keys of the elements that hear something: a node's
