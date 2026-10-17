@@ -281,7 +281,7 @@ WASM_INSTRUMENTS ?= 0
 # catch point is built with WebAssembly exception handling, which lowers
 # setjmp/longjmp to throw and catch (the module links libsetjmp for the
 # rest). No other member is built so, and the exnref encoding is LLVM's default.
-WASM_SJLJ_avra_runtime.c := -mllvm -wasm-enable-sjlj -mexception-handling
+WASM_SJLJ_avra_runtime.c := -mllvm -wasm-enable-sjlj -mexception-handling -mllvm -wasm-use-legacy-eh=false
 WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wildcard runtime/*.c))
 WASM_RUNTIME_OBJS := $(patsubst runtime/%.c,build/wasm32/%.o,$(WASM_RUNTIME_SRCS))
 WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
