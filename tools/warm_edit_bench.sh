@@ -111,9 +111,10 @@ cp "$file" "$orig"
 restore() { cp "$orig" "$file"; rm -f "$orig"; }
 trap restore EXIT INT TERM
 
-# A FRESH EDIT per round: the appended word carries a run nonce and the
+# A FRESH EDIT per round, of the same WIDTH every run (a count of bytes written is exact only
+# if the edit's text is): the appended word carries a run nonce and the
 # round's own name, so no round lands on a store hit.
-nonce=${SPEED_NONCE:-$(date +%s)-$$}
+nonce=${SPEED_NONCE:-$(date +%s)-$(printf '%07d' $$)}
 edit() { # <word>
     cp "$orig" "$file"
     python3 - "$file" "$lit" "$1$nonce" <<'PY'
