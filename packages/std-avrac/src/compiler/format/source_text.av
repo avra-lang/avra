@@ -1467,6 +1467,7 @@ impl SourceText {
                 parent,
             ),
             .Match(subject, arms) -> grouped(self.match_or_payload_if(subject, arms, id, depth, c), atom_tier, parent),
+            .IfLet(left, right, taken, other) -> grouped(self.if_let_group(left, right, taken, other, id, depth, c), atom_tier, parent),
             .NullLit -> grouped("null", atom_tier, parent),
             .Coalesce(left, right) -> {
                 let l = self.expression(left, 5, depth, c)
@@ -1868,6 +1869,25 @@ impl SourceText {
         self.payload_if(subject, arms, payload, id, depth)
     }
 
+    /// The `if x is .V(p) { A } else { B }` as written: the blocks are the
+    /// branches themselves, so `block` renders them whole; an elseless
+    /// guard carries an empty block and prints no `else`.
+    mut fn if_let_group(
+        left: ExprId,
+        right: PatId,
+        taken: ExprId,
+        other: ExprId,
+        id: ExprId,
+        depth: int,
+        col: int = -1,
+    ) -> string {
+        let one = self.span_flat(self.store.expr_span(id))
+        let cond = "${self.expression(left, 5, depth, resolved_col(col, depth) + 3)} is ${self.pattern(right, depth)}"
+        let yes = "if ${cond} ${self.block(taken, one, depth)}"
+        if self.store.empty_block(other) { return yes }
+        "${yes} else ${self.if_group_else(other, one, depth)}"
+    }
+
     /// An if EXPRESSION's branches, one-line when the whole form was.
     mut fn if_group(cond: ExprId, yes: ExprId, no: ExprId, id: ExprId, depth: int, col: int = -1) -> string {
         let one = self.span_flat(self.store.expr_span(id))
@@ -1932,6 +1952,7 @@ impl SourceText {
             // a payload `if` desugared into a marked Match chains as the
             // `if` it was, exactly as a nested `Expr.If` does
             .Match(subject, arms) -> self.chained_payload_if(subject, arms, no, depth),
+            .IfLet(left, right, taken, other) -> self.if_let_group(left, right, taken, other, no, depth),
             // A NESTED "else if" (its own if a STATEMENT, chain_value's
             // promotion) answers through `tail_scoped`'s lone-tail wrap
             // (core/store.av), so the chain link this sees is
