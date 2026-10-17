@@ -16,7 +16,7 @@
 //! ORDERED index's bucket folds its members in id order instead, so the
 //! order rows were declared in is part of what a reader saw.
 use @std.meta.{identity}
-use engine.{Kernel}
+use engine.{Kernel, whole_counted}
 
 /// Where a row files under one index: its text, or a dense slot (a
 /// bool's tag, a typed id's index).
@@ -305,9 +305,11 @@ impl Rows<R> {
     /// The whole relation read under `db`: cell 0.
     fn seen_whole(db: Db) {
         let kernel? = db.kernel.get() else {
+            whole_counted()
             db.foreign_read()
             return
         }
+        kernel.whole_read(self.family.get())
         let reader = kernel.reader()
         if reader >= 0 {
             self.read.told(kernel, reader, self.family.get(), 0)

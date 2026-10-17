@@ -3,6 +3,8 @@
 //! again — and what a reader could not reach answers nothing.
 use @std.ui.components.{button, checkbox, column, dialog, field, form, item, list, slider, text}
 use @std.ui.headless.{Screen, headless}
+use @std.ui.native.sources.{later}
+use @std.time.{ms}
 
 /// A counter the view reads and its handlers write.
 type Count = { n: Cell<int> = Cell.new(0) }
@@ -230,7 +232,7 @@ spec "the screen follows the state" {
             let before = page.text()
             c.n.set(5)
             let stale = page.text() == before
-            page.repaint()
+            page.turn(() -> true)
             stale && page.text() == "column\n  text \"5 presses\"\n  button \"Count\""
         }
     }
@@ -246,6 +248,62 @@ spec "the screen follows the state" {
             let _ = page.press("Missing")
             let quiet = built.get() == 1
             page.press("Go") && quiet && built.get() == 2
+        }
+    }
+}
+
+spec "a source asks the loop that runs" {
+    given "a screen whose loop has ended" {
+        then "a timer asked for is refused, and nothing runs" {
+            let ran: Cell<int> = Cell.new(0)
+            let screen = headless(() -> text "x")
+            screen.running(() -> screen.advance(ms(1)))
+            let asked = later(
+                ms(1),
+                () -> {
+                    ran.set(1)
+                    true
+                },
+            )
+            !asked && ran.get() == 0
+        }
+    }
+}
+
+spec "loops nest without crossing" {
+    given "a screen running inside another's body" {
+        then "a timer asked for reaches the innermost loop, and the outer one after" {
+            let inner: Cell<int> = Cell.new(0)
+            let outer: Cell<int> = Cell.new(0)
+            let a = headless(() -> text "a")
+            let b = headless(() -> text "b")
+            a
+                .running(
+                    () -> {
+                        b
+                            .running(
+                                () -> {
+                                    let _ = later(
+                                        ms(1),
+                                        () -> {
+                                            inner.set(inner.get() + 1)
+                                            true
+                                        },
+                                    )
+                                    b.advance(ms(5))
+                                },
+                            )
+                        let _ = later(
+                            ms(1),
+                            () -> {
+                                outer.set(outer.get() + 1)
+                                true
+                            },
+                        )
+                        a.advance(ms(5))
+                    },
+                )
+            inner.get() == 1 && outer.get() == 1
         }
     }
 }

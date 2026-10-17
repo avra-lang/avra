@@ -1881,3 +1881,31 @@ that may only fall (tools/work.budget, `make work-accept`). A count is the same
 on every machine, needs no ratio or slack, and a regression names the counter
 that grew. A clock stays a report; a ceiling is a count. A new unit of work
 gets its tally where it is done, a row in the budget, and the ratchet holds it.
+
+## A sugar keeps its node and answers for its meaning
+
+`~x` parses to `Bitnot { rewrite }`, not to its rewrite alone: the node
+is what the author wrote, `rewrite` (`x ^ -1`) is what it MEANS, minted
+with it and walked in its place (`kids() = [rewrite]`, typing answers
+`type_at(rewrite)`, lowering `reg_of(rewrite)`). Three facts hang off
+the pair, each read through ONE verb and never kept twice:
+
+- `store.mint_for(sugar, nodes, note)` — every minted node answers for
+  its sugar (`minted_for`), and the sugar says its meaning in one
+  sentence (`means_note`).
+- A refusal spoken while a minted node types carries that sentence as a
+  second frame at the sugar (`TypeCx.rewriting`, set in `type_node`) —
+  the rewrite's own words stay, the sugar says what it was.
+- `avra expand` prints the same sentence under the statement, and `fmt`
+  prints the node, so a sugar is no longer rewritten into its meaning
+  by the formatter.
+
+THE OPERAND IS HELD ONCE. `Bitnot { rewrite }` has no `value` field: a
+`~` is invertible, so its operand is read OFF the rewrite
+(`store.bitnot_operand`), and a copy in a template (`Rebuilder.minted_expr`)
+copies the rewrite once and re-links the copy's minted nodes and sentence
+to the copy's own sugar (`means_test.av` counts the operand's copies: one).
+A sugar that is NOT invertible keeps both fields and its rewrite is a
+DERIVED field — re-minted from the others at a splice, never copied —
+named once through the field-mark registry (`field_route`, next to
+`@local` and `@facet`), when the first such sugar lands.

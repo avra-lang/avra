@@ -1,0 +1,39 @@
+// proves: a timer reaches the loop as a turn. `advance` waits virtual
+// time while the loop drains, so a period and a one-shot land at their
+// instants and no real time passes; the loop ends with the body that ran
+// beside it, and its sources with it.
+use @std.ui.components.{text}
+use @std.ui.headless.{headless}
+use @std.ui.native.sources.{later, repeating}
+use @std.time.{ms}
+
+let ticks = Cell.new(0)
+let says = Cell.new("quiet")
+let screen = headless(() -> text "ticks=${ticks.get()} says=${says.get()}")
+println(screen.text())
+screen
+    .running(
+        () -> {
+            let _ = repeating(
+                ms(100),
+                () -> {
+                    ticks.set(ticks.get() + 1)
+                    true
+                },
+            )
+            let _ = later(
+                ms(250),
+                () -> {
+                    says.set("hello")
+                    true
+                },
+            )
+            screen.advance(ms(50))
+            println(screen.text())
+            screen.advance(ms(100))
+            println(screen.text())
+            screen.advance(ms(160))
+            println(screen.text())
+        },
+    )
+screen.text()

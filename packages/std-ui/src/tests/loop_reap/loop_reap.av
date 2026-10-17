@@ -1,0 +1,29 @@
+// proves: the loop lets a finished job go. A timer that asks for the next
+// one from inside its own turn runs 200 times, and the loop holds
+// two tasks at most, however many jobs have run.
+use @std.ui.components.{text}
+use @std.ui.headless.{headless}
+use @std.ui.native.sources.{later}
+use @std.time.{ms}
+
+let turns = Cell.new(0)
+let most = Cell.new(0)
+let screen = headless(() -> text "turns=${turns.get()}")
+
+fn again(turns: Cell<int>, most: Cell<int>, held: Cell<int>) -> bool {
+    turns.set(turns.get() + 1)
+    most.set(if held.get() > most.get() { held.get() } else { most.get() })
+    if turns.get() < 200 {
+        let _ = later(ms(1), () -> again(turns, most, held))
+    }
+    true
+}
+
+screen
+    .running(
+        () -> {
+            let _ = later(ms(1), () -> again(turns, most, screen.shown.app.jobs))
+            screen.advance(ms(300))
+        },
+    )
+"turns=${turns.get()} most=${most.get()} held=${screen.shown.app.jobs.get()}"
