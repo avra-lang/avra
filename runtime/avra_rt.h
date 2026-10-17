@@ -195,6 +195,7 @@ extern const char avra_rt_held_avra_mmap_close __asm__(AVRA_RT_LABEL(avra_mmap_c
 extern const char avra_rt_held_avra_pid_alive __asm__(AVRA_RT_LABEL(avra_pid_alive));
 extern const char avra_rt_held_avra_own_pid __asm__(AVRA_RT_LABEL(avra_own_pid));
 extern const char avra_rt_held_avra_guard_run __asm__(AVRA_RT_LABEL(avra_guard_run));
+extern const char avra_rt_held_avra_guard_answer __asm__(AVRA_RT_LABEL(avra_guard_answer));
 extern const char avra_rt_held_avra_guard_words __asm__(AVRA_RT_LABEL(avra_guard_words));
 extern const char avra_rt_held_avra_task_spawn __asm__(AVRA_RT_LABEL(avra_task_spawn));
 extern const char avra_rt_held_avra_task_settle __asm__(AVRA_RT_LABEL(avra_task_settle));
@@ -405,6 +406,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_pid_alive,
     &avra_rt_held_avra_own_pid,
     &avra_rt_held_avra_guard_run,
+    &avra_rt_held_avra_guard_answer,
     &avra_rt_held_avra_guard_words,
     &avra_rt_held_avra_task_spawn,
     &avra_rt_held_avra_task_settle,
@@ -749,6 +751,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_own_pid()), int64_t)
     "avra_own_pid: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_guard_run(AVRA_RT_PTR)), int64_t),
     "avra_guard_run: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_guard_answer()), int64_t),
+    "avra_guard_answer: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_guard_words()) == AVRA_RT_POINTER,
     "avra_guard_words: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_task_spawn(AVRA_RT_PTR)) == AVRA_RT_POINTER,

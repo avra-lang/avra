@@ -1070,6 +1070,7 @@ typedef int64_t (*GuardCode)(void*);
 
 static Guard* g_guard = NULL;
 static char g_guard_text[512];
+static int64_t g_guard_answer;
 
 static void guard_close(Guard* g) {
     for (Guard** at = &g_guard; *at; at = &(*at)->up) {
@@ -1096,12 +1097,14 @@ int64_t avra_guard_run(void* body) {
     g_guard = &g;
     if (setjmp(g.at) != 0) {
         guard_close(&g);
-        return 2;
+        return 1;
     }
-    int64_t answered = ((GuardCode)(uintptr_t)((AvraArray*)body)->data[0])(body);
+    g_guard_answer = ((GuardCode)(uintptr_t)((AvraArray*)body)->data[0])(body);
     guard_close(&g);
-    return answered & 1;
+    return 0;
 }
+
+int64_t avra_guard_answer(void) { return g_guard_answer; }
 
 const char* avra_guard_words(void) { return str_owned(g_guard_text, strlen(g_guard_text)); }
 
