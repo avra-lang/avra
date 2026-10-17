@@ -273,6 +273,10 @@ type Hold = {
     refs_by_target: Cell<Map<string, List<string>>>,
     /// The references held files make into a held file, restored once per target.
     held_refs: Cell<Map<string, List<Ref>>>,
+    /// The files held because their kept rows stand: their object keys are the rows', never re-derived.
+    standing: Cell<Map<string, bool>>,
+    /// Each judged file's run tokens off its module's row, decoded once per build.
+    lite_runs: Cell<Map<string, List<string>>>,
     linked_by: Cell<List<string>>,
     held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
@@ -359,6 +363,8 @@ fn new_hold() -> Hold {
         typed_by: list_cell(),
         refs_by_target: Cell.new(no_producers),
         held_refs: map_cell(),
+        standing: map_cell(),
+        lite_runs: map_cell(),
         linked_by: list_cell(),
         held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
@@ -399,6 +405,8 @@ type Records = {
     /// A MODULE'S PRODUCERS, keyed by record key: what the load walk and the bucket
     /// readers read of its record, decoded once per build however many importers reach it.
     record_producers: Cell<Map<string, Producers>>,
+    /// What each module stands as to a reader, whole — asked once per build, restated when its record is.
+    record_stamps: Cell<Map<string, string>>,
     /// A FILE'S OWN ANSWER, keyed by path: whether it lexes to a
     /// `grammar` token at all — `module_names_syntax`'s cold-path
     /// pre-filter, asked once per file per build no matter how many
@@ -436,6 +444,7 @@ fn new_records() -> Records {
         record_fields: Cell.new(no_fields),
         record_places: Cell.new(no_places),
         record_producers: Cell.new(no_producers_of),
+        record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),

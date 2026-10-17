@@ -528,9 +528,23 @@ impl Workspace {
     }
 
     fn held_okey(s: Store, path: string) -> string {
-        let ws = self
-        obj_key_cached(ws, s, self.module_path_of(path), path)
+        let at = "${self.module_path_of(path).text()}\t${path}"
+        let known: string? = self.keys.object_keys.get().get(at)
+        if known != null { return known! }
+        let kept: string? = if self.hold.standing.get().has(path) &&
+            self.file_judged(s, path, Stored.Unit, self.okey_row(path)) {
+            s.get(Stored.Unit, self.okey_row(path))
+        } else {
+            null
+        }
+        let found? = kept else { return obj_key_cached(self, s, self.module_path_of(path), path) }
+        self.keys.object_keys.put(at, found)
+        found
     }
+
+    /// FILE-SAID: a file's object key, keyed by PATH — kept beside its other rows, and read back for a
+    /// file whose rows stand, so a held file's key needs none of its parts.
+    fn okey_row(path: string) -> string { node_key(Stored.Unit, ["okey-row", self.compiler_id(), path]) }
 
     /// Whether this build is for wasm: no fiber, no thread, so no `while`
     /// check — the row it would call has no body on that target.

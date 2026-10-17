@@ -2,7 +2,7 @@
 //! walk needs to reach its neighbours — read from the record's lines once, kept as one
 //! small row beside the record, and read back in place so a names-only walk decodes no
 //! record line (docs/2026_10_06_COMPILER_DB.md, "load: the rest": records read in place).
-use core.{distinct, flatten, joined, ModulePath}
+use core.{distinct, flatten, joined, digest_of, sorted_texts, ModulePath}
 use core.debug.{db_verified_producers}
 use features.{ExternNote, DeclFacts, implements_kind}
 use compiler.store.{Store}
@@ -31,6 +31,12 @@ type Producers = {
     implementors: List<string>,
     /// Each file a `ref` line names, with the files whose lines name it: value the target, path the source.
     refs: List<Filed>,
+    /// Each placed file with the digest of the declaration names its module's namespace binds from it.
+    bounds: List<Filed>,
+    /// The digest of the lines other modules' keys read of the record: its interface, imports and references.
+    seen: string,
+    /// The `file` lines, as the record wrote them: each file's print and what its runs read.
+    files: List<List<string>>,
 }
 
 /// THE ONE READER OF A RECORD'S PRODUCER LINES: the fields are the ones `read_row` and
@@ -56,6 +62,14 @@ export fn producers_of(m: ModulePath, fields: List<List<string>>) -> Producers {
         refs: distinct_filed(
             [Filed { value: ref_target(p), path: p[1] } for p in fields if is_ref_row(p)],
         ),
+        bounds: [Filed { value: bound_digest(decoded, p), path: p } for p in distinct([p[1] for p in fields if places_file(p)])],
+        seen: digest_of(
+            joined(
+                [joined(p, "\t") for p in fields if p[0] == "iface" || p[0] == "import" || p[0] == "ref"],
+                "\n",
+            ),
+        ),
+        files: [p for p in fields if places_file(p)],
     }
 }
 
@@ -82,6 +96,20 @@ fn some_filed(value: string?, path: string) -> List<Filed> {
 fn extern_note(m: ModulePath, row: Row, facts: DeclFacts) -> ExternNote {
     ExternNote { module: m.text(), path: row.path, name: row.name, hosted: facts.hosted }
 }
+
+/// The digest of the names a file's declarations bind: every such name, in name order.
+fn bound_digest(rows: List<FiledRow>, path: string) -> string {
+    names_digest_of([d.row!.name for d in rows if d.parts[1] == path && binds_a_name(d.row!)])
+}
+
+/// Whether a row is a declaration whose name its module's namespace binds.
+fn binds_a_name(row: Row) -> bool {
+    let kind? = declared_kind(row.shape, row.kind) else { return false }
+    binds_name(kind)
+}
+
+/// A set of names as one digest, in name order.
+export fn names_digest_of(names: List<string>) -> string { digest_of(joined(sorted_texts(names), "\n")) }
 
 /// Whether a row is a declaration of a kind that implements a trait for a type.
 fn implements_a_type(row: Row) -> bool {
@@ -149,6 +177,9 @@ export fn producers_text(p: Producers) -> string {
         .concat([path_line("link", path) for path in p.links])
         .concat([path_line("implementor", path) for path in p.implementors])
         .concat([filed_line("refs", f) for f in p.refs])
+        .concat([filed_line("bounds", f) for f in p.bounds])
+        .concat([joined(["seen", p.seen], "\t")])
+        .concat([joined(l, "\t") for l in p.files])
         .concat([producers_end()])
     joined(lines, "\n")
 }
@@ -185,6 +216,9 @@ export fn producers_read(m: ModulePath, text: string) -> Producers? {
         links: tagged_paths(rows, "link"),
         implementors: tagged_paths(rows, "implementor"),
         refs: filings(rows, "refs"),
+        bounds: filings(rows, "bounds"),
+        seen: seen_line_of(rows),
+        files: [r for r in rows if r[0] == "file"],
     }
 }
 
@@ -193,12 +227,20 @@ fn producer_line(r: List<string>) -> bool {
     match r[0] {
         "complete" -> r.length == 1,
         "fault" or "declared" or "placed" or "link" or "implementor" -> r.length == 2,
-        "name" or "word" or "mark" or "refs" -> r.length == 3,
+        "name" or "word" or "mark" or "refs" or "bounds" -> r.length == 3,
         "extern" -> r.length == 4,
+        "seen" -> r.length == 2,
+        "file" -> r.length >= 3,
         "import" or "gathers" -> r.length >= 2,
         "reexport" -> r.length >= 5,
         _ -> false,
     }
+}
+
+/// The seen digest a row spells.
+fn seen_line_of(rows: List<List<string>>) -> string {
+    let r? = rows.find(it[0] == "seen") else { return "" }
+    r[1]
 }
 
 fn faulted(rows: List<List<string>>) -> string {
@@ -255,11 +297,42 @@ impl Workspace {
         producers_of(m, record_fields(self, store, m))
     }
 
+    /// What a module stands as to a file that read it, whole: its record's seen lines and the listing of
+    /// its files — a name's read, judged by this digest before any narrowed view is rebuilt.
+    fn seen_stamp(store: Store, m: ModulePath) -> string {
+        let known: string? = self.records.record_stamps.get().get(m.text())
+        if known != null { return known! }
+        let made = self.stamped(self.producers_for(store, m)?.seen ?? "none", m)
+        self.records.record_stamps.put(m.text(), made)
+        made
+    }
+
+    /// A module's stamp over the seen digest of its record and the listing of its files.
+    fn stamped(seen: string, m: ModulePath) -> string {
+        digest_of("${seen}\n${joined(self.module_files(m), "\n")}")
+    }
+
+    /// The compile-time-run tokens of a file, off its module's row.
+    fn lite_runs(pr: Producers, path: string) -> List<string> {
+        let known: List<string>? = self.hold.lite_runs.get().get(path)
+        if known != null { return known! }
+        let line? = pr.files.find(it[1] == path) else { return [] }
+        let made = [self.read_token(path, read) for read in runs_of(line) ?? []]
+        self.hold.lite_runs.put(path, made)
+        made
+    }
+
+    /// What a file's package-wide collects gathered, off its module's row.
+    fn lite_gathered(pr: Producers, path: string) -> List<string> {
+        [p[7] for p in pr.walk if p.length > 7 && p[0] == "gathers" && p[2] == path]
+    }
+
     /// A record just written: its producers read from the lines it was made of, kept beside
     /// it and stood in for the one decoded earlier.
     fn keep_producers(store: Store, m: ModulePath, iface: string) {
         let made = producers_of(m, record_fields(self, store, m))
         self.records.record_producers.put(self.record_key(m), made)
+        self.records.record_stamps.put(m.text(), self.stamped(made.seen, m))
         self.db.insert_sig(store, self.producers_key(m, iface), producers_text(made))
     }
 }

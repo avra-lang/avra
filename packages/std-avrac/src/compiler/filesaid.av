@@ -5,10 +5,10 @@
 //! hand-folded key and judged beside it under `AVRA_DB_VERIFY`: the two must agree on
 //! which files hold.
 use @std.text.{parse_int}
-use core.{digest_of, joined, qtrace, traced, ModulePath}
+use core.{digest_of, joined, qtrace, traced, ModulePath, module_path, distinct}
 use core.debug.{db_verified_files}
 use compiler.{Want}
-use compiler.store.{Store, Stored, Reading, node_key, read_name}
+use compiler.store.{Store, Stored, Reading, node_key, read_name, read_spelled}
 use compiler.record.{KeyParts}
 use compiler.findings.{findings_read}
 
@@ -20,6 +20,7 @@ enum FileRead {
     Gathered
     Seen(string)
     SeenSet
+    SeenPart(string)
 }
 
 impl FileRead {
@@ -32,6 +33,7 @@ impl FileRead {
             .Gathered -> "gathered ${path}",
             .Seen(m) -> "seen ${m}",
             .SeenSet -> "seen-set ${path}",
+            .SeenPart(m) -> "sp ${m}",
         }
     }
 }
@@ -49,6 +51,7 @@ fn file_read_of(name: string, path: string) -> FileRead? {
             null -> null
         }
         name.starts_with("seen ") -> FileRead.Seen(name.substring(5, name.length))
+        name.starts_with("sp ") -> FileRead.SeenPart(name.substring(3, name.length))
         _ -> null
     }
 }
@@ -62,6 +65,7 @@ fn answer_in(k: KeyParts, r: FileRead) -> string? {
         .Gathered -> digest_of(fields_wire(k.gathered)),
         .Seen(m) -> seen_answer(k, m),
         .SeenSet -> digest_of(seen_digest(k.seen)),
+        .SeenPart(_) -> null,
     }
 }
 
@@ -82,9 +86,19 @@ fn reads_of_parts(k: KeyParts) -> List<Reading> {
 impl Workspace {
     /// A file's kept answer filed under its path with what it stood on.
     fn keep_file_row(store: Store, path: string, family: Stored, key: string, bytes: string) {
-        let k = self.key_parts_cached(store, self.module_path_of(path), path)
         if store.get(family, key) == bytes && self.file_kept(store, path, family, key) { return }
-        let _ = store.keep_reading(family, key, bytes, reads_of_parts(k))
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        let _ = store
+            .keep_reading(family, key, bytes, reads_of_parts(k).concat(self.seen_stamps(store, k)))
+    }
+
+    /// What each module a file reads stood as, whole, when its answer was kept: the name the
+    /// judge asks first, so a module whose stamp stands never has its views rebuilt.
+    fn seen_stamps(store: Store, k: KeyParts) -> List<Reading> {
+        [Reading {
+            name: FileRead.SeenPart(m).name(k.path),
+            digest: self.seen_stamp(store, module_path(m.split("."))),
+        } for m in distinct([k.module].concat([s.module for s in k.seen]))]
     }
 
     /// A file's kept answer, while every answer it stood on has its digest.
@@ -127,8 +141,49 @@ impl Workspace {
     }
 
     fn file_judged(store: Store, path: string, family: Stored, key: string) -> bool {
-        let k = self.key_parts_cached(store, self.module_path_of(path), path)
-        store.holds(family, key, (name) -> self.stood_on(k, name))
+        let lines? = store.reads_of(family, key) else { return false }
+        let reads = [read_spelled(l) for l in lines]
+        if reads.any(it == null) { return false }
+        let m = self.module_path_of(path)
+        let stamps = [r! for r in reads if r != null && r!.name.starts_with("sp ")]
+        let cheap = !stamps.is_empty() && stamps.all((r) -> self.stamp_stands(store, r))
+        if !cheap { work_judge_fallback() }
+        reads.all((r) -> self.read_stands(store, m, path, r!, cheap))
+    }
+
+    /// Whether a module's stamp still has the digest a row read it at.
+    fn stamp_stands(store: Store, r: Reading) -> bool {
+        let read? = file_read_of(r.name, "") else { return false }
+        match read {
+            .SeenPart(m) -> self.seen_stamp(store, module_path(m.split("."))) == r.digest,
+            rest -> false,
+        }
+    }
+
+    /// Whether one read a row stood on still has its digest. A module's whole stamp stands for every
+    /// narrowed view of it, so the views are rebuilt only for a row whose stamps moved or were never kept.
+    fn read_stands(store: Store, m: ModulePath, path: string, r: Reading, cheap: bool) -> bool {
+        let read? = file_read_of(r.name, path) else { return false }
+        match read {
+            .Text -> digest_of(self.text_digest(path)) == r.digest,
+            .SeenPart(_) -> true,
+            .Seen(_) or .SeenSet -> cheap || self.stood_on(self.key_parts_cached(store, m, path), r.name) == r.digest,
+            .Run(_) or .Runs or .Gathered -> self.lite_answer(store, m, path, read) == r.digest,
+        }
+    }
+
+    /// The digest a compile-time-run or collect read has now, off the module's row when it has one.
+    fn lite_answer(store: Store, m: ModulePath, path: string, read: FileRead) -> string? {
+        let pr? = self.producers_for(store, m) else { return self.stood_on(self.key_parts_cached(store, m, path), read.name(path)) }
+        match read {
+            .Run(j) -> {
+                let runs = self.lite_runs(pr, path)
+                if j < runs.length { digest_of(runs[j]) } else { null }
+            },
+            .Runs -> digest_of(fields_wire(self.lite_runs(pr, path))),
+            .Gathered -> digest_of(fields_wire(self.lite_gathered(pr, path))),
+            rest -> null,
+        }
     }
 
     /// The digest a named answer has in these parts now.
