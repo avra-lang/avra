@@ -219,7 +219,6 @@ fn fixed_needs_a_node(name: string) -> string {
 fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> {
     mut out = [m for m in items]
     mut rec: Recover? = null
-    mut folded: string? = null
     for an in annots {
         match an {
             .AExpect(token, message) -> {
@@ -233,19 +232,19 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
                 rec = Recover { sync_to: sync_to }
             },
             .AOperators(_) -> nothing_attached(),
-            .AFold(label) -> {
-                if folded != null { return .Err("duplicate @fold on one branch") }
-                folded = label
-            },
+            .AFold(_) -> nothing_attached(),
             .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? },
             .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? },
         }
     }
     let blocks = [t for an in annots for t in operator_blocks(an)]
     if blocks.length > 1 { return .Err("duplicate @operators on one branch") }
+    let folds = [l for an in annots for l in fold_labels(an)]
+    if folds.length > 1 { return .Err("duplicate @fold on one branch") }
+    let folded: string? = folds.first()
     .Ok(
         Seq {
-            items: if folded == null { out } else { seeded(out, folded!) },
+            items: seeded(out, folded),
             build: null,
             recover: rec,
             operators: written_operators(blocks),
@@ -255,7 +254,8 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
 }
 
 /// The turns of a fold's group, each marked with the label it reads.
-fn seeded(items: List<Item>, label: string) -> List<Item> {
+fn seeded(items: List<Item>, folded: string?) -> List<Item> {
+    let label? = folded else { return items }
     [if i == 1 { m with { prim: seeded_prim(m.prim, label) } } else { m } for i, m in items]
 }
 
@@ -271,6 +271,14 @@ fn operator_blocks(an: PendingAnnot) -> List<List<Tier>> {
     match an {
         .AOperators(tiers) -> [tiers],
         .AExpect(_, _) or .ARecover(_) or .AHead(_) or .ATrailer(_) or .AFold(_) -> [],
+    }
+}
+
+/// The seed an `@fold` annotation names; none for any other.
+fn fold_labels(an: PendingAnnot) -> List<string> {
+    match an {
+        .AFold(label) -> [label],
+        .AExpect(_, _) or .ARecover(_) or .AHead(_) or .ATrailer(_) or .AOperators(_) -> [],
     }
 }
 
