@@ -2,6 +2,7 @@
 //! hold, and the link words. Moved out of the workspace god-object.
 use core.{
     EmbedKind,
+    EmbedBase,
     digest_of,
     some_list,
     CollectScope,
@@ -361,10 +362,13 @@ impl Workspace {
     /// `@scope/name/…` is read from the root of that package when
     /// `source`'s package depends on it, and refuses when it does not —
     /// a directory of this package named so is written `./@scope/…`.
-    fn embed_place(source: string, rel: string) -> Result<EmbedPlace, EmbedFault> {
+    fn embed_place(source: string, rel: string, base: EmbedBase) -> Result<EmbedPlace, EmbedFault> {
         if rel.starts_with("/") { fail EmbedFault.Outside }
         let from = self.packages()[self.holder_of_path(source)]
-        if !rel.starts_with("@") { return placed_beneath(from.root, joined_path(dir_of(source), rel)) }
+        if !rel.starts_with("@") {
+            let start = match base { .Beside -> dir_of(source), .Root -> from.root }
+            return placed_beneath(from.root, joined_path(start, rel))
+        }
         let segments = rel.split("/")
         let key = segments.slice(0, 2).join("/")
         if segments.length < 3 || !self.reaches(from, key) { fail EmbedFault.Undeclared(key) }
@@ -373,16 +377,19 @@ impl Workspace {
     }
 
     /// THE EMBED LAW, judged where the literal stands: the file's path,
-    /// or what is wrong with it. Both kinds read beside their source.
-    fn embed_placed(f: FileId, rel: string, kind: EmbedKind) -> Result<string, EmbedFault> {
-        self.embed_placed_beside(self.decls.file(f).path, rel, kind)
-    }
-
-    fn embed_placed_beside(source: string, rel: string, kind: EmbedKind) -> Result<
+    /// or what is wrong with it. Both kinds read from `base`: beside the source, or the package's root.
+    fn embed_placed(f: FileId, rel: string, kind: EmbedKind, base: EmbedBase) -> Result<
         string,
         EmbedFault,
     > {
-        let place = self.embed_place(source, rel)?
+        self.embed_placed_beside(self.decls.file(f).path, rel, kind, base)
+    }
+
+    fn embed_placed_beside(source: string, rel: string, kind: EmbedKind, base: EmbedBase) -> Result<
+        string,
+        EmbedFault,
+    > {
+        let place = self.embed_place(source, rel, base)?
         let path = joined_path(place.root, place.rel)
         match self.embedded(path, kind) {
             .Text(_) or .Octets(_) -> path,

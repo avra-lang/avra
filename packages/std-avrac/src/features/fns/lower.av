@@ -1,6 +1,8 @@
 //! The call's lowering rule: argument registers, then one Call —
 //! the memory pass owns the retains the ABI demands.
 use core.{
+    EmbedBase,
+    EmbedKind,
     ExprId,
     Reg,
     Ins,
@@ -56,10 +58,63 @@ fn embedded_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg>? {
     let kind? = cx.view.decls.embed_kind_of(d) else { return null }
     if args.length != 1 { return null }
     let rel? = cx.view.store.expr(args[0]).text_of() else { return null }
-    match cx.view.decls.embed_placed(cx.view.file, rel, kind) {
+    match cx.view.decls.embed_placed(cx.view.file, rel, kind, EmbedBase.Beside) {
         .Ok(path) -> [cx.const_str(path)],
         .Err(_) -> null,
     }
+}
+
+/// `provided<T>("p")`: the file's octets handed to `T.provide` with the
+/// package-relative path, and an answer of absence refused by name. The
+/// path is the one the embed judge placed from the package's root. Null for
+/// every other call.
+fn provided_reg(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> Reg? {
+    let d? = bound_decl_of(cx.names, e) else { return null }
+    if !cx.view.decls.is_meta_fn(d, "provided") || args.length != 1 { return null }
+    let rel? = cx.view.store.expr(args[0]).text_of() else { return null }
+    match cx.view.decls.embed_placed(cx.view.file, rel, EmbedKind.Octets, EmbedBase.Root) {
+        .Ok(path) -> provided_call(cx, e, rel, path),
+        .Err(_) -> null,
+    }
+}
+
+fn provided_call(mut cx: LowerCx, e: ExprId, rel: string, path: string) -> Reg {
+    let kind = cx.type_at(e)
+    let provide? = provider_of(cx, kind) else { return cx.lower_defect(e, "a provided kind without a `provide` survived typing") }
+    let octets = cx.embed_octets(Type.Bytes, cx.const_str(path))
+    let answer = cx
+        .call_decl(cx.type(kind?), cx.method_symbol(provide, e, kind), [cx.const_str(rel), octets])
+    cx
+        .presence(answer, kind, e) { cx, carried -> carried } else { cx ->
+            cx.trap(cx.const_str(provided_unread(rel, kind_name(cx, kind))))
+            cx.hollow_of(kind)
+        }
+}
+
+/// The `provide` a kind's `Provider` impl declares.
+fn provider_of(cx: LowerCx, kind: TypeId) -> DeclId? {
+    let owner? = type_decl_of(cx, kind) else { return null }
+    cx
+        .view
+        .decls
+        .declared_methods(owner)
+        .find((m) -> cx.view.decls.decl(m).name == "provide" && cx.view.decls.is_static_of(m))
+}
+
+fn type_decl_of(cx: LowerCx, kind: TypeId) -> DeclId? {
+    match cx.view.types.shape_of(kind) { .Struct(d, _) or .Enum(d, _) -> d, rest -> null }
+}
+
+fn kind_name(cx: LowerCx, kind: TypeId) -> string {
+    let owner? = type_decl_of(cx, kind) else { return "kind" }
+    cx.view.decls.decl(owner).name
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+/// A kind read nothing from the file it was pointed at.
+fn provided_unread(rel: string, kind: string) -> string {
+    "`${rel}` is no `${kind}` — the kind found none of its signature in the file"
 }
 
 /// A call's argument registers, a `state` seat handed its caller's
