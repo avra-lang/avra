@@ -62,7 +62,9 @@ export fn check_collect_enum(mut cx: TypeCx, s: StmtId) {
         [m.name for m in members],
         cx.stmt_loc(s),
     )
-    if members.is_empty() && lawful_header(p) { cx.emit(gathers_nothing(cx.stmt_loc(s), p.name)) }
+    if members.is_empty() && lawful_header(p) && cx.names.names.unread.is_empty() {
+        cx.emit(gathers_nothing(cx.stmt_loc(s), p.name))
+    }
     for d in twice { cx.emit(d) }
     for m in members { checked_member(cx, s, p.name, m) }
     for t in p.traits { checked_trait(cx, s, p.name, t, members) }
@@ -160,7 +162,8 @@ fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) {
 
 /// Whether the declaration's own words are lawful — a kind and a scope
 /// that exist, an order written. A gathering that names nothing real
-/// is empty because of that refusal, so it speaks only once.
+/// is empty because of that refusal, so it speaks only once — and a
+/// module with an unread file may have lost the member there.
 fn lawful_header(p: CollectEnumParts) -> bool {
     !p.order.is_empty() && known_kind(p.kind) && known_scope(p.scope)
 }
