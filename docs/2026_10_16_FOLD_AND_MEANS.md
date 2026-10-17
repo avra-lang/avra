@@ -566,3 +566,58 @@ Risk specific to B: exact turn spans change interior calls (`call_hi` was "narro
 than the truth"); read every golden that moves, never re-pin. A branch rebased on
 `origin/main` only; the `@operators` lane touches `expr_spine/mod.av` too, so B
 lands after it or merges its rows.
+
+## 5.10 As built (landing A, branch `nodes-fold-design`)
+
+Matches 5.2-5.5 with these differences, all found by building it:
+
+| plan | built |
+|---|---|
+| turns judged by their own labels (5.5) | also **the list law**: `Seq.seed` marks each turn, `Seq.scope(outer)` picks the judging branch, and `listed_seq`, `bound_prim`, `judged_seqs` and `labels()` all read it. Without it a label inside the star was "many" and a turn's `name` arrived as a list |
+| validator: four refusals | six: adds "a turn captures the fold's own label again" and "a fold beside `@operators`" |
+| the seed is not shape-checked | still true: the seed item sits outside the turn, so `shape_defects` skips it (`payload_shape` finds no labelled item) |
+| diff test vs the 14-family builder | vs a rule of links folded by a builder (the family merge needs real spans); trees and diagnostics (message, place, expected, rule) agree on 40 written inputs, their prefixes and 1500 generated; a `?.`-misreading fold is the control |
+
+Proofs run on `avra-nodes1b`, merge-base compiler `09de33ee` building the tree in one
+generation: `std-avrac/src/grammar/tests` 147/147 (head law three ways over a fold,
+spans, turn-local labels, notation, six refusals, hostile inputs, 1500-link chain,
+differential) and `features/tests` green; `make avra` twice; `make cache-attacks-a`
+457 builds, 0 failed; `fmt --check` clean; `check --baseline tools/idioms.baseline`
+for std-grammar and std-avrac clean. Not run: the whole std-avrac suite (the PR gate's).
+
+## 6. Follow-up plan: `@operators` words (`"+" = Add`), from nodes-operators' report
+
+Source: nodes-operators' message (branch `nodes-operators`, 50598d9b engine,
+c1874098 adoption). Not read here beyond that report; verify against their branch
+before building. They adopted the table with small tier builders because the DSL
+cannot say a node build in a tier. Their list, and what kills each:
+
+| tier builder (expr_spine) | dies when |
+|---|---|
+| `build_binary` (builders.av:40), `build_bitwise` (:57), `binary_of` (:71) | a word fixes `op` and the tier builds `-> Expr.Binary` |
+| `build_unmixed_bitwise` (:63) | stays: it is the `unmixed(…)` refusal (a voice), but loses its placeholder return once the refusal channel needs no value |
+| `build_compare` (:108) | the `none` tier builds `-> Expr.Binary`; `is` goes through `suffix` with its own node build (needs the payload pattern kept as `Is`'s field, step 5 `@facet`) |
+| `build_coalesce` (:175) | `left "??" -> Expr.Coalesce` |
+| `build_pipe` (pipe.av:50) | stays until `means` |
+
+Engine and DSL work, in one landing after `@fold` (shares the `built` seam, so rebase
+around `climb`'s `ceil` change):
+
+1. `Tier.words` carries a fixed variant per word: `Word = { tokens: List<string>, op: string? }`
+   (one record, never a parallel list); `OpEntry` carries it. `seed.av` `word`
+   rule: `word ( "=" NAME )?`; `builders.av` `build_word`/`build_tier`; `render.av`;
+   `grammar_lit/builders.av` `tier_expr`.
+2. `validate.av` `tier_build_defects`: accept `.Node` (lift the refusal at `:123`); a
+   node build in a tier reads `l`, `op`, `r`.
+3. `node_grammar.av`: bind a tier's node build against the tier's own scope: labels
+   `l` and `r`, plus `op` when any word fixes one. Today `bind_nodes` never visits
+   `s.operators`; this is the same "scope per build site" move as 5.5.
+4. `executor.av` `pair`: bind `op` to the taken word's fixed text when it has one,
+   else the operator token, and let `built` run the node build.
+5. `BinOp` as a payload a rule can fill from text: `core/makers_derive.av`
+   `known()`/`slot()` plus a `Slots` reader that resolves `Add` etc. (nodes-operators
+   names `op_of` through `op_symbol`). Its keeper — each fixed word equals
+   `op_symbol(variant)` — is their `tests/operator_words_test.av`.
+6. Tests: the existing `operators_diff_test.av` extended with `= Variant` words (tree and
+   diagnostics unchanged), a tier-build binding test beside `node_grammar_fold_test.av`,
+   the validator refusal, render round trip, and a `parse_test.av` row.
