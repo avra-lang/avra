@@ -116,10 +116,15 @@ def runnable(text):
 
 
 def program_tests():
-    """The tree's single-file program tests, in path order."""
+    """The tree's single-file program tests, in path order — but not the
+    ones that import the compiler itself, a dependency a check of takes
+    minutes to read."""
     found = glob.glob(os.path.join(ROOT, "packages", "**", "tests", "*", "*.av"), recursive=True)
     return sorted(
-        f for f in found if os.path.basename(os.path.dirname(f)) == os.path.basename(f)[:-3]
+        f
+        for f in found
+        if os.path.basename(os.path.dirname(f)) == os.path.basename(f)[:-3]
+        and "@std.avrac" not in open(f, encoding="utf-8").read()
     )
 
 
