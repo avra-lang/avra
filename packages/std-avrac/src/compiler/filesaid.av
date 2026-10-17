@@ -1,0 +1,216 @@
+//! A FILE'S KEPT ANSWERS, AS SAVED ANSWERS: the file's `Said` stands while the answers it
+//! was kept on still have the digests they had — its text, each recorded compile-time
+//! read's token, what its collects gathered, each module it sees by its interface, and
+//! the SETS of those, so a read added or dropped moves the answer. Kept beside the hold's
+//! hand-folded key and judged beside it under `AVRA_DB_VERIFY`: the two must agree on
+//! which files hold.
+use @std.text.{parse_int}
+use core.{digest_of, joined, qtrace, traced, ModulePath}
+use core.debug.{db_verified_files}
+use compiler.{Want}
+use compiler.store.{Store, Stored, Reading, node_key, read_name}
+use compiler.record.{KeyParts}
+use compiler.findings.{findings_read}
+
+/// What a file's kept answer stood on: one named answer each.
+enum FileRead {
+    Text
+    Run(int)
+    Runs
+    Gathered
+    Seen(string)
+    SeenSet
+}
+
+impl FileRead {
+    /// The read as its row names it: an input by the path it belongs to, an interface by its module.
+    fn name(path: string) -> string {
+        match self {
+            .Text -> "text ${path}",
+            .Run(j) -> "run ${path} ${j}",
+            .Runs -> "runs ${path}",
+            .Gathered -> "gathered ${path}",
+            .Seen(m) -> "seen ${m}",
+            .SeenSet -> "seen-set ${path}",
+        }
+    }
+}
+
+/// A read of `path`'s row read back from its name; null for one this compiler never wrote.
+fn file_read_of(name: string, path: string) -> FileRead? {
+    let run = "run ${path} "
+    when {
+        name == FileRead.Text.name(path) -> FileRead.Text
+        name == FileRead.Runs.name(path) -> FileRead.Runs
+        name == FileRead.Gathered.name(path) -> FileRead.Gathered
+        name == FileRead.SeenSet.name(path) -> FileRead.SeenSet
+        name.starts_with(run) -> match parse_int(name.substring(run.length, name.length)) {
+            j? -> FileRead.Run(j)
+            null -> null
+        }
+        name.starts_with("seen ") -> FileRead.Seen(name.substring(5, name.length))
+        _ -> null
+    }
+}
+
+/// The digest a read has in these parts; null for a read the parts no longer carry.
+fn answer_in(k: KeyParts, r: FileRead) -> string? {
+    match r {
+        .Text -> digest_of(k.text),
+        .Run(j) -> if j < k.runs.length { digest_of(k.runs[j]) } else { null },
+        .Runs -> digest_of(fields_wire(k.runs)),
+        .Gathered -> digest_of(fields_wire(k.gathered)),
+        .Seen(m) -> seen_answer(k, m),
+        .SeenSet -> digest_of(seen_digest(k.seen)),
+    }
+}
+
+/// What the module `m` is seen as in these parts; null for one not seen.
+fn seen_answer(k: KeyParts, m: string) -> string? {
+    let s? = k.seen.find(it.module == m) else { return null }
+    digest_of(s.bytes_key)
+}
+
+/// Every answer these parts stand on, named.
+fn reads_of_parts(k: KeyParts) -> List<Reading> {
+    let reads = [FileRead.Text, FileRead.Runs, FileRead.Gathered, FileRead.SeenSet]
+        .concat([FileRead.Run(j) for j in 0..k.runs.length])
+        .concat([FileRead.Seen(s.module) for s in k.seen])
+    [Reading { name: r.name(k.path), digest: answer_in(k, r) ?? "" } for r in reads]
+}
+
+impl Workspace {
+    /// A file's kept answer filed under its path with what it stood on.
+    fn keep_file_row(store: Store, path: string, family: Stored, key: string, bytes: string) {
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        if store.get(family, key) == bytes && self.file_kept(store, path, family, key) { return }
+        let _ = store.keep_reading(family, key, bytes, reads_of_parts(k))
+    }
+
+    /// A file's kept answer, while every answer it stood on has its digest.
+    fn file_row(store: Store, path: string, family: Stored, key: string) -> string? {
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        store.get_valid(family, key, (name) -> self.stood_on(k, name))
+    }
+
+    /// Whether a file's kept answer is there and still stands: unsuspected rows stand with
+    /// nothing derived, the rest are judged by their reads.
+    fn file_kept(store: Store, path: string, family: Stored, key: string) -> bool {
+        let unsuspected = store.unsuspected(family, key, self.suspect_rows(store))
+        if unsuspected && !db_verified_files() { return true }
+        let kept = self.file_judged(store, path, family, key)
+        if unsuspected && !kept {
+            qtrace(
+                "Q\tsuspect-missed\t${path}\t${family.name()}\t${self.moved_read(store, path)}\n",
+            )
+        }
+        kept
+    }
+
+    /// WHETHER EVERY ROW THAT STANDS IN FOR A FILE IS PRESENT AND READS NOTHING THAT MOVED. A row
+    /// the suspect set names is JUDGED, never cast out on suspicion alone — suspicion is a module's
+    /// TEXT having moved, not its narrowed interface, so a bystander fn would otherwise read every
+    /// reader of its module. The on-demand load's gate: a file whose rows so stand is never met.
+    fn file_rows_stand(store: Store, path: string, want: Want) -> bool {
+        let suspects = self.suspect_rows(store)
+        let said = store.unsuspected(Stored.Warn, said_row(path), suspects) ||
+            self.file_judged(store, path, Stored.Warn, said_row(path))
+        let asks = store.unsuspected(Stored.Unit, self.asks_row(path), suspects) ||
+            self.file_judged(store, path, Stored.Unit, self.asks_row(path))
+        let codes = store.unsuspected(Stored.Unit, self.codes_row(path), suspects) ||
+            self.file_judged(store, path, Stored.Unit, self.codes_row(path))
+        if want is .Diagnostics {
+            said && asks && codes && self.file_ruled(store, path)
+        } else {
+            said && asks && codes && store.has(Stored.Obj, self.held_okey(store, path))
+        }
+    }
+
+    fn file_judged(store: Store, path: string, family: Stored, key: string) -> bool {
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        store.holds(family, key, (name) -> self.stood_on(k, name))
+    }
+
+    /// The digest a named answer has in these parts now.
+    fn stood_on(k: KeyParts, name: string) -> string? {
+        let r? = file_read_of(name, k.path) else { return null }
+        answer_in(k, r)
+    }
+
+    /// Whether a file's rule findings were kept, rendered and as rows, and still stand.
+    fn file_ruled(store: Store, path: string) -> bool {
+        self.file_kept(store, path, Stored.Warn, rules_row(path)) &&
+            self.file_kept(store, path, Stored.Warn, findings_row(path))
+    }
+
+    /// A held file's `Said` under `want`: a diagnostics want reads its rule
+    /// findings beside it, and `stands_in` held it only where they were kept.
+    fn held_said(store: Store, path: string, said: Said, want: Want) -> Said? {
+        match want {
+            .Diagnostics -> {
+                let rules? = self.file_row(store, path, Stored.Warn, rules_row(path)) else { return null }
+                let rows? = self.file_row(store, path, Stored.Warn, findings_row(path)) else { return null }
+                said with { warnings: spoken([said.warnings, rules]), findings: findings_read(rows) }
+            },
+            .Binary -> said,
+        }
+    }
+
+    /// The first answer a file's kept answer stood on that has moved, in the words of its row;
+    /// "no row" for a file never kept.
+    fn moved_read(store: Store, path: string) -> string {
+        let k = self.key_parts_cached(store, self.module_path_of(path), path)
+        let lines? = store.reads_of(Stored.Warn, said_row(path)) else { return "no row" }
+        let moved = [line for line in lines if self.line_moved(line, k)]
+        moved.first() ?? "none"
+    }
+
+    fn line_moved(line: string, k: KeyParts) -> bool {
+        let at = line.index_of(" ")
+        if at <= 0 { return true }
+        self.stood_on(k, line.substring(at + 1, line.length)) != line.substring(0, at)
+    }
+
+    /// THE ROWS THAT READ AN INPUT THAT MOVED, once per record write and per file admitted: the files whose text
+    /// differs from what their row was kept on, then every file seeing a module those sit in,
+    /// to a fixpoint. A row outside the set read nothing that moved.
+    fn suspect_rows(store: Store) -> Map<string, bool> {
+        let paths = self.decls.file_paths()
+        if self.keys.suspects.get().files == paths.length { return self.keys.suspects.get().rows }
+        mut row_of: Map<string, string> = {}
+        for p in paths { row_of.set(store.suspect_key(Stored.Warn, said_row(p)), p) }
+        let edited = [p for p in paths if self.text_moved(store, p)]
+        mut moved = [FileRead.Text.name(p) for p in edited]
+            .concat([self.seen_name(p) for p in edited])
+        mut rows: Map<string, bool> = {}
+        mut grown = true
+        while grown {
+            grown = false
+            for r in store.suspects(moved) {
+                if rows.get(r) != null { continue }
+                rows.set(r, true)
+                grown = true
+                let p? = row_of.get(r) else { continue }
+                moved.push(self.seen_name(p))
+            }
+        }
+        if traced() {
+            qtrace(
+                "Q\tsuspects\t${edited.length} edited\t${rows.keys().length} rows\t${paths.length} files\n",
+            )
+        }
+        self.keys.suspects.set(Suspects { files: paths.length, rows: rows })
+        rows
+    }
+
+    /// The read a file's module is seen through.
+    fn seen_name(path: string) -> string { FileRead.Seen(self.module_of(path)).name(path) }
+
+    /// Whether a file's text differs from what its kept row stood on; a file never kept has moved.
+    fn text_moved(store: Store, path: string) -> bool {
+        let lines? = store.reads_of(Stored.Warn, said_row(path)) else { return true }
+        let read = FileRead.Text.name(path)
+        let line? = lines.find(read_name(it) == read) else { return true }
+        line.substring(0, line.index_of(" ")) != digest_of(self.text_digest(path))
+    }
+}

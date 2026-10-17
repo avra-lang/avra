@@ -1553,7 +1553,7 @@ AV
 S "cold cutfp: a closure capture and an unmutated mut sit in one file" cutfp
 got=$($R/cutfp/src/main 2>&1)
 [ "$got" = "cutfp 15" ] || { fails=$((fails+1)); echo "FAIL  cold cutfp printed '$got', wanted 'cutfp 15'"; }
-cutfp_warn0=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+cutfp_warn0=$(./avra check $R/cutfp 2>&1 | grep -c '^warning\[[a-z_.]*unmutated_mut\]')
 [ "$cutfp_warn0" = "1" ] || { fails=$((fails+1)); echo "FAIL  cutfp's cold check did not find the unmutated_mut warning it was written to earn"; }
 
 # THE CAPTURE MOVES: the closure now closes over a DIFFERENT computation —
@@ -1574,7 +1574,7 @@ ed $R/cutfp/src/main.av 'println("cutfp ${add(10)}")' 'println("cutfp ${add(10)}
 S "cutfp: a voice-only edit — the warning is earned no longer, the closure is untouched" cutfp
 got=$($R/cutfp/src/main 2>&1)
 [ "$got" = "cutfp 16 2" ] || { fails=$((fails+1)); echo "FAIL  warm cutfp printed '$got', wanted 'cutfp 16 2'"; }
-cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c 'unmutated_mut')
+cutfp_warn1=$(./avra check $R/cutfp 2>&1 | grep -c '^warning\[[a-z_.]*unmutated_mut\]')
 [ "$cutfp_warn1" = "0" ] || { fails=$((fails+1)); echo "FAIL  cutfp's warm check still finds unmutated_mut after the local was written — a stale voices fold"; }
 
 # A NON-STRUCTURAL SETTLEMENT REFUSAL RE-SPEAKS ON EVERY WARM BUILD: only a
