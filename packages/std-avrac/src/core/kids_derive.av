@@ -1,0 +1,57 @@
+//! `Kids` — the sub-expressions a pass walks, read off the record: its
+//! `ExprId`, `ExprId?` and `List<ExprId>` fields, in declaration order.
+//! A `collect enum Expr: Kids` derives it for every member with no
+//! `impl Kids` of its own, so a node that hides some of what it holds
+//! (an `if`'s branches, a lambda's body) writes the override.
+//!
+//! IT IS NOT `@derive(Children)`: that walk answers everything a node
+//! HOLDS, this one what a pass may walk without opening a scope.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{Type as MetaType, Field, Directive, Code}
+
+/// The compiler's derive for a node's walked children.
+export trait Kids {
+    fn kids() -> List<ExprId>
+
+    /// `@local` and `@facet` fields are no child.
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
+
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl Kids for ${t} {
+                        fn kids() -> List<ExprId> { ${together(parts(t))} }
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// Each walked field's reach, in declaration order.
+fn parts(t: MetaType) -> List<Code> {
+    [c! for c in [walked(f) for f in t.fields if reached(f)] if c != null]
+}
+
+/// The reaches as ONE expression: a lone one stands, several flatten.
+fn together(reaches: List<Code>) -> Code {
+    if reaches.is_empty() { return quote { [] } }
+    if reaches.length == 1 { return reaches[0] }
+    quote { flatten([${..reaches}]) }
+}
+
+/// How a field of this type reaches its expressions, absent for a type
+/// that holds none.
+fn walked(f: Field) -> Code? {
+    match f.ty {
+        "ExprId" -> quote { [self.${f.name}] },
+        "ExprId?" -> quote { some_list(self.${f.name}) },
+        "List<ExprId>" -> quote { self.${f.name} },
+        _ -> null,
+    }
+}
