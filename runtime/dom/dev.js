@@ -52,6 +52,11 @@ if (typeof document !== "undefined") {
     mine: document.querySelector('meta[name="avra-module"]').content,
     events: new EventSource("/@dev/events"),
     reload: () => location.reload(),
-    swap: typeof globalThis.avraSwap === "function" ? () => globalThis.avraSwap("./app.wasm") : null,
+    // Asked when a build lands, not when this script loads: the page's own
+    // script offers the verb once its module runs.
+    swap: async () => {
+      if (typeof globalThis.avraSwap !== "function") throw new Error("the page offers no swap");
+      await globalThis.avraSwap("./app.wasm");
+    },
   });
 }

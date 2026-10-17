@@ -180,8 +180,10 @@ if (source) {
   const says = (words) => `document.body.textContent.includes(${JSON.stringify(words)})`;
   claim("the dev page names the module it loaded", (await read(`document.querySelector('meta[name="avra-module"]').content`)).length > 0);
 
-  fs.writeFileSync(source, written.replace(`heading "Tasks"`, `heading "Chores"`));
+  await read(`(window.witness = "kept", 1)`);
+  fs.writeFileSync(source, written.replace(`fn title() -> string { "Tasks" }`, `fn title() -> string { "Chores" }`));
   claim("a view edited where it stands reaches the running page", await until(says("Chores")) && !(await read(says("Tasks"))));
+  claim("and the page was not reloaded to show it", await read(`window.witness`) === "kept");
   await shot("edited");
 
   fs.writeFileSync(source, `${written}\nfn broken( {\n`);
