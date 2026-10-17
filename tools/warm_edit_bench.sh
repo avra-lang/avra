@@ -160,7 +160,7 @@ printf 'warm edit %s\n' "$least" >> "$raw"
 # a store hit.
 counted() { # <scenario>: `counts <scenario> <counter> <n>` rows from one check, its whole-read attribution to stderr
     out=$("$avra" check --counts "$target" 2>&1 >/dev/null)
-    printf '%s\n' "$out" | grep '^whole:' | sed "s/^/$1 /" >&2
+    printf '%s\n' "$out" | grep -E '^(whole|why):' | sed "s/^/$1 /" >&2
     printf '%s\n' "$out" | grep '^counts:' | tail -n 1 | tr ' ' '\n' | grep = \
         | while IFS== read -r name n; do printf 'counts %s %s %s\n' "$1" "$name" "$n"; done
 }

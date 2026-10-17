@@ -1461,14 +1461,16 @@ registry is the idiom engine's spec, written by dogfooding.
   constant it compares to), the answer last.
 - A feature is a directory: `mod.av` is the declarative manifest
   (component + tables), `builders.av` holds parse lowering,
-  `semantics.av` holds its `Meaning`/`NodeSemantics` impls (the
-  record's own passes, dispatch one-liners), and rule bodies live by
+  `semantics.av` holds its `Meaning` impl (the record's own
+  passes, dispatch one-liners), and rule bodies live by
   concern — `check.av` for typing, `lower.av` for MEANING (lowering
   is the one semantics; the IR interpreter and the backend both
   consume it). Passes NEVER match feature nodes: an expression's
-  passes and walk (`resolve`/`type_of`/`lower`, `kids`/`heirs`) are
-  the record's own `impl Meaning`/`impl NodeSemantics`, reached on the
-  `Expr` value through `@delegates(Expr)`; a pattern's are its
+  passes (`resolve`/`type_of`/`lower`) are the record's own
+  `impl Meaning`, reached on the `Expr` value through
+  `@delegates(Expr)`; its walk (`kids`, `heirs`) is derived per member by
+  `collect enum Expr: Kids, Heirs`, and an `impl Kids`/`impl Heirs` is
+  the override of a node that hides or forwards; a pattern's are its
   record's `impl PatSemantics` through `pat_semantics_of`; the trait
   impl forces every pass method at compile time.
 - A pass CONTEXT carries the pass's STATE verbs only — walk, look

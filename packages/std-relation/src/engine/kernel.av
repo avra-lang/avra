@@ -530,7 +530,10 @@ impl Kernel {
     fn ask(key: Key) -> Verdict {
         self.record_at(key.family, key.arg)
         if self.active(key) { return Verdict.Cycle }
-        let cell? = self.cell(key) else { return self.miss(key.family) }
+        let cell? = self.cell(key) else {
+            self.why(key.family, "new")
+            return self.miss(key.family)
+        }
         let rev = self.rev.get()
         if cell.verified_at == rev { return self.hit(key.family) }
         // Marked verified at this revision BEFORE its deps are walked: a
@@ -539,8 +542,35 @@ impl Kernel {
         // again. The mark names the revision the walk began at, so a late
         // write during the walk leaves it stale.
         self.write_cell(key, cell with { verified_at: rev })
-        if self.any_dep_changed(cell) { return self.miss(key.family) }
+        let moved = self.first_changed_dep(cell)
+        if moved >= 0 {
+            self.why_stale(key.family, moved)
+            return self.miss(key.family)
+        }
         self.hit(key.family)
+    }
+
+    /// The first of `cell`'s dependencies that moved since it was verified, as an edge; -1 for none.
+    fn first_changed_dep(cell: QueryCell) -> int {
+        for d in cell.deps {
+            if self.changed_after(d, cell.verified_at) { return d }
+        }
+        0 - 1
+    }
+
+    /// A recompute because `moved`, an edge, changed: counted under its family, then under the
+    /// family it was stale by (`cell0`: the dependency's first cell, a whole relation's set).
+    fn why_stale(family: int, moved: int) {
+        self.why(family, "stale")
+        if !self.reporting { return }
+        let cell0 = if arg_of(moved) == 0 { " cell0" } else { "" }
+        let by = self.family_name(family_of(moved))
+        why_counted("${self.family_name(family)} stale<- ${by}${cell0}")
+    }
+
+    /// One recompute classified under its family, when reporting.
+    fn why(family: int, kind: string) {
+        if self.reporting { why_counted("${self.family_name(family)} ${kind}") }
     }
 
     fn any_dep_changed(cell: QueryCell) -> bool {
@@ -713,8 +743,9 @@ impl Kernel {
     fn settle(key: Key, value_hash: int) {
         let began = self.asker.began.get().last() ?? self.rev.get()
         let deps = self.closed_frame()
-        self
-            .settled(key, deps, kept_since(self.cell(key), value_hash) ?? self.rev.get(), value_hash, began)
+        let kept = kept_since(self.cell(key), value_hash)
+        self.why(key.family, if kept != null { "same" } else { "changed" })
+        self.settled(key, deps, kept ?? self.rev.get(), value_hash, began)
     }
 
     /// Like `settle`, but `fingerprint` is called AT MOST ONCE, and
@@ -736,7 +767,9 @@ impl Kernel {
             return
         }
         let value_hash = fingerprint()
-        self.settled(key, deps, kept_since(prior, value_hash) ?? self.rev.get(), value_hash, began)
+        let kept = kept_since(prior, value_hash)
+        self.why(key.family, if kept != null { "same" } else { "changed" })
+        self.settled(key, deps, kept ?? self.rev.get(), value_hash, began)
     }
 
     /// Closes `key`'s open frame WITHOUT settling it: nothing is kept for
@@ -996,6 +1029,15 @@ once fn whole_by() -> Cell<Map<string, int>> { Cell.new({}) }
 /// The whole reads as `<asker> reads <relation>: <n>`, in the order first seen — a family by
 /// the name its owner gave (a relation's is its declaration's), else its number.
 export fn whole_reads_by() -> List<string> { ["${who}: ${n}" for who, n in whole_by().get()] }
+
+once fn why_by() -> Cell<Map<string, int>> { Cell.new({}) }
+
+fn why_counted(key: string) { why_by().put(key, (why_by().get().get(key) ?? 0) + 1) }
+
+/// Why each query family recomputed, one `<family> <kind>: n` line each. A kind is `new` (no
+/// cell: the first ask in this process), `stale` (a dependency moved) with `stale<- <family>`
+/// naming it, then `same` or `changed` by whether the answer matched the prior cell's.
+export fn why_lines() -> List<string> { ["${k}: ${v}" for k, v in why_by().get()] }
 
 /// The whole-relation reads recorded over every kernel, since the process began.
 export fn whole_reads() -> int { whole_tally().get() }
