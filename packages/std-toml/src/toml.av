@@ -178,6 +178,7 @@ fn read_header(mut rd: Reader, lo: int) -> int {
         name.is_empty() -> refused_header(rd, empty_header(lo))
         !dotted_word(name) -> refused_header(rd, bad_header(name, lo))
         !at_line_end(rd.text, rd.n, rest) -> refused_header(rd, junk_after(rest, "header"))
+        rd.doc.headers.any(it.name == name) -> refused_header(rd, duplicate_header(name, lo))
         _ -> {
             rd.enter(TomlHeader { name: name, lo: lo, hi: hi })
             hi
@@ -499,6 +500,10 @@ fn duplicate_key(key: string, at: int) -> Refusal { refusal("duplicate key `${ke
 fn unclosed_header(at: int) -> Refusal { refusal("expected `]` to close the header", at) }
 
 fn empty_header(at: int) -> Refusal { refusal("a header names its section: `[name]`", at) }
+
+fn duplicate_header(name: string, at: int) -> Refusal {
+    refusal("`[${name}]` is declared twice — the first stays, and this one's keys are not read", at)
+}
 
 fn bad_header(name: string, at: int) -> Refusal {
     refusal("a header is a dotted name of `[A-Za-z0-9_-]` words, not `${name}`", at)

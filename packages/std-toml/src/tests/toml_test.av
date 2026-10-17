@@ -204,6 +204,14 @@ spec "std.toml" {
         }
     }
     given "refusals — one per mistake, pointed at its line" {
+        then "a header declared twice refuses at the second, whose entries are held by no section" {
+            let src = "[a]\nx = 1\n[b]\n[a]\ny = 2\n"
+            let d = parse_toml(src)
+            refused_once(src, "`[a]` is declared twice", "[a]") &&
+                d.headers.length == 2 &&
+                d.entries.length == 1 &&
+                d.entry("a", "y") == null
+        }
         then "the entries under a refused header belong to no section — they are not held" {
             let d = parse_toml("[a]\nx = 1\n[b.\ny = 2\n[c]\nz = 3\n")
             d.errors.length == 1 &&
