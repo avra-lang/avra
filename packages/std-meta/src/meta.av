@@ -428,6 +428,32 @@ export fn payload_of(owner: Type, name: string) -> Held? {
     Held.Enum(t.variants)
 }
 
+/// Whether a payload kind's declaration graph holds a type `atom`
+/// names — a derive prunes a payload that cannot reach what it walks
+/// for (an arena id), so a type it has no row for contributes nothing
+/// without being listed. Cycles end: a declaration is entered once.
+export fn holds(owner: Type, k: Kind, atom: fn(string) -> bool) -> bool {
+    holds_under(owner, k, atom, [])
+}
+
+fn holds_under(owner: Type, k: Kind, atom: fn(string) -> bool, seen: List<string>) -> bool {
+    match k {
+        .List(inner) -> holds_under(owner, inner, atom, seen),
+        .Opt(inner) -> holds_under(owner, inner, atom, seen),
+        .Named(name, _) -> {
+            if atom(name) { return true }
+            if seen.contains(name) { return false }
+            let held? = payload_of(owner, name) else { return false }
+            let entered = seen.concat([name])
+            match held {
+                .Record(fields) -> fields.any((f) -> holds_under(owner, f.kind, atom, entered)),
+                .Enum(variants) -> variants.any((v) -> v.fields.any((f) -> holds_under(owner, f.kind, atom, entered))),
+            }
+        },
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
 /// Generated code as a TREE. A `quote { … }` names its own template
 /// — the file that wrote it and where — and carries what fills its
 /// holes; the compiler splices the template's parsed body, so a
