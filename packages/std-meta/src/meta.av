@@ -407,6 +407,52 @@ export fn type_exported(module: string, name: string) -> Type? {
     avra_type_named("${module}.${name}")
 }
 
+/// What a declared payload type is made of, read off its declaration.
+export enum Held {
+    /// a record: its fields, in declaration order
+    Record(fields: List<Field>)
+    /// an enum: its variants, each with its own payload fields
+    Enum(variants: List<Variant>)
+}
+
+/// What the type `name` holds, for a derive that reads a payload
+/// type's declaration instead of keeping a row for it. `owner` is the
+/// type being derived: the lookup is that type's MODULE's export of
+/// `name` (`type_exported`), so a type only a member's own file
+/// imported is not readable here — absence, which the derive answers
+/// by refusing the payload loudly. Absent for a name no module export
+/// declares.
+export fn payload_of(owner: Type, name: string) -> Held? {
+    let t? = type_exported(owner.module, name) else { return null }
+    if t.variants.is_empty() { return Held.Record(t.fields) }
+    Held.Enum(t.variants)
+}
+
+/// Whether a payload kind's declaration graph holds a type `atom`
+/// names — a derive prunes a payload that cannot reach what it walks
+/// for (an arena id), so a type it has no row for contributes nothing
+/// without being listed. Cycles end: a declaration is entered once.
+export fn holds(owner: Type, k: Kind, atom: fn(string) -> bool) -> bool {
+    holds_under(owner, k, atom, [])
+}
+
+fn holds_under(owner: Type, k: Kind, atom: fn(string) -> bool, seen: List<string>) -> bool {
+    match k {
+        .List(inner) or .Opt(inner) -> holds_under(owner, inner, atom, seen),
+        .Named(name, _) -> {
+            if atom(name) { return true }
+            if seen.contains(name) { return false }
+            let held? = payload_of(owner, name) else { return false }
+            let entered = seen.concat([name])
+            match held {
+                .Record(fields) -> fields.any(holds_under(owner, it.kind, atom, entered)),
+                .Enum(variants) -> variants.any(it.fields.any(holds_under(owner, it.kind, atom, entered))),
+            }
+        },
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
 /// Generated code as a TREE. A `quote { … }` names its own template
 /// — the file that wrote it and where — and carries what fills its
 /// holes; the compiler splices the template's parsed body, so a
