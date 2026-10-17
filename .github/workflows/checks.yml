@@ -544,6 +544,7 @@ jobs:
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
+          MUTATION_SHARD: ${{ matrix.part }}
           # THE WARM-EDIT GATE'S HOST IS ONE STABLE NAME: `SPEED_HOST` keys
           # the bench's numbers to `ci-warm`, never to whatever CPU the
           # runner happens to have, so `tools/speed.budget`'s `ci-warm warm …`
@@ -887,6 +888,12 @@ jobs:
       image: ghcr.io/avra-lang/avra-ci:llvm22
       credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
     timeout-minutes: 60
+    # THE BREAKS RUN IN TWO PARTS (runtime/tests/mutations.py, MUTATION_SHARD): the scheduler's
+    # mutations were 10 of this job's 11 minutes, so each runner owns every other one.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: ['0/2', '1/2']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
