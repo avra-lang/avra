@@ -94,3 +94,21 @@ Derives "stand ALONE in their file" (CLAUDE.md), so the recursion cannot be one 
 - Shape fingerprints moving changes which hole runs line up only if two shapes collided before and not after (or the reverse): the quote-pattern suites are the witness.
 - `type_exported` needs the enum's module to EXPORT every payload record. Today every one is. A record added in a member's own file would answer absence and be refused, loudly, naming the type (finding 2).
 - The probe pinned module `rprobe2.core` style names only in a throwaway; the committed test prints no module name, so it does not move with a package rename.
+
+## 6. As built (slices 3, 4, 6; slice 5 held)
+
+Branch `nodes-generic-records`. Each derive commit was proven on avra-nodes1b with a compiler built from the tree (the derive source runs inside that build, so the compiler compiled with the generic derives is what ran the suites): `core` 318/318 + 2 programs, `features/quote` 134, `features/enums` 478 + 17, `features/lists` 344 + 21, `features/tests` 202 + 29 — every count identical to the baseline taken on the same Sprite before the first derive changed. `make fingerprints` clean after each commit. `make avra` twice reaches a fixed point (the second build is a store hit, so the generated code did not move).
+
+| derive | before | after |
+|---|---|---|
+| Children | rows for `Arm`, `CompClause` | none: both read off their declarations; `@apart` holders skip record payloads, so no new mark |
+| Exact | rows for `Arm`, `CompClause`, `Variant`, `Case`, `FormatPart` + `exact_comp_clause(s)`, `exact_variant(s)`, `exact_case(s)`, `exact_format_part(s)`, `exact_hole` | none; one new row, `List<Mark>`, because a mark's equality deliberately ignores its call |
+| Rebuild | rows + Rebuilder verbs for `CompClause`, `Variant`, `Case` (`comp_clauses`, `variants`, `cases` and the singular forms) | none; one new row, `List<Mark>` → `marks` |
+
+Still hand, each for a stated reason: `Param` (holds itself through `says`, and is a hole seat), `Arm` (a hole seat; `exact_arms` also serves `exact_view`), `FormatPart` (its rebuild renames a binder spelled `string`), `Mark` (partial equality), `BodyView` (an expansion equals any expansion), `TypeRef` (holds itself). A recursive record keeps a row: the derive refuses to enter a declaration it is already inside, with a call to a function that does not exist, so the defect lands at the generated code naming the type.
+
+**Mutation witness (Children).** With `Match` re-worded `@apart` the walk stops reaching its arms and `core/children_adversarial` fails two cases ("a match's subject and every arm's value are children…", "a match's written guard is reached between subject and value"); restored, green. The existing adversarial tests already pinned the exact order the generic walk must reproduce (guard before value).
+
+**Shape (slice 5) is held, and why.** `shallow_*` values are compared with the rule patterns BAKED into the compiler binary (`known_kinds`, `rules_table.av`'s "rule baked by an older compiler… rebuild the compiler"). Replacing the literal tags 300/305/306 with derived folds moves every shallow value of a node that holds an `Arm` or `CompClause` (`match`, comprehension), so the baked idiom rules over those nodes would stop matching until the compiler is rebuilt twice, and the committed seed carries the old values. Options: (a) Shape as its own landing followed by `make seed`; (b) keep the two shallow rows and retire only their `kids_*` rows now. Decision pending with the lead.
+
+Build notes found on the way: `within` is a reserved word (F3002); BSD `sed` has no `\b` (a silent no-op, caught by a failed build); a bare variant in the element of a list comprehension hears the LIST's want, so a derive that builds enum variants inside a comprehension must qualify them (`CompClause.Head(…)`), as the hand verbs always did.
