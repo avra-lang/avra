@@ -15,6 +15,9 @@ import regex
 OUT = "packages/std-text/src/unicode.av"
 LAST = 0x10FFFF
 
+# Unassigned code points are wide only inside the ideograph blocks (EastAsianWidth.txt).
+UNASSIGNED_WIDE = [(0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF), (0x20000, 0x2FFFD), (0x30000, 0x3FFFD)]
+
 GCB = ["Other", "CR", "LF", "Control", "Extend", "ZWJ", "Regional_Indicator", "Prepend",
        "SpacingMark", "L", "V", "T", "LV", "LVT"]
 PICT, CONSONANT, LINKER, INCB_EXTEND, EMOJI = 16, 32, 64, 128, 256
@@ -31,6 +34,8 @@ def cell_width(c, ch, wide, emoji_presentation):
         return 1
     if cat in ("Cc", "Cf", "Mn", "Me", "Zl", "Zp") or 0x1160 <= c <= 0x11FF:
         return 0
+    if cat == "Cn":
+        return 2 if any(lo <= c <= hi for lo, hi in UNASSIGNED_WIDE) else 1
     if wide(ch) or emoji_presentation(ch):
         return 2
     return 1
