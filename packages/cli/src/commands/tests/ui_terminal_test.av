@@ -11,6 +11,9 @@ use @std.time.{stamp}
 /// A field and a counting button, mounted in the terminal.
 const terminal_app: string = embed("ui_view/terminal_app.txt")
 
+/// A button that asks the loop for a timer, mounted in the terminal.
+const clock_app: string = embed("ui_view/terminal_clock.txt")
+
 /// The app, built once: where its binary stands — "" when it did not build.
 once fn terminal_binary() -> string {
     let root = "${scratch_dir()}/ui_terminal_${stamp()}"
@@ -23,6 +26,38 @@ once fn terminal_binary() -> string {
     match avra_ran(["build", root]) {
         .Ok(o) -> o.out.stdout.trim().split("\n").last() ?? "",
         .Err(_) -> "",
+    }
+}
+
+/// The timer app, built once: where its binary stands — "" when it did not build.
+once fn clock_binary() -> string {
+    let root = "${scratch_dir()}/ui_clock_${stamp()}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text(
+        "${root}/avra.toml",
+        "[package]\nname = \"ui_clock\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"ui_clock\"\npath = \"src/main.av\"\n",
+    )
+    let _ = write_text("${root}/src/main.av", clock_app)
+    match avra_ran(["build", root]) {
+        .Ok(o) -> o.out.stdout.trim().split("\n").last() ?? "",
+        .Err(_) -> "",
+    }
+}
+
+/// What the timer app prints when its input gives one return and stays
+/// open for `held` seconds.
+fn clock_printed(held: string) -> Result<string, ProcessError> {
+    let fed = cmd(tool("sh")?, ["-c", "printf '\\n'; sleep ${held}"])
+    let app = cmd(tool(clock_binary())?, []) with { timeout: hang_bound() }
+    let ran = fed.pipe(app).outcome()?
+    ran.stages.last()?.out?.stdout ?? "the app did not run"
+}
+
+/// The timer app's last line after `held` seconds of open input.
+fn clocked(held: string) -> string {
+    match clock_printed(held) {
+        .Ok(out) -> out.trim().split("\n").last() ?? "nothing printed",
+        .Err(_) -> "the pipe failed",
     }
 }
 
@@ -72,5 +107,11 @@ spec "a terminal app reads its own standard input" {
     }
     given "no input at all" {
         then "the app draws one screen and ends" { screens("") == 1 && left("") == "name=[] hits=0" }
+    }
+    given "a timer asked for by a press, and the input held open past it" {
+        then "its act runs as a turn and the screen shows it" { clocked("0.6") == "said=answered" }
+    }
+    given "a timer asked for, and the input ending before it is due" {
+        then "the loop ends and the timer with it" { clocked("0") == "said=waiting" }
     }
 }
