@@ -407,6 +407,27 @@ export fn type_exported(module: string, name: string) -> Type? {
     avra_type_named("${module}.${name}")
 }
 
+/// What a declared payload type is made of, read off its declaration.
+export enum Held {
+    /// a record: its fields, in declaration order
+    Record(fields: List<Field>)
+    /// an enum: its variants, each with its own payload fields
+    Enum(variants: List<Variant>)
+}
+
+/// What the type `name` holds, for a derive that reads a payload
+/// type's declaration instead of keeping a row for it. `owner` is the
+/// type being derived: the lookup is that type's MODULE's export of
+/// `name` (`type_exported`), so a type only a member's own file
+/// imported is not readable here — absence, which the derive answers
+/// by refusing the payload loudly. Absent for a name no module export
+/// declares.
+export fn payload_of(owner: Type, name: string) -> Held? {
+    let t? = type_exported(owner.module, name) else { return null }
+    if t.variants.is_empty() { return Held.Record(t.fields) }
+    Held.Enum(t.variants)
+}
+
 /// Generated code as a TREE. A `quote { … }` names its own template
 /// — the file that wrote it and where — and carries what fills its
 /// holes; the compiler splices the template's parsed body, so a
