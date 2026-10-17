@@ -46,8 +46,7 @@ export type Standing = {
     said: Cell<List<string>>,
     window: Cell<Window?>,
     counted: Cell<int>,
-    audit: Cell<int>,
-    moved: Cell<int>,
+    placed: Cell<Map<string, int>>,
 }
 
 /// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
@@ -60,11 +59,12 @@ export const first_window: int = 40
 /// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
     let nothing: List<string> = []
-    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(0))
+    stands_in(Cell.new(nothing), Cell.new(0))
 }
 
 /// A standing nothing has stood at, in the walk that says into `said`.
-fn stands_in(said: Cell<List<string>>, counted: Cell<int>, moved: Cell<int>) -> Standing {
+fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
+    let nowhere_placed: Map<string, int> = {}
     let none: Hold? = null
     let nowhere: string? = null
     let empty: List<Under> = []
@@ -79,8 +79,7 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>, moved: Cell<int>) -> 
         said: said,
         window: Cell.new(unwindowed),
         counted: counted,
-        audit: Cell.new(-1),
-        moved: moved,
+        placed: Cell.new(nowhere_placed),
     }
 }
 
@@ -117,7 +116,7 @@ impl Standing {
     fn children(steps: List<string>, shared: List<bool>, drawn: bool) -> List<Standing> {
         mut stood: Map<string, Standing> = {}
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
-        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said, self.counted, self.moved) } for s in steps]
+        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said, self.counted) } for s in steps]
         let above = if drawn { null } else { self.step.get() }
         for j, u in now {
             u.standing.opened()
@@ -129,24 +128,40 @@ impl Standing {
     }
 
     /// `children`, for the rows of a WINDOWED list: `steps` are the rows in
-    /// the window, opened as `children` opens them. A standing that stood at
-    /// a step outside the window, and `kept` says its row is still in the
-    /// source, stands on unopened — what a row's instance holds survives its
-    /// scrolling away, and goes only when its key leaves the source.
-    fn children_windowed(steps: List<string>, shared: List<bool>, kept: fn(string) -> bool) -> List<
-        Standing,
-    > {
+    /// the window, opened as `children` opens them, the first at index
+    /// `from`. A standing that holds an instance and stood at a step outside
+    /// the window stays, unopened, while its row is in the source — what a
+    /// row's instance holds survives its scrolling away, and goes only when
+    /// its key leaves the source. Each kept row remembers the index it was
+    /// last found at: `still` says that index still holds it, and while every
+    /// kept row passes, the source is not walked. One that fails has `find`
+    /// walk the source once, answering every step's index.
+    fn children_windowed(
+        steps: List<string>,
+        shared: List<bool>,
+        from: int,
+        still: fn(string, int) -> bool,
+        find: fn() -> Map<string, int>,
+    ) -> List<Standing> {
         let opened = self.children(steps, shared, false)
         let in_window = told_set(steps)
-        let carried = [u for u in self.was_under.get() if !in_window.has(u.step) && u.standing.held() > 0 && kept(u.step)]
+        let placed = self.placed.get()
+        let held = [u for u in self.was_under.get() if !in_window.has(u.step) && u.standing.held() > 0]
+        let lost = held.any((u) -> !self.stays(placed.get(u.step), u.step, still))
+        let found = if lost { find() } else { placed }
+        let carried = [u for u in held if found.has(u.step)]
         self.under.set(self.under.get().concat(carried))
+        mut here: Map<string, int> = {}
+        for j, s in steps { here.set(s, from + j) }
+        for u in carried { here.set(u.step, found.get(u.step) ?? 0) }
+        self.placed.set(here)
         opened
     }
 
-    /// Whether any standing under this one stood at a step outside `steps`.
-    fn stood_outside(steps: List<string>) -> bool {
-        let in_window = told_set(steps)
-        self.was_under.get().any((u) -> !in_window.has(u.step))
+    /// Whether a kept row, last found at `at`, is still there.
+    fn stays(at: int?, step: string, still: fn(string, int) -> bool) -> bool {
+        let i? = at else { return false }
+        still(step, i)
     }
 
     /// The window a list stands with, for `count` rows: the one a target
@@ -164,19 +179,6 @@ impl Standing {
         let from = if told.from > to { to } else { told.from }
         Window { from: if from < 0 { 0 } else { from }, to: to }
     }
-
-    /// Whether the rows this list kept, outside its window, are to be
-    /// checked against the source now: when anything but a scroll has moved
-    /// since the last check. A scroll moves no state, so it pays no pass over
-    /// the keys; any other turn may have changed the source, and pays one.
-    fn auditing() -> bool {
-        let due = self.audit.get() != self.moved.get()
-        self.audit.set(self.moved.get())
-        due
-    }
-
-    /// A turn that is not a scroll ran: the source may have moved.
-    fn moves() { self.moved.set(self.moved.get() + 1) }
 
     /// A target tells the list standing here which rows to build.
     fn windowed(from: int, to: int) { self.window.set(Window { from: from, to: to }) }

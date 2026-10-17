@@ -38,29 +38,31 @@ impl View for Rows {
         let built = [self.at(i) for i in w.from..w.to]
         let said = [lent(v.stand(), self.key_at(w.from + j), at) for j, v in built]
         let seats = [s.spelled() for s in steps(said)]
-        let audit = at.auditing() && at.stood_outside(seats)
-        let present = if audit { self.present() } else { none_present() }
         let stands = at
-            .children_windowed(seats, shared(said), (step: string) -> !audit || present.has(step))
+            .children_windowed(
+                seats,
+                shared(said),
+                w.from,
+                (step: string, i: int) -> i < self.count && self.step_at(i) == step,
+                () -> self.present(),
+            )
         at.tally(built.length)
         flatten([v.describe(stands[j]) for j, v in built])
     }
 }
 
 impl Rows {
-    /// The step of every row in the source, as a set: asked once a paint, and
-    /// only when a row outside the window has something to keep.
-    fn present() -> Map<string, bool> {
-        mut set: Map<string, bool> = {}
-        // LICENSED loops.push_loop: one key a row, found without building the row
-        for i in 0..self.count { set.set(Step.Keyed(self.key_at(i), 0).spelled(), true) }
-        set
-    }
-}
+    /// The step of the row at `i`.
+    fn step_at(i: int) -> string { Step.Keyed(self.key_at(i), 0).spelled() }
 
-fn none_present() -> Map<string, bool> {
-    let none: Map<string, bool> = {}
-    none
+    /// The index of every row's step in the source: asked only when a kept
+    /// row is no longer where it was.
+    fn present() -> Map<string, int> {
+        mut at: Map<string, int> = {}
+        // LICENSED loops.push_loop: one key a row, found without building the row
+        for i in 0..self.count { at.set(self.step_at(i), i) }
+        at
+    }
 }
 
 /// A row's stand, under the key the list found it by. A row that says
