@@ -1220,6 +1220,7 @@ type Taken<T, N> = {
     tier: int,
     suffixed: bool,
     op_at: int,
+    op_words: int,
     rhs: Captured<T, N>,
     cursor: int,
     diagnostics: List<Diagnostic>,
@@ -1235,6 +1236,7 @@ fn untaken<T, N>(cx: MatchContext<T, N>, status: MatchStatus, farthest: Farthest
         tier: 0,
         suffixed: false,
         op_at: 0,
+        op_words: 0,
         rhs: cx.absent,
         cursor: 0,
         diagnostics: cx.silence,
@@ -1396,6 +1398,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
             tier: e.tier,
             suffixed: true,
             op_at: cursor,
+            op_words: e.words.length,
             rhs: right.value,
             cursor: right.cursor,
             diagnostics: right.diagnostics,
@@ -1417,6 +1420,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
         tier: e.tier,
         suffixed: false,
         op_at: cursor,
+        op_words: e.words.length,
         rhs: tighter.value,
         cursor: tighter.cursor,
         diagnostics: tighter.diagnostics,
@@ -1433,7 +1437,8 @@ fn pair<T, N>(
     t: Taken<T, N>,
     start: int,
 ) -> Result<Captured<T, N>, string> {
-    let op: Captured<T, N> = captured_terminal<T, N>(cx.tokens[t.op_at])
+    let branch = consumed_loc<T>(cx.lex, cx.tokens, start, t.cursor)
+    let op = operator_capture<T, N>(cx, t, branch)
     let seen: List<Binding<T, N>> = [
         Binding { label: "l", value: left },
         Binding { label: "op", value: op },
@@ -1444,7 +1449,17 @@ fn pair<T, N>(
         tier.build ?? k.directive,
         seen,
         [left, op, t.rhs],
-        consumed_loc<T>(cx.lex, cx.tokens, start, t.cursor),
+        branch,
+    )
+}
+
+/// The operator a pair's builds read as `op`: its one token, or — for a
+/// word spelled with several (`>` `>`) — the word's own text as ONE
+/// token, so `op` is what the author wrote whichever way it was lexed.
+fn operator_capture<T, N>(cx: MatchContext<T, N>, t: Taken<T, N>, branch: Loc?) -> Captured<T, N> {
+    if t.op_words == 1 { return captured_terminal<T, N>(cx.tokens[t.op_at]) }
+    captured_terminal<T, N>(
+        cx.lex.stated([cx.lex.text(cx.tokens[t.op_at + k]) for k in 0..t.op_words].join(""), branch),
     )
 }
 

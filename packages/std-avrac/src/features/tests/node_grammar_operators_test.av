@@ -1,0 +1,100 @@
+// AN OPERATOR TABLE NAMES ITS NODE. A tier's build (or the branch's, for
+// every tier) is a node build whose slots are the climb's own captures —
+// `l`, `op` and `r` — and `op` is the WORD the climb took, whole, so a
+// payload that is an operator is filled from the words the table spells.
+// Against a node model of made-up variants.
+use @std.errors.{Loc}
+use @std.grammar.{Grammar, Slot, Diagnostic, Captured, run_grammar, ready}
+use @std.avrac.grammar.{parse_grammar, lex_source, Token, avra_known_terminals, avra_lexeme}
+use @std.avrac.features.{bind_nodes}
+use @std.avrac.core.{PayloadRow, joined}
+use @std.meta.{Field}
+
+fn op_rows() -> List<PayloadRow> {
+    [
+        PayloadRow {
+            owner: "E",
+            variant: "Bin",
+            payloads: [
+                Field { name: "op", ty: "BinOp", at: null, kind: .Named("BinOp", []) },
+                Field { name: "l", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "r", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+            ],
+        },
+        PayloadRow {
+            owner: "E",
+            variant: "Co",
+            payloads: [
+                Field { name: "l", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "r", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+            ],
+        },
+    ]
+}
+
+fn op_grammar(src: string) -> Grammar {
+    parse_grammar(src).built ?? Grammar { name: "unparsed", start: "unparsed", rules: [] }
+}
+
+fn op_refusals(src: string) -> List<Diagnostic> {
+    bind_nodes(op_grammar(src), op_rows()).defects
+}
+
+fn op_refuses(src: string, words: string) -> bool {
+    op_refusals(src).any(it.message.contains(words))
+}
+
+fn op_text(v: Captured<Token, string>) -> string {
+    match v {
+        .Terminal(t) -> t.text,
+        .Node(n) -> n,
+        .Many(items) -> "[${joined([op_text(x) for x in items], " ")}]",
+        .Absent -> "_",
+    }
+}
+
+fn op_build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> Result<
+    Captured<Token, string>,
+    string,
+> {
+    let built: Captured<Token, string> = Captured.Node("(${name} ${joined([op_text(a) for a in args], " ")})")
+    Result.Ok(built)
+}
+
+fn op_run(src: string, text: string) -> string {
+    let g = bind_nodes(op_grammar(src), op_rows()).g
+    let o = run_grammar<Token, string>(ready(g, avra_known_terminals()), lex_source(text).tokens, avra_lexeme(), op_build)
+    if o.result == null { return "<none> ${o.diagnostics.length}" }
+    "${op_text(o.result!)} ${o.diagnostics.length}"
+}
+
+const table: string = "e = l:operand @operators { left \"+\" \"-\" left ( \">\" \">\" ) \"<<\" left \"??\" -> E.Co } -> E.Bin\noperand = v:NAME -> lit(v)\n"
+
+spec "features/node_grammar — an operator table's builds" {
+    given "a branch build and a tier build over a table" {
+        then "name their node, and refuse nothing" { op_refusals(table).is_empty() }
+        then "the climb hands the node the word it took as `op`" {
+            op_run(table, "a + b\n") == "(E.Bin + (lit a) (lit b)) 0"
+        }
+        then "a word spelled with two tokens is one word" {
+            op_run(table, "a > > b\n") == "(E.Bin >> (lit a) (lit b)) 0"
+        }
+        then "a tier's own build wins over the branch's" {
+            op_run(table, "a ?? b\n") == "(E.Co (lit a) (lit b)) 0"
+        }
+        then "groups left" { op_run(table, "a - b + c\n") == "(E.Bin + (E.Bin - (lit a) (lit b)) (lit c)) 0" }
+    }
+    given "a word that names no operator" {
+        then "is refused where the table is assembled" {
+            op_refuses("e = l:operand @operators { left \"+=\" } -> E.Bin\noperand = v:NAME -> lit(v)\n", "the word `+=`, which spells no operator")
+        }
+        then "but not for a node with no operator payload" {
+            !op_refuses("e = l:operand @operators { left \"+=\" -> E.Co }\noperand = v:NAME -> lit(v)\n", "spells no operator")
+        }
+    }
+    given "a tier build naming a node that is not there" {
+        then "is refused like any node build" {
+            op_refuses("e = l:operand @operators { left \"+\" -> E.Nope } -> E.Bin\noperand = v:NAME -> lit(v)\n", "no such variant is declared")
+        }
+    }
+}
