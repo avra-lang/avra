@@ -18,7 +18,17 @@ avra=${AVRA:-$tree/build/avra}
 target=${UI_BOARD_TARGET:-wasm}
 work=$(mktemp -d "${TMPDIR:-/tmp}/avra-ui-browser.XXXXXX")
 
-skip() { echo "ui-browser: SKIPPED — $* ; the board did not run in a browser"; exit 0; }
+# A SKIP IS FOR A LOCAL RUN: on the checks' machine (CI=true) a missing browser,
+# node or toolchain is a broken machine, and a gate that skips there is green
+# for running nothing.
+skip() {
+    if [ "${CI:-}" = true ]; then
+        echo "ui-browser: ran 0 claims — $* ; the checks' machine must carry them (.github/ci/install_firefox.sh installs the browser)"
+        exit 1
+    fi
+    echo "ui-browser: ran 0 claims — SKIPPED: $* ; the board did not run in a browser"
+    exit 0
+}
 
 [ -x "$avra" ] || skip "no compiler at $avra"
 command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
@@ -50,4 +60,4 @@ url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 if ! out=$(node "$here/ui-board/browser.mjs" "$url" --source "$work/tools/ui-board/src/board.av" ${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"} 2>&1); then
     echo "$out" | grep -v '^ok ' ; echo "ui-browser: the board failed in the browser"; exit 1
 fi
-echo "ui-browser: $(echo "$out" | grep -c '^ok ') claims hold in Firefox, served by \`avra dev\` at $url"
+echo "ui-browser: ran $(echo "$out" | grep -c '^ok ') claims, all hold, in Firefox, served by \`avra dev\` at $url"
