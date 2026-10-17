@@ -392,48 +392,16 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
     }
 }
 
-/// THE BODIES A PROGRAM CARRIES: the entry and every host fn, and whatever
-/// they name — a call, a fn's address, a static's code — transitively, by the
-/// same projections the emitter's closure law reads (`refs_of`). A body no
-/// root reaches is the linker's to drop, so it is no part of what the program
-/// needs.
-// LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the bodies it carries out.
-export fn reached(l: Lowered) -> List<Body> {
-    mut by: Map<string, Body> = {}
-    for bd in l.fns { by.set(bd.name, bd) }
-    mut seen: Map<string, bool> = {}
-    // THE ENTRY IS NOT A NAMED BODY: a user fn may wear its name (`main`), so it
-    // stands outside the names a walk has seen
-    mut work: List<Body> = named_by(l.entry, l, by)
-    for bd in l.fns { if bd.hosted { work.push(bd) } }
-    mut out: List<Body> = [l.entry]
-    mut j = 0
-    while j < work.length {
-        let bd = work[j]
-        j = j + 1
-        if seen.get(bd.name) == null {
-            seen.set(bd.name, true)
-            out.push(bd)
-            work = work.concat(named_by(bd, l, by))
-        }
-    }
-    out
-}
-
-/// The bodies `bd` names that the program holds.
-fn named_by(bd: Body, l: Lowered, by: Map<string, Body>) -> List<Body> {
-    [by.get(n)! for n in refs_of([bd], l.statics).bodies.keys() if n != bd.name && by.get(n) != null]
-}
-
 /// WHAT A NON-HOST TARGET HAS NO BODY FOR, by NAME: a runtime row that
-/// declares no wasm body (a fiber, a core) which a body the program CARRIES
-/// calls, and a closure package that owns C and names no wasm object. The
-/// build speaks which one — never a linker's "undefined symbol", which accuses
-/// the innocent.
+/// declares no wasm body (a fiber, a core), and a closure package that owns C
+/// and names no wasm object. It reads the program LOWERED FROM ITS ENTRY
+/// (`Program.reached`), so a body nothing reaches names nothing. The build
+/// speaks which one — never a linker's "undefined symbol", which accuses the
+/// innocent.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a program in, the names it cannot carry out.
 export fn unsupported_on_wasm(l: Lowered) -> List<string> {
     let absent = [s.name for s in rt_sigs() if !s.wasm]
-    let called = [n for bd in reached(l) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
+    let called = [n for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
     distinct([n! for n in called if absent.contains(n!)])
         .concat(distinct([p.name for p in l.libraries if p.library != "" && !p.wasm]))
 }
