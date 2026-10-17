@@ -1082,6 +1082,98 @@ fn witnesses() -> List<CodeWitness> {
                     },
                 ),
         },
+        CodeWitness {
+            code: "annotation.seats",
+            witness: with_meta(
+                "use @std.meta.{Fn}\nfn mark(f: Fn, n: int) { }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.answer",
+            witness: with_meta(
+                "use @std.meta.{Fn}\nfn mark(f: Fn) -> int { 1 }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.derive",
+            witness: with_meta(
+                "use @std.meta.{derive}\ntype N = { z: int }\n@derive(N)\ntype T = { a: int }\n1",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.wrap_missing",
+            witness: with_provider(
+                "use @x.c.{wrap_missing}\n@wrap_missing\nfn answer() -> int { 1 }\nanswer()",
+                "use @std.meta.{Fn, Directive}\nexport fn wrap_missing(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn not_it() -> int { 0 } } }] }\nexport fn wrap_bodiless(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}() -> int { 0 } } }] }\nexport fn wrap_mismatch(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}(x: string) -> int { 0 } } }] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\n",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.wrap_bodiless",
+            witness: with_provider(
+                "use @x.c.{wrap_bodiless}\n@wrap_bodiless\nextern fn avra_array_len(a: ptr) -> int\n1",
+                "use @std.meta.{Fn, Directive}\nexport fn wrap_missing(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn not_it() -> int { 0 } } }] }\nexport fn wrap_bodiless(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}() -> int { 0 } } }] }\nexport fn wrap_mismatch(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}(x: string) -> int { 0 } } }] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\n",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.wrap_mismatch",
+            witness: with_provider(
+                "use @x.c.{wrap_mismatch}\n@wrap_mismatch\nfn answer() -> int { 1 }\nanswer()",
+                "use @std.meta.{Fn, Directive}\nexport fn wrap_missing(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn not_it() -> int { 0 } } }] }\nexport fn wrap_bodiless(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}() -> int { 0 } } }] }\nexport fn wrap_mismatch(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}(x: string) -> int { 0 } } }] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\n",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.generated_taken",
+            witness: with_provider(
+                "use @x.c.{same_twin}\n@same_twin\nfn answer() -> int { 1 }\nanswer()",
+                "use @std.meta.{Fn, Directive}\nexport fn wrap_missing(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn not_it() -> int { 0 } } }] }\nexport fn wrap_bodiless(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}() -> int { 0 } } }] }\nexport fn wrap_mismatch(f: Fn) -> List<Directive> { [Directive { twin: \"\", name: f.name, at: f.at, wraps: true, source: quote { fn \${f.name}(x: string) -> int { 0 } } }] }\nexport fn same_twin(f: Fn) -> List<Directive> { [Directive { twin: f.name, name: f.name, at: f.at }] }\n",
+            ),
+        },
+        CodeWitness {
+            code: "manifest.cycle",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": "[package]\nname = \"@x/app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/a\" = { path = \"a\" }\n",
+                        "/w/src/main.av": "1\n",
+                        "/w/a/avra.toml": "[package]\nname = \"@x/a\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/app\" = { path = \"..\" }\n",
+                        "/w/a/src/a.av": "export fn f() -> int { 1 }\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "manifest.prelude_floor",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@std/prelude\" = { path = \"pre\" }\n",
+                        "/w/src/main.av": "1\n",
+                        "/w/pre/avra.toml": "[package]\nname = \"@std/prelude\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/a\" = { path = \"../a\" }\n",
+                        "/w/pre/src/prelude.av": "export fn id(n: int) -> int { n }\n",
+                        "/w/a/avra.toml": "[package]\nname = \"@x/a\"\nversion = \"0.1.0\"\n",
+                        "/w/a/src/a.av": "export fn f() -> int { 1 }\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "annotation.callee",
+            witness: with_meta("use @std.meta.{Fn}\nlet mark = 1\n@mark\nfn answer() -> int { 1 }\nanswer()"),
+        },
+        CodeWitness {
+            code: "type.embed_file",
+            witness: with_meta("use @std.meta.{embed}\nconst s = embed(\"nope.txt\")\ns"),
+        },
+        CodeWitness {
+            code: "type.embed_place",
+            witness: with_meta("use @std.meta.{embed}\nconst s = embed(\"../../x.txt\")\ns"),
+        },
+        CodeWitness {
+            code: "type.embed_literal",
+            witness: with_meta("use @std.meta.{embed}\nlet f = embed\n1"),
+        },
+        CodeWitness {
+            code: "type.code_hash_named",
+            witness: with_meta("use @std.meta.{code_hash}\nlet h = code_hash(1)\n1"),
+        },
     ]
     rows
 }

@@ -734,7 +734,32 @@ help: other key types are recorded — `Map<string, …>`
 
 an annotation names a fn over a declaration
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Fn}
+let mark = 1
+@mark
+fn answer() -> int { 1 }
+answer()
+```
+
+```
+error[annotation.callee]: an annotation names a fn over a declaration
+  ╭─[/w/src/main.av:3:1]
+3 │ @mark
+  · ┬
+  · ╰── `@mark` names no fn
+──╯
+help: write `fn mark(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it
+```
 
 ## annotation.receiver
 
@@ -761,13 +786,63 @@ help: its first parameter is the declaration: `f: Fn`, or `t: Type` for a record
 
 an annotation's arguments fill its seats
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Fn}
+fn mark(f: Fn, n: int) { }
+@mark
+fn answer() -> int { 1 }
+answer()
+```
+
+```
+error[annotation.seats]: an annotation's arguments fill its seats
+  ╭─[/w/src/main.av:3:1]
+3 │ @mark
+  · ┬
+  · ╰── `mark` takes 1 after the declaration, this writes 0
+──╯
+help: write the arguments the annotation takes — `@mark(…)`
+```
 
 ## annotation.answer
 
 an annotation answers an effect
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Fn}
+fn mark(f: Fn) -> int { 1 }
+@mark
+fn answer() -> int { 1 }
+answer()
+```
+
+```
+error[annotation.answer]: an annotation answers an effect
+  ╭─[/w/src/main.av:3:1]
+3 │ @mark
+  · ┬
+  · ╰── `mark` answers `int`
+──╯
+help: `void` records the annotation and says nothing; `List<Diagnostic>` validates the declaration; `List<Directive>` generates declarations beside the one stood under; `Derived` runs each named trait's `derive` over the declaration; `Marker` marks the declaration for a reader that claims the word
+```
 
 ## annotation.said
 
@@ -785,7 +860,32 @@ No witness yet.
 
 an annotation generates a name the file already declares
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{same_twin}
+@same_twin
+fn answer() -> int { 1 }
+answer()
+```
+
+```
+error[annotation.generated_taken]: `@same_twin` generates `answer`, which this file already declares
+  ╭─[/w/src/main.av:2:1]
+2 │ @same_twin
+  · ┬
+  · ╰── asked here
+──╯
+help: rename the written declaration, or the generated one
+```
 
 ## annotation.warning
 
@@ -797,7 +897,32 @@ No witness yet.
 
 `@derive` names a trait that declares `derive`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{derive}
+type N = { z: int }
+@derive(N)
+type T = { a: int }
+1
+```
+
+```
+error[annotation.derive]: an annotation derives through a trait that declares `derive`
+  ╭─[/w/src/main.av:3:9]
+3 │ @derive(N)
+  ·         ┬
+  ·         ╰── `N` is not a trait
+──╯
+help: `@derive` names a trait — `trait N { static fn derive(t: Type) -> List<Directive> }`
+```
 
 ## annotation.unsettled
 
@@ -841,19 +966,94 @@ help: a mark is read by a `@derive` whose trait declares `marks`
 
 a WRAP directive's `source` names no matching fn
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{wrap_missing}
+@wrap_missing
+fn answer() -> int { 1 }
+answer()
+```
+
+```
+error[annotation.wrap_missing]: `@wrap_missing` asks to wrap `answer`, and its `source` declares no fn of that name
+  ╭─[/w/src/main.av:2:1]
+2 │ @wrap_missing
+  · ┬
+  · ╰── asked here
+──╯
+help: a WRAP directive's `source` writes the wrapper under the annotated fn's own name
+```
 
 ## annotation.wrap_bodiless
 
 a WRAP directive over a declaration with no body
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{wrap_bodiless}
+@wrap_bodiless
+extern fn avra_array_len(a: ptr) -> int
+1
+```
+
+```
+error[annotation.wrap_bodiless]: `@wrap_bodiless` asks to wrap `avra_array_len`, which has no body to move
+  ╭─[/w/src/main.av:2:1]
+2 │ @wrap_bodiless
+  · ┬
+  · ╰── asked here
+──╯
+help: WRAP moves a written body behind its wrapper — an extern or a trait member has none
+```
 
 ## annotation.wrap_mismatch
 
 a WRAP directive's wrapper signature does not match
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{wrap_mismatch}
+@wrap_mismatch
+fn answer() -> int { 1 }
+answer()
+```
+
+```
+error[annotation.wrap_mismatch]: `@wrap_mismatch`'s wrapper for `answer` does not redeclare its exact signature
+  ╭─[/w/src/main.av:2:1]
+2 │ @wrap_mismatch
+  · ┬
+  · ╰── asked here
+──╯
+help: match the `static`/`mut fn` word, the params (marks and defaults included) and the answer type, word for word
+```
 
 ## annotation.wrap_kind
 
@@ -1540,7 +1740,40 @@ help: key it as `"@x/z"`
 
 packages do not depend in a cycle
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "@x/app"
+version = "0.1.0"
+
+[dependencies]
+"@x/a" = { path = "a" }
+
+// /w/src/main.av
+1
+
+// /w/a/avra.toml
+[package]
+name = "@x/a"
+version = "0.1.0"
+
+[dependencies]
+"@x/app" = { path = ".." }
+
+// /w/a/src/a.av
+export fn f() -> int { 1 }
+
+```
+
+```
+error[manifest.cycle]: packages depend in a cycle: @x/app -> @x/a -> @x/app
+  ╭─[/w/a/avra.toml:6:1]
+6 │ "@x/app" = { path = ".." }
+  · ┬
+  · ╰── closes the cycle here
+──╯
+help: a package graph is acyclic — cut one edge
+```
 
 ## manifest.duplicate_package
 
@@ -1552,7 +1785,48 @@ No witness yet.
 
 the prelude depends on nothing
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/prelude" = { path = "pre" }
+
+// /w/src/main.av
+1
+
+// /w/pre/avra.toml
+[package]
+name = "@std/prelude"
+version = "0.1.0"
+
+[dependencies]
+"@x/a" = { path = "../a" }
+
+// /w/pre/src/prelude.av
+export fn id(n: int) -> int { n }
+
+// /w/a/avra.toml
+[package]
+name = "@x/a"
+version = "0.1.0"
+
+// /w/a/src/a.av
+export fn f() -> int { 1 }
+
+```
+
+```
+error[manifest.prelude_floor]: `@std/prelude` depends on nothing — it is the floor every package stands on
+  ╭─[/w/pre/avra.toml:6:1]
+6 │ "@x/a" = { path = "../a" }
+  · ┬
+  · ╰── this dependency
+──╯
+help: move the verb that needs this package up, into the package that depends on it
+```
 
 ## manifest.link_option
 
@@ -4675,25 +4949,117 @@ No witness yet.
 
 `embed` reads a file named in the source — its path is a literal, written where it is called
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{embed}
+let f = embed
+1
+```
+
+```
+error[type.embed_literal]: `embed` reads a file named in the source — its path is a literal
+  ╭─[/w/src/main.av:2:9]
+2 │ let f = embed
+  ·         ┬
+  ·         ╰── handed on uncalled here
+──╯
+help: call it where the path is written — `embed("schema.sql")`
+```
 
 ## type.embed_place
 
 `embed` reads inside its own package, through no link
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{embed}
+const s = embed("../../x.txt")
+s
+```
+
+```
+error[type.embed_place]: `embed` reads inside its own package — `../../x.txt` names a file outside it
+  ╭─[/w/src/main.av:2:17]
+2 │ const s = embed("../../x.txt")
+  ·                 ┬
+  ·                 ╰── leaves the package here
+──╯
+help: keep the file in this package, or name a dependency's by its package — `embed("@scope/name/path")`
+```
 
 ## type.embed_file
 
 `embed` answers a file's text — the file stands there and is UTF-8
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{embed}
+const s = embed("nope.txt")
+s
+```
+
+```
+error[type.embed_file]: `embed` finds no `nope.txt` beside this source file
+  ╭─[/w/src/main.av:2:17]
+2 │ const s = embed("nope.txt")
+  ·                 ┬
+  ·                 ╰── no file stands here
+──╯
+help: the path is read from this file's own directory
+```
 
 ## type.code_hash_named
 
 `code_hash` hashes a declared fn, named where it is called
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{code_hash}
+let h = code_hash(1)
+1
+```
+
+```
+error[type.code_hash_named]: `code_hash` hashes a declared fn, named where it is called
+  ╭─[/w/src/main.av:2:19]
+2 │ let h = code_hash(1)
+  ·                   ┬
+  ·                   ╰── this names no declared fn
+──╯
+help: name the fn itself — `code_hash(answer)` — never a value or a call
+```
 
 ## type.named_arg
 

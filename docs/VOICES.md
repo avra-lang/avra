@@ -17,16 +17,16 @@ which only shrinks.
 | block | 1 | 0 | 0 | 0 |
 | resolve | 33 | 26 | 26 | 2 |
 | lower | 8 | 2 | 2 | 0 |
-| type | 119 | 96 | 96 | 6 |
+| type | 119 | 100 | 100 | 6 |
 | flow | 17 | 12 | 12 | 0 |
-| annotation | 17 | 2 | 2 | 0 |
-| manifest | 30 | 25 | 25 | 0 |
+| annotation | 17 | 10 | 10 | 0 |
+| manifest | 30 | 27 | 27 | 0 |
 | collect | 14 | 14 | 14 | 0 |
 | collect_enum | 7 | 7 | 7 | 0 |
 | const | 6 | 6 | 6 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 260 | 194 | 194 | 8 |
+| **all** | 260 | 208 | 208 | 8 |
 
 ## Rules
 
