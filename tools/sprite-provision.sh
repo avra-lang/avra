@@ -30,6 +30,9 @@ if [ -n "$missing" ]; then
     sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $missing
 fi
 
+# The browser `make ui-browser` drives, pinned by .github/ci/install_firefox.sh.
+sh "$root/.github/ci/install_firefox.sh"
+
 # THE TREE SPELLS ITS LLVM ROOT AS ${LLVM_PREFIX} and defaults it to the
 # Homebrew path. Point that default at the distro LLVM so the Makefile,
 # the `avra` shim and every tool resolve it without an environment — a

@@ -259,6 +259,16 @@ fn spoken(texts: List<string>) -> string { joined([text for text in texts if !te
 /// Where what a file said lives: beside its object, under the object's key.
 fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", okey]) }
 
+/// FILE-SAID: what a file said, keyed by PATH, with the answers it stood on — written
+/// beside the object-keyed rows so a suspect set can be observed, deciding no hold.
+fn said_row(path: string) -> string { node_key(Stored.Warn, ["said-row", path]) }
+
+/// FILE-SAID: a file's rule findings, keyed by PATH.
+fn rules_row(path: string) -> string { node_key(Stored.Warn, ["rules-row", path]) }
+
+/// FILE-SAID: a file's findings rows, keyed by PATH.
+fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", path]) }
+
 /// Where a file's rule findings live, beside what it said — kept only by
 /// a derivation that wants diagnostics, since nothing a build makes reads
 /// them.
@@ -670,7 +680,28 @@ impl Workspace {
         for rf in [ReadFile { path: path, why: Reads.Home } for path in homes].concat(at.parse) { self.hold.forced.put(rf.path, rf.why) }
         if at.hold {
             let interfaces = self.clock()
-            for m in held_modules(self, store, built_entry(at)) { load_interface(self, store, m, at.entry, at.want) }
+            let roots = held_modules(self, store, built_entry(at))
+            // ON-DEMAND: the records are read for their NAMES alone — every file is
+            // registered and every module's impl/trait names indexed — and only the
+            // modules a file whose rows no longer stand sits in are loaded for real.
+            for m in roots { bare_interface(self, store, m, at.entry, at.want) }
+            let must_read = self
+                .hold
+                .forced
+                .get()
+                .keys()
+                .concat(if at.entry != null { [at.entry!] } else { [] })
+            let unstood = [fi.path for fi in self.decls.files_standing() if !self.file_rows_stand(store, fi.path, at.want) || must_read.contains(fi.path)]
+            for path in unstood { self.declarers_registered(path) }
+            let loading = distinct([self.module_path_of(path).text() for path in unstood])
+            for name in loading { load_interface(self, store, module_path(segments_of(name)), at.entry, at.want) }
+            // every file a module did not load stands in the store's own rows
+            for fi in self.decls.files_standing() {
+                if loading.contains(self.module_path_of(fi.path).text()) { continue }
+                if self.hold.read_files.get().any(it.path == fi.path) { continue }
+                if self.hold.forced.get().get(fi.path) != null { continue }
+                self.hold_only(fi.path)
+            }
             self.timed("interfaces", interfaces)
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
@@ -817,6 +848,9 @@ impl Workspace {
                 self.asks_key(self.held_okey(store, a.view.source.file)),
                 self.wanted_list_wire(asks),
             )
+        let path = a.view.source.file
+        self
+            .keep_file_row(store, path, Stored.Unit, self.asks_row(path), self.wanted_list_wire(asks))
     }
 
     /// Each fresh instantiation's code, kept under its own key — what a held
@@ -862,6 +896,8 @@ impl Workspace {
                 self.codes_key(self.held_okey(store, a.view.source.file)),
                 code_facts_wire(facts),
             )
+        let path = a.view.source.file
+        self.keep_file_row(store, path, Stored.Unit, self.codes_row(path), code_facts_wire(facts))
     }
 
     /// THE ATTEMPT THAT STOOD, as the program derived. The instantiations a held
@@ -1246,6 +1282,9 @@ impl Workspace {
         let rules = told.rules
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
         let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
+        self.keep_file_row(store, path, Stored.Warn, said_row(path), said_wire(told.said))
+        self.keep_file_row(store, path, Stored.Warn, rules_row(path), rules.rendered)
+        self.keep_file_row(store, path, Stored.Warn, findings_row(path), findings_text(rules.rows))
         match want {
             .Diagnostics -> told.said with { warnings: spoken([told.said.warnings, rules.rendered]), findings: rules.rows },
             .Binary -> told.said,
