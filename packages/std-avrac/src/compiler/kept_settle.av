@@ -516,7 +516,17 @@ impl Workspace {
     /// The declaration names of the modules a verdict sees, as one digest: a name a
     /// seen module gains or loses moves it.
     fn names_digest(mods: List<ModulePath>) -> string {
-        digest_of(joined(sorted_texts(flatten([self.module_decl_names(m) for m in mods])), "\n"))
+        names_digest_of([self.file_bound_digest(p) for m in mods for p in self.module_files(m)])
+    }
+
+    /// The digest of the names a file binds: a held file's off its module's producer row, any
+    /// other's from its declarations.
+    fn file_bound_digest(path: string) -> string {
+        let store? = self.store.get() else { return names_digest_of(self.file_decl_names(path, [], false)) }
+        let at = if self.held_path(path) { (self.producers_for(store, self.module_path_of(path))?.bounds ?? [])
+                .find(it.path == path) } else { null }
+        let found? = at else { return names_digest_of(self.file_decl_names(path, [], false)) }
+        found.value
     }
 
     /// A names line stands when the names are the ones it was kept with, or, for a plain free fn
@@ -543,11 +553,6 @@ impl Workspace {
         let sees = distinct(own.concat([p for p in files if self.tokens_of(p).has(stem)]))
         let narrow = !sees.any((p: string) -> self.has_generated(p))
         flatten([self.file_decl_names(path, sees, narrow) for path in own])
-    }
-
-    /// A module's declaration names, over the files it holds.
-    fn module_decl_names(m: ModulePath) -> List<string> {
-        flatten([self.file_decl_names(path, [], false) for path in self.module_files(m)])
     }
 
     /// Whether any declaration of a file was written by an annotation: its code spells names
