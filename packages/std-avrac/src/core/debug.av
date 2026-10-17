@@ -30,6 +30,13 @@ once fn graph_flag() -> string? { env("AVRA_DB_GRAPH") }
 /// Whether the kernel's graph is written out.
 fn graphed() -> bool { graph_flag() != null }
 
+/// `AVRA_DB_FAST`'s presence, read once.
+// LICENSED input.debug_flag: a debug flag is the process's own, not an input
+once fn fast_flag() -> string? { env("AVRA_DB_FAST") }
+
+/// Whether an unsuspected file stands without its parts derived.
+export fn db_fast() -> bool { fast_flag() != null }
+
 /// `AVRA_LEAVES`'s presence, read once.
 // LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn leaves_flag() -> string? { env("AVRA_LEAVES") }
@@ -41,8 +48,20 @@ export fn leaves_traced() -> bool { leaves_flag() != null }
 // LICENSED input.debug_flag: a debug flag is the process's own, not an input
 once fn verify_flag() -> string? { env("AVRA_DB_VERIFY") }
 
-/// Whether the saved-answer rule is judged beside what the compiler decides.
-export fn db_verified() -> bool { verify_flag() != null }
+/// Whether `AVRA_DB_VERIFY` names `judgement` (a comma list of `filesaid`, `typed`, `lowered`, `producers`), or `all`.
+fn verifying(judgement: string) -> bool {
+    let v? = verify_flag() else { return false }
+    v == "all" || v == "1" || v.split(",").contains(judgement)
+}
+
+/// Whether the typed and lowered saved-answer rules are judged beside what the compiler decides.
+export fn db_verified() -> bool { verifying("typed") || verifying("lowered") }
+
+/// Whether a module's kept producer row is judged against the record it was written from.
+export fn db_verified_producers() -> bool { verifying("producers") }
+
+/// Whether the suspect set's verdicts are judged against the file-row rule's.
+export fn db_verified_files() -> bool { verifying("filesaid") }
 
 /// A kernel that traces and writes its graph when the flags ask.
 export fn watched_kernel() -> Kernel {
