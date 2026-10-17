@@ -55,4 +55,40 @@ spec "a document answered over HTTP" {
         }
         then "foreign text a browser would run makes no URL to serve" { url("javascript:alert(1)") == null }
     }
+    given "a document that names a module" {
+        then "it stamps the print, names the module and starts it" {
+            let t = Document { title: "x", body: home(), module: "/app.wasm" }
+                .response()
+                .body
+                .text() ?? ""
+            t.contains("data-avra-print=\"") &&
+                t.contains("data-avra-module=\"/app.wasm\"") &&
+                t.contains("<script type=\"module\">")
+        }
+        then "the module's name is escaped where it lands" {
+            let t = Document { title: "x", body: home(), module: "/a\"b.wasm" }
+                .response()
+                .body
+                .text() ?? ""
+            t.contains("data-avra-module=\"/a&quot;b.wasm\"") && !t.contains("/a\"b.wasm")
+        }
+        then "the tree stands inside the mount the module takes over" {
+            let t = Document { title: "x", body: home(), module: "/app.wasm" }
+                .response()
+                .body
+                .text() ?? ""
+            t.contains("id=\"avra-style\"") && t.contains("<h1>Boards</h1>")
+        }
+        then "the same tree stamps the same print" {
+            let a = Document { title: "x", body: home(), module: "/app.wasm" }
+                .response()
+                .body
+                .text() ?? ""
+            let b = Document { title: "y", body: home(), module: "/app.wasm" }
+                .response()
+                .body
+                .text() ?? ""
+            a.split("data-avra-print=\"")[1].split("\"")[0] == b.split("data-avra-print=\"")[1].split("\"")[0]
+        }
+    }
 }
