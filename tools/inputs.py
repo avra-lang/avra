@@ -126,6 +126,7 @@ INERT = {
     "path": {"rows": set(), "world": {}},
     "testing": {"rows": set(), "world": {}},
     "toml": {"rows": set(), "world": {}},
+    "url": {"rows": set(), "world": {}},
 }
 
 # A runtime row a scope file declares for itself.
