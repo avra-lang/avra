@@ -760,25 +760,108 @@ No witness yet.
 
 a `use` names a module the package does not have
 
-No witness yet.
+```
+// /w/src/main.av
+use nope.{x}
+1
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.no_module]: no module `nope` under the package's source root
+  ╭─[/w/src/main.av:1:1]
+1 │ use nope.{x}
+  · ┬
+  · ╰── in this use
+──╯
+help: a module is a directory of `.av` files or one `.av` file, named from `src/` — `nope` was looked for
+```
 
 ## resolve.not_exported
 
 a `use` names an item the module does not export
 
-No witness yet.
+```
+// /w/src/main.av
+use util.{hidden}
+1
+
+// /w/src/util.av
+fn hidden() -> int { 1 }
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.not_exported]: `util` does not export `hidden`
+  ╭─[/w/src/main.av:1:1]
+1 │ use util.{hidden}
+  · ┬
+  · ╰── in this use
+──╯
+help: it exports nothing — mark the declaration `export` to share it
+```
 
 ## resolve.not_a_dependency
 
 a `use` names a package this package's manifest does not depend on
 
-No witness yet.
+```
+// /w/src/main.av
+use @x.y.{z}
+1
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.not_a_dependency]: `@x/y` is not a dependency of this package
+  ╭─[/w/src/main.av:1:1]
+1 │ use @x.y.{z}
+  · ┬
+  · ╰── in this use
+──╯
+help: declare it under `[dependencies]` in `/w/avra.toml` — `"@x/y" = { path = "…" }`
+```
 
 ## resolve.export_kind
 
 `export` marks a declaration — a fn, type, enum or trait
 
-No witness yet.
+```
+// /w/src/main.av
+export let a = 1
+1
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.export_kind]: `export` marks a fn, type, enum or trait — not this statement
+  ╭─[/w/src/main.av:1:8]
+1 │ export let a = 1
+  ·        ┬
+  ·        ╰── marked here
+──╯
+help: drop the `export`, or declare the value as a fn
+```
 
 ## resolve.unpackaged
 
@@ -804,13 +887,65 @@ help: put an `avra.toml` at the package root, with this file under its `src/` �
 
 a module is a directory OR a file, never both
 
-No witness yet.
+```
+// /w/src/main.av
+use util.{f}
+1
+
+// /w/src/util.av
+export fn f() -> int { 1 }
+
+// /w/src/util/mod.av
+export fn g() -> int { 1 }
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.module_ambiguous]: `util` is both a directory and a file under the root
+  ╭─[/w/src/main.av:1:1]
+1 │ use util.{f}
+  · ┬
+  · ╰── in this use
+──╯
+help: a module is one or the other — keep `util/` or `util.av`
+```
 
 ## resolve.duplicate_in_module
 
 an exported name declares once in its module
 
-No witness yet.
+```
+// /w/src/main.av
+use util.{f}
+f()
+
+// /w/src/util/a.av
+export fn f() -> int { 1 }
+
+// /w/src/util/b.av
+export fn f() -> int { 2 }
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.duplicate_in_module]: `f` is declared twice in this module — here and in `util/a.av`
+  ╭─[/w/src/util/b.av:1:8]
+1 │ export fn f() -> int { 2 }
+  ·        ┬
+  ·        ╰── declared here
+──╯
+help: an exported name is its module's one declaration — rename one, or drop the `export` so each file keeps its own
+```
 
 ## resolve.kept_apart
 
@@ -828,7 +963,30 @@ No witness yet.
 
 an imported name clashes with one already visible
 
-No witness yet.
+```
+// /w/src/main.av
+use util.{f, f}
+f()
+
+// /w/src/util.av
+export fn f() -> int { 1 }
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.import_clash]: `f` is listed twice
+  ╭─[/w/src/main.av:1:1]
+1 │ use util.{f, f}
+  · ┬
+  · ╰── in this use
+──╯
+help: list each name once — drop the repeat
+```
 
 ## resolve.reexport_twice
 
@@ -852,13 +1010,59 @@ No witness yet.
 
 use lines live at the top level
 
-No witness yet.
+```
+// /w/src/main.av
+fn g() -> int {
+    use util.{f}
+    f()
+}
+g()
+
+// /w/src/util.av
+export fn f() -> int { 1 }
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.nested_use]: use lines live at the top level
+  ╭─[/w/src/main.av:2:5]
+2 │     use util.{f}
+  ·     ┬
+  ·     ╰── declared inside a block
+──╯
+help: move it out of the block
+```
 
 ## resolve.package_form
 
 a package is `@scope.name` — two segments
 
-No witness yet.
+```
+// /w/src/main.av
+use @solo.{z}
+1
+
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[resolve.package_form]: `@solo` names no package — a package is `@scope.name`
+  ╭─[/w/src/main.av:1:1]
+1 │ use @solo.{z}
+  · ┬
+  · ╰── in this use
+──╯
+help: write the scope and the name, then the module: `@scope.name.a.{x}`
+```
 
 ## manifest.no_package
 
