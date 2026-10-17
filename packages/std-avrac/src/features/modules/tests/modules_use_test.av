@@ -1,0 +1,32 @@
+// A `use` item is its own record: an alias belongs to the name it
+// follows, wherever the aliased items stand in the list.
+use @std.avrac.testing.{projected}
+
+spec "features/modules — use items" {
+    given "an alias" {
+        then "stays with the first name when only the first has one" {
+            projected("use m.{a as b, c}\n0").contains("a as b") &&
+                !projected("use m.{a as b, c}\n0").contains("c as")
+        }
+        then "stays with the last name when only the last has one" {
+            projected("use m.{a, c as b}\n0").contains("c as b") &&
+                !projected("use m.{a, c as b}\n0").contains("a as")
+        }
+        then "stays with its own name when every item has one" {
+            let p = projected("use m.{a as b, c as d,}\n0")
+            p.contains("a as b") && p.contains("c as d")
+        }
+        then "is not borrowed by a name between two aliased ones" {
+            let p = projected("use m.{a as x, b, c as y}\n0")
+            p.contains("a as x") && p.contains("c as y") && !p.contains("b as")
+        }
+    }
+    given "a malformed list" {
+        then "an alias naming nothing is no spelling" {
+            projected("use m.{a as}\n0") == "<parse refused>"
+        }
+        then "an empty list is no spelling" {
+            projected("use m.{}\n0") == "<parse refused>"
+        }
+    }
+}
