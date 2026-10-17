@@ -269,3 +269,41 @@ spec "a source asks the loop that runs" {
         }
     }
 }
+
+spec "loops nest without crossing" {
+    given "a screen running inside another's body" {
+        then "a timer asked for reaches the innermost loop, and the outer one after" {
+            let inner: Cell<int> = Cell.new(0)
+            let outer: Cell<int> = Cell.new(0)
+            let a = headless(() -> text "a")
+            let b = headless(() -> text "b")
+            a
+                .running(
+                    () -> {
+                        b
+                            .running(
+                                () -> {
+                                    let _ = later(
+                                        ms(1),
+                                        () -> {
+                                            inner.set(inner.get() + 1)
+                                            true
+                                        },
+                                    )
+                                    b.advance(ms(5))
+                                },
+                            )
+                        let _ = later(
+                            ms(1),
+                            () -> {
+                                outer.set(outer.get() + 1)
+                                true
+                            },
+                        )
+                        a.advance(ms(5))
+                    },
+                )
+            inner.get() == 1 && outer.get() == 1
+        }
+    }
+}
