@@ -21,7 +21,18 @@
 //! hand-written `exact_*` row beside that type's own `*_fp`."
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, Arms, Kind, Held, payload_of, name}
+use @std.meta.{
+    Type as MetaType,
+    Variant as MetaVariant,
+    Field,
+    Directive,
+    Code,
+    Arms,
+    Kind,
+    Held,
+    payload_of,
+    name,
+}
 
 /// The compiler's derive for exact node equality.
 export trait Exact {
@@ -100,7 +111,9 @@ fn declared_eq(t: MetaType, n: string, a: Code, b: Code, inside: List<string>) -
     let held? = payload_of(t, n) else { return unread }
     let entered = inside.concat([n])
     match held {
-        .Record(fields) -> anded([eq_through(t, f.kind, quote { ${a}.${f.name} }, quote { ${b}.${f.name} }, entered) for f in fields if reached(f)]),
+        .Record(fields) -> anded(
+            [eq_through(t, f.kind, quote { ${a}.${f.name} }, quote { ${b}.${f.name} }, entered) for f in fields if reached(f)],
+        ),
         .Enum(variants) -> {
             let arms = [variant_eq(t, v, a, b, entered) for v in variants]
             quote { (match ${a} { ${arms} }) }
@@ -114,7 +127,15 @@ fn variant_eq(t: MetaType, v: MetaVariant, a: Code, b: Code, inside: List<string
     if v.fields.is_empty() { return quote { .${v} -> match ${b} { .${v} -> true, rest -> false } } }
     let left = ["${f.name}_x${inside.length}" for f in v.fields if carried(f)]
     let right = ["${f.name}_y${inside.length}" for f in v.fields if carried(f)]
-    let same = anded([eq_through(t, f.kind, name("${f.name}_x${inside.length}"), name("${f.name}_y${inside.length}"), inside) for f in v.fields if reached(f)])
+    let same = anded(
+        [eq_through(
+            t,
+            f.kind,
+            name("${f.name}_x${inside.length}"),
+            name("${f.name}_y${inside.length}"),
+            inside,
+        ) for f in v.fields if reached(f)],
+    )
     quote { .${v}(${left}) -> match ${b} { .${v}(${right}) -> ${same}, rest -> false } }
 }
 
