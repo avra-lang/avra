@@ -1,15 +1,37 @@
-//! The vocabulary a build links with: clang's words for a link, and the binary
-//! a source names.
+//! The vocabulary a build links with: the linker's words for each target, and
+//! the binary a source names.
+use @std.path.{joined_path, dir_of}
+use compiler.backend.{Target}
 
-/// clang's words for a link: the objects, the packages' own objects and
-/// flags, the runtime, then the binary's path. `-rdynamic` is not decoration:
-/// the evaluator resolves an extern through `dlsym(RTLD_DEFAULT)`, which on ELF
-/// reaches the executable only when its globals stand in the dynamic table.
-/// THE RUNTIME IS LAST because it is an archive: an ELF linker takes from it
-/// only what the words BEFORE it name, so a member only a package object
-/// reaches — a row the compiler's host table names — is otherwise dropped.
-fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
+/// The linker's words for a link: the objects, the packages' own, the runtime,
+/// then the binary's path. THE RUNTIME IS LAST because it is an archive: an ELF
+/// linker takes from it only what the words BEFORE it name, so a member only a
+/// package object reaches — a row the compiler's host table names — is
+/// otherwise dropped.
+fn link_objects(objs: List<string>, ws: Workspace, tools: Toolchain, out: string) -> List<string> {
+    match tools.target {
+        .Host -> host_link(objs, ws, tools.runtime, out),
+        .Wasm32Wasip1 -> wasm32_link(objs, ws, tools.runtime, out),
+    }
+}
+
+/// clang's words, the packages' flags among them. `-rdynamic` is not
+/// decoration: the evaluator resolves an extern through
+/// `dlsym(RTLD_DEFAULT)`, which on ELF reaches the executable only when its
+/// globals stand in the dynamic table.
+fn host_link(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
     ["-w", "-rdynamic"].concat(objs).concat(ws.link_words()).concat([runtime, "-o", out])
+}
+
+/// wasm-ld's words: wasi-libc's command start first, each package's object as
+/// the target built it (the target's directory holds the runtime beside
+/// them), then libc and the emulations the runtime was compiled against.
+fn wasm32_link(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
+    let libc = joined_path(dir_of(runtime), "sysroot/lib/wasm32-wasip1")
+    ["-m", "wasm32", "-L${libc}", joined_path(libc, "crt1-command.o")]
+        .concat(objs)
+        .concat(ws.objects_under(dir_of(runtime)))
+        .concat([runtime, "-lc", "-lm", "-lwasi-emulated-mman", "-lwasi-emulated-signal", "-lwasi-emulated-getpid", "-o", out])
 }
 
 /// `x.av` builds `x`.
@@ -20,6 +42,6 @@ export fn binary_name(source: string) -> string {
 
 // ── The voices ──
 
-fn clang_link_failed(code: int) -> string {
-    "avra: clang failed linking — exited with code ${code}"
+fn link_failed(code: int) -> string {
+    "avra: the linker failed — exited with code ${code}"
 }

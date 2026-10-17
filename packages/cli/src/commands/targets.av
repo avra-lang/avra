@@ -1,0 +1,159 @@
+//! TARGET LEGS — a program test proved on another target (`hello.wasm32-wasip1`
+//! beside `hello.av`): built for that target and run where it runs (node's WASI
+//! for wasm32), its stdout, stderr and exit held to the same program built for
+//! this machine and run here. A marker with text is a GOLDEN instead: the build
+//! for that target must refuse, in exactly those words. A leg whose toolchain or
+//! host is absent is SKIPPED ALOUD, and the run counts what it looked at — never
+//! a green run that examined nothing.
+use @std.avrac.compiler.{TargetCall, Toolchain}
+use @std.avrac.compiler.backend.{Target}
+use @std.path.{joined_path, dir_of, relative_path}
+use @std.io.{exists}
+use @std.process.{cmd, tool, Tool, Outcome as ChildOutcome, ProcessError, exit_text}
+use @std.time.{secs}
+
+/// What one leg came to.
+enum Leg {
+    /// Its run agreed with the host's.
+    Held
+    /// Its build refused in its golden's words.
+    Refused
+    /// It could not run here, and why.
+    Skipped(why: string)
+    /// It disagreed, in words that say how.
+    Wrong(report: string)
+}
+
+/// Every target leg judged in order; the first wrong one stops the run and is
+/// spoken, and a run that ends names what it counted.
+fn checked_targets(calls: List<TargetCall>) -> int {
+    if calls.is_empty() { return 0 }
+    mut legs: List<Leg> = []
+    for call in calls {
+        let leg = one_target(call)
+        if spoken_wrong(call, leg) { return 1 }
+        legs.push(leg)
+    }
+    println(counted_legs(legs))
+    0
+}
+
+/// A leg's words, when it has any: a skip's reason, or what went wrong —
+/// whether it was wrong.
+fn spoken_wrong(call: TargetCall, leg: Leg) -> bool {
+    match leg {
+        .Wrong(report) -> {
+            eprintln(report)
+            true
+        },
+        .Skipped(why) -> {
+            eprintln(skipped(call, why))
+            false
+        },
+        .Held or .Refused -> false,
+    }
+}
+
+/// One leg: its golden refusal, or its run held to the host's.
+fn one_target(call: TargetCall) -> Leg {
+    let tools = match toolchain_for(call.target) { .Ok(t) -> t, .Err(e) -> { return Leg.Skipped(e.describe().message) } }
+    if !exists(joined_path(dir_of(tools.runtime), "rows")) { return Leg.Skipped("its toolchain is not built — `make ${call.target.word()}`") }
+    let ws = file_workspace(call.path)
+    let built = ws.linked_program(call.path, leg_binary(ws.root, call.path, call.target.output(call.target.word())), tools)
+    if call.refusal != "" {
+        return match built {
+            .Ok(_) -> Leg.Wrong(built_not_refused(call)),
+            .Err(e) -> refusal_leg(call, stripped(e.describe().message, [ws.root, dir_of(std_root() ?? "")])),
+        }
+    }
+    let module = match built { .Ok(b) -> b.binary, .Err(e) -> { return Leg.Wrong(build_failed_for(call, e.describe().message)) } }
+    let there = match ran_on(call.target, module, tools) { .Ok(o) -> o, .Err(e) -> { return Leg.Skipped(e.describe().message) } }
+    match native_run(call) {
+        .Ok(here_run) -> if agree(here_run, there) { Leg.Held } else { Leg.Wrong(disagreement(call, here_run, there)) },
+        .Err(message) -> Leg.Wrong("${call.path}: ${message}"),
+    }
+}
+
+/// The same program built for this machine and run here.
+fn native_run(call: TargetCall) -> Result<ChildOutcome, string> {
+    let tools = match toolchain_for(Target.Host) { .Ok(t) -> t, .Err(e) -> { fail e.describe().message } }
+    let ws = file_workspace(call.path)
+    let binary = match ws.linked_program(call.path, leg_binary(ws.root, call.path, Target.Host.word()), tools) {
+        .Ok(b) -> b.binary,
+        .Err(e) -> { fail build_failed_for(call, e.describe().message) },
+    }
+    match ran_on(Target.Host, binary, tools) {
+        .Ok(o) -> .Ok(o),
+        .Err(e) -> .Err(e.describe().message),
+    }
+}
+
+/// A built program run where its target runs: the host's binary as itself,
+/// a wasm32 module under node's WASI through the toolchain's `run.mjs`.
+fn ran_on(t: Target, built: string, tools: Toolchain) -> Result<ChildOutcome, ProcessError> {
+    match t {
+        .Host -> timed_child(tool(built)?, []),
+        .Wasm32Wasip1 -> timed_child(tool("node")?, ["--no-warnings", joined_path(dir_of(tools.runtime), "run.mjs"), built]),
+    }
+}
+
+/// A program under test as a child — never a workload, so one that outlives
+/// its window is refused rather than hung on.
+fn timed_child(program: Tool, args: List<string>) -> Result<ChildOutcome, ProcessError> {
+    (cmd(program, args) with { timeout: secs(30) }).outcome()
+}
+
+/// Two runs agree on everything a caller reads: stdout, stderr and the exit.
+fn agree(a: ChildOutcome, b: ChildOutcome) -> bool {
+    a.out.stdout == b.out.stdout && a.out.stderr == b.out.stderr && exit_text(a.exit) == exit_text(b.exit)
+}
+
+/// A refusal held to its golden, the golden's final newline aside.
+fn refusal_leg(call: TargetCall, got: string) -> Leg {
+    if got == call.refusal || "${got}\n" == call.refusal { Leg.Refused } else { Leg.Wrong(refused_otherwise(call, got)) }
+}
+
+/// Where a leg's build lands — under `build/`, named by the program's path
+/// relative to the package root and the leg, so no two legs collide.
+fn leg_binary(root: string, path: string, leg: string) -> string {
+    let safe = relative_path(root, path).replace("/", "_").replace(".", "_")
+    joined_path(joined_path(root, "build"), "${leg}-${safe}")
+}
+
+/// A report with each root's prefix taken off its paths, so a golden spells
+/// none of this machine's.
+fn stripped(text: string, roots: List<string>) -> string {
+    mut out = text
+    for r in roots {
+        if r != "" { out = out.replace("${r}/", "") }
+    }
+    out
+}
+
+// ── The voices ──
+
+fn counted_legs(legs: List<Leg>) -> string {
+    let held = [l for l in legs if l is .Held].length
+    let refused = [l for l in legs if l is .Refused].length
+    "${legs.length} target leg(s): ${held} held to the host, ${refused} refused as their golden says, ${legs.length - held - refused} skipped"
+}
+
+fn skipped(call: TargetCall, why: string) -> string {
+    "avra: ${call.path}: its ${call.target.word()} leg is SKIPPED — ${why}"
+}
+
+fn built_not_refused(call: TargetCall) -> string {
+    "${call.path}: built for ${call.target.word()}, where its golden says the build refuses"
+}
+
+fn build_failed_for(call: TargetCall, message: string) -> string {
+    "${call.path}: the build failed — ${message}"
+}
+
+fn refused_otherwise(call: TargetCall, got: string) -> string {
+    "${call.path}: the ${call.target.word()} build refused otherwise\nwanted:\n${call.refusal}\ngot:\n${got}"
+}
+
+fn disagreement(call: TargetCall, here_run: ChildOutcome, there: ChildOutcome) -> string {
+    "${call.path}: ${call.target.word()} disagrees with the host\nhost (exited ${exit_text(here_run.exit)}):\n${here_run.out.stdout}${here_run.out.stderr}\n${call.target.word()} (exited ${exit_text(there.exit)}):\n${there.out.stdout}${there.out.stderr}"
+}

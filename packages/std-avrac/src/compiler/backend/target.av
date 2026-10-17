@@ -1,0 +1,51 @@
+//! What a build compiles for: the machine the compiler runs on, or wasm32
+//! under WASI preview 1 — its LLVM triple, the symbol its C start calls, and
+//! the word `--target` spells it with.
+
+/// A build's target.
+export enum Target {
+    Host
+    Wasm32Wasip1
+}
+
+/// Every target, in the order a command lists them.
+export fn targets() -> List<Target> { [Target.Host, Target.Wasm32Wasip1] }
+
+/// The target a word names, or null.
+export fn target_named(word: string) -> Target? { targets().find(it.word() == word) }
+
+impl Target {
+    /// The word `--target` spells it with.
+    fn word() -> string {
+        match self {
+            .Host -> "host",
+            .Wasm32Wasip1 -> "wasm32-wasip1",
+        }
+    }
+
+    /// Its LLVM triple: "" names the machine the compiler runs on.
+    fn triple() -> string {
+        match self {
+            .Host -> "",
+            .Wasm32Wasip1 -> "wasm32-unknown-wasip1",
+        }
+    }
+
+    /// The file a build of `base` writes: the host's binary is `base`
+    /// itself, wasm32's module is `base.wasm`.
+    fn output(base: string) -> string {
+        match self {
+            .Host -> base,
+            .Wasm32Wasip1 -> "${base}.wasm",
+        }
+    }
+
+    /// The symbol the C start calls with the arguments — wasi-libc's
+    /// `crt1-command` calls `__main_argc_argv` where a host's calls `main`.
+    fn entry_symbol() -> string {
+        match self {
+            .Host -> "main",
+            .Wasm32Wasip1 -> "__main_argc_argv",
+        }
+    }
+}

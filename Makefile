@@ -180,7 +180,7 @@ WASM_LD ?= wasm-ld
 # loader finds it (Homebrew with llvm pinned at 21:
 # WASM_LD_LIBS=/opt/homebrew/opt/llvm@23/lib:/opt/homebrew/lib).
 WASM_LD_LIBS ?=
-WASM32 := build/wasm32
+WASM32 := build/wasm32-wasip1
 WASM32_CC = $(LLVM_PREFIX)/bin/clang --target=wasm32-wasip1 --sysroot=$(WASI_SYSROOT)
 WASM32_RUNTIME = $(patsubst runtime/%.c,$(WASM32)/%.o,$(wildcard runtime/*.c))
 WASM32_PACKAGE = $(patsubst %.c,$(WASM32)/%.o,$(notdir $(wildcard packages/*/src/c/*.c)))
@@ -207,9 +207,9 @@ $(WASM32)/run.mjs: runtime/wasi_run.mjs
 	@mkdir -p $(WASM32)
 	@cp $< $@
 
-wasm32: $(WASM32)/libavra_runtime.a $(WASM32)/rows $(WASM32)/wasm-ld $(WASM32)/run.mjs
+wasm32-wasip1: $(WASM32)/libavra_runtime.a $(WASM32)/rows $(WASM32)/wasm-ld $(WASM32)/run.mjs
 	@ln -sfn $(WASI_SYSROOT) $(WASM32)/sysroot
-	@echo "wasm32: $(words $(WASM32_RUNTIME)) runtime object(s), $(words $(WASM32_PACKAGE)) package object(s), `wc -l < $(WASM32)/rows | tr -d ' '` row(s) in $(WASM32)"
+	@echo "wasm32-wasip1: $(words $(WASM32_RUNTIME)) runtime object(s), $(words $(WASM32_PACKAGE)) package object(s), `wc -l < $(WASM32)/rows | tr -d ' '` row(s) in $(WASM32)"
 
 # Every package that carries tests, in dependency order — DERIVED from
 # the manifests (tools/suites.py), never listed: a hand-kept list is a
@@ -218,7 +218,7 @@ wasm32: $(WASM32)/libavra_runtime.a $(WASM32)/rows $(WASM32)/wasm-ld $(WASM32)/r
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: objects census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited dogfooding-rules idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm32
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs wasm32-wasip1
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.

@@ -620,6 +620,14 @@ LLVMValueRef avra_llvm_build_text(LLVMBuilderRef b, const char* s, int64_t len, 
     return avra_llvm_global_text(LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(b))), s, len, name);
 }
 
+// A pointer cell on a target whose pointer is narrower than a cell: the
+// pointer, then zeros to the cell's eight bytes — the word a little-endian
+// store of it writes, and the only form a 32-bit data relocation takes.
+static LLVMValueRef narrow_cell(LLVMContextRef ctx, LLVMValueRef p, unsigned pad) {
+    LLVMValueRef parts[2] = { p, LLVMConstNull(LLVMArrayType2(LLVMInt8TypeInContext(ctx), pad)) };
+    return LLVMConstStructInContext(ctx, parts, 2, 1);
+}
+
 // A slot array laid out whole: the header, the AvraArray, then its
 // cells and their marks in one buffer, the way the runtime
 // allocates one. A cell arrives as an i64 or as a POINTER constant
@@ -633,16 +641,19 @@ LLVMValueRef avra_llvm_static_array(LLVMModuleRef m, const char* name, LLVMValue
     LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+    LLVMTargetDataRef td = LLVMCreateTargetData(LLVMGetDataLayoutStr(m));
+    unsigned narrow = 8 - LLVMPointerSize(td);
     LLVMValueRef* words = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
     LLVMValueRef* marks = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
     // each cell's mark is the compiler's (`slot_mark`), never guessed
     // from the constant's type: an absent nullable int is a plain zero
     for (int i = 0; i < n; i++) {
         int pointer = LLVMGetTypeKind(LLVMTypeOf(cells[i])) == LLVMPointerTypeKind;
-        words[i] = pointer ? LLVMConstPtrToInt(cells[i], i64) : cells[i];
+        words[i] = !pointer ? cells[i] : narrow ? narrow_cell(ctx, cells[i], narrow) : LLVMConstPtrToInt(cells[i], i64);
         marks[i] = given_marks[i];
     }
-    LLVMTypeRef cells_ty = LLVMArrayType2(i64, (uint64_t)n);
+    LLVMValueRef block = narrow ? LLVMConstStructInContext(ctx, words, (unsigned)n, 0) : LLVMConstArray2(i64, words, (uint64_t)n);
+    LLVMTypeRef cells_ty = LLVMTypeOf(block);
     LLVMTypeRef marks_ty = LLVMArrayType2(i8, (uint64_t)n);
     LLVMTypeRef box_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ i64, i64, ptr, ptr, ptr }, 5, 0);
     LLVMTypeRef whole_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ LLVMTypeOf(header_const(ctx, 0, 0)), box_ty, cells_ty, marks_ty }, 4, 0);
@@ -658,11 +669,12 @@ LLVMValueRef avra_llvm_static_array(LLVMModuleRef m, const char* name, LLVMValue
         LLVMConstPointerNull(ptr),
     };
     LLVMValueRef fields[4] = {
-        header_const(ctx, KIND_IMMORTAL(KIND_ARRAY), (uint32_t)sizeof(AvraArray)),
+        header_const(ctx, KIND_IMMORTAL(KIND_ARRAY), (uint32_t)LLVMABISizeOfType(td, box_ty)),
         LLVMConstStructInContext(ctx, box_fields, 5, 0),
-        LLVMConstArray2(i64, words, (uint64_t)n),
+        block,
         LLVMConstArray2(i8, marks, (uint64_t)n),
     };
+    LLVMDisposeTargetData(td);
     LLVMSetInitializer(g, LLVMConstStructInContext(ctx, fields, 4, 0));
     LLVMSetLinkage(g, LLVMPrivateLinkage);
     LLVMSetAlignment(g, 16);
@@ -679,10 +691,10 @@ LLVMValueRef avra_llvm_static_map(LLVMModuleRef m, const char* name, LLVMValueRe
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
     LLVMValueRef map_fields[4] = { keys, vals, LLVMConstPointerNull(ptr), LLVMConstInt(i64, 0, 0) };
-    LLVMValueRef fields[2] = {
-        header_const(ctx, KIND_IMMORTAL(KIND_MAP), (uint32_t)sizeof(AvraMap)),
-        LLVMConstStructInContext(ctx, map_fields, 4, 0),
-    };
+    LLVMValueRef map = LLVMConstStructInContext(ctx, map_fields, 4, 0);
+    LLVMTargetDataRef td = LLVMCreateTargetData(LLVMGetDataLayoutStr(m));
+    LLVMValueRef fields[2] = { header_const(ctx, KIND_IMMORTAL(KIND_MAP), (uint32_t)LLVMABISizeOfType(td, LLVMTypeOf(map))), map };
+    LLVMDisposeTargetData(td);
     return headered_global(m, LLVMConstStructInContext(ctx, fields, 2, 0), name, 0);
 }
 
@@ -828,12 +840,66 @@ static const char* baseline_cpu(const char* triple) {
     return strncmp(triple, "arm64-apple", 11) == 0 ? "apple-m1" : "";
 }
 
-/* The native target, registered once — on the program's own thread, before any
-   worker reads the registry. 0 when it stands. */
-static int native_target_ready(void) {
+/* The targets a module may be made for — the native one and wasm32 —
+   registered once, on the program's own thread, before any worker reads the
+   registry. 0 when they stand. */
+static int targets_ready(void) {
     static int ready = 0;
-    if (!ready && !(LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter())) ready = 1;
+    if (!ready && !(LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter())) {
+        LLVMInitializeWebAssemblyTargetInfo();
+        LLVMInitializeWebAssemblyTarget();
+        LLVMInitializeWebAssemblyTargetMC();
+        LLVMInitializeWebAssemblyAsmPrinter();
+        ready = 1;
+    }
     return ready ? 0 : 1;
+}
+
+/* Whether a triple is the machine this compiler runs on. */
+static int hosted(const char* triple) {
+    char* host = LLVMGetDefaultTargetTriple();
+    int same = strcmp(triple, host) == 0;
+    LLVMDisposeMessage(host);
+    return same;
+}
+
+/* A module's triple, owned by the caller: its own, else the host's. */
+static char* triple_of(LLVMModuleRef m) {
+    const char* own = LLVMGetTarget(m);
+    return own && *own ? LLVMCreateMessage(own) : LLVMGetDefaultTargetTriple();
+}
+
+/* The machine a triple names, at a level: the host's code is position
+   independent, as the C beside it is; another target's is the static
+   code its own linker takes. NULL with the reason on stderr. */
+static LLVMTargetMachineRef machine_for(const char* triple, LLVMCodeGenOptLevel cg) {
+    char* error = NULL;
+    LLVMTargetRef target;
+    if (LLVMGetTargetFromTriple(triple, &target, &error)) {
+        fprintf(stderr, "avra: no target for %s — %s\n", triple, error ? error : "");
+        if (error) LLVMDisposeMessage(error);
+        return NULL;
+    }
+    return LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", cg, hosted(triple) ? LLVMRelocPIC : LLVMRelocDefault, LLVMCodeModelDefault);
+}
+
+// A MODULE NAMES ITS TARGET: the triple — "" for the machine this compiler
+// runs on — and that target's data layout, written into the module before
+// anything is laid out, so its text says what it was made for and every
+// layout reads the target's sizes. 0, or 1 with the reason on stderr.
+int64_t avra_llvm_module_targeted(LLVMModuleRef m, const char* triple) {
+    if (targets_ready()) return 1;
+    char* named = *triple ? LLVMCreateMessage(triple) : LLVMGetDefaultTargetTriple();
+    LLVMTargetMachineRef tm = machine_for(named, LLVMCodeGenLevelNone);
+    if (tm) {
+        LLVMSetTarget(m, named);
+        LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
+        LLVMSetModuleDataLayout(m, layout);
+        LLVMDisposeTargetData(layout);
+        LLVMDisposeTargetMachine(tm);
+    }
+    LLVMDisposeMessage(named);
+    return tm ? 0 : 1;
 }
 
 // THE HOT LEAVES, INLINABLE (runtime/avra_hot.h): the bitcode this
@@ -872,8 +938,9 @@ static int hot_keep(const char* name) {
         || strcmp(name, "avra_array_get_owned") == 0;
 }
 
+// The carried bitcode was compiled for the host, so only a host module links it.
 static void hot_linked(LLVMModuleRef m) {
-    if (hot_off || avra_hot_bc_len == 0) return;
+    if (hot_off || avra_hot_bc_len == 0 || !hosted(LLVMGetTarget(m))) return;
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRange((const char*)avra_hot_bc, (size_t)avra_hot_bc_len, "avra_hot", 0);
     LLVMModuleRef hot;
@@ -907,18 +974,12 @@ static void hot_linked(LLVMModuleRef m) {
 static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid()) >= (int)sizeof(tmp)) return 1;
-    char* triple = LLVMGetDefaultTargetTriple();
+    char* triple = triple_of(m);
     char* error = NULL;
-    LLVMTargetRef target;
-    if (LLVMGetTargetFromTriple(triple, &target, &error)) {
-        fprintf(stderr, "avra: no native target for %s — %s\n", triple, error ? error : "");
-        if (error) LLVMDisposeMessage(error);
-        LLVMDisposeMessage(triple);
-        return 1;
-    }
     LLVMCodeGenOptLevel cg = level <= 0 ? LLVMCodeGenLevelNone : level == 1 ? LLVMCodeGenLevelLess
                            : level == 2 ? LLVMCodeGenLevelDefault : LLVMCodeGenLevelAggressive;
-    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", cg, LLVMRelocPIC, LLVMCodeModelDefault);
+    LLVMTargetMachineRef tm = machine_for(triple, cg);
+    if (!tm) { LLVMDisposeMessage(triple); return 1; }
     LLVMSetTarget(m, triple);
     LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
     LLVMSetModuleDataLayout(m, layout);
@@ -1000,7 +1061,7 @@ static void* emit_worker(void* unused) {
 // Answers 0, or 1 when the module could not be handed over — it is disposed
 // all the same.
 int64_t avra_llvm_emit_object_later(LLVMModuleRef m, LLVMContextRef lc, const char* path, int64_t level, int64_t workers) {
-    EmitJob* j = native_target_ready() ? NULL : (EmitJob*)malloc(sizeof(EmitJob));
+    EmitJob* j = targets_ready() ? NULL : (EmitJob*)malloc(sizeof(EmitJob));
     char* kept = j ? strdup(path) : NULL;
     if (!kept) { free(j); LLVMContextDispose(lc); return 1; }
     *j = (EmitJob){ m, lc, kept, level, NULL };

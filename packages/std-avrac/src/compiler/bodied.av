@@ -1,0 +1,76 @@
+//! A TARGET'S ROWS: a build links only what its target's objects define. The
+//! host links every row there is; another target's toolchain lists the symbols
+//! its objects define (`rows`, beside its runtime), and a body the build links
+//! that calls one outside that list is refused at its declaration — before
+//! anything is emitted, never as a linker's undefined symbol.
+use core.{hosted_symbol}
+use @std.path.{joined_path, dir_of}
+use @std.errors.{Loc}
+use diagnostics.{Diag, refusal}
+use compiler.backend.{Target}
+use compiler.lower.{Body, Lowered}
+
+impl Workspace {
+    /// Every row the build's bodies call has a body on its target, or the
+    /// first that has none is the build's refusal.
+    fn bodied(d: Derived, full: Lowered, tools: Toolchain) -> Result<int, BuildError> {
+        match tools.target {
+            .Host -> .Ok(0),
+            .Wasm32Wasip1 -> self.bodied_by(d, full, tools),
+        }
+    }
+
+    /// The same, against the rows the target's toolchain lists.
+    fn bodied_by(d: Derived, full: Lowered, tools: Toolchain) -> Result<int, BuildError> {
+        let rows = joined_path(dir_of(tools.runtime), "rows")
+        if !self.host.exists(rows) { fail BuildError.Diagnosed(d.program.rendered([no_toolchain(tools.target, rows)])) }
+        mut has: Map<string, bool> = {}
+        for row in self.host.read(rows).split("\n") { has.set(row, true) }
+        let bd? = full.fns.concat([full.entry]).find((b: Body) -> missing_row(b, has) != null) else { return 0 }
+        let row = missing_row(bd, has)!
+        fail BuildError.Diagnosed(d.program.rendered([self.unbodied(tools.target, row, bd)]))
+    }
+
+    /// The refusal, pointed at the row's own `extern` when the program declares
+    /// one, else at the declaration whose body calls it — a top-level
+    /// statement's call has none.
+    fn unbodied(t: Target, row: string, bd: Body) -> Diag {
+        let decls = self.decls
+        let all = decls.decls.get()
+        let own = all.find((x) -> decls.is_extern(x.id) && x.name == row)
+        if own != null { return no_body_declared(t, row, decls.loc(own!.id)) }
+        let caller = all.find((x) -> decls.symbol(x.id) == bd.name)
+        no_body_reached(t, row, if caller == null { null } else { decls.loc(caller!.id) })
+    }
+}
+
+/// The first row a body calls that the target does not define.
+fn missing_row(bd: Body, has: Map<string, bool>) -> string? {
+    [row! for row in [hosted_symbol(i) for i in bd.ins] if row != null].find((row: string) -> has.get(row) == null)
+}
+
+// ── The voices ──
+
+fn no_body_declared(t: Target, row: string, at: Loc?) -> Diag {
+    refusal("target.no_body", at, no_body_message(t, row), "declared here, and nothing defines it on ${t.word()}", no_body_help(t, row))
+}
+
+fn no_body_reached(t: Target, row: string, at: Loc?) -> Diag {
+    refusal("target.no_body", at, no_body_message(t, row), "reaches `${row}`", no_body_help(t, row))
+}
+
+fn no_body_message(t: Target, row: string) -> string { "`${row}` has no body on ${t.word()}" }
+
+fn no_body_help(t: Target, row: string) -> string {
+    "a ${t.word()} build links only the rows its toolchain defines — build for the host, or keep `${row}` out of what this program links"
+}
+
+fn no_toolchain(t: Target, rows: string) -> Diag {
+    refusal(
+        "target.no_toolchain",
+        null,
+        "the ${t.word()} toolchain is not built — `${rows}` does not stand",
+        "a build for ${t.word()} reads it",
+        "build it: `make ${t.word()}`",
+    )
+}

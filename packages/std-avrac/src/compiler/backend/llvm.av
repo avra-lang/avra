@@ -160,13 +160,13 @@ fn carries(r: Refs, named: Map<string, bool>, name: string) -> bool { r.whole ||
 
 /// The whole program as verified `.ll` text; null means written, a string is
 /// the failure.
-export fn emit_ll(l: Lowered, path: string) -> string? { emit_mode(l, path, Owned.Whole, Written.Text) }
+export fn emit_ll(l: Lowered, path: string, target: Target) -> string? { emit_mode(l, path, Owned.Whole, Written.Text, target) }
 
 /// ONE MODULE OF A SPLIT PROGRAM, as bitcode. It declares what its own bodies
 /// NAME — LLVM wants a called symbol declared where it is called — and lays out
 /// the statics they read: private linkage, so each module's copy is its own.
 /// The caller has asked `program_closed`, a whole-program scan with one answer.
-export fn emit_closed(l: Lowered, path: string, which: Owned) -> string? { emit_mode(l, path, which, Written.Bitcode) }
+export fn emit_closed(l: Lowered, path: string, which: Owned, target: Target) -> string? { emit_mode(l, path, which, Written.Bitcode, target) }
 
 /// How many objects are made at once: a worker is a thread of this process and
 /// holds one module, and the machine is shared — four buys the wall without
@@ -176,7 +176,9 @@ const EMIT_WIDTH: int = 4
 /// The same module as an OBJECT, optimized and generated in this process at
 /// clang's level — BY A WORKER: the module is built here and handed over, and
 /// `objects_made` waits for every one handed.
-export fn emit_object(l: Lowered, path: string, which: Owned, opt: int) -> string? { emit_mode(l, path, which, Written.Object(opt)) }
+export fn emit_object(l: Lowered, path: string, which: Owned, opt: int, target: Target) -> string? {
+    emit_mode(l, path, which, Written.Object(opt), target)
+}
 
 /// Every object handed to a worker, written — null — or the refusal.
 export fn objects_made() -> string? {
@@ -188,14 +190,23 @@ export fn objects_made() -> string? {
 /// for a worker to write and dispose.
 enum Written { Text, Bitcode, Object(opt: int) }
 
+/// A target this compiler's LLVM cannot make code for, in its own words.
+fn no_llvm_target(target: Target) -> string {
+    "avra: this compiler's LLVM has no `${target.word()}` target"
+}
+
 /// A program with a symbol nothing declares — a DEFECT, in its own words.
 export fn not_closed(missing: string) -> string {
     "internal compiler error: nothing declares `${missing}` — the program is not closed"
 }
 
-fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
+fn emit_mode(l: Lowered, path: string, which: Owned, form: Written, target: Target) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
+    if avra_llvm_module_targeted(m, target.triple()) != 0 {
+        avra_llvm_context_dispose(lc)
+        return no_llvm_target(target)
+    }
     let b = avra_llvm_create_builder(lc)
     let own = [bd for bd in l.fns if which.defines(bd)]
     // the entry is carried beside `l.fns`, and it names what it calls
@@ -222,7 +233,7 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
         }
     }
     if which.carries_entry() {
-        let failure: string? = emit_entry(lc, m, b, l, rt)
+        let failure: string? = emit_entry(lc, m, b, l, rt, target)
         if failure != null { return wreck(m, path, failure!) }
     }
     avra_llvm_dispose_builder(b)
@@ -330,7 +341,7 @@ export fn program_closed(l: Lowered) -> string? {
 /// `main` hands the runtime its arguments and answers what the
 /// entry answered. The argument pair crosses the seam exactly here
 /// — a program reads it through the host from then on.
-fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> string? {
+fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, target: Target) -> string? {
     declare(
         m,
         "avra_args_init",
@@ -342,20 +353,20 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> st
     let entry = avra_llvm_get_named_function(m, "av_entry")
     let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
     if failure != null { return failure }
-    open_main(lc, m, b, entry)
+    open_main(lc, m, b, entry, target.entry_symbol())
 }
 
-/// `int main(int argc, char** argv)`: the arguments handed over,
-/// then the entry.
-fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
+/// `int main(int argc, char** argv)`, under the name the target's C start
+/// calls: the arguments handed over, then the entry.
+fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr, named: string) -> string? {
     declare(
         m,
-        "main",
+        named,
         avra_llvm_int32_type(lc),
         [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)],
         false,
     )
-    let f = avra_llvm_get_named_function(m, "main")
+    let f = avra_llvm_get_named_function(m, named)
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     let init = avra_llvm_get_named_function(m, "avra_args_init")
     let args = avra_llvm_value_array_new(2)
@@ -373,7 +384,7 @@ fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
     let answer = avra_llvm_build_call(b, avra_llvm_fn_type_of(entry), entry, seatless, 0, "code")
     avra_llvm_value_array_free(seatless)
     let _ = avra_llvm_build_ret(b, answer)
-    if avra_llvm_verify_function(f) != 0 { return "internal compiler error: LLVM verification failed for main" }
+    if avra_llvm_verify_function(f) != 0 { return "internal compiler error: LLVM verification failed for ${named}" }
     null
 }
 

@@ -15,6 +15,7 @@ use core.{
     fp_list,
     RtSig,
     TypeRegistry,
+    hosted_symbol,
 }
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
@@ -28,6 +29,7 @@ use compiler.backend.{
     home_of,
     not_closed,
     program_closed,
+    Target,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{Store, Stored, node_key, store_at}
@@ -49,7 +51,7 @@ export enum BuildError {
     EmitFailed(message: string)
     /// The entry's module was written but its bytes could not be read back.
     ModuleUnreadable(path: string)
-    /// `clang` exited non-zero linking the objects into a binary.
+    /// The linker exited non-zero linking the objects into a binary.
     LinkFailed(code: int)
     /// A held object the store named is no longer where the store put it.
     ObjectGone(path: string)
@@ -68,7 +70,7 @@ impl Error for BuildError {
             .Empty -> info("build.empty", "the program is empty"),
             .EmitFailed(m) -> info("build.emit_failed", m),
             .ModuleUnreadable(p) -> info("build.module_unreadable", module_unreadable(p)),
-            .LinkFailed(code) -> info("build.link_failed", clang_link_failed(code)),
+            .LinkFailed(code) -> info("build.link_failed", link_failed(code)),
             .ObjectGone(p) -> info("build.object_gone", object_gone(p)),
             .NotClosed(missing) -> info("build.not_closed", not_closed(missing)),
             .Diagnosed(report) -> info("build.diagnosed", report),
@@ -87,6 +89,7 @@ export type BuildOutcome = {
     reused: bool,
     phases: string = "",
     refuses: List<RefusesCall> = [],
+    targeted: List<TargetCall> = [],
 }
 
 /// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
@@ -106,9 +109,10 @@ export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<
 /// A case the entry calls, and the path of the file its body is in.
 export type CaseHome = { call: CaseCall, path: string }
 
-/// What one build links with: the optimisation level, the runtime object and
-/// the linker the host found.
-export type Toolchain = { opt: string, runtime: string, linker: string }
+/// What one build links with: the optimisation level, the runtime library,
+/// the linker the host found, and the target they make code for — a target's
+/// runtime stands in a directory of its own, beside what else its link needs.
+export type Toolchain = { opt: string, runtime: string, linker: string, target: Target = Target.Host }
 
 impl Workspace {
     /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
@@ -144,8 +148,24 @@ impl Workspace {
 /// compiles every body with it.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a workspace in, its store's directory out.
 export fn build_cache_root(ws: Workspace) -> string {
-    if ws.keys.store_root.get() == "" { ws.keys.store_root.set(joined_path(stores_dir(ws), ws.compiler_id())) }
+    if ws.keys.store_root.get() == "" { ws.aim(Target.Host) }
     ws.keys.store_root.get()
+}
+
+impl Workspace {
+    /// A BUILD FOR ANOTHER TARGET STANDS IN A STORE OF ITS OWN, inside the
+    /// host's: every object a store holds is its target's code, so a host
+    /// object is never placed in another target's link. Asked before a build
+    /// reads a row.
+    fn aim(t: Target) {
+        let host = joined_path(stores_dir(self), self.compiler_id())
+        self.keys.store_root.set(
+            match t {
+                .Host -> host,
+                .Wasm32Wasip1 -> joined_path(host, t.word()),
+            },
+        )
+    }
 }
 
 /// Where a tree's stores stand, one a compiler.
@@ -291,7 +311,7 @@ export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Resul
     BuildOutcome,
     BuildError,
 > {
-    ws.linked_program(entry, binary_name(entry), tools)
+    ws.linked_program(entry, tools.target.output(binary_name(entry)), tools)
 }
 
 impl Workspace {
@@ -301,6 +321,7 @@ impl Workspace {
         BuildOutcome,
         BuildError,
     > {
+        self.aim(tools.target)
         let kept = self.kept_binary(self.program_key(entry, []), binary)
         if kept != null { return .Ok(kept!) }
         let d = diagnosed(self.derived(entry, Want.Binary))?
@@ -441,7 +462,7 @@ impl Workspace {
     /// what compiles them. A module that cannot be read back has no key: an empty
     /// read would key every program alike.
     fn bytes_keyed(full: Lowered, bc: string, tools: Toolchain) -> Result<string, BuildError> {
-        let broke = emit_closed(full, bc, Owned.Program)
+        let broke = emit_closed(full, bc, Owned.Program, tools.target)
         if broke != null { fail BuildError.EmitFailed(broke!) }
         match read_bytes(bc) {
             .Ok(bytes) -> .Ok(
@@ -475,6 +496,7 @@ impl Workspace {
         }
         mut clock = self.marking()
         let full = closed(self.homed(d.lowered, m, main, d.unlowered))?
+        self.bodied(d, full, tools)?
         let program = self.program_object(d, full, asked, tools)?
         let read = [self.object_of(d.store, a) for a in d.program.files]
         self.objects_kept(d, full, read.concat([program]), tools)?
@@ -489,7 +511,7 @@ impl Workspace {
             link_objects(
                 [o.obj for o in by_source(read.concat(held))].concat([program.obj]),
                 self,
-                tools.runtime,
+                tools,
                 staged,
             ),
         )
@@ -551,7 +573,7 @@ impl Workspace {
         let owed = [o for o in objects if !d.store.place(Stored.Obj, o.key, o.obj)]
         let gone = owed.find(it.which is .Program)
         if gone != null && !d.unlowered.is_empty() { fail BuildError.ObjectGone(gone!.obj) }
-        let broke = handed(full, owed, opt_level(tools.opt))
+        let broke = handed(full, owed, opt_level(tools.opt), tools.target)
         let unwritten = objects_made()
         if broke != null || unwritten != null { fail BuildError.EmitFailed(broke ?? unwritten!) }
         for o in owed { let _ = d.store.keep_file(Stored.Obj, o.key, o.obj, []) }
@@ -628,9 +650,9 @@ fn digest_of_file(text: string) -> string { "${text.length}.${digest_of(text)}" 
 
 /// Every owed object's module built and handed to a worker — the first
 /// refusal, or null. `objects_made` waits for them.
-fn handed(full: Lowered, owed: List<Made>, opt: int) -> string? {
+fn handed(full: Lowered, owed: List<Made>, opt: int, target: Target) -> string? {
     for o in owed {
-        let broke = emit_object(full, o.obj, o.which, opt)
+        let broke = emit_object(full, o.obj, o.which, opt, target)
         if broke != null { return broke }
     }
     null

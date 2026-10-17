@@ -13,7 +13,7 @@ use core.{
     user_kind,
     is_kind_word,
 }
-use @std.path.{under_dir, joined_path, normalized}
+use @std.path.{under_dir, joined_path, normalized, file_name}
 use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
 use @std.testing.{CaseRef, words}
@@ -200,6 +200,12 @@ impl Workspace {
             .concat(["-L${d}" for d in filled_words(m.search)])
             .concat(["-l${l}" for l in filled_words(m.libs)])
             .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+    }
+
+    /// Every package's objects as another target built them: the same file
+    /// names, under that target's directory.
+    fn objects_under(dir: string) -> List<string> {
+        flatten([[joined_path(dir, file_name(o)) for o in filled_words(self.manifest(pkg.ordinal).objects)] for pkg in self.packages()])
     }
 
     /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —

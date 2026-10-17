@@ -1,6 +1,6 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and what every file command takes.
-use @std.cli.{CliResult, flag, arg}
+use @std.cli.{CliResult, flag, arg, option}
 use @std.avrac.compiler.{
     Program,
     Workspace,
@@ -22,7 +22,7 @@ use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_nam
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit}
 use @std.time.{now_ns}
 use @std.io.{read_text, write_text, exists, is_dir, list_dir, env, make_dirs, stamp}
-use @std.avrac.compiler.backend.{emit_ll}
+use @std.avrac.compiler.backend.{emit_ll, Target, targets, target_named}
 use @std.avrac.compiler.host.{Host, no_target}
 use @std.avrac.diagnostics.{Diag, error_at, render, new_source_file}
 
@@ -90,6 +90,33 @@ fn std_root() -> string? {
 /// checkout, under `lib/avra/` in an install.
 fn runtime_library() -> string {
     toolchain_files(["libavra_runtime.a", "../lib/avra/libavra_runtime.a"]).find(exists(it)) ?? "build/libavra_runtime.a"
+}
+
+/// A TARGET'S TOOLCHAIN, the same two ways, in a directory named by the
+/// target's word: its runtime library, beside everything else its link
+/// needs (`make <word>` builds it).
+fn target_library(t: Target) -> string {
+    let named = "${t.word()}/libavra_runtime.a"
+    toolchain_files([named, "../lib/avra/${named}"]).find(exists(it)) ?? "build/${named}"
+}
+
+/// What a build for a target links with: the host's runtime and `CC`, or the
+/// target's own directory and the linker it carries — a host refusal to find
+/// `CC` is the command's to speak.
+fn toolchain_for(t: Target) -> Result<Toolchain, ProcessError> {
+    match t {
+        .Host -> .Ok(Toolchain { opt: "-O1", runtime: runtime_library(), linker: (linker()?).path }),
+        .Wasm32Wasip1 -> {
+            let runtime = target_library(t)
+            .Ok(Toolchain { opt: "-O1", runtime: runtime, linker: joined_path(dir_of(runtime), "wasm-ld"), target: t })
+        },
+    }
+}
+
+/// The target `--target` names — the host when the line names none.
+fn target_arg(args: CliResult) -> Target? {
+    let word = args.option("target")
+    if word == "" { Target.Host } else { target_named(word) }
 }
 
 /// Paths under the binary's directory, normalized.
@@ -246,7 +273,7 @@ fn lowered_or_report(p: Program) -> Result<string, string> {
     let lo = p.lowered_checked()?
     let path = joined_path(joined_path(p.ws.root, "build"), "${stem_of(entry.view.source.file)}.ll")
     let _ = make_dirs(dir_of(path))
-    let failure: string? = emit_ll(lo, path)
+    let failure: string? = emit_ll(lo, path, Target.Host)
     if failure != null { return .Err(failure!) }
     .Ok(path)
 }
@@ -423,18 +450,15 @@ fn build_report(e: BuildError) -> string {
 /// command's.
 fn cached_build(args: CliResult) -> int {
     let path? = argued_path(args) else { return 2 }
+    let target? = target_arg(args) else { return no_such_target(args.option("target")) }
     let ws = build_workspace(path)
     let entry = build_entry(ws, path)
     if entry == null {
         eprintln("avra: ${ws.root} declares no entry point")
         return 1
     }
-    let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
-    match build_program(
-        ws,
-        entry!,
-        Toolchain { opt: "-O1", runtime: runtime_library(), linker: tool.path },
-    ) {
+    let tools = match toolchain_for(target) { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
+    match build_program(ws, entry!, tools) {
         .Err(e) -> {
             println(build_report(e))
             1
@@ -449,6 +473,17 @@ fn cached_build(args: CliResult) -> int {
             0
         },
     }
+}
+
+/// A target word no target answers to: the words there are, named.
+fn no_such_target(word: string) -> int {
+    eprintln("avra: no target `${word}` — the targets are ${[t.word() for t in targets()].join(", ")}")
+    2
+}
+
+/// The option a build reads its target from.
+export option target {
+    description: "the target to build for: host (the default) or wasm32-wasip1"
 }
 
 /// The flag every file command takes.

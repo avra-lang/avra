@@ -10,10 +10,16 @@ use compiler.backend.{run_program}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.host.{Host}
 use compiler.lower.{Lowered, program_symbol}
+use compiler.backend.{Target, targets}
 
 /// One `.refuses` program: a trap IS its proof, so it is never called
 /// in-process — `voice` is the text its trap's stderr must carry.
 export type RefusesCall = { path: string, voice: string }
+
+/// One program proved on another target: built for it, run there, and held to
+/// the host's run — or, when `refusal` is not empty, held to the build's
+/// refusal, which it is (the package root stripped from its paths).
+export type TargetCall = { path: string, target: Target, refusal: string }
 
 impl Workspace {
     /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
@@ -58,6 +64,7 @@ impl Workspace {
             println("${counted(results.length, "example")} proved, as cases")
         }
         let refuses = self.refuses_tests()
+        let targeted = self.target_tests()
         let programs = if only == null { self.program_tests() } else { [] }
         let under = Keyed {
             named: "suite:${only ?? ""}",
@@ -65,7 +72,7 @@ impl Workspace {
         }
         let binary = joined_path(joined_path(self.root, "build"), "suite")
         let kept = self.kept_binary(self.program_key(under.named, under.beside), binary)
-        if kept != null { return .Ok(kept! with { refuses: refuses }) }
+        if kept != null { return .Ok(kept! with { refuses: refuses, targeted: targeted }) }
         let store = store_at(build_cache_root(self))
         let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
         let d = self.evaluated(store, owed, told_from)?
@@ -85,7 +92,7 @@ impl Workspace {
                 under,
                 binary,
                 tools,
-            ) { .Ok(b) -> b with { refuses: refuses }, .Err(e) -> { fail e.describe().message } }
+            ) { .Ok(b) -> b with { refuses: refuses, targeted: targeted }, .Err(e) -> { fail e.describe().message } }
         made
     }
 
@@ -95,6 +102,26 @@ impl Workspace {
     /// calling one of these there would end it at the first one.
     fn refuses_tests() -> List<RefusesCall> {
         [self.refuses_call(p) for p in sorted_texts([f for f in self.root_files() if self.expects_trap(f)])]
+    }
+
+    /// The package's programs proved on another target too — each marked by a
+    /// file named for the target beside it (`hello.wasm32-wasip1`), whose text
+    /// is the refusal the build owes, or nothing for a run held to the host's.
+    fn target_tests() -> List<TargetCall> {
+        let programs = sorted_texts([f for f in self.root_files() if self.is_program(f)])
+        flatten([[self.target_call(p, t) for t in targets() if self.aimed_at(p, t)] for p in programs])
+    }
+
+    /// Whether a program is marked for a target other than the host.
+    fn aimed_at(path: string, t: Target) -> bool {
+        match t {
+            .Host -> false,
+            .Wasm32Wasip1 -> self.host.exists(beside(path, t.word())),
+        }
+    }
+
+    fn target_call(path: string, t: Target) -> TargetCall {
+        TargetCall { path: path, target: t, refusal: self.host.read(beside(path, t.word())) }
     }
 
     fn refuses_call(path: string) -> RefusesCall {
