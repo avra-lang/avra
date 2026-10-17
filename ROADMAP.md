@@ -3214,6 +3214,19 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — a view reads a fetch as its Async, with no call
+
+`profile.state()` and `profile.value()` (`Fetch<T>`,
+`packages/std-ui/src/app/async.av`; read in every view that fetches) are
+the shortest forms the language allows, and two asks remove the
+parentheses and the `.state()`. (1) MATCHING A VALUE THROUGH ITS
+DESIGNATED PROJECTION (Scala's `unapply`, Rust's `Deref`): `match
+profile { .Loading -> …, .Ready(p) -> … }` sees the `Async` the type
+designates, so no view names the projection. (2) PROPERTY-STYLE
+ACCESSORS: a computed read with no parentheses (`profile.value`,
+`profile.is_loading`), which also reads right on every other
+state-shaped type.
+
 ### Interim record — a bounded cleanup wants one phrase
 
 `flow.unbounded_cleanup` makes a `within` the only legal waiting cleanup,
