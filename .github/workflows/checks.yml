@@ -25,7 +25,7 @@
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) runs the
 # whole gate over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
-# trades runner slots against wall time: five shards keeps a PR's gate short.
+# trades runner slots against wall time: six shards keeps a PR's gate short.
 name: checks
 
 on:
@@ -86,6 +86,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
+      # THE SHARDS ARE PACKED BY MEASURED SECONDS: the newest weights a main run kept
+      # (`suite-timing`), else the committed seed rows alone.
+      - uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
+          restore-keys: suite-seconds-
       # A PR diffs against its base, `origin/main`; so does the train.
       - if: github.event_name != 'push'
         name: base
@@ -177,7 +185,8 @@ jobs:
           if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
-          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 5)
+          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 6)
+          if [ -f .github/ci/suite-seconds.measured ]; then echo "suite weights: $(grep -vc '^#' .github/ci/suite-seconds.measured) measured row(s) over the committed seed"; else echo "suite weights: the committed seed alone"; fi
           # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
           # the compiler-free keepers and the codecs scan. The heavy legs owe
           # nothing until the PR is ready or carries `full-ci`, so a draft that
@@ -826,17 +835,30 @@ jobs:
         timeout-minutes: 30
         run: |
           fail=0
+          first=first
           for p in ${{ join(matrix.shard, ' ') }}; do
             [ -d "packages/${p%%/*}/src" ] || continue
             echo "::group::$p"
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
+            # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
+            # marked when it was the shard's first, which also paid the runner's cold start.
+            echo "$p $(( $(date +%s) - t )) $first" >> suite-times.txt
+            first=
           done
           exit $fail
+      # THE PACKER LEARNS FROM MAIN'S OWN RUNS: a main run hands its suite timings to the
+      # `suite-timing` job, which keeps them for every run's `prepare` to pack by.
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('suite-times.txt') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: suite-times-${{ strategy.job-index }}
+          path: suite-times.txt
+          retention-days: 1
 
       - name: speed baseline
         uses: actions/cache/restore@v4
@@ -861,6 +883,35 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
+  # THE SUITE WEIGHTS, MEASURED. Main's own run times every suite; this job merges those
+  # timings into the weights a later `prepare` packs the shards by, so the packer never
+  # reads a hand-kept file that went stale (`cli` sat at 120 s while it ran 417). The
+  # committed `suite-seconds.txt` is only the seed a cold cache falls back to.
+  suite-timing:
+    needs: [prepare, suites]
+    if: always() && needs.prepare.outputs.main == '1' && needs.suites.result == 'success'
+    runs-on: ubuntu-latest
+    # Prepare's own image: a cache's version includes how it was compressed, so the job that
+    # saves the weights and the one that restores them must share a toolchain.
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: suite-times-*, path: times, merge-multiple: false }
+      - uses: actions/cache/restore@v4
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
+          restore-keys: suite-seconds-
+      - name: merge
+        run: python3 tools/shards.py --merge-times times > suite-seconds.new && mv suite-seconds.new .github/ci/suite-seconds.measured && cat .github/ci/suite-seconds.measured
+      - uses: actions/cache/save@v4
+        with:
+          path: .github/ci/suite-seconds.measured
+          key: suite-seconds-${{ github.run_id }}
   # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The gate runs these too, but a
   # PR runs them FIRST and for nothing, so a keeper that reads only the tree
   # refuses on the PR instead of after the objects build. The set is
