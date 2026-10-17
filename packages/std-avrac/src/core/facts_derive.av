@@ -9,16 +9,27 @@
 use @std.meta.{Type as MetaType, Directive}
 
 export trait NodeFacts {
+    /// How the node stands at its seat (`Form`); its three facts below
+    /// read it unless a node answers one of them itself.
+    fn form() -> Form { form_compound }
+
     /// A form the source spells as a value: a scalar, text, a list, a
-    /// variant, a lambda. A name adopts one directly (`let id: UserId = 5`).
-    fn literal_form() -> bool { false }
+    /// variant, a lambda.
+    fn literal_form() -> bool { self.form().literal }
 
     /// Needs no parentheses wherever it lands.
-    fn atomic() -> bool { false }
+    fn atomic() -> bool { self.form().atomic }
 
     /// Whether the node's own kind ever admits purity — the fold over
     /// its kids has the final word where it does.
-    fn purity() -> Purity { Purity.Never }
+    fn purity() -> Purity { self.form().purity }
+
+    /// How the node may wait, before its names and types are read.
+    fn wait_probe() -> WaitProbe { WaitProbe.None }
+
+    /// The declaration the node's own use names, before its names and
+    /// types are read.
+    fn use_shape() -> UseShape { UseShape.Nothing }
 
     /// A call's arguments start past this many kids: `a.m(x)`'s subject
     /// is the first; null for a node that is no call.
