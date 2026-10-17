@@ -34,6 +34,8 @@ use core.{
     fp_str,
     StaticBox,
     Slot,
+    TypeId,
+    cleanups_open,
     debug,
 }
 use @std.path.{joined_path, normalized}
@@ -260,6 +262,40 @@ type Guard = { task: int, depth: int }
 /// The caller waiting at `pc` in `body` for a call answering into `dst`.
 fn resumed_at(body: Body, pc: int, dst: Reg) -> Resume {
     Resume { place: Place { body: body, pc: pc }, dst: dst }
+}
+
+/// A cleanup a frame makes as a trap unwinds through it: the callee and
+/// the values its arguments hold.
+type Cleaning = { callee: string, args: List<Val> }
+
+/// The body that makes a trap's cleanups in order and answers status 1:
+/// every cleanup's argument values are its params, one call each, and `ty`
+/// is the type of the status it answers.
+type Thunk = { body: Body, args: List<Val> }
+
+fn unwind_thunk(cleanups: List<Cleaning>, ty: TypeId) -> Thunk {
+    let args = flatten([c.args for c in cleanups])
+    mut calls: List<Ins> = []
+    mut next = 0
+    for j, c in cleanups {
+        let regs = [Reg { index: next + k } for k in 0..c.args.length]
+        calls.push(Ins.Call(Reg { index: args.length + j }, c.callee, regs))
+        next = next + c.args.length
+    }
+    let status = Reg { index: args.length + cleanups.length }
+    calls.push(Ins.ConstInt(status, 1))
+    calls.push(Ins.RetVal(status))
+    Thunk {
+        body: Body {
+            name: "unwind\$cleanups",
+            params: [ty for _a in args],
+            ret: ty,
+            gives: status,
+            ins: calls,
+            reg_types: [ty for _r in 0..args.length + cleanups.length + 1],
+        },
+        args: args,
+    }
 }
 
 /// The register the call instruction at `pc` answers into.
@@ -764,7 +800,7 @@ impl Machine {
         mut pc = 0
         mut answer: Val? = null
         mut going = true
-        while going && (self.failures.is_empty() || self.caught_into()) {
+        while going && (self.failures.is_empty() || self.caught_into(body, pc)) {
             if self.resume != null {
                 let landed = self.resume!
                 self.resume = null
@@ -927,23 +963,58 @@ impl Machine {
         Val.I(0)
     }
 
-    /// A trap stands: when a guard this task opened is open, the stack
-    /// drops to the guard's call, the words are kept, the trap is over and
-    /// the loop resumes past the guarded call with status 1.
-    fn caught_into() -> bool {
+    /// A trap stands: when a guard this task opened is open, every frame
+    /// from the trap's to the guard's makes its cleanups, innermost first —
+    /// the deferred calls its scopes had open — then the guarded call
+    /// answers status 1 with the trap's words kept and the trap over.
+    /// `body` and `pc` are where the trapping frame stood.
+    fn caught_into(body: Body, pc: int) -> bool {
         let opened = [j for j, g in self.guards if g.task == self.running]
         let at? = opened.last() else { return false }
         let g = self.guards[at]
         self.guards = self.guards.slice(0, at)
         let back = self.callers[g.depth - 1]
+        let cleanups = self.unwinding_cleanups(g.depth, body, pc)
         self.unwound(g.depth - 1)
         self.caught = self.failures.first() ?? ""
         self.failures = []
-        self.resume = Place {
-            body: back.place.body,
-            pc: self.put_at(back.dst, Val.I(1), back.place.pc),
+        if cleanups.is_empty() {
+            self.resume = Place {
+                body: back.place.body,
+                pc: self.put_at(back.dst, Val.I(1), back.place.pc),
+            }
+            return true
         }
+        let thunk = unwind_thunk(cleanups, back.place.body.reg_types[back.dst.index])
+        self.callers.push(back)
+        self.frames.push(self.frame_for(thunk.body, thunk.args))
+        self.resume = Place { body: thunk.body, pc: 0 }
         true
+    }
+
+    /// The cleanups the frames above a guard make, innermost first: each
+    /// frame's open `Cleanup`s at the place it stood, newest first, with the
+    /// argument values its registers hold now.
+    fn unwinding_cleanups(floor: int, body: Body, pc: int) -> List<Cleaning> {
+        flatten(
+            [self
+                .cleaning(
+                    self.frames[k],
+                    if k == self.callers.length { Place { body: body, pc: pc } } else { self.callers[k].place },
+                ) for k in reversed([j for j in floor..self.frames.length])],
+        )
+    }
+
+    fn cleaning(regs: List<Val?>, at: Place) -> List<Cleaning> {
+        mut out: List<Cleaning> = []
+        for ci in reversed(cleanups_open(at.body.ins)[at.pc]) {
+            match at.body.ins[ci] {
+                .Cleanup(callee, args) -> out
+                    .push(Cleaning { callee: callee, args: [regs[r.index] ?? Val.I(0) for r in args] }),
+                rest -> nothing(),
+            }
+        }
+        out
     }
 
     /// A stack a trap left mid-call dropped back to where this run began.
@@ -982,7 +1053,7 @@ impl Machine {
             .Alloca(d) -> self.put_at(d, self.slot_cell(d), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
-            .ScopeEnter(_) or .ScopeExit(_) -> pc + 1,
+            .ScopeEnter(_) or .ScopeExit(_) or .Cleanup(_, _) -> pc + 1,
             .Retain(r) -> {
                 self.retain_reg(r)
                 pc + 1

@@ -308,6 +308,18 @@ void avra_llvm_set_cold(LLVMValueRef fn) {
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
 }
 
+// A fn that cannot unwind: a call of it needs no unwind edge.
+void avra_llvm_set_nounwind(LLVMValueRef fn) {
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "nounwind"));
+}
+
+int avra_llvm_is_nounwind(LLVMValueRef fn) {
+    if (!LLVMIsAFunction(fn)) { return 0; }
+    unsigned kind = LLVMGetEnumAttributeKindForName("nounwind", 8);
+    return LLVMGetEnumAttributeAtIndex(fn, LLVMAttributeFunctionIndex, kind) != NULL;
+}
+
 // A global the linker keeps though no code names it: `llvm.used`, grown
 // by one.
 static void kept_whole(LLVMModuleRef m, LLVMValueRef g) {
@@ -929,6 +941,40 @@ LLVMValueRef avra_llvm_build_call(LLVMBuilderRef b, LLVMTypeRef fn_type, LLVMVal
         return LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, 0);
     }
     return result;
+}
+
+// A CALL THAT MAY UNWIND: the normal path continues in a block of its own,
+// the unwind path lands on `landing`. The builder stands in the continuation.
+LLVMValueRef avra_llvm_build_invoke(LLVMBuilderRef b, LLVMTypeRef fn_type, LLVMValueRef fn_val, LLVMValueRef* args, int count, LLVMBasicBlockRef landing) {
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(b));
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    LLVMBasicBlockRef cont = LLVMAppendBasicBlockInContext(ctx, fn, "cont");
+    int is_void = LLVMGetTypeKind(LLVMGetReturnType(fn_type)) == LLVMVoidTypeKind;
+    LLVMValueRef result = LLVMBuildInvoke2(b, fn_type, fn_val, args, (unsigned)count, cont, landing, "");
+    LLVMPositionBuilderAtEnd(b, cont);
+    if (is_void) { return LLVMConstInt(LLVMInt64TypeInContext(ctx), 0, 0); }
+    return result;
+}
+
+// THE UNWIND LANDING: a cleanup-only pad in the current fn, whose
+// personality is the C one (cleanups, no catches). Answers the pad's value,
+// which the block's `resume` hands on.
+LLVMValueRef avra_llvm_build_cleanup_landing(LLVMModuleRef m, LLVMBuilderRef b) {
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(b));
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef personality = LLVMGetNamedFunction(m, "__gcc_personality_v0");
+    if (!personality) {
+        personality = LLVMAddFunction(m, "__gcc_personality_v0", LLVMFunctionType(LLVMInt32TypeInContext(ctx), NULL, 0, 1));
+    }
+    LLVMSetPersonalityFn(fn, personality);
+    LLVMTypeRef parts[2] = { LLVMPointerTypeInContext(ctx, 0), LLVMInt32TypeInContext(ctx) };
+    LLVMValueRef pad = LLVMBuildLandingPad(b, LLVMStructTypeInContext(ctx, parts, 2, 0), personality, 0, "unwound");
+    LLVMSetCleanup(pad, 1);
+    return pad;
+}
+
+void avra_llvm_build_resume(LLVMBuilderRef b, LLVMValueRef pad) {
+    LLVMBuildResume(b, pad);
 }
 
 // ── Control flow ──

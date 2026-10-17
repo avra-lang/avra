@@ -35,6 +35,9 @@
 #define _GNU_SOURCE
 #endif
 #include <setjmp.h>
+#ifndef __wasm__
+#include <unwind.h>
+#endif
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1079,12 +1082,34 @@ static void guard_close(Guard* g) {
     }
 }
 
-// A trap: the innermost run this task opened takes it, with the words.
+#ifndef __wasm__
+// THE UNWIND'S STOP: called for each frame the forced unwind reaches, before
+// that frame's cleanups run. Frames below the guard's own run theirs and the
+// walk goes on; the guard's frame ends it, by a jump to the run's catch point.
+static _Unwind_Reason_Code guard_stop(int version, _Unwind_Action actions, _Unwind_Exception_Class cls,
+                                      struct _Unwind_Exception* exc, struct _Unwind_Context* ctx, void* arg) {
+    (void)version; (void)cls; (void)exc;
+    Guard* g = (Guard*)arg;
+    if ((actions & _UA_END_OF_STACK) || (uintptr_t)_Unwind_GetCFA(ctx) > (uintptr_t)g) longjmp(g->at, 1);
+    return _URC_NO_REASON;
+}
+#endif
+
+// A trap: the innermost run this task opened takes it, with the words. The
+// frames between the trap and the run make their cleanups first (a native
+// walk over the unwind tables); where the walk finds no way, the jump is
+// direct.
 static void guard_caught(const char* msg) {
     int64_t me = avra_task_id();
     for (Guard* g = g_guard; g; g = g->up) {
         if (g->task != me) continue;
         snprintf(g_guard_text, sizeof g_guard_text, "%s", msg);
+#ifndef __wasm__
+        static struct _Unwind_Exception unwinding;
+        memset(&unwinding, 0, sizeof unwinding);
+        unwinding.exception_class = 0x4156524100000000ULL;
+        (void)_Unwind_ForcedUnwind(&unwinding, guard_stop, g);
+#endif
         longjmp(g->at, 1);
     }
 }
@@ -2060,8 +2085,25 @@ void* avra_owned_slot_unique(void* arr, int64_t i) {
 
 // A write into a slot: the old owned content is released.
 void avra_slot_set(void* arr, int64_t i, int64_t v) {
-    AvraArray* a = (AvraArray*)arr;
     avra_array_get(arr, i);
+    avra_slot_put(arr, i, v);
+}
+
+void avra_slot_put_owned(void* arr, int64_t i, void* v) {
+    avra_rc_retain(v);
+    avra_slot_put(arr, i, (int64_t)(uintptr_t)v);
+    ((AvraArray*)arr)->marks[i] = MARK_OWNED;
+}
+
+void avra_slot_put_moved(void* arr, int64_t i, void* v) {
+    avra_slot_put(arr, i, (int64_t)(uintptr_t)v);
+    ((AvraArray*)arr)->marks[i] = MARK_OWNED;
+}
+
+// The same write into a slot the box's shape proves exists — a cell's one
+// slot, a record's declared field — so it has no bound to trap on.
+void avra_slot_put(void* arr, int64_t i, int64_t v) {
+    AvraArray* a = (AvraArray*)arr;
     if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
     a->data[i] = v;
     a->marks[i] = 0;
