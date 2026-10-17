@@ -488,6 +488,7 @@ export type Decls = {
     held_items: Cell<Map<string, List<DeclId>>>,
     spliced: Cell<Map<string, List<DeclId>>>,
     reentered: Table<List<DeclId>>,
+    reentering: Table<bool>,
     /// Each file's declarations by kind, owner and name, keyed by file
     /// index, kept until the file holds more declarations than it was
     /// indexed with.
@@ -889,6 +890,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         held_items: map_cell(),
         spliced: map_cell(),
         reentered: new_table(),
+        reentering: new_table(),
         wire_index: map_cell(),
         faces: Cell.new(no_faces),
         doc_facts: Cell.new(side_table("doc_facts", 0, 0, DocFact { doc: null, annotations: [] })),
@@ -1420,10 +1422,24 @@ impl Decls {
         match self.reentered.entry(f.index) { .Present(made) -> made, .Missing -> null }
     }
 
-    fn reentry_kept(f: FileId, made: List<DeclId>) { self.reentered.keep(f.index, made) }
+    fn reentry_kept(f: FileId, made: List<DeclId>) {
+        self.reentering.drop(f.index)
+        self.reentered.keep(f.index, made)
+    }
 
     /// The outer run ended: a later run starts with no re-entry settled.
-    fn reentry_over(f: FileId) { self.reentered.drop(f.index) }
+    fn reentry_over(f: FileId) {
+        self.reentering.drop(f.index)
+        self.reentered.drop(f.index)
+    }
+
+    /// A file's first re-entrant expansion is computing: a deeper re-entry
+    /// reads what is minted so far instead of computing again.
+    fn reentry_begun(f: FileId) { self.reentering.keep(f.index, true) }
+
+    fn reentry_running(f: FileId) -> bool {
+        match self.reentering.entry(f.index) { .Present(_) -> true, .Missing -> false }
+    }
 
     /// A file's expansion begins with nothing refused.
     fn hush_expansion(f: FileId) {
