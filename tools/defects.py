@@ -26,6 +26,8 @@ BAD = re.compile(
     re.M,
 )
 TIMEOUT = 60
+# check examines and lowers; run evaluates what check let through
+VERBS = ["check", "run"]
 MANIFEST = '[package]\nname = "probe"\nversion = "0.1.0"\n\n[bin]\npath = "src/main.av"\n'
 
 
@@ -84,10 +86,10 @@ def mutants(name, text):
     return out
 
 
-def run(avra, package):
+def run(avra, verb, package):
     try:
         p = subprocess.run(
-            [avra, "check", package],
+            [avra, verb, package],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=TIMEOUT,
@@ -135,13 +137,14 @@ def main():
         for n, body in work:
             with open(os.path.join(d, "src", "main.av"), "w", encoding="utf-8") as f:
                 f.write(body)
-            code, out = run(a.avra, d)
-            why = verdict(code, out)
-            if why:
-                bad.append((n, why))
-                print("defects: %s — %s" % (n, why))
-                print("    " + "\n    ".join(out.strip().split("\n")[:6]))
-    print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len(bad)))
+            for verb in VERBS:
+                code, out = run(a.avra, verb, d)
+                why = verdict(code, out)
+                if why:
+                    bad.append((n, why))
+                    print("defects: %s (%s) — %s" % (n, verb, why))
+                    print("    " + "\n    ".join(out.strip().split("\n")[:6]))
+    print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len({n for n, _ in bad})))
     return 1 if bad else 0
 
 
