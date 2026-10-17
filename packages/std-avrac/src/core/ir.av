@@ -158,14 +158,16 @@ export enum Ins {
     /// keeps each managed argument standing for the call, and the
     /// callee owns none of them — what it keeps takes its own reference.
     Call(@dst @owns dst: Reg, @body callee: string, @seats @lent args: List<Reg>)
-    /// A CLEANUP FOR THE UNWIND: from here to the end of the enclosing
+    /// A CLEANUP FOR THE UNWIND (`live`; not live, the same cleanup RETIRES: its
+    /// exit is about to make the call itself, so a trap in that call finds it
+    /// no longer open): from here to the end of the enclosing
     /// scope, a trap unwinding through a call calls `callee(args)` — the
     /// deferred call the frame would make at its exit. Normal and early
     /// exits are untouched: they make the call themselves, so this costs
     /// nothing on a path that does not unwind. A managed argument stands
     /// through an unwind because the scope's exits read these arguments
     /// after every call the cleanup covers.
-    Cleanup(@body callee: string, @seats @lent args: List<Reg>)
+    Cleanup(@body callee: string, @seats @lent args: List<Reg>, live: bool)
     /// An INDIRECT call through a register-held fn address — dyn
     /// dispatch (and, ahead, closures). The ABI is `Call`'s.
     CallPtr(@dst @owns dst: Reg, f: Reg, @seats @lent args: List<Reg>)
@@ -277,7 +279,15 @@ impl Ins {
                     fp_list([x.fingerprint() for x in args]),
                 ],
             ),
-            .Cleanup(callee, args) -> derived([fp_str("Ins"), 35, fp_str(callee), fp_list([x.fingerprint() for x in args])]),
+            .Cleanup(callee, args, live) -> derived(
+                [
+                    fp_str("Ins"),
+                    35,
+                    fp_str(callee),
+                    fp_list([x.fingerprint() for x in args]),
+                    if live { 1 } else { 0 },
+                ],
+            ),
             .CallPtr(dst, f, args) -> derived(
                 [
                     fp_str("Ins"),
@@ -343,7 +353,11 @@ fn ins_words(i: Ins) -> InsWords {
         .ArmEnd(gives) -> InsWords { tag: 16, ints: [gives.index], texts: [] },
         .RegionEnd(dst, gives) -> InsWords { tag: 17, ints: [dst.index, gives.index], texts: [] },
         .Call(dst, callee, args) -> InsWords { tag: 18, ints: [dst.index].concat(indices(args)), texts: [callee] },
-        .Cleanup(callee, args) -> InsWords { tag: 35, ints: indices(args), texts: [callee] },
+        .Cleanup(callee, args, live) -> InsWords {
+            tag: 35,
+            ints: [if live { 1 } else { 0 }].concat(indices(args)),
+            texts: [callee],
+        },
         .CallPtr(dst, f, args) -> InsWords { tag: 19, ints: [dst.index, f.index].concat(indices(args)), texts: [] },
         .RetVal(r) -> InsWords { tag: 20, ints: [r.index], texts: [] },
         .FnExit(gives) -> InsWords { tag: 21, ints: [gives.index], texts: [] },
@@ -395,7 +409,7 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .ArmEnd(gives) -> Ins.ArmEnd(m(gives)),
         .RegionEnd(dst, gives) -> Ins.RegionEnd(m(dst), m(gives)),
         .Call(dst, callee, args) -> Ins.Call(m(dst), callee, [m(x) for x in args]),
-        .Cleanup(callee, args) -> Ins.Cleanup(callee, [m(x) for x in args]),
+        .Cleanup(callee, args, live) -> Ins.Cleanup(callee, [m(x) for x in args], live),
         .CallPtr(dst, f, args) -> Ins.CallPtr(m(dst), m(f), [m(x) for x in args]),
         .RetVal(r) -> Ins.RetVal(m(r)),
         .FnExit(gives) -> Ins.FnExit(m(gives)),
@@ -423,7 +437,7 @@ export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
         .OnceRead(dst, sym) -> Ins.OnceRead(dst, s(sym)),
         .OnceCommit(sym, value) -> Ins.OnceCommit(s(sym), value),
         .Call(dst, callee, args) -> Ins.Call(dst, s(callee), args),
-        .Cleanup(callee, args) -> Ins.Cleanup(s(callee), args),
+        .Cleanup(callee, args, live) -> Ins.Cleanup(s(callee), args, live),
         .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
     }
 }
@@ -431,7 +445,7 @@ export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
 /// The symbols `i` names — `resymbolled`'s read.
 export fn symbols_of(i: Ins) -> List<string> {
     match i {
-        .FnAddr(_, sym) or .StaticAddr(_, sym) or .OnceRead(_, sym) or .OnceCommit(sym, _) or .Call(_, sym, _) or .Cleanup(sym, _) -> [sym],
+        .FnAddr(_, sym) or .StaticAddr(_, sym) or .OnceRead(_, sym) or .OnceCommit(sym, _) or .Call(_, sym, _) or .Cleanup(sym, _, _) -> [sym],
         .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
     }
 }
@@ -782,7 +796,10 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
             .Call(d2, c2, args2) -> same_reg(d1, d2) && c1 == c2 && same_regs(args1, args2),
             rest -> false,
         },
-        .Cleanup(c1, args1) -> match b { .Cleanup(c2, args2) -> c1 == c2 && same_regs(args1, args2), rest -> false },
+        .Cleanup(c1, args1, l1) -> match b {
+            .Cleanup(c2, args2, l2) -> c1 == c2 && l1 == l2 && same_regs(args1, args2),
+            rest -> false,
+        },
         .CallPtr(d1, f1, args1) -> match b {
             .CallPtr(d2, f2, args2) -> same_reg(d1, d2) && same_reg(f1, f2) && same_regs(args1, args2),
             rest -> false,
@@ -1259,24 +1276,50 @@ export fn cleanups_open(ins: List<Ins>) -> List<List<int>> {
     mut brackets: List<List<int>> = [[]]
     mut out: List<List<int>> = []
     for at, i in ins {
-        out.push(flatten(brackets))
-        brackets = bracketed(brackets, at, i)
+        out.push(standing(flatten(brackets)))
+        brackets = bracketed(brackets, ins, at, i)
     }
-    out.push(flatten(brackets))
+    out.push(standing(flatten(brackets)))
     out
 }
 
+/// The cleanups a bracket list leaves open: a retirement is a negative entry
+/// naming the live one it ends (`-1 - position`).
+fn standing(all: List<int>) -> List<int> { [j for j in all if j >= 0 && !all.contains(-1 - j)] }
+
 /// The brackets after `i` at `at`: a scope, region or loop opens a list,
-/// an arm ends one and starts the next, a close drops the innermost, and a
-/// `Cleanup` joins it.
-fn bracketed(brackets: List<List<int>>, at: int, i: Ins) -> List<List<int>> {
+/// an arm ends one and starts the next, a close drops the innermost, a
+/// `Cleanup` joins it, and a retirement joins it naming the cleanup it ends.
+fn bracketed(brackets: List<List<int>>, ins: List<Ins>, at: int, i: Ins) -> List<List<int>> {
     let outer = brackets.slice(0, brackets.length - 1)
     let fresh: List<int> = []
     match i {
         .ScopeEnter(_) or .IfStart(_) or .SwitchStart(_, _) or .LoopStart -> brackets.concat([fresh]),
         .ArmEnd(_) -> outer.concat([fresh]),
         .ScopeExit(_) or .RegionEnd(_, _) or .LoopEnd -> outer,
-        .Cleanup(_, _) -> outer.concat([brackets.last()!.concat([at])]),
+        .Cleanup(callee, args, live) -> outer
+            .concat(
+                [
+                    brackets.last()!
+                        .concat([if live { at } else { retired(brackets, ins, callee, args) }]),
+                ],
+            ),
         .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopCond(_) or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> brackets,
+    }
+}
+
+/// The entry that ends the newest live cleanup of this callee and these
+/// arguments: `-1 - its position`.
+fn retired(brackets: List<List<int>>, ins: List<Ins>, callee: string, args: List<Reg>) -> int {
+    let all = flatten(brackets)
+    let live = [j for j in standing(all) if names_cleanup(ins[j], callee, args)]
+    let j? = live.last() else { return -1 - ins.length }
+    -1 - j
+}
+
+fn names_cleanup(i: Ins, callee: string, args: List<Reg>) -> bool {
+    match i {
+        .Cleanup(c, a, _) -> c == callee && same_regs(a, args),
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> false,
     }
 }
