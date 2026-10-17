@@ -3,10 +3,14 @@
 //! any screen would: to a control BY ITS WORDS. An event runs the handler
 //! the view bound and the loop paints again, so a test drives the same
 //! door a host does and names no platform.
-use app.{Shown, shown}
+use app.{Act, Shown, running, shown, stood}
+use native.sources.{opened, served, unshown}
+use @std.time.{Duration, ms, sleep}
 use tree.controls.{Control}
 use tree.node.{EventKind, Said}
 use tree.view.{View}
+
+extern fn avra_clock_virtual(on: int)
 
 /// A screen nobody draws.
 export type Screen = { shown: Shown }
@@ -26,7 +30,7 @@ impl Screen {
     /// The control named `name` speaks `kind`, saying `said`.
     fn speak(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn(() -> c.says(kind, said))
+        self.shown.app.turn_of(c.path, () -> c.says(kind, said))
     }
 
     /// The user presses the control named `name`. False when no handler
@@ -34,7 +38,7 @@ impl Screen {
     /// press.
     fn press(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn(() -> c.pressed())
+        self.shown.app.turn_of(c.path, () -> c.pressed())
     }
 
     /// The user gives the control named `name` its text — all of it, as a
@@ -53,7 +57,7 @@ impl Screen {
     /// key in a field does.
     fn submit(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn(() -> c.sends())
+        self.shown.app.turn_of(c.path, () -> c.sends())
     }
 
     /// The user sends away what stands over the screen, as the key or a
@@ -65,9 +69,41 @@ impl Screen {
         self.shown.app.turn(() -> action.fire(null))
     }
 
-    /// The state changed outside an event — a timer, an answer arriving —
-    /// and the screen is painted again.
-    fn repaint() { self.shown.app.paint() }
+    /// `act` runs as a turn, as a source of the loop would leave it: a
+    /// paint follows when it ran.
+    fn turn(act: Act) -> bool { self.shown.app.turn(act) }
+
+    /// `body` runs while the screen's loop does: what a source leaves in
+    /// the inbox runs as turns beside it, and the screen follows. The
+    /// clock is virtual, so it moves when every task is waiting and no
+    /// real time passes. The loop ends with the body.
+    fn running(body: fn() -> void) {
+        avra_clock_virtual(1)
+        let before = running()
+        stood(self.shown.app)
+        let inbox = opened(self.shown.app)
+        let loop = spawn served(self.shown.app, inbox, unshown)
+        body()
+        self.shown.app.close()
+        let _ = loop.await
+        stood(before)
+    }
+
+    /// The body waits `span` of the clock while the loop runs: what falls
+    /// due within it runs, and a job started in that wait begins at its
+    /// end, so a zero wait drains nothing a job still has to start.
+    fn advance(span: Duration) {
+        sleep(span)
+        sleep(ms(0))
+    }
+
+    /// The words of the failure that ended the last turn, until a turn
+    /// runs again.
+    fn failure() -> string? { self.shown.app.failed.get() }
+
+    /// Every turn from now on runs under `by`, which answers whether the
+    /// action ran or the words of its failure.
+    fn guarded(by: fn(fn() -> bool) -> Result<bool, string>) { self.shown.app.guarded(by) }
 
     /// How many component instances the screen keeps.
     fn held() -> int { self.shown.app.held() }

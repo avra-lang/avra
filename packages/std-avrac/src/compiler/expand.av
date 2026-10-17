@@ -109,14 +109,17 @@ impl Workspace {
         // walks is itself a dependency of that resolve. The first
         // re-entry while the file's run is open expands again and keeps
         // its answer for the run; a later one reads it, so a file is not
-        // expanded once per member that asks.
+        // expanded once per member that asks. A re-entry that arrives
+        // while that first one still computes reads what is minted so far.
         let reentrant = self.relation(Family.Expanded).open(f.index)
         let settled = if reentrant { self.decls.reentry_answer(f) } else { null }
         if settled != null { return settled! }
+        if reentrant && self.decls.reentry_running(f) { return self.generated_so_far(f) }
         match self.relation(Family.Expanded).start_recursive(f.index) {
             .Reuse(value) -> { return expanded_of(value) },
             .Compute -> nothing(),
         }
+        if reentrant { self.decls.reentry_begun(f) }
         self.decls.hush_expansion(f)
         let p = self.parsed(f)
         let vis = self.visible(f)
@@ -136,6 +139,12 @@ impl Workspace {
             .finish(f.index, DbRow.Expanded(made), fp(31, [d.index for d in made]))
         if reentrant { self.decls.reentry_kept(f, made) } else { self.decls.reentry_over(f) }
         made
+    }
+
+    /// The declarations of `f` generated so far, in the store.
+    fn generated_so_far(f: FileId) -> List<DeclId> {
+        let p = self.parsed(f)
+        [d for d in self.decls.decls_of_file(f) if self.written_stmt(f, d).index >= p.store.stmts.count()]
     }
 
     /// The declarations of `f` its parse wrote. A held file's record also
@@ -927,7 +936,7 @@ impl Workspace {
     fn copied(f: FileId, file: string, at: int, fills: List<Node>, seat: HoleKind) -> Copied {
         let origin? = self.decls.known_file_id(file) else { return nothing_copied() }
         let src = self.decls.store_of(origin)
-        let q? = src.quote_at(at) else { return nothing_copied() }
+        let q? = src.quote_at(at) else { return self.copied_written(f, origin, src, at) }
         let body? = src.expr(q).body_of() else { return nothing_copied() }
         if quote_kind(src, q) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
@@ -944,6 +953,13 @@ impl Workspace {
         let lifted = self.lifted_from(f, src, copied_stmts, seat, file, at, rb)
         let stmts = if lifted.lifts { [] } else { rb.stmts(copied_stmts) }
         let arms = rb.arms(copied_arms)
+        self.noted_copy(f, origin, src, at, rb)
+        Copied { stmts: stmts, arms: arms, params: lifted.params, inits: lifted.inits }
+    }
+
+    /// A copy's bookkeeping: where its nodes came from, and every fill
+    /// that did not fit its seat, spoken.
+    fn noted_copy(f: FileId, origin: FileId, src: SyntaxArena, at: int, rb: Rebuilder) {
         if !same_file(origin, f) {
             self.decls.note_origins(f, rb.made_exprs, rb.made_stmts, rb.made_pats, origin)
             self
@@ -961,7 +977,17 @@ impl Workspace {
         self
             .decls
             .speak_expansion(f, [unplaceable_fill(self.decls.file(origin).path, at, u) for u in rb.unplaceable])
-        Copied { stmts: stmts, arms: arms, params: lifted.params, inits: lifted.inits }
+    }
+
+    /// A field's written default copied as one expression statement:
+    /// the template its crossing names, where no quote was written.
+    fn copied_written(f: FileId, origin: FileId, src: SyntaxArena, at: int) -> Copied {
+        let e? = self.decls.default_at(origin, at) else { return nothing_copied() }
+        let dst = self.decls.store_of(f)
+        mut rb = copier(src, dst, [], [])
+        let stmts = [dst.alloc_stmt(Stmt.ExprStmt(rb.expr(e)))]
+        self.noted_copy(f, origin, src, at, rb)
+        Copied { stmts: stmts, arms: [] }
     }
 
     /// A lifted call's directives, or none when it refused — the ONE

@@ -158,8 +158,10 @@ printf 'warm edit %s\n' "$least" >> "$raw"
 # compiler counts it (`check --counts`, compiler/work.av) — exact on every machine,
 # so tools/work_ratchet.py holds it with no slack. One round each, the edit never
 # a store hit.
-counted() { # <scenario>: `counts <scenario> <counter> <n>` rows from one check
-    "$avra" check --counts "$target" 2>&1 >/dev/null | grep '^counts:' | tail -n 1 | tr ' ' '\n' | grep = \
+counted() { # <scenario>: `counts <scenario> <counter> <n>` rows from one check, its whole-read attribution to stderr
+    out=$("$avra" check --counts "$target" 2>&1 >/dev/null)
+    printf '%s\n' "$out" | grep -E '^(whole|why):' | sed "s/^/$1 /" >&2
+    printf '%s\n' "$out" | grep '^counts:' | tail -n 1 | tr ' ' '\n' | grep = \
         | while IFS== read -r name n; do printf 'counts %s %s %s\n' "$1" "$name" "$n"; done
 }
 counted unchanged >> "$raw"

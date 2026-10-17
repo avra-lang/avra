@@ -49,7 +49,7 @@ use core.{
     Span,
     wire_fields,
     distinct,
-    ModulePath,
+    same_decl,
 }
 use features.{
     NameFacts,
@@ -90,6 +90,7 @@ impl Workspace {
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if !self.is_held(x.id) && self.reads_as_source(x.path)]
         let held = [x.id for x in all_files if self.is_held(x.id)]
+        self.hold.held_refs.set({})
         let surveyed = [self.file_refs(f) for f in files]
         // A HELD FILE'S BODY IS NOT SURVEYED — its outgoing references come
         // from its own kept record instead (`restored_refs`), written the
@@ -139,10 +140,33 @@ impl Workspace {
     /// moved name is caught.
     fn restored_refs(store: Store, f: FileId) -> List<Ref> {
         let rows = self.kept_ref_rows(store, self.decls.file(f).path)
-        // a wire names its file, which answers only once its module's declarations
-        // stand: each named module is stood up once, never once per row
-        for named in distinct([ref_target(p) for p in rows]) { self.module_stands(self.module_path_of(named)) }
-        flatten([some_list(self.resolved_ref(f, p)) for p in rows])
+        let apart = [p for p in rows if self.holds_target(p)]
+        for target in distinct([ref_target(p) for p in apart]) {
+            let kept = self.hold.held_refs.get().get(target) ?? []
+            self
+                .hold
+                .held_refs
+                .put(
+                    target,
+                    kept
+                        .concat([HeldRef { file: f, row: p } for p in apart if ref_target(p) == target]),
+                )
+        }
+        let read = [p for p in rows if !self.holds_target(p)]
+        // a wire names its file, which answers only once its declarations stand:
+        // each named file is stood up once, never once per row
+        for named in distinct([ref_target(p) for p in read]) { self.file_stands(named) }
+        flatten([some_list(self.resolved_ref(f, p)) for p in read])
+    }
+
+    /// Whether a `ref` row's target lives in a held file — whose references arrive on the
+    /// ask that names the declaration (`held_refs_to`), so no held module is minted for them.
+    fn holds_target(p: List<string>) -> bool { self.decls.held.get().get(ref_target(p)) != null }
+
+    /// The references held files make to `d`, restored from their records.
+    fn held_refs_to(d: DeclId) -> List<Ref> {
+        let at = self.hold.held_refs.get().get(self.decls.file(self.decls.decl(d).file).path) ?? []
+        [r for r in flatten([some_list(self.resolved_ref(h.file, h.row)) for h in at]) if same_decl(r.decl, d)]
     }
 
     /// A file's `ref` lines, as its module's kept record holds them.
@@ -150,13 +174,11 @@ impl Workspace {
         [p for p in record_fields(self, store, self.module_path_of(path)) if is_ref_row(p) && p[1] == path]
     }
 
-    /// Every file of `m` the program met, with its declarations standing.
-    fn module_stands(m: ModulePath) {
-        for path in self.met_files(m) {
-            let g = self.file_id(path)
-            let _ = self.items(g)
-            let _ = self.decls.decls_of_file(g)
-        }
+    /// A file's declarations standing; a path no file answers to stands nothing.
+    fn file_stands(path: string) {
+        let g? = self.decls.known_file_id(path) else { return }
+        let _ = self.items(g)
+        let _ = self.decls.decls_of_file(g)
     }
 
     fn resolved_ref(f: FileId, p: List<string>) -> Ref? {
@@ -245,7 +267,7 @@ impl Workspace {
             .StructLit(name, _, _) -> some_list(self.named_type_ref(f, names, e, name)),
             .Component(word, _, _, _, _) -> some_list(self.component_ref(f, names, e, word)),
             .Env(tr) -> some_list(self.type_name_ref(f, names, e, tr.name)),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
         }
     }
 

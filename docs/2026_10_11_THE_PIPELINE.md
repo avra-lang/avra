@@ -120,8 +120,8 @@ unmerged:
   `ready_for_review`, `synchronize` and `reopened` event and runs
   `gh pr merge --auto --squash`. A draft is skipped, and a fork's PR is
   skipped (its token cannot arm it).
-- **`tools/pr_watcher.py`** arms a green, mergeable, unarmed PR on its
-  next pass, and refreshes one that has fallen behind (§3).
+- **`tools/pr_watcher.py`** arms the next green, mergeable PR in order
+  on its next pass, and refreshes it when it has fallen behind (§3).
 
 `tools/work land` also arms auto-merge directly, so a lane that pushes
 and moves on needs nothing else.
@@ -323,13 +323,21 @@ There is no queue; the watcher keeps every open PR able to merge itself:
 - **(a)** a PR whose required `test` failed — comment the exact
   `job — line`, and re-run the failed jobs **once** (a second rerun of
   the same head changes nothing, so it is refused by state).
-- **(b)** a green, mergeable, unconflicted PR — **arm** auto-merge
-  (`gh pr merge --auto --squash`) when it is not already armed. There is
-  no cap: one merge at a time is what "up to date" enforces.
-- **(c)** a green, armed PR that is **behind** `main` — **refresh** its
-  branch (`gh pr update-branch`), so "up to date" is met without a human.
-  The refresh is deduped per head, and the update moves the head, so it
+- **(b)** the **next** green, mergeable, unconflicted PR — **arm**
+  auto-merge (`gh pr merge --auto --squash`) when it is not already armed.
+- **(c)** that same PR, when **behind** `main` — **refresh** its branch
+  (`gh pr update-branch`), so "up to date" is met without a human. The
+  refresh is deduped per head, and the update moves the head, so it
   refreshes again only if `main` moved again.
+- **(l)** the **order**: one PR at a time, because "up to date" already
+  makes it one at a time — every merge puts every other PR behind `main`,
+  so arming and refreshing them all re-ran every gate once per merge. Only
+  the front PR is armed and refreshed (green, mergeable, not held, the
+  `priority` label first, then the lowest number); while a PR is armed and
+  awaiting its run, or armed and clean about to land, nobody else is
+  touched and the rest are named `#N waits behind #F`. A PR's own run is
+  still its gate. A **`hold` label** (or a DO NOT MERGE title) keeps a PR
+  out of the order: never armed, never refreshed, disarmed if armed.
 - **(d)** a PR that **conflicts** with `main` — name the rebase its owner
   owes, once.
 - **(e)** a **draft** — name it so it is never invisible. The watcher

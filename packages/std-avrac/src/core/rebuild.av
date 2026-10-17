@@ -548,6 +548,8 @@ impl Rebuilder {
         if self.src.is_hole(e) { self.dst.mark_hole(id) }
         if self.src.is_raw_string(e) { self.dst.mark_raw_string(id) }
         if self.src.is_sugar_match(e) { self.dst.mark_sugar_match(id) }
+        let noted: string? = self.src.means_note(e)
+        if noted != null { self.dst.mint_for(id, self.copies_of(self.src.minted_nodes(e)), noted!) }
         let ip: PayloadIs? = self.src.is_payload(e)
         if ip != null { self.dst.mark_is_payload(id, self.pat(ip!.pat), ip!.has_else) }
         let gl: string? = self.src.grammar_lit_of(e)
@@ -571,6 +573,12 @@ impl Rebuilder {
             self.made_from.push(e)
         }
         id
+    }
+
+    /// Where the copy of each source node stands — the nodes a copied
+    /// sugar's meaning minted answer for the sugar's own copy.
+    fn copies_of(from: List<ExprId>) -> List<ExprId> {
+        [self.made_exprs[i] for i, s in self.made_from if from.any(same_expr(it, s))]
     }
 
     mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {

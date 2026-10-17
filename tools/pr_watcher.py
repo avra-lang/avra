@@ -9,12 +9,22 @@ watcher closes the gap between "green" and "landed", deterministically:
   (a) a PR whose required `test` FAILED — tell it the exact `job — line`,
       and re-run the failed jobs ONCE (a second rerun of the same head
       changes nothing, so it is refused by attempt, not by try-again);
-  (b) a green, mergeable, unarmed PR — ARM auto-merge (`gh pr merge
+  (b) the NEXT green, mergeable PR — ARM auto-merge (`gh pr merge
       --auto --squash`), which is the whole landing mechanism;
-  (c) a green, armed PR that is BEHIND `main` — REFRESH it
-      (`gh pr update-branch`), so "up to date" is met without a human.
-      The refresh is deduped per head: the update moves the head, so the
-      next pass refreshes only if `main` moved again;
+  (c) that same PR, when BEHIND `main` — REFRESH it (`gh pr update-branch`),
+      so "up to date" is met without a human. The refresh is deduped per
+      head: the update moves the head, so the next pass refreshes only if
+      `main` moved again;
+  (l) THE ORDER IS ONE PR AT A TIME, which is what "require up to date"
+      already makes it: every merge puts every other PR BEHIND, so arming
+      and refreshing them all re-ran every gate once per merge (N armed PRs
+      cost N-1 wasted runs a landing). Only the FRONT PR is armed and
+      refreshed: green, mergeable, not held, the `priority` label first,
+      then the oldest number. While a PR is armed and awaiting its run (or
+      armed and clean, about to land) nobody else is armed or refreshed —
+      the rest are named `#N waits behind #F`. A PR's own run stays the
+      gate. A `hold` label is respected like a DO NOT MERGE title: never
+      armed, never refreshed, one already armed is disarmed;
   (d) a CONFLICT — name the rebase its owner owes, once;
   (e) a DRAFT — name it `#N is a DRAFT — unlandable` so it is never
       invisible. The watcher NEVER readies a draft: a draft is a hold, and
@@ -79,6 +89,10 @@ TOLD = "told"
 # A PR whose title says DO NOT MERGE is a deliberate draft: named, never
 # readied. The phrase is a claim the owner wrote, not a state we infer.
 DO_NOT_MERGE = re.compile(r"DO\s+NOT\s+MERGE", re.IGNORECASE)
+# THE ORDER'S TWO LABELS: `hold` keeps a PR out of the landing order entirely (never armed,
+# never refreshed, disarmed if armed), `priority` puts it first in line.
+HOLD_LABEL = "hold"
+PRIORITY_LABEL = "priority"
 # THE CONFLICT WORDS ARE ONE DEFINITION, spoken here and quoted by the
 # docs; the self-test refuses the two drifting apart.
 # A green draft is named once it has been green this long, and again each day.
@@ -116,6 +130,64 @@ def _waiting_on(p):
     if c == "FAILURE":
         return None  # rule (a) owns it
     return f"the required `test` check ({c.lower() or 'pending'})"
+
+
+def _labels(p):
+    return {str(x).lower() for x in p.get("labels") or []}
+
+
+def _held(p):
+    """A PR held out of the landing order: a DO NOT MERGE title or the `hold` label."""
+    return bool(DO_NOT_MERGE.search(p.get("title") or "")) or HOLD_LABEL in _labels(p)
+
+
+def _is_green(p):
+    t = p.get("test")
+    return t is not None and t["conclusion"] == "SUCCESS"
+
+
+def _running(p):
+    """A PR whose gate is under way: its `test` is pending, or some job of its run is live."""
+    t = p.get("test")
+    pending = t is not None and t["conclusion"] not in ("SUCCESS", "FAILURE")
+    return pending or bool(p.get("live"))
+
+
+def _landing(p):
+    """A PR that is armed and either awaiting a run that can still pass, or clean, about to
+    land: the one PR in the order that nothing else may disturb by moving `main` or its own
+    head. A RED PR is not landing (a job of its run already failed, though the aggregate
+    `test` may not say so yet), nor is one that never ran: neither can merge, so neither may
+    hold the order."""
+    if p["state"] != "OPEN" or p.get("isDraft") or _held(p) or not p["autoMerge"]:
+        return False
+    if p.get("mergeable") == "CONFLICTING" or p.get("red"):
+        return False
+    t = p.get("test")
+    if t is not None and t["conclusion"] == "FAILURE":
+        return False
+    if _is_green(p):
+        return (p.get("mergeStateStatus") or "CLEAN").upper() == "CLEAN"
+    return _running(p)
+
+
+def next_in_order(prs):
+    """The one PR to arm and refresh now, or None: nobody while one is landing, else the
+    `priority` PRs first, then the oldest, among the green, mergeable, un-held."""
+    if any(_landing(p) for p in prs):
+        return None
+    ready = [p for p in prs if p["state"] == "OPEN" and not p.get("isDraft") and not _held(p)
+             and _is_green(p) and p.get("mergeable") == "MERGEABLE"]
+    ready.sort(key=lambda p: (0 if PRIORITY_LABEL in _labels(p) else 1, p["number"]))
+    return ready[0] if ready else None
+
+
+def _ahead(prs, front):
+    """Who a waiting PR is behind, in words: the front, or the PR that is landing."""
+    if front is not None:
+        return f"#{front['number']} (next in order)"
+    landing = [p["number"] for p in prs if _landing(p)]
+    return f"#{landing[0]} (landing)" if landing else "the order"
 
 
 def plan(prs, runs, state, trunk=None, held=None, now=None):
@@ -157,6 +229,7 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
                      "text": f"cancelling run {r['databaseId']} on "
                              f"{branch} — its PR is no longer open"})
 
+    front = next_in_order(prs)
     for p in prs:
         n, head = p["number"], p["headRefOid"]
         t = p.get("test")
@@ -228,9 +301,10 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         # (j) A HELD TITLE is a hold: a non-draft PR whose title says DO NOT
         # MERGE is never armed, and one that is armed is disarmed. Either
         # signal alone holds it; the workflow refuses to arm it too.
-        if DO_NOT_MERGE.search(p.get("title") or "") and not draft:
-            acts.append({"do": "note", "pr": n,
-                         "text": f"#{n} is HELD — its title says DO NOT MERGE"})
+        if _held(p) and not draft:
+            why = ("its title says DO NOT MERGE" if DO_NOT_MERGE.search(p.get("title") or "")
+                   else f"it carries the `{HOLD_LABEL}` label")
+            acts.append({"do": "note", "pr": n, "text": f"#{n} is HELD — {why}"})
             key = f"disarm:{n}:{head}"
             if p["autoMerge"] and key not in told:
                 acts.append({"do": "disarm", "pr": n, "key": key, "mark": ("told", key),
@@ -244,6 +318,16 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
 
         # (b)+(c) a green, mergeable PR is armed; once armed, one that is
         # behind is refreshed so "up to date" is met without a human.
+        if green and mergeable and open_ and (front is None or front["number"] != n):
+            # NOT THE FRONT: armed or refreshed now it would only be BEHIND again, and its
+            # gate re-run, the moment the front lands.
+            if p["autoMerge"] and landable:
+                acts.append({"do": "note", "pr": n,
+                             "text": f"#{n} is green and armed — auto-merge lands it"})
+            else:
+                acts.append({"do": "note", "pr": n,
+                             "text": f"#{n} waits behind {_ahead(prs, front)}"})
+            continue
         if green and mergeable and open_:
             if not p["autoMerge"]:
                 acts.append({"do": "arm", "pr": n,
@@ -362,7 +446,7 @@ def open_prs(repo):
     return _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
                      "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
                                "title,headRefName,autoMergeRequest,"
-                               "headRefOid,statusCheckRollup,isCrossRepository,createdAt"])
+                               "headRefOid,statusCheckRollup,isCrossRepository,createdAt,labels"])
 
 
 def _runs(repo):
@@ -419,9 +503,15 @@ def collect(repo, state):
         p = dict(raw)
         p["autoMerge"] = raw.get("autoMergeRequest") is not None
         p["nodeId"] = raw.get("id")
+        p["labels"] = [l.get("name", "") for l in raw.get("labels") or []]
         p["test"] = test_of(repo, raw)
         # A `test` run still pending is a run live on this PR: a rerun now would
         # cancel it, the group being one per event.
+        # A job of the run already failed, or a job is still live: what the aggregate `test` has not said yet.
+        p["red"] = any((c.get("conclusion") or "").upper() in ("FAILURE", "TIMED_OUT", "STARTUP_FAILURE")
+                       for c in raw.get("statusCheckRollup") or [])
+        p["live"] = any((c.get("status") or "COMPLETED") != "COMPLETED"
+                        for c in raw.get("statusCheckRollup") or [])
         p["test_live"] = any(c.get("status", "COMPLETED") != "COMPLETED"
                              for c in raw.get("statusCheckRollup") or []
                              if (c.get("name") or c.get("context")) == "test")
@@ -609,6 +699,61 @@ SELFTEST = [
      dict(prs=[_pr(2, "SUCCESS", autoMerge=True, mergeStateStatus="BEHIND")],
           runs=[], state={RERUN: {}, TOLD: {"refresh:2:h2": True}}),
      [("note", 2)]),
+    # (l) ONE PR AT A TIME: of three green PRs behind main only the OLDEST is armed and
+    # refreshed; the others wait, named, so a merge re-runs one gate, not three.
+    ("order-front-is-oldest",
+     dict(prs=[_pr(5, "SUCCESS", mergeStateStatus="BEHIND"),
+               _pr(2, "SUCCESS", mergeStateStatus="BEHIND"),
+               _pr(9, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("note", 5), ("arm", 2), ("refresh", 2), ("note", 9)]),
+    # a `priority` PR goes first whatever its number.
+    ("order-priority-first",
+     dict(prs=[_pr(2, "SUCCESS", mergeStateStatus="BEHIND"),
+               _pr(9, "SUCCESS", mergeStateStatus="BEHIND", labels=["priority"])],
+          runs=[], state=_empty_state()),
+     [("note", 2), ("arm", 9), ("refresh", 9)]),
+    # a `hold` PR is never armed or refreshed, and the order passes over it.
+    ("order-hold-skipped",
+     dict(prs=[_pr(2, "SUCCESS", mergeStateStatus="BEHIND", labels=["hold"]),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("note", 2), ("arm", 3), ("refresh", 3)]),
+    # a `hold` PR that is already armed is disarmed.
+    ("order-hold-disarms",
+     dict(prs=[_pr(2, "SUCCESS", autoMerge=True, labels=["hold"])],
+          runs=[], state=_empty_state()),
+     [("note", 2), ("disarm", 2)]),
+    # a PR armed and awaiting its run is the one in flight: nobody else is armed or refreshed.
+    ("order-inflight-blocks-others",
+     dict(prs=[_pr(2, "", autoMerge=True, mergeStateStatus="BLOCKED"),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("comment", 2), ("note", 3)]),
+    # a RED armed PR (a job failed, `test` not reported yet) is not landing: the next green one is the front.
+    ("order-red-armed-not-landing",
+     dict(prs=[_pr(2, None, autoMerge=True, mergeStateStatus="BLOCKED", red=True, live=True, labels=["priority"]),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("comment", 2), ("arm", 3), ("refresh", 3)]),
+    # an armed PR that never ran is not landing either.
+    ("order-never-run-not-landing",
+     dict(prs=[_pr(2, None, autoMerge=True, mergeStateStatus="BLOCKED"),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("comment", 2), ("arm", 3), ("refresh", 3)]),
+    # an armed PR whose jobs are live and none has failed IS landing, with no `test` yet.
+    ("order-live-jobs-landing",
+     dict(prs=[_pr(2, None, autoMerge=True, mergeStateStatus="BLOCKED", live=True),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("comment", 2), ("note", 3)]),
+    # an armed, clean PR is about to land: the PR behind main waits for it.
+    ("order-landing-blocks-others",
+     dict(prs=[_pr(2, "SUCCESS", autoMerge=True),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("note", 2), ("note", 3)]),
     # (d) a conflict is NAMED once, with the rebase its owner owes.
     ("conflict-named",
      dict(prs=[_pr(3, "SUCCESS", mergeable="CONFLICTING", headRefName="lane/x")],
@@ -663,6 +808,15 @@ def selftest():
         got = [(a["do"], a.get("pr", a.get("run"))) for a in acts]
         if got != want:
             sys.exit(f"pr-watcher: self-test failed on `{name}`: got {got}, want {want}")
+    # THE TREADMILL: five green PRs all behind main cost ONE refresh a pass, never five.
+    five = [_pr(n, "SUCCESS", mergeStateStatus="BEHIND", autoMerge=True) for n in (4, 6, 7, 8, 9)]
+    refreshed = [a["pr"] for a in plan(five, [], _empty_state()) if a["do"] == "refresh"]
+    if refreshed != [4]:
+        sys.exit(f"pr-watcher: self-test — five armed PRs behind main refreshed {refreshed}, want [4]")
+    # and once the front merges, the next in order is the one refreshed.
+    refreshed = [a["pr"] for a in plan(five[1:], [], _empty_state()) if a["do"] == "refresh"]
+    if refreshed != [6]:
+        sys.exit(f"pr-watcher: self-test — after the front merged {refreshed} was refreshed, want [6]")
     # a failed PR told once, not every pass.
     st = _empty_state()
     first = plan([_pr(1, "FAILURE")], [], st)

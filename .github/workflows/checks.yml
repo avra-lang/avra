@@ -25,7 +25,7 @@
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) runs the
 # whole gate over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
-# trades runner slots against wall time: four shards keeps a PR's gate short.
+# trades runner slots against wall time: five shards keeps a PR's gate short.
 name: checks
 
 on:
@@ -177,7 +177,7 @@ jobs:
           if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
-          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 4)
+          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 5)
           # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
           # the compiler-free keepers and the codecs scan. The heavy legs owe
           # nothing until the PR is ready or carries `full-ci`, so a draft that
@@ -352,6 +352,16 @@ jobs:
           before=$(du -sm .avra-cache | cut -f1)
           find .avra-cache/obj .avra-cache/bin -type f -printf '%T@ %s %p\n' 2>/dev/null | sort -rn \
             | awk -v cap=314572800 '{ acc += $2; if (acc > cap) print $3 }' | xargs -r rm -f
+          # THE STORE KEEPS TWO REVISIONS AND AT MOST 600 MB. Each revision is one compiler's rows, and
+          # a cache that restores and saves the store every main run only grows: 1.1 GB of dead
+          # generations rode into the hand-down tar and broke its 1 GB budget. The newest two are what
+          # a run reads (the compiler it built wrote them last).
+          if [ -d .avra-cache/store ]; then
+            chmod +x build/avra
+            echo "store before: $(du -sm .avra-cache/store | cut -f1) MB"
+            AVRA_STORE_REVISIONS=2 AVRA_STORE_MAX_MB=600 build/avra cache clean || echo "::warning::the bounded cache clean failed"
+            echo "store after: $(du -sm .avra-cache/store | cut -f1) MB"
+          fi
           echo "prune: .avra-cache $before MB -> $(du -sm .avra-cache | cut -f1) MB"
       # A CACHE IS SCOPE-BOUND, AND ONLY THE DEFAULT BRANCH CROSSES RUNS: a run
       # restores caches from its own branch and `main`, never a sibling's, and
@@ -822,7 +832,7 @@ jobs:
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            AVRA_SOUND_CHECK=1 build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
           done

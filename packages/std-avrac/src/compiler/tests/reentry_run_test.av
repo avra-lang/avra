@@ -45,4 +45,22 @@ spec "compiler/expand — a re-entry is settled for its run only" {
             ws.decls.reentry_answer(a) == null
         }
     }
+    given "a re-entry computing" {
+        then "is running until it is kept, and then its answer stands" {
+            let ws = reentry_workspace()
+            let a = ws.file_id("/w/src/a.av")
+            let before = ws.decls.reentry_running(a)
+            ws.decls.reentry_begun(a)
+            let during = ws.decls.reentry_running(a)
+            ws.decls.reentry_kept(a, [])
+            !before && during && !ws.decls.reentry_running(a) && ws.decls.reentry_answer(a) != null
+        }
+        then "is no longer running once the outer run ends" {
+            let ws = reentry_workspace()
+            let a = ws.file_id("/w/src/a.av")
+            ws.decls.reentry_begun(a)
+            ws.decls.reentry_over(a)
+            !ws.decls.reentry_running(a)
+        }
+    }
 }
