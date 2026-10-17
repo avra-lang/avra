@@ -1,0 +1,36 @@
+// proves: a failed turn and the recovery after it leave a component's
+// instance state where it was — the notice stands beside the view and
+// never in it, so nothing remounts. The view's root is a single button.
+use @std.ui.components.{button}
+use @std.ui.headless.{Screen, headless}
+
+state failing: bool = false
+
+component tap(label: string) {
+    state n: int = 0
+    button "${self.label} ${self.n}" { on press { self.n = self.n + 1 } }
+}
+
+fn view() -> tap { tap "t" }
+
+fn contained(act: fn() -> bool) -> Result<bool, string> {
+    let ran = act()
+    if !failing { return .Ok(ran) }
+    .Err("boom")
+}
+
+fn shown(s: Screen) -> string {
+    [l.trim() for l in s.text().split("\n") if l.trim() != ""].join(" | ")
+}
+
+let s = headless(view)
+s.guarded(contained)
+let _ = s.press("t 0")
+let _ = s.press("t 1")
+println("${shown(s)} held=${s.held()}")
+failing = true
+let _ = s.press("t 2")
+println("${shown(s)} held=${s.held()}")
+failing = false
+let _ = s.press("t 3")
+println("${shown(s)} held=${s.held()}")

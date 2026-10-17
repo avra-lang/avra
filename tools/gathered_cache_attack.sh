@@ -93,6 +93,30 @@ fn nobody_calls_this() -> int { 42 }'
 steps=$((steps+1)); unrelated=$(ran)
 [ "$unrelated" = "$grown" ] || { fails=$((fails+1)); echo "FAIL  an unrelated edit changed the answer: got '$unrelated', want '$grown'"; }
 
+# a member MOVES to another file: the same enum, its file's members regathered
+cat > $R/src/shapes/more.av <<'AV'
+fn nothing_here() -> int { 0 }
+AV
+cat >> $R/src/shapes/shapes.av <<'AV'
+
+@shape(2)
+type Box = { side: int, deep: string }
+AV
+steps=$((steps+1)); moved_home=$(ran)
+[ "$moved_home" = "$grown" ] || { fails=$((fails+1)); echo "FAIL  a member moved between files: got '$moved_home', want '$grown'"; }
+
+# a member is RENAMED in a file nothing else reads: its variant takes the new name
+ed $R/src/shapes/shapes.av 'type Box = { side: int, deep: string }' 'type Crate = { side: int, deep: string }'
+steps=$((steps+1)); renamed=$(ran)
+[ "$renamed" = "Dot() Line(string/Str) Crate(int/Int,string/Str) 0" ] || { fails=$((fails+1)); echo "FAIL  after a member was renamed: got '$renamed'"; }
+ed $R/src/shapes/shapes.av 'type Crate = ' 'type Box = '
+
+# a member is REMOVED from a file nothing else reads
+ed $R/src/shapes/shapes.av '@shape(2)
+type Box = { side: int, deep: string }' ''
+steps=$((steps+1)); gone=$(ran)
+[ "$gone" = "Dot() Line(string/Str) 0" ] || { fails=$((fails+1)); echo "FAIL  after a member was removed: got '$gone'"; }
+
 # A MEMBER THAT NAMES ITS OWN ENUM, and nothing asking the enum first: the
 # member's signature and the enum's each read the other, so a warm run that
 # verifies the member first must still move the enum's payload.
