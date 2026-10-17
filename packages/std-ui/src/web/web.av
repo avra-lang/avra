@@ -4,6 +4,8 @@
 //! is sent only what changed. THIS MODULE NAMES THE HOST: `avra_dom_frame`
 //! is the page's to answer, so only a program built for a page imports it.
 use app.{Act, Door, Msg, Want, plain, remounted, stood}
+use realize.dom.wire.{request_frame}
+use @std.http_message.message.{Reply}
 use realize.dom.live.{live}
 use realize.dom.page.{Paged, paged}
 use tree.view.{View}
@@ -12,6 +14,8 @@ use style.theme.{Theme}
 extern fn avra_dom_frame(frame: Bytes)
 extern fn avra_ui_arm(token: int, ms: int, repeat: int)
 extern fn avra_ui_disarm(token: int)
+extern fn avra_ui_get(token: int, request: Bytes)
+extern fn avra_ui_abort(token: int)
 extern fn avra_bytes_with_room(n: int) -> Bytes
 extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
 
@@ -23,9 +27,16 @@ type Seat = { box: Bytes, room: int }
 
 once fn seated() -> Cell<Seat?> { Cell.new(null) }
 
-/// A timer the page was asked for: its number, what runs when it fires,
-/// whose it is, and whether it fires again.
-type Held = { token: int, act: Act, owner: string?, repeat: bool }
+/// How the page keeps a source: a timer that fires once or over and over,
+/// or a request whose reply is left in a cell.
+enum How {
+    Timer(repeat: bool)
+    Request(into: Cell<Result<Reply, string>?>)
+}
+
+/// A source the page was asked for: its number, what runs when it fires or
+/// is answered, whose it is, and how the page keeps it.
+type Held = { token: int, act: Act, owner: string?, how: How }
 
 once fn waiting() -> Cell<List<Held>> { Cell.new([]) }
 
@@ -60,6 +71,14 @@ extern fn avra_ui_seat(room: int) -> Bytes {
     let made = Seat { box: avra_bytes_with_room(room), room: room }
     seated().set(made)
     made.box
+}
+
+/// The first `len` octets the host wrote into the seat, whole (empty when
+/// the length is one the seat cannot hold).
+fn seated_octets(len: int) -> Bytes {
+    let held? = seated().get() else { return "".bytes() }
+    if len < 0 || len > held.room { return "".bytes() }
+    avra_bytes_adopted(held.box, len)
 }
 
 /// The first `len` octets the host wrote into the seat, as text. A length
@@ -102,25 +121,42 @@ fn sent(msg: Msg) -> bool {
     }
 }
 
-/// The host is asked to keep a timer for `want`, under a number nobody
-/// else wears.
+/// The host is asked to keep a timer or send a request for `want`, under a
+/// number nobody else wears.
 fn armed(want: Want, act: Act, owner: string?) -> bool {
     let token = counted().get() + 1
     counted().set(token)
-    waiting().push(Held { token: token, act: act, owner: owner, repeat: want.repeats() })
-    avra_ui_arm(token, want.span(), if want.repeats() { 1 } else { 0 })
+    match want {
+        .After(ms) -> {
+            waiting().push(Held { token: token, act: act, owner: owner, how: How.Timer(false) })
+            avra_ui_arm(token, ms, 0)
+        },
+        .Every(ms) -> {
+            waiting().push(Held { token: token, act: act, owner: owner, how: How.Timer(true) })
+            avra_ui_arm(token, ms, 1)
+        },
+        .Get(request, into) -> {
+            waiting().push(Held { token: token, act: act, owner: owner, how: How.Request(into) })
+            avra_ui_get(token, request_frame(request))
+        },
+    }
     true
 }
 
-/// A timer is let go: it will not fire, and a late fire is ignored.
+/// A source is let go: it will not fire or answer, and a late fire is
+/// ignored.
 fn dropped(token: int) { waiting().set([h for h in waiting().get() if h.token != token]) }
 
-/// Every timer whose control has left the page is cancelled.
+/// Every source whose control has left the page is cancelled: a timer is
+/// disarmed, a request aborted.
 fn swept(held: Paged) {
     for h in waiting().get() {
         if !held.app.owns(h.owner) {
             dropped(h.token)
-            avra_ui_disarm(h.token)
+            match h.how {
+                .Timer(_) -> avra_ui_disarm(h.token),
+                .Request(_) -> avra_ui_abort(h.token),
+            }
         }
     }
 }
@@ -130,8 +166,52 @@ fn swept(held: Paged) {
 extern fn avra_ui_fired(token: int) {
     let held? = mounted().get() else { return }
     let ask? = waiting().get().find(it.token == token) else { return }
-    if !ask.repeat { dropped(token) }
+    if !fires(ask) { return }
     let _ = held.app.turn_for(ask.owner, ask.act)
     swept(held)
     held.app.warn()
+}
+
+/// The host's request `token` was answered: with the status and the octets
+/// in the seat (`len` of them), or — status -1 — why there is no answer, as
+/// text in the seat. The reply is left where its ask put it and its act runs
+/// as a turn. A request already let go answers nothing.
+extern fn avra_ui_answered(token: int, status: int, len: int) {
+    let held? = mounted().get() else { return }
+    let ask? = waiting().get().find(it.token == token) else { return }
+    let into? = replies_to(ask.how) else { return }
+    dropped(token)
+    into.set(replied(status, len))
+    let _ = held.app.turn_for(ask.owner, ask.act)
+    swept(held)
+    held.app.warn()
+}
+
+/// Whether a source fires when the host's timer does: a timer does — and is
+/// let go if it fires once — a request waits for an answer instead.
+fn fires(ask: Held) -> bool {
+    match ask.how {
+        .Timer(repeat) -> {
+            if !repeat { dropped(ask.token) }
+            true
+        },
+        .Request(_) -> false,
+    }
+}
+
+/// Where a request's reply is left; none for a timer.
+fn replies_to(how: How) -> Cell<Result<Reply, string>?>? {
+    match how { .Request(into) -> into, .Timer(_) -> null }
+}
+
+/// The words a failed request gives, or a plain one when it gave none.
+fn failure_words(words: string?) -> string {
+    let said? = words else { return "the request failed" }
+    if said == "" { "the request failed" } else { said }
+}
+
+/// What the host's answer was: a reply, or the words it gave for none.
+fn replied(status: int, len: int) -> Result<Reply, string> {
+    if status < 0 { return .Err(failure_words(seated_text(len))) }
+    .Ok(Reply { status: status, body: seated_octets(len) })
 }
