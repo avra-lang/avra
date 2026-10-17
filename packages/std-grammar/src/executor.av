@@ -552,7 +552,7 @@ fn match_seq<T, N>(
     for member in s.items {
         let r = when {
             member.trailer && !open -> missed<T, N>(cx, cursor, bindings, cx.silence, null)
-            s.fold != null && member.rep == Rep.Star -> match_fold<T, N>(
+            s.fold != null && (member.rep == Rep.Star || member.rep == Rep.Opt) -> match_fold<T, N>(
                 cx,
                 rule_name,
                 s.fold!,
@@ -847,7 +847,8 @@ fn with_seed<T, N>(bindings: List<Binding<T, N>>, field: string, acc: Captured<T
 /// value. `origin` is where the fold's branch began, so a turn's node
 /// spans the seed and everything folded into it. A turn's own labels
 /// die with the turn — what a later turn reads is the value so far and
-/// nothing else. Iterations speculate as a repetition's do.
+/// nothing else. Iterations speculate as a repetition's do; an optional
+/// group is one turn at most.
 fn match_fold<T, N>(
     mut cx: MatchContext<T, N>,
     rule_name: string,
@@ -898,6 +899,7 @@ fn match_fold<T, N>(
         diagnostics = diagnostics.concat(r.diagnostics)
         acc = r.value
         cursor = r.cursor
+        if member.rep == Rep.Opt { break }
     }
     matched<T, N>(cursor, with_seed<T, N>(bindings, field, acc), acc, diagnostics, farthest)
 }
