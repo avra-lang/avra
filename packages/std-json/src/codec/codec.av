@@ -1,5 +1,5 @@
-//! `@json` — a record type that reads itself from JSON and writes
-//! itself back. The declaration IS the schema: each field reads the
+//! `@json` — a record or enum type that reads itself from JSON and
+//! writes itself back. The declaration IS the schema: each field reads the
 //! member of its own name, by its own type.
 //!
 //!     use @std.json.codec.{json}
@@ -8,10 +8,12 @@
 //!     type Idea = { title: string, votes: int, tags: List<string>, note: string? }
 //!
 //! gives `Idea.from_json(j)`, answering the record or a `DecodeError`
-//! naming the path that misfit (`tags[2]`), and `idea.to_json()`. A
-//! field reads an `int`, `float`, `bool`, `string`, a `T?` (absent and
+//! naming the path that misfit (`tags[2]`), and `idea.to_json()`. An
+//! ENUM is an object whose `tag` names the variant and whose other
+//! members are its payload fields (`{"tag":"Both","row":1}`); a variant
+//! reads at most four fields. A field reads an `int`, `float`, `bool`, `string`, a `T?` (absent and
 //! `null` both read as null), a `List<T>` of any of these, or another
-//! `@json` record. Anything else is refused at the declaration.
+//! `@json` record or enum. Anything else is refused at the declaration.
 //!
 //! Stands alone with `@std/meta` and the vocabulary it generates calls
 //! to, per the derive-isolation law.
@@ -19,6 +21,8 @@ use @std.meta.{
     Type,
     Field,
     Kind,
+    Variant,
+    Arms,
     Directive,
     Diagnostic,
     Declared,
@@ -44,13 +48,15 @@ use @std.json.{
     want_object,
     path_field,
     path_item,
+    unknown_tag,
 }
 
-/// `@json` — a record's JSON reader and writer, and every way its
-/// shape refuses one, spoken at the declaration.
+/// `@json` — a record's or an enum's JSON reader and writer, and every
+/// way its shape refuses one, spoken at the declaration.
 export fn json(t: Type) -> Declared {
+    if !t.variants.is_empty() { return enum_json(t) }
     let problems = shape_problems(t)
-    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    if !problems.is_empty() { return refused(problems) }
     Declared { made: [Directive { twin: "", name: t.name, at: t.at, source: codec(t) }] }
 }
 
@@ -95,6 +101,117 @@ fn codec(t: Type) -> Decls {
             }
         }
     }
+}
+
+// ── An enum ──────────────────────────────────────────────────────
+
+/// A declaration that made nothing, and why.
+fn refused(problems: List<Diagnostic>) -> Declared { Declared { made: [], problems: problems } }
+
+/// An enum as an object: its variant under `tag`, and each payload field
+/// under its own name. A variant with no payload is the tag alone.
+fn enum_json(t: Type) -> Declared {
+    let problems = enum_problems(t)
+    if !problems.is_empty() { return refused(problems) }
+    Declared { made: [Directive { twin: "", name: t.name, at: t.at, source: enum_codec(t) }] }
+}
+
+fn enum_codec(t: Type) -> Decls {
+    let chosen = chosen_by_tag(
+        [Named { name: v.name, value: built(t, v, [member_read(f) for f in v.fields]) } for v in t.variants],
+    )
+    let writes = [write_arm(v) for v in t.variants]
+    let tags = listed([quote { Json.Str(${literal(v.name)}) } for v in t.variants])
+    let schemas = listed(
+        [quote { field(${literal(n)}, ${name(n)}.json_schema()) } for n in read_closure(t)],
+    )
+    quote {
+        impl ${t} {
+            /// This enum read from a JSON document.
+            static fn from_json(j: Json) -> Result<${t}, DecodeError> {
+                ${name(t.name)}.decode_json(j, "")
+            }
+
+            /// This enum read from the value at `at`: its variant under
+            /// `tag`, then the payload fields it names.
+            static fn decode_json(v: Json?, at: string) -> Result<${t}, DecodeError> {
+                let o = want_object(v, at)?
+                let tag_at = path_field(at, "tag")
+                let tag = want_text(member_once(o, "tag", tag_at)?, tag_at)?
+                ${chosen}
+            }
+
+            /// This enum as a JSON object: its variant under `tag`.
+            fn to_json() -> Json {
+                match self { ${writes} }
+            }
+
+            /// This enum's JSON Schema: an object whose `tag` is one of
+            /// its variants.
+            static fn json_schema() -> Json {
+                Json.Obj([
+                    field("type", Json.Str("object")),
+                    field("properties", Json.Obj([field("tag", Json.Obj([field("enum", Json.Arr(${tags}))]))])),
+                    field("required", Json.Arr([Json.Str("tag")])),
+                ])
+            }
+
+            /// The schema of this enum and of every record it reads.
+            static fn json_schemas() -> Json {
+                Json.Obj(${schemas})
+            }
+        }
+    }
+}
+
+/// The variant `tag` names: one `if` per variant, ending in the refusal
+/// for a tag that names none.
+fn chosen_by_tag(by_name: List<Named>) -> Code {
+    mut chain = quote { { fail unknown_tag(tag_at, tag) } }
+    // LICENSED loops.push_loop: each branch wraps the chain built from the variants after it
+    for j in 0..by_name.length {
+        let n = by_name[by_name.length - 1 - j]
+        let rest = chain
+        chain = quote { if tag == ${literal(n.name)} { ${n.value} } else { ${rest} } }
+    }
+    chain
+}
+
+/// A variant's name and the code that builds it.
+type Named = { name: string, value: Code }
+
+/// The widest variant `built` spells.
+const VARIANT_WIDTH: int = 4
+
+/// A variant of `t` built from the code at each position in `vs`, one
+/// template per arity: a call's argument list has no seat a hole may fill.
+fn built(t: Type, v: Variant, vs: List<Code>) -> Code {
+    match vs.length {
+        0 -> quote { ${name(t.name)}.${v} },
+        1 -> quote { ${name(t.name)}.${v}(${vs[0]}) },
+        2 -> quote { ${name(t.name)}.${v}(${vs[0]}, ${vs[1]}) },
+        3 -> quote { ${name(t.name)}.${v}(${vs[0]}, ${vs[1]}, ${vs[2]}) },
+        4 -> quote { ${name(t.name)}.${v}(${vs[0]}, ${vs[1]}, ${vs[2]}, ${vs[3]}) },
+        rest -> quote { a_variant_wider_than_variant_width_has_no_call() },
+    }
+}
+
+/// One arm of `to_json`: the tag, then each payload field under its name.
+fn write_arm(v: Variant) -> Arms {
+    let bs = ["b${j}" for j in 0..v.fields.length]
+    let tag = quote { field("tag", Json.Str(${literal(v.name)})) }
+    let fields = [quote { field(${literal(f.name)}, ${written(f.kind, name(bs[j]), 0)}) } for j, f in v.fields]
+    let members = listed([tag].concat(fields))
+    if v.fields.is_empty() { return quote { .${v} -> Json.Obj(${members}) } }
+    quote { .${v}(${bs}) -> Json.Obj(${members}) }
+}
+
+fn enum_problems(t: Type) -> List<Diagnostic> {
+    [too_wide_variant(t, v) for v in t.variants if v.fields.length > VARIANT_WIDTH]
+        .concat([unreadable_payload(t, v, f) for v in t.variants for f in v.fields if !readable(f.kind)])
+        .concat(
+            [unannotated_payload(t, v, f, n) for v in t.variants for f in v.fields for n in records_read(f.kind) if !coded(n)],
+        )
 }
 
 // ── Reading ──────────────────────────────────────────────────────
@@ -240,7 +357,7 @@ fn read_closure(t: Type) -> List<string> {
     mut seen = [t.name]
     mut at = 0
     while at < seen.length {
-        let fields = if at == 0 { t.fields } else { type_named(seen[at])?.fields ?? [] }
+        let fields = if at == 0 { fields_of(t) } else { fields_of(type_named(seen[at])) }
         for n in [n for f in fields for n in records_read(f.kind)] {
             if !seen.contains(n) { seen = seen.concat([n]) }
         }
@@ -252,10 +369,15 @@ fn read_closure(t: Type) -> List<string> {
 // ── The shape a codec reads ──────────────────────────────────────
 
 fn shape_problems(t: Type) -> List<Diagnostic> {
-    if !t.variants.is_empty() { return [an_enum(t)] }
     if t.fields.length > RECORD_WIDTH { return [too_wide(t)] }
     [unreadable_field(t, f) for f in t.fields if !readable(f.kind)]
         .concat([unannotated(t, f, n) for f in t.fields for n in records_read(f.kind) if !coded(n)])
+}
+
+/// Every field a type reads: a record's own, an enum's across its variants.
+fn fields_of(t: Type?) -> List<Field> {
+    let d? = t else { return [] }
+    d.fields.concat([f for v in d.variants for f in v.fields])
 }
 
 /// The records a field of this kind reads through — each must carry
@@ -290,12 +412,33 @@ fn readable(k: Kind) -> bool {
 
 // ── Voices ───────────────────────────────────────────────────────
 
-fn an_enum(t: Type) -> Diagnostic {
+/// What a declaration too wide to read is told to do.
+const group_help: string = "group fields into a nested `@json` record"
+
+fn too_wide_variant(t: Type, v: Variant) -> Diagnostic {
     refuse_as_at(
-        "enum_record",
-        t.at,
-        "`@json` reads a record, and `${t.name}` is an enum",
-        "give each variant its own record, or write `from_json` by hand",
+        "too_wide",
+        v.at,
+        "`@json` reads a variant of at most ${VARIANT_WIDTH} fields, and `${t.name}.${v.name}` has ${v.fields.length}",
+        group_help,
+    )
+}
+
+fn unreadable_payload(t: Type, v: Variant, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "unreadable_field",
+        f.at,
+        "`${t.name}.${v.name}`'s `${f.name}` is `${f.ty}`, which has no JSON reading",
+        "a payload reads int, float, bool, string, `T?`, `List<T>`, or another `@json` record or enum",
+    )
+}
+
+fn unannotated_payload(t: Type, v: Variant, f: Field, n: string) -> Diagnostic {
+    refuse_as_at(
+        "unannotated_record",
+        f.at,
+        "`${t.name}.${v.name}`'s `${f.name}` reads `${n}`, which does not wear `@json`",
+        "write `@json` on `${n}` too",
     )
 }
 
@@ -304,7 +447,7 @@ fn too_wide(t: Type) -> Diagnostic {
         "too_wide",
         t.at,
         "`@json` reads a record of at most ${RECORD_WIDTH} fields, and `${t.name}` has ${t.fields.length}",
-        "group fields into a nested `@json` record",
+        group_help,
     )
 }
 
