@@ -4107,6 +4107,14 @@ const char* avra_embed(const char* path) {
     return "";
 }
 
+/* `embed_octets` is `embed`'s twin for a file of any octets: answered
+   by the compiler, at compile time, under the const's own directory. */
+const char* avra_embed_octets(const char* path) {
+    (void)path;
+    avra_trap("`embed_octets` reads a file at compile time, into a const — this program reached it at run time");
+    return "";
+}
+
 /* `type_named` is answered by the compiler's own declaration table,
    which a running program does not carry; the interpreter's arm
    never calls this body at all. */
