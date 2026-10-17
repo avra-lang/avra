@@ -82,10 +82,10 @@ fn provided_call(mut cx: LowerCx, e: ExprId, rel: string, path: string) -> Reg {
     let kind = cx.type_at(e)
     let provide? = provider_of(cx, kind) else { return cx.lower_defect(e, "a provided kind without a `provide` survived typing") }
     let octets = cx.embed_octets(Type.Bytes, cx.const_str(path))
-    let answer = cx
-        .call_decl(cx.type(kind?), cx.method_symbol(provide, e, kind), [cx.const_str(rel), octets])
+    let held = cx.type(kind?)
+    let answer = cx.call_decl(held, cx.method_symbol(provide, e, kind), [cx.const_str(rel), octets])
     cx
-        .presence(answer, kind, e) { cx, carried -> carried } else { cx ->
+        .presence(answer, held, e) { cx, carried -> carried } else { cx ->
             cx.trap(cx.const_str(provided_unread(rel, kind_name(cx, kind))))
             cx.hollow_of(kind)
         }

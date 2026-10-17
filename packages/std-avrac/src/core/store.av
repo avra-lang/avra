@@ -18,7 +18,7 @@ export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> List<ExprId> { [] }
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool, is_asset: bool }
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks {
@@ -30,6 +30,7 @@ fn no_stmt_marks() -> StmtMarks {
         is_provide: false,
         is_module_state: false,
         is_host: false,
+        is_asset: false,
     }
 }
 
@@ -1278,6 +1279,17 @@ impl SyntaxArena {
     fn mark_state(s: StmtId) {
         self.update_marks(s, (m) -> m with { is_state: true })
         self.restamp(s, 155)
+    }
+
+    /// `asset n: T = "path"` — written as the asset statement, which IS the
+    /// const `provided<T>("path")`: the mark is how the printer says it back.
+    fn mark_asset(s: StmtId) {
+        self.update_marks(s, (m) -> m with { is_asset: true })
+        self.restamp(s, 158)
+    }
+
+    fn is_asset_stmt(s: StmtId) -> bool {
+        if s.index < self.marks.get().length { self.marks_at(s).is_asset } else { false }
     }
 
     fn is_state_stmt(s: StmtId) -> bool {
