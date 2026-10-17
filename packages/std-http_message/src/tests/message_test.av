@@ -1,0 +1,43 @@
+use @std.http_message.message.{Body, Header, Method, Request}
+
+spec "a request is a value" {
+    given "the constructors" {
+        then "get names its URL and carries nothing" {
+            let r = Request.get("https://example.test/a")
+            r.method == Method.Get &&
+                r.url == "https://example.test/a" &&
+                r.headers.is_empty() &&
+                r.body is .Empty &&
+                r.timeout_ms == null &&
+                r.retries == 0
+        }
+        then "post, put and patch carry their body, delete none" {
+            let p = Request.post("/p", Body.Text("hi"))
+            let u = Request.put("/u", Body.Json("{}"))
+            let c = Request.patch("/c", Body.Empty)
+            let d = Request.delete("/d")
+            p.method == Method.Post &&
+                u.method == Method.Put &&
+                c.method == Method.Patch &&
+                d.method == Method.Delete &&
+                d.body is .Empty
+        }
+    }
+    given "a request refined with `with`" {
+        then "the timeout and the retries are set, the rest kept" {
+            let r = Request.get("/x") with { timeout_ms: 2500, retries: 2 }
+            r.timeout_ms == 2500 && r.retries == 2 && r.url == "/x"
+        }
+        then "a field is added after those it has, in order" {
+            let r = Request.get("/x").header("accept", "text/plain").header("x-id", "7")
+            r.headers.length == 2 && r.headers[0].name == "accept" && r.headers[1].value == "7"
+        }
+    }
+    given "two requests built alike" {
+        then "their fields agree, so a request replays" {
+            let a = Request.post("/p", Body.Form([Header { name: "k", value: "v" }]))
+            let b = Request.post("/p", Body.Form([Header { name: "k", value: "v" }]))
+            a.url == b.url && a.method == b.method && a.body is .Form
+        }
+    }
+}
