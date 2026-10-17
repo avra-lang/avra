@@ -5,6 +5,7 @@
 //! when it ran.
 use tree.node.{Node, Prim, Attribute, Urgency}
 use style.box.{Box}
+use tree.controls.{controls}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use style.theme.{Theme, default_theme}
@@ -17,12 +18,14 @@ export alias Act = fn() -> bool
 /// loop owns, so it ends with the loop.
 export alias Job = fn() -> bool
 
-/// What the inbox carries: a turn to run, a job to start, or a job's
-/// word that it has finished (the loop's own).
+/// What the inbox carries: a turn to run, a job to start, or a worker's
+/// word that it is free of the job numbered `serial` (the loop's own). `owner` is the path of the
+/// control that asked — where a node stands, across paints — or none for
+/// work the app itself asked: what a node that has left asked is dropped.
 export enum Msg {
-    Turn(act: Act)
-    Start(job: Job)
-    Ended
+    Turn(act: Act, owner: string?)
+    Start(job: Job, owner: string?)
+    Ended(worker: int, serial: int)
 }
 
 /// The way into a running loop: where a message goes, and how the loop is
@@ -56,6 +59,8 @@ export type App = {
     unsaid: Cell<string?>,
     guard: Cell<fn(fn() -> bool) -> Result<bool, string>>,
     noticed: Cell<fn(string?) -> void>,
+    asking: Cell<string?>,
+    standing: Cell<List<string>>,
 }
 
 /// A target with nowhere to show a notice beside the view.
@@ -85,6 +90,7 @@ export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, The
     let untold: List<string> = []
     let nodoor: Door? = null
     let nothing: string? = null
+    let nobody: string? = null
     App {
         view: Cell.new(drawn),
         theme: Cell.new(theme),
@@ -98,6 +104,8 @@ export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, The
         unsaid: Cell.new(nothing),
         guard: Cell.new(uncontained),
         noticed: Cell.new(unnoticed),
+        asking: Cell.new(nobody),
+        standing: Cell.new(untold),
     }
 }
 
@@ -118,7 +126,9 @@ impl App {
         let view = self.view.get()
         let theme = self.theme.get()
         self.stands.begun()
-        self.show(view(self.stands), theme())
+        let root = view(self.stands)
+        self.standing.set([c.path for c in controls(root)])
+        self.show(root, theme())
     }
 
     /// What the last paint's walk said of the tree it was handed — an
@@ -187,13 +197,30 @@ impl App {
         }
     }
 
+    /// The control at `owner` speaks: `act` is a turn, and whatever it
+    /// asks of the loop is that control's.
+    fn turn_of(owner: string, act: Act) -> bool {
+        let before = self.asking.get()
+        self.asking.set(owner)
+        let ran = self.turn(act)
+        self.asking.set(before)
+        ran
+    }
+
+    /// Whether the control at `owner` is on the screen the last paint
+    /// showed. Work no control asked is always owned.
+    fn owns(owner: string?) -> bool {
+        let at? = owner else { return true }
+        self.standing.get().contains(at)
+    }
+
     /// A source leaves `act` for the loop to run as a turn. False when
     /// the loop has ended.
-    fn post(act: Act) -> bool { self.send(Msg.Turn(act)) }
+    fn post(act: Act) -> bool { self.send(Msg.Turn(act, self.asking.get())) }
 
     /// A source leaves `job` for the loop to start as a task it owns.
     /// False when the loop has ended.
-    fn start(job: Job) -> bool { self.send(Msg.Start(job)) }
+    fn start(job: Job) -> bool { self.send(Msg.Start(job, self.asking.get())) }
 
     fn send(msg: Msg) -> bool {
         let door? = self.door.get() else { return self.direct(msg) }
@@ -211,7 +238,7 @@ impl App {
     /// A message with no loop to take it: a turn runs at once, a job has
     /// nowhere to run.
     fn direct(msg: Msg) -> bool {
-        match msg { .Turn(act) -> self.turn(act), .Start(_) or .Ended -> false }
+        match msg { .Turn(act, _) -> self.turn(act), .Start(_, _) or .Ended(_, _) -> false }
     }
 
     /// The loop ends once what stands in the inbox has run.

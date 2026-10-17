@@ -5,10 +5,10 @@
 # Usage: sh tools/expanded_attack.sh [avra] [package]
 avra=${1:-build/avra}
 package=${2:-packages/std-avrac}
-# A re-entry nested inside a re-entry recomputes (each settles once), so a file whose
-# delegating traits nest three resolves deep settles four times; the attack guards the
-# per-member re-run, which was 173.
-limit=4
+# A re-entry nested inside the first re-entry reads what that one has minted, so a file
+# settles twice at most (its run and that re-entry); the limit leaves one spare, and the
+# attack guards the per-member re-run, which was 173.
+limit=3
 trace=$(mktemp "${TMPDIR:-/tmp}/avra-expanded.XXXXXX")
 AVRA_QTRACE=1 "$avra" check "$package" 2>&1 | grep -a '^Q	settle	Expanded' > "$trace"
 worst=$(cut -f4 "$trace" | sort | uniq -c | sort -rn | head -n 1)

@@ -1,0 +1,89 @@
+// A node with no `impl Kids` answers its own expression fields in
+// declaration order. Each
+// case spells the answer its record's hand-written impl gave before
+// the shape stood in for it.
+use @std.avrac.core.{Span}
+use @std.avrac.compiler.{parse_source}
+
+fn spelled(source: string, s: Span) -> string { source.bytes().slice(s.lo, s.hi).text() ?? "" }
+
+/// The source text of the root expression's kids, joined by `|`.
+fn kids_of(source: string) -> string {
+    let p = parse_source(source)
+    let head? = p.stmts.first() else { return "no statement" }
+    let root? = p.store.stmt_value(head) else { return "no expression" }
+    let spans = [p.store.expr_span(k)! for k in p.store.expr(root).kids()]
+    [spelled(source, s) for s in spans].join("|")
+}
+
+spec "features/shaped_kids" {
+    given "a record's expression fields stand as its kids" {
+        then "two operands" {
+            kids_of("a + b") == "a|b"
+        }
+        then "a subject and its index" {
+            kids_of("a[3]") == "a|3"
+        }
+        then "a lone operand" {
+            kids_of("!a") == "a"
+        }
+        then "a property's subject, never its name" {
+            kids_of("a.b") == "a"
+        }
+        then "a call's arguments, never its callee" {
+            kids_of("f(1, 2)") == "1|2"
+        }
+        then "a map's keys, then its values" {
+            kids_of("{\"a\": 1, \"b\": 2}") == "\"a\"|\"b\"|1|2"
+        }
+        then "a range's bounds" {
+            kids_of("(0..4)") == "0|4"
+        }
+        then "a list's elements" {
+            kids_of("[1, 2]") == "1|2"
+        }
+        then "an `is` test's subject" {
+            kids_of("a is .X") == "a"
+        }
+        then "a variant literal's arguments" {
+            kids_of(".X(1, 2)") == "1|2"
+        }
+        then "a method call's subject, then its arguments" {
+            kids_of("a.m(1, 2)") == "a|1|2"
+        }
+        then "a when's conditions, values, then fallback" {
+            kids_of("when {\n    c -> 1\n    _ -> 2\n}") == "c|1|2"
+        }
+        then "a coalesce's sides" {
+            kids_of("a ?? b") == "a|b"
+        }
+        then "a force's value" {
+            kids_of("a!") == "a"
+        }
+        then "a chain's subject" {
+            kids_of("a?.b") == "a"
+        }
+        then "a call value's subject, then its arguments" {
+            kids_of("f(1)(2)") == "f(1)|2"
+        }
+        then "a struct literal's values" {
+            kids_of("P { n: 1, m: 2 }") == "1|2"
+        }
+        then "a with's subject, then its values" {
+            kids_of("a with { n: 1 }") == "a|1"
+        }
+    }
+    given "a node with nothing expressive holds no kids" {
+        then "a string literal" {
+            kids_of("\"x\"") == ""
+        }
+        then "a receiver" {
+            kids_of("self") == ""
+        }
+    }
+    given "an override answers its own" {
+        then "a lambda's body" {
+            kids_of("(a: int) -> a") == ""
+        }
+    }
+}

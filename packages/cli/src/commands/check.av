@@ -7,13 +7,15 @@
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
 use @std.path.{relative_path, under_dir}
-use @std.avrac.compiler.{Checked, Finding, work_counts, work_whole_reads}
+use @std.relation.engine.{count_reads}
+use @std.avrac.compiler.{Checked, Finding, work_counts, work_whole_reads, work_whys}
 
 type CheckCmd = {}
 
 impl Runnable for CheckCmd {
     fn run(args: CliResult) -> int {
         let path? = slotted_path(args) else { return 2 }
+        if args.has_flag("counts") { count_reads() }
         let base = match checked_at(path) {
             .Ok(c) -> said(args, path, c),
             .Err(report) -> {
@@ -41,6 +43,7 @@ fn said(args: CliResult, path: string, c: Checked) -> int {
     if args.has_flag("counts") {
         eprintln(work_counts())
         for line in work_whole_reads() { eprintln("whole: ${line}") }
+        for line in work_whys() { eprintln("why: ${line}") }
     }
     0
 }

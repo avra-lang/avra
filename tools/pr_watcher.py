@@ -146,19 +146,29 @@ def _is_green(p):
     return t is not None and t["conclusion"] == "SUCCESS"
 
 
+def _running(p):
+    """A PR whose gate is under way: its `test` is pending, or some job of its run is live."""
+    t = p.get("test")
+    pending = t is not None and t["conclusion"] not in ("SUCCESS", "FAILURE")
+    return pending or bool(p.get("live"))
+
+
 def _landing(p):
-    """A PR that is armed and either awaiting its run or clean, about to land: the one PR in
-    the order that nothing else may disturb by moving `main` or its own head."""
+    """A PR that is armed and either awaiting a run that can still pass, or clean, about to
+    land: the one PR in the order that nothing else may disturb by moving `main` or its own
+    head. A RED PR is not landing (a job of its run already failed, though the aggregate
+    `test` may not say so yet), nor is one that never ran: neither can merge, so neither may
+    hold the order."""
     if p["state"] != "OPEN" or p.get("isDraft") or _held(p) or not p["autoMerge"]:
         return False
-    if p.get("mergeable") == "CONFLICTING":
+    if p.get("mergeable") == "CONFLICTING" or p.get("red"):
         return False
     t = p.get("test")
     if t is not None and t["conclusion"] == "FAILURE":
         return False
-    if not _is_green(p):
-        return True
-    return (p.get("mergeStateStatus") or "CLEAN").upper() == "CLEAN"
+    if _is_green(p):
+        return (p.get("mergeStateStatus") or "CLEAN").upper() == "CLEAN"
+    return _running(p)
 
 
 def next_in_order(prs):
@@ -497,6 +507,11 @@ def collect(repo, state):
         p["test"] = test_of(repo, raw)
         # A `test` run still pending is a run live on this PR: a rerun now would
         # cancel it, the group being one per event.
+        # A job of the run already failed, or a job is still live: what the aggregate `test` has not said yet.
+        p["red"] = any((c.get("conclusion") or "").upper() in ("FAILURE", "TIMED_OUT", "STARTUP_FAILURE")
+                       for c in raw.get("statusCheckRollup") or [])
+        p["live"] = any((c.get("status") or "COMPLETED") != "COMPLETED"
+                        for c in raw.get("statusCheckRollup") or [])
         p["test_live"] = any(c.get("status", "COMPLETED") != "COMPLETED"
                              for c in raw.get("statusCheckRollup") or []
                              if (c.get("name") or c.get("context")) == "test")
@@ -712,6 +727,24 @@ SELFTEST = [
     # a PR armed and awaiting its run is the one in flight: nobody else is armed or refreshed.
     ("order-inflight-blocks-others",
      dict(prs=[_pr(2, "", autoMerge=True, mergeStateStatus="BLOCKED"),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("comment", 2), ("note", 3)]),
+    # a RED armed PR (a job failed, `test` not reported yet) is not landing: the next green one is the front.
+    ("order-red-armed-not-landing",
+     dict(prs=[_pr(2, None, autoMerge=True, mergeStateStatus="BLOCKED", red=True, live=True, labels=["priority"]),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("comment", 2), ("arm", 3), ("refresh", 3)]),
+    # an armed PR that never ran is not landing either.
+    ("order-never-run-not-landing",
+     dict(prs=[_pr(2, None, autoMerge=True, mergeStateStatus="BLOCKED"),
+               _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("comment", 2), ("arm", 3), ("refresh", 3)]),
+    # an armed PR whose jobs are live and none has failed IS landing, with no `test` yet.
+    ("order-live-jobs-landing",
+     dict(prs=[_pr(2, None, autoMerge=True, mergeStateStatus="BLOCKED", live=True),
                _pr(3, "SUCCESS", mergeStateStatus="BEHIND")],
           runs=[], state=_empty_state()),
      [("comment", 2), ("note", 3)]),
