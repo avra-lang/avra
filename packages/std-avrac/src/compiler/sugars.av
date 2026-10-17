@@ -40,32 +40,36 @@ fn minted_means(lang: Language, store: SyntaxArena, sugar: ExprId) -> List<ExprI
     let rewrite: Rewrite? = store.expr(sugar).means()
     let template? = rewrite else { return store.expr(sugar).minted(store, store.expr_span(sugar)) }
     match template.node {
-        .Template(_, _, parts, fills) -> spliced(lang, store, sugar, parts, [hole_id(f) for f in fills]),
+        .Template(_, _, parts, fills) -> spliced(lang, store, sugar, parts, fills),
         rest -> [],
     }
 }
 
-/// The arena index a hole's fill names — an id fills as its index.
-fn hole_id(fill: Node) -> int {
-    match fill { .Int(index) -> index, rest -> 0 - 1 }
-}
-
 /// The template's runs with a hole between each, as the quote it was
 /// written in.
-fn woven_quote(parts: List<string>) -> string {
-    let holed = [p + "\${0}" for p in parts.slice(0, parts.length - 1)].join("")
+fn woven_quote(parts: List<string>, fills: List<Node>) -> string {
+    let holed = [p + hole_text(fills[j]) for j, p in parts.slice(0, parts.length - 1)].join("")
     "quote { ${holed}${parts.last()!} }"
 }
 
-fn spliced(lang: Language, store: SyntaxArena, sugar: ExprId, parts: List<string>, ids: List<int>) -> List<
-    ExprId,
-> {
-    let source = woven_quote(parts)
+/// A hole as written: a run of ids is a spread, every other fill a lone hole.
+fn hole_text(fill: Node) -> string {
+    match fill { .Many(_) -> "\${..run}", rest -> "\${0}" }
+}
+
+fn spliced(
+    lang: Language,
+    store: SyntaxArena,
+    sugar: ExprId,
+    parts: List<string>,
+    fills: List<Node>,
+) -> List<ExprId> {
+    let source = woven_quote(parts, fills)
     let s? = scratch(lang, source) else { return [] }
     let body? = s.store.expr(s.body).body_of() else { return [] }
     let stmts: List<StmtId> = match body.view { .Verbatim(ss, _) -> ss, rest -> [] }
     let last? = stmts.last() else { return [] }
-    let thunks = [(kind: HoleKind) -> filled(kind, index) for index in ids]
+    let thunks = [(kind: HoleKind) -> filled(kind, fill) for fill in fills]
     mut rb = copier(s.store, store, thunks, hole_runs(s.store, s.body), sugar_door(lang))
     let copied = rb.stmts(stmts)
     let root? = store.answer_of(copied.last()!) else { return [] }
@@ -75,15 +79,34 @@ fn spliced(lang: Language, store: SyntaxArena, sugar: ExprId, parts: List<string
     made.filter(!same_expr(it, root)).concat([root])
 }
 
-/// A hole's id in the seat it stands in: an expression, a pattern, or a
-/// refusal the splice speaks.
-fn filled(kind: HoleKind, index: int) -> Filled {
+/// A hole's fill in the seat it stands in: an id read as an expression or
+/// a pattern, a run of ids, a name — or a refusal the splice speaks.
+fn filled(kind: HoleKind, fill: Node) -> Filled {
     match kind {
-        .Expression -> Filled.Expr(ExprId { index: index }),
-        .Binder -> Filled.Pat(PatId { index: index }),
-        rest -> Filled.Unplaceable("a rewrite's hole stands where an expression or a pattern does"),
+        .Expression -> match fill {
+            .Int(index) -> Filled.Expr(ExprId { index: index }),
+            rest -> Filled.Unplaceable(not_an_id()),
+        },
+        .Binder -> match fill {
+            .Int(index) -> Filled.Pat(PatId { index: index }),
+            rest -> Filled.Unplaceable(not_an_id()),
+        },
+        .Run -> match fill {
+            .Many(items) -> Filled.Exprs([ExprId { index: index_of(i) } for i in items]),
+            rest -> Filled.Unplaceable(not_an_id()),
+        },
+        .Name -> match fill { .Name(text) -> Filled.Name(text), rest -> Filled.Unplaceable(not_an_id()) },
+        rest -> Filled
+            .Unplaceable("a rewrite's hole stands where an expression, a pattern, a run or a name does"),
     }
 }
+
+/// The arena index an id's fill names.
+fn index_of(fill: Node) -> int {
+    match fill { .Int(index) -> index, rest -> 0 - 1 }
+}
+
+fn not_an_id() -> string { "a rewrite's hole is filled by an id, a run of ids or a name, each in its own seat" }
 
 /// The template's scratch parse, made once.
 fn scratch(lang: Language, source: string) -> Scratch? {
