@@ -885,7 +885,8 @@ impl Kernel {
     fn whole_read(relation: int) {
         whole_counted()
         let edge = self.asking_edge()
-        let key = "${if edge < 0 { 0 - 1 } else { family_of(edge) }} ${relation}"
+        let who = if edge < 0 { "no query open" } else { self.family_name(family_of(edge)) }
+        let key = "${who} reads ${self.family_name(relation)}"
         whole_by().put(key, (whole_by().get().get(key) ?? 0) + 1)
     }
 
@@ -992,9 +993,9 @@ export fn whole_counted() { whole_tally().set(whole_tally().get() + 1) }
 /// Whole-relation reads by the family that asked and the relation read all of, since the process began.
 once fn whole_by() -> Cell<Map<string, int>> { Cell.new({}) }
 
-/// The whole reads as `<asker family> <relation family> <n>` (-1: no query open), in the order
-/// first seen — numbers the compiler names (`family_word`).
-export fn whole_reads_by() -> List<string> { ["${who} ${n}" for who, n in whole_by().get()] }
+/// The whole reads as `<asker> reads <relation>: <n>`, in the order first seen — a family by
+/// the name its owner gave (a relation's is its declaration's), else its number.
+export fn whole_reads_by() -> List<string> { ["${who}: ${n}" for who, n in whole_by().get()] }
 
 /// The whole-relation reads recorded over every kernel, since the process began.
 export fn whole_reads() -> int { whole_tally().get() }
