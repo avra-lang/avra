@@ -851,6 +851,48 @@ jobs:
         with:
           path: speed-base.metrics
           key: speed-main-suites-${{ strategy.job-index }}-${{ github.sha }}
+  # PROOF ONLY: the objects a build writes, byte for byte, with main's compiler and this branch's.
+  emit-equal:
+    needs: [prepare]
+    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 20 }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: new }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      - name: main's compiler
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git fetch -q origin main
+          git worktree add -q /tmp/mainwt origin/main
+          key=$(cd /tmp/mainwt && sh tools/compiler_paths.sh --key)
+          echo "main's compiler key: $key"
+          python3 tools/compiler_release.py fetch "avrac-$key" /tmp/avra-old || python3 tools/compiler_release.py fetch "$key" /tmp/avra-old
+          chmod +x /tmp/avra-old new/avra
+      - name: build twice, compare objects
+        run: |
+          tar -xf avra-build.tar
+          chmod +x build/avra
+          for pkg in packages/std-http packages/cli; do
+            for which in old new; do
+              rm -rf .avra-cache
+              if [ "$which" = old ]; then cp /tmp/avra-old build/avra; else cp new/avra build/avra; fi
+              s=$(date +%s)
+              build/avra build "$pkg" > /tmp/build-$which.log 2>&1 || { cat /tmp/build-$which.log; exit 1; }
+              echo "$pkg $which: $(( $(date +%s) - s )) s, $(ls .avra-cache/obj/*.o | wc -l) objects"
+              mkdir -p "/tmp/obj-$which"
+              rm -f /tmp/obj-$which/*
+              (cd .avra-cache/obj && sha256sum *.o | cut -d' ' -f1 | sort) > /tmp/obj-$which.sums
+            done
+            if cmp -s /tmp/obj-old.sums /tmp/obj-new.sums; then echo "$pkg: $(wc -l < /tmp/obj-new.sums) objects, every digest equal"; else echo "::error::$pkg: object digests differ"; diff /tmp/obj-old.sums /tmp/obj-new.sums | head -20; exit 1; fi
+          done
   # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The gate runs these too, but a
   # PR runs them FIRST and for nothing, so a keeper that reads only the tree
   # refuses on the PR instead of after the objects build. The set is
