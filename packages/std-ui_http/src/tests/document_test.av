@@ -6,6 +6,8 @@ use @std.ui.tree.url.{local, url}
 use @std.ui.tree.view.{View}
 use @std.ui.style.layout.{Layout}
 use @std.ui.style.style.{Style}
+use @std.json.{Json, to_text}
+use @std.ui.shipped.{ship}
 use @std.ui_http.{Document, html_response}
 
 fn home() -> dyn View {
@@ -89,6 +91,22 @@ spec "a document answered over HTTP" {
                 .body
                 .text() ?? ""
             a.split("data-avra-print=\"")[1].split("\"")[0] == b.split("data-avra-print=\"")[1].split("\"")[0]
+        }
+    }
+    given "a document that names a module, with state shipped" {
+        then "carries the state in a data block the module reads, `<` written out" {
+            ship("note", "string", () -> to_text(Json.Str("a</script>b")), (j: string) -> true)
+            let t = Document { title: "x", body: home(), module: "/app.wasm" }
+                .response()
+                .body
+                .text() ?? ""
+            t
+                .contains(
+                    "<script type=\"application/json\" id=\"avra-state\">{\"note\":{\"shape\":\"string\",\"value\":\"a\\u003c/script>b\"}}</script>",
+                )
+        }
+        then "carries none when the document names no module" {
+            !served("x").contains("avra-state")
         }
     }
 }
