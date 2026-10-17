@@ -1,0 +1,37 @@
+//! Parse-time lowering: the statement becomes the const that reads
+//! the file's octets through its kind.
+use core.{Expr, Stmt, Scoped, Plain}
+use features.{LangNode, Builder}
+
+fn build_asset(b: Builder) -> Result<LangNode, string> {
+    let name = b.token(0)?
+    let kinds = b.type_refs(1)?
+    let kind? = kinds.first() else { return .Err(unpinned_asset(name.text)) }
+    let path = b.token(2)?
+    let embedded = b
+        .expr_node(
+            Expr
+                .Call(
+                    Scoped("embed_octets"),
+                    [],
+                    [b.store.alloc_expr(Expr.StrLit(path.text), path.span)],
+                ),
+        )
+    let read = b
+        .expr_node(
+            Expr
+                .MethodCall(
+                    b.expr_node(Expr.Ident(Scoped(kind.name))),
+                    Plain("read"),
+                    [b.store.alloc_expr(Expr.StrLit(path.text), path.span), embedded],
+                ),
+        )
+    b.make_stmt(Stmt.ConstDecl(Scoped(name.text), kind, read))
+}
+
+// ── voices ──────────────────────────────────────────────────────
+
+/// An asset's type is written; the file's bytes do not choose it.
+fn unpinned_asset(name: string) -> string {
+    "an asset names its kind — `asset ${name}: Picture = \"…\"` — and the kind reads the file's octets"
+}
