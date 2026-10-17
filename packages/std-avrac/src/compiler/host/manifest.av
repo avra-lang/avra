@@ -247,10 +247,6 @@ impl Reader {
         self.voices.push(d)
     }
 
-    /// Whether a section is the nameless one a broken header leaves, which
-    /// the syntax refusal has already spoken for.
-    fn spoken_by_syntax(section: string) -> bool { section.is_empty() && self.unreadable() }
-
     /// Whether the text had a syntax error: what the document lacks may
     /// be what the error swallowed, so an absence is no finding.
     fn unreadable() -> bool { !self.doc.errors.is_empty() }
@@ -295,7 +291,10 @@ impl Reader {
     /// never a degraded load.
     fn unknowns() {
         for s in self.doc.sections() {
-            if self.spoken_by_syntax(s) { continue }
+            if s.is_empty() {
+                for e in self.doc.entries_of(s) { self.speak(self.rootless_key(e)) }
+                continue
+            }
             if !known_section(s) {
                 self
                     .speak(
@@ -313,6 +312,16 @@ impl Reader {
                 }
             }
         }
+    }
+
+    fn rootless_key(e: TomlEntry) -> Diag {
+        warning(
+            "manifest.unknown_key",
+            self.entry_at(e),
+            "`${e.key}` sits before any `[section]` header, so nothing reads it",
+            "ignored",
+            "move it under the section it belongs to — `name` and `version` go under `[package]`",
+        )
     }
 
     fn unknown_key(s: string, e: TomlEntry) -> Diag {
