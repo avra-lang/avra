@@ -165,9 +165,9 @@ fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
 /// statement.
 fn keyed_loop_body(store: SyntaxArena, body: ExprId, key: ExprId, at: Span?) -> List<StmtId> {
     match store.expr(body) {
-        .Block(stmts, held) -> {
-            if held == null { return stmts }
-            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held!, key)), at)])
+        .Block(stmts, _) -> {
+            let held? = store.tail_of(body) else { return stmts }
+            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held, key)), at)])
         },
         rest -> [store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, body, key)), at)],
     }
@@ -591,9 +591,7 @@ impl Builder {
     /// A slot filled by `collect { … }` over the children placed in it —
     /// after what a setting of the same name already lists.
     fn collected(pl: Placed, settings: List<SettingParts>) -> Field {
-        let gathered = self
-            .store
-            .alloc_expr(Expr.Collect(self.store.alloc_expr(Expr.Block(pl.stmts, null), self.span)), self.span)
+        let gathered = self.store.alloc_expr(Expr.Collect(pl.stmts), self.span)
         let first? = settings.find(it.name == pl.slot) else { return Field { name: pl.slot, value: gathered } }
         Field {
             name: pl.slot,
