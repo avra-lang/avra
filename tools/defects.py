@@ -195,6 +195,7 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--generate", type=int, default=0, metavar="N")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--dump", metavar="NAME", help="print one program's text and stop")
     ap.add_argument("--progress", type=int, default=0, metavar="K", help="say where it is every K programs")
     ap.add_argument("--show", action="store_true", help="print every run's output")
     a = ap.parse_args()
@@ -212,6 +213,9 @@ def main():
     ]
     if a.only:
         work = [w for w in work if w[0].startswith(a.only)]
+    if a.dump:
+        print("".join(b for n, _, b, _ in work if n == a.dump), end="")
+        return 0
     if a.list:
         for n, _, _, _ in work:
             print(n)
