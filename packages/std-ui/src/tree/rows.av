@@ -15,7 +15,7 @@
 //!
 //! A row whose own key is not the key the list was given is SAID: the key
 //! the list finds a row by must be the key the row stands under.
-use tree.identity.{Stand, steps, shared}
+use tree.identity.{Stand, Step, steps, shared}
 use tree.lists.{flatten}
 use tree.node.{Node}
 use tree.standing.{Standing}
@@ -38,8 +38,10 @@ impl View for Rows {
         let built = [self.at(i) for i in w.from..w.to]
         let said = [lent(v.stand(), self.key_at(w.from + j), at) for j, v in built]
         let seats = [s.spelled() for s in steps(said)]
-        let present = if at.stood_outside(seats) { self.present() } else { none_present() }
-        let stands = at.children_windowed(seats, shared(said), (step: string) -> present.has(step))
+        let audit = at.auditing(self.count) && at.stood_outside(seats)
+        let present = if audit { self.present() } else { none_present() }
+        let stands = at
+            .children_windowed(seats, shared(said), (step: string) -> !audit || present.has(step))
         at.tally(built.length)
         flatten([v.describe(stands[j]) for j, v in built])
     }
@@ -50,7 +52,8 @@ impl Rows {
     /// only when a row outside the window has something to keep.
     fn present() -> Map<string, bool> {
         mut set: Map<string, bool> = {}
-        for s in steps([Stand { key: self.key_at(i) } for i in 0..self.count]) { set.set(s.spelled(), true) }
+        // LICENSED loops.push_loop: one key a row, found without building the row
+        for i in 0..self.count { set.set(Step.Keyed(self.key_at(i), 0).spelled(), true) }
         set
     }
 }

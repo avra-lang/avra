@@ -1,6 +1,6 @@
 //! What one paint of the bench costs natively, by phase. Arguments: the
 //! number of rows.
-use @ui.bench.{fill, tick, view}
+use @ui.bench.{fill, tick, view, view_windowed}
 use @std.ui.app.{plain}
 use @std.ui.realize.dom.live.{live}
 use @std.ui.realize.dom.page.{paged}
@@ -24,9 +24,10 @@ let n = parse_int(env("ROWS") ?? "1000") ?? 1000
 fill(n)
 let sent: Cell<int> = Cell.new(0)
 let page = live()
-let made = paged(view, plain, page, (b: Bytes) -> sent.set(b.length))
+let windowed_run = env("MODE") == "windowed"
+let made = if windowed_run { paged(view_windowed, plain, page, (b: Bytes) -> sent.set(b.length)) } else { paged(view, plain, page, (b: Bytes) -> sent.set(b.length)) }
 let w0 = now_ms()
-let tree = tree_of(view())
+let tree = if windowed_run { tree_of(view_windowed()) } else { tree_of(view()) }
 println("tree root children ${tree.children.length}")
 let w1 = now_ms()
 println("rows ${n}")
@@ -47,3 +48,21 @@ let s0 = now_ms()
 made.app.paint()
 let s1 = now_ms()
 println("nothing changed: paint ${s1 - s0} ms, frame ${sent.get()} bytes")
+if windowed_run {
+    let sweep = parse_int(env("SWEEP") ?? "10000") ?? 10000
+    println("rows built this paint ${made.app.stands.built()}")
+    let list = made.app.stands.windows()[0]
+    let w0 = now_ms()
+    mut at = 0
+    while at < n && at < sweep {
+        let found = made.app.stands.find(list)
+        if found != null { found!.windowed(at, at + 40) }
+        made.app.mark()
+        made.app.paint()
+        at = at + 40
+    }
+    let w1 = now_ms()
+    println(
+        "scrolled through ${at} rows in windows of 40: ${w1 - w0} ms, ${(w1 - w0) * 1000 / (n / 40 + 1)} us a window",
+    )
+}

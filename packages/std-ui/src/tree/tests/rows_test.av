@@ -86,6 +86,41 @@ spec "tree/rows — a list builds only its window" {
             s.scroll(path, 100, 140) && s.text().contains("row 100 taps 0")
         }
     }
+    given "a row whose key leaves the source" {
+        then "loses what it held, and a row of that key added later starts fresh" {
+            let src: Cell<List<int>> = Cell.new(rows_of(10))
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            src.get(),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: keyed(i) },
+                        )
+                    }
+                },
+            )
+            let path = s.windows()[0]
+            let tapped = s.press("Tap 3") && s.press("Tap 3")
+            let away = s.scroll(path, 5, 10)
+            let gone = s
+                .turn(
+                    () -> {
+                        src.set([i for i in rows_of(10) if i != 3])
+                        true
+                    },
+                )
+            let back = s
+                .turn(
+                    () -> {
+                        src.set(rows_of(10))
+                        true
+                    },
+                )
+            let seen = s.scroll(path, 0, 10)
+            tapped && away && gone && back && seen && s.text().contains("row 3 taps 0")
+        }
+    }
     given "a row key that is not the one the list found it by" {
         then "is said, once" {
             let s = headless(

@@ -46,7 +46,16 @@ export type Standing = {
     said: Cell<List<string>>,
     window: Cell<Window?>,
     counted: Cell<int>,
+    audit: Cell<Audit>,
 }
+
+/// When a windowed list last checked its kept rows against its source: how
+/// many rows it had then, and how many paints ago.
+type Audit = { rows: int, paints: int }
+
+/// How many paints a windowed list lets pass before it checks its kept
+/// rows against the source again, when the number of rows has not moved.
+export const audit_every: int = 32
 
 /// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
 export type Window = { from: int, to: int }
@@ -77,6 +86,7 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
         said: said,
         window: Cell.new(unwindowed),
         counted: counted,
+        audit: Cell.new(Audit { rows: -1, paints: 0 }),
     }
 }
 
@@ -159,6 +169,22 @@ impl Standing {
         let to = if told.to > count { count } else { told.to }
         let from = if told.from > to { to } else { told.from }
         Window { from: if from < 0 { 0 } else { from }, to: to }
+    }
+
+    /// Whether the rows this list kept, outside its window, are to be checked
+    /// against the source now: when the number of rows moved, and every
+    /// `audit_every` paints otherwise. A check is a pass over every key, so a
+    /// scroll that moved nothing else pays it rarely; a row deleted and
+    /// another added in one paint is found by the next audit at the latest.
+    fn auditing(rows: int) -> bool {
+        let last = self.audit.get()
+        let due = last.rows != rows || last.paints >= audit_every
+        self
+            .audit
+            .set(
+                if due { Audit { rows: rows, paints: 0 } } else { Audit { rows: rows, paints: last.paints + 1 } },
+            )
+        due
     }
 
     /// A target tells the list standing here which rows to build.
