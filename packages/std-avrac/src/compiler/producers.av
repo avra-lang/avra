@@ -4,7 +4,7 @@
 //! record line (docs/2026_10_06_COMPILER_DB.md, "load: the rest": records read in place).
 use core.{distinct, flatten, joined, ModulePath}
 use core.debug.{db_verified_producers}
-use features.{ExternNote, DeclFacts}
+use features.{ExternNote, DeclFacts, implements_kind}
 use compiler.store.{Store}
 
 /// One value a file files under: a declaration name, a word or a mark.
@@ -27,6 +27,8 @@ type Producers = {
     marks: List<Filed>,
     externs: List<ExternNote>,
     links: List<string>,
+    /// Every file declaring a kind that implements a trait for a type.
+    implementors: List<string>,
 }
 
 /// THE ONE READER OF A RECORD'S PRODUCER LINES: the fields are the ones `read_row` and
@@ -48,6 +50,7 @@ export fn producers_of(m: ModulePath, fields: List<List<string>>) -> Producers {
         ),
         externs: [extern_note(m, d.row!, facts_unblocked(d.row!.facts)!) for d in decoded if facts_unblocked(d.row!.facts)!.external],
         links: distinct([d.parts[1] for d in decoded if links_a_scheduler(d.row!)]),
+        implementors: distinct([d.parts[1] for d in decoded if implements_a_type(d.row!)]),
     }
 }
 
@@ -60,6 +63,12 @@ fn some_filed(value: string?, path: string) -> List<Filed> {
 
 fn extern_note(m: ModulePath, row: Row, facts: DeclFacts) -> ExternNote {
     ExternNote { module: m.text(), path: row.path, name: row.name, hosted: facts.hosted }
+}
+
+/// Whether a row is a declaration of a kind that implements a trait for a type.
+fn implements_a_type(row: Row) -> bool {
+    let kind? = declared_kind(row.shape, row.kind) else { return false }
+    implements_kind(kind)
 }
 
 /// Whether a row is a fn whose record says it links a scheduler.
@@ -77,6 +86,7 @@ export fn note_producers(ws: Workspace, p: Producers) {
     for f in p.marks { filed_under(ws.hold.marked_by, f) }
     for n in p.externs { ws.hold.externed_by.push(n) }
     ws.hold.linked_by.set(distinct(ws.hold.linked_by.get().concat(p.links)))
+    for path in p.implementors { if !ws.hold.typed_by.get().contains(path) { ws.hold.typed_by.push(path) } }
     for path in distinct([r[1] for r in p.reexports]) { ws.hold.reexports.put(path, reexports_in(p.reexports, path)) }
 }
 
@@ -118,6 +128,7 @@ export fn producers_text(p: Producers) -> string {
             [joined(["extern", field_text(n.path), field_text(n.name), bit_word(n.hosted)], "\t") for n in p.externs],
         )
         .concat([path_line("link", path) for path in p.links])
+        .concat([path_line("implementor", path) for path in p.implementors])
         .concat([producers_end()])
     joined(lines, "\n")
 }
@@ -152,6 +163,7 @@ export fn producers_read(m: ModulePath, text: string) -> Producers? {
             hosted: r[3] == "1",
         } for r in rows if r[0] == "extern"],
         links: tagged_paths(rows, "link"),
+        implementors: tagged_paths(rows, "implementor"),
     }
 }
 
@@ -159,7 +171,7 @@ export fn producers_read(m: ModulePath, text: string) -> Producers? {
 fn producer_line(r: List<string>) -> bool {
     match r[0] {
         "complete" -> r.length == 1,
-        "fault" or "declared" or "placed" or "link" -> r.length == 2,
+        "fault" or "declared" or "placed" or "link" or "implementor" -> r.length == 2,
         "name" or "word" or "mark" -> r.length == 3,
         "extern" -> r.length == 4,
         "import" or "gathers" -> r.length >= 2,
