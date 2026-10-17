@@ -624,6 +624,8 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   mod._initialize();
   const code = mod[HOST.entry]();
   if (code !== 0) throw new Error(`the program's statements answered ${code}`);
+  // Said last: a reader of the page knows the module stands and has painted.
+  if (document.documentElement) document.documentElement.setAttribute("data-avra", "ready");
   return { mod, ears: apply.ears };
 }
 
