@@ -7,7 +7,6 @@ use tree.node.{Node}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use style.theme.{Theme, default_theme}
-use @std.task.{Channel, unbounded_channel}
 
 /// Whatever may change the program's state, as the door takes it: it
 /// answers whether it ran.
@@ -25,22 +24,27 @@ export enum Msg {
     Ended
 }
 
+/// The way into a running loop: where a message goes, and how the loop is
+/// told to end. A target with no tasks has none.
+export type Door = { send: fn(Msg) -> bool, close: fn() -> void }
+
 /// An app on one target. `show` is the target's own paint: the tree as it
 /// stands and the theme it wears, in; whatever the target does with them.
 /// The view and the theme are held in cells, so the app stays ONE identity
 /// when it is given another view to show. `stands` is where its walk
 /// starts: every component instance on the app is kept under it, and
 /// nowhere else. `told` is what its walk has said that a target already
-/// passed on. `inbox` is where every source that is not a control —
-/// a timer, an answer, a stream — leaves its `Act`; its writers never
-/// wait. `jobs` is how many tasks the loop holds.
+/// passed on. `door` is where every source that is not a control —
+/// a timer, an answer, a stream — leaves its message once a loop runs;
+/// its writers never wait. A target with no loop runs an `Act` as a turn
+/// at once and starts no job. `jobs` is how many tasks the loop holds.
 export type App = {
     view: Cell<fn(Standing) -> Node>,
     theme: Cell<fn() -> Theme>,
     show: fn(Node, Theme) -> void,
     stands: Standing,
     told: Cell<List<string>>,
-    inbox: Channel<Msg>,
+    door: Cell<Door?>,
     jobs: Cell<int>,
 }
 
@@ -51,13 +55,14 @@ export fn plain() -> Theme { default_theme }
 export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, Theme) -> void) -> App {
     let drawn: fn(Standing) -> Node = (at: Standing) -> rooted(view().describe(at))
     let untold: List<string> = []
+    let nodoor: Door? = null
     App {
         view: Cell.new(drawn),
         theme: Cell.new(theme),
         show: show,
         stands: standing(),
         told: Cell.new(untold),
-        inbox: unbounded_channel<Msg>(),
+        door: Cell.new(nodoor),
         jobs: Cell.new(0),
     }
 }
@@ -124,11 +129,29 @@ impl App {
     fn start(job: Job) -> bool { self.send(Msg.Start(job)) }
 
     fn send(msg: Msg) -> bool {
-        match self.inbox.sink.post(msg) { .Taken or .Full -> true, .Ended -> false }
+        let door? = self.door.get() else { return self.direct(msg) }
+        door.send(msg)
+    }
+
+    /// Where messages go now: the running loop's inbox, held — a source
+    /// started under one loop keeps leaving its messages there, whatever
+    /// loop the app runs next.
+    fn sender() -> fn(Msg) -> bool {
+        let door? = self.door.get() else { return (m: Msg) -> self.direct(m) }
+        door.send
+    }
+
+    /// A message with no loop to take it: a turn runs at once, a job has
+    /// nowhere to run.
+    fn direct(msg: Msg) -> bool {
+        match msg { .Turn(act) -> self.turn(act), .Start(_) or .Ended -> false }
     }
 
     /// The loop ends once what stands in the inbox has run.
-    fn close() { self.inbox.sink.close() }
+    fn close() {
+        let door? = self.door.get() else { return }
+        door.close()
+    }
 }
 
 /// The app whose loop is running: where a handler's `later` and

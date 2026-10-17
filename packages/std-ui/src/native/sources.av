@@ -5,12 +5,26 @@
 //! loop does. A TARGET WITHOUT TASKS REALIZES THE SAME SEAM ITS OWN WAY:
 //! a source is anything that posts an `Act`, and the page's host does it
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
-use app.{Act, App, Job, Msg, running}
+use app.{Act, App, Door, Job, Msg, running}
 use @std.time.{Duration, every, sleep}
-use @std.task.{Sink, Source, unbounded_channel}
+use @std.task.{Channel, Posted, Source, unbounded_channel}
 
 /// A paint that shows nothing further.
 export fn unshown() {}
+
+/// The inbox of an app's loop, open: the app's door leads to it, so what
+/// a source leaves is kept for the loop that serves it.
+export fn opened(on: App) -> Channel<Msg> {
+    let inbox = unbounded_channel<Msg>()
+    on
+        .door
+        .set(Door { send: (m: Msg) -> taken(inbox.sink.post(m)), close: () -> inbox.sink.close() })
+    inbox
+}
+
+fn taken(p: Posted) -> bool {
+    match p { .Taken or .Full -> true, .Ended -> false }
+}
 
 /// THE LOOP: each act in the inbox is a turn, until the inbox ends. Each
 /// job runs on a worker, a task this block owns: a job takes an idle
@@ -18,14 +32,14 @@ export fn unshown() {}
 /// job says so and waits for the next. The block holds as many tasks as
 /// jobs were ever live at once, however many have run. `painted` runs
 /// after a turn that ran.
-export fn served(on: App, painted: fn() -> void) {
+export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
     let queue = unbounded_channel<Job>()
     mut workers: List<Task<bool>> = []
     mut idle = 0
     mut going = true
     while going {
         going = select {
-            msg in on.inbox.source -> {
+            msg in inbox.source -> {
                 match msg {
                     .Turn(act) -> {
                         if on.turn(act) { painted() }
@@ -34,7 +48,7 @@ export fn served(on: App, painted: fn() -> void) {
                         if idle > 0 {
                             idle = idle - 1
                         } else {
-                            workers.push(spawn worked(queue.source, on.inbox.sink))
+                            workers.push(spawn worked(queue.source, on.sender()))
                         }
                         let _ = queue.sink.post(job)
                     },
@@ -45,17 +59,17 @@ export fn served(on: App, painted: fn() -> void) {
                 on.jobs.set(workers.length)
                 true
             }
-            on.inbox.source.ended -> false
+            inbox.source.ended -> false
         }
     }
     queue.sink.close()
 }
 
 /// A worker: each job it is handed, then its word that it is free.
-fn worked(jobs: Source<Job>, sink: Sink<Msg>) -> bool {
+fn worked(jobs: Source<Job>, send: fn(Msg) -> bool) -> bool {
     for job in jobs {
         let _ = job()
-        let _ = sink.post(Msg.Ended)
+        let _ = send(Msg.Ended)
     }
     true
 }
@@ -63,34 +77,29 @@ fn worked(jobs: Source<Job>, sink: Sink<Msg>) -> bool {
 /// `act` runs as a turn once `span` has gone by. False when no loop runs.
 export fn later(span: Duration, act: Act) -> bool {
     let on? = running() else { return false }
-    let sink = on.inbox.sink
-    on.start(() -> waited(sink, span, act))
+    let send = on.sender()
+    on.start(() -> waited(send, span, act))
 }
 
 /// `act` runs as a turn every `period`, until the loop ends. False when
 /// no loop runs.
 export fn repeating(period: Duration, act: Act) -> bool {
     let on? = running() else { return false }
-    let sink = on.inbox.sink
-    on.start(() -> ticked(sink, period, act))
+    let send = on.sender()
+    on.start(() -> ticked(send, period, act))
 }
 
-fn waited(sink: Sink<Msg>, span: Duration, act: Act) -> bool {
+fn waited(send: fn(Msg) -> bool, span: Duration, act: Act) -> bool {
     sleep(span)
-    let _ = sink.post(Msg.Turn(act))
+    let _ = send(Msg.Turn(act))
     true
 }
 
-fn ticked(sink: Sink<Msg>, period: Duration, act: Act) -> bool {
+fn ticked(send: fn(Msg) -> bool, period: Duration, act: Act) -> bool {
     let beat = every(period)
     while true {
         beat.wait()
-        match sink.post(Msg.Turn(act)) {
-            .Ended -> {
-                return true
-            },
-            .Taken or .Full -> {},
-        }
+        if !send(Msg.Turn(act)) { return true }
     }
     true
 }
