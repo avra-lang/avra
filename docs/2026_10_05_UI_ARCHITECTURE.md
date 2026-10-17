@@ -260,10 +260,32 @@ ends THAT TURN, never the app.
    the page as it stood; the patch stream is never half-applied. The
    notice is a paint of its own, drawn from the state as it stands.
 
-The door is `App.turn`'s `guard`: it runs the action and answers whether
-it ran or the failure's words. A test injects a failure there
-(`Screen.guarded`); the mechanism that makes a real trap a failure is the runtime's, and
-the door is the only place it is read.
+The door is `App.turn`'s `guard`, and the default guard is `contained`
+(`@std/meta`): it runs the action under the runtime's guarded run and
+answers whether it ran, or the failure's words. A test may install its
+own (`Screen.guarded`) to inject a failure without a trap.
+
+### What holds on each target
+
+What a caught trap guarantees is the runtime's, and it is not the same
+everywhere. Stated plainly:
+
+| | native (terminal, headless) | wasm (a page) |
+|---|---|---|
+| the trap ends the turn, not the process | yes | yes |
+| writes the turn made stand | yes | yes |
+| the failure words reach the target | yes | yes |
+| the app keeps hearing events | yes | yes |
+| the frames between the trap and the handler run their `defer`/`errdefer` | **yes** — a native unwind over the frames' tables | **not yet** — the catch is a `setjmp`/`longjmp` (a wasm exception), which skips them |
+
+So a handler that opens a resource under a `defer` closes it on a native
+trap, and on a page, today, leaks it until the module ends. No claim in
+this document about cleanup after a failure holds on a page.
+
+What is never caught, on any target: a trap on another task, a stack
+overflow, and the process's own limits (out of memory, the memory
+ceiling). A trap in a deferred call that runs as a normal exit
+re-runs the cleanups still open.
 
 ## Layout is one algorithm on every surface
 
