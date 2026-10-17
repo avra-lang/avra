@@ -47,6 +47,7 @@ use @std.path.{dir_of, joined_path, relative_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{
     ExternNote,
+    Ref,
     takes_receiver,
     Unsettled,
     Settled,
@@ -269,7 +270,9 @@ type Hold = {
     /// The held files whose records declare a type that may implement a trait.
     typed_by: Cell<List<string>>,
     /// The record `ref` rows whose target is a held file, by that file's path, with the file each came from.
-    held_refs: Cell<Map<string, List<HeldRef>>>,
+    refs_by_target: Cell<Map<string, List<string>>>,
+    /// The references held files make into a held file, restored once per target.
+    held_refs: Cell<Map<string, List<Ref>>>,
     linked_by: Cell<List<string>>,
     held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
@@ -291,9 +294,6 @@ type Hold = {
     rows_live: Cell<Map<string, List<UnitRow>>>,
     rows_fresh: Cell<Map<string, bool>>,
 }
-
-/// A held file's `ref` row and the file that wrote it.
-type HeldRef = { file: FileId, row: List<string> }
 
 /// One const a unit's lowering asked the settlement for.
 type ConstAsk = { file: FileId, root: SettleRoot, seats: List<SeatValue> }
@@ -357,6 +357,7 @@ fn new_hold() -> Hold {
         marked_by: Cell.new(no_producers),
         externed_by: list_cell(),
         typed_by: list_cell(),
+        refs_by_target: Cell.new(no_producers),
         held_refs: map_cell(),
         linked_by: list_cell(),
         held_flat: Cell.new(no_flat),
