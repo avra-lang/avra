@@ -1,19 +1,22 @@
 //! The builder of one parameter seat: a rule ending `-> Record.ParamSyntax`
 //! labels the words and parts a seat writes, and the seat is made here,
-//! its identity minted at its name.
+//! its identity minted at its name — or at its type, for a positional
+//! enum payload that writes none.
 use core.{Param, Scoped, SeatMark}
 use features.{LangNode, Builder}
 
 impl Builder {
     /// The seat a `ParamSyntax` rule wrote.
     fn seat() -> Result<LangNode, string> {
-        let n = self.token(self.slot_of("name")?)?
+        let n = (self.tokens(self.slot_of("name")?)?).first()
+        let ty = self.type_opt_of("ty")?
+        let name = n?.text ?? ""
         .Ok(
             LangNode
                 .NParam(
                     Param {
-                        name: Scoped(if self.present_of("spread")? { "..${n.text}" } else { n.text }),
-                        ty: self.type_opt_of("ty")?,
+                        name: Scoped(if self.present_of("spread")? { "..${name}" } else { name }),
+                        ty: ty,
                         default: self.expr_opt_of("default")?,
                         promises: SeatMark {
                             mutable: self.present_of("mutable")?,
@@ -21,7 +24,7 @@ impl Builder {
                             state: self.present_of("state")?,
                             unshared: self.present_of("unshared")?,
                         },
-                        id: self.store.alloc_param_id(n.span),
+                        id: self.store.alloc_param_id(n?.span ?? ty?.span),
                         marks: self.marks_of("marks")?,
                         state: self.present_of("state_field")?,
                     },
