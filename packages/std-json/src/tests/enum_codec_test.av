@@ -1,0 +1,72 @@
+// `@json` on an enum: a variant is an object whose `tag` names it and whose
+// other members are the payload, each read by its own type.
+use @std.json.{Json, parse, to_text}
+use @std.json.codec.{json}
+
+@json
+enum Show {
+    All
+    Active
+    Done
+}
+
+@json
+type Pin = { row: int, label: string }
+
+@json
+enum Choice {
+    Nothing
+    One(row: int)
+    Both(row: int, note: string?)
+    Pinned(pin: Pin, more: List<int>)
+    Marks(shows: List<Show>)
+}
+
+fn round(text: string) -> string {
+    let doc = parse(text) catch Json.Null
+    match Choice.from_json(doc) { .Ok(c) -> to_text(c.to_json()), .Err(e) -> e.describe().message }
+}
+
+spec "std/json — an enum's codec" {
+    given "a variant with no payload" {
+        then "is its tag alone" { to_text(Show.Active.to_json()) == "{\"tag\":\"Active\"}" }
+        then "reads back from it" {
+            match Show.from_json(parse("{\"tag\":\"Done\"}") catch Json.Null) {
+                .Ok(s) -> s == Show.Done,
+                .Err(_) -> false,
+            }
+        }
+    }
+    given "a variant with a payload" {
+        then "writes each field under its name" { to_text(Choice.One(3).to_json()) == "{\"tag\":\"One\",\"row\":3}" }
+        then "round-trips every shape" {
+            [
+                "{\"tag\":\"Nothing\"}",
+                "{\"tag\":\"One\",\"row\":3}",
+                "{\"tag\":\"Both\",\"row\":1,\"note\":\"n\"}",
+                "{\"tag\":\"Both\",\"row\":1,\"note\":null}",
+                "{\"tag\":\"Pinned\",\"pin\":{\"row\":2,\"label\":\"x\"},\"more\":[1,2]}",
+                "{\"tag\":\"Marks\",\"shows\":[{\"tag\":\"All\"},{\"tag\":\"Done\"}]}",
+            ]
+                .all(round(it) == it)
+        }
+    }
+    given "a document that misfits" {
+        then "an unknown tag is named at the tag" {
+            round("{\"tag\":\"Gone\"}") == "`tag` wants a variant's name, found `Gone`"
+        }
+        then "a missing tag is named" { round("{\"row\":1}") == "`tag` wants text, found nothing" }
+        then "a payload field of the wrong kind is named by its path" {
+            round("{\"tag\":\"One\",\"row\":\"x\"}") == "`row` wants an integer, found text"
+        }
+        then "a nested enum's misfit carries the path through the list" {
+            round("{\"tag\":\"Marks\",\"shows\":[{\"tag\":\"All\"},{\"tag\":\"Nope\"}]}") == "`shows[1].tag` wants a variant's name, found `Nope`"
+        }
+        then "a document that is no object is refused" { round("[1]") == "the document wants an object, found an array" }
+    }
+    given "the schema" {
+        then "names the tags a variant may wear" {
+            to_text(Show.json_schema()).contains("\"enum\":[\"All\",\"Active\",\"Done\"]")
+        }
+    }
+}
