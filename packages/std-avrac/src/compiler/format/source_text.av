@@ -1401,6 +1401,16 @@ impl SourceText {
             .Receiver -> grouped("self", atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
+            .ChainCall(subject, name, args) -> grouped(
+                "${self.expression(subject, postfix_tier, depth, c)}?.${source_name(name.of)}${self.args_wrapped(args, depth)}",
+                postfix_tier,
+                parent,
+            ),
+            .ChainApply(subject, args) -> grouped(
+                "${self.expression(subject, postfix_tier, depth, c)}?.${self.args_wrapped(args, depth)}",
+                postfix_tier,
+                parent,
+            ),
             .Pipe(_, _) -> self.pipe_rendered(self.pipe_walk(id, depth), parent, depth, c),
             .Bitnot(value) -> grouped("~${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),

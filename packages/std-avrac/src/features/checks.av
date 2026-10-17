@@ -247,6 +247,18 @@ impl TypeCx {
             )
     }
 
+    /// Whether the node being typed is a `?.` link's own meaning.
+    fn chained() -> bool {
+        let sugar? = self.rewriting else { return false }
+        self.view.store.chain_link(sugar)
+    }
+
+    /// Whether `root` is the carried value a `?.` link's meaning binds.
+    fn chained_root(root: ExprId) -> bool {
+        let sugar? = self.view.store.minted_for(root) else { return false }
+        self.view.store.chain_link(sugar)
+    }
+
     mut fn chain_writes(e: ExprId, name: string) {
         self
             .emit(
@@ -1347,7 +1359,7 @@ impl TypeCx {
         }
         let r = root!
         let n = self.root_word(r)
-        if n == chained_binder { return self.chain_writes(e, name) }
+        if n == chained_binder || self.chained_root(r) { return self.chain_writes(e, name) }
         if self.captured(r) {
             if self.view.types.rides_pointer(self.type_at(subject)) { self.facts.mark_alias_copy(subject) }
             return self

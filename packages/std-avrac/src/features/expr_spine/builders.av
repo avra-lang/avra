@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, binop_of, Pat, PatId, want, TypeRef, pronoun_param, Plain, Scoped, span_of}
+use core.{Expr, ExprId, binop_of, Pat, PatId, want, TypeRef, pronoun_param, Plain, Scoped, span_of, Span}
 use features.{
     LangNode,
     Builder,
@@ -254,7 +254,7 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
                         ends
                     }
                     acc = if link == "?." {
-                        chained_call(b, acc, name.text, margs_here)
+                        chained_call(b, acc, name.text, margs_here, span_of(starts, hi))
                     } else {
                         b
                             .store
@@ -319,31 +319,32 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
                 // the first unspent one behind this paren is this call's
                 let through = jx < call_chains.length && call_chains[jx].span.lo < cp
                 if through { jx = jx + 1 }
-                acc = if through { chained_apply(b, acc, args_here) } else { b.store.alloc_expr(Expr.CallValue(acc, args_here), span_of(starts, hi)) }
+                acc = if through { chained_apply(b, acc, args_here, span_of(starts, hi)) } else { b.store.alloc_expr(Expr.CallValue(acc, args_here), span_of(starts, hi)) }
             }
         }
     }
     b.wrap_expr(acc)
 }
 
-/// `a?.m(args)` IS `match a { null -> null, v? -> v.m(args) }`: the
-/// present arm calls the method on what the nullable carries, the
-/// absent arm answers absence, and the match's own typing joins them.
-fn chained_call(b: Builder, subject: ExprId, name: string, args: List<ExprId>) -> ExprId {
-    let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
-    let call = b.store.alloc_expr(Expr.MethodCall(carried, Plain(name), args), b.span)
-    let absent = b.store.alloc_expr(Expr.NullLit, b.span)
-    b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
+/// `a?.m(args)` keeps its node; it means `match a { null -> null, v? -> v.m(args) }`,
+/// minted beside it (`ChainCall`'s `means`).
+fn chained_call(b: Builder, subject: ExprId, name: string, args: List<ExprId>, at: Span?) -> ExprId {
+    meant(b, b.store.alloc_expr(Expr.ChainCall(subject, Plain(name), args), at))
 }
 
-/// `f?.(args)` IS `match f { null -> null, v? -> v(args) }`: the fn
-/// that may be absent is called when it is held, and absence answers
-/// absence — the chain's law, over an application.
-fn chained_apply(b: Builder, subject: ExprId, args: List<ExprId>) -> ExprId {
-    let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
-    let call = b.store.alloc_expr(Expr.CallValue(carried, args), b.span)
-    let absent = b.store.alloc_expr(Expr.NullLit, b.span)
-    b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
+/// `f?.(args)` keeps its node; it means `match f { null -> null, v? -> v(args) }`.
+fn chained_apply(b: Builder, subject: ExprId, args: List<ExprId>, at: Span?) -> ExprId {
+    meant(b, b.store.alloc_expr(Expr.ChainApply(subject, args), at))
+}
+
+/// A chain node, its meaning minted beside it.
+fn meant(b: Builder, sugar: ExprId) -> ExprId {
+    let _ = b.store.mean(sugar, chain_means(b.source_of(sugar)), b.words.door)
+    sugar
+}
+
+fn chain_means(written: string) -> string {
+    "`${written}` acts when its subject is held, and answers absence when it is not"
 }
 
 /// The nearest UNCONSUMED anchor past the cursors — the window's

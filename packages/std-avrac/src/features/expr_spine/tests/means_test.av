@@ -93,4 +93,29 @@ spec "features/expr_spine — a sugar's meaning" {
                 shown_text.contains("`~7` means `7 ^ -1`")
         }
     }
+    given "`a?.m(args)` and `f?.(args)`" {
+        then "a method call through `?.` parses to its own node" {
+            let p = parse_source("let s: string? = \"x\"\ns?.starts_with(\"a\")")
+            let root = p.store.stmt_value(p.stmts[1])!
+            p.voices.list.length == 0 && p.store.expr(root) is .ChainCall
+        }
+        then "a fn applied through `?.` parses to its own node" {
+            let p = parse_source("let f = 1\nf?.(1)")
+            let root = p.store.stmt_value(p.stmts[1])!
+            p.voices.list.length == 0 && p.store.expr(root) is .ChainApply
+        }
+        then "a held subject answers the call's answer" {
+            shown("let s: string? = \"ab\"\ns?.starts_with(\"a\")") == "true"
+        }
+        then "an absent subject answers absence" {
+            shown("let s: string? = null\ns?.starts_with(\"a\")") == "null"
+        }
+        then "a `?.` on what is never absent refuses in its own words" {
+            refused_with("let s = \"x\"\ns?.starts_with(\"a\")", "`?.` reaches into what is never absent")
+        }
+        then "the statement notes what it means" {
+            let p = parse_source("let s: string? = null\ns?.starts_with(\"a\")")
+            p.store.means_in(p.stmts[1]).join("|").contains("acts when its subject is held")
+        }
+    }
 }

@@ -177,6 +177,30 @@ impl NodeFacts for Is {
     fn form() -> Form { form_operator }
     fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
 }
+impl NodeFacts for ChainCall {
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+    fn means() -> Rewrite? {
+        let args = self.args
+        quote {
+            match ${self.subject} {
+                null -> null
+                v? -> v.${self.name}(${..args})
+            }
+        }
+    }
+}
+impl NodeFacts for ChainApply {
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+    fn means() -> Rewrite? {
+        let args = self.args
+        quote {
+            match ${self.subject} {
+                null -> null
+                v? -> v(${..args})
+            }
+        }
+    }
+}
 impl NodeFacts for Pipe {
     fn leftmost() -> Leftmost { Leftmost.Operand(self.value) }
     fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> { store.piped_nodes(self.stage, self.value) }
