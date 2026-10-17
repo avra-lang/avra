@@ -1337,16 +1337,28 @@ impl Workspace {
     fn file_id(path: string) -> FileId {
         let known? = self.decls.known_file_id(path) else {
             let f = self.minted_file(path)
-            if !self.lone && !self.is_held(f) && self.reads_as_source(path) {
-                // listed, not `module_files`: its cache would answer the query that
-                // later reads the module, which then records no edge on the manifest
-                for sibling in self.listed_files(self.module_path_of(path)) { let _ = self.minted_file(sibling) }
-                // its parse reads every component its directory declares
-                for sibling in self.declaring_siblings(path) { let _ = self.minted_file(sibling) }
-            }
+            if self.hold.holds_settled.get() { self.siblings_met(f, path) }
             return f
         }
         known
+    }
+
+    /// WHAT A READ FILE REACHES, met: its module's files and the components its directory
+    /// declares. Asked once the holds are settled — a file registered before then is held
+    /// or not by what the settling decides, and a held file reaches only itself, so asking
+    /// early scanned every file of every held module for a verdict nobody needed.
+    fn siblings_met(f: FileId, path: string) {
+        if self.lone || self.is_held(f) || !self.reads_as_source(path) { return }
+        // listed, not `module_files`: its cache would answer the query that
+        // later reads the module, which then records no edge on the manifest
+        for sibling in self.listed_files(self.module_path_of(path)) { let _ = self.minted_file(sibling) }
+        // its parse reads every component its directory declares
+        for sibling in self.declaring_siblings(path) { let _ = self.minted_file(sibling) }
+    }
+
+    /// The files registered while the holds were being settled, each met as `file_id` meets one.
+    fn met_unheld_siblings() {
+        for f in self.decls.unheld_files() { self.siblings_met(f, self.decls.file(f).path) }
     }
 
     fn minted_file(path: string) -> FileId {
