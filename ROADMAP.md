@@ -3214,6 +3214,29 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — a quote wants a record literal over a computed field list
+
+`quote` builds a record only by a fixed field name (`seed with { ${fname}:
+${val} }`), so a derive over a plain record cannot spell "this record from
+one value per field". Two sites want it: `makers_derive.construction`, which
+builds an enum variant positionally (`.Ok(.${v}(${..args}))`) and so cannot
+make a record such as `TypeRef` from its labels, and `exemplar_derive`'s
+`field_sample`, which works around the same hole with a hand-written
+`codec_zero()` seed per type and one `with` per field — a second spelling of
+the type's fields. The want: `${t} { ${..entries} }`, each entry a `name:
+value` pair. It lets `@derive(Makes)` read a plain record's `t.fields`, which
+is what lets the six `type_expr` builders (and any later record target) die;
+`@local span` needs a `Slots.span_of()` beside it.
+
+Its other half is the presence read, designed and small: `Slot` (std-grammar
+`ast.av`) gains `Present(label)`, which the engine fills with a stated
+`true`/`false` terminal by whether the label captured (`executor.av`'s one
+`slot_value`), and node_grammar's `filling` emits it when the payload is
+`Bool` and its labelled item is a literal (`optional:"?"`, `dynamic:"dyn"`,
+`mutable:"mut"`). The rule decides it — no attribute, no sniffing the type
+— and `flag_of` already reads the stated word. Waits on the record maker,
+since no enum variant has a literal-bound bool without a hand builder.
+
 ### Interim record — a bounded cleanup wants one phrase
 
 `flow.unbounded_cleanup` makes a `within` the only legal waiting cleanup,
