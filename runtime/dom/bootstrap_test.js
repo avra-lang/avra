@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { createApplier, createFetches, createFrames, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { printOf, createApplier, createFetches, createFrames, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { NO_ID, OP, SAYS } from "./wire.gen.js";
 import { stubDocument, stubElement, textOf } from "./stub_dom.js";
 
@@ -25,6 +25,7 @@ const listen = (id, kind, event, says, reads, prevents) => [OP.listen, ...idByte
 const unlisten = (id, kind) => [OP.unlisten, ...idBytes(id), ...i32(kind)];
 const style = (css) => [OP.style, ...str(css)];
 const call = (id, verb) => [OP.call, ...idBytes(id), ...str(verb)];
+const adopt = (...kinds) => [OP.adopt, ...i32(kinds.length), ...kinds.flatMap(str)];
 const frame = (...recs) => Uint8Array.from([WIRE_VERSION, ...recs.flat()]);
 
 let fails = 0;
@@ -205,7 +206,7 @@ try { parseFrame(Uint8Array.from([WIRE_VERSION, 200])); } catch (e) { unknown = 
 check("an op the table does not hold refuses", unknown, "unknown patch op 200");
 check("an id past 32 bits reads whole", parseFrame(frame(create(5000000000, "div")))[0].id, 5000000000);
 check("no id reads as no id", parseFrame(frame(place(1, NO_ID, NO_ID)))[0].after, NO_ID);
-check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["call", "create", "create_text", "drop_attr", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "style", "unlisten"]);
+check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["adopt", "call", "create", "create_text", "drop_attr", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "style", "unlisten"]);
 
 // ── the echo's seam ──
 // A program that hands out each seat at 32, GROWING its memory as it does:
@@ -284,7 +285,7 @@ const clockAt = () => {
   timers.disarm(99n);
   clock.advance(10);
   check("a disarmed one-shot never fires; disarming twice, or a stranger, says nothing", [fired.length, timers.count()], [4, 0]);
-  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["abort", "arm", "disarm", "frame", "get", "next_paint"]);
+  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["abort", "arm", "disarm", "frame", "get", "next_paint", "stood"]);
 }
 
 // ── the page's requests ──
@@ -374,6 +375,55 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   check("the display's frame calls the program once", [painted.length, frames.waiting()], [1, false]);
   frames.next();
   check("a new ask after the frame is a new frame", queue.length, 1);
+}
+
+// ── a server's page is adopted ──
+{
+  const served = (doc) => {
+    const mount = stubElement("root");
+    const div = doc.createElement("div");
+    const text = doc.createTextNode("hi");
+    const mark = doc.createTextNode("");
+    mark.tagName = "#comment";
+    const b = doc.createElement("b");
+    div.insertBefore(text, null);
+    div.insertBefore(mark, null);
+    div.insertBefore(b, null);
+    mount.insertBefore(div, null);
+    return { mount, div, text, b };
+  };
+  const doc = stubDocument();
+  const s = served(doc);
+  let repairs = 0;
+  const sent = [];
+  const apply = createApplier(doc, s.mount, (who, kind, said) => sent.push([who, kind]), null, () => repairs++);
+  apply(frame(adopt("div", "#text", "b"), setAttr(1, "title", "t")));
+  check("an adopted page keeps its elements and numbers them in document order", [s.mount.childNodes[0] === s.div, s.div.attrs.title === undefined, s.text.attrs.title], [true, true, "t"]);
+  apply(frame(setText(1, "yo"), create(3, "i"), place(3, 0, 2)));
+  check("a patch after adoption reaches the adopted nodes", [s.text.textContent, tags(s.div)], ["yo", ["#text", "#comment", "b", "i"]]);
+
+  const warn = console.warn;
+  console.warn = () => {};
+  const t = served(doc);
+  const apply2 = createApplier(doc, t.mount, () => {}, null, () => repairs++);
+  apply2(frame(adopt("div", "b"), create(5, "p")));
+  await Promise.resolve();
+  check("a page that is not the program's is emptied, the rest of the frame skipped, and the program asked to draw again", [t.mount.childNodes.length, repairs], [0, 1]);
+
+  const u = served(doc);
+  const apply3 = createApplier(doc, u.mount, () => {}, null, () => repairs++);
+  apply3(frame(adopt(), create(0, "p"), place(0, NO_ID, NO_ID)));
+  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 1]);
+  console.warn = warn;
+}
+
+{
+  const m = stubElement("root");
+  const none = printOf(m);
+  m.setAttribute("data-avra-print", "12345");
+  const stamped = printOf(m);
+  m.setAttribute("data-avra-print", "x");
+  check("a mount's print is the number the server stamped, none otherwise", [none, stamped, printOf(m)], [0, 12345, 0]);
 }
 
 // ── a page runs a program that mounts ──

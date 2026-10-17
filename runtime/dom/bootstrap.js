@@ -42,6 +42,7 @@ export function parseFrame(bytes) {
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
     else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
+    else if (op === OP.adopt) patches.push({ op, kinds: Array.from({ length: int() }, str) });
     else throw new Error(`unknown patch op ${op}`);
   }
   return patches;
@@ -73,7 +74,7 @@ function caretOf(el) {
 
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
-export function createApplier(doc, mount, send = () => {}, styleEl = null) {
+export function createApplier(doc, mount, send = () => {}, styleEl = null, repair = () => {}) {
   const byId = new Map();
   const need = (id) => {
     const el = byId.get(id);
@@ -108,7 +109,47 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     };
   };
 
+  // THE PAGE A SERVER SENT IS ADOPTED, never drawn over: its nodes, taken in
+  // document order, are the elements the program counted out under the same
+  // numbers. Markers (comments) are the writer's, between texts a parser
+  // would join. A page that is not the program's elements is emptied, loudly,
+  // and the program draws from nothing.
+  const kindOf = (n) => String(n.nodeName ?? n.tagName).toLowerCase();
+  const marker = (n) => kindOf(n) === "#comment";
+  const standing = () => {
+    const out = [];
+    const walk = (parent) => {
+      for (const n of Array.from(parent.childNodes || [])) {
+        if (marker(n)) continue;
+        out.push(n);
+        walk(n);
+      }
+    };
+    walk(mount);
+    return out;
+  };
+  const emptied = () => {
+    byId.clear();
+    while (mount.childNodes.length > 0) mount.removeChild(mount.childNodes[0]);
+  };
+  let broken = false;
+  const adopt = (kinds) => {
+    const nodes = standing();
+    if (kinds.length === 0) {
+      if (nodes.length > 0) { console.warn("avra: the page held elements this program does not draw — emptied"); emptied(); }
+      return;
+    }
+    if (nodes.length !== kinds.length || nodes.some((n, j) => kindOf(n) !== kinds[j])) {
+      console.warn("avra: the page held is not the one this program draws — drawn again from nothing");
+      emptied();
+      broken = true;
+      return;
+    }
+    nodes.forEach((n, j) => keep(j, n));
+  };
+
   const apply = {
+    [OP.adopt]: (p) => adopt(p.kinds),
     [OP.create]: (p) => keep(p.id, doc.createElement(p.tag)),
     [OP.create_text]: (p) => keep(p.id, doc.createTextNode(p.content)),
     // A NODE THAT MOVES IS THE SAME NODE, with all the page keeps on it. One
@@ -163,7 +204,11 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   };
 
   return function applyFrame(bytes) {
-    for (const p of parseFrame(bytes)) apply[p.op](p);
+    for (const p of parseFrame(bytes)) {
+      apply[p.op](p);
+      if (broken) break;
+    }
+    if (broken) { broken = false; queueMicrotask(repair); }
   };
 }
 
@@ -334,6 +379,13 @@ export function createFrames(raf, painted) {
   };
 }
 
+// The print a server stamped on the mount, none (0) for a page it did not
+// send: the program compares it against the page it would draw itself.
+export function printOf(mount) {
+  const n = Number(mount.getAttribute ? mount.getAttribute("data-avra-print") : null);
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
@@ -346,7 +398,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
   const frames = createFrames(raf, () => mod[HOST.painted]());
   const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
-  const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
+  const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style, () => mod[HOST.repaired]());
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
     // The seat is a Bytes: the pointer names its box, and the LENGTH comes
@@ -358,6 +410,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
       [ROWS.abort]: fetches.abort,
       [ROWS.next_paint]: frames.next,
+      [ROWS.stood]: () => BigInt(printOf(mount)),
     },
   });
   const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
