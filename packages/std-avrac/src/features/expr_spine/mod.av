@@ -43,14 +43,11 @@ export fn expr_spine() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name              | build
         "int_lit"         | build_int_lit
-        "binary"          | build_binary
-        "bitwise"         | build_bitwise
         "unmixed_bitwise" | build_unmixed_bitwise
         "bitnot_expr"     | build_bitnot
         "compare"         | build_compare
         "neg_expr"        | build_neg
         "fold_postfix"    | build_fold_postfix
-        "coalesce"        | build_coalesce
         "pipe"            | build_pipe
         "leading_pipe"    | build_leading_pipe
         "catch_any"       | build_catch
@@ -71,18 +68,18 @@ export fn expr_spine() -> LanguageFeature {
             stmt = lp:"|>" -> leading_pipe(lp)
             asked = "." name:NAME ( "(" ( args:asked_payload ( "," args:asked_payload )* ","? )? ")" )? -> Pat.Variant | name:NAME ":" ty:type_atom -> Pat.Typed
             asked_payload = "_" -> Pat.Wild | n:NAME -> asked_bind(n)
-            climbed = l:additive @operators {
+            climbed = left:additive @operators {
                 left "||"
                 left "&&"
-                none "==" "!=" "<=" ">=" "<" ">" suffix "is" asked -> compare(l, op, r)
-                left "??" -> coalesce(l, op, r)
-                left "|>" -> pipe(l, op, r)
-                unmixed(unmixed_bitwise) "|" "^" "&" "<<" (">" ">") -> bitwise(l, op, r)
-            } -> binary(l, op, r)
-            additive = l:unary @operators {
+                none "==" "!=" "<=" ">=" "<" ">" suffix "is" asked -> compare(left, op, right)
+                left "??" -> Expr.Coalesce
+                left "|>" -> pipe(left, op, right)
+                unmixed(unmixed_bitwise) "|" "^" "&" "<<" (">" ">")
+            } -> Expr.Binary
+            additive = left:unary @operators {
                 left "+" "-"
                 left "*" "/" "%"
-            } -> binary(l, op, r)
+            } -> Expr.Binary
             unary = "!" value:unary -> Expr.Not | "-" v:unary -> neg_expr(v) | "~" v:unary -> bitnot_expr(v) | withed
             withed = subject:postfix "with" "{" BREAK? fields:NAME ":" values:expression ( "," BREAK? fields:NAME ":" values:expression )* ","? BREAK? "}" -> Expr.With | v:postfix
             postfix = v:primary ( "." "type" "(" tt:type ")" @expect(")", "expected `)` to close the type literal") | "?." "type" "(" tq:type ")" @expect(")", "expected `)` to close the chained type literal") | q:( "?." | "." ) p:NAME ( mo:"(" ( ma:argument ( "," ma:argument )* ","? )? ")" )? | "[" i:expression "]" @expect("]", "expected `]` to close the index") | ( cq:"?." )? co:"(" ( ca:argument ( "," ca:argument )* ","? )? ")" | f:( "!" | "?" ) | tb:trailing ( "else" te:trailing )? @trailer(tb) )* -> fold_postfix(v, q, p, mo, ma, i, co, ca, f, tb, te, tt, tq, cq)

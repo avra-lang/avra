@@ -1,0 +1,31 @@
+// proves a field's declared default crosses to a derive as its own
+// expression: a literal, a computation, a call, a negation, an interpolated
+// string, a lambda call, an `if` and a `match` all splice; a field with no
+// default, a nullable one included, contributes nothing; a generic record
+// crosses like any other; a default that is itself a quote crosses absent,
+// since its offset already names the quote.
+use @std.meta.{derive, Code}
+use @test.field_default.{Defaults}
+
+fn five() -> int { 5 }
+
+@derive(Defaults)
+type Cfg = { a: int, b: int = 40 + 2, c: int, d: int = five() }
+
+@derive(Defaults)
+type Bare = { x: int, y: int? }
+
+@derive(Defaults)
+type Shapes = { a: int = -3, b: int = if five() > 2 { 10 } else { 20 }, c: int = "ab${five()}".length, d: int = ((x: int) -> x + 1)(4), e: int = match five() { 5 -> 50, _ -> 0 } }
+
+@derive(Defaults)
+type Gen<T> = { a: int = 3, v: T }
+
+@derive(Defaults)
+type Quoted = { a: int = 1, c: Code = quote { 2 } }
+
+let kept: Gen<int> = Gen { a: 1, v: 2 }
+
+"${join(Cfg.defaults())} / ${Bare.defaults().length} / ${join(Shapes.defaults())} / ${kept.a} / ${join(Quoted.defaults())}"
+
+fn join(xs: List<int>) -> string { ["${x}" for x in xs].join(" ") }

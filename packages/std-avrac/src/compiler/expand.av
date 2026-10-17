@@ -927,7 +927,7 @@ impl Workspace {
     fn copied(f: FileId, file: string, at: int, fills: List<Node>, seat: HoleKind) -> Copied {
         let origin? = self.decls.known_file_id(file) else { return nothing_copied() }
         let src = self.decls.store_of(origin)
-        let q? = src.quote_at(at) else { return nothing_copied() }
+        let q? = src.quote_at(at) else { return self.copied_written(f, origin, src, at) }
         let body? = src.expr(q).body_of() else { return nothing_copied() }
         if quote_kind(src, q) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
@@ -944,6 +944,13 @@ impl Workspace {
         let lifted = self.lifted_from(f, src, copied_stmts, seat, file, at, rb)
         let stmts = if lifted.lifts { [] } else { rb.stmts(copied_stmts) }
         let arms = rb.arms(copied_arms)
+        self.noted_copy(f, origin, src, at, rb)
+        Copied { stmts: stmts, arms: arms, params: lifted.params, inits: lifted.inits }
+    }
+
+    /// A copy's bookkeeping: where its nodes came from, and every fill
+    /// that did not fit its seat, spoken.
+    fn noted_copy(f: FileId, origin: FileId, src: SyntaxArena, at: int, rb: Rebuilder) {
         if !same_file(origin, f) {
             self.decls.note_origins(f, rb.made_exprs, rb.made_stmts, rb.made_pats, origin)
             self
@@ -961,7 +968,17 @@ impl Workspace {
         self
             .decls
             .speak_expansion(f, [unplaceable_fill(self.decls.file(origin).path, at, u) for u in rb.unplaceable])
-        Copied { stmts: stmts, arms: arms, params: lifted.params, inits: lifted.inits }
+    }
+
+    /// A field's written default copied as one expression statement:
+    /// the template its crossing names, where no quote was written.
+    fn copied_written(f: FileId, origin: FileId, src: SyntaxArena, at: int) -> Copied {
+        let e? = self.decls.default_at(origin, at) else { return nothing_copied() }
+        let dst = self.decls.store_of(f)
+        mut rb = copier(src, dst, [], [])
+        let stmts = [dst.alloc_stmt(Stmt.ExprStmt(rb.expr(e)))]
+        self.noted_copy(f, origin, src, at, rb)
+        Copied { stmts: stmts, arms: [] }
     }
 
     /// A lifted call's directives, or none when it refused — the ONE

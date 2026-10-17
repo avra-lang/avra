@@ -115,6 +115,14 @@ export type SyntaxArena = {
     // `null` instead of refusing; the mark is the ONE way the checker
     // tells the two apart
     sugar_matches: Cell<List<bool>>,
+    // the SUGAR node whose meaning minted each node — null for a node
+    // the author wrote; what lets a refusal about a minted node speak
+    // at the sugar the author did write
+    minted_by: Cell<List<ExprId?>>,
+    // what a sugar node says its meaning is, by the sugar — the one
+    // sentence `avra expand` prints and a refusal about a minted
+    // node carries
+    means_notes: Cell<List<string?>>,
     // the variant pattern a payload `is` names (`.V(p, q)`), by the
     // Is node and by the Match an `if` desugared it into — the binder
     // list a match arm would take, kept beside the node so the `if`
@@ -199,6 +207,8 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         collect_dense: list_cell(),
         raw_strings: list_cell(),
         sugar_matches: list_cell(),
+        minted_by: list_cell(),
+        means_notes: list_cell(),
         is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
@@ -271,6 +281,8 @@ impl SyntaxArena {
         self.run_holes.push(false)
         self.raw_strings.push(false)
         self.sugar_matches.push(false)
+        self.minted_by.push(null)
+        self.means_notes.push(null)
         self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
@@ -463,6 +475,40 @@ impl SyntaxArena {
     fn mark_sugar_match(e: ExprId) {
         self.sugar_matches.set_at(e.index, true)
         self.expr_fingerprints.set_at(e.index, fp(150, [self.expr_fingerprints.get()[e.index]]))
+    }
+
+    /// `nodes` are what `sugar`'s meaning minted: each answers for it,
+    /// and `note` is the sentence that says what the sugar means.
+    fn mint_for(sugar: ExprId, nodes: List<ExprId>, note: string) {
+        for n in nodes { self.minted_by.set_at(n.index, sugar) }
+        self.means_notes.set_at(sugar.index, note)
+    }
+
+    /// What `sugar` says it means; null for a node that is no sugar.
+    fn means_note(sugar: ExprId) -> string? {
+        self.means_notes.get()[sugar.index]
+    }
+
+    /// Every sugar node, in allocation order.
+    fn sugars() -> List<ExprId> {
+        [ExprId { index: i } for i, n in self.means_notes.get() if n != null]
+    }
+
+    /// The operand a `~` was written over: the left of the `^` it
+    /// means. A rewrite that is no such pair names nothing, so the
+    /// error node stands in.
+    fn bitnot_operand(rewrite: ExprId) -> ExprId {
+        match self.expr(rewrite) { .Binary(_, left, _) -> left, rest -> rewrite }
+    }
+
+    /// What `sugar`'s meaning minted, in allocation order.
+    fn minted_nodes(sugar: ExprId) -> List<ExprId> {
+        [ExprId { index: i } for i, by in self.minted_by.get() if by != null && same_expr(by!, sugar)]
+    }
+
+    /// The sugar a minted node stands in for; null for any other.
+    fn minted_for(e: ExprId) -> ExprId? {
+        self.minted_by.get()[e.index]
     }
 
     fn is_sugar_match(e: ExprId) -> bool {
@@ -697,7 +743,7 @@ impl SyntaxArena {
             .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
         }
     }
 
@@ -716,7 +762,7 @@ impl SyntaxArena {
             .Ident(name) -> Expr.Call(name, [], [value]),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, [self.pronouned(value)]),
             .Lambda(_, _) -> Expr.CallValue(stage, [value]),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
         }
     }
 
@@ -1346,7 +1392,7 @@ impl SyntaxArena {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .Force(subject) -> PlaceStep.Unwrap(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
         }
     }
 
@@ -1374,7 +1420,7 @@ impl SyntaxArena {
             .StructLit(_, _, _) -> true,
             .Binary(_, left, _) or .Coalesce(left, _) -> self.opens_with_literal(left),
             .Force(held) or .Propagate(held) or .Prop(held, _) or .Chain(held, _) or .Is(held, _) or .Index(held, _) or .MethodCall(held, _, _) or .With(held, _, _) or .CallValue(held, _) -> self.opens_with_literal(held),
-            .Not(_) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
+            .Bitnot(_) or .Not(_) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
         }
     }
 
