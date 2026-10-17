@@ -514,61 +514,6 @@ export fn window_end(anchors: List<Token>, j: int, ends: int) -> int {
 }
 
 /// Each arm's optional bind — "" IS an arm that names nothing.
-/// Anchored WINDOW alignment for optional per-anchor TYPES: each
-/// anchor's annotation, when one was written inside its window —
-/// the third user made this the shared law (fns, trait sigs,
-/// lambdas).
-export fn aligned_param_types(anchors: List<Token>, optional: List<TypeRef>, ends: int) -> List<
-    TypeRef?,
-> {
-    [one_between(optional, a.span.lo, window_end(anchors, j, ends)) for j, a in anchors]
-}
-
-fn one_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
-    types.find(ref_within(it, after, before))
-}
-
-/// A MARK MARKS THE MEMBER IT PRECEDES, so it belongs to the nearest
-/// anchor that follows it. `anchors` holds EVERY place on the
-/// declaration a mark may land — an enum's variant names AND its
-/// payload types — in any order; a set short of one anchor reads
-/// that member's marks as its successor's. `from` is the
-/// declaration's own start: nothing before it is a member's mark.
-export type MarkWindows = { anchors: List<int>, marks: List<Mark>, from: int }
-
-impl MarkWindows {
-    /// The marks the anchor at `lo` carries.
-    fn at(lo: int) -> List<Mark> {
-        marks_inside(self.marks, self.opens_before(lo), lo)
-    }
-
-    /// Where an anchor's window opens: the nearest anchor before it,
-    /// or the declaration's start when nothing precedes it.
-    fn opens_before(lo: int) -> int {
-        mut open = self.from
-        for a in self.anchors {
-            if a > open && a < lo { open = a }
-        }
-        open
-    }
-}
-
-/// A WRITTEN TYPE'S START — the anchor a payload's marks precede, and
-/// the projection two enum sites would otherwise spell twice.
-export fn type_lo(t: TypeRef) -> int {
-    t.span?.lo ?? 0
-}
-
-/// The marks whose `@` stands strictly inside a window.
-fn marks_inside(marks: List<Mark>, after: int, before: int) -> List<Mark> {
-    [m for m in marks if m.span != null && between(m.span!.lo, after, before)]
-}
-
-export fn ref_within(t: TypeRef, after: int, before: int) -> bool {
-    let lo? = t.span?.lo else { return false }
-    lo > after && lo < before
-}
-
 export fn aligned_binds(anchors: List<Token>, optional: List<Token>, ends: int) -> List<string> {
     [token_between(optional, a.span.lo, window_end(anchors, j, ends)) for j, a in anchors]
 }
@@ -580,54 +525,6 @@ fn token_between(tokens: List<Token>, after: int, before: int) -> string {
 }
 
 impl Builder {
-    /// Field names, their types, and the DEFAULTS some carry, zipped —
-    /// captures arrive per slot, so a default finds its field by
-    /// POSITION: the last name that starts before it.
-    fn fields_zipped(
-        fs: List<Token>,
-        ft: List<TypeRef>,
-        fds: List<ExprId>,
-        marks: List<Mark>,
-        states: List<Token> = [],
-    ) -> Result<List<Param>, string> {
-        let typed = [self.type_after(fs, ft, j) for j, f in fs]
-        if [t for t in typed if t != null].length != ft.length {
-            return .Err(zip_defect_of("field names and types"))
-        }
-        let w = MarkWindows {
-            anchors: [f.span.lo for f in fs],
-            marks: marks,
-            from: self.span?.lo ?? 0,
-        }
-        .Ok(
-            [Param {
-                name: Scoped(f.text),
-                ty: typed[j],
-                default: self.default_before(fs, fds, j),
-                promises: plain_mark,
-                id: self.store.alloc_param_id(f.span),
-                marks: w.at(f.span.lo),
-                state: state_before(fs, states, j, self.span?.lo ?? 0),
-            } for j, f in fs],
-        )
-    }
-
-    /// The default whose position falls between field `j`'s name and
-    /// the next field's — null when none does.
-    fn default_before(fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
-        let lo = fs[j].span.lo
-        let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
-        fds.find((d) -> self.starts_between(d, lo, hi))
-    }
-
-    /// The written type between field `j`'s name and the next field's
-    /// — null for a hole standing as the whole field.
-    fn type_after(fs: List<Token>, ft: List<TypeRef>, j: int) -> TypeRef? {
-        let lo = fs[j].span.lo
-        let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
-        ft.find((t) -> t.span != null && between(t.span!.lo, lo, hi))
-    }
-
     /// The value between field `j`'s name and the next field's — null
     /// for a hole standing as the whole field.
     fn value_after(vn: List<Token>, ve: List<ExprId>, j: int) -> ExprId? {
@@ -675,14 +572,6 @@ export fn record_spreads(entries: List<int>, rs: List<Token>, rt: List<TypeRef>)
 /// Strictly inside the window `after..before`.
 export fn between(at: int, after: int, before: int) -> bool {
     at > after && at < before
-}
-
-/// Whether the `state` word stands immediately before field `j` — the
-/// optional token is captured per field, so it finds its field by
-/// POSITION the way a default does.
-fn state_before(fs: List<Token>, states: List<Token>, j: int, from: int) -> bool {
-    let lo = if j == 0 { from } else { fs[j - 1].span.lo }
-    states.any((s) -> between(s.span.lo, lo, fs[j].span.lo))
 }
 
 /// Seats with their marks: a `mut` or `const` token between the

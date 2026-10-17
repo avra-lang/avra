@@ -673,10 +673,9 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       SMELL: a window helper whose anchors are one KIND of member
       (`List<Token>` of names) while the range it spans holds members
       of another kind (the payload types between them). THE IDIOM:
-      one `MarkWindows`-shaped value carrying EVERY anchor, in any
-      order, asked per anchor (`w.at(lo)`), so adding a kind of
-      member that can carry the piece is adding it to the anchor list
-      and nothing else. Not ratcheted: no grep tells a complete
+      no window at all — a nested rule builds each member's own
+      record (`NVariant`, `NParam`), so a piece lands on the member
+      whose rule wrote it and no anchor list exists to be partial. Not ratcheted: no grep tells a complete
       anchor list from a partial one — the anchors are whatever the
       grammar can put there. THE KEEPER IS THE ATTACK, and it is
       cheap: for each member kind, write the piece on the LAST member
