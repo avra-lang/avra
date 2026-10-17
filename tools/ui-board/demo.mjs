@@ -16,6 +16,14 @@ import { wasiPreview1 } from "../../runtime/dom/wasi.js";
 import { stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js";
 
 const mount = stubElement("root");
+// The page's timers, by hand: what was armed, and a way to let it fire.
+const armed = new Map();
+const clock = {
+  setTimeout: (fn, ms) => { const h = armed.size + 1; armed.set(h, { fn, ms }); return h; },
+  setInterval: (fn, ms) => { const h = armed.size + 1; armed.set(h, { fn, ms }); return h; },
+  clearTimeout: (h) => armed.delete(h),
+  clearInterval: (h) => armed.delete(h),
+};
 const style = { textContent: "" };
 let frames = 0;
 let writes = 0;
@@ -26,6 +34,7 @@ await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
   style,
   wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
   sent: (bytes) => { frames++; writes += bytes.length; },
+  clock,
 });
 
 const shape = (n) => {
@@ -123,6 +132,20 @@ const faint = (css) => {
 claim("each mode's sheet names its inks and its fills", Object.keys(tones(sheet)).length >= 4 && Object.keys(tones(style.textContent)).length >= 4);
 claim("every ink reads on every fill in the light mode", faint(sheet).length === 0, faint(sheet).join(", "));
 claim("every ink reads on every fill in the dark mode", faint(style.textContent).length === 0, faint(style.textContent).join(", "));
+
+// A SOURCE IS THE HOST'S TIMER: a press asks, the page arms a timer, its
+// firing is a turn, and the footer says so.
+spent();
+const footerWords = () => every(mount, (n) => n.tagName === "#text" && n.textContent.includes("open ·")).map((n) => n.textContent)[0] || "";
+const remind = named("Remind me")[0];
+claim("the footer holds a Remind me that listens", Boolean(remind));
+claim("before the reminder the footer does not say it", !footerWords().includes("reminder"), footerWords());
+fire(remind);
+claim("pressing it arms one timer of 100 ms on the page's clock", armed.size === 1 && [...armed.values()][0].ms === 100, `${armed.size}`);
+claim("asking cost no frame: nothing changed on the page", frames === 0, spent());
+[...armed.values()][0].fn();
+claim("the timer firing is a turn: the footer says the reminder", footerWords().includes("reminder"), footerWords());
+spent();
 
 console.log(failed === 0 ? "ui-board: every claim holds" : `ui-board: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
