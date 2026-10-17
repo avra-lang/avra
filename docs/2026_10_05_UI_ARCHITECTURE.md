@@ -218,6 +218,24 @@ it ran or the failure's words. A test injects a failure there
 (`Screen.guarded`); the mechanism that makes a real trap a failure is the runtime's, and
 the door is the only place it is read.
 
+### What holds on each target
+
+A caught trap is the runtime's (`contained`, `@std/meta`), and the same on
+every target:
+
+- the trap ends the turn, not the process;
+- the writes the turn made stand;
+- the frames between the trap and the handler run their `defer` and
+  `errdefer` calls, innermost first — over the unwind tables natively, over
+  WebAssembly exception handling on a page (the standard exnref encoding:
+  Chrome 137, Firefox 131, Safari 18.4; a browser without it is refused by
+  name when the module loads).
+
+What is never caught, on any target: a trap on another task, a stack
+overflow, and the process's own limits (out of memory, the memory ceiling).
+A trap in a deferred call that runs as a normal exit re-runs the cleanups
+still open.
+
 ## What the page keeps (seam 1's law)
 
 **A property is written only when the value the program draws for it —
