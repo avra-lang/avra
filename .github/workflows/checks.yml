@@ -339,19 +339,19 @@ jobs:
           chmod +x build/avra
           build/avra check packages/cli >/dev/null 2>&1 || true
           echo "warm store: check packages/cli took $(( $(date +%s) - s ))s"
-      # THE CACHE'S MACHINE CODE IS BOUNDED BY AGE. `.avra-cache/obj` and `bin` are
+      # THE CACHE'S MACHINE CODE IS BOUNDED BY SIZE. `.avra-cache/obj` and `bin` are
       # restored by prefix from the run before and saved again, and an entry keyed to
       # a compiler that no longer exists is never read, so they only grow (1.1 GB, 621 MB
-      # of it objects). A row is a file named by its key: a missing one is rebuilt
-      # (`store.has` asks the disk), so pruning costs a rebuild and never a wrong answer.
+      # of it objects). The newest 300 MB stay, by file time — what this run wrote is
+      # newest. A row is a file named by its key: a missing one is rebuilt (`store.has`
+      # asks the disk), so pruning costs a rebuild and never a wrong answer.
       - if: steps.plan.outputs.build == '1'
         name: prune the cache
         run: |
           [ -d .avra-cache ] || exit 0
           before=$(du -sm .avra-cache | cut -f1)
-          for d in obj bin; do
-            [ -d ".avra-cache/$d" ] && find ".avra-cache/$d" -type f -mtime +3 -exec rm -f {} +
-          done
+          find .avra-cache/obj .avra-cache/bin -type f -printf '%T@ %s %p\n' 2>/dev/null | sort -rn \
+            | awk -v cap=314572800 '{ acc += $2; if (acc > cap) print $3 }' | xargs -r rm -f
           echo "prune: .avra-cache $before MB -> $(du -sm .avra-cache | cut -f1) MB"
       # A CACHE IS SCOPE-BOUND, AND ONLY THE DEFAULT BRANCH CROSSES RUNS: a run
       # restores caches from its own branch and `main`, never a sibling's, and
