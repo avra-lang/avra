@@ -149,12 +149,6 @@ impl Workspace {
     /// question the analysis asks before it does anything at all.
     fn is_held(f: FileId) -> bool { self.decls.held.get().get(self.decls.file(f).path) != null }
 
-    /// EVERY HELD FILE, in file order — read off the held set and the file table, each
-    /// unrecorded as `is_held` is, so asking costs no whole read of the File relation.
-    fn held_files() -> List<FileId> {
-        [FileId { index: i } for i in 0..self.decls.file_count() if self.is_held(FileId { index: i })]
-    }
-
     /// HOLD A FILE: from here it contributes its minted declarations and what the
     /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
     /// files holds forty-nine.
@@ -311,7 +305,7 @@ impl Workspace {
     /// The host fns of the files a program reads and of the files it holds: a
     /// held module defines its symbols for the link as a read one does.
     fn program_host_fns(read: List<FileId>) -> List<DeclId> {
-        flatten([self.decls.host_fns_of_file(f) for f in read.concat(self.held_files())])
+        flatten([self.decls.host_fns_of_file(f) for f in read.concat(self.decls.held_files())])
     }
 
     /// The packages the program's own sources import from, by key.
