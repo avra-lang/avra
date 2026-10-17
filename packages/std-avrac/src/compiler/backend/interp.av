@@ -1699,6 +1699,7 @@ impl Machine {
             // no arm of its own: the row's C body, called by name through
             // the uniform frame, the row its witness — the host holds
             // every row (runtime/avra_rt.h), so the symbol is there
+            .Trap -> self.trap_row(row, callee, vals),
             .Unhosted -> self.hosted_extern(row, callee, vals),
         }
     }
@@ -1721,6 +1722,14 @@ impl Machine {
     /// answer kind how the answer comes back — and the backend reads
     /// that same column, so the engines agree by construction and not
     /// by two hand-written tables happening to match.
+    /// A program's trap: a settlement records the words as the const's
+    /// refusal; a running program exits through the runtime's own trap.
+    fn trap_row(sig: RtSig, callee: string, vals: List<Val>) -> Val {
+        if !self.settling { return self.hosted_extern(sig, callee, vals) }
+        self.trapped(self.text_val(vals[0]))
+        Val.N
+    }
+
     fn hosted_extern(sig: RtSig, callee: string, vals: List<Val>) -> Val {
         let sym = self.symbol_of(callee)
         if sym == 0 { return self.no_symbol(callee) }
