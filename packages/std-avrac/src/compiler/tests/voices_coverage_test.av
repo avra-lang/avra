@@ -1,6 +1,8 @@
 // What a voice carries beyond its words, read from its witness's own
 // rendering: help, a fix where the row owes one, and a witness at all.
-use @std.avrac.compiler.dev.{Shown, Witness, kind_gaps, gap_lines}
+use @std.avrac.compiler.dev.{Shown, Witness, kind_gaps, rule_gaps, gap_lines}
+use @std.avrac.compiler.{RuleEntry}
+use features.{Code, Fix, Fixes}
 use @std.avrac.diagnostics.{DiagCode, Remedy}
 
 fn said(kind: string, remedy: Remedy, witness: Witness, rendered: string) -> Shown {
@@ -10,6 +12,28 @@ fn said(kind: string, remedy: Remedy, witness: Witness, rendered: string) -> Sho
         rendered: rendered,
         fired: true,
     }
+}
+
+fn never_fires(_c: Code) -> Fix? { null }
+
+/// A rule fixture: documented, with the given examples and reason.
+fn rule_with(fixes: List<Fixes>, says: List<string>) -> RuleEntry {
+    RuleEntry {
+        name: "r",
+        module: "t",
+        run: never_fires,
+        root: [],
+        kinds: [],
+        doc: "d",
+        fixes: fixes,
+        keeps: ["k"],
+        law: [],
+        says: says,
+    }
+}
+
+fn rule_gap_lines(r: RuleEntry) -> string {
+    gap_lines(rule_gaps([r])).join(";")
 }
 
 fn gaps_of(s: Shown) -> string {
@@ -56,6 +80,17 @@ spec "voices coverage" {
         }
         then "a stated fact owes nothing" {
             gaps_of(said("k.a", Remedy.Fix, Witness.Beyond("a package"), "")) == ""
+        }
+    }
+    given "a rule" {
+        then "one with neither a rewrite example nor a stated reason lacks a fix" {
+            rule_gap_lines(rule_with([], [])) == "t.r\tno_fix"
+        }
+        then "one that states why it only says owes no fix" {
+            rule_gap_lines(rule_with([], ["a rewrite would touch the whole loop"])) == ""
+        }
+        then "one with a rewrite example owes none" {
+            rule_gap_lines(rule_with([Fixes { before: "a", after: "b" }], [])) == ""
         }
     }
 }
