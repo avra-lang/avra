@@ -15,7 +15,7 @@ which only shrinks.
 | build | 1 | 0 | 0 | 0 |
 | language | 1 | 0 | 0 | 0 |
 | block | 1 | 0 | 0 | 0 |
-| resolve | 33 | 17 | 17 | 2 |
+| resolve | 33 | 26 | 26 | 2 |
 | lower | 8 | 1 | 1 | 0 |
 | type | 119 | 71 | 71 | 6 |
 | flow | 17 | 11 | 11 | 0 |
@@ -32,4 +32,4 @@ which only shrinks.
 
 | rules | documented | with a `@fixes` example |
 |---|---|---|
-| 80 | 53 | 17 |
+| 80 | 80 | 17 |
