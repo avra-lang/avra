@@ -201,6 +201,31 @@ spec "features/structs (adversarial)" {
         then "a `state` mark after the name refuses" {
             refusals("type Q = { a state: int }\n1") == 1
         }
+        then "a literal where a field type belongs refuses" {
+            refusals("type Q = { a: 1 }\n1") == 1
+        }
+        then "a keyword where a field name belongs refuses" {
+            refusals("type Q = { if: int }\n1") == 1
+        }
+        then "a default of the wrong type refuses" {
+            refusals("type Q = { a: int = \"s\" }\nQ { }.a") == 1
+        }
+        then "a default naming no value refuses" {
+            refusals("type Q = { a: int = }\n1") == 1
+        }
+        then "a doubled comma between fields refuses" {
+            refusals("type Q = { a: int,, b: int }\n1") == 1
+        }
+        then "a managed default is read back whole" {
+            shown(
+                "type Q = { s: string = \"a\" + \"b\", n: int }\nlet q = Q { n: 1 }\n\"\${q.s}\${q.n}\"",
+            ) == "ab1"
+        }
+        then "a field typed as another record keeps its place" {
+            shown(
+                "type A = { x: int }\ntype B = { a: A, y: int }\nlet b = B { a: A { x: 4 }, y: 5 }\nb.a.x * 10 + b.y",
+            ) == "45"
+        }
     }
     given "a default is a body of its own" {
         then "it cannot read the top level's run-time bindings — one refusal, the floor's" {

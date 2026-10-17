@@ -407,4 +407,28 @@ spec "features/impls adversarial" {
             ) == "58"
         }
     }
+    given "the trait member carrier — a member's own statement" {
+        then "a trait with no members declares" {
+            shown("trait T {\n}\n1") == "1"
+        }
+        then "a default body and a bare sig stand side by side" {
+            shown(
+                "trait D {\n    fn a() -> int\n    fn b() -> int { 7 }\n}\ntype P = { x: int }\nimpl D for P {\n    fn a() -> int { 1 }\n}\nlet p = P { x: 0 }\np.a() + p.b()",
+            ) == "8"
+        }
+        then "a sig's params keep their order and types" {
+            shown(
+                "trait S {\n    fn sub(x: int, y: int) -> int\n}\ntype P = { x: int }\nimpl S for P {\n    fn sub(x: int, y: int) -> int { x - y }\n}\nP { x: 0 }.sub(9, 4)",
+            ) == "5"
+        }
+        then "a member without `fn` refuses" {
+            refusals("trait T {\n    a() -> int\n}\n1") == 1
+        }
+        then "a member with no parameter list refuses" {
+            refusals("trait T {\n    fn a -> int\n}\n1") == 1
+        }
+        then "a param naming an unknown type refuses" {
+            refusals("trait T {\n    fn a(x: Nope) -> int\n}\n1") == 1
+        }
+    }
 }
