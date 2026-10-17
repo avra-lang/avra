@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { printOf, createApplier, createFetches, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { printOf, wordsOf, standingOf, createApplier, createFetches, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -33,7 +33,7 @@ const setVar = (id, property, value) => [OP.set_var, ...idBytes(id), ...str(prop
 const dropVar = (id, property) => [OP.drop_var, ...idBytes(id), ...str(property)];
 const style = (css) => [OP.style, ...str(css)];
 const call = (id, verb) => [OP.call, ...idBytes(id), ...str(verb)];
-const adopt = (...kinds) => [OP.adopt, ...i32(kinds.length), ...kinds.flatMap(str)];
+const adopt = (words, ...kinds) => [OP.adopt, ...i32(words), ...i32(kinds.length), ...kinds.flatMap(str)];
 const frame = (...recs) => Uint8Array.from([WIRE_VERSION, ...recs.flat()]);
 
 let fails = 0;
@@ -504,7 +504,8 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   let repairs = 0;
   const sent = [];
   const apply = createApplier(doc, s.mount, (who, kind, said) => sent.push([who, kind]), null, () => repairs++);
-  apply(frame(adopt("div", "#text", "b"), setAttr(1, "title", "t")));
+  const drew = wordsOf(standingOf(s.mount));
+  apply(frame(adopt(drew, "div", "#text:2", "b"), setAttr(1, "title", "t")));
   check("an adopted page keeps its elements and numbers them in document order", [s.mount.childNodes[0] === s.div, s.div.attrs.title === undefined, s.text.attrs.title], [true, true, "t"]);
   apply(frame(setText(1, "yo"), create(3, "i"), place(3, 0, 2)));
   check("a patch after adoption reaches the adopted nodes", [s.text.textContent, tags(s.div)], ["yo", ["#text", "#comment", "b", "i"]]);
@@ -513,14 +514,21 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   console.warn = () => {};
   const t = served(doc);
   const apply2 = createApplier(doc, t.mount, () => {}, null, () => repairs++);
-  apply2(frame(adopt("div", "b"), create(5, "p")));
+  apply2(frame(adopt(wordsOf(standingOf(t.mount)), "div", "b"), create(5, "p")));
   await Promise.resolve();
   check("a page that is not the program's is emptied, the rest of the frame skipped, and the program asked to draw again", [t.mount.childNodes.length, repairs], [0, 1]);
 
+  const v = served(doc);
+  v.text.textContent = "h";
+  const apply4 = createApplier(doc, v.mount, () => {}, null, () => repairs++);
+  apply4(frame(adopt(drew, "div", "#text:2", "b")));
+  await Promise.resolve();
+  check("a text that holds other words than the program drew is not adopted", [v.mount.childNodes.length, repairs], [0, 2]);
+
   const u = served(doc);
   const apply3 = createApplier(doc, u.mount, () => {}, null, () => repairs++);
-  apply3(frame(adopt(), create(0, "p"), place(0, NO_ID, NO_ID)));
-  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 1]);
+  apply3(frame(adopt(0), create(0, "p"), place(0, NO_ID, NO_ID)));
+  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 2]);
   console.warn = warn;
 }
 
