@@ -168,18 +168,13 @@ spec "features/enums (adversarial)" {
         // the interpreter refused with an internal defect while the
         // backend quietly answered `false` — comparing ADDRESSES.
         // An engine divergence AND a silently wrong native answer.
-        then "equality refuses, and says to match instead" {
-            let a = analyze_source("${ab()}E.a(1) == E.a(1)")
-            a.diagnostics.length == 1 &&
-                a
-                    .report()
-                    .contains(
-                        "`==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
-                    ) &&
-                a.report().contains("match on it instead")
+        then "equality compares by variant and payload" {
+            shown("${ab()}E.a(1) == E.a(1)") == "true" &&
+                shown("${ab()}E.a(1) == E.a(2)") == "false" &&
+                shown("${ab()}E.a(1) == E.b") == "false"
         }
-        then "inequality refuses the same way" {
-            refusals("${ab()}E.b != E.b") == 1
+        then "inequality negates the same law" {
+            shown("${ab()}E.b != E.b") == "false" && shown("${ab()}E.b != E.a(1)") == "true"
         }
         then "an enum compared to an int refuses" {
             refusals("${ab()}E.b == 1") == 1

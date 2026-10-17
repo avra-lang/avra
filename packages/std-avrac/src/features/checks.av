@@ -977,46 +977,102 @@ impl TypeCx {
         self.view.types.intern(answers)
     }
 
-    /// The by-value law over a TYPE: the scalars and text, an enum whose
-    /// variants carry nothing — it compares by variant — and a record of
-    /// ONE field, which compares by that field. The one place equality is
-    /// decided: `==`, a list's scans and a literal pattern all ask here.
+    /// The by-value law over a TYPE: the scalars, text and bytes; a
+    /// record every field of which compares; a list whose element
+    /// compares; a map whose value compares; and an enum every payload
+    /// of which compares. A type that REACHES ITSELF through those
+    /// parts does not compare — a deep walk over a cycle never ends.
+    /// The one place equality is decided: `==`, a list's scans and a
+    /// literal pattern all ask here.
     fn compares_by_value(ty: TypeId) -> bool {
         // a compare READS: a name is judged by the shape it stands over
-        let seen = self.view.types.seen_through(ty)
-        let inner? = self.view.types.carried(seen) else {
-            return comparable(self.view.types.shape_of(seen)) ||
-                self.unit_enum(seen) ||
-                self.one_field(seen)
+        self.comparable_parts(self.view.types.seen_through(ty), [])
+    }
+
+    /// `compares_by_value`, carrying the path walked so far: a type
+    /// already on the path is a cycle, and a cycle is not comparable.
+    fn comparable_parts(ty: TypeId, seen: List<TypeId>) -> bool {
+        let here = self.view.types.seen_through(ty)
+        let inner? = self.view.types.carried(here) else { return self.comparable_shape(here, seen) }
+        self.comparable_parts(inner, seen)
+    }
+
+    fn comparable_shape(ty: TypeId, seen: List<TypeId>) -> bool {
+        if seen.contains(ty) { return false }
+        let deeper = seen.concat([ty])
+        match self.view.types.shape_of(ty) {
+            .Int or .Float or .Bool or .Str or .Bytes -> true,
+            .Struct(_, _) -> self.comparable_fields(ty, deeper),
+            .App(_, _, _) -> self.comparable_fields(ty, deeper) || self.comparable_variants(ty, deeper),
+            .Enum(_, _) -> self.comparable_variants(ty, deeper),
+            .List(elem) -> self.comparable_parts(elem, deeper),
+            .Map(_, value) -> self.comparable_parts(value, deeper),
+            rest -> false,
         }
-        self.compares_by_value(inner)
     }
 
-    /// A record of exactly one field that compares by value — read from
-    /// its declaration, never from the layout registry mid-flight.
-    fn one_field(ty: TypeId) -> bool {
+    /// Every field of a record compares — read from its declaration,
+    /// never from the layout registry mid-flight.
+    fn comparable_fields(ty: TypeId, seen: List<TypeId>) -> bool {
         let sig? = self.fields_of(ty) else { return false }
-        sig.types.length == 1 && self.compares_by_value(sig.types[0])
+        sig.types.all((ft: TypeId) -> self.comparable_parts(ft, seen))
     }
 
-    /// An enum every variant of which carries nothing — a tag alone.
-    fn unit_enum(ty: TypeId) -> bool {
-        if !(self.view.types.shape_of(ty) is .Enum) { return false }
-        let sig: EnumSig? = self.variants_of(ty)
-        sig != null && sig!.payloads.all(it.is_empty())
+    /// Every payload of every variant of an enum compares; a variant
+    /// carrying nothing is the tag case.
+    fn comparable_variants(ty: TypeId, seen: List<TypeId>) -> bool {
+        let sig? = self.variants_of(ty) else { return false }
+        sig
+            .payloads
+            .all((ps: List<TypeId>) -> ps.all((pt: TypeId) -> self.comparable_parts(pt, seen)))
+    }
+
+    /// Whether a type reaches ITSELF through its parts — the cycle a
+    /// deep compare would follow forever.
+    fn reaches_itself(ty: TypeId) -> bool {
+        self.reaches_index(ty.index, ty, [])
+    }
+
+    fn reaches_index(target: int, from: TypeId, seen: List<int>) -> bool {
+        if seen.contains(from.index) { return false }
+        let deeper = seen.concat([from.index])
+        self
+            .view
+            .decls
+            .held_types(from)
+            .any(
+                (p: TypeId) -> {
+                    // LICENSED structs.index_compared: type IDENTITY, not agreement
+                    p.index == target || self.reaches_index(target, p, deeper)
+                },
+            )
     }
 
     // ── The voices: every refusal worded HERE, once ──
     /// The equality law's refusal — `==`, `!=` and a pattern's `==`
-    /// speak it of the side that cannot compare.
+    /// speak it of the side that cannot compare. A RECURSIVE type gets
+    /// its own words: a deep walk over a cycle would never end.
     mut fn not_comparable(op: string, offender: ExprId) -> TypeId {
         let n = self.name_at(offender)
+        let seen = self.view.types.seen_through(self.type_at(offender))
+        if self.reaches_itself(self.view.types.carried(seen) ?? seen) {
+            return self
+                .spoken(
+                    refusal(
+                        "type.recursive_compare",
+                        self.loc_of(offender),
+                        "`${op}` compares by value, and `${n}` is a recursive type — a deep walk would follow the cycle forever",
+                        this_is(n),
+                        "compare a field, or a depth you bound",
+                    ),
+                )
+        }
         self
             .spoken(
                 refusal(
                     "type.mismatch",
                     self.loc_of(offender),
-                    "`${op}` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                    "`${op}` compares by value — a scalar, text, bytes, a record, list, map or enum whose parts compare",
                     this_is(n),
                     compare_help(self.seen_at(offender)),
                 ),
@@ -2030,15 +2086,16 @@ fn postfix_ready(e: Expr) -> bool {
 /// Where to look instead, by what was offered.
 fn compare_help(sh: Type) -> string {
     match sh {
-        .List(_) -> "compare an element or the `length` instead",
+        .List(_) -> "the elements cannot compare — compare a projection of them",
         .Cell(_) -> "read the cell with `get` before comparing",
         .Task(_) -> "compare what it answers — `.await` it first",
         .Tasks -> "an owner of tasks is not a value to compare",
-        .Struct(_, _) -> "compare a field instead",
-        .Enum(_, _) or .Res(_, _) -> "match on it instead — only an enum carrying nothing compares, by variant",
-        .Opt(_) or .Null -> "answer the absence first — `??` gives it a value",
+        .Struct(_, _) -> "a field cannot compare — compare the fields that do",
+        .Enum(_, _) -> "a payload cannot compare — match on it and compare what it carries",
+        .Res(_, _) -> "match on it instead",
+        .Opt(_) or .Null -> "the value inside cannot compare — compare a part of it",
         .EmptyList -> "an empty list compares with nothing — give it elements or a declared type",
-        .Map(_, _) or .EmptyMap -> "maps do not compare — ask `get`",
+        .Map(_, _) or .EmptyMap -> "the values cannot compare — ask `get` and compare one",
         .Var(_, _, _) -> "a type parameter cannot compare — operator traits are recorded",
         .Dyn(_, _) -> "a `dyn` compares behind its contract — operator traits are recorded",
         .Fn(_, _, _) -> "fn values do not compare — call them instead",
