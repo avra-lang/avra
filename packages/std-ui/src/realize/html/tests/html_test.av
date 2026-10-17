@@ -191,8 +191,8 @@ spec "std/ui html — primitives" {
             ["dir-col", "dir-row", "gap-m", "pis-s", "pie-s", "pt-s", "pb-s"]
                 .all((c) -> count(sheet(), ".${c}{") == 1)
         }
-        then "it holds the variables, the nine base rules and one line per class the tree named" {
-            sheet().split("\n").length == 1 + 9 + 8
+        then "it holds the variables, the ten base rules and one line per class the tree named" {
+            sheet().split("\n").length == 1 + 10 + 8
         }
         then "a button shows what it stands on inside a border, so a fill it names is the fill a reader sees" {
             sheet()
@@ -261,5 +261,48 @@ spec "std/ui html — primitives" {
         then "the fragment is the page's body" {
             page(Page { title: "T" }, tree()).contains("<body>${fragment(tree())}</body>")
         }
+    }
+    given "sizes along an axis" {
+        then "a fill takes the room that is left along its parent's axis and stretches across it" {
+            let css = render(
+                boxed(.Row, Layout {}, [boxed(.Column, Layout { width: .Fill, height: .Fill }, [])]),
+                Env {},
+            )
+            css.contains("\n.dir-row>.w-fill{flex:var(--grow,1) 1 0%;min-width:0}") &&
+                css.contains("\n.dir-col>.w-fill{align-self:stretch}") &&
+                css.contains("\n.dir-col>.h-fill{flex:var(--grow,1) 1 0%;min-height:0}") &&
+                css.contains("\n.dir-row>.h-fill{align-self:stretch}")
+        }
+        then "a fixed size holds along its parent's axis and is no more than its width elsewhere" {
+            let css = render(
+                boxed(
+                    .Row,
+                    Layout {},
+                    [boxed(.Column, Layout { width: .Fixed(8), height: .Fixed(3) }, [])],
+                ),
+                Env {},
+            )
+            css.contains("\n.w-8{width:8px}") &&
+                css.contains("\n.dir-row>.w-8{flex-shrink:0}") &&
+                css.contains("\n.h-3{height:3px}") &&
+                css.contains("\n.dir-col>.h-3{flex-shrink:0}")
+        }
+        then "a node that fills in both directions names its class once" {
+            fragment(boxed(.Column, Layout { width: .Fill }, [])) == "<div class=\"dir-col w-fill\"></div>"
+        }
+        then "a growth given to a fill is its share" {
+            render(boxed(.Row, Layout { grow: 3 }, []), Env {})
+                .contains("\n.grow-3{flex-grow:3;--grow:3}")
+        }
+        then "wrap, margin and order are written, a reverse order named without a sign" {
+            let css = render(
+                boxed(.Row, Layout { wrap: .WrapReverse, margin: around(.S), order: -2 }, []),
+                Env {},
+            )
+            css.contains("\n.wrap-rev{flex-wrap:wrap-reverse}") &&
+                css.contains("\n.mis-s{margin-inline-start:var(--space-s)}") &&
+                css.contains("\n.order-n2{order:-2}")
+        }
+        then "every box is measured by its border" { sheet().contains("\n*,*::before,*::after{box-sizing:border-box}\n") }
     }
 }
