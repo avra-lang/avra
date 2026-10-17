@@ -1240,6 +1240,15 @@ impl TypeCx {
         d with { help: "`${name}` is its own type — a value of its shape crosses by construction", suggestions: [fix] }
     }
 
+    /// What a seat that refused `found` says it needs: a type's name is
+    /// no value, anything else is a value of the want's type.
+    fn seat_help(found: ExprId, want: TypeId) -> string {
+        match self.shape_at(found) {
+            .TypeName(_, n) -> "`${n}` is a type, not a value — build one with `${n} { … }`",
+            _ -> "make the value a `${self.view.types.name_of(want)}`, or change the declaration that wants it",
+        }
+    }
+
     /// THE SEAT MISMATCH, spoken once: every seat that judges a value
     /// against its want (an argument, a field, a binding, an operand)
     /// words its refusal here, at `at`, over the `found` value. A NAME
@@ -1247,7 +1256,7 @@ impl TypeCx {
     /// conversion offers it as help and as the edit; any other mismatch
     /// says what the seat needs.
     fn seat_mismatch(kind: string, at: Loc?, found: ExprId, message: string, want: TypeId) -> Diag {
-        let help = "make the value a `${self.view.types.name_of(want)}`, or change the declaration that wants it"
+        let help = self.seat_help(found, want)
         self.converted(refusal(kind, at, message, this_is(self.name_at(found)), help), want, found)
     }
 

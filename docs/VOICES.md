@@ -22,11 +22,11 @@ which only shrinks.
 | annotation | 17 | 2 | 2 | 0 |
 | manifest | 30 | 15 | 15 | 0 |
 | collect | 14 | 0 | 0 | 0 |
-| collect_enum | 6 | 1 | 1 | 0 |
+| collect_enum | 7 | 2 | 2 | 0 |
 | const | 6 | 1 | 1 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 259 | 110 | 110 | 8 |
+| **all** | 260 | 111 | 111 | 8 |
 
 ## Rules
 
