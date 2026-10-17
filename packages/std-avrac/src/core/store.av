@@ -147,9 +147,6 @@ export type SyntaxArena = {
     // read, by the `Grammar` struct literal it fully expanded into —
     // the raw block's own words, never rebuilt from the expansion
     grammar_lits: Cell<List<string?>>,
-    // a `table<Row> { … }` literal's row type and header, by the
-    // list it desugared to
-    tables: Cell<List<TableSpec?>>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
@@ -221,7 +218,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
-        tables: list_cell(),
         struct_targs: list_cell(),
         written_close: list_cell(),
         quotes_at: map_cell(),
@@ -295,7 +291,6 @@ impl SyntaxArena {
         self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
-        self.tables.push(null)
         self.struct_targs.push([])
         self.written_close.push(null)
         self.keyed_lists.push(null)
@@ -375,30 +370,6 @@ impl SyntaxArena {
 
     fn grammar_lit_of(e: ExprId) -> string? {
         self.grammar_lits.get()[e.index]
-    }
-
-    /// A `table<Row> { … }` literal desugared into this list — the
-    /// row type and header the rows' own fields cannot answer once
-    /// the table is empty, the mark's code 148.
-    fn mark_table(e: ExprId, tbl: TableSpec) {
-        self.tables.set_at(e.index, tbl)
-        self
-            .expr_fingerprints
-            .set_at(
-                e.index,
-                fp(
-                    148,
-                    [
-                        self.expr_fingerprints.get()[e.index],
-                        fp_str(tbl.row_type),
-                        fp_list(str_fps(tbl.header)),
-                    ],
-                ),
-            )
-    }
-
-    fn table_of(e: ExprId) -> TableSpec? {
-        self.tables.get()[e.index]
     }
 
     /// `tail_scoped` narrowed this Block's own span to its lone tail
