@@ -119,6 +119,9 @@ export type SyntaxArena = {
     // the author wrote; what lets a refusal about a minted node speak
     // at the sugar the author did write
     minted_by: Cell<List<ExprId?>>,
+    // the root of what a sugar means, by the sugar — the node a walk
+    // descends into in its place; null for every other node
+    meaning: Cell<List<ExprId?>>,
     // what a sugar node says its meaning is, by the sugar — the one
     // sentence `avra expand` prints and a refusal about a minted
     // node carries
@@ -208,6 +211,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         raw_strings: list_cell(),
         sugar_matches: list_cell(),
         minted_by: list_cell(),
+        meaning: list_cell(),
         means_notes: list_cell(),
         is_payloads: list_cell(),
         instance_owners: list_cell(),
@@ -282,6 +286,7 @@ impl SyntaxArena {
         self.raw_strings.push(false)
         self.sugar_matches.push(false)
         self.minted_by.push(null)
+        self.meaning.push(null)
         self.means_notes.push(null)
         self.is_payloads.push(null)
         self.instance_owners.push(null)
@@ -494,16 +499,34 @@ impl SyntaxArena {
         [ExprId { index: i } for i, n in self.means_notes.get() if n != null]
     }
 
-    /// The operand a `~` was written over: the left of the `^` it
-    /// means. A rewrite that is no such pair names nothing, so the
-    /// error node stands in.
-    fn bitnot_operand(rewrite: ExprId) -> ExprId {
-        match self.expr(rewrite) { .Binary(_, left, _) -> left, rest -> rewrite }
+    /// What `sugar` means, minted beside it: its nodes answer for it, the
+    /// last is the root a walk descends into in its place, and `note` is the
+    /// sentence that says what the sugar means. The one door a builder and
+    /// a template copy both use, so a copy re-mints and never copies.
+    fn mean(sugar: ExprId, note: string) -> List<ExprId> {
+        let minted = self.expr(sugar).means(self, self.expr_span(sugar))
+        let root? = minted.last() else { return [] }
+        self.meaning.set_at(sugar.index, root)
+        self.mint_for(sugar, minted, note)
+        minted
     }
 
-    /// What `sugar`'s meaning minted, in allocation order.
-    fn minted_nodes(sugar: ExprId) -> List<ExprId> {
-        [ExprId { index: i } for i, by in self.minted_by.get() if by != null && same_expr(by!, sugar)]
+    /// The root of what `sugar` means; null for any other node.
+    fn meant(e: ExprId) -> ExprId? {
+        self.meaning.get()[e.index]
+    }
+
+    /// The nodes a walk descends into from `e`: a sugar walks as what it
+    /// means, every other node as its kids. THE one place that rule lives.
+    fn walked(e: ExprId) -> List<ExprId> {
+        let root? = self.meant(e) else { return self.expr(e).kids() }
+        [root]
+    }
+
+    /// The nodes a planted want flows into from `e`, by the same rule.
+    fn heired(e: ExprId) -> List<ExprId> {
+        let root? = self.meant(e) else { return self.expr(e).heirs() }
+        [root]
     }
 
     /// The sugar a minted node stands in for; null for any other.
