@@ -5,6 +5,7 @@
 //! renderer.
 use core.{
     SyntaxArena,
+    CatchArm,
     spread_entry,
     jump_word,
     Remark,
@@ -1472,17 +1473,8 @@ impl SourceText {
                 )
             },
             .Propagate(value) -> grouped("${self.chain_subject(value, depth, c)}?", postfix_tier, parent),
-            .Catch(subject, variants, binds, values) -> grouped(
-                self
-                    .catch_expr(
-                        subject,
-                        [t.of for t in variants],
-                        [t.of for t in binds],
-                        values,
-                        end_of(self.store.expr_span(id)),
-                        depth,
-                        c,
-                    ),
+            .Catch(subject, arms) -> grouped(
+                self.catch_expr(subject, arms, end_of(self.store.expr_span(id)), depth, c),
                 1,
                 parent,
             ),
@@ -2185,40 +2177,24 @@ impl SourceText {
         )
     }
 
-    mut fn catch_expr(
-        subject: ExprId,
-        variants: List<string>,
-        binds: List<string>,
-        values: List<ExprId>,
-        end: int,
-        depth: int,
-        col: int = -1,
-    ) -> string {
+    mut fn catch_expr(subject: ExprId, arms: List<CatchArm>, end: int, depth: int, col: int = -1) -> string {
         let c = resolved_col(col, depth)
         let held = self.expression(subject, 2, depth, c)
-        if values.length == 1 {
-            let prefix = "${held} catch ${self.catch_head(variants[0], binds[0])}"
-            return "${prefix}${self.expression(values[0], 2, depth, col_after(prefix, c))}"
+        if arms.length == 1 {
+            let prefix = "${held} catch ${catch_head(arms[0])}"
+            return "${prefix}${self.expression(arms[0].value, 2, depth, col_after(prefix, c))}"
         }
-        let arms = flatten(
+        let lines = flatten(
             [self
-                .trivia_before(start_of(self.store.expr_span(v)), depth + 1)
+                .trivia_before(start_of(self.store.expr_span(a.value)), depth + 1)
                 .concat(
                     [
-                        "${source_line(depth + 1, "${self.catch_head(variants[j], binds[j])}${self.expression(v, 0, depth + 1)}")}${self.trailing_of(v)}",
+                        "${source_line(depth + 1, "${catch_head(a)}${self.expression(a.value, 0, depth + 1)}")}${self.trailing_of(a.value)}",
                     ],
-                ) for j, v in values],
+                ) for a in arms],
         )
             .concat(self.trivia_before(end, depth + 1))
-        "${held} catch {\n${joined(arms, "\n")}\n${source_line(depth, "}")}"
-    }
-
-    fn catch_head(variant: string, bind: string) -> string {
-        if variant.is_empty() {
-            if bind.is_empty() { return "" }
-            return "${source_name(bind)} -> "
-        }
-        ".${source_name(variant)}${if bind.is_empty() { "" } else { "(${source_name(bind)})" }} -> "
+        "${held} catch {\n${joined(lines, "\n")}\n${source_line(depth, "}")}"
     }
 
     mut fn pattern(id: PatId, depth: int) -> string {
@@ -2781,4 +2757,14 @@ type FieldEntry = { lo: int, text: string }
 /// `break` or `continue`, and its label when it names one.
 fn jump_line(again: bool, label: string?) -> string {
     if label == null { jump_word(again) } else { "${jump_word(again)} ${label!}" }
+}
+
+/// One `catch` arm's head: `.Variant(bind) -> `, `bind -> `, or nothing
+/// for a bare value.
+fn catch_head(a: CatchArm) -> string {
+    if a.variant.of.is_empty() {
+        if a.bind.of.is_empty() { return "" }
+        return "${source_name(a.bind.of)} -> "
+    }
+    ".${source_name(a.variant.of)}${if a.bind.of.is_empty() { "" } else { "(${source_name(a.bind.of)})" }} -> "
 }

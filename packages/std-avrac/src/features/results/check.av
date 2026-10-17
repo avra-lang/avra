@@ -11,7 +11,17 @@ use diagnostics.{refusal}
 fn catch_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
-        .Catch(s, vs, bs, arms) -> catched_type(cx, e, s, [t.of for t in vs], [t.of for t in bs], arms),
+        .Catch(s, arms) -> {
+            if arms.is_empty() { return catch_without_arms(cx, e) }
+            catched_type(
+                cx,
+                e,
+                s,
+                [a.variant.of for a in arms],
+                [a.bind.of for a in arms],
+                [a.value for a in arms],
+            )
+        },
         _ -> cx.error_type,
     }
 }
@@ -180,6 +190,19 @@ export fn res_variants(args: TypeArgs) -> EnumSig? {
 }
 
 // ── The voices ──
+
+fn catch_without_arms(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.catch",
+                cx.loc_of(e),
+                "a `catch` needs at least one arm",
+                "no arm here",
+                "write the failure it recovers from: `catch e -> …`, or `catch { .Variant -> … }`",
+            ),
+        )
+}
 
 fn not_a_result(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)

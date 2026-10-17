@@ -6,6 +6,7 @@
 use @std.avrac.core.{
     Scoped,
     Plain,
+    CatchArm,
     new_node_store,
     SyntaxArena,
     Expr,
@@ -133,8 +134,16 @@ spec "core/nodes adversarial" {
             mut s = new_node_store()
             let subject = s.alloc_expr(Expr.IntLit(1))
             let v = s.alloc_expr(Expr.IntLit(2))
-            let l = s.alloc_expr(Expr.Catch(subject, [Plain("A"), Plain("B")], [Scoped("b")], [v]))
-            let r = s.alloc_expr(Expr.Catch(subject, [Plain("A")], [Scoped("B"), Scoped("b")], [v]))
+            let l = s
+                .alloc_expr(
+                    Expr
+                        .Catch(subject, [CatchArm { variant: Plain("A"), bind: Scoped("b"), value: v }]),
+                )
+            let r = s
+                .alloc_expr(
+                    Expr
+                        .Catch(subject, [CatchArm { variant: Plain("b"), bind: Scoped("A"), value: v }]),
+                )
             s.expr_fingerprint(l) != s.expr_fingerprint(r)
         }
         then "a block's statements are not its tail" {
