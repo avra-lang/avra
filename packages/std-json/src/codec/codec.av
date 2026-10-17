@@ -13,6 +13,9 @@
 //! members are its payload fields (`{"tag":"Both","row":1}`). A field reads an `int`, `float`, `bool`, `string`, a `T?` (absent and
 //! `null` both read as null), a `List<T>` or `Map<string, T>` of any of these, or another
 //! `@json` record or enum. Anything else is refused at the declaration.
+//! `T.json_shape()` is the type's STRUCTURE as one string -- fields, variants
+//! and payload kinds, down through the types it reads -- so a state saved
+//! under one shape is told from one read back under another.
 //!
 //! Stands alone with `@std/meta` and the vocabulary it generates calls
 //! to, per the derive-isolation law.
@@ -70,6 +73,7 @@ fn codec(t: Type) -> Decls {
     let schemas = listed(
         [quote { field(${literal(n)}, ${name(n)}.json_schema()) } for n in read_closure(t)],
     )
+    let rec_parts = [quote { ${literal(f.name + ":")} + ${shape_code(f.kind)} } for f in t.fields]
     quote {
         impl ${t} {
             /// This record read from a JSON document.
@@ -101,6 +105,19 @@ fn codec(t: Type) -> Decls {
             static fn json_schemas() -> Json {
                 Json.Obj(${schemas})
             }
+
+            /// This record's SHAPE: its name, its fields and their kinds,
+            /// down through every type it reads. A field added, dropped,
+            /// renamed or retyped changes it, whatever the name.
+            static fn json_shape() -> string {
+                ${name(t.name)}.shape_in([])
+            }
+
+            static fn shape_in(seen: List<string>) -> string {
+                let here = seen.concat([${literal(t.name)}])
+                let parts: List<string> = [${..rec_parts}]
+                ${literal(t.name)} + "<" + parts.join(",") + ">"
+            }
         }
     }
 }
@@ -127,6 +144,7 @@ fn enum_codec(t: Type) -> Decls {
     let schemas = listed(
         [quote { field(${literal(n)}, ${name(n)}.json_schema()) } for n in read_closure(t)],
     )
+    let variant_parts = [variant_shape(v) for v in t.variants]
     quote {
         impl ${t} {
             /// This enum read from a JSON document.
@@ -162,6 +180,18 @@ fn enum_codec(t: Type) -> Decls {
             static fn json_schemas() -> Json {
                 Json.Obj(${schemas})
             }
+
+            /// This enum's SHAPE: its name, each variant and the kinds of its
+            /// payload, down through every type it reads.
+            static fn json_shape() -> string {
+                ${name(t.name)}.shape_in([])
+            }
+
+            static fn shape_in(seen: List<string>) -> string {
+                let here = seen.concat([${literal(t.name)}])
+                let parts: List<string> = [${..variant_parts}]
+                ${literal(t.name)} + "|" + parts.join("|")
+            }
         }
     }
 }
@@ -181,6 +211,17 @@ fn chosen_by_tag(by_name: List<Named>) -> Code {
 
 /// A variant's name and the code that builds it.
 type Named = { name: string, value: Code }
+
+/// A variant's shape: its name and the kinds of its payload fields.
+fn variant_shape(v: Variant) -> Code {
+    let fields = [quote { ${literal(f.name + ":")} + ${shape_code(f.kind)} } for f in v.fields]
+    quote {
+        {
+            let parts: List<string> = [${..fields}]
+            ${literal(v.name)} + "(" + parts.join(",") + ")"
+        }
+    }
+}
 
 /// A variant of `t` built from the code at each position in `vs`.
 fn built(t: Type, v: Variant, vs: List<Code>) -> Code {
@@ -319,6 +360,24 @@ fn written_members(elem: Kind, v: Code, depth: int) -> Code {
     let e = "e${depth}"
     let out = written(elem, name(e), depth + 1)
     quote { Json.Obj([field(${name(k)}, ${out}) for ${k}, ${e} in ${v}]) }
+}
+
+// ── Shape ────────────────────────────────────────────────────────
+
+/// The code spelling a kind's shape. A record or enum it reads is
+/// expanded in place, once down a path: met again, it is its name.
+fn shape_code(kind: Kind) -> Code {
+    match kind {
+        .Int -> quote { "int" },
+        .Float -> quote { "float" },
+        .Str -> quote { "string" },
+        .Bool -> quote { "bool" },
+        .Opt(inner) -> quote { ${shape_code(inner)} + "?" },
+        .List(elem) -> quote { "[" + ${shape_code(elem)} + "]" },
+        .Map(_, elem) -> quote { "map<" + ${shape_code(elem)} + ">" },
+        .Named(n, _) -> quote { if here.contains(${literal(n)}) { ${literal("~" + n)} } else { ${name(n)}.shape_in(here) } },
+        rest -> quote { unwritable() },
+    }
 }
 
 // ── Schema ───────────────────────────────────────────────────────
