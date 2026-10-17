@@ -874,10 +874,10 @@ fn witnesses() -> List<CodeWitness> {
         },
         CodeWitness {
             code: "flow.no_fate",
-            witness: Witness
-                .Source(
-                    "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\nlet w = work {\n    each: ok\n}\n0",
-                ),
+            witness: with_provider(
+                "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n}\n0\n",
+                "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n",
+            ),
         },
     ]
     rows
@@ -897,6 +897,23 @@ fn with_meta_modules(main: string, more: Map<string, string>) -> Witness {
     }
     for path, text in more { files.set(path, text) }
     Witness.Package(vendored_meta(files))
+}
+
+/// A package witness whose program imports from a provider package,
+/// `@x/c`, whose one file is `provider` — a component declared elsewhere.
+fn with_provider(main: string, provider: string) -> Witness {
+    let meta_dep = "[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n"
+    Witness
+        .Package(
+            vendored_meta(
+                {
+                    "/w/avra.toml": app_manifest + "\n" + meta_dep + "\"@x/c\" = { path = \"vendor/c\" }\n",
+                    "/w/src/main.av": main,
+                    "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+                    "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + provider,
+                },
+            ),
+        )
 }
 
 /// A package witness whose toolchain carries the real `@std/task`.
