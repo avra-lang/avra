@@ -40,7 +40,6 @@ use features.{
     Record,
     ChildSlot,
     Event,
-    marked_seats,
     marks_at,
     params_at,
     pat_id_at,
@@ -251,16 +250,11 @@ fn build_component_named_bare(b: Builder) -> Result<LangNode, string> {
 /// block the printer spells — or, under a `req ->` head, a fn over
 /// what the component offers.
 fn build_instance_body(b: Builder) -> Result<LangNode, string> {
-    let ps = b.tokens(0)?
+    let ps = params_at(b.args, 0)
     let stmts = b.stmts(1)?
     if ps.is_empty() { return b.make_expr(Expr.Block(stmts, null)) }
     if stmts.any((s) -> b.store.setting_parts(s) != null) { return .Err(fn_body_setting()) }
-    let unwritten: List<TypeRef?> = [null for p in ps]
-    b
-        .make_expr(
-            Expr
-                .Lambda(marked_seats(b.store, ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)),
-        )
+    b.make_expr(Expr.Lambda(ps, b.block_of(stmts)))
 }
 
 /// A ONE-SEAT FN FIELD'S BODY WRITTEN AS ARMS: `Name inst { pattern
@@ -298,14 +292,8 @@ fn build_instance_arms_body(b: Builder) -> Result<LangNode, string> {
 /// follows it — never a reserved word.
 fn build_on_handler(b: Builder) -> Result<LangNode, string> {
     let event = (b.token(1)?).text
-    let ps = b.tokens(2)?
     let stmts = b.stmts(3)?
-    let unwritten: List<TypeRef?> = [null for p in ps]
-    let lam = b
-        .expr_node(
-            Expr
-                .Lambda(marked_seats(b.store, ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)),
-        )
+    let lam = b.expr_node(Expr.Lambda(params_at(b.args, 2), b.block_of(stmts)))
     b.store.mark_on_handler(lam, event)
     b.make_stmt(Stmt.Setting(Plain(event), lam))
 }
