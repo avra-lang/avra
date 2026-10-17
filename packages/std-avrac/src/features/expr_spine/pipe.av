@@ -45,15 +45,12 @@
 use core.{Expr, ExprId, BinOp, op_symbol}
 use features.{LangNode, Builder}
 
-/// `l ( |> r )*` folds left, each stage taking the value built so
-/// far as its first argument.
-fn build_fold_pipe(b: Builder) -> Result<LangNode, string> {
-    mut acc = b.expr(0)?
-    for stage in b.exprs(1)? {
-        let call? = b.store.piped(stage, acc) else { return .Err(no_stage(b, stage)) }
-        acc = call
-    }
-    b.wrap_expr(acc)
+/// `l |> r` — the climb grouped the pair, so `x |> f |> g` arrives
+/// as `(x |> f) |> g`, the stage taking the value as its first argument.
+fn build_pipe(b: Builder) -> Result<LangNode, string> {
+    let stage = b.expr(2)?
+    let call? = b.store.piped(stage, b.expr(0)?) else { return .Err(no_stage(b, stage)) }
+    b.wrap_expr(call)
 }
 
 /// A line that begins with `|>`.

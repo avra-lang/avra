@@ -673,10 +673,9 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       SMELL: a window helper whose anchors are one KIND of member
       (`List<Token>` of names) while the range it spans holds members
       of another kind (the payload types between them). THE IDIOM:
-      one `MarkWindows`-shaped value carrying EVERY anchor, in any
-      order, asked per anchor (`w.at(lo)`), so adding a kind of
-      member that can carry the piece is adding it to the anchor list
-      and nothing else. Not ratcheted: no grep tells a complete
+      no window at all — a nested rule builds each member's own
+      record (`NVariant`, `NParam`), so a piece lands on the member
+      whose rule wrote it and no anchor list exists to be partial. Not ratcheted: no grep tells a complete
       anchor list from a partial one — the anchors are whatever the
       grammar can put there. THE KEEPER IS THE ATTACK, and it is
       cheap: for each member kind, write the piece on the LAST member
@@ -999,9 +998,9 @@ enum values too — a registry or an operator set is literally a table:
 
 ```avra
 let rows = table<BuilderRow> {
-    name          | build
-    "int_lit"     | build_int_lit
-    "fold_binary" | build_fold_binary
+    name        | build
+    "int_lit"   | build_int_lit
+    "binary"    | build_binary
 }
 let ops = table<OpRow> {
     text | op
@@ -1869,3 +1868,14 @@ with every claim checked (`make ui-board`: tools/ui_board.sh builds the
 board for wasm and runs tools/ui-board/demo.mjs). It skips aloud where
 the toolchain is absent, naming what is missing, so a machine without it
 is never read as green.
+
+## Counters, not clocks
+
+Wall time on our machines is noise: one binary measured 4.0 s and 6.2 s. The
+compiler can count its own work exactly, so a performance claim is held as a
+COUNT — files loaded and parsed, modules and files minted, queries computed,
+store KiB written (`check --counts`, compiler/work.av) — against a ceiling
+that may only fall (tools/work.budget, `make work-accept`). A count is the same
+on every machine, needs no ratio or slack, and a regression names the counter
+that grew. A clock stays a report; a ceiling is a count. A new unit of work
+gets its tally where it is done, a row in the budget, and the ratchet holds it.

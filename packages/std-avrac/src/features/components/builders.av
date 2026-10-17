@@ -24,7 +24,6 @@ use core.{
     TypeRef,
     Param,
     Unheard,
-    Mark,
     sorted_by,
     same_stmt,
     plain_mark,
@@ -43,15 +42,12 @@ use features.{
     Event,
     marked_seats,
     marks_at,
-    MarkWindows,
+    params_at,
     pat_id_at,
     expr_id_at,
     arms_at,
     record_spreads,
     three_dots,
-    between,
-    ref_within,
-    window_end,
     void_ref,
 }
 use grammar.{Token}
@@ -61,43 +57,55 @@ fn build_component_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
     if !(b.type_refs(2)?).is_empty() { return .Err(component_bound(b.type_refs(2)?)) }
-    let head = b.fields_zipped(b.tokens(3)?, b.type_refs(4)?, [], marks_at(b.args, 12))?
-    let fs = b.tokens(5)?
-    let en = b.tokens(14)?
-    let written = sorted_by(fs.concat(en), (x: Token, y: Token) -> x.span.lo < y.span.lo)
-    let marks = MarkWindows {
-        anchors: [t.span.lo for t in written],
-        marks: marks_at(b.args, 13),
-        from: b.span?.lo ?? 0,
-    }
-    let fields = b
-        .fields_zipped(
-            fs,
-            b.type_refs(6)?,
-            b.exprs(7)?,
-            [m for f in fs for m in marks.at(f.span.lo)],
-            b.tokens(17)?,
-        )?
-    let held = b.stmts(8)?
+    let held = b.stmts(6)?
     let made = [s for s in held if !holds_a_member(b.store, s)]
     if made.any((s) -> b.store.is_state_stmt(s)) { return .Err(untyped_state()) }
     if made.any((s) -> b.store.is_declaration(s)) { return .Err(foreign_member()) }
     let fns = b.with_body(held, made)
-    if !(b.tokens(11)?).is_empty() { return .Err(three_dots()) }
-    let events = b.events(en, b.tokens(15)?, b.type_refs(16)?, marks)?
-    let records = record_spreads([t.span.lo for t in written], b.tokens(9)?, b.type_refs(10)?)?
+    if !(b.tokens(9)?).is_empty() { return .Err(three_dots()) }
     let members = sorted_by(
-        fields.concat(events),
+        params_at(b.args, 4).concat(params_at(b.args, 5)),
         (x: Param, y: Param) -> b.written_at(x) < b.written_at(y),
     )
+    let records = record_spreads([b.written_at(m) for m in members], b.tokens(7)?, b.type_refs(8)?)?
     let s = b
         .store
         .alloc_stmt(
-            Stmt.ComponentDecl(Scoped(n.text), [Plain(t.text) for t in tp], head, members, fns),
+            Stmt
+                .ComponentDecl(Scoped(n.text), [Plain(t.text) for t in tp], params_at(b.args, 3), members, fns),
             b.span,
         )
     if !records.is_empty() { b.store.spread_fields(s, records) }
     .Ok(LangNode.NStmt(s))
+}
+
+/// `on name(seat: T, …)` — an event, as the member that holds its
+/// handler: a nullable fn over the seats the event says, absent until
+/// an instance hears it.
+fn build_component_event(b: Builder) -> Result<LangNode, string> {
+    let name = b.token(1)?
+    let says = params_at(b.args, 2)
+    .Ok(
+        LangNode
+            .NParam(
+                Param {
+                    name: Scoped(name.text),
+                    ty: TypeRef {
+                        name: "fn",
+                        args: flatten([some_list(s.ty) for s in says]).concat([void_ref]),
+                        optional: true,
+                        dynamic: false,
+                        arrow: true,
+                        span: name.span,
+                    },
+                    default: b.store.alloc_expr(Expr.NullLit, name.span),
+                    promises: plain_mark,
+                    id: b.store.alloc_param_id(name.span),
+                    marks: marks_at(b.args, 0),
+                    says: says,
+                },
+            ),
+    )
 }
 
 /// A member a component may hold besides its fields: a `fn`, or a
@@ -343,45 +351,6 @@ impl Builder {
         let w = self.token(i)?
         let word? = self.words.components.find(it.word == w.text) else { return .Err(unimported(w.text)) }
         .Ok(word)
-    }
-
-    /// Each declared event as the member that holds its handler: a fn
-    /// over the seats the event says, absent until an instance hears it.
-    fn events(names: List<Token>, seats: List<Token>, types: List<TypeRef>, marks: MarkWindows) -> Result<
-        List<Param>,
-        string,
-    > {
-        let ends = self.span?.hi ?? 0
-        .Ok(
-            [self.event(e, seats, types, window_end(names, j, ends), marks.at(e.span.lo))? for j, e in names],
-        )
-    }
-
-    fn event(name: Token, seats: List<Token>, types: List<TypeRef>, ends: int, marks: List<Mark>) -> Result<
-        Param,
-        string,
-    > {
-        let told = [t for t in types if ref_within(t, name.span.lo, ends)]
-        let says = self
-            .fields_zipped([s for s in seats if between(s.span.lo, name.span.lo, ends)], told, [], [])?
-        .Ok(
-            Param {
-                name: Scoped(name.text),
-                ty: TypeRef {
-                    name: "fn",
-                    args: told.concat([void_ref]),
-                    optional: true,
-                    dynamic: false,
-                    arrow: true,
-                    span: name.span,
-                },
-                default: self.store.alloc_expr(Expr.NullLit, name.span),
-                promises: plain_mark,
-                id: self.store.alloc_param_id(name.span),
-                marks: marks,
-                says: says,
-            },
-        )
     }
 
     fn named(word: ComponentWord, targs: List<TypeRef>, n: Token, body: ExprId?) -> Result<

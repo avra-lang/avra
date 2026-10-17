@@ -1,0 +1,34 @@
+//! WORK, COUNTED. The compiler's own tallies of what a run did: files read from
+//! disk, files parsed, modules and files minted from a hold, queries computed,
+//! store KiB written (rounded up: a written row's text carries a few bytes of clock). Each is exact and the same on every machine, so a
+//! ratchet can hold it where a clock cannot (tools/warm_edit_bench.sh, `check
+//! --counts`). A tally is process-wide and only grows.
+use @std.relation.engine.{queries_computed}
+use compiler.store.{store_bytes_written}
+
+once fn loaded_tally() -> Cell<int> { Cell.new(0) }
+
+once fn parsed_tally() -> Cell<int> { Cell.new(0) }
+
+once fn modules_tally() -> Cell<int> { Cell.new(0) }
+
+once fn files_tally() -> Cell<int> { Cell.new(0) }
+
+fn bumped(tally: Cell<int>) { tally.set(tally.get() + 1) }
+
+/// A file's text read from disk.
+export fn work_loaded() { bumped(loaded_tally()) }
+
+/// A source parsed from text.
+export fn work_parsed() { bumped(parsed_tally()) }
+
+/// A held module minted from its record.
+export fn work_module_minted() { bumped(modules_tally()) }
+
+/// A held file's declarations minted from its record lines.
+export fn work_file_minted() { bumped(files_tally()) }
+
+/// The run's counts as one line, in the order the ratchet's rows name them.
+export fn work_counts() -> string {
+    "counts: files_loaded=${loaded_tally().get()} files_parsed=${parsed_tally().get()} modules_minted=${modules_tally().get()} files_minted=${files_tally().get()} queries_computed=${queries_computed()} store_kib_written=${(store_bytes_written() + 1023) / 1024}"
+}
