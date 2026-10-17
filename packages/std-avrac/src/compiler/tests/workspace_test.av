@@ -150,6 +150,15 @@ fn depending_on(rows: string) -> Workspace {
     )
 }
 
+/// The package where `solo` fails to parse (a continuation led by its
+/// operator) and `main` imports from it.
+fn with_unread_solo(main: string) -> Workspace {
+    mut fs = ws_files()
+    fs.set("/w/src/main.av", main)
+    fs.set("/w/src/solo.av", "export fn only(a: bool, b: bool) -> bool {\n    a\n        && b\n}\n")
+    test_workspace(memory_host(fs, ws_names()), "/w")
+}
+
 fn main_report(text: string) -> string {
     with_main(text).analyze_file("/w/src/main.av").report()
 }
@@ -291,6 +300,20 @@ spec "compiler/workspace" {
             main_refuses("use util.{hidden}\n2\n", "`util` does not export `hidden`") &&
                 main_report("use util.{hidden}\n2\n")
                     .contains("its exports: twice, ident, Pair, Box, Shape")
+        }
+        then "an item its module's unread file would have declared — the parse error named, the reads silent" {
+            let a = with_unread_solo("use solo.{only}\nonly(true, true)\n").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`solo` does not export `only`") &&
+                a.report().contains("`solo` fails to parse here, so its names are unread: expected `}` to close the block") &&
+                a.report().contains("fix the parse error first") &&
+                !a.report().contains("is not defined") &&
+                !a.report().contains("no `fn only`")
+        }
+        then "a failed use's names answer to the use alone — a type read and a call both stay silent" {
+            let a = with_unread_solo("use solo.{only, Wide}\nlet w = Wide { n: 1 }\nonly(true, true)\n")
+                .analyze_file("/w/src/main.av")
+            a.diagnostics.length == 2 && !a.report().contains("no `type Wide`")
         }
         then "a package the manifest does not declare — a root without one declares nothing" {
             main_refuses(

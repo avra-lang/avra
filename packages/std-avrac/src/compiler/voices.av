@@ -152,14 +152,22 @@ fn reexport_twice(at: Loc?, name: string) -> Diag {
 
 /// `own_test` says the asker is one of `m`'s own tests, which reads the
 /// module's private names too — so the name is declared there at all.
-fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>, own_test: bool) -> Diag {
-    refusal(
+/// `unread` is a parse error in one of `m`'s files: the name may be
+/// declared where nothing could be read, so the refusal points there.
+fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>, own_test: bool, unread: Diag?) -> Diag {
+    let d = refusal(
         "resolve.not_exported",
         at,
         if own_test { "`${m.text()}` declares no `${item}`, exported or private" } else { "`${m.text()}` does not export `${item}`" },
         "in this use",
         if own_test { "a module's own tests read its private names as well as its exports: ${joined(exports, ", ")}" } else { "its exports: ${joined(exports, ", ")}" },
     )
+    let root? = unread else { return d }
+    d
+        with {
+            secondary: [Frame { label: "`${m.text()}` fails to parse here, so its names are unread: ${root.message}", loc: root.primary.loc }],
+            help: "fix the parse error first — `${item}` may be declared in the file that fails to parse",
+        }
 }
 
 fn private_apart(at: Loc?, m: ModulePath, item: string, files: List<string>) -> Diag {
@@ -1078,6 +1086,7 @@ export fn namespace_fp(ns: Namespace, ids: Ids) -> int {
                 ids,
             ),
             fp_list([ids.of_decl(d.index) for d in ns.apart]),
+            fp_list([fp_str(x) for x in ns.refused]),
             voices_fp(ns.voices),
         ],
     )
