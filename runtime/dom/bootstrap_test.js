@@ -505,7 +505,7 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   const sent = [];
   const apply = createApplier(doc, s.mount, (who, kind, said) => sent.push([who, kind]), null, () => repairs++);
   const drew = wordsOf(standingOf(s.mount));
-  apply(frame(adopt(drew, "div", "#text:2", "b"), setAttr(1, "title", "t")));
+  apply(frame(adopt(drew, "div", "#text", "b"), setAttr(1, "title", "t")));
   check("an adopted page keeps its elements and numbers them in document order", [s.mount.childNodes[0] === s.div, s.div.attrs.title === undefined, s.text.attrs.title], [true, true, "t"]);
   apply(frame(setText(1, "yo"), create(3, "i"), place(3, 0, 2)));
   check("a patch after adoption reaches the adopted nodes", [s.text.textContent, tags(s.div)], ["yo", ["#text", "#comment", "b", "i"]]);
@@ -528,7 +528,7 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   const v = served(doc);
   v.text.textContent = "h";
   const apply4 = createApplier(doc, v.mount, () => {}, null, () => repairs++);
-  apply4(frame(adopt(drew, "div", "#text:2", "b")));
+  apply4(frame(adopt(drew, "div", "#text", "b")));
   await Promise.resolve();
   check("a text that holds other words than the program drew is not adopted", [v.mount.childNodes.length, repairs], [0, 3]);
 
