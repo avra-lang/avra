@@ -25,10 +25,24 @@ function shown(doc, failure) {
 }
 
 // Hear the stream for the page running the module `mine`: a module that is
-// no longer that one reloads the page, a failure is shown, and a good
-// build of the module it runs clears what was shown.
-export function watch({ doc, mine, events, reload }) {
-  events.addEventListener("built", (said) => { if (said.data !== mine) reload(); else shown(doc, ""); });
+// no longer that one replaces it under the page — `swap()` starts the new
+// module over the elements the page holds, so an edit is applied as a diff —
+// or reloads the page where nothing can swap or the swap failed. A failure
+// is shown, and a good build of the module it runs clears what was shown.
+export function watch({ doc, mine, events, reload, swap = null }) {
+  let running = mine;
+  events.addEventListener("built", async (said) => {
+    if (said.data === running) { shown(doc, ""); return; }
+    if (!swap) { reload(); return; }
+    try {
+      await swap();
+      running = said.data;
+      shown(doc, "");
+    } catch (e) {
+      console.warn(`avra: the module could not take over the page (${e && e.message ? e.message : e}) — reloading`);
+      reload();
+    }
+  });
   events.addEventListener("failed", (said) => shown(doc, said.data));
 }
 
@@ -38,5 +52,6 @@ if (typeof document !== "undefined") {
     mine: document.querySelector('meta[name="avra-module"]').content,
     events: new EventSource("/@dev/events"),
     reload: () => location.reload(),
+    swap: typeof globalThis.avraSwap === "function" ? () => globalThis.avraSwap("./app.wasm") : null,
   });
 }
