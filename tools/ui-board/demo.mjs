@@ -282,7 +282,7 @@ claim("an adopted page builds nothing", all.filter((p) => p.op === OP.create || 
 claim("the first paint over an adopted page is the adoption and its listeners", first.length > 1 && first.slice(1).every((p) => p.op === OP.listen), first.map((p) => p.op).join(","));
 claim("the server's nodes are the page the module stands on", kept.at.childNodes.length === kept.placed.length && kept.placed.every((n, j) => kept.at.childNodes[j] === n));
 claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
-claim("the first frame over an adopted page is under 2000 bytes (9326 without a server page)", kept.sizes[0] < 2000, `${kept.sizes[0]}`);
+claim("the first frame over an adopted page is under 1500 bytes (9326 without a server page)", kept.sizes[0] < 1500, `${kept.sizes[0]}`);
 claim(`the server's page is ${serverBytes} bytes of HTML`, serverBytes > 0);
 const torn = await adopting(String(Number(serverPrint) + 1));
 const tornCreates = torn.sentFrames.flat().filter((p) => p.op === OP.create).length;
