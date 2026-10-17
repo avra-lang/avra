@@ -10,9 +10,8 @@
 //! gives `Idea.from_json(j)`, answering the record or a `DecodeError`
 //! naming the path that misfit (`tags[2]`), and `idea.to_json()`. An
 //! ENUM is an object whose `tag` names the variant and whose other
-//! members are its payload fields (`{"tag":"Both","row":1}`); a variant
-//! reads at most four fields. A field reads an `int`, `float`, `bool`, `string`, a `T?` (absent and
-//! `null` both read as null), a `List<T>` of any of these, or another
+//! members are its payload fields (`{"tag":"Both","row":1}`). A field reads an `int`, `float`, `bool`, `string`, a `T?` (absent and
+//! `null` both read as null), a `List<T>` or `Map<string, T>` of any of these, or another
 //! `@json` record or enum. Anything else is refused at the declaration.
 //!
 //! Stands alone with `@std/meta` and the vocabulary it generates calls
@@ -49,6 +48,9 @@ use @std.json.{
     path_field,
     path_item,
     unknown_tag,
+    want_members,
+    map_from,
+    Member,
 }
 
 /// `@json` — a record's or an enum's JSON reader and writer, and every
@@ -180,20 +182,10 @@ fn chosen_by_tag(by_name: List<Named>) -> Code {
 /// A variant's name and the code that builds it.
 type Named = { name: string, value: Code }
 
-/// The widest variant `built` spells.
-const VARIANT_WIDTH: int = 4
-
-/// A variant of `t` built from the code at each position in `vs`, one
-/// template per arity: a call's argument list has no seat a hole may fill.
+/// A variant of `t` built from the code at each position in `vs`.
 fn built(t: Type, v: Variant, vs: List<Code>) -> Code {
-    match vs.length {
-        0 -> quote { ${name(t.name)}.${v} },
-        1 -> quote { ${name(t.name)}.${v}(${vs[0]}) },
-        2 -> quote { ${name(t.name)}.${v}(${vs[0]}, ${vs[1]}) },
-        3 -> quote { ${name(t.name)}.${v}(${vs[0]}, ${vs[1]}, ${vs[2]}) },
-        4 -> quote { ${name(t.name)}.${v}(${vs[0]}, ${vs[1]}, ${vs[2]}, ${vs[3]}) },
-        rest -> quote { a_variant_wider_than_variant_width_has_no_call() },
-    }
+    if vs.is_empty() { return quote { ${name(t.name)}.${v} } }
+    quote { ${name(t.name)}.${v}(${..vs}) }
 }
 
 /// One arm of `to_json`: the tag, then each payload field under its name.
@@ -207,8 +199,7 @@ fn write_arm(v: Variant) -> Arms {
 }
 
 fn enum_problems(t: Type) -> List<Diagnostic> {
-    [too_wide_variant(t, v) for v in t.variants if v.fields.length > VARIANT_WIDTH]
-        .concat([unreadable_payload(t, v, f) for v in t.variants for f in v.fields if !readable(f.kind)])
+    [unreadable_payload(t, v, f) for v in t.variants for f in v.fields if !readable(f.kind)]
         .concat(
             [unannotated_payload(t, v, f, n) for v in t.variants for f in v.fields for n in records_read(f.kind) if !coded(n)],
         )
@@ -233,6 +224,7 @@ fn read(kind: Kind, v: Code, p: Code, depth: int) -> Code {
         .Bool -> quote { want_bool(${v}, ${p})? },
         .Opt(inner) -> read_present(inner, v, p, depth),
         .List(elem) -> read_items(elem, v, p, depth),
+        .Map(_, elem) -> read_members(elem, v, p, depth),
         .Named(n, _) -> quote { ${name(n)}.decode_json(${v}, ${p})? },
         rest -> quote { unreadable() },
     }
@@ -254,6 +246,18 @@ fn read_items(elem: Kind, v: Code, p: Code, depth: int) -> Code {
     let e = "e${depth}"
     let got = read(elem, name(e), quote { path_item(${p}, ${name(i)}) }, depth + 1)
     quote { [${got} for ${i}, ${e} in want_items(${v}, ${p})?] }
+}
+
+/// A map's reading: each member read by the value kind, at its own path.
+fn read_members(elem: Kind, v: Code, p: Code, depth: int) -> Code {
+    let m = "m${depth}"
+    let got = read(
+        elem,
+        quote { ${name(m)}.value },
+        quote { path_field(${p}, ${name(m)}.key) },
+        depth + 1,
+    )
+    quote { map_from([Member { key: ${name(m)}.key, value: ${got} } for ${m} in want_members(${v}, ${p})?]) }
 }
 
 // ── Writing ──────────────────────────────────────────────────────
@@ -287,6 +291,7 @@ fn written(kind: Kind, v: Code, depth: int) -> Code {
         .Bool -> quote { Json.Bool(${v}) },
         .Opt(inner) -> written_present(inner, v, depth),
         .List(elem) -> written_items(elem, v, depth),
+        .Map(_, elem) -> written_members(elem, v, depth),
         .Named(_, _) -> quote { ${v}.to_json() },
         rest -> quote { unwritable() },
     }
@@ -307,6 +312,13 @@ fn written_items(elem: Kind, v: Code, depth: int) -> Code {
     let e = "e${depth}"
     let out = written(elem, name(e), depth + 1)
     quote { Json.Arr([${out} for ${e} in ${v}]) }
+}
+
+fn written_members(elem: Kind, v: Code, depth: int) -> Code {
+    let k = "k${depth}"
+    let e = "e${depth}"
+    let out = written(elem, name(e), depth + 1)
+    quote { Json.Obj([field(${name(k)}, ${out}) for ${k}, ${e} in ${v}]) }
 }
 
 // ── Schema ───────────────────────────────────────────────────────
@@ -338,6 +350,7 @@ fn kind_schema(kind: Kind) -> Code {
         .Bool -> typed("boolean"),
         .Opt(inner) -> quote { Json.Obj([field("anyOf", Json.Arr([${kind_schema(inner)}, ${typed("null")}]))]) },
         .List(elem) -> quote { Json.Obj([field("type", Json.Str("array")), field("items", ${kind_schema(elem)})]) },
+        .Map(_, elem) -> quote { Json.Obj([field("type", Json.Str("object")), field("additionalProperties", ${kind_schema(elem)})]) },
         .Named(n, _) -> quote { Json.Obj([field("$ref", Json.Str(${literal("#/components/schemas/" + n)}))]) },
         rest -> quote { unwritable() },
     }
@@ -385,8 +398,7 @@ fn fields_of(t: Type?) -> List<Field> {
 fn records_read(k: Kind) -> List<string> {
     match k {
         .Named(n, _) -> [n],
-        .Opt(inner) -> records_read(inner),
-        .List(elem) -> records_read(elem),
+        .Opt(held) or .List(held) or .Map(_, held) -> records_read(held),
         rest -> [],
     }
 }
@@ -405,8 +417,9 @@ fn readable(k: Kind) -> bool {
         .Int or .Float or .Bool or .Str -> true,
         .Opt(inner) -> readable(inner),
         .List(elem) -> readable(elem),
+        .Map(key, value) -> key is .Str && readable(value),
         .Named(_, args) -> args.is_empty(),
-        .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+        .Ptr or .Void or .Cell(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
 
@@ -415,21 +428,12 @@ fn readable(k: Kind) -> bool {
 /// What a declaration too wide to read is told to do.
 const group_help: string = "group fields into a nested `@json` record"
 
-fn too_wide_variant(t: Type, v: Variant) -> Diagnostic {
-    refuse_as_at(
-        "too_wide",
-        v.at,
-        "`@json` reads a variant of at most ${VARIANT_WIDTH} fields, and `${t.name}.${v.name}` has ${v.fields.length}",
-        group_help,
-    )
-}
-
 fn unreadable_payload(t: Type, v: Variant, f: Field) -> Diagnostic {
     refuse_as_at(
         "unreadable_field",
         f.at,
         "`${t.name}.${v.name}`'s `${f.name}` is `${f.ty}`, which has no JSON reading",
-        "a payload reads int, float, bool, string, `T?`, `List<T>`, or another `@json` record or enum",
+        "a payload reads int, float, bool, string, `T?`, `List<T>`, `Map<string, T>`, or another `@json` record or enum",
     )
 }
 

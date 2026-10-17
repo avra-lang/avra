@@ -14,12 +14,22 @@ enum Show {
 type Pin = { row: int, label: string }
 
 @json
+type Bag = { counts: Map<string, int>, pins: Map<string, List<Pin>>, note: string? }
+
+@json
 enum Choice {
     Nothing
     One(row: int)
     Both(row: int, note: string?)
     Pinned(pin: Pin, more: List<int>)
     Marks(shows: List<Show>)
+    Wide(a: int, b: int, c: int, d: int, e: int, f: int)
+    Table(cells: Map<string, int>)
+}
+
+fn bag_round(text: string) -> string {
+    let doc = parse(text) catch Json.Null
+    match Bag.from_json(doc) { .Ok(b) -> to_text(b.to_json()), .Err(e) -> e.describe().message }
 }
 
 fn round(text: string) -> string {
@@ -47,6 +57,9 @@ spec "std/json — an enum's codec" {
                 "{\"tag\":\"Both\",\"row\":1,\"note\":null}",
                 "{\"tag\":\"Pinned\",\"pin\":{\"row\":2,\"label\":\"x\"},\"more\":[1,2]}",
                 "{\"tag\":\"Marks\",\"shows\":[{\"tag\":\"All\"},{\"tag\":\"Done\"}]}",
+                "{\"tag\":\"Table\",\"cells\":{\"x\":1,\"y\":2}}",
+                "{\"tag\":\"Table\",\"cells\":{}}",
+                "{\"tag\":\"Wide\",\"a\":1,\"b\":2,\"c\":3,\"d\":4,\"e\":5,\"f\":6}",
             ]
                 .all(round(it) == it)
         }
@@ -67,6 +80,27 @@ spec "std/json — an enum's codec" {
     given "the schema" {
         then "names the tags a variant may wear" {
             to_text(Show.json_schema()).contains("\"enum\":[\"All\",\"Active\",\"Done\"]")
+        }
+    }
+
+    given "a map of members" {
+        then "round-trips in the order written" {
+            let text = "{\"counts\":{\"b\":2,\"a\":1},\"pins\":{\"p\":[{\"row\":1,\"label\":\"x\"}]},\"note\":null}"
+            bag_round(text) == text
+        }
+        then "names a member by its path" {
+            bag_round("{\"counts\":{\"b\":\"x\"},\"pins\":{}}") == "`counts.b` wants an integer, found text"
+        }
+        then "names a member nested under a list" {
+            bag_round("{\"counts\":{},\"pins\":{\"p\":[{\"row\":\"z\",\"label\":\"x\"}]}}") == "`pins.p[0].row` wants an integer, found text"
+        }
+        then "refuses a name written twice" {
+            bag_round("{\"counts\":{\"a\":1,\"a\":2},\"pins\":{}}") == "`counts.a` wants one member, found more"
+        }
+        then "refuses what is no object" { bag_round("{\"counts\":[1],\"pins\":{}}") == "`counts` wants an object, found an array" }
+        then "is an object of its values in the schema" {
+            to_text(Bag.json_schema())
+                .contains("\"counts\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"}}")
         }
     }
 }
