@@ -547,13 +547,25 @@ impl Workspace {
 
     /// A module's declaration names, over the files it holds.
     fn module_decl_names(m: ModulePath) -> List<string> {
-        flatten([self.file_decl_names(path, [], false) for path in self.module_files(m)])
+        flatten([self.recorded_decl_names(m, path) ?? self.file_decl_names(path, [], false) for path in self.module_files(m)])
+    }
+
+    /// A held file's declaration names as its module's record lists them — the file's rows
+    /// stay unminted. Absent for a file read fresh, and where no record is attached.
+    fn recorded_decl_names(m: ModulePath, path: string) -> List<string>? {
+        let store? = self.store.get() else { return null }
+        if !self.held_path(path) { return null }
+        flatten([bound_names(p) for p in file_rows(record_fields(self, store, m), record_places(self, store, m).get(path))])
     }
 
     /// Whether any declaration of a file was written by an annotation: its code spells names
     /// its text does not.
     fn has_generated(path: string) -> bool {
         let f? = self.decls.known_file_id(path) else { return false }
+        if self.held_path(path) && self.store.get() != null {
+            let m = self.module_path_of(path)
+            return makers_in(record_fields(self, self.store.get()!, m), path).values().any(!it.is_empty())
+        }
         self.decls.decls_of_file(f).any((d: DeclId) -> !self.decls.decl(d).maker.is_empty())
     }
 
@@ -715,3 +727,9 @@ fn verdict_fp(r: Result<Settled, Unsettled>) -> int {
     match r { .Ok(v) -> fp(309, [v.fingerprint]), .Err(why) -> fp(310, [fp_str(why.words())]) }
 }
 
+/// The name a record line binds — none for a line that binds no name.
+fn bound_names(parts: List<string>) -> List<string> {
+    let row? = read_row(parts) else { return [] }
+    let kind? = declared_kind(row.shape, row.kind) else { return [] }
+    if binds_name(kind) { [row.name] } else { [] }
+}
