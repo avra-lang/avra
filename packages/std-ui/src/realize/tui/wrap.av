@@ -1,10 +1,24 @@
-//! `realize/tui/wrap.av` — text as lines of a width. A cell is one code
-//! point, never a byte, so an `é` is one column; a wide glyph and a
-//! combining mark still count one each.
-use @std.text.{chars, codepoint_count}
+//! `realize/tui/wrap.av` — text as lines of a width. A cell is a terminal
+//! column, so a wide glyph takes two and a combining mark none; a cluster
+//! (`@std.text.graphemes`) is never split across lines.
+use @std.text.{cells, graphemes, codepoints, from_codepoints}
 
-/// The cells a line takes.
-export fn cells(s: string) -> int { codepoint_count(s) }
+/// The picture a control code point is shown as, so no byte of a tree
+/// can drive the terminal: C0 and DEL as their control pictures, C1 as
+/// the replacement character. A newline stays, the one break a text
+/// carries; every other code point is itself.
+fn shown_code(c: int) -> int {
+    when {
+        c == 10 -> c
+        c < 32 -> 9216 + c
+        c == 127 -> 9249
+        c >= 128 && c < 160 -> 65533
+        _ -> c
+    }
+}
+
+/// `s` with each control shown as its picture.
+export fn shown(s: string) -> string { from_codepoints([shown_code(c) for c in codepoints(s)]) }
 
 /// A width below one reads as one.
 export fn at_least_one(n: int) -> int { if n < 1 { 1 } else { n } }
@@ -24,12 +38,28 @@ fn paragraph(p: string, w: int) -> List<string> {
     flowed(words, " ", w)
 }
 
-/// `s` in runs of `width` cells; whole when it already fits.
+/// `s` in runs of at most `width` cells, cut between clusters; whole when
+/// it already fits. A cluster wider than the line stands alone.
 export fn cut(s: string, width: int) -> List<string> {
     let w = at_least_one(width)
-    let cs = chars(s)
-    if cs.length <= w { return [s] }
-    [cs.slice(k * w, k * w + w).join("") for k in 0..(cs.length + w - 1) / w]
+    if cells(s) <= w { [s] } else { packed(graphemes(s), w) }
+}
+
+fn packed(gs: List<string>, w: int) -> List<string> {
+    mut out: List<string> = []
+    mut line = ""
+    mut used = 0
+    for g in gs {
+        let n = cells(g)
+        if used + n > w && line != "" {
+            out.push(line)
+            line = ""
+            used = 0
+        }
+        line = line + g
+        used = used + n
+    }
+    if line == "" { out } else { out.concat([line]) }
 }
 
 /// Parts laid on lines: single-line parts share a line, `sep` apart,
