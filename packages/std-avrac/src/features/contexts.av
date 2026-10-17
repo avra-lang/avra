@@ -194,6 +194,10 @@ impl Decls {
             voices.speak(self.embed_not_a_value(read_at ?? self.loc(d)))
             return error_type
         }
+        if self.is_meta_fn(d, "guarded") {
+            voices.speak(self.guard_not_a_value(read_at ?? self.loc(d)))
+            return error_type
+        }
         let sig? = self.sig(d)?.fn_sig() else { return error_type }
         // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
         // its declaration wrote travel with the type, so a writing fn
@@ -761,6 +765,18 @@ impl Decls {
             embed_literal_law,
             "handed on uncalled here",
             "call it where the path is written — `embed(\"schema.sql\")`",
+        )
+    }
+
+    /// `guarded` is lowered where it is called: a value of it would run
+    /// nothing, and a guard that quietly runs nothing is the worst failure.
+    fn guard_not_a_value(at: Loc?) -> Diag {
+        refusal(
+            "type.guard_value",
+            at,
+            "`guarded` is lowered where it is called, and handed on uncalled it would run nothing",
+            "handed on uncalled here",
+            "call it where the body is written — `guarded(() -> …)`",
         )
     }
 

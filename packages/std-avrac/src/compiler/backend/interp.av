@@ -140,6 +140,14 @@ type Machine = {
     tasks: List<Job>,
     running: int,
     parking: bool,
+    // THE GUARDED RUNS OPEN: each a floor on its task's call stack that a
+    // trap on that task lands back at. `entering` is the closure an
+    // `avra_guard_run` just asked the loop to begin under one; `resume`
+    // is where a caught trap sends the loop; `caught` the trap's words.
+    guards: List<Guard>,
+    entering: Val?,
+    resume: Place?,
+    caught: string,
     // how many tasks the run has spawned: the newest one's id
     spawned: int = 0,
     // how many tasks the run has seen answer: the newest answer's stamp
@@ -245,9 +253,18 @@ type Place = { body: Body, pc: int }
 /// register that call's answer fills.
 type Resume = { place: Place, dst: Reg }
 
+/// An open guarded run: the task that opened it and the depth its call
+/// stack stood at once the guarded closure was entered.
+type Guard = { task: int, depth: int }
+
 /// The caller waiting at `pc` in `body` for a call answering into `dst`.
 fn resumed_at(body: Body, pc: int, dst: Reg) -> Resume {
     Resume { place: Place { body: body, pc: pc }, dst: dst }
+}
+
+/// The register the call instruction at `pc` answers into.
+fn guard_dst(body: Body, pc: int) -> Reg {
+    match body.ins[pc] { .CallRt(d, _, _) -> d, rest -> Reg { index: 0 } }
 }
 
 /// What one step of the run loop did: carried on, or ended the body
@@ -296,6 +313,10 @@ fn fresh_machine(l: Lowered, named: fn(string) -> Lifted = no_named_type) -> Mac
         tasks: [],
         running: -1,
         parking: false,
+        guards: [],
+        entering: null,
+        resume: null,
+        caught: "",
         arrays: [],
         counts: [],
         spare: Spares { resting: [], ready: [] },
@@ -743,7 +764,13 @@ impl Machine {
         mut pc = 0
         mut answer: Val? = null
         mut going = true
-        while going && self.failures.is_empty() {
+        while going && (self.failures.is_empty() || self.caught_into()) {
+            if self.resume != null {
+                let landed = self.resume!
+                self.resume = null
+                body = landed.body
+                pc = landed.pc
+            }
             // where this step began: a row that parks re-runs here
             let at = pc
             self.budget = self.budget - 1
@@ -783,6 +810,11 @@ impl Machine {
                     rest -> { pc = self.step(body, pc) },
                 }
             }
+            if self.entering != null {
+                let next = self.guard_begun(resumed_at(body, at, guard_dst(body, at)))
+                body = next.body
+                pc = next.pc
+            }
             if self.parking {
                 self.parking = false
                 let next = self.switched(Place { body: body, pc: at })
@@ -802,12 +834,13 @@ impl Machine {
                         answer = gave
                         going = false
                     } else {
+                        let answered = self.guard_returned() ?? gave
                         let back = self.callers.pop()
                         body = back.place.body
                         pc = self
                             .put_at(
                                 back.dst,
-                                gave ?? self.defect_val("a fn body answered nothing"),
+                                answered ?? self.defect_val("a fn body answered nothing"),
                                 back.place.pc,
                             )
                     }
@@ -856,6 +889,60 @@ impl Machine {
         let vals = [self.value(r) for r in args]
         self.callers.push(caller)
         self.frames.push(self.frame_for(target, vals))
+        true
+    }
+
+    /// A guarded run asked the loop to begin its closure under a floor:
+    /// the closure's frame is entered like a call's, and the guard is
+    /// the call stack's depth once it stands.
+    fn guard_begun(caller: Resume) -> Place {
+        let closure = self.entering!
+        self.entering = null
+        let box? = array_id(closure) else { return self.guard_refused(caller) }
+        let target? = self.addressed_val(self.arrays[box].first() ?? Val.N) else { return self.guard_refused(caller) }
+        if self.callers.length >= call_limit {
+            self.trapped("recursion too deep — ${call_limit} nested calls")
+            return caller.place
+        }
+        self.callers.push(caller)
+        self.frames.push(self.frame_for(target, [closure]))
+        self.guards.push(Guard { task: self.running, depth: self.callers.length })
+        Place { body: target, pc: 0 }
+    }
+
+    /// A guarded run over something that is no closure: a defect, and the
+    /// run goes on past the call.
+    fn guard_refused(caller: Resume) -> Place {
+        self.defect("a guarded run over a non-closure survived typing")
+        Place { body: caller.place.body, pc: self.put_at(caller.dst, Val.I(0), caller.place.pc) }
+    }
+
+    /// A guarded closure returned: when the frame returning is the
+    /// innermost open guard's, the call's status is 0 and its answer is
+    /// not read.
+    fn guard_returned() -> Val? {
+        let g? = self.guards.last() else { return null }
+        if g.task != self.running || g.depth != self.callers.length { return null }
+        let _ = self.guards.pop()
+        Val.I(0)
+    }
+
+    /// A trap stands: when a guard this task opened is open, the stack
+    /// drops to the guard's call, the words are kept, the trap is over and
+    /// the loop resumes past the guarded call with status 1.
+    fn caught_into() -> bool {
+        let opened = [j for j, g in self.guards if g.task == self.running]
+        let at? = opened.last() else { return false }
+        let g = self.guards[at]
+        self.guards = self.guards.slice(0, at)
+        let back = self.callers[g.depth - 1]
+        self.unwound(g.depth - 1)
+        self.caught = self.failures.first() ?? ""
+        self.failures = []
+        self.resume = Place {
+            body: back.place.body,
+            pc: self.put_at(back.dst, Val.I(1), back.place.pc),
+        }
         true
     }
 
@@ -1442,6 +1529,13 @@ impl Machine {
         answer
     }
 
+    /// `avra_guard_run`: the loop begins the closure under a floor once
+    /// this step ends; the call's register is written when it returns.
+    fn guard_asked(vals: List<Val>) -> Val {
+        self.entering = vals[0]
+        Val.I(0)
+    }
+
     /// The reference a row's own body takes to the seat it keeps.
     fn taken(takes: Takes, vals: List<Val>) {
         match takes {
@@ -1556,6 +1650,8 @@ impl Machine {
             .TaskJoin -> self.task_join_val(vals),
             .TaskJoinCaught -> self.task_join_caught_val(vals),
             .TaskDone -> self.task_done_val(vals),
+            .GuardRun -> self.guard_asked(vals),
+            .GuardWords -> Val.S(self.caught),
             .TaskSettle -> self.task_settle_val(vals),
             .TaskSettleAll -> self.task_settle_all_val(vals),
             .TasksPush -> self.tasks_push_val(vals),
