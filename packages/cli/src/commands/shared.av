@@ -481,13 +481,32 @@ fn build_entry(ws: Workspace, path: string) -> string? {
 /// out of a record is a copy the hooks never see.
 export fn argued_path(args: CliResult) -> string? {
     let path = path_arg(args)
-    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
-    let there = match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
-    if !there {
+    if !exists_at(path) {
         no_such_file(path)
         return null
     }
     path
+}
+
+/// Whether a path stands on the disk.
+fn exists_at(path: string) -> bool {
+    // LICENSED compiler.host_asked_directly: a command's read of the path it was given, at this instant — no query frame is open
+    match disk_host().there(path) { .Exists(_, t) -> t, rest -> false }
+}
+
+/// A variadic `file`'s paths, each rooted and checked to exist (`no_such_file` spoken for the
+/// first that does not), a compile slot taken first when the first names a package.
+export fn slotted_paths(args: CliResult) -> List<string>? {
+    let paths = [rooted(p) for p in args.args_of("file")]
+    let gone = paths.find(!exists_at(it))
+    if gone != null {
+        no_such_file(gone!)
+        return null
+    }
+    let first? = paths.first() else { return null }
+    // LICENSED input.compile_slot: a package-scale command takes one of the machine's slots, which never changes a compile answer
+    if is_a_dir(first) { let _ = compile_slot() }
+    paths
 }
 
 /// The argued path, a compile slot taken first when it names a
