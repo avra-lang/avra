@@ -41,8 +41,9 @@ TIMEOUT = 60
 # a mutant is linked one in this many: a link costs seconds, and check has lowered it already
 BUILD_EVERY = 4
 # @mutate adds the case's mutations; @check runs only `check` — a program
-# whose own run traps by the language's law (an index past the end)
-FLAGS = {"@mutate", "@check"}
+# whose own run traps by the language's law (an index past the end);
+# @manifest makes the case's text the package's avra.toml, beside a one-line program
+FLAGS = {"@mutate", "@check", "@manifest"}
 # check examines and lowers; run evaluates what check let through; build
 # emits and links what it accepted
 MANIFEST = '[package]\nname = "probe"\nversion = "0.1.0"\n\n[bin]\npath = "src/main.av"\n'
@@ -228,21 +229,21 @@ def main():
     work = []
     for name, flags, body in all_cases:
         verbs = ["check"] if "@check" in flags else ["check", "run"]
-        work.append((name, verbs, body))
+        work.append((name, verbs, body, "@manifest" in flags))
         if "@mutate" in flags:
-            work.extend((n, verbs, b) for n, b in mutants(name, body))
-    work = [(n, v, b, False) for n, v, b in work]
+            work.extend((n, verbs, b, "@manifest" in flags) for n, b in mutants(name, body))
+    work = [(n, v, b, False, m) for n, v, b, m in work]
     work += [
-        (n, ["check", "run"] if runnable(b) else ["check"], b, True)
+        (n, ["check", "run"] if runnable(b) else ["check"], b, True, False)
         for n, b in generated(a.generate, a.seed)
     ]
     if a.only:
         work = [w for w in work if w[0].startswith(a.only)]
     if a.dump:
-        print("".join(b for n, _, b, _ in work if n == a.dump), end="")
+        print("".join(b for n, _, b, _, _ in work if n == a.dump), end="")
         return 0
     if a.list:
-        for n, _, _, _ in work:
+        for n, _, _, _, _ in work:
             print(n)
         return 0
     if not work:
@@ -251,13 +252,12 @@ def main():
     bad = []
     with tempfile.TemporaryDirectory(prefix="avra-defects-") as d:
         os.makedirs(os.path.join(d, "src"))
-        with open(os.path.join(d, "avra.toml"), "w", encoding="utf-8") as f:
-            f.write(MANIFEST)
-        for k, (n, verbs, body, mutant) in enumerate(work):
+        for k, (n, verbs, body, mutant, as_manifest) in enumerate(work):
             if a.progress and k % a.progress == 0:
                 print("defects: %d/%d" % (k, len(work)), flush=True)
-            with open(os.path.join(d, "src", "main.av"), "w", encoding="utf-8") as f:
-                f.write(body)
+            for name, text in (("avra.toml", body if as_manifest else MANIFEST), ("src/main.av", "1\n" if as_manifest else body)):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                    f.write(text)
             clean = False
             for verb in verbs + ["build"]:
                 if verb == "build" and not (clean and (not mutant or k % BUILD_EVERY == 0)):
