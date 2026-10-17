@@ -392,7 +392,9 @@ impl LowerCx {
     fn inline_safe(e: ExprId) -> bool {
         let node = self.view.store.expr(e)
         match node {
-            .Block(stmts, value) -> stmts.is_empty() && value != null && self.inline_safe(value!),
+            .Block(stmts, _) -> stmts.is_empty() &&
+                self.view.store.tail_of(e) != null &&
+                self.inline_safe(self.view.store.tail_of(e)!),
             .Propagate(_) or .Catch(_, _, _, _) -> false,
             .Lambda(_, _) -> true,
             rest -> node.kids().all((k: ExprId) -> self.inline_safe(k)),
