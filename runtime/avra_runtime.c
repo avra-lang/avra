@@ -1129,6 +1129,13 @@ static const char* guard_caught(const char* msg) {
     return msg;
 }
 
+#ifdef __wasm__
+// The personality a wasm module's cleanup funclets name. A cleanup catches
+// every exception and hands it on, so no language rule is ever asked of it;
+// the symbol is here for the linker.
+int __gxx_wasm_personality_v0(void) { return 0; }
+#endif
+
 int64_t avra_guard_run(void* body) {
     Guard g;
     g.unwinding = 0;

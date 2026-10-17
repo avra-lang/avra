@@ -1,0 +1,72 @@
+// proves, native and wasm alike: a trap caught by `contained` runs the deferred calls of every frame
+// between the trap and the guard, innermost first — a `defer`, an `errdefer`,
+// a deferred call over a managed value whose frame holds the last reference,
+// or handed on before the trap —
+// and a path that does not trap makes none of them twice; both engines
+use @std.meta.{contained}
+
+state log: List<string> = []
+
+fn note(s: string) { log = log.concat([s]) }
+
+fn total(xs: List<int>) { note("total ${xs.length}") }
+
+fn boom() -> int {
+    let xs = [1]
+    let i = 4
+    xs[i]
+}
+
+fn inner(name: string) -> int {
+    defer note("closed ${name}")
+    boom()
+}
+
+fn outer() -> int {
+    defer note("outer")
+    let r = inner("a")
+    r + 1
+}
+
+fn failing() -> Result<int, string> {
+    errdefer note("errdefer")
+    defer note("defer")
+    .Ok(boom())
+}
+
+fn holding() -> int {
+    let data = [10, 20, 30]
+    defer total(data)
+    boom()
+}
+
+state kept: List<int> = []
+
+fn keep(xs: List<int>) { kept = xs }
+
+fn moved() -> int {
+    let data = [4, 5]
+    defer total(data)
+    keep(data)
+    boom()
+}
+
+fn clean() -> int {
+    defer note("clean")
+    7
+}
+
+fn worded(r: Result<int, string>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(w) -> "err ${w}" }
+}
+
+fn shown(what: string, r: Result<int, string>) {
+    println("${what}: ${worded(r)} | ${log.join(",")}")
+    log = []
+}
+
+shown("two frames", contained(outer))
+shown("defer and errdefer", contained(() -> match failing() { .Ok(n) -> n, .Err(w) -> 0 }))
+shown("a managed argument", contained(holding))
+shown("a managed argument handed on first", contained(moved))
+shown("no trap", contained(clean))
