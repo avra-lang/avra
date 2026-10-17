@@ -101,6 +101,7 @@ export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
                     },
                     .Ended(at, serial) -> { hands.get()[at].freed(serial) },
                     .Frame -> {
+                        on.frames.set(on.frames.get() + 1)
                         pending = false
                         if on.flush() { painted() }
                     },
@@ -139,7 +140,8 @@ export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
 const window_ms = 8
 
 /// The frame's own task: each time the loop says the screen moved, a window
-/// passes, then the loop is told. One task for the loop's whole life.
+/// passes, then the loop is told. One task for the loop's whole life, parked
+/// on its channel between: an idle app wakes nothing.
 fn framed(wakes: Source<bool>, send: fn(Msg) -> bool) -> bool {
     for _wake in wakes {
         sleep(ms(window_ms))
