@@ -1183,6 +1183,7 @@ impl TypeCx {
         if decl != null { return self.declared_type(at, decl!, name) }
         if width_named(name) != null { return self.width_off_a_seat(at, name) }
         if traced() { qtrace("Q\tnamed_type_fail\t${name}\t${self.view.decls.file(self.view.file).path}\n") }
+        if self.names.names.refused.contains(name) { return self.error_type }
         let apart: Diag? = self
             .view
             .decls
@@ -1193,13 +1194,19 @@ impl TypeCx {
         }
         self
             .emit(
-                refusal(
-                    "type.unknown",
-                    at,
-                    "`${name}` names no type",
-                    written_label(self.written_in),
-                    "the types today are `int`, `string`, `bool`, and your declared types",
-                ),
+                self
+                    .names
+                    .names
+                    .behind_unread(
+                        refusal(
+                            "type.unknown",
+                            at,
+                            "`${name}` names no type",
+                            written_label(self.written_in),
+                            "the types today are `int`, `string`, `bool`, and your declared types",
+                        ),
+                        name,
+                    ),
             )
         self.error_type
     }
