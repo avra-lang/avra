@@ -148,6 +148,9 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
     return (at * BASE + octets.length + 1) % PRIME;
   };
   const wordsOf = (nodes) => nodes.filter((n) => kindOf(n) === "#text").reduce((acc, n) => mixed(acc, n.textContent), 7) + 1;
+  // The elements the last adoption took, whose controls may hold what a user
+  // typed before the program could hear it.
+  let taken = [];
   const adopt = (kinds, words) => {
     const nodes = standing();
     if (kinds.length === 0) {
@@ -161,6 +164,25 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
       return;
     }
     nodes.forEach((n, j) => keep(j, n));
+    taken = nodes;
+  };
+
+  // A control that holds more than its markup seeded was typed in before the
+  // program stood: it says so once, through the listener the program bound,
+  // and its handler learns what the page already shows. One listener per
+  // control: the first that reads the property.
+  const replay = () => {
+    const nodes = taken;
+    taken = [];
+    for (const el of nodes) {
+      for (const held of (el.__avra_listeners || new Map()).values()) {
+        if (!held.reads || el[held.reads] === undefined) continue;
+        const seeded = held.reads === "checked" ? el.getAttribute("checked") !== null : el.getAttribute(held.reads) ?? "";
+        if (el[held.reads] === seeded) continue;
+        held.listener(null);
+        break;
+      }
+    }
   };
 
   const apply = {
@@ -199,7 +221,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
         send(p.id, p.kind, saidBy(el, p.says, p.reads));
       };
       el.addEventListener(p.event, listener);
-      held.set(p.kind, { event: p.event, listener });
+      held.set(p.kind, { event: p.event, listener, reads: p.reads });
     },
     [OP.unlisten]: (p) => {
       const el = need(p.id);
@@ -223,7 +245,8 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
       apply[p.op](p);
       if (broken) break;
     }
-    if (broken) { broken = false; queueMicrotask(repair); }
+    if (broken) { broken = false; queueMicrotask(repair); return; }
+    replay();
   };
 }
 
