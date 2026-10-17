@@ -1,0 +1,126 @@
+// The text reader refuses what the tree reader refuses, in the same cases:
+// every prefix of a document, a name written twice, a number JSON does not
+// spell, an escape it does not have, a raw control octet — and never traps.
+use @std.json.codec.{json}
+use @std.json.typed.{as_int, as_text, elements, members}
+use @std.text.{repeat}
+
+@json
+type Cell2 = { n: int, s: string, flag: bool, maybe: int?, tags: List<string> }
+
+const whole: string = "{\"n\":3,\"s\":\"a\\\"b\",\"flag\":true,\"maybe\":null,\"tags\":[\"x\",\"y\"]}"
+
+fn reads(text: string) -> bool {
+    match Cell2.from_json_text(text) { .Ok(_) -> true, .Err(_) -> false }
+}
+
+fn refusal(text: string) -> string {
+    match Cell2.from_json_text(text) { .Ok(_) -> "read", .Err(e) -> e }
+}
+
+fn cut_reads(n: int) -> bool { reads(whole.substring(0, n)) }
+
+fn int_refused(text: string) -> bool {
+    match as_int(text) { .Ok(_) -> false, .Err(_) -> true }
+}
+
+fn int_read(text: string) -> int {
+    match as_int(text) { .Ok(n) -> n, .Err(_) -> -999 }
+}
+
+fn text_refused(text: string) -> bool {
+    match as_text(text) { .Ok(_) -> false, .Err(_) -> true }
+}
+
+fn text_read(text: string) -> string {
+    match as_text(text) { .Ok(t) -> t, .Err(_) -> "refused" }
+}
+
+fn elements_of(text: string) -> List<string> {
+    match elements(text) { .Ok(xs) -> xs, .Err(_) -> ["refused"] }
+}
+
+fn members_count(text: string) -> int {
+    match members(text) { .Ok(ms) -> ms.length, .Err(_) -> -1 }
+}
+
+spec "std/json typed — hostile text" {
+    given "a whole document" {
+        then "reads" { reads(whole) }
+        then "reads back to itself" {
+            match Cell2.from_json_text(whole) { .Ok(c) -> c.json_text() == whole, .Err(_) -> false }
+        }
+    }
+    given "a document cut short" {
+        then "is refused at every length" { (0..whole.length).all(!cut_reads(it)) }
+    }
+    given "a document with something after it" {
+        then "is refused" { !reads(whole + "x") && !reads(whole + ",") && !reads(whole + "{}") }
+        then "may have blanks after it" { reads(whole + " \n") }
+    }
+    given "a name written twice" {
+        then "is refused, as the tree refuses it" {
+            refusal("{\"n\":1,\"n\":2,\"s\":\"\",\"flag\":true,\"tags\":[]}") == "names a member twice"
+        }
+    }
+    given "a trailing comma" {
+        then "is refused in an object and in an array" {
+            !reads("{\"n\":1,\"s\":\"\",\"flag\":true,\"tags\":[],}") &&
+                !reads("{\"n\":1,\"s\":\"\",\"flag\":true,\"tags\":[\"a\",]}")
+        }
+    }
+    given "an integer" {
+        then "has no leading zero, plus, fraction, exponent or blank inside" {
+            ["01", "+1", "1.0", "1e3", "- 1", "--1", "", "0x1"].all(int_refused(it))
+        }
+        then "past what an int holds is refused, not wrapped" { int_refused("99999999999999999999") }
+        then "may be negative or zero" { int_read("-12") == -12 && int_read("0") == 0 }
+    }
+    given "a string" {
+        then "decodes its escapes" { text_read("\"a\\n\\u0041\\\"\"") == "a\nA\"" }
+        then "refuses an escape JSON lacks" { text_refused("\"\\q\"") }
+        then "refuses a bad hex escape" { text_refused("\"\\uZZZZ\"") }
+        then "refuses a short hex escape" { text_refused("\"\\u12\"") }
+        then "refuses a raw newline" { text_refused("\"a\nb\"") }
+        then "refuses one never closed, and a lone backslash" {
+            text_refused("\"abc") && text_refused("\"abc\\")
+        }
+    }
+    given "a name spelled with an escape" {
+        then "is the name it spells" {
+            reads("{\"\\u006e\":3,\"s\":\"\",\"flag\":false,\"tags\":[]}")
+        }
+    }
+    given "a value of the wrong kind" {
+        then "is refused in its own words" {
+            refusal("{\"n\":\"3\",\"s\":\"\",\"flag\":true,\"tags\":[]}") == "wants an integer" &&
+                refusal("{\"n\":3,\"s\":4,\"flag\":true,\"tags\":[]}") == "wants text" &&
+                refusal("{\"n\":3,\"s\":\"\",\"flag\":\"yes\",\"tags\":[]}") == "wants `true` or `false`" &&
+                refusal("{\"n\":3,\"s\":\"\",\"flag\":true,\"tags\":{}}") == "wants an array"
+        }
+        then "is refused for a missing member" { refusal("{\"s\":\"\",\"flag\":true,\"tags\":[]}") == "is missing" }
+        then "null reads an optional as absent, and a required one is refused" {
+            reads("{\"n\":3,\"s\":\"\",\"flag\":true,\"maybe\":null,\"tags\":[]}") &&
+                !reads("{\"n\":null,\"s\":\"\",\"flag\":true,\"tags\":[]}")
+        }
+    }
+    given "no object at all" {
+        then "is refused" { ["", " ", "null", "[]", "3", "\"x\"", "{", "}"].all(!reads(it)) }
+    }
+    given "very deep nesting" {
+        then "is read as the value it is, without trapping" {
+            let deep = repeat("[", 50000) + repeat("]", 50000)
+            !reads("{\"n\":3,\"s\":\"\",\"flag\":true,\"tags\":" + deep + "}")
+        }
+        then "an unbalanced run is refused" { !reads("{\"n\":3,\"s\":\"\",\"flag\":true,\"tags\":" + repeat("[", 1000) + "}") }
+    }
+    given "elements" {
+        then "of an empty array are none, of a blank one too" {
+            elements_of("[]").is_empty() && elements_of(" [ ] ").is_empty()
+        }
+        then "keep each value as written" { elements_of("[1, \"a\", {\"k\": [2]}]").join("|") == "1|\"a\"|{\"k\": [2]}" }
+    }
+    given "members" {
+        then "of an empty object are none" { members_count("{}") == 0 }
+    }
+}
