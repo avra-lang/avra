@@ -1057,6 +1057,23 @@ registry is the idiom engine's spec, written by dogfooding.
   THAT PARSES WHERE IT IS SPOKEN — the `where` is half the claim, and
   the keeper this wants compiles the named form in the refusing
   context.
+- EVERY VOICE CARRIES WHAT ITS ROW OWES, AND THE REGISTRY HOLDS IT. A
+  kind's help is a property of its voice and its structured fix a
+  property of its law, so the row says which: `DiagCode.remedy` is
+  `Remedy.Help` (words only — the default) or `Remedy.Fix` (the law
+  states a machine-applicable edit, so the voice carries a
+  `Suggestion`). `make voices` (`avra voices`) reads the registry and
+  the compiler's own rendering of each witness — never source text —
+  and refuses a NEW kind or rule that lacks a witness, help, or, under
+  `Remedy.Fix`, a `fix (` line; `tools/voices.baseline` lists the gaps
+  that stand and only shrinks, and `docs/VOICES.md` is the generated
+  inventory. A refusal passing `null` help is
+  `compiler.helpless_refusal`'s finding. A seat judging a value
+  against its want words its refusal through `seat_mismatch` — one verb
+  holds the label, the help and the conversion (`text`, `[x]`, `x!`, a
+  named type's wrap), so no seat re-words the remedy. A suggestion
+  applies under `avra fix --repair` only when it is `Confidence.High`
+  and its splice clears the error it came with and mints none.
 - A LINT COUNTS WHAT ITS DOCTRINE COUNTS, never a proxy that
   correlates. F2040 was written to count HIDDEN VARIANTS where the
   doctrine counts ANSWERING ARMS: measured tree-wide, 191 sites

@@ -142,7 +142,7 @@ impl ResolveCx {
                             at,
                             "`${name}` is not defined",
                             "not defined anywhere in this program",
-                            null,
+                            "define it above this use — `let ${name} = …` — or import it — `use module.{${name}}`",
                         ),
                         e,
                         name,
@@ -309,7 +309,7 @@ impl ResolveCx {
                             self.loc_of(e),
                             "no `type ${name}` is declared",
                             "used here",
-                            null,
+                            "declare it — `type ${name} = { … }` — or import it — `use module.{${name}}`",
                         ),
                         e,
                         name,
@@ -375,7 +375,7 @@ impl ResolveCx {
                             self.loc_of(e),
                             "no `fn ${name}` is defined",
                             "called here",
-                            null,
+                            "define it — `fn ${name}(…) { … }` — or import it — `use module.{${name}}`",
                         ),
                         e,
                         name,
@@ -713,14 +713,24 @@ impl ResolveCx {
     /// shadowed names are honest candidates for a typo.
     fn suggested(d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
         let n? = closest(name, candidates) else { return d }
-        let at: Loc? = self.loc_of(e)
-        let edits = [Edit { loc: l, replacement: n.name } for l in some_list(at)]
+        let at: Loc? = self.name_at(e, name)
         let s = Suggestion {
             confidence: if n.distance == 1 { Confidence.High } else { Confidence.Medium },
             description: "replace `${name}` with `${n.name}`",
-            edits: edits,
+            edits: [Edit { loc: l, replacement: n.name } for l in some_list(at)],
         }
-        d with { help: "did you mean `${n.name}`?", suggestions: [s] }
+        d with { help: "did you mean `${n.name}`?", suggestions: if at == null { [] } else { [s] } }
+    }
+
+    /// Where the written name stands: the node's own span opens on it
+    /// (a call's runs on through its arguments, which are not the name)
+    /// — absent for text that is not the name.
+    fn name_at(e: ExprId, name: string) -> Loc? {
+        if self.view.origin_of(e) != null { return null }
+        let l? = self.loc_of(e) else { return null }
+        let text = self.view.source.text
+        if l.lo + name.length > text.length || text.substring(l.lo, l.lo + name.length) != name { return null }
+        l with { hi: l.lo + name.length }
     }
 }
 
