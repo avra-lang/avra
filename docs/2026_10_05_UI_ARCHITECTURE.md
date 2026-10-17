@@ -265,28 +265,6 @@ The door is `App.turn`'s `guard`, and the default guard is `contained`
 answers whether it ran, or the failure's words. A test may install its
 own (`Screen.guarded`) to inject a failure without a trap.
 
-### What holds on each target
-
-What a caught trap guarantees is the runtime's, and it is not the same
-everywhere. Stated plainly:
-
-| | native (terminal, headless) | wasm (a page) |
-|---|---|---|
-| the trap ends the turn, not the process | yes | yes |
-| writes the turn made stand | yes | yes |
-| the failure words reach the target | yes | yes |
-| the app keeps hearing events | yes | yes |
-| the frames between the trap and the handler run their `defer`/`errdefer` | **yes** — a native unwind over the frames' tables | **not yet** — the catch is a `setjmp`/`longjmp` (a wasm exception), which skips them |
-
-So a handler that opens a resource under a `defer` closes it on a native
-trap, and on a page, today, leaks it until the module ends. No claim in
-this document about cleanup after a failure holds on a page.
-
-What is never caught, on any target: a trap on another task, a stack
-overflow, and the process's own limits (out of memory, the memory
-ceiling). A trap in a deferred call that runs as a normal exit
-re-runs the cleanups still open.
-
 ## Layout is one algorithm on every surface
 
 A `Layout` means the same on a page and in a terminal because both run CSS
