@@ -646,12 +646,74 @@ fn witnesses() -> List<CodeWitness> {
             code: "manifest.bad_tool_from",
             witness: manifest(app_manifest + "\n[process.tools]\ngit = { from = \"nowhere\" }\n"),
         },
+        CodeWitness { code: "collect.kind", witness: Witness.Source("type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1") },
+        CodeWitness { code: "collect.scope", witness: Witness.Source("type Entry = { name: string }\ncollect xs: List<Entry> = @tag in everywhere as Entry { name: it.name } by it.name\n1") },
+        CodeWitness { code: "collect.order", witness: Witness.Source("type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name }\n1") },
+        CodeWitness { code: "collect.not_a_list", witness: Witness.Source("type Entry = { name: string }\ncollect xs: int = @tag in self as Entry { name: it.name } by it.name\n1") },
+        CodeWitness { code: "collect.not_a_record", witness: Witness.Source("collect xs: List<int> = @tag in self as int { name: it.name } by it.name\n1") },
+        CodeWitness { code: "collect.proj_type", witness: Witness.Source("type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name\n1") },
+        CodeWitness { code: "collect.fields", witness: Witness.Source("type Entry = { name: string, module: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1") },
+        CodeWitness { code: "collect.path", witness: Witness.Source("type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name\n1") },
+        CodeWitness { code: "collect.order_key", witness: Witness.Source("type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.nope\n1") },
+        CodeWitness { code: "collect.order_uncomparable", witness: Witness.Source("type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark\n1") },
+        CodeWitness { code: "collect.self_read", witness: Witness.Source("export component widget {\n    run: fn(int) -> int?\n}\ntype Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget cyclic { n -> if xs.length > n { n } else { null } }\n1") },
+        CodeWitness { code: "collect_enum.scope", witness: Witness.Source("export component widget {\n    run: fn(int) -> int?\n}\nexport widget a { n -> null }\ncollect enum S = widget in closure by it.name\n1") },
+        CodeWitness { code: "collect.order_mixed", witness: Witness.Beyond(marks_golden) },
+        CodeWitness { code: "collect.dense", witness: Witness.Beyond(marks_golden) },
+        CodeWitness { code: "collect.closure_fold", witness: Witness.Beyond("a lone program always has its entry, and the law reads a library with none — the golden is features/collects/tests/collects_test.av, which says so") },
+        CodeWitness { code: "collect_enum.tie", witness: Witness.Beyond(marks_golden) },
+        CodeWitness { code: "collect_enum.member", witness: Witness.Beyond(marks_golden) },
+        CodeWitness { code: "collect_enum.variant", witness: Witness.Beyond(marks_golden) },
+        CodeWitness { code: "collect_enum.self", witness: Witness.Beyond("delegation reads `@std/meta`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av") },
+        CodeWitness { code: "const.budget", witness: Witness.Source("const n: int = (0..99999999).fold(0, (a, b) -> a + b)\nn") },
+        CodeWitness { code: "const.param", witness: Witness.Source("fn g(x: int) -> int {\n    const k: int = x + 1\n    k\n}\ng(1)") },
+        CodeWitness { code: "const.form", witness: Witness.Source("fn mk() -> fn(int) -> int { (x: int) -> x }\nconst f: fn(int) -> int = mk()\nf(1)") },
+        CodeWitness { code: "const.cycle", witness: Witness.Source("const a = a + 1\na") },
+        CodeWitness { code: "const.reach", witness: Witness.Beyond("a lone source has no prelude to print through, and a const reads the world only through one — the golden is compiler/tests/settle_test.av") },
+        CodeWitness { code: "flow.yield", witness: Witness.Source("fn f() -> int {\n    yield 1\n    2\n}\nf()") },
+        CodeWitness { code: "flow.produce", witness: Witness.Source("let s = produce<int>(1) { yield 1 }\n1") },
+        CodeWitness { code: "flow.callback_pointer", witness: Witness.Source("extern fn avra_probe_cb(cb: fn(int) -> ptr) -> int\n1") },
+        CodeWitness { code: "flow.end_arm", witness: Witness.Beyond("`select` over a supply needs `@std/task`, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av") },
+        CodeWitness { code: "flow.no_fate", witness: Witness.Beyond("a handler that can fail is a component of `@std/task`, which a lone source cannot import — the golden is features/components/tests/components_fate_test.av") },
+        CodeWitness { code: "type.quote_meta", witness: Witness.Source("let q = quote { 1 }\n1") },
+        CodeWitness { code: "type.quote_hole", witness: Witness.Beyond("a hole is filled from `@std/meta`, which a lone source cannot import — the golden is features/quote/tests/rewrite_test.av") },
+        CodeWitness { code: "type.quote_pat_run", witness: Witness.Beyond("a `quote` pattern reads `@std/meta`'s `Code`, which a lone source cannot import — the golden is features/quote/tests/quote_pattern_test.av") },
+        CodeWitness {
+            code: "manifest.link_option",
+            witness: manifest(app_manifest + "\n[link]\nlibs = [\"-lm\"]\n"),
+        },
+        CodeWitness {
+            code: "manifest.link_flag",
+            witness: manifest(app_manifest + "\n[link]\ndynamic_symbols = \"yes\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_budget",
+            witness: manifest(app_manifest + "\n[lifted]\nsteps = 0\n"),
+        },
+        CodeWitness { code: "manifest.borrowed_raw", witness: borrowed_raw() },
     ]
     rows
 }
 
 /// A lawful manifest, for a witness to add one wrong line to.
 const app_manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+/// Where the mark-reading collect laws are witnessed: a mark's receiver is
+/// `@std/meta`'s `Named`, which a lone source cannot import.
+const marks_golden: string = "a mark's receiver is `@std/meta`'s own `Named`, which a lone source cannot import — the golden is features/collects/tests/collects_test.av"
+
+/// A dependency that asks for raw linker options, under an app that names it.
+fn borrowed_raw() -> Witness {
+    Witness
+        .Package(
+            {
+                "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
+                "/w/src/main.av": "use @acme.dep.{d}\nd(1)\n",
+                "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n[link.raw]\nflags = [\"-o\", \"/tmp/x\"]\n",
+                "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int { n }\n",
+            },
+        )
+}
 
 /// A package witness over one manifest and the one-line program beside it.
 fn manifest(toml: string) -> Witness {
