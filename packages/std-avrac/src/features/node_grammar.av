@@ -20,7 +20,7 @@
 //! the next declared type the way a string table would.
 use core.{flatten, joined, PayloadRow, row_for, binop_of}
 use @std.meta.{Field, Kind}
-use @std.grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Operators, Diagnostic, defect}
+use @std.grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Operators, Tier, Diagnostic, defect}
 
 /// A grammar with every node build bound, and what binding refused.
 export type NodeBinding = { g: Grammar, defects: List<Diagnostic> }
@@ -53,7 +53,15 @@ fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
 /// every build.
 fn bound_operators(ops: Operators?, outer: Seq, rows: List<PayloadRow>) -> Operators? {
     let held? = ops else { return null }
-    held with { tiers: [t with { build: bound_build(t.build, outer, rows) } for t in held.tiers] }
+    held with { tiers: [bound_tier(t, outer, rows) for t in held.tiers] }
+}
+
+/// A tier with its own build and each suffix's bound.
+fn bound_tier(t: Tier, outer: Seq, rows: List<PayloadRow>) -> Tier {
+    t with {
+        build: bound_build(t.build, outer, rows),
+        suffixes: [x with { build: bound_build(x.build, outer, rows) } for x in t.suffixes],
+    }
 }
 
 fn bound_prim(rname: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
@@ -129,8 +137,15 @@ fn judged_seqs(s: Seq, scope: Seq) -> List<Judged> {
 
 fn seq_defects(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {
     let tiers = s.operators?.tiers ?? []
-    build_defects(rname, s.build, outer, rows, flatten([t.words for t in tiers if t.build == null]))
-        .concat(flatten([build_defects(rname, t.build, outer, rows, t.words) for t in tiers]))
+    build_defects(rname, s.build, outer, rows, flatten([t.served_words() for t in tiers if t.build == null]))
+        .concat(flatten([tier_build_defects(rname, t, outer, rows) for t in tiers]))
+}
+
+/// A tier's own build, and each of its suffixes', judged for the
+/// operators each builds.
+fn tier_build_defects(rname: string, t: Tier, outer: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {
+    build_defects(rname, t.build, outer, rows, t.served_words())
+        .concat(flatten([build_defects(rname, x.build, outer, rows, [[x.word]]) for x in t.suffixes]))
 }
 
 /// One build judged against the node it names; `words` are the operator
