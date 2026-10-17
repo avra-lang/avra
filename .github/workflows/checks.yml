@@ -25,7 +25,7 @@
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) runs the
 # whole gate over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
-# trades runner slots against wall time: five shards keeps a PR's gate short.
+# trades runner slots against wall time: six shards keeps a PR's gate short.
 name: checks
 
 on:
@@ -185,7 +185,7 @@ jobs:
           if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
-          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 5)
+          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 6)
           if [ -f .github/ci/suite-seconds.measured ]; then echo "suite weights: $(grep -vc '^#' .github/ci/suite-seconds.measured) measured row(s) over the committed seed"; else echo "suite weights: the committed seed alone"; fi
           # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
           # the compiler-free keepers and the codecs scan. The heavy legs owe
@@ -844,7 +844,7 @@ jobs:
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
             # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
