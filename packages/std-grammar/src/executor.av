@@ -1135,6 +1135,7 @@ type Climbing = {
 type Taken<T, N> = {
     status: MatchStatus,
     tier: int,
+    suffixed: bool,
     op_at: int,
     rhs: Captured<T, N>,
     cursor: int,
@@ -1149,6 +1150,7 @@ fn untaken<T, N>(cx: MatchContext<T, N>, status: MatchStatus, farthest: Farthest
     Taken {
         status: status,
         tier: 0,
+        suffixed: false,
         op_at: 0,
         rhs: cx.absent,
         cursor: 0,
@@ -1179,11 +1181,12 @@ fn climb<T, N>(
     mut diagnostics = diagnostics0
     mut farthest = farthest0
     mut spent = 0 - 1
+    mut ceil = k.ops.tiers.length - 1
     mut run_tier = 0 - 1
     mut run_first = 0
     mut refused: List<string> = []
     while true {
-        let t = one_operator<T, N>(cx, k, cursor, min, spent)
+        let t = one_operator<T, N>(cx, k, cursor, min, spent, ceil)
         farthest = far_merge(farthest, t.farthest)
         if t.status == MatchStatus.Fatal {
             return fatal_defect<T, N>(cx, cursor, [], diagnostics.concat(t.diagnostics), farthest)
@@ -1205,11 +1208,12 @@ fn climb<T, N>(
         }
         cursor = t.cursor
         spent = if tier.assoc.spends() { t.tier } else { 0 - 1 }
+        if t.suffixed { ceil = t.tier }
     }
     if !refused.is_empty() { return refused_run<T, N>(cx, k, refused[0], start, cursor, diagnostics, farthest) }
     farthest = far_merge(
         farthest,
-        cx.miss_story(cursor, k.rule_name, k.ops.expected_from(min, spent)),
+        cx.miss_story(cursor, k.rule_name, k.ops.expected_from(min, spent, ceil)),
     )
     matched<T, N>(cursor, [], left, diagnostics, farthest)
 }
@@ -1222,13 +1226,13 @@ impl Assoc {
 }
 
 impl Operators {
-    /// The words a miss expects from tier `min` up, less the tier a
-    /// `Single` operator just spent.
-    fn expected_from(min: int, spent: int) -> List<string> {
-        if spent < 0 { return self.reach[min] }
+    /// The words a miss expects from tier `min` up to `ceil`, less the
+    /// tier a `Single` operator just spent.
+    fn expected_from(min: int, spent: int, ceil: int) -> List<string> {
+        if spent < 0 && ceil >= self.tiers.length - 1 { return self.reach[min] }
         distinct(
             flatten(
-                [self.expects[i] for i in tightest_tiers(self.tiers.length) if i >= min && i != spent],
+                [self.expects[i] for i in tightest_tiers(self.tiers.length) if i >= min && i <= ceil && i != spent],
             ),
         )
     }
@@ -1240,13 +1244,18 @@ fn tightest_tiers(n: int) -> List<int> {
 
 /// The first operator at `cursor`, tightest tier first, whose right
 /// side also matches; an operator whose right side fails leaves the
-/// next candidate its turn.
-fn one_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, cursor: int, min: int, spent: int) -> Taken<
-    T,
-    N,
-> {
+/// next candidate its turn. Tiers above `ceil` are out of reach: what
+/// a suffix closed has no right operand left for them to take.
+fn one_operator<T, N>(
+    mut cx: MatchContext<T, N>,
+    k: Climbing,
+    cursor: int,
+    min: int,
+    spent: int,
+    ceil: int,
+) -> Taken<T, N> {
     let entries = k.ops.by_first.get(cx.lex.text(cx.tokens[cursor])) ?? []
-    first_taken<T, N>(cx, k, entries, 0, cursor, min, spent, null)
+    first_taken<T, N>(cx, k, entries, 0, cursor, min, spent, ceil, null)
 }
 
 /// `one_operator` from candidate `at` on, `farthest` carrying what the
@@ -1259,15 +1268,18 @@ fn first_taken<T, N>(
     cursor: int,
     min: int,
     spent: int,
+    ceil: int,
     farthest: FarthestFailure?,
 ) -> Taken<T, N> {
     if at >= entries.length { return untaken<T, N>(cx, MatchStatus.Miss, farthest) }
     let e = entries[at]
-    if e.tier < min || e.tier == spent { return first_taken<T, N>(cx, k, entries, at + 1, cursor, min, spent, farthest) }
+    if e.tier < min || e.tier == spent || e.tier > ceil {
+        return first_taken<T, N>(cx, k, entries, at + 1, cursor, min, spent, ceil, farthest)
+    }
     let t = take_operator<T, N>(cx, k, e, cursor)
     let reached = far_merge(farthest, t.farthest)
     if t.status == MatchStatus.Hit || t.status == MatchStatus.Fatal { return t with { farthest: reached } }
-    first_taken<T, N>(cx, k, entries, at + 1, cursor, min, spent, reached)
+    first_taken<T, N>(cx, k, entries, at + 1, cursor, min, spent, ceil, reached)
 }
 
 /// One entry at `cursor`: its tokens, then its right side.
@@ -1291,11 +1303,15 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
     } else {
         match_rule<T, N>(cx, e.rule!, at, k.capped)
     }
+    if right.status == MatchStatus.Fatal {
+        return untaken<T, N>(cx, right.status, right.farthest) with { diagnostics: right.diagnostics }
+    }
     if right.status != MatchStatus.Hit { return untaken<T, N>(cx, right.status, right.farthest) }
     if e.rule != null {
         return Taken {
             status: MatchStatus.Hit,
             tier: e.tier,
+            suffixed: true,
             op_at: cursor,
             rhs: right.value,
             cursor: right.cursor,
@@ -1316,6 +1332,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
     Taken {
         status: tighter.status,
         tier: e.tier,
+        suffixed: false,
         op_at: cursor,
         rhs: tighter.value,
         cursor: tighter.cursor,

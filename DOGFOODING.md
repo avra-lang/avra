@@ -998,9 +998,9 @@ enum values too — a registry or an operator set is literally a table:
 
 ```avra
 let rows = table<BuilderRow> {
-    name          | build
-    "int_lit"     | build_int_lit
-    "fold_binary" | build_fold_binary
+    name        | build
+    "int_lit"   | build_int_lit
+    "binary"    | build_binary
 }
 let ops = table<OpRow> {
     text | op
