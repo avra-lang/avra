@@ -100,6 +100,7 @@ use compiler.typing.{new_type_cx}
 use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
 use @std.relation.engine.{
+    site_hit,
     Table,
     new_table,
     list_cell,
@@ -1540,6 +1541,7 @@ impl Workspace {
     fn unread_words(f: FileId) -> List<ComponentWord> {
         if self.lone { return [] }
         let path = self.decls.file(f).path
+        site_hit("unread_words held=${self.is_held(f)}")
         let files = if file_declares_component(self, path) { [path].concat([s for s in self.declaring_siblings(path) if s != path]) } else { self.declaring_siblings(path) }
         [unread_word(name, declared) for declared in files for name in component_names(self, declared)]
     }
@@ -1649,6 +1651,7 @@ impl Workspace {
     fn declaring_siblings(path: string) -> List<string> {
         if self.per_file { return [] }
         let dir = dir_of(path)
+        site_hit("declaring_siblings dir_files=${self.listed(dir).length}")
         let declaring = [joined_path(dir, f) for f in self.listed(dir) if is_source(f, dir) && file_declares_component(self, joined_path(dir, f))]
         [s for s in declaring if !self.excluded(s)]
     }
