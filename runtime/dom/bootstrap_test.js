@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { createApplier, createFetches, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { createApplier, createFetches, createFrames, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { NO_ID, OP, SAYS } from "./wire.gen.js";
 import { stubDocument, stubElement, textOf } from "./stub_dom.js";
 
@@ -284,7 +284,7 @@ const clockAt = () => {
   timers.disarm(99n);
   clock.advance(10);
   check("a disarmed one-shot never fires; disarming twice, or a stranger, says nothing", [fired.length, timers.count()], [4, 0]);
-  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["abort", "arm", "disarm", "frame", "get"]);
+  check("the rows a page answers are named by the generated table", Object.keys(ROWS).sort(), ["abort", "arm", "disarm", "frame", "get", "next_paint"]);
 }
 
 // ── the page's requests ──
@@ -359,6 +359,21 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   sendAnswer(mod, 9, 201, new TextEncoder().encode("abc"));
   check("an answer writes its octets into the seat, then names the token, status and length", [seen, new TextDecoder().decode(new Uint8Array(mod.memory.buffer, 16, 3))], [[["seat", 3], [9, 201, 3]], "abc"]);
   check("the rows a page answers include the request rows", ["get", "abort"].every((k) => typeof ROWS[k] === "string"), true);
+}
+
+// ── the page's frames ──
+{
+  const queue = [];
+  const painted = [];
+  const frames = createFrames((cb) => queue.push(cb), () => painted.push(1));
+  frames.next();
+  frames.next();
+  frames.next();
+  check("asking for a frame again before it comes asks the display once", [queue.length, frames.waiting()], [1, true]);
+  queue.shift()();
+  check("the display's frame calls the program once", [painted.length, frames.waiting()], [1, false]);
+  frames.next();
+  check("a new ask after the frame is a new frame", queue.length, 1);
 }
 
 // ── a page runs a program that mounts ──
