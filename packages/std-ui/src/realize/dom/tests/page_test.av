@@ -31,6 +31,13 @@ fn press(on: Paged, name: string) -> bool {
     on.heard(who.n, EventKind.Press.code(), Says.Nothing.code(), 0, null)
 }
 
+/// A door that fails the turn after its action ran, while `failing` holds.
+fn contained(act: fn() -> bool, failing: Cell<bool>) -> Result<bool, string> {
+    let ran = act()
+    if !failing.get() { return .Ok(ran) }
+    .Err("boom")
+}
+
 spec "an app on a live page" {
     given "a first paint" {
         then "the host is sent one frame" {
@@ -142,6 +149,27 @@ spec "an app on a live page" {
                 .paint()
             let frames = host.frames.get()
             frames.length == 2 && frames[1].length < frames[0].length
+        }
+    }
+    given "a turn that failed" {
+        then "the notice is sent beside the view, the view keeps its element, and a turn that runs takes the notice away" {
+            let host = Host {}
+            let count: Cell<int> = Cell.new(0)
+            let failing: Cell<bool> = Cell.new(false)
+            let on = counting(count, host)
+            on.app.guarded((act: fn() -> bool) -> contained(act, failing))
+            on.app.paint()
+            let before = named(on.page, "Raise").first()?.n
+            failing.set(true)
+            let _ = press(on, "Raise")
+            let sent = host.frames.get()
+            let noticed = sent.length == 2 && sent[1].text_lossy().contains("turn failed: boom")
+            failing.set(false)
+            let _ = press(on, "Raise")
+            noticed &&
+                named(on.page, "Raise").first()?.n == before &&
+                count.get() == 2 &&
+                host.frames.get().length == 3
         }
     }
 }

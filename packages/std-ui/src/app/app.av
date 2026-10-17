@@ -3,7 +3,8 @@
 //! DOOR, `turn`: whatever may change the state — a control speaking, a
 //! timer, an answer arriving — runs through it, and a paint follows only
 //! when it ran.
-use tree.node.{Node}
+use tree.node.{Node, Prim, Attribute, Urgency}
+use style.box.{Box}
 use tree.standing.{Standing, standing}
 use tree.view.{View, rooted}
 use style.theme.{Theme, default_theme}
@@ -38,6 +39,10 @@ export type Door = { send: fn(Msg) -> bool, close: fn() -> void }
 /// a timer, an answer, a stream — leaves its message once a loop runs;
 /// its writers never wait. A target with no loop runs an `Act` as a turn
 /// at once and starts no job. `jobs` is how many tasks the loop holds.
+/// `guard` runs a turn's action and answers whether it ran, or the words
+/// of the failure that ended it; `failed` is the last turn's failure
+/// until a turn runs again, and `unsaid` is the part of it no target has
+/// passed on yet.
 export type App = {
     view: Cell<fn(Standing) -> Node>,
     theme: Cell<fn() -> Theme>,
@@ -47,6 +52,28 @@ export type App = {
     door: Cell<Door?>,
     looping: Cell<bool>,
     jobs: Cell<int>,
+    failed: Cell<string?>,
+    unsaid: Cell<string?>,
+    guard: Cell<fn(fn() -> bool) -> Result<bool, string>>,
+    noticed: Cell<fn(string?) -> void>,
+}
+
+/// A target with nowhere to show a notice beside the view.
+fn unnoticed(_words: string?) {}
+
+/// A turn that nothing contains: the action runs and its answer stands.
+fn uncontained(act: fn() -> bool) -> Result<bool, string> { .Ok(act()) }
+
+/// The notice a target that draws one shows beside the view while the
+/// last turn failed: an assertive alert naming the failure, under a key
+/// of its own so it is never mistaken for the view's root.
+export fn notice_node(words: string) -> Node {
+    Node {
+        prim: Prim.Alert,
+        attrs: [.Text("turn failed: ${words}"), .Urgency(Urgency.Assertive)],
+        box: Box { key: "notice" },
+        children: [],
+    }
 }
 
 /// The theme of an app that names none.
@@ -57,6 +84,7 @@ export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, The
     let drawn: fn(Standing) -> Node = (at: Standing) -> rooted(view().describe(at))
     let untold: List<string> = []
     let nodoor: Door? = null
+    let nothing: string? = null
     App {
         view: Cell.new(drawn),
         theme: Cell.new(theme),
@@ -66,6 +94,10 @@ export fn app<V: View>(view: fn() -> V, theme: fn() -> Theme, show: fn(Node, The
         door: Cell.new(nodoor),
         looping: Cell.new(false),
         jobs: Cell.new(0),
+        failed: Cell.new(nothing),
+        unsaid: Cell.new(nothing),
+        guard: Cell.new(uncontained),
+        noticed: Cell.new(unnoticed),
     }
 }
 
@@ -106,7 +138,25 @@ impl App {
     /// terminal's, a page's console.
     fn warn() {
         for w in self.said_anew() { eprintln("ui: ${w}") }
+        let words? = self.unsaid.get() else { return }
+        self.unsaid.set(null)
+        eprintln("ui: turn failed: ${words}")
     }
+
+    /// The turn's failure, or its absence, kept and passed on to the target.
+    fn said_failure(words: string?) {
+        self.failed.set(words)
+        if words != null { self.unsaid.set(words) }
+        (self.noticed.get())(words)
+    }
+
+    /// `to` hears the failure of each turn that fails, and null when a turn
+    /// runs after one: a target that shows a notice beside its view keeps it.
+    fn noticing(to: fn(string?) -> void) { self.noticed.set(to) }
+
+    /// `by` contains every turn from now on: it runs the action and
+    /// answers whether it ran, or the failure's words.
+    fn guarded(by: fn(fn() -> bool) -> Result<bool, string>) { self.guard.set(by) }
 
     /// How many component instances the app keeps — the lifetime
     /// witness.
@@ -115,11 +165,26 @@ impl App {
     /// THE ONE DOOR INTO THE LOOP. `act` is whatever may change the
     /// program's state; it answers whether it ran, and a paint follows
     /// only then. What the paint says is the target's to decide — a page
-    /// that did not change is sent nothing.
+    /// that did not change is sent nothing. A FAILURE IS CONTAINED TO ITS
+    /// TURN: it is kept in `failed`, the state stands as the handler
+    /// left it, the view is painted as it stands, and the target is told
+    /// so it can show a notice beside the view. The next turn to run
+    /// clears it.
     fn turn(act: fn() -> bool) -> bool {
-        let ran = act()
-        if ran { self.paint() }
-        ran
+        match (self.guard.get())(act) {
+            .Ok(ran) -> {
+                if ran {
+                    self.said_failure(null)
+                    self.paint()
+                }
+                ran
+            },
+            .Err(words) -> {
+                self.said_failure(words)
+                self.paint()
+                false
+            },
+        }
     }
 
     /// A source leaves `act` for the loop to run as a turn. False when

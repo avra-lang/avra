@@ -452,6 +452,18 @@ export type Decls = {
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
     ensure_file: Cell<fn(FileId) -> void>,
+    /// THE PRODUCER INDEX'S FOUR DOORS, the workspace's to arm: a bucket reader asks for
+    /// the value it is about to read and every held module with a row filed there is
+    /// minted first — `named_rows`, `indexed`, `indexed_by_mark`.
+    ensure_named: Cell<fn(string) -> void>,
+    ensure_worded: Cell<fn(string) -> void>,
+    ensure_marked: Cell<fn(string) -> void>,
+    /// A held module's externs, by symbol, off the producer index — no module is minted
+    /// to answer, and `ensure_modules` mints the ones a reader then wants rows of.
+    externs_index: Cell<fn() -> List<ExternNote>>,
+    /// The held files that declare a type, off the producer index.
+    types_index: Cell<fn() -> List<string>>,
+    ensure_modules: Cell<fn(List<string>) -> void>,
     /// THE FILE AN `embed` LITERAL NAMES, or why a const may not read
     /// it: the hook the workspace arms — it knows the package a file
     /// stands in and the ones it depends on, and its host is what reads.
@@ -663,6 +675,9 @@ export type Decls = {
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
     ensure_refs: Cell<fn() -> bool>,
+    /// The references a HELD file makes to a declaration, restored on the ask that names it:
+    /// the relation holds only the ones a read file's declaration receives.
+    ensure_held_refs: Cell<fn(DeclId) -> List<Ref>>,
     /// Whether each declaration is read as a value anywhere, as the references pass found it,
     /// by DeclId; a declaration past the end is read nowhere.
     read_flags: Cell<List<bool>>,
@@ -756,6 +771,19 @@ fn embed_unjudged(_f: FileId, _rel: string) -> Result<string, EmbedFault> {
 // LICENSED fns.dead_parameter: the hook's contract carries the declaration
 fn no_store(f: FileId) {}
 
+// LICENSED fns.dead_parameter: a fn VALUE filling a producer-ensure seat — no workspace stands behind the table, so no module is minted
+fn no_holder(_v: string) {}
+
+// LICENSED fns.dead_parameter: a fn VALUE filling the module-ensure seat — no workspace stands behind the table, so no module is minted
+fn no_holders(_modules: List<string>) {}
+
+fn no_externs() -> List<ExternNote> { [] }
+
+fn no_modules() -> List<string> { [] }
+
+/// An `extern fn` a record declares: its module and file, its symbol, and whether it has a body.
+export type ExternNote = { module: string, path: string, name: string, hosted: bool }
+
 fn no_audit(_r: Bypassed) {}
 
 /// Whether a scope gathers from every file of the owner's package.
@@ -772,6 +800,9 @@ fn no_entry_ensure() -> bool { false }
 // LICENSED fns.dead_parameter: a fn VALUE filling the references-ensure seat — no pass runs before the workspace arms it
 /// No pass to run: what the relation holds is what stands.
 fn no_refs_ensure() -> bool { true }
+
+// LICENSED fns.dead_parameter: a fn VALUE filling the held-references seat — no workspace stands behind the table, so none is restored
+fn no_held_refs(_d: DeclId) -> List<Ref> { [] }
 
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
@@ -838,6 +869,12 @@ export fn new_decls_under(durable: Durable) -> Decls {
         held_rows: Cell.new(no_store),
         ensure_store: Cell.new(no_store),
         ensure_file: Cell.new(no_store),
+        ensure_named: Cell.new(no_holder),
+        ensure_worded: Cell.new(no_holder),
+        ensure_marked: Cell.new(no_holder),
+        externs_index: Cell.new(no_externs),
+        types_index: Cell.new(no_modules),
+        ensure_modules: Cell.new(no_holders),
         embed_judge: Cell.new(embed_unjudged),
         ensure_package: Cell.new(no_store),
         scoped: map_cell(),
@@ -899,6 +936,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         composers_of: Cell.new(none_apart),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
+        ensure_held_refs: Cell.new(no_held_refs),
         read_flags: list_cell(),
         ensure_read: Cell.new(no_answer),
         mut_seat_index: map_cell(),
@@ -1102,6 +1140,7 @@ impl Decls {
     /// what this read saw.
     @bracket("decls")
     fn named(name: string) -> List<Decl> {
+        self.hold_named(name)
         let b = self.name_bucket(name)
         if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
         self.bucket_moved(b)
@@ -1493,13 +1532,19 @@ impl Decls {
 
     /// Every declaration `collect` gathers under `word` — a declared instance
     /// of that component — in id order.
-    fn indexed(word: string) -> List<Decl> { self.filed(word_index, word) }
+    fn indexed(word: string) -> List<Decl> {
+        self.hold_worded(word)
+        self.filed(word_index, word)
+    }
 
     /// Every `collect enum` declared, in id order.
     fn collect_enums() -> List<Decl> { self.indexed(collect_enum_word) }
 
     /// Every declaration wearing `@name`, in id order.
-    fn indexed_by_mark(name: string) -> List<Decl> { self.filed(marks_index, name) }
+    fn indexed_by_mark(name: string) -> List<Decl> {
+        self.hold_marked(name)
+        self.filed(marks_index, name)
+    }
 
     /// The rows filed under `v` in `Decl`'s index `i`: the bucket read
     /// unrecorded, each row read through `decl`, which records it.
@@ -1747,8 +1792,15 @@ impl Decls {
         self.disarm()
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_ensure)
+        self.ensure_named.set(no_holder)
+        self.ensure_worded.set(no_holder)
+        self.ensure_marked.set(no_holder)
         self.ensure_refs.set(no_refs_ensure)
+        self.ensure_held_refs.set(no_held_refs)
         self.ensure_read.set(no_answer)
+        self.externs_index.set(no_externs)
+        self.types_index.set(no_modules)
+        self.ensure_modules.set(no_holders)
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
@@ -2346,7 +2398,7 @@ impl Decls {
     /// asking runs the references pass.
     fn refs_of(d: DeclId) -> List<Ref> {
         if !self.refs_stand() { return [] }
-        Ref.by_decl(self.rows_db.get(), d)
+        Ref.by_decl(self.rows_db.get(), d).concat((self.ensure_held_refs.get())(d))
     }
 
     /// Whether the references relation stands to be read — asking runs
@@ -2418,6 +2470,8 @@ impl Decls {
     fn arm_references(ensure: fn() -> bool) {
         self.ensure_refs.set(ensure)
     }
+
+    fn arm_held_refs(held: fn(DeclId) -> List<Ref>) { self.ensure_held_refs.set(held) }
 
     /// The workspace arms the failures hook once.
     fn arm_failures(ensure: fn() -> void) {
@@ -2598,11 +2652,39 @@ impl Decls {
     /// The host fns one file declares.
     fn host_fns_of_file(f: FileId) -> List<DeclId> { [d for d in self.decls_of_file(f) if self.is_host_fn(d)] }
 
-    /// Every `extern fn`, in id order, off the externs' bucket.
+    /// Every `extern fn` standing, in id order, off the externs' bucket: a held module
+    /// stands once something asked for it.
     @bracket("decls")
-    fn externs() -> List<Decl> {
+    fn standing_externs() -> List<Decl> {
         let rs = self.decl_row_rows.get()
         [x for x in rs.members(rs.bucket_of(external_index, bool_key(true))) if self.is_extern(x.id)]
+    }
+
+    /// Every extern of the program by symbol, whether or not its module stands: a held
+    /// module's off the producer index, a read file's off the bucket.
+    fn extern_notes() -> List<ExternNote> {
+        self
+            .held_externs()
+            .concat(
+                [ExternNote {
+                    module: self.module_of(x.id),
+                    path: self.file(x.file).path,
+                    name: x.name,
+                    hosted: self.is_host_fn(x.id),
+                } for x in self.standing_externs() if !self.file_held(x.file)],
+            )
+    }
+
+    /// The externs answering one symbol, their held modules minted first.
+    fn externs_named(name: string) -> List<Decl> {
+        self.hold_modules([n.module for n in self.held_externs() if n.name == name])
+        [x for x in self.standing_externs() if x.name == name]
+    }
+
+    /// The program's host fns, their held modules minted first.
+    fn host_fns() -> List<Decl> {
+        self.hold_modules([n.module for n in self.held_externs() if n.hosted])
+        [x for x in self.standing_externs() if self.is_host_fn(x.id)]
     }
 
     /// THE ONE READING DOOR for a declaration's OWN `///` doc — a held
@@ -2748,6 +2830,7 @@ impl Decls {
     /// unrecorded.
     @bracket("decls")
     fn named_rows(name: string) -> List<Decl> {
+        self.hold_named(name)
         let rs = self.decl_row_rows.get()
         rs.members(rs.bucket_of_text(name_index, name))
     }
@@ -3059,8 +3142,13 @@ impl Decls {
     /// Every type in the program that implements `tr` — its records,
     /// enums, named types and builtins, each asked through the hook, so
     /// a held module answers from its interface.
+    ///
+    /// THE TYPES ARE READ FILE BY FILE, each file's rows as its own bucket: a file read as
+    /// source, and every held file whose record declares a type (minted first). Asking a type's
+    /// table then mints files that declare none, which moves no bucket this read stands on.
     fn implementors_of(tr: DeclId) -> List<DeclId> {
-        [x.id for x in self.all_decls() if implements_kind(x.kind) && self.implements(x.id, tr)]
+        let held = [f for p in (self.types_index.get())() for f in some_list(self.known_file_id(p)) if self.file_held(f)]
+        [d for f in self.unheld_files().concat(held) for d in self.decls_of_file(f) if implements_kind(self.decl(d).kind) && self.implements(d, tr)]
     }
 
     /// Whether a type answers a generic trait at these arguments: a
@@ -3285,7 +3373,7 @@ fn enum_parts(sig: DeclSig) -> EnumSig? {
 }
 
 /// Whether a declaration of this kind may implement a trait.
-fn implements_kind(k: DeclKind) -> bool {
+export fn implements_kind(k: DeclKind) -> bool {
     match k {
         .Record or .Enum or .CollectEnum or .Named or .Builtin -> true,
         .Fn or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .State -> false,
