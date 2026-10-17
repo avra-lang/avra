@@ -184,6 +184,37 @@ Five attempts to lift a handler into a generated message failed.
     is listed is `tree/shows.av`'s `Shows`. The old node's `spoken`
     is `tree/outline.av`'s `outline`.
 
+## Failure is contained to its turn
+
+A turn is the unit of failure. A trap in a handler or in the view walk
+ends THAT TURN, never the app.
+
+1. **State is as the handler left it.** Nothing is rolled back and
+   nothing is reloaded: a write the turn made before it failed stands.
+2. **The failure is shown, on every target, BESIDE the view.** The
+   notice is never a node of the view's tree: the author's root stays
+   their root, and no path, instance or existing page shifts when a turn
+   fails or recovers. `App.failed` holds the words until a turn runs
+   again, and each target draws its own notice: a page is sent an
+   assertive `Alert` as a second element after the view's, in the same
+   frame as the view's own patches (`Live.patches` takes it); the
+   terminal prints a `turn failed: <words>` status line under the
+   screen; the headless screen reads it (`Screen.failure()`, and
+   `text()` stays the view's alone). A target with an error stream also
+   says the words once (`ui: turn failed: …`: the terminal's stderr, the
+   page's console).
+3. **The app keeps hearing events.** The next turn that runs clears the
+   failure and paints without the notice.
+4. **A failure mid-paint leaves the last page shown.** A paint is a walk
+   and a diff and only then a send, so a failure before the send leaves
+   the page as it stood; the patch stream is never half-applied. The
+   notice is a paint of its own, drawn from the state as it stands.
+
+The door is `App.turn`'s `guard`: it runs the action and answers whether
+it ran or the failure's words. A test injects a failure there
+(`Screen.guarded`); the mechanism that makes a real trap a failure is the runtime's, and
+the door is the only place it is read.
+
 ## What the page keeps (seam 1's law)
 
 **A property is written only when the value the program draws for it —
