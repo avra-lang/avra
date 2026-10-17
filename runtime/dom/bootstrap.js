@@ -318,6 +318,22 @@ export function sendAnswer(mod, token, status, octets) {
   mod[HOST.answered](BigInt(token), BigInt(status), BigInt(octets.length));
 }
 
+// The page's frames, for the program's paints. The program asks for one when
+// state moved (`next()`), once until it comes; the host calls `painted` from
+// the display's own frame (`raf`, the page's requestAnimationFrame, or a
+// test's), and the program paints once however many turns moved it.
+export function createFrames(raf, painted) {
+  let pending = false;
+  return {
+    next: () => {
+      if (pending) return;
+      pending = true;
+      raf(() => { pending = false; painted(); });
+    },
+    waiting: () => pending,
+  };
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
@@ -325,9 +341,10 @@ export function sendAnswer(mod, token, status, octets) {
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
 // the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a) }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb) }) {
   let mod = null;
   const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
+  const frames = createFrames(raf, () => mod[HOST.painted]());
   const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
   const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
   mod = await instantiate(source, {
@@ -340,6 +357,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
       [ROWS.disarm]: timers.disarm,
       [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
       [ROWS.abort]: fetches.abort,
+      [ROWS.next_paint]: frames.next,
     },
   });
   const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
