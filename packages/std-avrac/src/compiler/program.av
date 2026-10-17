@@ -616,16 +616,12 @@ impl Program {
         self.lowered_as(entry, every, false)
     }
 
-    /// WHAT THE ENTRY REACHES, lowered: `lowered()` again, for a reader that
-    /// asks what a program CARRIES where `files_checked` lowers every declared
-    /// body (the build's objects are the files'). The lowering settles the
-    /// scheduler bit from the entry alone; the bit the build settled is put back.
-    fn reached() -> Lowered {
-        let bit = self.ws.decls.links_scheduler()
-        let lo = self.lowered()
-        self.ws.decls.record_schedulers(bit)
-        lo
-    }
+    /// WHAT THE ENTRY REACHES, lowered: the lowering from the entry, for a
+    /// reader that asks what a program CARRIES where `files_checked` lowers
+    /// every declared body (the build's objects are the files'). A QUERY: it
+    /// settles nothing — the scheduler bit stands as the build settled it, so
+    /// the units it asks are the ones the build already holds.
+    fn reached() -> Lowered { self.lowered_bodies(self.entry?.at, false, false, false) }
 
     /// Whether the program's ROOT waits: the entry file's own
     /// expressions, or every file's when a `programs` binary runs them
@@ -637,7 +633,13 @@ impl Program {
         self.files.any((a) -> self.ws.file_links_scheduler(a.view.file))
     }
 
-    fn lowered_bodies(entry: int?, every: bool, programs: bool) -> Lowered {
+    /// The scheduler bit, settled from the members and the entry root.
+    fn settle_schedulers(entry: int?, programs: bool) {
+        let ws = self.ws
+        ws.decls.record_schedulers(ws.members_link_scheduler() || self.root_links(entry, programs))
+    }
+
+    fn lowered_bodies(entry: int?, every: bool, programs: bool, settle: bool) -> Lowered {
         let ws = self.ws
         // Every file this program reaches is typed by now (the
         // driver's own law: analysis before lowering). Settle the
@@ -653,7 +655,7 @@ impl Program {
         // here, before any body lowers, so every `while` of the program
         // is judged by one bit. A library that runs no top-level
         // statement (`entry` null, `programs` false) has no root.
-        ws.decls.record_schedulers(ws.members_link_scheduler() || self.root_links(entry, programs))
+        if settle { self.settle_schedulers(entry, programs) }
         let lo = memory(
             self
                 .ws
@@ -681,7 +683,7 @@ impl Program {
     /// A program lowered, with what its host fns owe the program beyond
     /// their own declarations.
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
-        let lo = self.lowered_bodies(entry, every, programs)
+        let lo = self.lowered_bodies(entry, every, programs, true)
         lo with { diagnostics: lo.diagnostics.concat(self.ws.host_fn_voices([a.view.file for a in self.files])) }
     }
 
