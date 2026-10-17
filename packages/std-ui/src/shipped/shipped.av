@@ -15,7 +15,7 @@
 //! one the server did not ship simply fails its print and is drawn again.
 //! `mount` closes the registry, and a `ship` after it traps: a state
 //! registered late would be shipped by the server and missed by the module.
-use @std.json.{Json, field, parse, to_text}
+use @std.json.typed.{Piece, as_text, member, member_text, members, object_of, quoted}
 
 extern fn avra_trap(message: string)
 
@@ -28,27 +28,49 @@ once fn slots() -> Cell<List<Slot>> { Cell.new([]) }
 
 once fn closed() -> Cell<bool> { Cell.new(false) }
 
+/// What reads and writes the document, set by the first `ship`: a page that
+/// ships nothing never reaches the document's reader or writer, so it links
+/// neither.
+type Door = { written: fn() -> string, applying: fn(string) -> List<string> }
+
+once fn door() -> Cell<Door?> { Cell.new(null) }
+
 /// Name a state to ship. A name is shipped once and only before `mount`.
 export fn ship(name: string, shape: string, read: fn() -> string, write: fn(string) -> bool) {
     if closed().get() { avra_trap(late_voice(name)) }
     if slots().get().any(it.name == name) { avra_trap(twice_voice(name)) }
     slots().push(Slot { name: name, shape: shape, read: read, write: write })
+    door().set(Door { written: document, applying: applied })
+}
+
+/// The shipped state as a document: empty when the program ships none.
+export fn carried() -> string {
+    let d? = door().get() else { return "" }
+    d.written()
+}
+
+/// A document written into the states the program shipped; nothing when it
+/// ships none.
+export fn carry(text: string) {
+    let d? = door().get() else { return }
+    let _ = d.applying(text)
 }
 
 /// The registry is closed: what `mount` does before its first paint.
 export fn close() { closed().set(true) }
 
-/// Every shipped state as one JSON document, `<` written `<` so it
-/// stands inside a `script` element; empty when nothing is shipped.
+/// Every shipped state as one JSON document: its shape and its value; empty
+/// when nothing is shipped. A value is the JSON text its reader answered.
+/// `<` is written `\u003c` so the document stands inside a `script` element.
+/// The registry reads and writes its document as text: a page that ships
+/// nothing links no JSON value, parser or writer.
 export fn document() -> string {
     if slots().get().is_empty() { return "" }
-    let members = [field(s.name, state_json(s)) for s in slots().get()]
-    to_text(Json.Obj(members)).replace("<", "\\u003c")
-}
-
-fn state_json(s: Slot) -> Json {
-    let value = parse(s.read()) catch Json.Null
-    Json.Obj([field("shape", Json.Str(s.shape)), field("value", value)])
+    let members = [member_text(
+        s.name,
+        object_of([member_text("shape", quoted(s.shape)), member_text("value", s.read())]),
+    ) for s in slots().get()]
+    object_of(members).replace("<", "\\u003c")
 }
 
 /// A document written into the states it names. A state it does not name
@@ -56,8 +78,8 @@ fn state_json(s: Slot) -> Json {
 /// fit, is DROPPED and spoken. Answers the names it dropped.
 export fn applied(text: string) -> List<string> {
     if text == "" { return [] }
-    match parse(text) {
-        .Ok(doc) -> [s.name for s in slots().get() if dropped(s, doc)],
+    match members(text) {
+        .Ok(named) -> [s.name for s in slots().get() if dropped(s, named)],
         .Err(_) -> {
             warn(unreadable_voice())
             []
@@ -65,20 +87,21 @@ export fn applied(text: string) -> List<string> {
     }
 }
 
-/// Whether `s` is named by `doc` and was not written: the shape moved or the
-/// value did not fit. A state the document does not name is untouched.
-fn dropped(s: Slot, doc: Json) -> bool {
-    let member? = doc.get(s.name) else { return false }
-    let shape = member.get("shape")?.text() ?? ""
+/// Whether `s` is named by the document and was not written: the shape moved
+/// or the value did not fit. A state the document does not name is untouched.
+fn dropped(s: Slot, named: List<Piece>) -> bool {
+    let raw? = member(named, s.name) else { return false }
+    let inner = members(raw) catch []
+    let shape = as_text(member(inner, "shape") ?? "") catch ""
     if shape != s.shape {
         warn(moved_voice(s.name, shape, s.shape))
         return true
     }
-    let value? = member.get("value") else {
+    let value? = member(inner, "value") else {
         warn(misfit_voice(s.name))
         return true
     }
-    if s.write(to_text(value)) { return false }
+    if s.write(value) { return false }
     warn(misfit_voice(s.name))
     true
 }

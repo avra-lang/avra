@@ -12,8 +12,8 @@
 //!
 //! The board names no target. A page mounts it (`web/`) and so does a
 //! terminal (`term/`).
-use @std.json.{DecodeError, Json, parse, to_text}
 use @std.json.codec.{json}
+use @std.json.typed.{array_of, as_bool, as_int, bool_text, elements, int_text}
 use @std.time.{ms}
 use @std.ui.app.{Async, Fetch, fetch, fetched, later}
 use @std.ui.shipped.{ship}
@@ -70,18 +70,13 @@ state tasks: List<Todo> = [
 /// Name the states a server's page carries to the module: what the view
 /// reads and a request decides. A state not named here is never shipped.
 export fn ship_state() {
-    ship(
-        "filter",
-        Show.json_shape(),
-        () -> to_text(filter.to_json()),
-        (j: string) -> filter_written(j),
-    )
-    ship("dark", "bool", () -> to_text(Json.Bool(dark)), (j: string) -> dark_written(j))
-    ship("seq", "int", () -> to_text(Json.Int(seq)), (j: string) -> seq_written(j))
+    ship("filter", Show.json_shape(), () -> filter.json_text(), (j: string) -> filter_written(j))
+    ship("dark", "bool", () -> bool_text(dark), (j: string) -> dark_written(j))
+    ship("seq", "int", () -> int_text(seq), (j: string) -> seq_written(j))
     ship(
         "tasks",
         "[${Todo.json_shape()}]",
-        () -> to_text(Json.Arr([t.to_json() for t in tasks])),
+        () -> array_of([t.json_text() for t in tasks]),
         (j: string) -> tasks_written(j),
     )
 }
@@ -94,44 +89,47 @@ export fn requested() {
 }
 
 fn filter_written(j: string) -> bool {
-    match parse(j) {
-        .Ok(doc) -> match Show.from_json(doc) {
-            .Ok(shown) -> {
-                filter = shown
-                true
-            },
-            .Err(_) -> false,
+    match Show.from_json_text(j) {
+        .Ok(shown) -> {
+            filter = shown
+            true
         },
         .Err(_) -> false,
     }
 }
 
 fn dark_written(j: string) -> bool {
-    let on? = (parse(j) catch Json.Null).truth() else { return false }
-    dark = on
-    true
+    match as_bool(j) {
+        .Ok(on) -> {
+            dark = on
+            true
+        },
+        .Err(_) -> false,
+    }
 }
 
 fn seq_written(j: string) -> bool {
-    let n? = (parse(j) catch Json.Null).int() else { return false }
-    seq = n
-    true
+    match as_int(j) {
+        .Ok(n) -> {
+            seq = n
+            true
+        },
+        .Err(_) -> false,
+    }
 }
 
 fn tasks_written(j: string) -> bool {
-    let doc = parse(j) catch Json.Null
-    let read = [Todo.from_json(entry) for entry in doc.items()]
-    if read.any(refused(it)) { return false }
-    tasks = [t for r in read for t in ok_of(r)]
-    true
+    match todos_of(j) {
+        .Ok(read) -> {
+            tasks = read
+            true
+        },
+        .Err(_) -> false,
+    }
 }
 
-fn refused(r: Result<Todo, DecodeError>) -> bool {
-    match r { .Ok(_) -> false, .Err(_) -> true }
-}
-
-fn ok_of(r: Result<Todo, DecodeError>) -> List<Todo> {
-    match r { .Ok(t) -> [t], .Err(_) -> [] }
+fn todos_of(j: string) -> Result<List<Todo>, string> {
+    [Todo.from_json_text(entry)? for entry in elements(j)?]
 }
 
 /// The counts are DERIVED from the list, never stored beside it.
