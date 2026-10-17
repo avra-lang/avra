@@ -461,6 +461,8 @@ export type Decls = {
     /// A held module's externs, by symbol, off the producer index — no module is minted
     /// to answer, and `ensure_modules` mints the ones a reader then wants rows of.
     externs_index: Cell<fn() -> List<ExternNote>>,
+    /// The held files that declare a type, off the producer index.
+    types_index: Cell<fn() -> List<string>>,
     ensure_modules: Cell<fn(List<string>) -> void>,
     /// THE FILE AN `embed` LITERAL NAMES, or why a const may not read
     /// it: the hook the workspace arms — it knows the package a file
@@ -773,6 +775,8 @@ fn no_holders(_modules: List<string>) {}
 
 fn no_externs() -> List<ExternNote> { [] }
 
+fn no_modules() -> List<string> { [] }
+
 /// An `extern fn` a record declares: its module and file, its symbol, and whether it has a body.
 export type ExternNote = { module: string, path: string, name: string, hosted: bool }
 
@@ -865,6 +869,7 @@ export fn new_decls_under(durable: Durable) -> Decls {
         ensure_worded: Cell.new(no_holder),
         ensure_marked: Cell.new(no_holder),
         externs_index: Cell.new(no_externs),
+        types_index: Cell.new(no_modules),
         ensure_modules: Cell.new(no_holders),
         embed_judge: Cell.new(embed_unjudged),
         ensure_package: Cell.new(no_store),
@@ -1762,6 +1767,7 @@ impl Decls {
         self.ensure_held_refs.set(no_held_refs)
         self.ensure_read.set(no_answer)
         self.externs_index.set(no_externs)
+        self.types_index.set(no_modules)
         self.ensure_modules.set(no_holders)
         self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
@@ -3105,8 +3111,13 @@ impl Decls {
     /// Every type in the program that implements `tr` — its records,
     /// enums, named types and builtins, each asked through the hook, so
     /// a held module answers from its interface.
+    ///
+    /// THE TYPES ARE READ FILE BY FILE, each file's rows as its own bucket: a file read as
+    /// source, and every held file whose record declares a type (minted first). Asking a type's
+    /// table then mints files that declare none, which moves no bucket this read stands on.
     fn implementors_of(tr: DeclId) -> List<DeclId> {
-        [x.id for x in self.all_decls() if implements_kind(x.kind) && self.implements(x.id, tr)]
+        let held = [f for p in (self.types_index.get())() for f in some_list(self.known_file_id(p)) if self.file_held(f)]
+        [d for f in self.unheld_files().concat(held) for d in self.decls_of_file(f) if implements_kind(self.decl(d).kind) && self.implements(d, tr)]
     }
 
     /// Whether a type answers a generic trait at these arguments: a
@@ -3331,7 +3342,7 @@ fn enum_parts(sig: DeclSig) -> EnumSig? {
 }
 
 /// Whether a declaration of this kind may implement a trait.
-fn implements_kind(k: DeclKind) -> bool {
+export fn implements_kind(k: DeclKind) -> bool {
     match k {
         .Record or .Enum or .CollectEnum or .Named or .Builtin -> true,
         .Fn or .Alias or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Collect or .State -> false,

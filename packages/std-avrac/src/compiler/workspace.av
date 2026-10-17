@@ -263,6 +263,8 @@ type Hold = {
     worded_by: Cell<Map<string, List<string>>>,
     marked_by: Cell<Map<string, List<string>>>,
     externed_by: Cell<List<ExternNote>>,
+    /// The held files whose records declare a type that may implement a trait.
+    typed_by: Cell<List<string>>,
     /// The record `ref` rows whose target is a held file, by that file's path, with the file each came from.
     held_refs: Cell<Map<string, List<HeldRef>>>,
     linked_by: Cell<List<string>>,
@@ -351,6 +353,7 @@ fn new_hold() -> Hold {
         worded_by: Cell.new(no_producers),
         marked_by: Cell.new(no_producers),
         externed_by: list_cell(),
+        typed_by: list_cell(),
         held_refs: map_cell(),
         linked_by: list_cell(),
         held_flat: Cell.new(no_flat),
@@ -1057,7 +1060,7 @@ fn built(
     ws.decls.arm_marked((mark: string) -> ws.held_marked(mark))
     ws
         .decls
-        .arm_externs(() -> ws.hold.externed_by.get(), (modules: List<string>) -> ws.minted_modules(modules))
+        .arm_externs(() -> ws.hold.externed_by.get(), () -> ws.hold.typed_by.get(), (modules: List<string>) -> ws.minted_modules(modules))
     ws.decls.arm_embeds((f: FileId, rel: string) -> ws.embed_placed(f, rel))
     ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
