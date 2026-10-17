@@ -297,5 +297,76 @@ const torn = await adopting(String(Number(serverPrint) + 1));
 const tornCreates = torn.sentFrames.flat().filter((p) => p.op === OP.create).length;
 claim("a print that is not the module's empties the page and draws it again", torn.sentFrames[0][0].kinds.length === 0 && tornCreates > 0 && torn.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
 
+// ── a module swapped under the page ──
+const editedWasm = process.argv[5];
+const swapping = async () => {
+  const doc = stubDocument();
+  const at = stubElement("root");
+  const sentFrames = [];
+  const timers = new Map();
+  const own = {
+    setTimeout: (fn, ms) => { const h = timers.size + 1; timers.set(h, fn); return h; },
+    setInterval: (fn, ms) => { const h = timers.size + 1; timers.set(h, fn); return h; },
+    clearTimeout: (h) => timers.delete(h),
+    clearInterval: (h) => timers.delete(h),
+  };
+  const frames2 = [];
+  let swap = null;
+  await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+    document: doc,
+    mount: at,
+    style: { textContent: "" },
+    wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+    sent: (bytes) => sentFrames.push(parseFrame(bytes)),
+    clock: own,
+    fetch: fetchFn,
+    raf: (cb) => frames2.push(cb),
+    hot: (s) => { swap = s; },
+  });
+  await settle();
+  return { at, sentFrames, swap: (path) => swap(new Uint8Array(fs.readFileSync(path))), timers, frames2 };
+};
+const nodesOf = (n) => [n, ...n.childNodes.flatMap(nodesOf)];
+{
+  const s = await swapping();
+  const before = s.at.childNodes.flatMap(nodesOf);
+  const shapeBefore = s.at.childNodes.map(shape).join();
+  s.sentFrames.length = 0;
+  await s.swap(process.argv[2]);
+  await settle();
+  const ops = s.sentFrames.flat();
+  const after = s.at.childNodes.flatMap(nodesOf);
+  claim("a swap to the same module keeps every element the page holds", before.length === after.length && before.every((n, j) => after[j] === n), `${before.length} vs ${after.length}`);
+  claim("a swap to the same module says listeners and nothing built", ops.length > 0 && ops.every((p) => p.op === OP.listen), ops.map((p) => p.op).join(","));
+  claim("and the page it leaves is the page it had", s.at.childNodes.map(shape).join() === shapeBefore);
+}
+{
+  const s = await swapping();
+  const remind = named("Remind me", s.at)[0];
+  const sync = named("Sync", s.at)[0];
+  const [, press] = [...remind.listeners][0];
+  press();
+  for (const cb of s.frames2.splice(0)) cb();
+  await settle();
+  const armedBefore = s.timers.size;
+  await s.swap(process.argv[2]);
+  await settle();
+  claim("a swap lets go of the timers the module that stood down armed", armedBefore > 0 && s.timers.size === 0, `${armedBefore} then ${s.timers.size}`);
+  claim("a swap starts the module from its own state over the page the host holds", s.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
+}
+{
+  const s = await swapping();
+  const before = s.at.childNodes.flatMap(nodesOf);
+  s.sentFrames.length = 0;
+  await s.swap(editedWasm);
+  await settle();
+  const ops = s.sentFrames.flat();
+  const texts = ops.filter((p) => p.op === OP.set_text);
+  const built = ops.filter((p) => [OP.create, OP.create_text, OP.remove, OP.place].includes(p.op));
+  const after = s.at.childNodes.flatMap(nodesOf);
+  claim("an edited view is applied as one set_text and nothing built", texts.length === 1 && texts[0].content === "Tasks today" && built.length === 0, ops.map((p) => p.op).join(","));
+  claim("and every element the page held stands", before.length === after.length && before.every((n, j) => after[j] === n));
+}
+
 console.log(failed === 0 ? "ui-board: every claim holds" : `ui-board: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);
