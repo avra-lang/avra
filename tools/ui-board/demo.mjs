@@ -250,12 +250,13 @@ spent();
 // ── a server's page, adopted ──
 const serverPrint = process.argv[3];
 const serverBytes = Number(process.argv[4]);
-const adopting = async (print) => {
+const adopting = async (print, early = null) => {
   const doc = stubDocument();
   const at = stubElement("root");
   at.setAttribute("data-avra-print", print);
   const placed = firstPaint.map((n) => copied(n, doc));
   for (const n of placed) at.insertBefore(n, null);
+  if (early !== null) every(at, (n) => n.attrs["aria-label"] === "New task")[0].value = early;
   const sentFrames = [];
   const sizes = [];
   const quiet = console.warn;
@@ -284,6 +285,14 @@ claim("the server's nodes are the page the module stands on", kept.at.childNodes
 claim("the adopted page is the page the module drew itself", kept.at.childNodes.map(shape).join() === firstPaint.map(shape).join());
 claim("the first frame over an adopted page is under 1500 bytes (9326 without a server page)", kept.sizes[0] < 1500, `${kept.sizes[0]}`);
 claim(`the server's page is ${serverBytes} bytes of HTML`, serverBytes > 0);
+const early = await adopting(serverPrint, "typed early");
+{
+  const [, add] = [...named("Add", early.at)[0].listeners][0];
+  add();
+  frame();
+  await settle();
+  claim("text typed before the program stood is the program's when it adds the task", textOf(early.at).includes("typed early"), textOf(early.at).slice(0, 60));
+}
 const torn = await adopting(String(Number(serverPrint) + 1));
 const tornCreates = torn.sentFrames.flat().filter((p) => p.op === OP.create).length;
 claim("a print that is not the module's empties the page and draws it again", torn.sentFrames[0][0].kinds.length === 0 && tornCreates > 0 && torn.at.childNodes.map(shape).join() === firstPaint.map(shape).join());

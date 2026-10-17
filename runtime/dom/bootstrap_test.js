@@ -518,6 +518,25 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   await Promise.resolve();
   check("a page that is not the program's is emptied, the rest of the frame skipped, and the program asked to draw again", [t.mount.childNodes.length, repairs], [0, 1]);
 
+  {
+    const typed = stubElement("root");
+    const form = doc.createElement("div");
+    const typedIn = doc.createElement("input");
+    typedIn.setAttribute("value", "a");
+    typedIn.value = "abc";
+    const pristine = doc.createElement("input");
+    pristine.setAttribute("value", "b");
+    pristine.value = "b";
+    const ticked = doc.createElement("input");
+    ticked.checked = true;
+    for (const n of [typedIn, pristine, ticked]) form.insertBefore(n, null);
+    typed.insertBefore(form, null);
+    const heardBy = [];
+    const applyT = createApplier(doc, typed, (who, kind, said) => heardBy.push([who, kind, said]), null, () => {});
+    applyT(frame(adoptWith(words(), "div", "input", "input", "input"), listen(1, 2, "input", SAYS.text, "value", false), listen(2, 2, "input", SAYS.text, "value", false), listen(3, 3, "change", SAYS.flag, "checked", false)));
+    check("a control typed in before the program stood says so once adopted; one left alone says nothing", heardBy, [[1, 2, { says: SAYS.text, value: "abc" }], [3, 3, { says: SAYS.flag, value: true }]]);
+  }
+
   const w = stubElement("root");
   const apply5 = createApplier(doc, w, () => {}, null, () => repairs++);
   const before = repairs;
