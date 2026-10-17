@@ -385,8 +385,8 @@ export function createFrames(raf, painted) {
 // The print a server stamped on the mount, none (0) for a page it did not
 // send: the program compares it against the page it would draw itself.
 export function printOf(mount) {
-  const n = Number(mount.getAttribute ? mount.getAttribute("data-avra-print") : null);
-  return Number.isInteger(n) && n > 0 ? n : 0;
+  const text = mount.getAttribute ? mount.getAttribute("data-avra-print") : null;
+  return /^[1-9][0-9]{0,15}$/.test(text ?? "") ? Number(text) : 0;
 }
 
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
