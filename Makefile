@@ -355,7 +355,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -852,10 +852,16 @@ wall-accept:
 # On macOS the measurement goes to the lane's Sprite, as speed-ratchet does.
 warm-edit:
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
+	@python3 tools/work_ratchet.py --self-test >/dev/null
 	@sh tools/warm_edit_bench.sh
 warm-accept:
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@WARM_EDIT_ACCEPT=1 sh tools/warm_edit_bench.sh
+# The work-count ceilings only fall: this lowers each to what the compiler counted
+# (and seeds a new counter), never raises one. Review the diff of tools/work.budget.
+work-accept:
+	@python3 tools/work_ratchet.py --self-test >/dev/null
+	@WORK_ACCEPT=1 sh tools/warm_edit_bench.sh
 
 idioms:
 	@STATUS=0; CHECKED=0; \
