@@ -65,6 +65,9 @@ export fn sig_producer() -> Producer {
             code_hash(held_sig_verified),
             code_hash(keep_interfaces),
             code_hash(record_cached),
+            code_hash(producers_of),
+            code_hash(producers_text),
+            code_hash(producers_read),
             code_hash(iface_of),
             code_hash(doc_of_wire),
         ],
@@ -618,6 +621,7 @@ export fn keep_interfaces(ws: Workspace, store: Store, modules: List<ModulePath>
             ws.db.insert_sig(store, ws.record_bodies().key(m.text(), iface), made)
             ws.db.insert_sig(store, ws.record_key(m), iface)
             record_known(ws, m, made)
+            keep_producers(ws, store, m, iface)
             if seen_part(made) != seen_part(prior) { seen_moved = true }
         }
     }
@@ -686,26 +690,12 @@ fn load_named(
     // A MODULE HELD NOTHING FOR IS READ, and a read file is one the workspace MET:
     // a module whose importers are all held is met nowhere else, and a file never
     // met is neither parsed nor linked.
-    let text = record_cached(ws, store, m)
-    if text == "" {
+    let pr? = producers_for(ws, store, m) else {
         ws.met_all(named)
         return
     }
-    let fields = record_fields(ws, store, m)
-    // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
-    // its files parse. A partial hold is how a declaration goes missing — the
-    // cache must be a miss rather than a lie.
-    //
-    // AND A RECORD NAMING A FILE THE MODULE NO LONGER HAS is a previous tree's: minting
-    // its declarations asks the host for a source that is gone.
-    //
-    // EITHER WAY THE REFUSAL SPEAKS: a module refused whole is not a module
-    // "never asked about" — every file it would have held answers `read_files`
-    // with the one declaration (or the one stray file) that made the record
-    // short, so the refusal names itself instead of reading as "no reason
-    // recorded" at every file it would have covered.
     let here = ws.module_files(m)
-    let why = record_fault(ws, key, fields, here)
+    let why = fault_of(pr, here)
     if why != "" {
         if first {
             ws
@@ -722,14 +712,13 @@ fn load_named(
         ws.met_all(named)
         return
     }
-    if first { load_imports(ws, store, m, fields, entry, want, meet) }
+    if first { load_imports(ws, store, m, pr, entry, want, meet) }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
-    let places = record_places(ws, store, m)
     // A FILE THE RECORD PLACES IS MET WITH THE FILES NAMED: registering one file of a
     // directory registers them all, and a registered file never met is asked no hold —
     // it parses on every run, whatever moved.
-    for f in named.concat([f for f in here if places.get(f) != null && !named.contains(f)]) {
+    for f in named.concat([f for f in here if pr.placed.contains(f) && !named.contains(f)]) {
         if ws.records.met_files.get().get(f) != null { continue }
         // ON-DEMAND: a names-only walk registers the file so the program is whole,
         // and leaves its interface to the module a suspect asks for.
@@ -738,7 +727,7 @@ fn load_named(
             continue
         }
         ws.records.met_files.put(f, true)
-        meet_file(ws, store, m, f, places.get(f), entry, want)
+        meet_file(ws, store, m, f, record_places(ws, store, m).get(f), entry, want)
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
@@ -751,7 +740,7 @@ fn load_imports(
     ws: Workspace,
     store: Store,
     m: ModulePath,
-    fields: List<List<string>>,
+    pr: Producers,
     entry: string?,
     want: Want,
     meet: bool,
@@ -759,7 +748,7 @@ fn load_imports(
     // every module sees the prelude and none imports it
     ws.ensure_package(prelude_key)
     load_named(ws, store, prelude_module(), ws.module_files(prelude_module()), entry, want, meet)
-    for parts in fields {
+    for parts in pr.walk {
         if parts[0] == "import" {
             // the ROOT module's name is empty, and `split` drops a trailing empty field
             let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
@@ -769,45 +758,7 @@ fn load_imports(
         }
         if parts[0] == "gathers" { load_gathered(ws, store, parts, entry, want, meet) }
     }
-    note_producers(ws, m, fields)
-}
-
-/// THE PRODUCER INDEX: every declaration NAME, WORD and MARK a held
-/// module's record lines carry, each extern it declares and each file's re-exports — filed while the record
-/// is read for its names alone, so a bucket reader can mint the modules that would file a
-/// row there BEFORE its own read. The fields are the ones `read_row` and `facts_unblocked`
-/// already decode, so nothing is parsed a second time.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a module and its record lines in.
-export fn note_producers(ws: Workspace, m: ModulePath, fields: List<List<string>>) {
-    for parts in fields {
-        if !declares(parts) { continue }
-        let row? = read_row(parts) else { continue }
-        let f? = facts_unblocked(row.facts) else { continue }
-        filed_under(ws.hold.named_by, row.name, parts[1])
-        if f.word != null { filed_under(ws.hold.worded_by, f.word!, parts[1]) }
-        for a in f.annotations { filed_under(ws.hold.marked_by, a.name, parts[1]) }
-        if f.external {
-            ws
-                .hold
-                .externed_by
-                .push(
-                    ExternNote {
-                        module: m.text(),
-                        path: row.path,
-                        name: row.name,
-                        hosted: f.hosted,
-                    },
-                )
-        }
-        let kind? = declared_kind(row.shape, row.kind) else { continue }
-        if records_cancel(kind) && row.reach().links { ws.hold.linked_by.set(distinct(ws.hold.linked_by.get().concat([parts[1]]))) }
-    }
-    for path in distinct([p[1] for p in fields if p.length >= 5 && p[0] == "reexport"]) { ws.hold.reexports.put(path, reexports_in(fields, path)) }
-}
-
-/// One file filed under a value in a producer map, once.
-fn filed_under(map: Cell<Map<string, List<string>>>, value: string, path: string) {
-    map.put(value, distinct((map.get().get(value) ?? []).concat([path])))
+    note_producers(ws, pr)
 }
 
 /// A PACKAGE A HELD `collect` GATHERS WHOLE, met module by module under each one's own
@@ -1047,28 +998,6 @@ fn read_why(
     if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
     if !holdable(rows) { return Reads.Unholdable }
     null
-}
-
-/// A MODULE'S RECORD FAULT — "" when the record is whole, else the one reason
-/// its decoder refused it — read once per build: the scan walks the record's
-/// every line against the module's own files, and a module reached by several
-/// importers would repeat it at each, so the answer is kept under the record's key.
-// LICENSED compiler.free_state_verb: `load_interface`'s own walk — a workspace, a record key and its fields in.
-fn record_fault(ws: Workspace, key: string, fields: List<List<string>>, here: List<string>) -> string {
-    let known: string? = ws.records.record_fault.get().get(key)
-    if known != null { return known! }
-    let made = record_fault_of(fields, here)
-    ws.records.record_fault.put(key, made)
-    made
-}
-
-/// The reason a record's lines cannot be rebuilt whole, or "" when they can.
-fn record_fault_of(fields: List<List<string>>, here: List<string>) -> string {
-    let incomplete = record_complete(fields)
-    if incomplete != null { return incomplete! }
-    let stray = fields.find((parts) -> declares(parts) && !here.contains(parts[1]))
-    if stray == null { return "" }
-    "names `${stray![1]}`, which the module no longer has"
 }
 
 /// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
