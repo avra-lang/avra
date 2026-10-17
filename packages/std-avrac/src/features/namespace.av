@@ -22,7 +22,7 @@ use core.{
     flatten,
     joined,
 }
-use diagnostics.{Diag, refusal, Voices, no_voices, unread_behind}
+use diagnostics.{Diag, refusal, Voices, no_voices}
 use @std.errors.{Loc}
 use @std.meta.{bracket}
 use @std.path.{file_name}
@@ -58,21 +58,10 @@ export type Namespace = {
     // the names this file's `use` lines were refused — their reads are
     // answered by that refusal alone
     refused: List<string>,
-    // a parse error in a file of this file's module: the root a refused
-    // read follows from, when one stands
-    unread: List<Diag>,
     voices: Voices,
 }
 
 impl Namespace {
-    /// `d` pointed at the parse error this file's module is unread behind,
-    /// when there is one: a refused read follows from it, so the remedy
-    /// is theirs to find after it is fixed.
-    fn behind_unread(d: Diag, name: string) -> Diag {
-        let root? = self.unread.first() else { return d }
-        unread_behind(d, "this module", root, name)
-    }
-
     fn fn_decl(name: string) -> DeclId? {
         let local: DeclId? = self.fns.get(name)
         if local != null || self.base == null { local } else { self.base!.fns.get(name) }
@@ -130,7 +119,6 @@ export fn no_names() -> Namespace {
         type_names: [],
         apart: [],
         refused: [],
-        unread: [],
         voices: no_voices(),
     }
 }

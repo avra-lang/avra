@@ -29,7 +29,7 @@ use core.{
     Scoped,
     faceted,
 }
-use diagnostics.{refusal, Diag}
+use diagnostics.{refusal, Diag, unread_behind}
 use features.{
     TypeCx,
     slot_help,
@@ -1197,8 +1197,6 @@ impl TypeCx {
         self
             .emit(
                 self
-                    .names
-                    .names
                     .behind_unread(
                         refusal(
                             "type.unknown",
@@ -1366,9 +1364,13 @@ impl TypeCx {
     /// `use` was refused (that refusal spoke), else pointed at the unread
     /// file when the module has one.
     fn speak_unread(d: Diag, name: string) {
-        let names = self.names.names
-        if names.refused.contains(name) { return }
-        self.emit(names.behind_unread(d, name))
+        if self.names.names.refused.contains(name) { return }
+        self.emit(self.behind_unread(d, name))
+    }
+
+    fn behind_unread(d: Diag, name: string) -> Diag {
+        let root? = self.elsewhere.unread_root() else { return d }
+        unread_behind(d, "this module", root, name)
     }
 
     fn bound_not_a_trait(s: StmtId, written: string) {
