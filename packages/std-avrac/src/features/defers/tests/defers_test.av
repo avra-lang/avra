@@ -223,5 +223,27 @@ spec "features/defers" {
                 !ir.contains("avra_array_new") &&
                 !ir.contains("callptr")
         }
+        then "a deferred call names itself as a cleanup once, where the defer stands, and the exits keep their calls" {
+            let ir = render_ir(
+                ir_of(
+                    "fn note(n: int) {\n}\nfn f(x: int) -> int {\n    defer note(1)\n    if x == 0 { return 0 }\n    x\n}\nf(3)",
+                ),
+            )
+            ir.split("cleanup note(").length == 2 && ir.split("call note(").length == 3
+        }
+        then "a deferred body that needs its box names the lifted body as its cleanup" {
+            let ir = render_ir(
+                ir_of(
+                    "fn note(n: int) {\n}\nfn f(x: int) -> int {\n    defer note(x + 1)\n    x\n}\nf(3)",
+                ),
+            )
+            ir.split("cleanup ").length == 2 && ir.contains("callptr")
+        }
+        then "a capture-free deferred body names its static lifted body as its cleanup" {
+            let ir = render_ir(
+                ir_of("${puts()}fn f() -> int {\n    defer avra_puts(\"x\")\n    1\n}\nf()"),
+            )
+            ir.contains("static fn\$") && ir.split("cleanup ").length == 2
+        }
     }
 }
