@@ -355,7 +355,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers inputs inputs-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -894,6 +894,12 @@ fmt-lossless:
 attack:
 	@sh tools/attack.sh
 
+# NO DEFECT VOICE REACHES A USER PROGRAM: every malformed or edge program
+# in tools/defects/corpus.txt, and every mutation of its bases, is checked
+# and run, and one answered with a defect voice or a trap refuses.
+defects:
+	@python3 tools/defects.py
+
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.
 vocab:
@@ -994,7 +1000,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = fingerprints vocab families-left layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+KEEPERS_B = fingerprints vocab families-left layers inputs cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack defects \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)

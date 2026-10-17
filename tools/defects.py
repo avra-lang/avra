@@ -10,7 +10,7 @@ Each case is the entry of a one-file package in a scratch directory
 (a lone file reads no std and no prelude, and a file inside this tree
 is silent), so a refusal actually prints.
 
-usage: defects.py [--avra PATH] [--only NAME] [--keep] [--list]
+usage: defects.py [--avra PATH] [--only NAME] [--list]
 """
 import argparse
 import os
@@ -26,13 +26,17 @@ BAD = re.compile(
     re.M,
 )
 TIMEOUT = 60
-# check examines and lowers; run evaluates what check let through
-VERBS = ["check", "run"]
+# @mutate adds the case's mutations; @check runs only `check` — a program
+# whose own run traps by the language's law (an index past the end)
+FLAGS = {"@mutate", "@check"}
+# check examines and lowers; run evaluates what check let through; build
+# emits and links what it accepted
 MANIFEST = '[package]\nname = "probe"\nversion = "0.1.0"\n\n[bin]\npath = "src/main.av"\n'
 
 
 def cases(text):
-    """(name, mutate, body) for each `### name` case, in file order."""
+    """(name, flags, body) for each `### name` case, in file order. The
+    flags are the `@` words on the lines after the name."""
     out = []
     name, body = None, []
     for line in text.split("\n"):
@@ -50,12 +54,13 @@ def cases(text):
 
 
 def finish(name, body):
-    mutate = bool(body) and body[0] == "@mutate"
-    if mutate:
+    flags = set()
+    while body and body[0] in FLAGS:
+        flags.add(body[0])
         body = body[1:]
     while body and body[-1] == "":
         body = body[:-1]
-    return name, mutate, "\n".join(body) + ("\n" if body else "")
+    return name, flags, "\n".join(body) + ("\n" if body else "")
 
 
 def mutants(name, text):
@@ -111,19 +116,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--avra", default=os.path.join(ROOT, "avra"))
     ap.add_argument("--only")
-    ap.add_argument("--keep", action="store_true")
     ap.add_argument("--list", action="store_true")
     a = ap.parse_args()
     all_cases = cases(open(CORPUS, encoding="utf-8").read())
     work = []
-    for name, mutate, body in all_cases:
-        work.append((name, body))
-        if mutate:
-            work.extend(mutants(name, body))
+    for name, flags, body in all_cases:
+        verbs = ["check"] if "@check" in flags else ["check", "run"]
+        work.append((name, verbs, body))
+        if "@mutate" in flags:
+            work.extend((n, verbs, b) for n, b in mutants(name, body))
     if a.only:
         work = [w for w in work if w[0].startswith(a.only)]
     if a.list:
-        for n, _ in work:
+        for n, _, _ in work:
             print(n)
         return 0
     if not work:
@@ -134,11 +139,15 @@ def main():
         os.makedirs(os.path.join(d, "src"))
         with open(os.path.join(d, "avra.toml"), "w", encoding="utf-8") as f:
             f.write(MANIFEST)
-        for n, body in work:
+        for n, verbs, body in work:
             with open(os.path.join(d, "src", "main.av"), "w", encoding="utf-8") as f:
                 f.write(body)
-            for verb in VERBS:
+            clean = False
+            for verb in verbs + ["build"]:
+                if verb == "build" and not clean:
+                    continue
                 code, out = run(a.avra, verb, d)
+                clean = clean or (verb == "check" and code == 0)
                 why = verdict(code, out)
                 if why:
                     bad.append((n, why))
