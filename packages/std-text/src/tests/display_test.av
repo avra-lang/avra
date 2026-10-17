@@ -1,6 +1,6 @@
 // Text as a terminal draws it: clusters are never split, and each takes
 // the cells a cluster-aware terminal gives it.
-use @std.text.{graphemes, cells, from_codepoints, codepoints}
+use @std.text.{graphemes, cells, from_codepoints, codepoints, pad_left, pad_right}
 
 fn made(codes: List<int>) -> string { from_codepoints(codes) }
 
@@ -32,6 +32,9 @@ spec "std/text — graphemes and cells" {
             cells("中文") == 4 && cells("한") == 2 && cells("Ａ") == 2
         }
         then "halfwidth kana, Greek and box drawing take one" { cells("ｶ") == 1 && cells("α") == 1 && cells("─") == 1 }
+        then "a noncharacter and an unassigned point outside the ideograph blocks take one" {
+            cells(made([65535])) == 1 && cells(made([1114111])) == 1 && cells(made([262144])) == 1
+        }
         then "a plane-two Han glyph takes two" { cells(made([131072])) == 2 }
     }
     given "emoji" {
@@ -73,6 +76,17 @@ spec "std/text — graphemes and cells" {
         then "no cluster is empty and together they are the text" {
             let s = "x" + made([128104, 8205, 128105]) + "é" + made([2325, 2381, 2359]) + "!"
             graphemes(s).join("") == s && graphemes(s).all(it != "")
+        }
+    }
+    given "padding" {
+        then "padding fills to the width in cells" {
+            pad_right("中", 4) == "中  " &&
+                pad_left("中", 4) == "  中" &&
+                cells(pad_right("中", 4)) == 4
+        }
+        then "a mark takes no room and a wide text is left alone" {
+            let e = made([101, 769])
+            pad_right(e, 3) == e + "  " && pad_right("中文", 3) == "中文"
         }
     }
 }
