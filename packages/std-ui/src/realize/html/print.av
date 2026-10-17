@@ -43,16 +43,27 @@ export fn print_of(run: List<Element>, css: string) -> int {
     run.fold(mixed(7, css), (a: int, e: Element) -> element_print(a, e)) + 1
 }
 
-/// Each element of a run in document order — the tag's word, or `#text:` and
-/// the octets of its words — the sequence a host checks the page it holds
-/// against. A text's length catches what a parser drops or joins.
+/// Each element of a run in document order — the tag's word, or `#text` —
+/// the sequence a host checks the page it holds against.
 export fn kinds_of(run: List<Element>) -> List<string> {
     flatten([kinds_in(e) for e in run])
 }
 
 fn kinds_in(e: Element) -> List<string> {
     match e {
-        .Text(run) -> ["#text:${run.content.bytes().length}"],
+        .Text(_) -> ["#text"],
         .Tag(el) -> [el.tag.word()].concat(flatten([kinds_in(k) for k in el.kids])),
+    }
+}
+
+/// One number over the words of every text in a run, in document order: what
+/// a host folds the texts it holds to, so a parser or a proxy that drops a
+/// `pre`'s first newline or rewrites a word is told from the page drawn.
+export fn words_of(run: List<Element>) -> int { run.fold(7, (a: int, e: Element) -> words_in(a, e)) + 1 }
+
+fn words_in(acc: int, e: Element) -> int {
+    match e {
+        .Text(run) -> mixed(acc, run.content),
+        .Tag(el) -> el.kids.fold(acc, (a: int, k: Element) -> words_in(a, k)),
     }
 }

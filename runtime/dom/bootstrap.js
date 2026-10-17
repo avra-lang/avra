@@ -42,7 +42,7 @@ export function parseFrame(bytes) {
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
     else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
-    else if (op === OP.adopt) patches.push({ op, kinds: Array.from({ length: int() }, str) });
+    else if (op === OP.adopt) patches.push({ op, words: int(), kinds: Array.from({ length: int() }, str) });
     else throw new Error(`unknown patch op ${op}`);
   }
   return patches;
@@ -115,10 +115,8 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
   // would join. A page that is not the program's elements is emptied, loudly,
   // and the program draws from nothing.
   const nameOf = (n) => String(n.nodeName ?? n.tagName).toLowerCase();
+  const kindOf = nameOf;
   const marker = (n) => nameOf(n) === "#comment";
-  // A text is its octets' length too: a parser that drops a leading newline or
-  // folds a line ending holds other words than the program drew.
-  const kindOf = (n) => (nameOf(n) === "#text" ? `#text:${new TextEncoder().encode(n.textContent).length}` : nameOf(n));
   const standing = () => {
     const out = [];
     const walk = (parent) => {
@@ -136,13 +134,26 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
     while (mount.childNodes.length > 0) mount.removeChild(mount.childNodes[0]);
   };
   let broken = false;
-  const adopt = (kinds) => {
+  // One number over the words of every text, in document order, folded as the
+  // program folds its own (`words_of`, realize/html/print.av): a parser or a
+  // proxy that dropped a newline or rewrote a word holds other words than the
+  // program drew.
+  const PRIME = 1000000007;
+  const BASE = 131;
+  const mixed = (acc, text) => {
+    const octets = new TextEncoder().encode(text);
+    let at = acc;
+    for (const b of octets) at = (at * BASE + b + 1) % PRIME;
+    return (at * BASE + octets.length + 1) % PRIME;
+  };
+  const wordsOf = (nodes) => nodes.filter((n) => kindOf(n) === "#text").reduce((acc, n) => mixed(acc, n.textContent), 7) + 1;
+  const adopt = (kinds, words) => {
     const nodes = standing();
     if (kinds.length === 0) {
       if (nodes.length > 0) { console.warn("avra: the page held elements this program does not draw — emptied"); emptied(); }
       return;
     }
-    if (nodes.length !== kinds.length || nodes.some((n, j) => kindOf(n) !== kinds[j])) {
+    if (nodes.length !== kinds.length || nodes.some((n, j) => kindOf(n) !== kinds[j]) || wordsOf(nodes) !== words) {
       console.warn("avra: the page held is not the one this program draws — drawn again from nothing");
       emptied();
       broken = true;
@@ -152,7 +163,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null, repai
   };
 
   const apply = {
-    [OP.adopt]: (p) => adopt(p.kinds),
+    [OP.adopt]: (p) => adopt(p.kinds, p.words),
     [OP.create]: (p) => keep(p.id, doc.createElement(p.tag)),
     [OP.create_text]: (p) => keep(p.id, doc.createTextNode(p.content)),
     // A NODE THAT MOVES IS THE SAME NODE, with all the page keeps on it. One

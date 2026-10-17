@@ -25,7 +25,10 @@ const listen = (id, kind, event, says, reads, prevents) => [OP.listen, ...idByte
 const unlisten = (id, kind) => [OP.unlisten, ...idBytes(id), ...i32(kind)];
 const style = (css) => [OP.style, ...str(css)];
 const call = (id, verb) => [OP.call, ...idBytes(id), ...str(verb)];
-const adopt = (...kinds) => [OP.adopt, ...i32(kinds.length), ...kinds.flatMap(str)];
+// The words of the stub page fixtures below, folded as the program folds them.
+const words = (...texts) => { let at = 7; for (const t of texts) { const o = utf8(t); for (const b of o) at = (at * 131 + b + 1) % 1000000007; at = (at * 131 + o.length + 1) % 1000000007; } return at + 1; };
+const adoptWith = (w, ...kinds) => [OP.adopt, ...i32(w), ...i32(kinds.length), ...kinds.flatMap(str)];
+const adopt = (...kinds) => adoptWith(words("hi"), ...kinds);
 const frame = (...recs) => Uint8Array.from([WIRE_VERSION, ...recs.flat()]);
 
 let fails = 0;
@@ -397,7 +400,7 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   let repairs = 0;
   const sent = [];
   const apply = createApplier(doc, s.mount, (who, kind, said) => sent.push([who, kind]), null, () => repairs++);
-  apply(frame(adopt("div", "#text:2", "b"), setAttr(1, "title", "t")));
+  apply(frame(adopt("div", "#text", "b"), setAttr(1, "title", "t")));
   check("an adopted page keeps its elements and numbers them in document order", [s.mount.childNodes[0] === s.div, s.div.attrs.title === undefined, s.text.attrs.title], [true, true, "t"]);
   apply(frame(setText(1, "yo"), create(3, "i"), place(3, 0, 2)));
   check("a patch after adoption reaches the adopted nodes", [s.text.textContent, tags(s.div)], ["yo", ["#text", "#comment", "b", "i"]]);
@@ -420,14 +423,22 @@ const requestFrame = ({ method = "GET", url, timeoutMs = -1, headers = [], kind 
   const v = served(doc);
   v.text.textContent = "h";
   const apply4 = createApplier(doc, v.mount, () => {}, null, () => repairs++);
-  apply4(frame(adopt("div", "#text:2", "b")));
+  apply4(frame(adopt("div", "#text", "b")));
   await Promise.resolve();
   check("a text that holds other words than the program drew is not adopted", [v.mount.childNodes.length, repairs], [0, 3]);
+
+  const same = served(doc);
+  same.text.textContent = "ho";
+  const apply6 = createApplier(doc, same.mount, () => {}, null, () => repairs++);
+  const before6 = repairs;
+  apply6(frame(adopt("div", "#text", "b")));
+  await Promise.resolve();
+  check("a text of the same length but other words is not adopted", [same.mount.childNodes.length, repairs - before6], [0, 1]);
 
   const u = served(doc);
   const apply3 = createApplier(doc, u.mount, () => {}, null, () => repairs++);
   apply3(frame(adopt(), create(0, "p"), place(0, NO_ID, NO_ID)));
-  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 3]);
+  check("an empty adoption empties what the server sent and the frame draws on", [u.mount.childNodes.length, u.mount.childNodes[0].tagName, repairs], [1, "p", 4]);
   console.warn = warn;
 }
 
