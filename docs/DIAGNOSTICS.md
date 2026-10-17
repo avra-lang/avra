@@ -2101,7 +2101,7 @@ error[const.reach]: a const cannot read the world
   ╭─[/w/src/main.av:5:16]
 5 │ const n: int = noisy()
   ·                ┬
-  ·                ╰── `n` reaches `avra_puts` in `@std.prelude.println`, called from `noisy`, called from `settling$main$const3`
+  ·                ╰── `n` reaches `avra_puts` in `@std.prelude.println`, called from `noisy`
 ──╯
 help: a const settles at compile time from pure computation alone — read the world at run time, under `let`
 ```
