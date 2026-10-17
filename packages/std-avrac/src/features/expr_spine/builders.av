@@ -41,14 +41,6 @@ fn build_unmixed_bitwise(b: Builder) -> Result<LangNode, string> {
     b.make_type(void_ref)
 }
 
-/// `left op right` for the operator whose source symbol is `symbol`.
-fn binary_of(b: Builder, symbol: string, what: string) -> Result<LangNode, string> {
-    let op = want(binop_of(symbol), what)?
-    let l = b.expr(0)?
-    let r = b.expr(2)?
-    b.wrap_expr(b.store.alloc_expr(Expr.Binary(op, l, r), b.cover(l, r)))
-}
-
 /// The words that law refuses in — one place, so the two operators
 /// it names are always the two the reader wrote.
 fn mixed_bitwise(first: string, second: string) -> string {
@@ -70,12 +62,10 @@ fn bitnot_means(written: string, operand: string) -> string {
     "`${written}` means `${operand} ^ -1`"
 }
 
-/// `l op r` or `l is …` — at most one, never a chain. The right side
-/// says which: a value is a comparison's, and the PATTERN the `is`
-/// rule built is a tag test (`.V`, `.V(x)`) or a type test (`c: T`).
-fn build_compare(b: Builder) -> Result<LangNode, string> {
+/// `l is …` — the PATTERN the `is` rule built is a tag test (`.V`,
+/// `.V(x)`) or a type test (`c: T`).
+fn build_is_test(b: Builder) -> Result<LangNode, string> {
     match b.args[2] {
-        .Node(.NExpr(_)) -> binary_of(b, (b.token(1)?).text, "a comparison operator"),
         .Node(.NPat(p)) -> asked_expr(b, b.expr(0)?, p),
         rest -> .Err(compare_without_right_side()),
     }
