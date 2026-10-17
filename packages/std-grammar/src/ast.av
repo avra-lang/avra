@@ -106,16 +106,32 @@ export enum Assoc {
     Unmixed(refusal: string)
 }
 
-/// An operator whose right side is a rule, not an operand (`is`).
-export type Suffix = { word: string, rule: string }
+/// An operator whose right side is a rule, not an operand (`is`). Its own
+/// `build` wins over its tier's.
+export type Suffix = { word: string, rule: string, build: Build? = null }
 
 /// One precedence tier; the tiers of an `Operators` run loosest
 /// first. A word is the tokens of one operator, adjacent (`>` `>`).
 /// A tier's own `build` overrides the branch's.
 export type Tier = { assoc: Assoc, words: List<List<string>>, suffixes: List<Suffix>, build: Build? }
 
+impl Tier {
+    /// The operator words the tier's own build serves: its words, and
+    /// the suffixes that write no build of their own.
+    fn served_words() -> List<List<string>> {
+        self.words.concat([[x.word] for x in self.suffixes if x.build == null])
+    }
+
+    /// The build that builds the operator taken: the suffix's own when
+    /// `suffix` names one, else the tier's.
+    fn build_at(suffix: int) -> Build? {
+        if suffix < 0 { return self.build }
+        self.suffixes[suffix].build ?? self.build
+    }
+}
+
 /// One operator the climb can take, tightest tier first.
-export type OpEntry = { words: List<string>, tier: int, rule: string? }
+export type OpEntry = { words: List<string>, tier: int, rule: string?, at: int = 0 - 1 }
 
 /// The tiers and what the climb reads off them, filled by
 /// `operators_of`: `entries` tightest first and `by_first` the same
