@@ -56,6 +56,10 @@ const MAX_BYTES_KEPT: int = 2147483648
 /// What the kept binaries (`bin/`) may hold: each is a whole program, one per program key, so a
 /// session of edits would otherwise fill a disk. Oldest out first; the newest always stays.
 const BIN_BYTES_KEPT: int = 1073741824
+
+/// What the kept objects (`obj/`) may hold. An object is a cache entry like any row: one the
+/// ceiling drops is a MISS, its file read again and its object rebuilt, never a build refusal.
+const OBJ_BYTES_KEPT: int = 2147483648
 const MAX_AGE_KEPT_NS: int = 0
 
 /// A store's limits, as `avra cache clean` and the automatic seal read them.
@@ -600,6 +604,7 @@ export fn pack_clean(pack: Pack, limits: StoreLimits) -> CleanReport {
     }
     let evicted = prune_bodies(pack.dir, limits)
     let _ = trim_kept_binaries(dir_of(pack.dir), bin_limit())
+    let _ = trim_kept_files(dir_of(pack.dir), "obj", obj_limit())
     CleanReport {
         skipped: false,
         sealed: sealed,
@@ -629,7 +634,11 @@ fn enforce_limits(pack: Pack) {
     let _ = prune_bodies(pack.dir, store_limits())
     drop_unreferenced_values(pack.dir)
     let _ = trim_kept_binaries(dir_of(pack.dir), bin_limit())
+    let _ = trim_kept_files(dir_of(pack.dir), "obj", obj_limit())
 }
+
+/// The kept objects' ceiling in bytes: `AVRA_OBJ_MAX_BYTES`, else two gigabytes.
+fn obj_limit() -> int { env_int("AVRA_OBJ_MAX_BYTES") ?? OBJ_BYTES_KEPT }
 
 /// The kept binaries' ceiling in bytes: `AVRA_BIN_MAX_BYTES`, else a gigabyte.
 fn bin_limit() -> int { env_int("AVRA_BIN_MAX_BYTES") ?? BIN_BYTES_KEPT }
@@ -639,9 +648,12 @@ type KeptFile = { path: string, bytes: int, at: int }
 
 /// The binaries under `<root>/bin`, oldest first, past what `limit` allows: each is removed
 /// with its edge, so a later ask finds a miss and links again. The newest is never removed.
-export fn trim_kept_binaries(root: string, limit: int) -> int {
+export fn trim_kept_binaries(root: string, limit: int) -> int { trim_kept_files(root, "bin", limit) }
+
+/// The files of one file family (`bin`, `obj`) under `<root>/<family>`, oldest first, past `limit`.
+export fn trim_kept_files(root: string, family: string, limit: int) -> int {
     if limit <= 0 { return 0 }
-    let bin = joined_path(root, "bin")
+    let bin = joined_path(root, family)
     let kept = sorted_by(kept_binaries(bin), (a: KeptFile, b: KeptFile) -> a.at < b.at)
     mut held = kept.fold(0, (sum, f) -> sum + f.bytes)
     mut gone = 0
@@ -652,7 +664,7 @@ export fn trim_kept_binaries(root: string, limit: int) -> int {
         held = held - f.bytes
         gone = gone + 1
     }
-    if traced() && gone > 0 { qtrace("Q\tstore\tbin-trimmed\t${gone}\t${held}\n") }
+    if traced() && gone > 0 { qtrace("Q\tstore\t${family}-trimmed\t${gone}\t${held}\n") }
     gone
 }
 
