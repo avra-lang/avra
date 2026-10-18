@@ -30,6 +30,7 @@ use @std.text.{has_nul, parse_int}
 use @std.url.{decoded}
 use date.{http_date, http_date_parsed}
 use route.{Route, Reach}
+use validators.{tag_listed}
 
 /// A directory to serve: where it is, the file a directory answers
 /// with, whether a name starting with `.` may be served, the
@@ -224,18 +225,6 @@ fn not_modified(q: Request<Unrouted>, o: Opened, tag: string) -> bool {
     if q.header("if-none-match") != null { return false }
     let since? = http_date_parsed(q.header("if-modified-since") ?? "") else { return false }
     o.mtime <= since
-}
-
-/// Whether an `If-None-Match` list names `tag` — weakly, as the field
-/// compares — or is `*`.
-fn tag_listed(field: string?, tag: string) -> bool {
-    let list? = field else { return false }
-    list.trim() == "*" || list.split(",").any(weak_same(it.trim(), tag))
-}
-
-fn weak_same(listed: string, tag: string) -> bool {
-    let opaque = if listed.starts_with("W/") { listed.substring(2, listed.length) } else { listed }
-    opaque == tag
 }
 
 // ── Ranges ──────────────────────────────────────────────────────
