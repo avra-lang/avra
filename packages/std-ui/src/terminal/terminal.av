@@ -19,7 +19,10 @@ use tree.view.{View, rooted}
 use terminal.screen.{Screen, screen}
 use native.net.{over_http}
 use native.sources.{opened, served}
+use @std.task.{signals}
 use terminal.keys.{Key, Paste, heard, keys, paste_cap, resume}
+use tree.bindings.{meeting, names}
+use tree.chord.{Chord, parsed}
 
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
@@ -28,6 +31,7 @@ extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 extern fn avra_fd_tty_size(fd: int) -> int
 extern fn avra_fd_tty_raw(fd: int, mode: int) -> int
 extern fn avra_fd_exit_writes(fd: int, bytes: Bytes)
+extern fn avra_sig_raise(kind: int)
 
 /// Who holds the focus: the path the control stands at, and its place
 /// among the controls that could take it — where the focus goes when that
@@ -44,6 +48,9 @@ export type Terminal = {
     size: Cell<Size>,
     on_screen: Screen?,
     leaves: fn(string) -> void,
+    interrupts: fn() -> void,
+    moded: fn(int) -> void,
+    mode: Cell<int> = Cell.new(1),
     focus: Cell<Focus?> = Cell.new(null),
     ended: Cell<bool> = Cell.new(false),
     active: Cell<bool> = Cell.new(true),
@@ -67,6 +74,8 @@ export fn terminal<V: View>(
         size: Cell.new(Size { width: width, height: height }),
         on_screen: nowhere,
         leaves: (_s: string) -> {},
+        interrupts: stopped,
+        moded: moded_nothing,
         paste_limit: paste_limit,
     }
     let _ = made.fit()
@@ -83,6 +92,8 @@ export fn terminal_in_place<V: View>(
     height: int,
     screen: Screen,
     leaves: fn(string) -> void,
+    interrupts: fn() -> void,
+    moded: fn(int) -> void,
     paste_limit: int = paste_cap,
 ) -> Terminal {
     let made = Terminal {
@@ -90,11 +101,14 @@ export fn terminal_in_place<V: View>(
         size: Cell.new(Size { width: width, height: height }),
         on_screen: screen,
         leaves: leaves,
+        interrupts: interrupts,
+        moded: moded,
         paste_limit: paste_limit,
     }
     let _ = made.fit()
     leaves(screen.parts())
     made.paint_grid()
+    made.synced_mode()
     made
 }
 
@@ -107,6 +121,47 @@ fn of_rows(attrs: List<Attribute>) -> int {
     let held? = attrs.find(places) else { return 0 }
     match held { .Placed(_, of, _) -> of, _ -> 0 }
 }
+
+/// Where a key meets a binding: before the terminal's own use of it, after a
+/// control has had its say, or never — typing and the pointer are not bound.
+enum Lane {
+    Before
+    After
+    Never
+}
+
+/// A key's lane. Every key spelled.
+fn lane_of(k: Key) -> Lane {
+    match k {
+        .Escape or .Chord(_, _, _) or .PageUp or .PageDown or .Top or .Bottom -> .Before,
+        .Enter -> .After,
+        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) -> .Never,
+    }
+}
+
+/// The chord a key is, when a binding can name it.
+fn chord_of(k: Key) -> Chord? {
+    match k {
+        .Enter -> parsed("Enter"),
+        .Escape -> parsed("Escape"),
+        .PageUp -> parsed("PageUp"),
+        .PageDown -> parsed("PageDown"),
+        .Top -> parsed("Home"),
+        .Bottom -> parsed("End"),
+        .Chord(text, ctrl, alt) -> parsed("${if ctrl { "ctrl+" } else { "" }}${if alt { "alt+" } else { "" }}${text}"),
+        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) -> null,
+    }
+}
+
+/// Whether a live binding names Ctrl-C.
+fn interrupt_bound(root: Node, seat: int?) -> bool {
+    let c? = parsed("ctrl+c") else { return false }
+    names(root, seat, c)
+}
+
+fn stopped() {}
+
+fn moded_nothing(_mode: int) {}
 
 // ── what a key does to the control that holds the focus ─────────
 
@@ -249,6 +304,34 @@ impl Terminal {
         let l? = self.listed() else { return }
         let size = if l.to - l.from < 1 { 1 } else { l.to - l.from }
         self.slid(l, l.from + by * size)
+    }
+
+    /// The binding the key meets runs as a turn: the nearest live one, from the
+    /// focused control out to the root. True when one ran.
+    fn bound(k: Key) -> bool {
+        let root? = self.shown.tree.get() else { return false }
+        let c? = chord_of(k) else { return false }
+        let found? = meeting(root, self.focused()?.seat, c) else { return false }
+        self
+            .shown
+            .app
+            .turn(
+                () -> {
+                    (found.handler)()
+                    true
+                },
+            )
+    }
+
+    /// Ctrl-C is the app's when a live binding names it, and the terminal's
+    /// signal when none does: the input is in full raw mode only while the
+    /// app has it, and in cbreak otherwise, where Ctrl-C is a real SIGINT.
+    fn synced_mode() {
+        let root? = self.shown.tree.get() else { return }
+        let want = if interrupt_bound(root, self.focused()?.seat) { 2 } else { 1 }
+        if want == self.mode.get() { return }
+        self.mode.set(want)
+        (self.moded)(want)
     }
 
     /// The screen's width in cells.
@@ -399,6 +482,14 @@ impl Terminal {
     /// the text a field holds are the ones those keys made.
     fn key(k: Key) -> bool {
         let _ = self.shown.app.flush()
+        let met = match lane_of(k) { .Before -> self.bound(k), .After or .Never -> false }
+        if met { return true }
+        let ran = self.defaulted(k)
+        match lane_of(k) { .After -> ran || self.bound(k), .Before or .Never -> ran }
+    }
+
+    /// What the terminal does with a key that no binding took.
+    fn defaulted(k: Key) -> bool {
         match k {
             .Next -> {
                 self.move(1)
@@ -428,7 +519,11 @@ impl Terminal {
                 self.edge(true)
                 false
             },
-            .Escape or .Chord(_, _, _) -> false,
+            .Escape -> false,
+            .Chord(text, ctrl, alt) -> {
+                if text == "c" && ctrl && !alt { (self.interrupts)() }
+                false
+            },
             .Click(x, y, _, _, _) -> self.click(x, y),
             .Wheel(x, y, toward_end) -> {
                 self.wheel(self.list_under(x, y), if toward_end { 3 } else { -3 })
@@ -486,6 +581,8 @@ impl Terminal {
 // ── the terminal itself ─────────────────────────────────────────
 
 const input = 0
+/// `Sig.Int`'s place in the signal kinds.
+const sigint = 1
 const output = 1
 const chunk = 4096
 
@@ -495,6 +592,7 @@ impl Terminal {
     fn printed() {
         if self.live() {
             self.paint_grid()
+            self.synced_mode()
             return
         }
         println("")
@@ -535,6 +633,29 @@ fn read(on: Terminal) -> bool {
     true
 }
 
+/// The terminal's size as it changes: each SIGWINCH becomes an act that
+/// refits the screen to the size the terminal then reports.
+fn resizes(on: Terminal, live: bool) -> bool {
+    if !live { return true }
+    let winch = signals([.Winch])
+    while winch.next() != null {
+        let size = avra_fd_tty_size(output)
+        if size > 0 &&
+            !on
+                .shown
+                .app
+                .post(
+                    () -> {
+                        on.resized(size / 65536, size % 65536)
+                        true
+                    },
+                ) {
+            return true
+        }
+    }
+    true
+}
+
 /// THE APP: `view` in this terminal, drawn now and after every turn
 /// that ran — a key, a timer, an answer — until the input ends. On a
 /// terminal the screen is written in place (`inplace` forces it either way);
@@ -551,7 +672,9 @@ export fn mount<V: View>(view: fn() -> V, width: int = 80, height: int = 24, inp
     stood(on.shown.app)
     let inbox = opened(on.shown.app, over_http)
     let _ = spawn read(on)
+    let resizing = spawn resizes(on, live)
     served(on.shown.app, inbox, () -> on.printed())
+    resizing.cancel()
     on.leave()
     if live { let _ = avra_fd_tty_raw(input, 0) }
     stood(before)
@@ -564,7 +687,18 @@ fn entered<V: View>(view: fn() -> V, columns: int, lines: int) -> Terminal {
     let _ = avra_fd_tty_raw(input, 1)
     let sent = (s: string) -> write_all(output, s.bytes())
     let leaves = (s: string) -> avra_fd_exit_writes(output, s.bytes())
-    terminal_in_place(view, columns, lines, screen(sent), leaves)
+    let moded = (m: int) -> {
+        let _ = avra_fd_tty_raw(input, m)
+    }
+    terminal_in_place(
+        view,
+        columns,
+        lines,
+        screen(sent),
+        leaves,
+        () -> avra_sig_raise(sigint),
+        moded,
+    )
 }
 
 /// `bytes` written whole to `fd`, waiting for it to take them when it will not
