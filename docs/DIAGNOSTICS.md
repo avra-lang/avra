@@ -1814,6 +1814,25 @@ fix (high): interpolate it — `"${5}"`
   "${5}"
 ```
 
+## type.let_pattern
+
+a destructuring `let` stands inside a block
+
+```avra
+let [q, ..] = [1] else { 1 }
+2
+```
+
+```
+error[type.let_pattern]: a destructuring `let` takes the rest of a block as its scope, and a file's top level is no block
+  ╭─[witness.av:1:1]
+1 │ let [q, ..] = [1] else { 1 }
+  · ┬
+  · ╰── this `let`
+──╯
+help: destructure inside a fn body, or `match` the value
+```
+
 ## const.reach
 
 a const cannot read the world
@@ -2398,6 +2417,28 @@ error[type.spread_list]: `..` in a list spreads a list, found `int`
 help: a list literal spreads lists — `[..xs, y]`; write any other value as an element
 ```
 
+## type.list_pattern
+
+a list pattern matches a list
+
+```avra
+let n = 3
+match n {
+    [a, ..] -> a
+    _ -> 0
+}
+```
+
+```
+error[type.list_pattern]: a list pattern matches a list, found `int`
+  ╭─[witness.av:3:5]
+3 │     [a, ..] -> a
+  ·     ┬
+  ·     ╰── this pattern
+──╯
+help: match a list — `[first, ..rest]`; for any other value, match what it is
+```
+
 ## type.list_element
 
 a list's elements share one type
@@ -2552,6 +2593,37 @@ error[type.duplicate_field]: `P` declares `x` more than once
   · ╰── in this declaration
 ──╯
 help: rename one of them
+```
+
+## type.record_pattern
+
+a record pattern names the subject's record and its fields
+
+```avra
+type P = { x: int }
+let n = 3
+match n {
+    P { x, .. } -> x
+    _ -> 0
+}
+```
+
+```
+error[type.record_pattern]: `P { … }` matches a record, found `int`
+  ╭─[witness.av:4:5]
+4 │     P { x, .. } -> x
+  ·     ┬
+  ·     ╰── this pattern
+──╯
+help: match a record of that name, or the shape the value is
+
+warning[type.unreachable_arm]: this arm is never reached — the arm above takes every value
+  ╭─[witness.av:5:5]
+5 │     _ -> 0
+  ·     ┬
+  ·     ╰── never reached
+──╯
+help: move it above the catch-all, or remove it
 ```
 
 ## type.spread
