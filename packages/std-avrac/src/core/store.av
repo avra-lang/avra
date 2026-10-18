@@ -573,6 +573,34 @@ impl SyntaxArena {
         self.stmt(s) is .ExprStmt && self.statement_if(v)
     }
 
+    /// The match a destructuring `let` means: the pattern's arm holds the
+    /// rest of its block, and a wildcard arm holds what a refused value
+    /// does. None until the block has folded its statements in.
+    fn let_matched(pat: PatId, subject: ExprId, otherwise: ExprId?, rest: ExprId?, span: Span?) -> List<
+        ExprId,
+    > {
+        let held? = rest else { return [] }
+        let taken = Arm { pats: [pat], guard: null, value: held }
+        let refused = Arm {
+            pats: [self.alloc_pat(Pat.Wild, span)],
+            guard: null,
+            value: otherwise ?? held,
+        }
+        [
+            self
+                .alloc_expr(
+                    Expr.Match(subject, if otherwise == null { [taken] } else { [taken, refused] }),
+                    span,
+                ),
+        ]
+    }
+
+    /// Whether `e` is the match a destructuring `let` means.
+    fn minted_by_let(e: ExprId) -> bool {
+        let sugar? = self.minted_for(e) else { return false }
+        self.expr(sugar) is .LetPattern
+    }
+
     fn is_sugar_match(e: ExprId) -> bool {
         self.sugar_matches.get()[e.index]
     }
@@ -598,7 +626,7 @@ impl SyntaxArena {
     fn binding_ask(asked: PatId) -> PayloadIs? {
         match self.pat(asked) {
             .Variant(_, args) -> if args.is_empty() { null } else { binding_payload(asked) },
-            .Typed(_, _) -> binding_payload(asked),
+            .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> binding_payload(asked),
             .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> null,
         }
     }
@@ -608,7 +636,7 @@ impl SyntaxArena {
         match self.pat(asked) {
             .Variant(name, _) -> name.of,
             .Typed(_, ty) -> ty.name,
-            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> "",
+            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> "",
         }
     }
 

@@ -1336,6 +1336,11 @@ impl SourceText {
             .Receiver -> grouped("self", atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
+            .LetPattern(pat, subject, otherwise, held) -> grouped(
+                self.let_pattern_text(pat, subject, otherwise, held, depth),
+                loosest_tier,
+                parent,
+            ),
             .Pipe(_, _) -> self.pipe_rendered(self.pipe_walk(id, depth), parent, depth, c),
             .Bitnot(value) -> grouped("~${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),
@@ -1794,6 +1799,39 @@ impl SourceText {
         let yes = self.block(arms[0].value, one, depth)
         if !payload.has_else { return "if ${cond} ${yes}" }
         "if ${cond} ${yes} else ${self.if_group_else(arms[1].value, one, depth)}"
+    }
+
+    /// The `let pattern = subject [else { … }]` node and the statements it
+    /// holds: the head line, then the statements its block holds, level
+    /// with it — the first line unpadded, as an expression's text is.
+    mut fn let_pattern_text(
+        pat: PatId,
+        subject: ExprId,
+        otherwise: ExprId?,
+        rest: ExprId?,
+        depth: int,
+    ) -> string {
+        let prefix = "let ${self.pattern(pat, depth)} = "
+        let head = "${prefix}${self.expression(subject, loosest_tier, depth, col_after(prefix, depth * 4))}"
+        let opened = if otherwise == null { head } else { "${head} else ${self.block(otherwise!, self.span_flat(self.store.expr_span(otherwise!)), depth)}" }
+        let trail = self.trailing(end_of(self.store.expr_span(subject)))
+        let held = if rest == null { [] } else { self.let_rest_lines(rest!, depth) }
+        unpadded(joined(["${source_line(depth, opened)}${trail}"].concat(held), "\n"), depth)
+    }
+
+    /// The statements a destructuring `let` owns, then the value its
+    /// block answers with.
+    mut fn let_rest_lines(block: ExprId, depth: int) -> List<string> {
+        match self.store.expr(block) {
+            .Block(stmts, value) -> {
+                let body = flatten([self.statement(s, depth) for s in stmts])
+                let v? = value else { return body }
+                body
+                    .concat(self.trivia_before(start_of(self.store.expr_span(v)), depth))
+                    .concat([source_line(depth, self.expression(v, loosest_tier, depth))])
+            },
+            rest -> [source_line(depth, self.expression(block, loosest_tier, depth))],
+        }
     }
 
     /// The chained form of `payload_if` — a marked Match in an else
