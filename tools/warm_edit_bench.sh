@@ -140,6 +140,12 @@ while [ "$i" -lt "$rounds" ]; do
     if [ "$least" -eq 0 ] || [ "$ms" -lt "$least" ]; then least=$ms; fi
 done
 printf 'warm unchanged %s\n' "$least" >> "$raw"
+# WHERE THE HIT'S MILLISECONDS GO, to stderr beside the number: the process's own
+# start (an arg-less run, no check) and the check's `--time` phases, so a runner that
+# is slower reads as a slower START, never as a slower compiler. Not judged.
+s0=$(now); "$avra" rules >/dev/null 2>&1; e0=$(now)
+echo "warm_edit_bench: startup $(((e0 - s0) / 1000000)) ms (\`avra rules\`, no check)" >&2
+"$avra" check --time "$target" 2>&1 >/dev/null | grep '^time:' | sed 's/^/warm_edit_bench: unchanged /' >&2
 
 # ONE BODY EDIT per round, each a miss; the LEAST is the edit's price.
 least=0

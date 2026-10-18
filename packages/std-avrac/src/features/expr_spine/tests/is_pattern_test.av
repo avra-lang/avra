@@ -1,0 +1,46 @@
+// An `is` node keeps the pattern it was written with: `.V`, `.V(x)` or
+// a type test `c: T`. What binds is read off that pattern.
+use @std.avrac.core.{SyntaxArena, ExprId, StmtId, PatId}
+use @std.avrac.compiler.{parse_source}
+
+type IsTree = { store: SyntaxArena, root: ExprId? }
+
+fn is_tree(source: string) -> IsTree {
+    let p = parse_source(source)
+    let head: StmtId? = p.stmts.first()
+    IsTree { store: p.store, root: if head == null { null } else { p.store.stmt_value(head!) } }
+}
+
+/// The pattern the root `is` kept, absent when the root is no `is`.
+fn pattern_of(t: IsTree) -> PatId? {
+    match t.store.expr(t.root!) { .Is(_, asked) -> asked, _ -> null }
+}
+
+spec "features/expr_spine — an `is` keeps its pattern" {
+    given "a bare tag test" {
+        then "the pattern is the variant with no payload" {
+            let t = is_tree("a is .V")
+            let asked? = pattern_of(t) else { return false }
+            t.store.asked_tag(asked) == "V" && t.store.is_payload(t.root!) == null
+        }
+    }
+    given "a payload test" {
+        then "the pattern binds, and the tag is the variant's" {
+            let t = is_tree("a is .V(x, _)")
+            let asked? = pattern_of(t) else { return false }
+            t.store.asked_tag(asked) == "V" && t.store.is_payload(t.root!) != null
+        }
+    }
+    given "a type test" {
+        then "the tag is the type's name and the pattern binds" {
+            let t = is_tree("a is c: T")
+            let asked? = pattern_of(t) else { return false }
+            t.store.asked_tag(asked) == "T" && t.store.is_payload(t.root!) != null
+        }
+    }
+    given "a chained comparison" {
+        then "an `is` after a comparison is refused, never half-built" {
+            parse_source("a == b is .V").voices.list.length > 0
+        }
+    }
+}

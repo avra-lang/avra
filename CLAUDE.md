@@ -1060,7 +1060,15 @@ registry is the idiom engine's spec, written by dogfooding.
   inside the generic impl that wants the wrap. A REMEDY NAMES A FORM
   THAT PARSES WHERE IT IS SPOKEN — the `where` is half the claim, and
   the keeper this wants compiles the named form in the refusing
-  context.
+  context. IT EXISTS (`make voices`, compiler/dev/remedies.av): a
+  structured fix is spliced into its lone witness and must clear its
+  refusal and still parse (`bad_fix`), and a REMEDY ROW — a refusal and
+  the same program with the help's form applied — must come out as the
+  row says (`bad_remedy`); a help that names a form with neither is
+  `no_remedy`, baselined and only shrinking. Its own test pins F2033's old
+  `(x: T0) -> f(x)` as a failing row: no `T0` is a type anywhere, so the
+  help now writes the wrapper over the fn's own arity and lets the seat
+  pin the types.
 - EVERY VOICE CARRIES WHAT ITS ROW OWES, AND THE REGISTRY HOLDS IT. A
   kind's help is a property of its voice and its structured fix a
   property of its law, so the row says which: `DiagCode.remedy` is

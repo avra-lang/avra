@@ -1,0 +1,72 @@
+// A suffix operator builds with its OWN build when it writes one; else its
+// tier's, else the branch's. A tier's own build is written before its
+// suffixes, so a `->` after a suffix is that suffix's.
+use @std.errors.{Loc}
+use @std.grammar.{Grammar, Captured, RunOutcome, render_grammar, run_grammar, ready}
+use @std.avrac.grammar.{Token, lex_source, avra_known_terminals, avra_lexeme, parse_grammar}
+use @std.avrac.core.{joined}
+
+fn sfx_render(v: Captured<Token, string>) -> string {
+    match v {
+        .Terminal(t) -> t.text,
+        .Node(n) -> n,
+        .Many(items) -> "[${joined([sfx_render(x) for x in items], " ")}]",
+        .Absent -> "_",
+    }
+}
+
+fn sfx_build(name: string, args: List<Captured<Token, string>>, _loc: Loc?) -> Result<
+    Captured<Token, string>,
+    string,
+> {
+    let built: Captured<Token, string> = Captured
+        .Node("(${name} ${joined([sfx_render(a) for a in args], " ")})")
+    Result.Ok(built)
+}
+
+fn sfx_parsed(text: string) -> Grammar {
+    parse_grammar(text).built ?? Grammar { name: "unparsed", start: "unparsed", rules: [] }
+}
+
+fn sfx_answer(text: string, src: string) -> string {
+    let o = run_grammar<Token, string>(
+        ready(sfx_parsed(text), avra_known_terminals()),
+        lex_source(src).tokens,
+        avra_lexeme(),
+        sfx_build,
+    )
+    if o.result == null { return "<none> ${o.diagnostics.length}" }
+    "${sfx_render(o.result!)} ${o.diagnostics.length}"
+}
+
+const own_builds: string = "prog = x:e ( BREAK )* EOF -> x\ne = left:operand @operators { none \"==\" -> eq(left, op, right) suffix \"is\" tag -> is_(left, op, right) left \"+\" } -> plus(left, op, right)\ntag = \".\" n:NAME -> tag(n)\noperand = v:NAME -> lit(v)\n"
+
+const tier_only: string = "prog = x:e ( BREAK )* EOF -> x\ne = left:operand @operators { none \"==\" -> eq(left, op, right) suffix \"is\" tag } -> plus(left, op, right)\ntag = \".\" n:NAME -> tag(n)\noperand = v:NAME -> lit(v)\n"
+
+spec "grammar/suffix — a suffix's own build" {
+    given "a tier with a build and a suffix with its own" {
+        then "the tier's words build with the tier's" { sfx_answer(own_builds, "a == b") == "(eq (lit a) == (lit b)) 0" }
+        then "the suffix builds with its own" { sfx_answer(own_builds, "a is .V") == "(is_ (lit a) is (tag V)) 0" }
+        then "a word of a tier with no build builds with the branch's" {
+            sfx_answer(own_builds, "a + b") == "(plus (lit a) + (lit b)) 0"
+        }
+    }
+    given "a suffix that writes no build" {
+        then "builds with its tier's" { sfx_answer(tier_only, "a is .V") == "(eq (lit a) is (tag V)) 0" }
+    }
+    given "the notation" {
+        then "writes a tier's build before its suffixes and a suffix's after it, and reads it back" {
+            let shown = render_grammar(sfx_parsed(own_builds))
+            shown
+                    .contains("none \"==\" -> eq(left, op, right) suffix \"is\" tag -> is_(left, op, right)") &&
+                render_grammar(sfx_parsed(shown)) == shown
+        }
+        then "refuses a suffix build that calls for what the climb does not hand it" {
+            parse_grammar(
+                "e = left:operand @operators { none \"==\" suffix \"is\" tag -> is_(left, nope) } -> plus(left, op, right)\ntag = \".\" n:NAME -> tag(n)\noperand = v:NAME -> lit(v)\n",
+            )
+                .diagnostics
+                .any(it.message.contains("`nope`"))
+        }
+    }
+}
