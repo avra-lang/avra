@@ -1,0 +1,35 @@
+<!doctype html><meta charset=utf-8><body><div id=root></div>
+<script type=module>
+const q = new URLSearchParams(location.search);
+const N = Number(q.get("n"));
+const m = await import("./" + q.get("m") + ".js");
+const { OP, NO_ID, SAYS, WIRE_VERSION } = await import("./wire.gen.js");
+let adds = 0;
+const add = EventTarget.prototype.addEventListener;
+EventTarget.prototype.addEventListener = function (...a) { adds++; return add.apply(this, a); };
+let echoes = 0;
+const mount = document.getElementById("root");
+const apply = m.createApplier(document, mount, () => { echoes++; });
+const enc = new TextEncoder();
+const bytes = [];
+const u8 = (v) => bytes.push(v);
+const i32 = (v) => { for (let k = 0; k < 4; k++) bytes.push((v >>> (8 * k)) & 255); };
+const id = (n) => { i32(n >>> 0); i32(Math.floor(n / 4294967296) | 0); };
+const str = (s) => { const b = enc.encode(s); i32(b.length); for (const x of b) bytes.push(x); };
+u8(WIRE_VERSION);
+for (let n = 0; n < N; n++) {
+  u8(OP.create); id(n); str("button");
+  u8(OP.place); id(n); id(NO_ID); id(n === 0 ? NO_ID : n - 1);
+  u8(OP.listen); id(n); i32(1); str("click"); i32(SAYS.nothing); str(""); i32(0);
+}
+const frame = Uint8Array.from(bytes);
+const t0 = performance.now();
+apply(frame);
+const registered = performance.now() - t0;
+const els = [...mount.childNodes];
+const K = Math.min(20000, N);
+const t1 = performance.now();
+for (let k = 0; k < K; k++) els[(k * 7919) % els.length].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+const dispatched = performance.now() - t1;
+window.__bench = { n: N, adds, registered_ms: Math.round(registered), dispatch_us_per_event: Math.round((dispatched / K) * 1000), echoes, frame_bytes: frame.length };
+</script>
