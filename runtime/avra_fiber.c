@@ -1081,6 +1081,10 @@ int64_t avra_sig_number(int64_t kind) {
     return 0;
 }
 
+// A signal raised on this process: the platform's number for the kind, as
+// a signal from outside would arrive.
+void avra_sig_raise(int64_t kind) { raise((int)avra_sig_number(kind)); }
+
 // The wait over `sig` is done: the poller's registration goes, and the
 // disposition Avra spent is given back, so the signal is the process's
 // own again — a child forked later dies to it as it did before.

@@ -260,6 +260,7 @@ extern const char avra_rt_held_avra_fd_write __asm__(AVRA_RT_LABEL(avra_fd_write
 extern const char avra_rt_held_avra_fd_tty_size __asm__(AVRA_RT_LABEL(avra_fd_tty_size));
 extern const char avra_rt_held_avra_fd_tty_raw __asm__(AVRA_RT_LABEL(avra_fd_tty_raw));
 extern const char avra_rt_held_avra_fd_exit_writes __asm__(AVRA_RT_LABEL(avra_fd_exit_writes));
+extern const char avra_rt_held_avra_sig_raise __asm__(AVRA_RT_LABEL(avra_sig_raise));
 extern const char avra_rt_held_avra_str_concat __asm__(AVRA_RT_LABEL(avra_str_concat));
 extern const char avra_rt_held_avra_str_concat_reusing __asm__(AVRA_RT_LABEL(avra_str_concat_reusing));
 extern const char avra_rt_held_avra_errno_text __asm__(AVRA_RT_LABEL(avra_errno_text));
@@ -475,6 +476,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_fd_tty_size,
     &avra_rt_held_avra_fd_tty_raw,
     &avra_rt_held_avra_fd_exit_writes,
+    &avra_rt_held_avra_sig_raise,
     &avra_rt_held_avra_str_concat,
     &avra_rt_held_avra_str_concat_reusing,
     &avra_rt_held_avra_errno_text,
@@ -889,6 +891,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fd_tty_raw(AVRA_RT_I
     "avra_fd_tty_raw: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fd_exit_writes(AVRA_RT_I64, AVRA_RT_PTR)), void),
     "avra_fd_exit_writes: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_sig_raise(AVRA_RT_I64)), void),
+    "avra_sig_raise: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_str_concat(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_str_concat: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_str_concat_reusing(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
