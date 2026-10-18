@@ -2,6 +2,7 @@
 // whose run asks: the record names it, so the file is held only while
 // that text stands.
 use @std.avrac.testing.{test_workspace}
+use @std.avrac.core.{EmbedKind}
 use compiler.{Workspace, RunRead, reads_field, reads_of, distinct_reads}
 use compiler.host.{memory_host}
 
@@ -28,21 +29,21 @@ spec "compiler/settle — a run's read of the world is recorded" {
     then "a file a run reads is recorded for the file whose run asks, and its text answers" {
         let ws = run_reads_workspace()
         let before = run_reads_of(ws)
-        let text = ws.run_read(ws.file_id(RUN_READS_MAIN), "/w/src/data.txt")
-        let read = match text { .Ok(t) -> t, .Err(why) -> "refused: ${why}" }
+        let text = ws.run_read(ws.file_id(RUN_READS_MAIN), "/w/src/data.txt", EmbedKind.Text)
+        let read = match text { .Ok(t) -> t.text() ?? "", .Err(why) -> "refused: ${why}" }
         before == "" && read == "one" && run_reads_of(ws) == "/w/src/data.txt"
     }
     then "a file that is not there is recorded all the same: its arrival moves what the run would answer" {
         let ws = run_reads_workspace()
-        let gone = ws.run_read(ws.file_id(RUN_READS_MAIN), "/w/src/none.txt")
+        let gone = ws.run_read(ws.file_id(RUN_READS_MAIN), "/w/src/none.txt", EmbedKind.Text)
         let refused = match gone { .Ok(_) -> false, .Err(_) -> true }
         refused && run_reads_of(ws) == "/w/src/none.txt"
     }
     then "read twice, it is recorded once" {
         let ws = run_reads_workspace()
         let f = ws.file_id(RUN_READS_MAIN)
-        let _ = ws.run_read(f, "/w/src/data.txt")
-        let _ = ws.run_read(f, "/w/src/data.txt")
+        let _ = ws.run_read(f, "/w/src/data.txt", EmbedKind.Text)
+        let _ = ws.run_read(f, "/w/src/data.txt", EmbedKind.Text)
         run_reads_of(ws) == "/w/src/data.txt"
     }
 }

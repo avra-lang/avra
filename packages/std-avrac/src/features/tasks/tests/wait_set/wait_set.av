@@ -1,6 +1,6 @@
 // proves: the wait set's rows, the gate's, the rows of a task nothing
 // runs, a task's slots and its id answer alike evaluated and compiled.
-use @std.time.{ms, sleep, now_ns}
+use @std.time.{now_ns}
 
 extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
 extern fn avra_wait_until(at_ns: int, arm: int, member: int)
@@ -62,16 +62,12 @@ fn one_set() -> string {
     let g = avra_gate_new()
     let p = avra_task_pending()
     let empty = avra_gate_claim(g)
-    let ringer = spawn {
-        sleep(ms(2))
-        avra_gate_claim(g)
-    }
+    let ringer = spawn { avra_gate_claim(g) }
     avra_wait_gate(g, 0, 5)
     avra_wait_task(p, 1, 6)
     avra_wait_until(far(), 2, 7)
     let by_gate = said(avra_wait_park())
     let answerer = spawn {
-        sleep(ms(2))
         avra_task_answer(p, boxed(77))
         0
     }
@@ -106,7 +102,6 @@ fn cancelled() -> string {
     avra_task_cancel(p)
     let t = avra_task_at(far())
     let canceller = spawn {
-        sleep(ms(2))
         avra_task_cancel(t)
         0
     }

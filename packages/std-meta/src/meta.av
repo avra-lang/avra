@@ -374,6 +374,35 @@ export fn embed(path: string) -> string {
     avra_embed(path)
 }
 
+/// A TYPE THE COMPILER READS FROM A BUILD INPUT. A kind implements
+/// `Provider` once; a declaration marked as provided asks every kind to
+/// `provide` from the octets of the file it names, and takes the type of
+/// the one that answers. The compiler does the placed read (inside the
+/// package, through no link) and hands the octets over, so a provider is
+/// pure: its answer is a function of the file. `path` is package-relative.
+/// Absent is "this kind does not read this file".
+export trait Provider {
+    static fn provide(path: string, octets: Bytes) -> Self?
+}
+
+/// A value of the kind `T`, read from a file of this package at compile
+/// time. The path is a literal, read from the PACKAGE'S ROOT (never beside
+/// the source), inside the package and through no link; the kind is
+/// written — `provided<Picture>("art/logo.svg")` — and must implement
+/// `Provider`. The compiler lowers every call itself: the file's octets go
+/// to `T.provide` with the package-relative path, and a kind that answers
+/// absent refuses the file by name. `asset` is this call written as a
+/// declaration.
+export fn provided<T: Provider>(path: string) -> T {
+    unreached<T>(path)
+}
+
+/// A body that only types: the compiler lowers every call of `provided`
+/// itself, so this one is never run.
+fn unreached<T>(path: string) -> T {
+    unreached<T>(path)
+}
+
 /// THE HASH OF `f`'S CODE: a key that moves when what `f` does moves,
 /// and only then. It folds `f`'s lowered code and everything it can
 /// reach — what it calls, a closure it makes, a value of a const it

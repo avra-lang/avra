@@ -10,7 +10,7 @@
 //! step, or — for an element the lowering makes inside a node — that
 //! part's (`tree/identity.av`). A page that keeps it gives it a number. A URL arrives as a `Url`, which has no unsafe
 //! value, and every other value is escaped by whoever writes it.
-use tree.identity.{NodeId, Step, root as root_step, steps, unplaced, under}
+use tree.identity.{NodeId, Step, root as root_step, shared, steps, unplaced, under}
 use tree.node.{Node, Attribute, Prim, Action, EventKind, submits_among}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.css.{class_names}
@@ -39,6 +39,7 @@ export type Tagged = {
     rests: List<HtmlAttrName> = [],
     hears: List<Action> = [],
     kids: List<Element> = [],
+    crowded: bool = false,
 }
 
 impl Element {
@@ -147,12 +148,16 @@ fn node_attrs(n: Node) -> List<HtmlAttr> {
 
 /// Where an element stands among its siblings: its step as it is
 /// MATCHED, and the same step as a reader is SHOWN it.
-type Seat = { matched: string, shown: string }
+type Seat = { matched: string, shown: string, crowded: bool = false }
 
 /// The seat of a step, under the seat of what its siblings stand beside
 /// — none, when they stand inside their node.
-fn seat_of(seat: Seat?, step: Step) -> Seat {
-    Seat { matched: under(seat?.matched, step.spelled()), shown: under(seat?.shown, step.shown()) }
+fn seat_of(seat: Seat?, step: Step, crowded: bool = false) -> Seat {
+    Seat {
+        matched: under(seat?.matched, step.spelled()),
+        shown: under(seat?.shown, step.shown()),
+        crowded: crowded,
+    }
 }
 
 /// The parts a lowering makes inside a node, by the step each stands at.
@@ -178,7 +183,7 @@ fn headings(n: Node) -> List<Element> {
     match n.prim {
         .Card -> [Element
             .Tag(Tagged { seat: title_part(j), reads: title_part(j), tag: .H2, kids: said(title) }) for j, title in [t for a in n.attrs for t in titles(a)]],
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> [],
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> [],
     }
 }
 
@@ -188,7 +193,7 @@ fn headings(n: Node) -> List<Element> {
 fn words_lead(p: Prim) -> bool {
     match p {
         .Field or .Slider or .Progress -> true,
-        .Checkbox or .Switch or .Text or .Heading or .Button or .Link or .Image or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Alert or .Spinner or .Form -> false,
+        .Checkbox or .Switch or .Text or .Heading or .Button or .Link or .Image or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Alert or .Spinner or .Form or .Key -> false,
     }
 }
 
@@ -206,6 +211,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 attrs: element_attrs(n.prim, n.attrs),
                 rests: rests_of(n.attrs),
                 hears: n.events,
+                crowded: at.crowded,
             },
         )
     let words = Element
@@ -218,6 +224,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 tag: .Label,
                 attrs: node_attrs(n),
                 kids: if words_lead(n.prim) { [words, control] } else { [control, words] }.concat(kids),
+                crowded: at.crowded,
             },
         )
 }
@@ -232,7 +239,7 @@ fn always_heard(p: Prim) -> EventKind? {
     match p {
         .Form -> .Submit,
         .Dialog -> .Dismiss,
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider -> null,
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider or .Key -> null,
     }
 }
 
@@ -256,6 +263,7 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
                 rests: rests_of(n.attrs),
                 hears: heard(n),
                 kids: kids,
+                crowded: at.crowded,
             },
         )
 }
@@ -271,18 +279,21 @@ fn lower(n: Node, at: Seat) -> List<Element> {
             element(
                 n,
                 at,
-                said(n.words()).concat(headings(n)).concat(lower_each(n.children, stands, null)),
+                said(n.words()).concat(headings(n)).concat(lower_each(n, stands, null, at.crowded)),
             ),
         ],
-        .Never -> [element(n, at, [])].concat(lower_each(n.children, stands, at)),
-        .Beside -> [labelled(n, at, lower_each(n.children, stands, null))],
+        .Never -> [element(n, at, [])].concat(lower_each(n, stands, at, at.crowded)),
+        .Beside -> [labelled(n, at, lower_each(n, stands, null, at.crowded))],
     }
 }
 
-/// Each child lowered at its own step — under `within`, when its
-/// children stand beside the node rather than inside it.
-fn lower_each(children: List<Node>, stands: List<Step>, seat: Seat?) -> List<Element> {
-    [e for i, c in children for e in lower(c, seat_of(seat, stands[i]))]
+/// Each child of `n` lowered at its own step — under `within`, when its
+/// children stand beside the node rather than inside it. A child is crowded
+/// when it, or what holds it, is told from a sibling by order alone. A key
+/// draws nothing.
+fn lower_each(n: Node, stands: List<Step>, seat: Seat?, above: bool) -> List<Element> {
+    let told = shared([c.box.stand() for c in n.children])
+    [e for i, c in n.children if c.drawn() for e in lower(c, seat_of(seat, stands[i], above || told[i]))]
 }
 
 /// The elements a tree lowers to, in page order.

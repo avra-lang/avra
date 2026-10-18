@@ -1,6 +1,6 @@
 //! The instruction emitter: `impl Emit`, one arm per IR instruction.
 //! The module/declaration/entry machinery lives in llvm.av.
-use core.{Ins, Reg, BinOp, UnOp, RtFlag, flag_symbol, TypeId, RtKind, RtSig}
+use core.{Ins, Reg, BinOp, UnOp, RtFlag, flag_symbol, rounding_code, TypeId, RtKind, RtSig}
 use features.{nothing, absent_tag}
 
 /// LLVMRealPredicate codes (llvm-c/Core.h), by name. `!=` is UNE: unordered,
@@ -265,7 +265,10 @@ impl Emit {
     }
 
     fn un_value(op: UnOp, v: ptr) -> ptr {
-        match op { .Not -> avra_llvm_build_not(self.b, v, "not") }
+        match op {
+            .Not -> avra_llvm_build_not(self.b, v, "not"),
+            .ToInt(r) -> avra_llvm_build_to_int(self.b, v, rounding_code(r), "to_int"),
+        }
     }
 
     /// A runtime call, generic over every callee declare_runtime names.
