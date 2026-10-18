@@ -115,6 +115,10 @@ export type SyntaxArena = {
     // `null` instead of refusing; the mark is the ONE way the checker
     // tells the two apart
     sugar_matches: Cell<List<bool>>,
+    // an `if` written at STATEMENT position — branches that hold
+    // statements and answer nothing; what a promoted chain, or an `if`
+    // written as an expression whose branch leaves, is not
+    statement_ifs: Cell<List<bool>>,
     // the SUGAR node whose meaning minted each node — null for a node
     // the author wrote; what lets a refusal about a minted node speak
     // at the sugar the author did write
@@ -207,6 +211,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         collect_dense: list_cell(),
         raw_strings: list_cell(),
         sugar_matches: list_cell(),
+        statement_ifs: list_cell(),
         minted_by: list_cell(),
         means_notes: list_cell(),
         is_payloads: list_cell(),
@@ -281,6 +286,7 @@ impl SyntaxArena {
         self.run_holes.push(false)
         self.raw_strings.push(false)
         self.sugar_matches.push(false)
+        self.statement_ifs.push(false)
         self.minted_by.push(null)
         self.means_notes.push(null)
         self.is_payloads.push(null)
@@ -509,6 +515,26 @@ impl SyntaxArena {
     /// The sugar a minted node stands in for; null for any other.
     fn minted_for(e: ExprId) -> ExprId? {
         self.minted_by.get()[e.index]
+    }
+
+    fn mark_statement_if(e: ExprId) {
+        self.statement_ifs.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(151, [self.expr_fingerprints.get()[e.index]]))
+    }
+
+    /// Whether an `if` was written at statement position, where its
+    /// value is nothing — the guard idiom. A chain that answers is
+    /// promoted out of this form where a value is wanted
+    /// (`chain_value`).
+    fn statement_if(e: ExprId) -> bool {
+        self.statement_ifs.get()[e.index]
+    }
+
+    /// Whether a statement is a guard `if` — an expression statement
+    /// whose expression answers nothing.
+    fn guard_stmt(s: StmtId) -> bool {
+        let v? = self.stmt_value(s) else { return false }
+        self.stmt(s) is .ExprStmt && self.statement_if(v)
     }
 
     fn is_sugar_match(e: ExprId) -> bool {
@@ -814,32 +840,41 @@ impl SyntaxArena {
     /// a chain in tail position is a value wherever a block is.
     fn answer_of(s: StmtId) -> ExprId? {
         match self.stmt(s) {
-            .ExprStmt(v) -> v,
-            .Discard(_) -> null,
-            .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .ExprStmt(v) -> self.answered_by(s, v),
+            .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
-    /// A chain answers when it has an else and both sides answer.
-    /// THE ELSE SIDE'S OWN AMBIGUITY: `else if` and `else { if … }`
-    /// capture the identical one-statement list (no node marks which
-    /// was written), so `branch_value`'s lone-tail wrap seeds its
-    /// `written_close` from that ONE statement's own span either way.
-    /// This statement's OWN span is the only place a real brace still
-    /// shows: parsed straight through to wherever the else side ends,
-    /// it lands past the branch's single statement exactly when one
-    /// stands there, and exactly there when none does — so it
-    /// overwrites the branch's seed once the branch turns out to have
-    /// been that single, promotable statement.
-    fn chain_value(s: StmtId, c: ExprId, t: List<StmtId>, e: List<StmtId>) -> ExprId? {
-        if e.is_empty() { return null }
-        let tv: ExprId? = self.branch_value(t)
-        let ev: ExprId? = self.branch_value(e)
+    /// An expression statement's answer: its expression, or — for a
+    /// statement `if` — the chain it promotes to when every branch
+    /// answers (`chain_value`).
+    fn answered_by(s: StmtId, v: ExprId) -> ExprId? {
+        match self.expr(v) {
+            .If(c, t, e) -> if self.statement_if(v) { self.chain_value(self.stmt_span(s), c, t, e) } else { v },
+            _ -> v,
+        }
+    }
+
+    /// A chain answers when it has an else and both sides answer. An
+    /// `else if` link is its own `If` (an `else { if … }` is a block
+    /// around one), so a promoted chain keeps the form it was written in.
+    fn chain_value(span: Span?, c: ExprId, t: ExprId, e: ExprId?) -> ExprId? {
+        let other? = e else { return null }
+        let tv: ExprId? = self.arm_value(t)
+        let ev: ExprId? = self.arm_value(other)
         if tv == null || ev == null { return null }
-        let span = self.stmt_span(s)
-        if e.length == 1 && span != null { self.mark_written_close(ev!, span!.hi) }
         self.alloc_expr(Expr.If(c, tv!, ev!), span)
+    }
+
+    /// What one branch of a statement `if` answers: a block's statements
+    /// as a value, a chained `if`'s own answer, or the expression a
+    /// binding link already is.
+    fn arm_value(b: ExprId) -> ExprId? {
+        match self.expr(b) {
+            .Block(stmts, _) -> self.branch_value(stmts),
+            .If(c, t, e) -> self.chain_value(self.expr_span(b), c, t, e),
+            _ -> b,
+        }
     }
 
     /// THE TAIL LAW: a scope's tail STATEMENT already answered a
@@ -885,6 +920,11 @@ impl SyntaxArena {
         self.tail_scoped(stmts, last, value, self.stmt_span(last))
     }
 
+    /// Whether `v` is a statement `if` with an else.
+    fn else_written(v: ExprId) -> bool {
+        match self.expr(v) { .If(_, _, e) -> self.statement_if(v) && e != null, _ -> false }
+    }
+
     /// The statements with a trailing if-chain that answers turned
     /// into the expression statement it is — the top level's tail
     /// law, the same as a block's. THE MINT REPLACES THE STATEMENT,
@@ -894,7 +934,10 @@ impl SyntaxArena {
     fn answered(stmts: List<StmtId>) -> List<StmtId> {
         let held? = stmts.last() else { return stmts }
         let last = held
-        let chained: bool = match self.stmt(last) { .IfStmt(_, _, e) -> !e.is_empty(), _ -> false }
+        let chained: bool = match self.stmt(last) {
+            .ExprStmt(v) -> self.else_written(v),
+            _ -> false,
+        }
         if !chained || !self.annotations_of(last).is_empty() { return stmts }
         let value? = self.answer_of(last) else { return stmts }
         stmts

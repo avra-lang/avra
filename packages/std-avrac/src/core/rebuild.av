@@ -178,7 +178,11 @@ export fn quote_kind(store: SyntaxArena, e: ExprId) -> QuoteKind {
             if !arms.is_empty() { return QuoteKind.Arms }
             if ss.is_empty() { return QuoteKind.Stmts }
             if ss.all((s: StmtId) -> store.bare_hole(s)) { return QuoteKind.Holes }
-            if store.hole_stmt(ss.last()!) == null && store.stmt(ss.last()!) is .ExprStmt { return QuoteKind.Expr }
+            if store.hole_stmt(ss.last()!) == null &&
+                store.stmt(ss.last()!) is .ExprStmt &&
+                !store.guard_stmt(ss.last()!) {
+                return QuoteKind.Expr
+            }
             if ss.all((s: StmtId) -> store.declares(s) || store.hole_stmt(s) != null) { return QuoteKind.Decls }
             QuoteKind.Stmts
         },
@@ -521,6 +525,7 @@ impl Rebuilder {
         if self.src.is_hole(e) { self.dst.mark_hole(id) }
         if self.src.is_raw_string(e) { self.dst.mark_raw_string(id) }
         if self.src.is_sugar_match(e) { self.dst.mark_sugar_match(id) }
+        if self.src.statement_if(e) { self.dst.mark_statement_if(id) }
         let noted: string? = self.src.means_note(e)
         if noted != null { self.dst.mint_for(id, self.copies_of(self.src.minted_nodes(e)), noted!) }
         let ip: PayloadIs? = self.src.is_payload(e)

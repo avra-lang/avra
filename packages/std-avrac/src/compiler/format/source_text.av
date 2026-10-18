@@ -463,7 +463,6 @@ impl SourceText {
                         ),
                 ]
             },
-            .IfStmt(cond, yes, no) -> [self.if_statement(cond, yes, no, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Return(value) -> [
                 source_line(
                     depth,
@@ -845,7 +844,7 @@ impl SourceText {
     mut fn block(body: ExprId, one_line: bool, depth: int) -> string {
         let end = self.block_end(body)
         match self.store.expr(body) {
-            .Block(stmts, value) -> self.braced("", stmts, value, end, one_line, depth),
+            .Block(stmts, _) -> self.braced("", stmts, self.store.tail_of(body), end, one_line, depth),
             rest -> self.braced("", [], body, end, one_line, depth),
         }
     }
@@ -918,73 +917,8 @@ impl SourceText {
         "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
-    mut fn if_statement(
-        cond: ExprId,
-        yes: List<StmtId>,
-        no: List<StmtId>,
-        end: int,
-        one_line: bool,
-        depth: int,
-    ) -> string {
-        source_line(depth, self.if_tail(cond, yes, no, end, one_line, depth))
-    }
-
-    /// An `if` statement's own text, UNINDENTED — a whole statement's
-    /// form (its caller wraps it in `source_line`) and an `else if`
-    /// chain link's form (embedded straight after `} else `) are the
-    /// same text.
-    mut fn if_tail(
-        cond: ExprId,
-        yes: List<StmtId>,
-        no: List<StmtId>,
-        end: int,
-        one_line: bool,
-        depth: int,
-    ) -> string {
-        let condition = self.expression(cond, loosest_tier, depth, col_after("if ", depth * 4))
-        let y = flatten([self.statement(s, depth + 1) for s in yes])
-        if no.is_empty() {
-            let empty = y.concat(self.trivia_before(end, depth + 1))
-            if empty.is_empty() { return "if ${condition} {}" }
-            if one_line && empty.length == 1 { return "if ${condition} { ${unpadded(empty[0], depth + 1)} }" }
-            return "if ${condition} {\n${joined(empty, "\n")}\n${source_line(depth, "}")}"
-        }
-        let opened = "if ${condition} {\n${joined(y, "\n")}\n"
-        let elif? = self.else_if_tail(no, end, depth) else {
-            let n = flatten([self.statement(s, depth + 1) for s in no])
-                .concat(self.trivia_before(end, depth + 1))
-            if one_line && y.length == 1 && n.length == 1 {
-                return "if ${condition} { ${unpadded(y[0], depth + 1)} } else { ${unpadded(n[0], depth + 1)} }"
-            }
-            return "${opened}${source_line(depth, "} else {")}\n${joined(n, "\n")}\n${source_line(depth, "}")}"
-        }
-        "${opened}${source_line(depth, "} else ${elif}")}"
-    }
-
-    /// `no`'s sole statement, read back as an `else if` chain link
-    /// when it is one — `null` when `no` holds more than one
-    /// statement, is empty, or its one statement is not an `IfStmt`,
-    /// a remark stands before it (nothing can stand between `else`
-    /// and `if` in the source an `else if` reads back from, so a
-    /// comment there means the braces were written, not the chain),
-    /// OR real braces were written around it: `else if` and `else {
-    /// if … }` capture the SAME one-statement list, so the enclosing
-    /// span is the only witness left — `enclosing_end` is where the
-    /// caller's OWN braces read back to, and it reaches past the
-    /// nested if's own end only when a real `}` stands there too.
-    mut fn else_if_tail(no: List<StmtId>, enclosing_end: int, depth: int) -> string? {
-        if no.length != 1 { return null }
-        let s = no[0]
-        if self.pending_before(start_of(self.store.stmt_span(s))) { return null }
-        if enclosing_end != self.stmt_end(s) { return null }
-        match self.store.stmt(s) {
-            .IfStmt(c2, y2, n2) -> self.if_tail(c2, y2, n2, self.stmt_end(s), self.stmt_flat(s), depth),
-            rest -> null,
-        }
-    }
-
     /// Whether a remark is still queued before `at` — a peek, never a
-    /// drain: `else_if_tail` must know without moving the cursor,
+    /// drain: `chained_if` must know without moving the cursor,
     /// since deciding NOT to chain leaves the drain to `statement`.
     fn pending_before(at: int) -> bool {
         self.next < self.trivia.length && self.trivia[self.next].at < at
@@ -1436,7 +1370,7 @@ impl SourceText {
                 atom_tier,
                 parent,
             ),
-            .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
+            .Block(stmts, _) -> grouped(self.block_expr(stmts, self.store.tail_of(id), id, depth), atom_tier, parent),
             .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
             .Emit(value) -> grouped("yield ${self.expression(value, loosest_tier, depth, c)}", atom_tier, parent),
             .Produce(elem, cap, body) -> grouped(self.produce_group(elem, cap, body, id, depth), atom_tier, parent),
@@ -1448,7 +1382,7 @@ impl SourceText {
             ),
             .WaitArm(index, bind, head, guard, value) -> self.wait_arm(index, bind, head, guard, value, depth),
             .ElseArm(value) -> self.headed_arm("else -> ", value, depth),
-            .Collect(body) -> grouped(self.instance(id, "collect", [body], null, depth), loosest_tier, parent),
+            .Collect(stmts) -> grouped("collect ${self.block_expr(stmts, null, id, depth)}", loosest_tier, parent),
             .Call(callee, pins, args) -> {
                 let head = "${source_name(callee.of)}${self.pins(pins)}"
                 grouped(
@@ -1884,15 +1818,17 @@ impl SourceText {
         self.payload_if(subject, arms, payload, id, depth)
     }
 
-    /// An if EXPRESSION's branches, one-line when the whole form was.
-    mut fn if_group(cond: ExprId, yes: ExprId, no: ExprId, id: ExprId, depth: int, col: int = -1) -> string {
+    /// An `if`'s branches, one-line when the whole form was; an else-less
+    /// guard ends at its first block.
+    mut fn if_group(cond: ExprId, yes: ExprId, no: ExprId?, id: ExprId, depth: int, col: int = -1) -> string {
         let one = self.span_flat(self.store.expr_span(id))
-        "if ${self.expression(cond, loosest_tier, depth, resolved_col(col, depth) + 3)} ${self.block(yes, one, depth)} else ${self.if_group_else(no, one, depth)}"
+        let head = "if ${self.expression(cond, loosest_tier, depth, resolved_col(col, depth) + 3)} ${self.block(yes, one, depth)}"
+        let other? = no else { return head }
+        "${head} else ${self.if_group_else(other, one, depth)}"
     }
 
     /// An if-EXPRESSION's else branch — chained straight into another
-    /// `if_group` when it IS one (an `else if` link, this form's
-    /// twin of `else_if_tail`), so a written chain reprints as the
+    /// `if_group` when it IS one (an `else if` link), so a written chain reprints as the
     /// chain it was rather than nesting one bare block inside
     /// another: `block`'s OWN fallback for a non-`.Block` value
     /// wraps ANY expression in `{ }`, which is exactly right for an
@@ -1948,21 +1884,6 @@ impl SourceText {
             // a payload `if` desugared into a marked Match chains as the
             // `if` it was, exactly as a nested `Expr.If` does
             .Match(subject, arms) -> self.chained_payload_if(subject, arms, no, depth),
-            // A NESTED "else if" (its own if a STATEMENT, chain_value's
-            // promotion) answers through `tail_scoped`'s lone-tail wrap
-            // (core/store.av), so the chain link this sees is
-            // `Block([], If(...))`, never `If(...)` bare. A written
-            // `else { if … }` wraps the SAME shape, so the two are told
-            // apart by `written_close` (`block_end`): a real brace sits
-            // STRICTLY PAST the wrapped value's own span, where a
-            // synthetic wrap's end IS that span — see through only then.
-            .Block(stmts, value) -> if stmts.is_empty() &&
-                value != null &&
-                self.block_end(no) == end_of(self.store.expr_span(value!)) {
-                self.chained_if(value!, depth)
-            } else {
-                null
-            },
             rest -> null,
         }
     }
@@ -2190,7 +2111,11 @@ impl SourceText {
         value: ExprId,
         depth: int,
     ) -> string {
-        let binds = if bind.of == "" { "" } else if index.of == "" { "${source_name(bind.of)} in " } else { "${source_name(index.of)}, ${source_name(bind.of)} in " }
+        let binds = when {
+            bind.of == "" -> ""
+            index.of == "" -> "${source_name(bind.of)} in "
+            _ -> "${source_name(index.of)}, ${source_name(bind.of)} in "
+        }
         let guarded = if guard == null { "" } else { " if ${self.expression(guard!, 0, depth + 1)}" }
         self
             .headed_arm("${binds}${self.expression(head, 0, depth + 1)}${guarded} -> ", value, depth)
@@ -2429,7 +2354,7 @@ impl SourceText {
             let one = self.span_flat(self.store.expr_span(id))
             let end = self.block_end(body)
             return match self.store.expr(body) {
-                .Block(stmts, value) -> self.braced(head, stmts, value, end, one, depth),
+                .Block(stmts, _) -> self.braced(head, stmts, self.store.tail_of(body), end, one, depth),
                 rest -> self.braced(head, [], body, end, one, depth),
             }
         }
