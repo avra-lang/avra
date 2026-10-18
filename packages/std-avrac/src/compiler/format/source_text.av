@@ -2282,7 +2282,41 @@ impl SourceText {
             .Quote(body) -> self.expression(body, loosest_tier, depth),
             .Typed(name, ty) -> "${source_name(name.of)}: ${self.type_ref_wrapped(ty, depth)}",
             .Member(name, bind) -> ".${source_name(name.of)} as ${source_name(bind.of)}",
+            .Seq(before, middle, after) -> self.seq_pattern(before, middle, after, depth),
+            .Fields(name, fields, args, open) -> self.fields_pattern(name.of, [f.of for f in fields], args, open, depth),
         }
+    }
+
+    /// `[a, ..rest, z]`: the elements before the `..`, the `..` with
+    /// the name it binds, the elements after.
+    mut fn seq_pattern(before: List<PatId>, middle: List<PatId>, after: List<PatId>, depth: int) -> string {
+        let dots = ["..${self.rest_binder(m)}" for m in middle]
+        "[${joined([self.pattern(p, depth) for p in before].concat(dots).concat([self.pattern(p, depth) for p in after]), ", ")}]"
+    }
+
+    /// The name a `..` binds, or nothing for a wildcard.
+    fn rest_binder(middle: PatId) -> string {
+        match self.store.pat(middle) { .Bind(name) -> source_name(name.of), _ -> "" }
+    }
+
+    /// `P { x, y: pattern, .. }`: a field whose pattern binds its own
+    /// name is written punned.
+    mut fn fields_pattern(
+        name: string,
+        fields: List<string>,
+        args: List<PatId>,
+        open: bool,
+        depth: int,
+    ) -> string {
+        let entries = [self.field_pattern(f, args[j], depth) for j, f in fields]
+            .concat(if open { [".."] } else { [] })
+        "${source_name(name)} { ${joined(entries, ", ")} }"
+    }
+
+    mut fn field_pattern(field: string, arg: PatId, depth: int) -> string {
+        let spelled = self.pattern(arg, depth)
+        if spelled == source_name(field) { return spelled }
+        "${source_name(field)}: ${spelled}"
     }
 
     /// A literal pattern's own text. A STRING is re-read by the format
