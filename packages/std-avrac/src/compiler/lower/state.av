@@ -4,6 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{
     StmtId,
+    exact,
     ExprId,
     FileId,
     TypeId,
@@ -482,8 +483,9 @@ impl LowerCx {
     mut fn state_cell(s: StmtId, v: Reg) -> Reg {
         let declared? = self.facts.declared_binding(s) else { return v }
         let sh = self.view.types.shape_of(declared)
-        let size = self.box_size(1)
-        self.grown_box(sh, size, [v])
+        if !exact() { return self.grown_box(sh, self.box_size(1), [v]) }
+        let size = self.box_size(2)
+        self.grown_box(sh, size, [v, self.const_int(0)])
     }
 
     /// A `state` binding's read: the binding's cell, then the value it

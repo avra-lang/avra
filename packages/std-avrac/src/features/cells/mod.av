@@ -4,7 +4,7 @@
 //! OWN: nothing is copied at the read — the box is shared until a
 //! write comes — and a `push`, `set_at` or `put` through the cell
 //! opens it first, so no write ever reaches what was read out.
-use core.{Type, TypeId, ExprId, Reg}
+use core.{Type, TypeId, ExprId, Reg, exact}
 use features.{
     LanguageFeature,
     MethodRow,
@@ -122,6 +122,19 @@ fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
 export fn cell_holding(mut cx: LowerCx, held: TypeId, value: Reg) -> Reg {
     let size = cx.box_size(1)
     let cell = cx.grown_box(Type.Cell(held), size, [value])
+    opened_in_place(cx, held, cell)
+}
+
+/// A fresh `state` cell: `cell_holding` plus the version slot the staging
+/// flag asks for, which starts at zero.
+export fn state_cell_holding(mut cx: LowerCx, held: TypeId, value: Reg) -> Reg {
+    if !exact() { return cell_holding(cx, held, value) }
+    let size = cx.box_size(2)
+    let cell = cx.grown_box(Type.Cell(held), size, [value, cx.const_int(0)])
+    opened_in_place(cx, held, cell)
+}
+
+fn opened_in_place(mut cx: LowerCx, held: TypeId, cell: Reg) -> Reg {
     if written_in_place(cx.view.types.seen_shape(held)) {
         let _ = cx.owned_slot_unique(cx.view.types.shape_of(held), cell, cx.const_int(0))
     }

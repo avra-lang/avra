@@ -6,14 +6,16 @@
 //! observed. The runtime clones by its own owned-map; the
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
-use core.{ExprId, StmtId, TypeId, DeclId, Reg, Ins, Type}
+use core.{ExprId, StmtId, TypeId, DeclId, Reg, Ins, Type, BinOp, exact}
 use features.{state_slot}
 
-/// An opened place: a cell (a bare mut name) or a slot of a box
-/// already made unique.
+/// An opened place: a cell (a bare mut name), a slot of a box
+/// already made unique, or a `state` cell, whose every write leaves its
+/// version one higher.
 export enum Place {
     Cell(slot: Reg)
     Slot(box: Reg, at: Reg)
+    State(cell: Reg)
 }
 
 impl LowerCx {
@@ -27,7 +29,7 @@ impl LowerCx {
             .Field(subject, name) -> {
                 // A `state` field's slot IS its cell's one slot.
                 let cell = self.state_field_cell(subject, name.of)
-                if cell != null { return self.slot_write(cell!, self.const_int(0), v) }
+                if cell != null { return self.state_written(cell!, v) }
                 if self.view.types.is_wide(self.type_at(subject)) {
                     return self.repacked(subject, name.of, v)
                 }
@@ -67,7 +69,23 @@ impl LowerCx {
         match place {
             .Cell(slot) -> self.emit(Ins.Store(slot, v)),
             .Slot(box, at) -> self.slot_write(box, at, v),
+            .State(cell) -> self.state_written(cell, v),
         }
+    }
+
+    /// `v` written to a `state` cell's value, then its version one higher.
+    mut fn state_written(cell: Reg, v: Reg) {
+        self.slot_write(cell, self.const_int(0), v)
+        self.version_bumped(cell)
+    }
+
+    /// A `state` cell's version, one more. Cells made without a version
+    /// slot (the staging flag off) are left alone.
+    mut fn version_bumped(cell: Reg) {
+        if !exact() { return }
+        let at = self.const_int(1)
+        let next = self.bin(Type.Int, BinOp.Add, self.proven_read(cell, 1, null), self.const_int(1))
+        self.slot_set(cell, at, next)
     }
 
     /// The place an expression names, opened for one write — null for
@@ -110,7 +128,7 @@ impl LowerCx {
             if self.flat_at(subject) { return self.opened_place(subject) }
             return Place.Slot(self.unique_box(subject), self.field_slot(subject, name))
         }
-        Place.Slot(cell, self.const_int(0))
+        Place.State(cell)
     }
 
     /// The `Cell` a `state` field holds, read from its record — null for
@@ -146,23 +164,23 @@ impl LowerCx {
     /// assigns what it holds — the lambda shares the caller's place.
     fn state_capture_place(l: ExprId, j: int) -> Place? {
         let cell? = self.state_capture_cell(l, j) else { return null }
-        Place.Slot(cell, self.const_int(0))
+        Place.State(cell)
     }
 
     /// A module-level state's place: the shared cell's one slot, so a
     /// write lands where every other reader's read looks.
     fn state_decl_place(d: DeclId) -> Place? {
-        Place.Slot(self.state_decl_cell(d), self.const_int(0))
+        Place.State(self.state_decl_cell(d))
     }
     /// A `state` seat's place: the seat register IS the caller's cell,
     /// so a whole assignment lands in what it holds.
     fn state_param_place(i: int) -> Place? {
-        Place.Slot(self.param_reg(i), self.const_int(0))
+        Place.State(self.param_reg(i))
     }
 
     fn state_place(e: ExprId, s: StmtId) -> Place? {
         let cell? = self.defined_reg(e, s, self.def_ty(s)) else { return null }
-        Place.Slot(cell, self.const_int(0))
+        Place.State(cell)
     }
 
     fn cell_place(e: ExprId) -> Place? {

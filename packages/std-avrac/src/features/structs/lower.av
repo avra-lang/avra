@@ -9,7 +9,7 @@
 //! instructions anywhere.
 use core.{ExprId, Reg, TypeId, filled}
 use features.{LowerCx, StructSig, slot_want}
-use features.cells.{cell_holding}
+use features.cells.{state_cell_holding}
 
 /// The copy: values evaluate in written order, then the record whole
 /// with the written slots replaced — a flat one packed afresh, a boxed
@@ -90,7 +90,7 @@ export fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -
 fn slot_filled(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int, held: Reg?) -> Reg {
     let v: Reg = held ?? defaulted_reg(cx, e, sig, slot)
     if !sig.state_at(slot) { return v }
-    cell_holding(cx, slot_want(cx.view.types, sig, slot), v)
+    state_cell_holding(cx, slot_want(cx.view.types, sig, slot), v)
 }
 
 /// A value written to the field named `name` by a `with`: unchanged for
@@ -98,7 +98,7 @@ fn slot_filled(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int, held: Reg?
 fn slot_written(mut cx: LowerCx, sig: StructSig, name: string, v: Reg) -> Reg {
     let j? = sig.slot_of(name) else { return v }
     if !sig.state_at(j) { return v }
-    cell_holding(cx, slot_want(cx.view.types, sig, j), v)
+    state_cell_holding(cx, slot_want(cx.view.types, sig, j), v)
 }
 
 /// `x.of` — the shape a name stands over. A named value IS its
