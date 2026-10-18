@@ -1156,16 +1156,19 @@ registry is the idiom engine's spec, written by dogfooding.
   the only word spoken was the TYPER's about the seat (F2075, "a hole
   takes what its seat takes"), which names neither the mistake nor
   its exits; it is F2085 now, homed at the hole, and it carries both.
-  THE FIX IS IN THE GENERATOR, NOT THE TEMPLATE: fold the list where
-  the derive runs, one hole per element (`[a].concat([b])`), so the
-  generated literal's length is fixed per type — which is also what
-  the ARITY law wants, so the two laws agree on one shape. Not listed
-  under "the subset today" because it SPEAKS, which is the whole
-  point of the change. And the hole vocabulary is wider than it
-  looks: an INT hole is native in both positions (`int_node` in an
-  expression, `int_name` in a name), so `${tag()}` needs no
-  hand-rolled `name("${v}")` — a second instrument for a question the
-  compiler already answers.
+  THE RUN HAS ITS OWN SEATS, which is the whole answer: a call's
+  arguments, a list's elements and a variant's payload take `..${xs}`
+  (or `${..xs}`) with a `List<Code>`; a record literal takes its fields
+  as `${t} { ..${inits} }` at any width, so no derive folds a list per
+  arity; and a block's LAST hole (`fn f() { ${steps} }`) takes a
+  `List<Stmts>` — statements joining the block, an expression its
+  value. Not listed under "the subset today" because each SPEAKS.
+  And the hole vocabulary is wider than it looks: an INT hole is
+  native in every seat — `int_node` in an expression, a block's end or
+  an arm's pattern (a LITERAL pattern: the arm tests for the number),
+  `int_name` in a name — so `${tag()}` needs no hand-rolled
+  `name("${v}")`, and an expression-only `quote { o.int(x) }` answers
+  `Stmts` where its seat wants statements.
 - A BOUNDARY CHECK MAKES A MOVED SHAPE UNMOVABLE IN ONE GENERATION,
   AND GROWTH IS NOT A MOVED SHAPE. `features/crossing.av` holds
   `@std/meta`'s shapes as rows the compiler was built against; a

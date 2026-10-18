@@ -2,6 +2,7 @@
 //! materialize generated declarations, and the meta value a crossing
 //! produces. Moved out of the workspace god-object.
 use core.{
+    Pat,
     Expr,
     StmtId,
     Span,
@@ -764,13 +765,24 @@ impl Workspace {
         match kind {
             .Expression -> Filled.Expr(self.spliced_expr(f, node)),
             .Name -> Filled.Name(self.spliced_names(node).first() ?? ""),
-            .Binder -> Filled.Names(self.spliced_names(node)),
+            .Binder -> self.spliced_binder(f, node),
             .Type -> Filled.Type(self.spliced_type(node)),
-            .Statement -> Filled.Stmts(self.spliced_stmts(f, node)),
+            .Statement or .Tail -> Filled.Stmts(self.spliced_stmts(f, node)),
             .Arm -> Filled.Arms(self.spliced_arms(f, node)),
             .Run -> Filled.Exprs(self.spliced_exprs(f, node)),
             .Fields -> Filled.Params(self.spliced_params(f, node)),
             .Inits -> Filled.Inits(self.spliced_inits(f, node)),
+        }
+    }
+
+    /// A binder seat's fill: a number or a truth is a LITERAL pattern
+    /// (the arm tests for it), anything else the names it spells.
+    fn spliced_binder(f: FileId, node: Node) -> Filled {
+        let store = self.decls.store_of(f)
+        match node {
+            .Int(v) -> Filled.Pat(store.alloc_pat(Pat.Lit(store.alloc_expr(Expr.IntLit(v))))),
+            .Bool(b) -> Filled.Pat(store.alloc_pat(Pat.Lit(store.alloc_expr(Expr.BoolLit(b))))),
+            .Template(_, _, _, _) or .Many(_) or .Name(_) or .Text(_) or .Float(_) or .Interp(_, _) -> Filled.Names(self.spliced_names(node)),
         }
     }
 
@@ -793,7 +805,7 @@ impl Workspace {
                 inits: no_inits(),
             },
             .Inits -> Lift { lifts: true, params: [], inits: self.carried_inits(f, src, ss, file, at, rb) },
-            .Expression or .Name or .Binder or .Type or .Statement or .Arm or .Run -> Lift { lifts: false, params: [], inits: no_inits() },
+            .Expression or .Name or .Binder or .Type or .Statement or .Arm or .Run or .Tail -> Lift { lifts: false, params: [], inits: no_inits() },
         }
     }
 
