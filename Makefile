@@ -360,7 +360,7 @@ wasm-archive:
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
-        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
+        check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -634,6 +634,7 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_seal_attack.sh
 	@sh tools/store_index_attack.sh
 	@sh tools/fn_add_attack.sh
+	@sh tools/host_fn_edit_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
 	@sh tools/cancel_bits_attack.sh
@@ -914,6 +915,12 @@ fmt-lossless:
 attack:
 	@sh tools/attack.sh
 
+# NO DEFECT VOICE REACHES A USER PROGRAM: every malformed or edge program
+# in tools/defects/corpus.txt, and every mutation of its bases, is checked
+# and run, and one answered with a defect voice or a trap refuses.
+defects:
+	@python3 tools/defects.py
+
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.
 vocab:
@@ -1014,7 +1021,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = fingerprints vocab families-left layers hooks-released inputs whole-reads cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack \
+KEEPERS_B = fingerprints vocab families-left layers hooks-released inputs whole-reads cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack voices defects \
             ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
@@ -1173,6 +1180,24 @@ witnesses:
 	  echo "witnesses: docs/DIAGNOSTICS.md is not what the compiler says — it is generated, never edited:"; \
 	  echo "witnesses:   ./avra diagnostics > docs/DIAGNOSTICS.md"; \
 	  diff docs/DIAGNOSTICS.md build/DIAGNOSTICS.md.gen 2>/dev/null | head -30; exit 1; }
+
+# WHAT EVERY VOICE CARRIES: a witness, help, and a structured fix where
+# its registry row owes one — read from the registry and the compiler's
+# own rendering of each witness (`avra voices`). A NEW kind or rule with
+# a gap refuses; tools/voices.baseline lists the gaps that stand and only
+# shrinks (`make voices-accept` prunes what a fix paid). docs/VOICES.md
+# is the generated inventory, never edited.
+voices:
+	@./avra voices --baseline tools/voices.baseline
+	@python3 tools/voices_spoken.py
+	@./avra voices --report > build/VOICES.md.gen
+	@cmp -s build/VOICES.md.gen docs/VOICES.md || { \
+	  echo "voices: docs/VOICES.md is not what the compiler says — it is generated, never edited:"; \
+	  echo "voices:   ./avra voices --report > docs/VOICES.md"; \
+	  diff docs/VOICES.md build/VOICES.md.gen 2>/dev/null | head -30; exit 1; }
+
+voices-accept:
+	@./avra voices --baseline tools/voices.baseline --accept
 
 # THE EXTERN WALL'S WIDTH: Avra's `int` is 64 bits and C's is 32, so a
 # C body answering a narrow type writes only the low half and a
