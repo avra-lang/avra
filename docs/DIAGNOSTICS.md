@@ -2541,6 +2541,132 @@ a spread places another record's fields
 
 No witness yet.
 
+## type.spread_value
+
+a literal's spread is a record of the literal's own type or a subset
+
+```avra
+type P = { x: int }
+let p = P { ..5, x: 1 }
+2
+```
+
+```
+error[type.spread_value]: `..` spreads `int`, which has no fields
+  ╭─[witness.av:2:15]
+2 │ let p = P { ..5, x: 1 }
+  ·               ┬
+  ·               ╰── spread here
+──╯
+help: a literal spreads a record — `P { ..p, x: 1 }`; for any other value, write each field
+```
+
+## type.spread_nullable
+
+a spread source is never null
+
+```avra
+type P = { x: int }
+let a: P? = null
+let p = P { ..a, x: 1 }
+2
+```
+
+```
+error[type.spread_nullable]: `..` spreads `P?`, which may be null
+  ╭─[witness.av:3:15]
+3 │ let p = P { ..a, x: 1 }
+  ·               ┬
+  ·               ╰── spread here
+──╯
+help: unwrap it first — `..(x ?? fallback)`
+```
+
+## type.spread_field
+
+a spread carries only fields the literal's type declares, same types
+
+```avra
+type P = { x: int }
+type Q = { x: int, w: int }
+let q = Q { x: 1, w: 2 }
+let p = P { ..q }
+2
+```
+
+```
+error[type.spread_field]: this spread carries `w`, and `P` declares no such field
+  ╭─[witness.av:4:15]
+4 │ let p = P { ..q }
+  ·               ┬
+  ·               ╰── spread here
+──╯
+help: spread a `P`, or write the fields of `P` directly — the fields are `x`
+```
+
+## type.spread_missing
+
+a spread literal's entries cover every field without a default
+
+```avra
+type P = { x: int, y: int }
+type X = { x: int }
+let p = P { ..X { x: 1 } }
+2
+```
+
+```
+error[type.spread_missing]: this `P` leaves field `y` unset
+  ╭─[witness.av:3:9]
+3 │ let p = P { ..X { x: 1 } }
+  ·         ┬
+  ·         ╰── this literal
+──╯
+help: add `y: …`, or spread a record that has it
+```
+
+## type.spread_dead
+
+a field written before a spread that carries it is overwritten
+
+```avra
+type P = { x: int }
+let a = P { x: 1 }
+let p = P { x: 2, ..a }
+2
+```
+
+```
+warning[type.spread_dead]: field `x` is overwritten by a spread after it
+  ╭─[witness.av:3:16]
+3 │ let p = P { x: 2, ..a }
+  ·                ┬
+  ·                ╰── overwritten
+──╯
+help: write `x` after the spread to keep it
+```
+
+## type.spread_generic
+
+a spread literal builds a record that takes no type parameters
+
+```avra
+type G<T> = { v: T }
+let g = G { v: 1 }
+let h = G { ..g }
+2
+```
+
+```
+error[type.spread_generic]: `G` takes type parameters, and a literal that spreads builds only a record that takes none
+  ╭─[witness.av:3:9]
+3 │ let h = G { ..g }
+  ·         ┬
+  ·         ╰── this literal
+──╯
+help: copy a generic record with `with` — `p with { x: 1 }`
+```
+
 ## type.struct_fields
 
 a literal provides each declared field exactly once
