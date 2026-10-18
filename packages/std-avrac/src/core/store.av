@@ -116,11 +116,6 @@ export type SyntaxArena = {
     // a string written `"""raw"""`, never `"escaped"` — the printer's
     // only way to tell them apart once both are one StrLit
     raw_strings: Cell<List<bool>>,
-    // a Match a trailing-block ARM sugar synthesized — never one a
-    // program wrote — so a missing arm under a nullable seat answers
-    // `null` instead of refusing; the mark is the ONE way the checker
-    // tells the two apart
-    sugar_matches: Cell<List<bool>>,
     // the SUGAR node whose meaning minted each node — null for a node
     // the author wrote; what lets a refusal about a minted node speak
     // at the sugar the author did write
@@ -214,7 +209,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         spreads: list_cell(),
         collect_dense: list_cell(),
         raw_strings: list_cell(),
-        sugar_matches: list_cell(),
         minted_by: list_cell(),
         meaning: list_cell(),
         means_notes: list_cell(),
@@ -288,7 +282,6 @@ impl SyntaxArena {
         self.holes.push(false)
         self.run_holes.push(false)
         self.raw_strings.push(false)
-        self.sugar_matches.push(false)
         self.minted_by.push(null)
         self.meaning.push(null)
         self.means_notes.push(null)
@@ -465,15 +458,6 @@ impl SyntaxArena {
         self.run_holes.get()[e.index]
     }
 
-    /// A `Match` a trailing block of arms sugar built (`{ .Ok(v) ->
-    /// … }`), never one a program wrote — the mark is part of the
-    /// node: an implicit tail changes what it means to leave a
-    /// variant unhandled.
-    fn mark_sugar_match(e: ExprId) {
-        self.sugar_matches.set_at(e.index, true)
-        self.expr_fingerprints.set_at(e.index, fp(150, [self.expr_fingerprints.get()[e.index]]))
-    }
-
     /// `nodes` are what `sugar`'s meaning minted: each answers for it,
     /// and `note` is the sentence that says what the sugar means.
     fn mint_for(sugar: ExprId, nodes: List<ExprId>, note: string) {
@@ -526,8 +510,10 @@ impl SyntaxArena {
         self.minted_by.get()[e.index]
     }
 
+    /// An arms body, or the `Match` it means, never one a program wrote: an
+    /// implicit tail changes what it means to leave a variant unhandled.
     fn is_sugar_match(e: ExprId) -> bool {
-        self.sugar_matches.get()[e.index]
+        match self.expr(self.minted_for(e) ?? e) { .ArmsMatch(_) -> true, _ -> false }
     }
 
     /// `x is .V(p, q)` — the variant pattern the payload list names,
@@ -796,6 +782,12 @@ impl SyntaxArena {
         let before = self.exprs.count()
         let root? = self.piped(stage, value) else { return [] }
         [ExprId { index: i } for i in before..self.exprs.count() if i != root.index].concat([root])
+    }
+
+    /// The match an arms body means: over the pronoun, the match last.
+    fn arms_match_nodes(arms: List<Arm>, at: Span?) -> List<ExprId> {
+        let subject = self.alloc_expr(Expr.Ident(Scoped("it")), at)
+        [subject, self.alloc_expr(Expr.Match(subject, arms), at)]
     }
 
     /// An argument the PRONOUN rides becomes an implicit one-param
@@ -1518,9 +1510,11 @@ impl SyntaxArena {
     // registries can disagree about which payloads are children.
 
     /// Every expression at and under `root`, children before owners,
-    /// hidden branches and statement bodies included.
+    /// hidden branches and statement bodies included. A sugar holds what
+    /// it means, so its walk descends into that.
     fn every_expr(root: ExprId) -> List<ExprId> {
-        flatten([self.every_expr(k) for k in self.expr_children(root)]).concat([root])
+        let below = if self.meant(root) == null { self.expr_children(root) } else { some_list(self.meant(root)) }
+        flatten([self.every_expr(k) for k in below]).concat([root])
     }
 
     fn stmts_exprs(ids: List<StmtId>) -> List<ExprId> {
