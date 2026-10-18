@@ -34,6 +34,7 @@ use @std.meta.{
     Param,
     Variant,
     Mark,
+    MarkArg,
     Kind,
     Directive,
     Declared,
@@ -419,21 +420,21 @@ impl Vocabulary {
     fn hosted(f: Field) -> List<Diagnostic> {
         let marks = marks_of(f, host_mark)
         let twice = if marks.length > 1 { [host_twice(f)] } else { [] }
-        twice.concat(flatten([self.host_setting(m, a) for m in marks for a in m.args]))
+        twice
+            .concat(
+                flatten([self.host_setting(m, a) for m in marks for a in m.named])
+                    .concat([host_unnamed(m, w) for m in marks for w in m.args]),
+            )
     }
 
-    /// One setting of a `@host`, written `label:value` by the mark.
-    fn host_setting(m: Mark, written: string) -> List<Diagnostic> {
-        let at = written.index_of(":")
-        if at < 0 { return [host_unnamed(m, written)] }
-        let label = written.substring(0, at)
-        let value = written.substring(at + 1, written.length)
-        match label {
-            web_label -> self.host_variant(m, "DOM event", value, self.web, "DomEvent"),
+    /// One setting of a `@host`: a platform, or `prevent`.
+    fn host_setting(m: Mark, setting: MarkArg) -> List<Diagnostic> {
+        match setting.label {
+            web_label -> self.host_variant(m, "DOM event", setting.value, self.web, "DomEvent"),
             terminal_label -> self
-                .host_variant(m, "terminal key", value, self.keys.filter(it.fields.is_empty()), "Key"),
-            prevent_label -> if value == "true" || value == "false" { [] } else { [host_flag(m, value)] },
-            rest -> [host_platform(m, label)],
+                .host_variant(m, "terminal key", setting.value, self.keys.filter(it.fields.is_empty()), "Key"),
+            prevent_label -> if setting.value == "true" || setting.value == "false" { [] } else { [host_flag(m, setting.value)] },
+            rest -> [host_platform(m, setting.label)],
         }
     }
 
