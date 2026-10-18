@@ -629,6 +629,28 @@ under a directory with an `avra.toml` above it can answer exit 0 and
 nothing for a file full of errors — the file is not a program of that
 workspace. Probe from `/tmp`.
 
+**A budget that counts the machine's whole heap makes a run's fate depend
+on its neighbours, and the PR route finds it first.** A compile-time run
+(a derive, a const) is cut off past `[lifted] memory`, measured as the
+process's live bytes against where the run began. The workspace answers
+`type_named` from inside the run, and what it builds to answer (types,
+signatures) stays — so the same derive settled in 2 MB or in 5.6 MB by how
+much the compiler had already loaded. A PR's job restores a big store and a
+suite that compiles a whole directory, which is the second shape; main's push
+runs the first, so main was green and the PR red: `SyntaxArena has no method
+expr_children` at seven sites with no refusal naming a budget, because a run
+cut inside a re-entrant expansion is hushed and its declarations are simply
+absent. A failure that reads as a MISSING DECLARATION with no voice is this
+shape until proven otherwise: run the failing group with `AVRA_DEBUG=1` and
+read the `settle:` lines — a step count lower than the same run's usual, with
+bytes just over 5242880, is the cut. The run is billed only for what it
+makes (`Machine.named_unbilled`); `compiler/tests/settle_bill_test.av` pins it.
+To reproduce a PR-route failure, download the run's `avra-compiler` and
+`avra-build` artifacts, unpack them over a copy of the PR's tree on a Sprite,
+and run the failing job's groups IN ITS ORDER: the compiler group alone
+passed on the same artifacts, and the ordered run of the job's groups
+reproduced it.
+
 **Older notes name scripts that are not in the tree.** The speculative
 land-train design (`docs/2026_09_29_LAND_TRAIN.md`) named `tools/land.sh`
 and `tools/land_train.sh`; neither was built. A ticket once named
