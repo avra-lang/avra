@@ -346,10 +346,6 @@ def gate_warm(measured, accepted, host, require):
     return 0
 
 
-def wall_on_ci():
-    return os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
-
-
 def check_wall(measured, accepted, host, require, report_only=False):
     """The wall-clock family: a PR check's whole wall time and each job
     in it, held against a ceiling in `tools/speed.budget`. Like the warm
@@ -395,7 +391,7 @@ def check_wall(measured, accepted, host, require, report_only=False):
 
 def gate_wall(measured, accepted, host, require):
     print("speed: wall-clock host %s" % host)
-    fail, gated, words = check_wall(measured, accepted, host, require, wall_on_ci())
+    fail, gated, words = check_wall(measured, accepted, host, require, on_ci())
     seen = len({k for k in measured if k[0] == WALL_COMMAND})
     print("speed: %d wall row(s) measured, %d gated here" % (seen, gated))
     for why in words:
