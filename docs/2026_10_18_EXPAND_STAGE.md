@@ -84,7 +84,7 @@ Rules that keep it one spelling:
 - **A component opts in by implementing `Expands`** — the way it opts into `@derive` composition today
   (`composed`, `expand.av:338`). No `expand` keyword, no new declaration kind.
 - **The instance is its own maker.** `maker_said` already names work "no written annotation asked for"
-  by the declaration and callee (`expand.av:~245`); an instance is exactly that.
+  by the declaration and callee (`expand.av:254`); an instance is exactly that.
 - **Annotation-generated and component-generated declarations are indistinguishable downstream**:
   same `Directive`, same `admit_code`, same diagnostics, same `explain`.
 - **Why not a `generated` block inside the component.** It would be a second place the generator
@@ -258,9 +258,9 @@ rule runs at a literal today.**
 |---|---|
 | a `List<Diagnostic>` answer is the VALIDATES effect | `annotations/check.av:182-184` (`effect_of`) |
 | it runs at compile time through `lifted`, speaking each non-warning as a diagnostic | `check.av:100-104`, `spoken_said` at `check.av:512` (kind `annotation.said`) |
-| but its first seat is the DECLARATION (`Fn`/`Type`/`Named`), so it judges the declaration, never a value | `receiver_fits` / `wrong_receiver`, `check.av:155, 52-56` |
+| but its first seat is the DECLARATION (`Fn`/`Type`/`Named`), so it judges the declaration, never a value | `receiver_fits` at `check.av:54`, defined `check.av:155` |
 | `@range` is `fn range(v: int, lo, hi) -> Result<int, string>` — its first seat is a VALUE | `std-validate/src/validate.av:60` |
-| an annotation on a record, enum or named type whose first seat takes a value is a RULE: `is_rule` is true and `check_annotation` RETURNS before running anything | `check.av:140-144` (`is_rule`), the early return at the top of the seat checks |
+| an annotation on a record, enum or named type whose first seat takes a value is a RULE: `is_rule` is true and `check_annotation` RETURNS before running anything | `is_rule` at `check.av:140-144`, the early return at `check.av:43` |
 | a rule is data a reader splices where it reads the value; the one reader is `@derive(Decode)`, which CALLS each annotation over what was read, at run time | `std-validate/src/derive.av:7-10` |
 | a literal filling a named type is judged by shape only | `features/checks.av:425-440` (`named_accepts`: `accepts(e, of!)`, no rule consulted) |
 
