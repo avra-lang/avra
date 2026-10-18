@@ -167,37 +167,233 @@ help: project a field instead — `p.x` prints
 
 run-time statements belong to the entry file
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use lib.{f}
+f()
+
+// /w/src/lib.av
+export fn f() -> int {
+    1
+}
+let stray = 1
+
+```
+
+```
+error[lower.entry_only]: a module file holds declarations — only the entry `/w/src/main.av` runs statements
+  ╭─[/w/src/lib.av:4:1]
+4 │ let stray = 1
+  · ┬
+  · ╰── runs here
+──╯
+help: move it into the entry, or wrap it in a fn the entry calls
+```
 
 ## lower.code_hash_const
 
 a const's value holds no code hash — at compile time the program is only what the const reaches
 
-No witness yet.
+No witness here: the refusal is spoken inside a const's settlement and reaches a program as `const.trap` carrying its words — the golden is compiler/tests/code_hash_test.av.
 
 ## lower.host_fn_twice
 
 a host fn's name is a symbol, and a symbol has one body in a program
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use near.{used}
+extern fn far_event(n: int) -> int {
+    n
+}
+used(1)
+
+// /w/src/near.av
+use far.{helper}
+export fn used(n: int) -> int {
+    helper(n)
+}
+
+// /w/src/far.av
+export fn helper(n: int) -> int {
+    n * 2
+}
+extern fn far_event(n: int) -> int {
+    n + 40
+}
+
+```
+
+```
+error[lower.host_fn_twice]: two host fns define `far_event` — a symbol has one body
+  ╭─[/w/src/main.av:2:1]
+2 │ extern fn far_event(n: int) -> int {
+  · ┬
+  · ╰── defined again here
+──╯
+  ╭─[/w/src/far.av:4:1]
+4 │ extern fn far_event(n: int) -> int {
+  · ┬
+  · ╰── first defined here
+──╯
+help: rename one: a host fn's name is the symbol a host calls it by
+```
 
 ## lower.host_fn_shadows
 
 a host fn's name is no symbol the platform already defines
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+extern fn avra_ptr_at(address: int) -> ptr?
+extern fn malloc(n: int) -> ptr {
+    avra_ptr_at(n)!
+}
+1
+```
+
+```
+error[lower.host_fn_shadows]: `malloc` is a symbol this platform already defines — a host fn of that name would answer every caller of it
+  ╭─[/w/src/main.av:2:1]
+2 │ extern fn malloc(n: int) -> ptr {
+  · ┬
+  · ╰── defined here
+──╯
+help: name the host fn for what its host asks of this program, as `avra_ui_event` is
+```
 
 ## lower.host_fn_answers
 
 a bodiless extern is answered by the package that names it, or by the program's own
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@x/near" = { path = "vendor/near" }
+"@x/far" = { path = "vendor/far" }
+
+// /w/src/main.av
+use @x.near.{used}
+use @x.far.{helper}
+"${used(helper(1))}"
+// /w/vendor/near/avra.toml
+[package]
+name = "@x/near"
+version = "0.1.0"
+
+[dependencies]
+"@x/far" = { path = "../far" }
+
+// /w/vendor/near/src/near.av
+use @x.far.{helper}
+extern fn page_row(n: int) -> int
+export fn used(n: int) -> int {
+    page_row(helper(n))
+}
+
+// /w/vendor/far/avra.toml
+[package]
+name = "@x/far"
+version = "0.1.0"
+
+// /w/vendor/far/src/far.av
+export fn helper(n: int) -> int {
+    n * 2
+}
+extern fn page_row(n: int) -> int {
+    0
+}
+
+```
+
+```
+error[lower.host_fn_answers]: `page_row` is `@x/near`'s to name, and `@x/far` answers it — only the package that names an extern, or the program's own, answers it
+  ╭─[/w/vendor/far/src/far.av:4:1]
+4 │ extern fn page_row(n: int) -> int {
+  · ┬
+  · ╰── answered here
+──╯
+help: answer it in the program's own package: a test stands there, and so does a host's stand-in
+```
 
 ## lower.host_fn_unasked
 
 a dependency's host fn is a program's export only when the program's own sources import that dependency
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@x/near" = { path = "vendor/near" }
+"@x/far" = { path = "vendor/far" }
+
+// /w/src/main.av
+use @x.near.{used}
+extern fn page_row(n: int) -> int {
+    n
+}
+"${used(1)}"
+// /w/vendor/near/avra.toml
+[package]
+name = "@x/near"
+version = "0.1.0"
+
+[dependencies]
+"@x/far" = { path = "../far" }
+
+// /w/vendor/near/src/near.av
+use @x.far.{helper}
+extern fn page_row(n: int) -> int
+export fn used(n: int) -> int {
+    page_row(helper(n))
+}
+
+// /w/vendor/far/avra.toml
+[package]
+name = "@x/far"
+version = "0.1.0"
+
+// /w/vendor/far/src/far.av
+export fn helper(n: int) -> int {
+    n * 2
+}
+extern fn far_event(n: int) -> int {
+    n
+}
+
+```
+
+```
+error[lower.host_fn_unasked]: the host fn `far_event` of `@x/far` would be this program's export, and the program's own sources never import `@x/far`
+  ╭─[/w/vendor/far/src/far.av:4:1]
+4 │ extern fn far_event(n: int) -> int {
+  · ┬
+  · ╰── declared here
+──╯
+help: import from `@x/far` in the program's own package — that says its host fns speak for this program — or drop the dependency that brings it
+```
 
 ## type.type_value
 
@@ -559,7 +755,49 @@ No witness yet.
 
 a component's `check` judged this instance
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{port}
+let p = port 70000
+p.n
+// /w/vendor/c/avra.toml
+[package]
+name = "@x/c"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "../meta" }
+
+// /w/vendor/c/src/c.av
+use @std.meta.{Diagnostic, refuse}
+
+export component port(n: int) {
+    fn check() -> List<Diagnostic> {
+        if self.n > 0 && self.n < 65536 { return [] }
+        [refuse("a port is 1 to 65535, this is ${self.n}")]
+    }
+}
+
+```
+
+```
+error[lower.component_checked]: a port is 1 to 65535, this is 70000
+  ╭─[/w/src/main.av:2:9]
+2 │ let p = port 70000
+  ·         ┬
+  ·         ╰── `check` refused this instance
+──╯
+help: change the instance's settings, or the library's `check` that refuses them
+```
 
 ## type.component_format
 
@@ -668,13 +906,121 @@ No witness yet.
 
 an annotation refused this declaration
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{plain}
+@plain
+fn f() -> int { 1 }
+f()
+// /w/vendor/c/avra.toml
+[package]
+name = "@x/c"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "../meta" }
+
+// /w/vendor/c/src/c.av
+use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
+export fn plain(f: Fn) -> List<Diagnostic> {
+    [refuse("`${f.name}` is plain")]
+}
+export fn badkind(f: Fn) -> List<Diagnostic> {
+    [refuse_as("not a word", "a refusal under a bad kind")]
+}
+export trait Traps {
+    static fn derive(t: Type) -> Declared {
+        let none: List<Directive> = []
+        Declared { made: [none[3]] }
+    }
+}
+export trait Fields {
+    static fn derive(t: Type) -> List<Directive> {
+        let rows: List<Decls> = [quote { enum E { A } }]
+        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
+    }
+}
+
+```
+
+```
+error[annotation.said]: `f` is plain
+  ╭─[/w/src/main.av:3:1]
+3 │ fn f() -> int { 1 }
+  · ┬
+  · ╰── refused by `@plain`
+──╯
+help: change the declaration the annotation refuses, or the annotation's arguments
+```
 
 ## annotation.kind
 
 an annotation's kind is a word — `[A-Za-z0-9_-]+`, like `E1`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{badkind}
+@badkind
+fn f() -> int { 1 }
+f()
+// /w/vendor/c/avra.toml
+[package]
+name = "@x/c"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "../meta" }
+
+// /w/vendor/c/src/c.av
+use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
+export fn plain(f: Fn) -> List<Diagnostic> {
+    [refuse("`${f.name}` is plain")]
+}
+export fn badkind(f: Fn) -> List<Diagnostic> {
+    [refuse_as("not a word", "a refusal under a bad kind")]
+}
+export trait Traps {
+    static fn derive(t: Type) -> Declared {
+        let none: List<Directive> = []
+        Declared { made: [none[3]] }
+    }
+}
+export trait Fields {
+    static fn derive(t: Type) -> List<Directive> {
+        let rows: List<Decls> = [quote { enum E { A } }]
+        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
+    }
+}
+
+```
+
+```
+error[annotation.kind]: an annotation's kind is a word
+  ╭─[/w/src/main.av:2:1]
+2 │ @badkind
+  · ┬
+  · ╰── `@badkind` named `not a word`, saying: a refusal under a bad kind
+──╯
+help: spell the kind `[A-Za-z0-9_-]+`, like `E1`
+```
 
 ## annotation.generated_taken
 
@@ -686,7 +1032,31 @@ No witness yet.
 
 a declaration's warning, spoken at a use
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{deprecated}
+@deprecated("use add")
+fn sum(a: int, b: int) -> int { a + b }
+sum(1, 2)
+```
+
+```
+warning[annotation.warning]: `sum` is deprecated — use add
+  ╭─[/w/src/main.av:4:1]
+4 │ sum(1, 2)
+  · ┬
+  · ╰── used here
+──╯
+help: stop using it, or ask the declaration's owner what replaces it
+```
 
 ## annotation.derive
 
@@ -698,19 +1068,179 @@ No witness yet.
 
 an annotation could not run
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @std.meta.{derive}
+use @x.c.{Traps}
+@derive(Traps)
+type T = { x: int }
+0
+// /w/vendor/c/avra.toml
+[package]
+name = "@x/c"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "../meta" }
+
+// /w/vendor/c/src/c.av
+use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
+export fn plain(f: Fn) -> List<Diagnostic> {
+    [refuse("`${f.name}` is plain")]
+}
+export fn badkind(f: Fn) -> List<Diagnostic> {
+    [refuse_as("not a word", "a refusal under a bad kind")]
+}
+export trait Traps {
+    static fn derive(t: Type) -> Declared {
+        let none: List<Directive> = []
+        Declared { made: [none[3]] }
+    }
+}
+export trait Fields {
+    static fn derive(t: Type) -> List<Directive> {
+        let rows: List<Decls> = [quote { enum E { A } }]
+        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
+    }
+}
+
+```
+
+```
+error[annotation.unsettled]: an annotation could not run
+  ╭─[/w/src/main.av:3:1]
+3 │ @derive(Traps)
+  · ┬
+  · ╰── `derive` index 3 is out of bounds (length 0)
+──╯
+help: an annotation runs at compile time from pure computation alone
+```
 
 ## annotation.meta
 
 the compiler crosses `@std/meta`'s own shapes
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{plain}
+@plain
+fn f() -> int { 1 }
+f()
+// /w/vendor/c/avra.toml
+[package]
+name = "@x/c"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "../meta" }
+
+// /w/vendor/c/src/c.av
+use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
+export fn plain(f: Fn) -> List<Diagnostic> {
+    [refuse("`${f.name}` is plain")]
+}
+export fn badkind(f: Fn) -> List<Diagnostic> {
+    [refuse_as("not a word", "a refusal under a bad kind")]
+}
+export trait Traps {
+    static fn derive(t: Type) -> Declared {
+        let none: List<Directive> = []
+        Declared { made: [none[3]] }
+    }
+}
+export trait Fields {
+    static fn derive(t: Type) -> List<Directive> {
+        let rows: List<Decls> = [quote { enum E { A } }]
+        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
+    }
+}
+
+```
+
+```
+error[annotation.meta]: the compiler crosses `@std/meta`'s own shapes
+  the compiler was built against another `@std/meta` — `Diagnostic` declares `msg` where the crossing reads `message`
+help: build against the `@std/meta` this compiler ships
+```
 
 ## annotation.unplaceable
 
 a hole was filled with something no seat can hold
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @std.meta.{derive}
+use @x.c.{Fields}
+@derive(Fields)
+type T = { x: int }
+0
+// /w/vendor/c/avra.toml
+[package]
+name = "@x/c"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "../meta" }
+
+// /w/vendor/c/src/c.av
+use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
+export fn plain(f: Fn) -> List<Diagnostic> {
+    [refuse("`${f.name}` is plain")]
+}
+export fn badkind(f: Fn) -> List<Diagnostic> {
+    [refuse_as("not a word", "a refusal under a bad kind")]
+}
+export trait Traps {
+    static fn derive(t: Type) -> Declared {
+        let none: List<Directive> = []
+        Declared { made: [none[3]] }
+    }
+}
+export trait Fields {
+    static fn derive(t: Type) -> List<Directive> {
+        let rows: List<Decls> = [quote { enum E { A } }]
+        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
+    }
+}
+
+```
+
+```
+error[annotation.unplaceable]: a hole was filled with something no seat can hold
+   ╭─[/w/vendor/c/src/c.av:16:40]
+16 │         let rows: List<Decls> = [quote { enum E { A } }]
+   ·                                        ┬
+   ·                                        ╰── a field run takes `type _ = { … }` or `fn _(…)` templates, and the one from /w/vendor/c/src/c.av:545 carries no fields
+───╯
+help: a fill the compiler cannot place is spoken, never spliced
+```
 
 ## annotation.unread_mark
 
@@ -754,7 +1284,7 @@ No witness yet.
 
 a WRAP directive over a declaration that is neither a fn nor a method
 
-No witness yet.
+No witness here: a declaration with a body root that is no fn or method is a seat default or a spec case, and no annotation can stand on either — `@a` before `then` is a parse error.
 
 ## resolve.no_module
 
@@ -2861,7 +3391,35 @@ No witness here: `@lacks` resolves to `@std/meta`'s own declaration, which a lon
 
 a sealed type is built and rewritten in the module that declares it
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use urls.{Url}
+let u: Url = "x"
+1
+// /w/src/urls/urls.av
+use @std.meta.{sealed}
+@sealed
+export type Url = string
+
+```
+
+```
+error[type.sealed]: `Url` is sealed — only `urls`, the module that declares it, builds or rewrites one
+  ╭─[/w/src/main.av:2:14]
+2 │ let u: Url = "x"
+  ·              ┬
+  ·              ╰── a literal fills it here
+──╯
+help: ask `urls` for one through a fn it exports; reading it — a field, equality, a pattern — is open everywhere
+```
 
 ## type.coalesce
 
