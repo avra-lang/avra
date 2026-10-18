@@ -271,7 +271,37 @@ impl Builder {
     /// level — every body survives bad input visibly.
     fn stmts(i: int) -> Result<List<StmtId>, string> {
         let items = list_at(self.args, i)
-        .Ok([stmt_id_at(items, j) ?? self.store.alloc_stmt(Stmt.Error) for j in 0..items.length])
+        .Ok(
+            self
+                .folded_lets(
+                    [stmt_id_at(items, j) ?? self.store.alloc_stmt(Stmt.Error) for j in 0..items.length],
+                ),
+        )
+    }
+
+    /// A destructuring `let` owns the rest of its block: `let P { x } = p`
+    /// then `R` is one `LetPattern` node holding `R`, which means `match p
+    /// { P { x } -> { R } }`, so the pattern's names scope over `R` as an
+    /// arm's do, and an `else` is the other arm.
+    fn folded_lets(items: List<StmtId>) -> List<StmtId> {
+        let at? = items.find_index((s) -> self.store.open_let(s) != null) else { return items }
+        let open = self.store.open_let(items[at])!
+        let span = self.store.stmt_span(items[at])
+        let rest = self.folded_lets(items.slice(at + 1, items.length))
+        let node = self
+            .store
+            .alloc_expr(
+                Expr
+                    .LetPattern(
+                        open.pat,
+                        open.subject,
+                        open.otherwise,
+                        self.block_at(rest, self.extent_of(rest)),
+                    ),
+                span,
+            )
+        let _ = self.store.mean(node, let_means(self.source_of(node)), self.words.door)
+        items.slice(0, at).concat([self.store.alloc_stmt(Stmt.ExprStmt(node), span)])
     }
 
     /// A new pattern node, spanning the matched branch. A `@facet`
@@ -376,11 +406,23 @@ impl Builder {
     /// never minted) — `tail_scoped` (core/store.av) is where a found
     /// value gets wrapped back in, shared with `branch_value` so the
     /// two cannot drift.
-    fn block_of(stmts: List<StmtId>) -> ExprId {
-        if stmts.is_empty() { return self.expr_node(Expr.Block(stmts, null)) }
+    fn block_of(stmts: List<StmtId>) -> ExprId { self.block_at(stmts, self.span) }
+
+    /// `block_of` over a span of its own — the extent of the statements
+    /// a fold gathered, never the enclosing block's.
+    fn block_at(stmts: List<StmtId>, span: Span?) -> ExprId {
+        if stmts.is_empty() { return self.store.alloc_expr(Expr.Block(stmts, null), span) }
         let tail = stmts.last()!
-        let value? = self.store.answer_of(tail) else { return self.expr_node(Expr.Block(stmts, null)) }
-        self.store.tail_scoped(stmts, tail, value, self.span)
+        let value? = self.store.answer_of(tail) else { return self.store.alloc_expr(Expr.Block(stmts, null), span) }
+        self.store.tail_scoped(stmts, tail, value, span)
+    }
+
+    /// The span from the first statement's start to the last one's end.
+    fn extent_of(stmts: List<StmtId>) -> Span? {
+        let first? = stmts.first() else { return null }
+        let a? = self.store.stmt_span(first) else { return null }
+        let b? = self.store.stmt_span(stmts.last()!) else { return a }
+        a.cover(b)
     }
 
     /// Where this build's branch ENDED — the bound a positional
@@ -566,7 +608,7 @@ export fn spread_name(f: Token, spreads: List<Token>, all: List<Token>) -> strin
 /// Whether `..` stands directly before entry `f` — after every entry
 /// written before it.
 fn spread_before(s: Token, f: Token, all: List<Token>) -> bool {
-    s.span.lo < f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
+    s.span.hi == f.span.lo && !all.any((g: Token) -> g.span.lo > s.span.lo && g.span.lo < f.span.lo)
 }
 
 /// A spread written with a third dot — the spelling other languages teach.
@@ -619,4 +661,9 @@ fn facet_not_a_stmt(field: string) -> string {
 fn unknown_payload(ps: List<Field>, n: string) -> string {
     if ps.is_empty() { return "no payload `${n}` — this build carries none" }
     "no payload `${n}` — this build carries `${[p.name for p in ps].join("`, `")}`"
+}
+
+/// What a destructuring `let` means, in words.
+fn let_means(written: string) -> string {
+    "`${written}` takes the value apart by its pattern, and the rest of the block is the arm the pattern's names scope over"
 }

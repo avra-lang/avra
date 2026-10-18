@@ -47,6 +47,10 @@ export type PayloadIs = { pat: PatId, has_else: bool }
 /// The payload ask of a binding `is` pattern, as the source wrote it: with an `else`.
 fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked, has_else: true } }
 
+/// A seat's source in a call that spreads a record: argument `arg`, whole
+/// (`field` is -1) or its field `field`.
+export type SeatFill = { arg: int, field: int }
+
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
@@ -323,7 +327,10 @@ impl SyntaxArena {
 
     /// The seat an argument names, when it is written `name: value`.
     fn arg_label(a: ExprId) -> string? {
-        match self.expr(a) { .Named(name, _) -> name.of, _ -> null }
+        match self.expr(a) {
+            .Named(name, _) -> if name.of == spread_entry { null } else { name.of },
+            _ -> null,
+        }
     }
 
     /// An argument's value, its name stripped.
@@ -334,9 +341,36 @@ impl SyntaxArena {
     /// A call's arguments in SEAT order, names stripped; a seat no
     /// argument writes is skipped. A callee that names fewer seats
     /// than it is handed keeps the written order.
-    fn seated_args(args: List<ExprId>, seats: List<string>) -> List<ExprId> {
+    fn seated_args(written: List<ExprId>, seats: List<string>) -> List<ExprId> {
+        let args = [a for a in written if self.spread_operand(a) == null]
         if seats.length < args.length { return [self.unnamed(a) for a in args] }
         [self.unnamed(args[i]) for i in self.seat_plan(args, seats) if i >= 0]
+    }
+
+    /// Where each seat's value comes from when an argument SPREADS a
+    /// record (`fields[j]` names argument `j`'s fields, none for a plain
+    /// one): written order, a later source winning a seat. A plain
+    /// argument fills the seat of its name, or the seat at its own place
+    /// among the plain ones; a field fills the seat of its name. Null is a
+    /// seat nothing writes.
+    fn seat_fills(args: List<ExprId>, seats: List<string>, fields: List<List<string>>) -> List<
+        SeatFill?,
+    > {
+        mut out: List<SeatFill?> = filled<SeatFill?>(seats.length, null)
+        mut place = 0
+        for j, a in args {
+            if self.spread_operand(a) != null {
+                for i, n in fields[j] {
+                    if seats.contains(n) { out.set(seats.index_of(n), SeatFill { arg: j, field: i }) }
+                }
+            } else {
+                let label: string? = self.arg_label(a)
+                let seat = if label == null { place } else { seats.index_of(label!) }
+                if label == null { place = place + 1 }
+                if seat >= 0 && seat < seats.length { out.set(seat, SeatFill { arg: j, field: 0 - 1 }) }
+            }
+        }
+        out
     }
 
     /// Which argument fills each seat: its index among `args`, or -1
@@ -573,6 +607,34 @@ impl SyntaxArena {
         self.stmt(s) is .ExprStmt && self.statement_if(v)
     }
 
+    /// The match a destructuring `let` means: the pattern's arm holds the
+    /// rest of its block, and a wildcard arm holds what a refused value
+    /// does. None until the block has folded its statements in.
+    fn let_matched(pat: PatId, subject: ExprId, otherwise: ExprId?, rest: ExprId?, span: Span?) -> List<
+        ExprId,
+    > {
+        let held? = rest else { return [] }
+        let taken = Arm { pats: [pat], guard: null, value: held }
+        let refused = Arm {
+            pats: [self.alloc_pat(Pat.Wild, span)],
+            guard: null,
+            value: otherwise ?? held,
+        }
+        [
+            self
+                .alloc_expr(
+                    Expr.Match(subject, if otherwise == null { [taken] } else { [taken, refused] }),
+                    span,
+                ),
+        ]
+    }
+
+    /// Whether `e` is the match a destructuring `let` means.
+    fn minted_by_let(e: ExprId) -> bool {
+        let sugar? = self.minted_for(e) else { return false }
+        self.expr(sugar) is .LetPattern
+    }
+
     fn is_sugar_match(e: ExprId) -> bool {
         self.sugar_matches.get()[e.index]
     }
@@ -598,7 +660,7 @@ impl SyntaxArena {
     fn binding_ask(asked: PatId) -> PayloadIs? {
         match self.pat(asked) {
             .Variant(_, args) -> if args.is_empty() { null } else { binding_payload(asked) },
-            .Typed(_, _) -> binding_payload(asked),
+            .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> binding_payload(asked),
             .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> null,
         }
     }
@@ -608,7 +670,7 @@ impl SyntaxArena {
         match self.pat(asked) {
             .Variant(name, _) -> name.of,
             .Typed(_, ty) -> ty.name,
-            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> "",
+            .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> "",
         }
     }
 
@@ -1042,7 +1104,8 @@ impl SyntaxArena {
     fn pattern_binds(id: PatId) -> List<Binder> {
         match self.pat(id) {
             .Bind(name) or .Typed(name, _) or .Member(_, name) -> [Binder { pat: id, name: name.of }],
-            .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
+            .Variant(_, args) or .Fields(_, _, args, _) -> flatten([self.pattern_binds(a) for a in args]),
+            .Seq(before, middle, after) -> flatten([self.pattern_binds(a) for a in before.concat(middle).concat(after)]),
             .Format(_, parts) -> named_binders(id, bound_names(parts)),
             .Quote(body) -> named_binders(id, quote_pat_names(quote_pat_holes(self, body))),
             .Wild or .Rest or .Lit(_) -> [],
@@ -1058,7 +1121,7 @@ impl SyntaxArena {
     fn irrefutable(id: PatId) -> bool {
         match self.pat(id) {
             .Wild or .Rest or .Bind(_) -> true,
-            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) -> false,
+            .Variant(_, _) or .Lit(_) or .Format(_, _) or .Quote(_) or .Typed(_, _) or .Member(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> false,
         }
     }
 
@@ -1075,6 +1138,23 @@ impl SyntaxArena {
             .Quote(body) -> fp(143, [self.expr_fingerprint(body)]),
             .Typed(name, ty) -> fp(196, [fp_str(name.of), type_fp(ty)]),
             .Member(name, bind) -> fp(197, [fp_str(name.of), fp_str(bind.of)]),
+            .Seq(before, middle, after) -> fp(
+                315,
+                [
+                    fp_list([self.pat_fingerprint(a) for a in before]),
+                    fp_list([self.pat_fingerprint(a) for a in middle]),
+                    fp_list([self.pat_fingerprint(a) for a in after]),
+                ],
+            ),
+            .Fields(name, fields, args, open) -> fp(
+                316,
+                [
+                    fp_str(name.of),
+                    fp_list([fp_str(f.of) for f in fields]),
+                    fp_list([self.pat_fingerprint(a) for a in args]),
+                    if open { 1 } else { 0 },
+                ],
+            ),
         }
     }
 

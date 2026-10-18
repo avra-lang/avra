@@ -13,4 +13,4 @@ RUN apt-get update -qq \
  && mkdir -p /opt/homebrew/opt && ln -sfn /usr/lib/llvm-22 /opt/homebrew/opt/llvm \
  && sh /tmp/install_firefox.sh \
  && git config --system --add safe.directory '*'
-ENV LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang
+ENV LLVM_PREFIX=/usr/lib/llvm-22 CC=/usr/lib/llvm-22/bin/clang AVRA_CXX_RUNTIME=stdc++

@@ -112,6 +112,7 @@ void avra_wait_sig(int64_t sig, int64_t arm, int64_t member);
 // The platform's signal number for a portable signal KIND (the `Sig`
 // variant index): the one currency a portable Avra enum and the C share.
 int64_t avra_sig_number(int64_t kind);
+void avra_sig_raise(int64_t kind);
 // … for `task` to end.
 void avra_wait_task(void* task, int64_t arm, int64_t member);
 // Parks the caller on what it registered and answers the claim:
