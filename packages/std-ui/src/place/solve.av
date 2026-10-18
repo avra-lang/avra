@@ -166,6 +166,16 @@ fn fills(s: Sizing?) -> bool {
     v is .Fill
 }
 
+/// How far a box gives way on an axis: not at all when it fills, no further
+/// than its own size when fixed, as far as its content when it hugs.
+fn yields(s: Sizing?, content: int, own: int) -> int {
+    when {
+        fills(s) -> 0
+        fixed(s) != null -> smaller(content, own)
+        _ -> content
+    }
+}
+
 fn axis_of(n: Node) -> Axis { n.box.layout.direction ?? own_axis(n.prim) ?? .Column }
 
 fn sides(cx: Ctx, e: Edge?) -> Sides {
@@ -276,10 +286,7 @@ fn item_of(cx: Ctx, n: Node, path: string, i: int, iw: int, ih: int?, dir: Axis,
         let pads = sides(cx, l.pad)
         let wide = fixed_w(cx, c) ?? if fills(l.width) { pads.start + pads.end } else { max_w(cx, c, cp) }
         let squeezed = min_w(cx, c, cp)
-        let least = bigger(
-            pads.start + pads.end,
-            if fills(l.width) { 0 } else if fixed(l.width) != null { smaller(squeezed, wide) } else { squeezed },
-        )
+        let least = bigger(pads.start + pads.end, yields(l.width, squeezed, wide))
         Item {
             at: i,
             base: wide,
@@ -303,10 +310,7 @@ fn item_of(cx: Ctx, n: Node, path: string, i: int, iw: int, ih: int?, dir: Axis,
         let content = height_at(cx, c, cp, w)
         let pads = sides(cx, l.pad)
         let tall = fixed_h(cx, c) ?? if fills(l.height) && ih != null { pads.top + pads.bottom } else { content }
-        let least = bigger(
-            pads.top + pads.bottom,
-            if fills(l.height) { 0 } else if fixed(l.height) != null { smaller(content, tall) } else { content },
-        )
+        let least = bigger(pads.top + pads.bottom, yields(l.height, content, tall))
         Item {
             at: i,
             base: tall,
@@ -371,7 +375,11 @@ fn flexed(items: List<Item>, avail: int?, gap: int) -> Flexed {
     let room? = avail else { return whole_sizes([item.hyp for item in items]) }
     let gaps = gap * at_least_zero(items.length - 1)
     let growing = [outer(item, item.hyp) for item in items].sum() + gaps < room
-    let factors = [if growing { item.grow } else if item.rigid { 0 } else { at_least_zero(item.base - item.padded) } for item in items]
+    let factors = [when {
+        growing -> item.grow
+        item.rigid -> 0
+        _ -> at_least_zero(item.base - item.padded)
+    } for item in items]
     mut frozen = [factors[i] == 0 || growing && item.base > item.hyp || !growing && item.base < item.hyp for i, item in items]
     mut sizes = [item.hyp for item in items]
     for _round in 0..items.length + 1 {
