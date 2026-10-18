@@ -367,7 +367,11 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         annotated: owns && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
-        word: if x.kind is .Const { store.instance_of(x.stmt) } else if x.kind is .CollectEnum { collect_enum_word } else { null },
+        word: when {
+            x.kind is .Const -> store.instance_of(x.stmt)
+            x.kind is .CollectEnum -> collect_enum_word
+            _ -> null
+        },
         doc: if owns { store.doc_comment(x.stmt) } else { null },
         annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },

@@ -1,0 +1,194 @@
+//! DOES A HELP KEEP ITS WORD? A voice's help or fix names a code form,
+//! and nothing but this reads it: a help that sends every reader at a
+//! form the compiler refuses stays green forever, since the golden pins
+//! the WORDS. Two checks, both by running the compiler:
+//!
+//! - a STRUCTURED fix on a lone witness is spliced in, and the program
+//!   it makes must not draw the same refusal again, nor fail to parse;
+//! - a REMEDY ROW is a refusal and the same program with the help's
+//!   form applied: the refusal must still be what the row says, and the
+//!   applied program must come out as the row says — clean, or a named
+//!   other refusal — and never unparseable.
+use core.{flatten}
+use diagnostics.{new_source_file, spliced, Diag}
+use @std.errors.{Suggestion}
+use compiler.{avra}
+
+/// What an applied remedy must come to — `becomes`.
+export enum Then {
+    Clean
+    Draws(kind: string)
+}
+
+/// One help's claim, run: `refused` draws the voice (its words hold
+/// `says`), and `applied` is `refused` with the help's form written in.
+export type RemedyRow = { kind: string, says: string, refused: string, applied: string, becomes: Then }
+
+/// The refusals the rows are held to, in registry order.
+export fn rows() -> List<RemedyRow> {
+    [
+        RemedyRow {
+            kind: "type.lambda",
+            says: "a generic fn is not a value",
+            refused: "fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = ident\nf(1)",
+            applied: "fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = (x0) -> ident(x0)\nf(1)",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.extern_value",
+            says: "an extern fn is not a value",
+            refused: "extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")",
+            applied: "extern fn avra_host_is_dir(path: string) -> int\nlet f = (x0: string) -> avra_host_is_dir(x0)\nf(\"corpus\")",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.mut_fn",
+            says: "`mut fn` marks a method that writes its receiver",
+            refused: "mut fn f() -> int { 1 }\nf()",
+            applied: "fn f() -> int { 1 }\nf()",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.seat",
+            says: "is `mut`, and this is a value",
+            refused: "fn f(mut n: int) -> int { n }\nf(1)",
+            applied: "fn f(n: int) -> int { n }\nf(1)",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.receiver",
+            says: "is not `mut`",
+            refused: "type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length",
+            applied: "type B = { xs: List<int> }\nimpl B {\n    mut fn put(v: int) { self.xs.push(v) }\n}\nmut b = B { xs: [] }\nb.put(1)\nb.xs.length",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.place",
+            says: "is not `mut`",
+            refused: "fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length",
+            applied: "fn grow(xs: List<int>) -> List<int> { xs.concat([1]) }\nlet v = grow([1])\nv.length",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.fail",
+            says: "`fail` raises on a `Result`",
+            refused: "fn f() -> int {\n    fail 1\n}\nf()",
+            applied: "fn f() -> Result<int, int> {\n    fail 1\n}\nlet r = f()\n1",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.variant_arity",
+            says: "carries `int`, given nothing",
+            refused: "enum S {\n    a(int)\n    b\n}\nlet x = S.a()\n2",
+            applied: "enum S {\n    a(int)\n    b\n}\nlet x = S.a(1)\n2",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.with_struct",
+            says: "`with` copies a struct",
+            refused: "let n = 3\nlet m = n with { x: 1 }\n2",
+            applied: "type P = { x: int }\nlet p = P { x: 0 }\nlet m = p with { x: 1 }\n2",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.match",
+            says: "`match` chooses over an enum",
+            refused: "let n = 3\nmatch n {\n    .a -> 1\n}",
+            applied: "let n = 3\nmatch n {\n    3 -> 1\n    _ -> 0\n}",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.list_scalar",
+            says: "a list element takes its type from its value",
+            refused: "let xs = [null, null]\n1",
+            applied: "let xs: List<int?> = [null, null]\n1",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.applied",
+            says: "a map's keys are strings",
+            refused: "let m: Map<int, int> = {}\n1",
+            applied: "let m: Map<string, int> = {}\n1",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.type_value",
+            says: "is a type, not a value",
+            refused: "type P = { x: int }\nmut p = P\n1",
+            applied: "type P = { x: int }\nlet p = P { x: 1 }\np.x",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.list",
+            says: "a comprehension walks a list",
+            refused: "[x for x in 1]",
+            applied: "[x for x in [1]]",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "resolve.receiver",
+            says: "names a method's receiver",
+            refused: "let self = 1\nself",
+            applied: "let me = 1\nme",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.const_pattern",
+            says: "is a const here, so this arm compares",
+            refused: "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\nf(M.B)",
+            applied: "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n        _ -> 4\n    }\n}\nf(M.B)",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.member_pattern",
+            says: "`as` takes a gathered variant whole",
+            refused: "enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a as x -> 1\n}",
+            applied: "enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a(x) -> 1\n}",
+            becomes: Then.Clean,
+        },
+    ]
+}
+
+/// The kinds a remedy row holds the help of.
+export fn remedy_kinds() -> List<string> {
+    [r.kind for r in rows()]
+}
+
+/// The kinds of the rows whose claim does not hold.
+export fn remedy_failures() -> List<string> {
+    [r.kind for r in rows() if row_fails(r)]
+}
+
+export fn row_fails(r: RemedyRow) -> bool {
+    let drawn = avra().check(new_source_file("witness.av", r.refused))
+    if !drawn.contains("[${r.kind}]") || !drawn.contains(r.says) { return true }
+    let out = avra().check(new_source_file("witness.av", r.applied))
+    if unreadable(out) || out.contains(r.says) { return true }
+    match r.becomes { .Clean -> out.contains("error["), .Draws(k) -> !out.contains("error[${k}]") }
+}
+
+/// Whether a rendering holds a refusal of the program's own text — a
+/// parse or lex refusal, or the compiler blaming itself.
+fn unreadable(out: string) -> bool {
+    out.contains("error[parse.") || out.contains("error[lex.") || out.contains("language.defect")
+}
+
+/// The kinds with a structured fix that does not do what it says: spliced
+/// into the lone witness, the same refusal is drawn again or the text no
+/// longer reads.
+export fn unsound_fixes(runs: List<Shown>) -> List<string> {
+    [s.code.kind for s in runs if s.says("fix (") && unsound(s)]
+}
+
+fn unsound(s: Shown) -> bool {
+    let text = match s.witness { .Source(t) -> t, .Package(_) or .Absent or .Beyond(_) -> "" }
+    if text.is_empty() { return false }
+    let drawn = [d for d in avra().analyze(new_source_file("witness.av", text)).diagnostics if d.kind == s.code.kind]
+    [spliced_fails(s.code.kind, text, d, sg) for d in drawn for sg in d.suggestions].any(it)
+}
+
+fn spliced_fails(kind: string, text: string, d: Diag, sg: Suggestion) -> bool {
+    let after? = spliced(text, sg.edits) else { return true }
+    let out = avra().check(new_source_file("witness.av", after))
+    unreadable(out) || out.contains("[${kind}]: ${d.message}")
+}

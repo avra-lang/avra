@@ -15,6 +15,8 @@ use core.{
     fp_str,
     mix_final,
     joined,
+    closest,
+    some_list,
     flatten,
     sorted_texts,
     TypeId,
@@ -167,10 +169,20 @@ fn not_exported(
         at,
         if own_test { "`${m.text()}` declares no `${item}`, exported or private" } else { "`${m.text()}` does not export `${item}`" },
         "in this use",
-        if own_test { "a module's own tests read its private names as well as its exports: ${joined(exports, ", ")}" } else { "its exports: ${joined(exports, ", ")}" },
+        exports_help(item, exports, own_test),
     )
     let root? = unread else { return d }
     unread_behind(d, "`${m.text()}`", root, item)
+}
+
+/// What a module's surface offers in place of the name asked for: the
+/// nearest export, then every export — or, when there is none, how one is made.
+fn exports_help(item: string, exports: List<string>, own_test: bool) -> string {
+    if exports.is_empty() { return "it exports nothing — mark the declaration `export` to share it" }
+    let near = joined(["did you mean `${n.name}`? " for n in some_list(closest(item, exports))], "")
+    let known = joined(exports, ", ")
+    if own_test { return "${near}a module's own tests read its private names as well as its exports: ${known}" }
+    "${near}its exports: ${known}"
 }
 
 fn private_apart(at: Loc?, m: ModulePath, item: string, files: List<string>) -> Diag {
@@ -473,7 +485,7 @@ fn fields_of(s: Stmt) -> List<Param>? {
     match s {
         .StructDecl(_, _, fields) -> fields,
         .FnDecl(_, _, params, _, _) -> params,
-        .ExprStmt(_) or .Discard(_) or .IfStmt(_, _, _) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+        .ExprStmt(_) or .Discard(_) or .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
     }
 }
 
