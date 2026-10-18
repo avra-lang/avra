@@ -172,15 +172,14 @@ fn event_law(mut cx: TypeCx, e: ExprId) {
     let inst? = cx.view.store.instance_parts(e) else { return }
     let body? = inst.body else { return }
     for s in cx.view.store.block_stmts(body) ?? [] {
-        let handler? = cx.view.store.setting_parts(s)?.value else { continue }
-        let heard? = cx.view.store.on_handler(handler) else { continue }
-        let why? = heard.unheard else { continue }
+        let setting? = cx.view.store.setting_parts(s) else { continue }
+        let why? = cx.view.store.unheard_of(setting.value) else { continue }
         cx
             .emit(
                 match why {
-                    .Undeclared(declared) -> undeclared_event(cx.stmt_loc(s), inst.word, heard.event, declared),
-                    .Seats(says) -> misheard_event(cx.stmt_loc(s), heard.event, says),
-                    .Twice -> heard_twice(cx.stmt_loc(s), inst.word, heard.event),
+                    .Undeclared(declared) -> undeclared_event(cx.stmt_loc(s), inst.word, setting.name, declared),
+                    .Seats(says) -> misheard_event(cx.stmt_loc(s), setting.name, says),
+                    .Twice -> heard_twice(cx.stmt_loc(s), inst.word, setting.name),
                 },
             )
     }

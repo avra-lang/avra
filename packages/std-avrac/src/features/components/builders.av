@@ -297,7 +297,7 @@ fn build_on_handler(b: Builder) -> Result<LangNode, string> {
     let event = (b.token(1)?).text
     let stmts = b.stmts(3)?
     let lam = b.expr_node(Expr.Lambda(params_at(b.args, 2), b.block_of(stmts)))
-    b.store.mark_on_handler(lam, event)
+    b.store.mark_handler(lam)
     b.make_stmt(Stmt.Setting(Plain(event), lam))
 }
 
@@ -306,7 +306,7 @@ fn build_on_handler(b: Builder) -> Result<LangNode, string> {
 fn build_on_value(b: Builder) -> Result<LangNode, string> {
     let event = (b.token(1)?).text
     let value = b.expr(2)?
-    b.store.mark_on_handler(value, event)
+    b.store.mark_handler(value)
     b.make_stmt(Stmt.Setting(Plain(event), value))
 }
 
@@ -477,9 +477,8 @@ impl Builder {
     /// A setting that names an event hears it, however it is spelled.
     fn set(r: Record, st: SettingParts, all: List<SettingParts>) -> Result<List<Field>, string> {
         let filled = [Field { name: st.name, value: st.value }]
-        let sugared = self.store.on_handler(st.value) != null
+        let sugared = self.store.is_handler(st.value)
         let event? = r.events.find(it.name == st.name) else { return if sugared { self.undeclared(r, st, filled) } else { .Ok(filled) } }
-        if !sugared { self.store.mark_heard(st.value, st.name) }
         if all.find(it.name == st.name)?.value != st.value { return self.unheard(st.value, Unheard.Twice) }
         let written? = self.store.lambda_parts(st.value) else { return .Ok(filled) }
         if written.params.is_empty() { return .Ok([Field { name: st.name, value: self.told(st.value, event) }]) }
@@ -498,7 +497,6 @@ impl Builder {
     }
 
     fn unheard(handler: ExprId, why: Unheard) -> Result<List<Field>, string> {
-        if self.store.on_handler(handler) == null { return .Err(unmarked_handler()) }
         self.store.mark_unheard(handler, why)
         .Ok([])
     }
@@ -846,10 +844,6 @@ fn pattern_literal(word: string, field: string) -> string {
 
 fn fn_body_setting() -> string {
     "a body with parameters is a fn, and a fn holds no settings — write them in a body without a `name ->` head"
-}
-
-fn unmarked_handler() -> string {
-    "defect: an instance refused a handler the `on` sugar never marked — the builder and the store disagree"
 }
 
 fn record_fn_body(word: string) -> string {

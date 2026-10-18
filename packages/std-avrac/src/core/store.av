@@ -13,11 +13,12 @@ export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> List<ExprId> { [] }
 
 /// The forms an expression was written in: a lambda as a trailing block,
 /// a string as `"""raw"""`, a name inside a type literal (a hole), and a
-/// `${..name}` hole that binds a run of siblings rather than one node.
-export type ExprMarks = { is_trailing: bool, is_raw: bool, is_hole: bool, is_run_hole: bool }
+/// `${..name}` hole that binds a run of siblings rather than one node, and
+/// a value an `on <event> { … }` setting holds.
+export type ExprMarks = { is_trailing: bool, is_raw: bool, is_hole: bool, is_run_hole: bool, is_handler: bool }
 
 fn no_expr_marks() -> ExprMarks {
-    ExprMarks { is_trailing: false, is_raw: false, is_hole: false, is_run_hole: false }
+    ExprMarks { is_trailing: false, is_raw: false, is_hole: false, is_run_hole: false, is_handler: false }
 }
 
 /// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
@@ -174,11 +175,9 @@ export type SyntaxArena = {
     body_starts: Cell<Map<string, int>>,
     block_voices: Cell<List<BlockVoice>>,
     foreign: Cell<List<ForeignRange>>,
-    // an `on <kind> { … }` handler's KIND, by the nullary lambda the
-    // instance-body sugar built — the word the handler was written
-    // with, so the printer spells the sugar back rather than the
-    // setting and closure it lowers to
-    on_handlers: Cell<List<OnHandler?>>,
+    // why the instance's component cannot hear the handler a value is,
+    // by that value
+    unheard_by: Cell<List<Unheard?>>,
 }
 
 export fn new_node_store(file: string = "") -> SyntaxArena {
@@ -227,7 +226,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         body_starts: map_cell(),
         block_voices: list_cell(),
         foreign: list_cell(),
-        on_handlers: list_cell(),
+        unheard_by: list_cell(),
     }
 }
 
@@ -292,7 +291,7 @@ impl SyntaxArena {
         self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.written_close.push(null)
-        self.on_handlers.push(null)
+        self.unheard_by.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
 
@@ -632,36 +631,21 @@ impl SyntaxArena {
         match self.expr(e) { .Component(_, _, _, _, _, key) -> key, _ -> null }
     }
 
-    /// The event an `on <event> { … }` handler was written for, by the
-    /// lambda the sugar built for it. Absent on every closure a program
-    /// wrote as a closure. Part of the expression's identity: the sugar
-    /// hears an EVENT, where a closure written under the same name fills
-    /// a field.
-    fn mark_on_handler(e: ExprId, event: string) {
-        self.on_handlers.set_at(e.index, OnHandler { event: event })
-        self
-            .expr_fingerprints
-            .set_at(e.index, fp(189, [self.expr_fingerprints.get()[e.index], fp_str(event)]))
+    /// The value an `on <event> { … }` setting holds, written by the sugar.
+    /// Absent on every closure a program wrote as a closure. Part of the
+    /// expression's identity: the sugar hears an EVENT, where a closure
+    /// written under the same name fills a field.
+    fn mark_handler(e: ExprId) {
+        self.update_expr_marks(e, (m) -> m with { is_handler: true })
+        self.expr_fingerprints.set_at(e.index, fp(189, [self.expr_fingerprints.get()[e.index]]))
     }
 
-    /// The event a handler the SUGAR wrote names — what the printer
-    /// spells back as `on <event>`.
-    fn on_handler_kind(e: ExprId) -> string? {
-        let held? = self.on_handlers.get()[e.index] else { return null }
-        if held.sugar { held.event } else { null }
-    }
-
-    /// A plain setting that names an event: it hears it as the sugar
-    /// would, and stays written as it was.
-    fn mark_heard(e: ExprId, event: string) {
-        self.on_handlers.set_at(e.index, OnHandler { event: event, sugar: false })
-    }
+    fn is_handler(e: ExprId) -> bool { self.expr_marks_at(e).is_handler }
 
     /// Why the instance's component cannot hear the handler at `e` —
     /// what the instance's refusal says. Part of its identity.
     fn mark_unheard(e: ExprId, why: Unheard) {
-        let held? = self.on_handlers.get()[e.index] else { return }
-        self.on_handlers.set_at(e.index, held with { unheard: why })
+        self.unheard_by.set_at(e.index, why)
         self
             .expr_fingerprints
             .set_at(e.index, fp(190, [self.expr_fingerprints.get()[e.index], unheard_fp(why)]))
@@ -670,10 +654,9 @@ impl SyntaxArena {
     /// Whether the value at `e` fills a field another law already refused
     /// by name — a handler for an event its component does not declare.
     /// The record's own field law then types the value and says nothing.
-    fn refused_elsewhere(e: ExprId) -> bool { self.on_handlers.get()[e.index]?.unheard != null }
+    fn refused_elsewhere(e: ExprId) -> bool { self.unheard_of(e) != null }
 
-    /// The handler at `e`, when the sugar wrote it.
-    fn on_handler(e: ExprId) -> OnHandler? { self.on_handlers.get()[e.index] }
+    fn unheard_of(e: ExprId) -> Unheard? { self.unheard_by.get()[e.index] }
 
     /// Where a quote's runs of text start in the source, one per part.
     fn mark_quote_at(e: ExprId) {
@@ -1209,6 +1192,7 @@ impl SyntaxArena {
         if worn.is_raw { self.mark_raw_string(e) }
         if worn.is_hole { self.mark_hole(e) }
         if worn.is_run_hole { self.mark_run_hole(e) }
+        if worn.is_handler { self.mark_handler(e) }
     }
 
     /// The marks a statement wears.

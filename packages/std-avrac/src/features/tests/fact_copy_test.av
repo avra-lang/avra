@@ -62,8 +62,22 @@ fn form_of(store: SyntaxArena, e: ExprId) -> string {
         if !store.struct_targs_of(e).is_empty() { "a" } else { "" },
         if store.is_payload(e) != null { "p" } else { "" },
         if store.grammar_lit_of(e) != null { "g" } else { "" },
+        if store.is_hole(e) { "o" } else { "" },
+        if store.is_handler(e) { "h" } else { "" },
     ]
         .join("")
+}
+
+/// Whether the copy of a lambda marked as an `on` handler is still one.
+fn keeps_handler(body: string) -> bool {
+    let src = quoted(body)
+    let dst = parse_source("let x = 1")
+    let ss = held(src)
+    let lam = src.store.every_expr(src.store.answer_of(ss.last()!)!).find(src.store.expr(it) is .Lambda)!
+    src.store.mark_handler(lam)
+    mut rb = copier(src.store, dst.store, [], [], no_door)
+    let copied = rb.stmts(ss)
+    dst.store.every_expr(dst.store.answer_of(copied.last()!)!).any(dst.store.is_handler(it))
 }
 
 /// Whether the copy of `body`'s last value is written in the forms its source was, and in some.
@@ -129,6 +143,9 @@ spec "features/tests — facts a template copy keeps" {
         then "a trailing block of arms survives" { keeps_forms("xs.map { .Ok(v) -> v }") }
         then "a literal's type arguments survive" { keeps_forms("Box<int> { v: 1 }") }
         then "a binding if survives" { keeps_forms("if k is .A(v) { v } else { 0 }") }
+        then "a grammar literal survives" { keeps_forms("grammar { \"s\" }") }
+        then "a hole in a type literal survives" { keeps_forms("cx.type(Map<string, want>)") }
+        then "a handler the `on` sugar wrote survives" { keeps_handler("let f = (x) -> x") }
     }
     given "what a declaration wrote beside its keywords" {
         then "an impl's own type parameters survive" { keeps_declared("impl Box<T> { fn get() -> int { 1 } }") }
