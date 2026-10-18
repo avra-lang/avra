@@ -38,6 +38,9 @@ use features.{
     call_places_of,
     structural_places_of,
     place_key,
+    structural_key,
+    is_structural_key,
+    plain_of_structural,
     StatePlace,
     SeatValue,
     settled_symbol,
@@ -1151,21 +1154,12 @@ fn shared_key(p: StatePlace) -> int {
     match p { .Global(_) -> place_key(p), .Local(_, _) or .Unknown -> unknown_key() }
 }
 
-/// THE STRUCTURAL HALF of a declaration's reach rides the same set: a key
-/// moved far out of the places' range, so one fixpoint holds both and a plain
-/// reader filters the other out.
-const structural_offset = 4503599627370496
-
-fn structural_key(k: int) -> int { if k >= 0 { k + structural_offset } else { k - structural_offset } }
-
-fn is_structural_key(k: int) -> bool { k >= structural_offset || k <= 0 - structural_offset }
-
 /// The keys a set holds that are plain places.
 fn plain_places(keys: List<int>) -> List<int> { [k for k in keys if !is_structural_key(k)] }
 
 /// The place keys the structural half of a set names.
 fn structural_places_of_keys(keys: List<int>) -> List<int> {
-    [if k >= 0 { k - structural_offset } else { k + structural_offset } for k in keys if is_structural_key(k)]
+    [plain_of_structural(k) for k in keys if is_structural_key(k)]
 }
 
 /// A set of place keys, sorted and each once — the lattice's one shape.

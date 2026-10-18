@@ -6,8 +6,15 @@
 use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
-use core.{DeclId}
-use features.{place_key, StatePlace}
+use core.{DeclId, FileId, StmtId}
+use features.{
+    place_key,
+    place_at_key,
+    StatePlace,
+    structural_key,
+    is_structural_key,
+    plain_of_structural,
+}
 
 fn structural_workspace(body: string) -> Workspace {
     let ws = test_workspace(
@@ -95,6 +102,47 @@ spec "compiler/workspace — the structural set" {
                 "component press(on go) {\n}\nfn pressed() -> press {\n    press { on go { n = n + 1 } }\n}\n",
             )
             structural_of(ws, "pressed").is_empty()
+        }
+    }
+    given "a cell read both inside a reading and outside it" {
+        then "is a plain place and a structural one, never one for the other" {
+            let ws = structural_workspace(
+                "fn both() -> plain {\n    let t = said \"a \${n}\"\n    plain \"b \${n}\"\n}\n",
+            )
+            let d = named(ws, "both")
+            ws.decl_places(d).contains(key_of_n(ws)) && only_n(ws, structural_of(ws, "both"))
+        }
+        then "and a cell read only inside a reading is plain with no structural entry" {
+            let ws = structural_workspace("fn only() -> said { said \"a \${n}\" }\n")
+            let d = named(ws, "only")
+            ws.decl_places(d).contains(key_of_n(ws)) && structural_of(ws, "only").is_empty()
+        }
+    }
+    given "the keys at the edge of the range" {
+        then "the largest local and global keys are plain, their structural keys are structural, and they decode back" {
+            let local = place_key(
+                StatePlace.Local(FileId { index: 524286 }, StmtId { index: 4294967295 }),
+            )
+            let global = place_key(StatePlace.Global(DeclId { index: 2251799813685245 }))
+            !is_structural_key(local) &&
+                !is_structural_key(global) &&
+                is_structural_key(structural_key(local)) &&
+                is_structural_key(structural_key(global)) &&
+                plain_of_structural(structural_key(local)) == local &&
+                plain_of_structural(structural_key(global)) == global
+        }
+        then "a local past the bound answers Unknown, which no one mistakes for a structural key" {
+            let past = place_key(StatePlace.Local(FileId { index: 524287 }, StmtId { index: 0 }))
+            past == place_key(StatePlace.Unknown) &&
+                !is_structural_key(past) &&
+                is_structural_key(structural_key(past))
+        }
+        then "a declaration past the bound answers Unknown" {
+            place_key(StatePlace.Global(DeclId { index: 2251799813685246 })) == place_key(StatePlace.Unknown)
+        }
+        then "place_at_key reads a plain key back" {
+            let d = place_key(StatePlace.Global(DeclId { index: 7 }))
+            place_key(place_at_key(d)) == d
         }
     }
 }

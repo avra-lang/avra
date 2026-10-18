@@ -47,14 +47,36 @@ export enum StatePlace {
 }
 
 /// A place as one whole number — what a declaration-keyed query holds, so
-/// a set of places is a sorted list of ints with a hash.
+/// a set of places is a sorted list of ints with a hash. EVERY KEY LIES
+/// STRICTLY INSIDE (-2^51, 2^51): a place whose indexes would leave that
+/// range answers `Unknown`, which assumes any, so the structural tag below
+/// (the key moved out by 2^52) can never meet a plain key.
 export fn place_key(p: StatePlace) -> int {
     match p {
-        .Local(f, s) -> (f.index + 1) * 4294967296 + s.index,
-        .Global(d) -> 0 - (d.index + 2),
+        .Local(f, s) -> if f.index + 1 < max_files && s.index < max_stmts { (f.index + 1) * max_stmts + s.index } else { 0 - 1 },
+        .Global(d) -> if d.index + 2 < max_decls { 0 - (d.index + 2) } else { 0 - 1 },
         .Unknown -> 0 - 1,
     }
 }
+
+/// The statements a file's local keys count, and the files and declarations
+/// a key tells apart: the product of the first two is 2^51, the bound every
+/// key stays inside.
+const max_stmts = 4294967296
+const max_files = 524288
+const max_decls = 2251799813685248
+
+/// THE STRUCTURAL TAG: a place a declaration reads that no reading answers
+/// for, carried in the same set as the plain place as the key moved out by
+/// 2^52. Disjoint from every plain key by `place_key`'s bound.
+const structural_offset = 4503599627370496
+
+export fn structural_key(k: int) -> int { if k >= 0 { k + structural_offset } else { k - structural_offset } }
+
+export fn is_structural_key(k: int) -> bool { k >= structural_offset || k <= 0 - structural_offset }
+
+/// The plain key a structural key wraps.
+export fn plain_of_structural(k: int) -> int { if k >= 0 { k - structural_offset } else { k + structural_offset } }
 
 /// The place a `place_key` names.
 export fn place_at_key(k: int) -> StatePlace {
