@@ -1814,6 +1814,25 @@ fix (high): interpolate it — `"${5}"`
   "${5}"
 ```
 
+## type.let_pattern
+
+a destructuring `let` stands inside a block
+
+```avra
+let [q, ..] = [1] else { 1 }
+2
+```
+
+```
+error[type.let_pattern]: a destructuring `let` takes the rest of a block as its scope, and a file's top level is no block
+  ╭─[witness.av:1:1]
+1 │ let [q, ..] = [1] else { 1 }
+  · ┬
+  · ╰── this `let`
+──╯
+help: destructure inside a fn body, or `match` the value
+```
+
 ## const.reach
 
 a const cannot read the world
@@ -2379,6 +2398,47 @@ an empty list has no element type to infer
 
 No witness yet.
 
+## type.spread_list
+
+a list literal spreads lists
+
+```avra
+let a = [..5]
+2
+```
+
+```
+error[type.spread_list]: `..` in a list spreads a list, found `int`
+  ╭─[witness.av:1:12]
+1 │ let a = [..5]
+  ·            ┬
+  ·            ╰── spread here
+──╯
+help: a list literal spreads lists — `[..xs, y]`; write any other value as an element
+```
+
+## type.list_pattern
+
+a list pattern matches a list
+
+```avra
+let n = 3
+match n {
+    [a, ..] -> a
+    _ -> 0
+}
+```
+
+```
+error[type.list_pattern]: a list pattern matches a list, found `int`
+  ╭─[witness.av:3:5]
+3 │     [a, ..] -> a
+  ·     ┬
+  ·     ╰── this pattern
+──╯
+help: match a list — `[first, ..rest]`; for any other value, match what it is
+```
+
 ## type.list_element
 
 a list's elements share one type
@@ -2533,6 +2593,37 @@ error[type.duplicate_field]: `P` declares `x` more than once
   · ╰── in this declaration
 ──╯
 help: rename one of them
+```
+
+## type.record_pattern
+
+a record pattern names the subject's record and its fields
+
+```avra
+type P = { x: int }
+let n = 3
+match n {
+    P { x, .. } -> x
+    _ -> 0
+}
+```
+
+```
+error[type.record_pattern]: `P { … }` matches a record, found `int`
+  ╭─[witness.av:4:5]
+4 │     P { x, .. } -> x
+  ·     ┬
+  ·     ╰── this pattern
+──╯
+help: match a record of that name, or the shape the value is
+
+warning[type.unreachable_arm]: this arm is never reached — the arm above takes every value
+  ╭─[witness.av:5:5]
+5 │     _ -> 0
+  ·     ┬
+  ·     ╰── never reached
+──╯
+help: move it above the catch-all, or remove it
 ```
 
 ## type.spread
@@ -3572,6 +3663,45 @@ error[type.param_default]: `b` has no default and follows `a`, which has one —
 help: move the defaulted seats last, or give `b` a default too
 ```
 
+## type.variadic
+
+a `..` seat is the last, a plain list, and takes the arguments a call leaves, by position
+
+```avra
+fn h(..r: List<int>, a: int) -> int { a }
+1
+```
+
+```
+error[type.variadic]: `..r` takes the rest of `h`'s arguments, so it is the one seat that stands last
+  ╭─[witness.av:1:1]
+1 │ fn h(..r: List<int>, a: int) -> int { a }
+  · ┬
+  · ╰── this seat
+──╯
+help: move it to the end, and keep one
+```
+
+## type.spread_seat
+
+a `..` argument fills a seat that takes the rest of the arguments
+
+```avra
+fn g(a: int, b: int) -> int { a }
+let c = g(1, ..[2])
+c
+```
+
+```
+error[type.spread_seat]: `..` spreads into a seat that takes the rest of the arguments, and `g` declares none
+  ╭─[witness.av:2:14]
+2 │ let c = g(1, ..[2])
+  ·              ┬
+  ·              ╰── spread here
+──╯
+help: declare `..rest: List<T>` on `g`, or pass each element — a list's length is known at run time, a seat's at compile time
+```
+
 ## type.isolated
 
 an `isolated` seat takes a fn that shares nothing with its caller — a lambda capturing no identity, a declared fn, or an `isolated` parameter
@@ -3687,6 +3817,25 @@ error[type.map_key]: a map's keys are strings, this is `int`
   ·          ╰── this is `int`
 ──╯
 help: other key types are recorded — spell the key as text
+```
+
+## type.spread_map
+
+a map literal spreads maps
+
+```avra
+let m = { ..5 }
+2
+```
+
+```
+error[type.spread_map]: `..` in a map spreads a map, found `int`
+  ╭─[witness.av:1:13]
+1 │ let m = { ..5 }
+  ·             ┬
+  ·             ╰── spread here
+──╯
+help: a map literal spreads maps — `{ ..m, "k": v }`; write any other value under a key
 ```
 
 ## type.map_value

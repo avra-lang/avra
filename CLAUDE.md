@@ -1617,8 +1617,6 @@ files (F3017 names both files), a pattern or construction with the wrong payload
 compiler's help is the note.
 
 Syntax the grammar lacks:
-- Struct destructuring in `let` (`let Sp { lo, hi } = s`):
-  "expected `=` while parsing `stmt`".
 - AN IMPORT IS SPELLED WITH DOTS, and this file writes package names
   with a SLASH throughout (`@std/io`, `@std/text`) because that is the
   package's name in prose. The `use` line is not:
