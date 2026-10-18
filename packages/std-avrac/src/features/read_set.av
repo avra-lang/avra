@@ -162,6 +162,86 @@ fn deduped(places: List<StatePlace>) -> List<StatePlace> {
     out
 }
 
+// ── the STRUCTURAL set: reads a reading does not answer for ───────────
+
+/// Whether a closure's reads are not the paint's: the closure the builder
+/// minted to say a text again (its reads are the reading, answered by the
+/// page), and a handler an instance hears (it runs when the user speaks, not
+/// when the page is drawn).
+fn covered(view: FileView, e: ExprId) -> bool {
+    view.store.expr_is_closure(e) &&
+        (view.store.minted_for(e) != null || view.store.on_handler(e) != null)
+}
+
+/// The heads of an instance a reading answers for: its text, which the
+/// instance's minted closure says again.
+fn sited_heads(view: FileView, e: ExprId) -> List<ExprId> {
+    match view.store.expr(e) {
+        .Component(_, heads, _, .Expanded(lit), _) if says_again(view, lit) -> heads.take(1),
+        rest -> [],
+    }
+}
+
+/// Whether a literal holds a closure the builder minted for it.
+fn says_again(view: FileView, lit: ExprId) -> bool {
+    match view.store.expr(lit) {
+        .StructLit(_, _, values) -> values.any((v) -> view.store.minted_for(v) != null && view.store.expr_is_closure(v)),
+        rest -> false,
+    }
+}
+
+/// The places the subtree reads that no reading answers for, children first.
+/// A covered closure is a leaf with no read; the head a reading says again is
+/// not walked; every other closure yields its captures, as `reads_of` has it.
+fn structural_reads(view: FileView, names: NameFacts, root: ExprId, skip: List<ExprId>) -> List<
+    StatePlace,
+> {
+    if skip.contains(root) || covered(view, root) { return [] }
+    let own = here(view, names, root)
+    if view.store.expr_is_closure(root) { return own }
+    let inner = skip.concat(sited_heads(view, root))
+    flatten([structural_reads(view, names, k, inner) for k in view.store.expr_children(root)])
+        .concat(own)
+}
+
+/// The places the calls in the subtree reach that no reading answers for: a
+/// callee's own STRUCTURAL places (`callee`, as `place_key`s), and `Unknown`
+/// where a body is out of sight.
+fn structural_calls(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    skip: List<ExprId>,
+    callee: fn(DeclId) -> List<int>,
+) -> List<StatePlace> {
+    if skip.contains(root) || covered(view, root) || view.store.expr_is_closure(root) { return [] }
+    let called = if view.store.expr_is_call(root) { callee_places(names, root, callee) } else { [] }
+    let method = if applies_method(view.store, root) { [StatePlace.Unknown] } else { [] }
+    let inner = skip.concat(sited_heads(view, root))
+    called
+        .concat(method)
+        .concat(
+            flatten(
+                [structural_calls(view, names, k, inner, callee) for k in view.store.expr_children(root)],
+            ),
+        )
+}
+
+/// Every place the subtree reads at paint time that a reading does NOT
+/// answer for: a page whose cell is among them takes the full paint when it
+/// is written.
+export fn structural_places_of(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    callee: fn(DeclId) -> List<int>,
+) -> List<StatePlace> {
+    deduped(
+        structural_reads(view, names, root, [])
+            .concat(structural_calls(view, names, root, [], callee)),
+    )
+}
+
 /// The `state` places `root`'s subtree reads, deduped. A call is a
 /// boundary: the callee's reads are the callee's body's, never folded
 /// in here.

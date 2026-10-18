@@ -36,6 +36,7 @@ use features.{
     bound_decl_of,
     read_set_of,
     call_places_of,
+    structural_places_of,
     place_key,
     StatePlace,
     SeatValue,
@@ -260,7 +261,7 @@ impl Workspace {
                 // settled cell, and an unsettled member reads as
                 // `bottom` — pure. Answer conservatively instead.
                 if self.db.value_hash_of(key(Family.ReadReach, 0)) == null { return [unknown_key()] }
-                self.read_fixpoint.value_at(d.index)
+                plain_places(self.read_fixpoint.value_at(d.index))
             },
             .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> [],
         }
@@ -286,6 +287,9 @@ impl Workspace {
             [shared_key(p) for p in read_set_of(view, names, root)]
                 .concat(
                     [place_key(p) for p in call_places_of(view, names, root, (g) -> self.callee_places(g))],
+                )
+                .concat(
+                    [structural_key(shared_key(p)) for p in structural_places_of(view, names, root, (g) -> self.callee_structural(g))],
                 ),
         )
     }
@@ -299,7 +303,38 @@ impl Workspace {
         if x.external || self.is_held(x.file) { return [unknown_key()] }
         match x.kind {
             .State -> [place_key(StatePlace.Global(g))],
-            rest -> self.read_fixpoint.value_at(g.index),
+            rest -> plain_places(self.read_fixpoint.value_at(g.index)),
+        }
+    }
+
+    /// The `state` places a declaration reads at paint time that no reading
+    /// answers for — what a page must take the full paint for when one is
+    /// written. A reading is a text the instance's minted closure says again;
+    /// a handler runs when the user speaks. The declaration's own `state`
+    /// statements stand as themselves; a call contributes its callee's
+    /// structural places.
+    fn structural_places(d: DeclId) -> List<int> {
+        let x = self.decls.decl(d)
+        let root? = x.root else { return [unknown_key()] }
+        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        let _ = self.read_reach()
+        let names = self.names_of(d)
+        let view = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
+        sorted_places(
+            [place_key(p) for p in structural_places_of(view, names, root, (g) -> self.callee_structural(g))],
+        )
+    }
+
+    /// What a callee answers a structural walk: a body this compile cannot
+    /// see may read anything, a `state` declaration read directly is the
+    /// place, and every other declaration answers through the fixpoint's
+    /// structural half.
+    fn callee_structural(g: DeclId) -> List<int> {
+        let x = self.decls.decl(g)
+        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        match x.kind {
+            .State -> [place_key(StatePlace.Global(g))],
+            rest -> structural_places_of_keys(self.read_fixpoint.value_at(g.index)),
         }
     }
 
@@ -1114,6 +1149,23 @@ fn unknown_key() -> int { place_key(StatePlace.Unknown) }
 /// place itself, anything the callee's body owns is `Unknown`.
 fn shared_key(p: StatePlace) -> int {
     match p { .Global(_) -> place_key(p), .Local(_, _) or .Unknown -> unknown_key() }
+}
+
+/// THE STRUCTURAL HALF of a declaration's reach rides the same set: a key
+/// moved far out of the places' range, so one fixpoint holds both and a plain
+/// reader filters the other out.
+const structural_offset = 4503599627370496
+
+fn structural_key(k: int) -> int { if k >= 0 { k + structural_offset } else { k - structural_offset } }
+
+fn is_structural_key(k: int) -> bool { k >= structural_offset || k <= 0 - structural_offset }
+
+/// The keys a set holds that are plain places.
+fn plain_places(keys: List<int>) -> List<int> { [k for k in keys if !is_structural_key(k)] }
+
+/// The place keys the structural half of a set names.
+fn structural_places_of_keys(keys: List<int>) -> List<int> {
+    [if k >= 0 { k - structural_offset } else { k + structural_offset } for k in keys if is_structural_key(k)]
 }
 
 /// A set of place keys, sorted and each once — the lattice's one shape.
