@@ -1648,28 +1648,28 @@ impl SourceText {
             return self
                 .wrapped_list(
                     "{",
-                    ["${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, k in keys],
+                    [self.map_entry_text(k, values[j], depth + 1) for j, k in keys],
                     "}",
                     false,
                     depth,
                     col,
                 )
         }
-        if self.span_flat(span) { return "{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}" }
+        if self.span_flat(span) { return "{${joined([self.map_entry_text(k, values[j], depth) for j, k in keys], ", ")}}" }
         let body = flatten(
             [self
                 .trivia_before(start_of(self.store.expr_span(k)), depth + 1)
-                .concat(
-                    [
-                        source_line(
-                            depth + 1,
-                            "${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)},",
-                        ),
-                    ],
-                ) for j, k in keys],
+                .concat([source_line(depth + 1, "${self.map_entry_text(k, values[j], depth + 1)},")]) for j, k in keys],
         )
             .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// One map entry: `key: value`, or a spread's `..map` — its key is
+    /// the spread and its value a placeholder that prints nothing.
+    mut fn map_entry_text(k: ExprId, v: ExprId, depth: int) -> string {
+        if self.store.spread_operand(k) != null { return self.expression(k, loosest_tier, depth) }
+        "${self.expression(k, loosest_tier, depth)}: ${self.expression(v, loosest_tier, depth)}"
     }
 
     /// The table's lines, each column padded to its own widest cell
