@@ -236,6 +236,7 @@ fn judged(
     stranger_defects(rname, s, row, fixed, top)
         .concat(unfilled_defects(rname, s, row, fixed))
         .concat(shape_defects(rname, s, row, fixed))
+        .concat(truth_defects(rname, s, row, fixed))
         .concat(nested_defects(rname, s, row, fixed, rows))
 }
 
@@ -383,6 +384,42 @@ fn payload_shape(rname: string, s: Seq, row: PayloadRow, p: Field, label: string
     [node_refusal(rname, wrong_shape(row, p, carried!))]
 }
 
+/// A `bool` payload is stated `true` or `false`, or is the presence of a
+/// terminal the rule captured under its label. Any other word, and a built
+/// node, states no truth.
+fn truth_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
+    flatten([truth_defect(rname, s, row, p, fixed) for p in row.payloads if is_bool(p.kind)])
+}
+
+fn is_bool(k: Kind) -> bool {
+    match k { .Bool -> true, rest -> false }
+}
+
+fn truth_defect(rname: string, s: Seq, row: PayloadRow, p: Field, fixed: List<Fixed>) -> List<
+    Diagnostic,
+> {
+    let label? = label_of(p, fixed, s) else { return stated_truth(rname, row, p, fixed.find(it.name == p.name)) }
+    let hit? = s.deep_items().find(labelled(it, label)) else { return [] }
+    if presence_item(hit.prim) { return [] }
+    [node_refusal(rname, truth_from_node(row, p))]
+}
+
+/// A stated word that is no truth; a node or a list is the nesting's own to judge.
+fn stated_truth(rname: string, row: PayloadRow, p: Field, stated: Fixed?) -> List<Diagnostic> {
+    let f? = stated else { return [] }
+    match f.stated() {
+        .Text(text) -> if text == "true" || text == "false" { [] } else { [node_refusal(rname, states_no_truth(row, p, text))] },
+        .Node(_) or .List(_) -> [],
+    }
+}
+
+/// Whether an item's presence can be read as a truth: a terminal, literal or
+/// named (`state:STATE`), or a group, which may answer either. A rule's built
+/// node is a value, and holds no truth.
+fn presence_item(p: Prim) -> bool {
+    match p { .Lit(_) or .Named(_) or .Group(_) -> true, .Ref(_) or .NotChar(_) -> false }
+}
+
 /// What a grammar atom answers with: a built node, or a token's text.
 enum Carrier { Built, Text }
 
@@ -467,6 +504,14 @@ fn node_fills_text(row: PayloadRow, p: Field, owner: string, variant: string) ->
 
 fn node_of_another_kind(row: PayloadRow, p: Field, owner: string, variant: string, built: string) -> string {
     "builds `${owner}.${variant}` in `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}`, and it builds a `${built}`"
+}
+
+fn states_no_truth(row: PayloadRow, p: Field, text: string) -> string {
+    "states `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}` as `${text}` — a `bool` payload is stated `true` or `false`, or is the presence of a terminal"
+}
+
+fn truth_from_node(row: PayloadRow, p: Field) -> string {
+    "fills `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}` from a built node — a `bool` payload is a terminal's presence, or stated `true` or `false`"
 }
 
 fn names_no_operator(row: PayloadRow, word: string) -> string {

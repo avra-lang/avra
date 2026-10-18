@@ -208,6 +208,39 @@ fn label_arg(a: BuildArg) -> Result<string, string> {
     .Ok(a.name)
 }
 
+/// A build argument: its name, and the term it states when it states one.
+fn arg_of<T>(lex: Lexeme<T>, args: List<Captured<T, GrammarNode>>) -> Result<
+    Captured<T, GrammarNode>,
+    string,
+> {
+    let n = tok_text(lex, args[0], "an argument name")?
+    let term: Term? = stated_term(args[1])?
+    ok<T>(GrammarNode.NArg(BuildArg { name: n, term: term }))
+}
+
+fn stated_term<T>(v: Captured<T, GrammarNode>) -> Result<Term?, string> {
+    match v {
+        .Absent -> .Ok(null),
+        .Terminal(_) or .Node(_) or .Many(_) -> .Ok(want(node_of(v)?.as_term(), "a stated term")?),
+    }
+}
+
+/// A term that is a build: a bare word reads as text, a node build is built
+/// in place, and a builder call has no payload to fill.
+fn term_of_build<T>(v: Captured<T, GrammarNode>) -> Result<Captured<T, GrammarNode>, string> {
+    let b = want(node_of(v)?.as_build(), "a build")?
+    match b {
+        .Var(name) -> ok<T>(GrammarNode.NTerm(Term.Text(name))),
+        .Node(_, _, _, _) -> ok<T>(GrammarNode.NTerm(Term.Node(b))),
+        .Call(name, _) -> .Err(term_calls_a_builder(name)),
+    }
+}
+
+fn term_of_list<T>(v: Captured<T, GrammarNode>) -> Result<Captured<T, GrammarNode>, string> {
+    let items = [want(node_of(x)?.as_term(), "a stated term")? for x in as_list(v)?]
+    ok<T>(GrammarNode.NTerm(Term.List(items)))
+}
+
 // ── Voices: what a build's own words refuse. ──
 
 /// A nested build constructs a NODE; a builder call has no payload to fill.
@@ -421,30 +454,13 @@ export fn grammar_build<T>(
                 .Node(_) or .Many(_) -> .Err("expected `(`"),
             }
         },
-        "build_arg" -> {
-            let n = tok_text(lex, args[0], "an argument name")?
-            let term: Term? = match args[1] {
-                .Absent -> null,
-                rest -> want(node_of(args[1])?.as_term(), "a stated term")?,
-            }
-            ok<T>(GrammarNode.NArg(BuildArg { name: n, term: term }))
-        },
-        "term_build" -> {
-            let b = want(node_of(args[0])?.as_build(), "a build")?
-            match b {
-                .Var(name) -> ok<T>(GrammarNode.NTerm(Term.Text(name))),
-                .Node(_, _, _, _) -> ok<T>(GrammarNode.NTerm(Term.Node(b))),
-                .Call(name, _) -> .Err(term_calls_a_builder(name)),
-            }
-        },
+        "build_arg" -> arg_of(lex, args),
+        "term_build" -> term_of_build(args[0]),
         "term_text" -> {
             let text = tok_text(lex, args[0], "a literal")?
             ok<T>(GrammarNode.NTerm(Term.Text(text)))
         },
-        "term_list" -> {
-            let items = [want(node_of(x)?.as_term(), "a stated term")? for x in as_list(args[0])?]
-            ok<T>(GrammarNode.NTerm(Term.List(items)))
-        },
+        "term_list" -> term_of_list(args[0]),
         "build_expect" -> {
             let token = tok_text(lex, args[0], "the expected token")?
             let msg = tok_text(lex, args[1], "the message")?

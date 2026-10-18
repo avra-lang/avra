@@ -71,6 +71,11 @@ fn rows() -> List<PayloadRow> {
         PayloadRow { owner: "Pat", variant: "Wild", payloads: [] },
         PayloadRow {
             owner: "E",
+            variant: "Flag",
+            payloads: [Field { name: "on", ty: "bool", at: null, kind: .Bool }],
+        },
+        PayloadRow {
+            owner: "E",
             variant: "Many",
             payloads: [
                 Field {
@@ -197,6 +202,28 @@ spec "features/node_grammar" {
         then "a stated payload renders with its value" {
             render_grammar(grammar_of("r = \"t\" -> E.Lit(value = true)\n"))
                 .contains("-> E.Lit(value = true)")
+        }
+    }
+    given "a `bool` payload" {
+
+        then "is the presence of a terminal the rule captures" {
+            defects_of("r = on:\"raw\" -> E.Flag\n").is_empty()
+        }
+        then "or is stated `true` or `false`" {
+            defects_of("r = \"x\" -> E.Flag(on = true)\n").is_empty() &&
+                defects_of("r = \"x\" -> E.Flag(on = false)\n").is_empty()
+        }
+        then "a stated word that is neither refuses, and says what a bool is" {
+            refuses(
+                "r = \"x\" -> E.Flag(on = maybe)\n",
+                "a `bool` payload is stated `true` or `false`",
+            )
+        }
+        then "a named terminal's presence is a truth too (`state:STATE`)" {
+            defects_of("r = on:NAME -> E.Flag\n").is_empty()
+        }
+        then "a built node is no truth" {
+            refuses("r = on:e -> E.Flag\ne = NAME\n", "from a built node")
         }
     }
     given "a node built in place" {
