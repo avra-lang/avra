@@ -12,7 +12,18 @@
 // says it. Anything else is its own message.
 export function faultWords(e) {
   if (e instanceof RangeError && /call stack/i.test(e.message)) return "avra: a task's stack overflowed";
+  if (typeof WebAssembly.SuspendError === "function" && e instanceof WebAssembly.SuspendError) return PARKED_UNDER_HOST;
   return String(e && e.message ? e.message : e);
+}
+
+// A task parked while a host callback was on the stack: JS frames cannot be
+// suspended, so the program was entered by a plain call, not by `enter`.
+export const PARKED_UNDER_HOST = "avra: a task parked under a host call — enter the program with tasks.enter, which gives each entry a stack of its own";
+
+// The artifact a page fetches: the clean module where the host can suspend a
+// stack, the asyncified fallback where it cannot.
+export function chooseArtifact(url, suspends = jspiAvailable()) {
+  return suspends ? url : url.replace(/\.wasm$/, ".asyncify.wasm");
 }
 
 export function jspiAvailable() {
@@ -88,5 +99,9 @@ export function hostedTasks(exports, fault = (e) => { throw e; }) {
     stranded: () => live,
     // Runs the program's own entry on the first stack; resolves when it ends.
     start: (name = "_start") => WebAssembly.promising(exports()[name])(),
+    // A host callback (an echo, a timer, a fetch's reply) enters the program
+    // on a stack of its own, so whatever it runs may park. A plain call of
+    // the export has no stack to suspend and is refused at the first park.
+    enter: (name, ...args) => WebAssembly.promising(exports()[name])(...args),
   };
 }
