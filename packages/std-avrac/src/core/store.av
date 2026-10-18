@@ -18,7 +18,7 @@ export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> List<ExprId> { [] }
 /// `grammar` declaration read), so it stays its own side table — a
 /// payload wearing a nullable field inside this struct would read as
 /// "grammar-ness is a mark" when it is a kept value.
-export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_provide: bool, is_module_state: bool, is_host: bool }
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool, is_state: bool, is_module_state: bool, is_host: bool }
 
 fn no_stmt_marks() -> StmtMarks {
     StmtMarks {
@@ -27,7 +27,6 @@ fn no_stmt_marks() -> StmtMarks {
         is_once: false,
         is_static: false,
         is_state: false,
-        is_provide: false,
         is_module_state: false,
         is_host: false,
     }
@@ -1104,6 +1103,19 @@ impl SyntaxArena {
 
     /// The marks a statement wears.
     fn marks_at(s: StmtId) -> StmtMarks { self.marks.get()[s.index] }
+
+    /// Gives `s` every keyword `worn` records, each through its own verb
+    /// so the fingerprint follows — the one door a copy uses, so a new
+    /// bit is added here and a template copy never forgets it.
+    fn wear(s: StmtId, worn: StmtMarks) {
+        if worn.is_exported { self.mark_exported(s) }
+        if worn.is_mutating { self.mark_mutating(s) }
+        if worn.is_once { self.mark_once(s) }
+        if worn.is_static { self.mark_static(s) }
+        if worn.is_state { self.mark_state(s) }
+        if worn.is_module_state { self.mark_module_state(s) }
+        if worn.is_host { self.mark_host(s) }
+    }
 
     /// `mut fn` crossed this declaration — it says its receiver is
     /// written; a trait sig's word is the contract.
