@@ -5,6 +5,7 @@
 //! renderer.
 use core.{
     SyntaxArena,
+    spread_entry,
     jump_word,
     Remark,
     Trivia,
@@ -47,7 +48,7 @@ use core.{
     same_param_id,
     pronoun_param_id,
 }
-use features.{chained_binder, spread_entry}
+use features.{chained_binder}
 use features.expr_spine.{words, applieds}
 use @std.text.{Text, builder}
 extern fn avra_float_text_bits(bits: int) -> string
@@ -1387,9 +1388,10 @@ impl SourceText {
                 )
             },
             .Named(name, value) -> {
-                let head = "${source_name(name.of)}: "
+                let spreads = name.of == spread_entry
+                let head = if spreads { ".." } else { "${source_name(name.of)}: " }
                 grouped(
-                    "${head}${self.expression(value, loosest_tier, depth, col_after(head, c))}",
+                    "${head}${self.expression(value, if spreads { postfix_tier } else { loosest_tier }, depth, col_after(head, c))}",
                     loosest_tier,
                     parent,
                 )
