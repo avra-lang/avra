@@ -1,0 +1,207 @@
+//! `realize/dom/exact.av` — EXACT PATCHES: a state write updates only the
+//! text that reads it. The page watches the cells its readings read: after a
+//! paint each reading's cells are observed and filed under it by key; a turn
+//! asks which observed cells were written, recomputes only the readings
+//! under them, and says `SetText` where the words changed. A text the
+//! compiler could not place carries no reading and the full paint speaks
+//! for it.
+//!
+//! THE RUNTIME HOLDS WHAT IT OBSERVES: observing takes a reference to the
+//! cell and unobserving gives it back, so a cell cannot die under a reading
+//! and releasing never writes a freed header. A KEY names a cell by its
+//! address and opens nothing; the page indexes keys.
+//!
+//! THE TURN'S ORDER IS THE LAW: the stamp moves on FIRST, then the log is
+//! taken. A write after the stamp moved stores a stamp the observer has not
+//! seen; read the log first and a write between the two is filed under the
+//! stamp that is already spent.
+use tree.identity.{NodeId}
+use tree.sites.{Reading}
+use realize.html.element.{Element, Tagged}
+use realize.dom.patch.{Patch}
+
+extern fn avra_box_observe(cell: ptr) -> int
+extern fn avra_box_unobserve(cell: ptr) -> int
+extern fn avra_box_key(cell: ptr) -> int
+extern fn avra_turn_next() -> int
+extern fn avra_changes_take() -> ptr
+extern fn avra_array_len(arr: ptr) -> int
+extern fn avra_array_get(arr: ptr, at: int) -> int
+extern fn avra_rc_release(p: ptr)
+
+/// A reading the page has placed: the number it gave the text's run, the
+/// reading, and the words the page was last told.
+export type Placed = { node: NodeId, reading: Reading, shown: Cell<string> }
+
+/// The readings a paint placed, in page order: each text element that carries
+/// readings, the run it holds first.
+export fn placed_in(page: List<Element>) -> List<Placed> {
+    [p for e in page for p in placed_of(e)]
+}
+
+fn placed_of(e: Element) -> List<Placed> {
+    let el? = e.tagged() else { return [] }
+    [p for r in el.sites for p in run_placed(el, r)]
+        .concat([p for k in el.kids for p in placed_of(k)])
+}
+
+/// A reading with the text run its element holds.
+fn run_placed(el: Tagged, r: Reading) -> List<Placed> {
+    let k? = el.kids.first() else { return [] }
+    match k {
+        .Text(run) -> [Placed { node: run.id, reading: r, shown: Cell.new(run.content) }],
+        .Tag(_) -> [],
+    }
+}
+
+/// The cells the paint reads that no reading answers for, over the whole page.
+fn structural_cells(page: List<Element>) -> List<ptr> {
+    [c for e in page for c in structural_of(e)]
+}
+
+fn structural_of(e: Element) -> List<ptr> {
+    let el? = e.tagged() else { return [] }
+    [c for c in el.structural].concat([c for k in el.kids for c in structural_of(k)])
+}
+
+/// Whether any node of the page cannot have its structural reads placed, or
+/// was drawn by a composition.
+fn opaque_in(page: List<Element>) -> bool { page.any(opaque_element(it)) }
+
+fn opaque_element(e: Element) -> bool {
+    let el? = e.tagged() else { return false }
+    el.opaque.of || el.kids.any(opaque_element(it))
+}
+
+/// The placed readings a page watches, the keys filed under them (a cell's
+/// key as text maps to the positions of the readings that read it), and what
+/// takes the full paint instead: the cells the paint reads that no reading
+/// answers for, and whether the page can be placed at all.
+export type Watch = {
+    placed: List<Placed>,
+    under: Map<string, List<int>>,
+    structural: List<ptr>,
+    opaque: bool,
+}
+
+fn key_of(cell: ptr) -> string { "${avra_box_key(cell)}" }
+
+/// A painted page under watch: each reading's cells observed and filed under
+/// the readings that read them, and the structural cells observed too, so a
+/// write to one is logged and the turn knows to paint whole.
+export fn watching(page: List<Element>) -> Watch {
+    let placed = placed_in(page)
+    let structural = structural_cells(page)
+    for cell in structural { let _ = avra_box_observe(cell) }
+    mut index: Map<string, List<int>> = {}
+    for at, p in placed {
+        for cell in p.reading.cells {
+            let _ = avra_box_observe(cell)
+            let key = key_of(cell)
+            index.set(key, (index.get(key) ?? []).concat([at]))
+        }
+    }
+    Watch { placed: placed, under: index, structural: structural, opaque: opaque_in(page) }
+}
+
+impl Watch {
+    /// The positions of the readings under the keys the runtime logged, each once.
+    fn affected(changed: List<int>) -> List<int> {
+        changed
+            .fold([]) { seen, key ->
+                let under = self.under.get("${key}") ?? []
+                seen.concat([i for i in under if !seen.contains(i)])
+            }
+    }
+
+    /// One reading brought up to date: the patch that says its new words, or
+    /// none when they came out as they were (the cutoff).
+    fn refreshed(at: int) -> List<Patch> {
+        let p = self.placed[at]
+        let now = (p.reading.words)()
+        if now == p.shown.get() { return [] }
+        p.shown.set(now)
+        [Patch.SetText(p.node, now)]
+    }
+
+    /// Every cell observed again after the stamp wrapped: a cell stamped a
+    /// full cycle ago would read as already written this turn.
+    fn observed_again() {
+        for cell in self.structural { let _ = avra_box_observe(cell) }
+        for p in self.placed {
+            for cell in p.reading.cells { let _ = avra_box_observe(cell) }
+        }
+    }
+
+    /// Whether any key the runtime logged is a cell the paint reads outside a
+    /// reading.
+    fn structural_among(changed: List<int>) -> bool {
+        self.structural.any((c) -> changed.contains(avra_box_key(c)))
+    }
+
+    /// THE TURN: the stamp moves on first, the log is taken second. A page
+    /// that cannot be placed, or one where a structural cell was written, is
+    /// not the exact path's to answer — it declines, and the full paint
+    /// speaks. Otherwise only the readings under the changed cells are
+    /// recomputed.
+    fn turn() -> List<Patch>? {
+        if avra_turn_next() == 1 { self.observed_again() }
+        let changed = taken()
+        if self.opaque || self.structural_among(changed) { return null }
+        [p for at in self.affected(changed) for p in self.refreshed(at)]
+    }
+
+    /// The page stops watching: every cell its readings and its structure
+    /// observed is let go, once however many read it.
+    fn released() {
+        for cell in self.structural { let _ = avra_box_unobserve(cell) }
+        for key in self.under.keys() {
+            let at = (self.under.get(key) ?? [])[0]
+            for cell in self.placed[at].reading.cells {
+                if key_of(cell) == key { let _ = avra_box_unobserve(cell) }
+            }
+        }
+    }
+}
+
+/// The keys of the cells written this turn, the runtime's log taken and let go.
+fn taken() -> List<int> {
+    let log = avra_changes_take()
+    let keys = [avra_array_get(log, i) for i in 0..avra_array_len(log)]
+    avra_rc_release(log)
+    keys
+}
+
+/// A patch as a reader spells it: a text change in full, any other by its
+/// kind and the node it names.
+export fn spelled(p: Patch) -> string {
+    match p {
+        .SetText(id, content) -> "SetText #${id.n} \"${content}\"",
+        .Create(id, _) -> "Create #${id.n}",
+        .CreateText(id, content) -> "CreateText #${id.n} \"${content}\"",
+        .Place(id, _, _) -> "Place #${id.n}",
+        .Remove(id) -> "Remove #${id.n}",
+        .SetAttr(id, _, value) -> "SetAttr #${id.n} \"${value}\"",
+        .DropAttr(id, _) -> "DropAttr #${id.n}",
+        .SetProp(id, _, _) -> "SetProp #${id.n}",
+        .Listen(id, _) -> "Listen #${id.n}",
+        .Unlisten(id, _) -> "Unlisten #${id.n}",
+        .SetVar(id, _, value) -> "SetVar #${id.n} \"${value}\"",
+        .DropVar(id, _) -> "DropVar #${id.n}",
+        .Style(_) -> "Style",
+        .Call(id, verb) -> "Call #${id.n} ${verb}",
+    }
+}
+
+/// How two answers to one turn differ: null when the exact path said exactly
+/// what the full paint did (the same patches, in any order), else both,
+/// spelled.
+export fn disagreement(exact: List<Patch>, full: List<Patch>) -> string? {
+    let a = [spelled(p) for p in exact]
+    let b = [spelled(p) for p in full]
+    if a.length == b.length && a.all(times(a, it) == times(b, it)) { return null }
+    "exact said [${a.join(", ")}] but the full paint said [${b.join(", ")}]"
+}
+
+/// How many times a spelling stands in a list.
+fn times(xs: List<string>, s: string) -> int { xs.filter(it == s).length }
