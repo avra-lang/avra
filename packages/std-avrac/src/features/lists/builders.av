@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> the comprehension and collect nodes.
-use core.{Expr, Scoped, CompClause}
+use core.{Expr, ExprId, Plain, Scoped, CompClause, sorted_by, spread_entry}
 use features.{token_at, expr_id_at, scoped_at, comp_clause_at, comp_clauses_at, LangNode, Builder}
 use grammar.{Token}
 
@@ -45,4 +45,24 @@ fn build_collect_blockless(_b: Builder) -> Result<LangNode, string> {
 
 fn blockless_collect() -> string {
     "`collect` gathers the values its block's statements leave — write `collect { … }`"
+}
+
+/// One list entry in written order: its start, and the node it is.
+type Entry = { at: int, node: ExprId }
+
+/// `[a, ..xs, b]` — elements and spreads in written order. A spread is
+/// the `Named` node `..` wearing its operand.
+fn build_list_lit(b: Builder) -> Result<LangNode, string> {
+    let elems = [Entry { at: b.store.expr_span(x)?.lo ?? 0, node: x } for x in b.exprs(0)?]
+    let spreads = [spread_entry_at(b, x) for x in b.exprs(1)?]
+    b
+        .make_expr(Expr.ListLit([x.node for x in sorted_by(elems.concat(spreads), (x, y) -> x.at < y.at)]))
+}
+
+/// A spread's operand wrapped as the entry it is.
+fn spread_entry_at(b: Builder, operand: ExprId) -> Entry {
+    Entry {
+        at: b.store.expr_span(operand)?.lo ?? 0,
+        node: b.store.alloc_expr(Expr.Named(Plain(spread_entry), operand), b.store.expr_span(operand)),
+    }
 }
