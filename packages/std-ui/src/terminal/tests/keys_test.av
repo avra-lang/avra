@@ -10,6 +10,7 @@ use @std.ui.terminal.keys.{
     kitty_on,
     modes_off,
     modes_on,
+    paste_cap,
     resume,
 }
 
@@ -27,9 +28,10 @@ fn word(k: Key) -> string {
         .Bottom -> "bottom",
         .Escape -> "escape",
         .Chord(t, ctrl, alt) -> "chord(${t},${if ctrl { "c" } else { "" }}${if alt { "a" } else { "" }})",
-        .Click(x, y) -> "click(${x},${y})",
+        .Click(x, y, shift, alt, ctrl) -> "click(${x},${y}${if shift { ",shift" } else { "" }}${if alt { ",alt" } else { "" }}${if ctrl { ",ctrl" } else { "" }})",
         .Wheel(x, y, toward_end) -> "wheel(${x},${y},${if toward_end { "down" } else { "up" }})",
-        .Paste(t) -> "paste(${t})",
+        .Paste(.Text(t)) -> "paste(${t})",
+        .Paste(.TooLarge(n)) -> "paste_too_large(${n})",
         .FocusIn -> "focus_in",
         .FocusOut -> "focus_out",
         .Reports(n) -> "reports(${n})",
@@ -117,14 +119,16 @@ spec "a terminal's input is read as keys" {
         }
     }
     given "a control character with no key" {
-        then "it is dropped" { spelled("a" + from_codepoint(1) + from_codepoint(7) + "b") == "'a' 'b'" }
+        then "it is dropped" { spelled("a" + from_codepoint(0) + from_codepoint(28) + "b") == "'a' 'b'" }
     }
 }
 
 spec "the mouse, the paste, the focus and the kitty keyboard" {
     given "an SGR mouse report" {
         then "a primary press is a click at the cell, from zero" { spelled("${esc()}[<0;12;5M") == "click(11,4)" }
-        then "a press with a modifier held is still a click" { spelled("${esc()}[<4;3;3M") == "click(2,2)" }
+        then "a press carries the modifiers held" {
+            spelled("${esc()}[<4;3;3M${esc()}[<8;3;3M${esc()}[<16;3;3M${esc()}[<20;3;3M") == "click(2,2,shift) click(2,2,alt) click(2,2,ctrl) click(2,2,shift,ctrl)"
+        }
         then "a release, a drag and the other buttons spell nothing" {
             spelled("${esc()}[<0;3;3m${esc()}[<32;3;3M${esc()}[<2;3;3M${esc()}[<1;3;3M") == ""
         }
@@ -156,19 +160,33 @@ spec "the mouse, the paste, the focus and the kitty keyboard" {
         then "an unfinished paste leaves its octets held and no key" {
             read([27, 91, 50, 48, 48, 126, 97, 98]) == " | 8"
         }
-        then "one too long to hold is let go whole, and the keys after it are heard" {
+        then "one too long to hold is let go, and the keys after it are heard, with how many octets went" {
             let first = heard("${esc()}[200~${repeat("x", 1100000)}".bytes())
-            let second = resume(first.held.concat("yyy${esc()}[201~k".bytes()), first.draining)
-            first.draining &&
+            let second = resume(
+                first.held.concat("yyy${esc()}[201~k".bytes()),
+                first.draining,
+                paste_cap,
+            )
+            first.draining > 0 &&
                 first.keys.is_empty() &&
                 first.held.length < 16 &&
-                !second.draining &&
-                [word(k) for k in second.keys].join(" ") == "'k'"
+                second.draining == 0 &&
+                [word(k) for k in second.keys].join(" ") == "paste_too_large(1100003) 'k'"
         }
         then "a long paste's end cut across reads while it is let go still ends it" {
             let first = heard("${esc()}[200~${repeat("x", 1100000)}${esc()}[20".bytes())
-            let second = resume(first.held.concat("1~k".bytes()), first.draining)
-            first.draining && [word(k) for k in second.keys].join(" ") == "'k'"
+            let second = resume(first.held.concat("1~k".bytes()), first.draining, paste_cap)
+            first.draining > 0 &&
+                [word(k) for k in second.keys].join(" ") == "paste_too_large(1100000) 'k'"
+        }
+        then "the limit is the terminal's to set" {
+            let first = resume("${esc()}[200~${repeat("x", 100)}".bytes(), 0, 50)
+            let second = resume(first.held.concat("${esc()}[201~".bytes()), first.draining, 50)
+            first.draining > 0 && [word(k) for k in second.keys].join(" ") == "paste_too_large(100)"
+        }
+        then "a paste inside the limit is whole" {
+            let run = resume("${esc()}[200~${repeat("x", 50)}${esc()}[201~".bytes(), 0, 50)
+            [word(k) for k in run.keys].join(" ") == "paste(${repeat("x", 50)})"
         }
     }
     given "the terminal's focus" {
@@ -182,14 +200,16 @@ spec "the mouse, the paste, the focus and the kitty keyboard" {
             spelled("${esc()}[105;5u${esc()}[120;3u") == "chord(i,c) chord(x,a)"
         }
         then "a key with no modifier but Shift is its text" { spelled("${esc()}[97u${esc()}[97;2u") == "'a' 'a'" }
-        then "Ctrl-C and Ctrl-D end the input" { spelled("${esc()}[99;5u${esc()}[100;5u") == "end end" }
+        then "Ctrl-D ends the input and Ctrl-C is a chord" { spelled("${esc()}[99;5u${esc()}[100;5u") == "chord(c,c) end" }
         then "a release, or a key with Super held, spells nothing" { spelled("${esc()}[97;1:3u${esc()}[97;9u") == "" }
         then "the terminal's answer to the query is told, with its flags" {
             spelled("${esc()}[?0u${esc()}[?1u") == "reports(0) reports(1)"
         }
         then "a report cut across reads is read whole" { across([27, 91, 49, 48], [53, 59, 53, 117]) == "chord(i,c)" }
         then "the legacy octets are read as they were" { spelled("\t\n${from_codepoint(127)}") == "next enter erase" }
-        then "Ctrl-C, as an octet, ends the input" { spelled("a${from_codepoint(3)}b") == "'a' end 'b'" }
+        then "a control octet is a Ctrl chord, and Ctrl-D ends the input" {
+            spelled("a${from_codepoint(3)}${from_codepoint(1)}${from_codepoint(4)}b") == "'a' chord(c,c) chord(a,c) end 'b'"
+        }
     }
     given "the modes the app asks for" {
         then "are mouse reports, bracketed paste, focus events and the kitty query, and off again in reverse" {
