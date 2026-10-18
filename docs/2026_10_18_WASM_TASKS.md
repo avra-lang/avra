@@ -190,26 +190,38 @@ native-only. The tangles that make this a review and not a mechanical move:
      read, but it exists only where isolation does, and then only on wasm.
 
    **Pick (a), universal; (b) is an accelerator for a later slice.** Cost,
-   measured (wasm32 -O2 via binaryen 133, node 24.19, best of 5; a floor, since
+   measured (wasm32 -O2 via binaryen 133, node 24.19, best of 7; a floor, since
    real bodies are heavier than these):
 
    | check | tight loop (4e8 iterations) | recursion (fib 40) |
    |---|---|---|
-   | none | 286 ms | 289 ms |
-   | flag byte load (today's native check, never raised) | 329 ms (+15%) | n/a |
-   | loop-LOCAL counter, check every 2^20 | 342 ms (+20%) | n/a |
-   | global budget, decrement at each edge or entry | 359 ms (+23%) | 855 ms (2.96x) |
+   | none | 286 ms | 280-289 ms |
+   | flag byte load (today's native check, never raised) | +15% | n/a |
+   | loop-local counter, check every 2^20 | +20% | n/a |
+   | global budget, decremented at each edge or entry | +23% | 2.96x |
+   | **strip-mined loop**, N = 256 / 1024 / 16384 | **+4.3% / +4.9% / +3.5%** | n/a |
+   | depth parameter, check when `depth & 1023 == 1023` | n/a | +47% |
 
-   Native shows the same shape on fib (331 to 845 ms), so the cost is the
-   memory counter on a body of a few instructions, not wasm. The design
-   follows the numbers: **loops count in a register-resident local** (no
-   memory traffic: the +20% row, and the compiler can hoist it), and
-   **recursion checks at function entry only in fns the call-graph pass
-   (`cancel_reach.av`) proves recursive**, on the global budget. fib is the
-   worst case of that rule; a recursive fn with a real body pays the same
-   few instructions against more work. The recursion row is the open cost:
-   measure it on the real compiler's output before the slice that inserts
-   the checks, and consider checking only every Nth entry by depth.
+   **Loops are STRIP-MINED.** The compiler splits a hot loop into an inner
+   run of N iterations with NO check (the body optimises as it does today) and
+   an outer step that takes the budget down by N and checks once. The check's
+   cost divides by N: +3.5% to +4.9% on the tightest loop there is, against
+   +20% for a per-iteration check. The residue is the inner loop's variable
+   trip count (`min(i + N, n)`); a loop whose count is known stays one loop.
+   A seeded schedule stays reproducible, because the budget is counted in
+   iterations, not time.
+
+   **Recursion has no cheap exact check.** A call-site counter is a memory
+   decrement on a body of a few instructions (2.96x on fib, native 331 to
+   845 ms: the cost is the counter, not wasm). Gating on depth is cheaper
+   (+47%, one extra argument and a mask) but only bounds DEEP recursion: fib
+   never goes past depth 40, so it would never yield. Neither is shipped as
+   the universal cost. The rule: pure recursion that neither loops nor
+   waits is cut by (b) where the page is isolated, and otherwise at the next
+   park or loop (cooperative); `within` around such a body fires when it
+   returns. Deep recursion is bounded by the engine's own stack limit
+   already. Revisit if a real program shows a pure-recursion hot spot that
+   needs cancel.
 
 5. **The case runner** (L3171-3797) and the listing (`avra tasks <pid>`) are
    native-only test and tooling surfaces; excluded.
@@ -217,6 +229,25 @@ native-only. The tangles that make this a review and not a mechanical move:
 7. **Footprint D1** (a program that neither spawns nor waits links no
    scheduler object) must hold after the split: the new `avra_sched.o` must
    not become reachable from `avra_runtime.o`. `make footprint` is the keeper.
+
+## What the first slice found (landed as `ui-sched-port`)
+
+- **A shadow stack per task.** A JSPI stack holds wasm frames, but a C
+  function's address-taken locals and spills live in linear memory, on the
+  one stack `__stack_pointer` names. Two tasks interleaving on it overwrite
+  each other's frames. So every hosted task owns a shadow stack
+  (`HOSTED_STACK`, malloc'd at its first run), the stack pointer is saved
+  before a handover and restored when the thread comes back, and a fresh
+  task's entry sets it to the top of its own before anything else runs.
+- **The archive's first member is `avra_runtime.o`.** The program imports
+  every runtime row from `avra:rt`; a member that names the same row plain
+  (`env`) while the row is still undefined is `import module mismatch` at
+  the link (seen on `avra_trap`). The linker takes members in archive order,
+  so the object that defines the rows goes first (Makefile).
+- **One translation unit, byte-identical native code.** The seam is `#if
+  AVRA_HOSTED` inside `avra_fiber.c`, not a file split: the native
+  scheduler object disassembles identically to main (arm64 and x86_64), so
+  the hot path gained no call. The file split can follow the same seam.
 
 ## Witness plan for the open items
 
