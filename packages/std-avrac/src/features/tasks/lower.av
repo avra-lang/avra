@@ -5,10 +5,20 @@
 use core.{ExprId, Reg, Type, TypeId, RtFlag, BinOp, ResSides}
 use features.{LowerCx, MethodCall, Sub}
 
+/// EVERY TASK `spawn` MAKES IS JOINED by the frame that holds it — and
+/// cancelled first when that frame is leaving because its own task was
+/// cancelled — unless something takes it over: a binding, a list, a `Tasks`
+/// (each retires the join as it stores the task). A task read as an argument,
+/// a receiver, a hole, an operand or a `select` head has no other owner.
+fn made(mut cx: LowerCx, task: Reg) -> Reg {
+    cx.settles_at_close(task, false)
+    task
+}
+
 fn task_expr_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
-        .Spawn(body) -> cx.task_spawn(cx.shape_at(e), task_box(cx, body)),
+        .Spawn(body) -> made(cx, cx.task_spawn(cx.shape_at(e), task_box(cx, body))),
         .Within(limit, body) -> within_reg(cx, e, limit, body),
         rest -> cx.lower_defect(e, "a foreign node reached the task lowering"),
     }
@@ -123,7 +133,9 @@ fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
 
 fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let first? = mc.args.first() else { return cx.lower_defect(mc.e, "a push without its task survived typing") }
-    cx.tasks_push(cx.reg_of(mc.subject), cx.reg_of(first))
+    let task = cx.reg_of(first)
+    cx.retires_settle(task)
+    cx.tasks_push(cx.reg_of(mc.subject), task)
     cx.hollow_of(cx.type_at(mc.e))
 }
 

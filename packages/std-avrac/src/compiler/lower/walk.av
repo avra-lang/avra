@@ -216,7 +216,14 @@ impl LowerCx {
         if !self.view.decls.owns_tasks(self.type_at(v)) { return }
         let slot = self.body.slot_of(s)
         let owner? = slot ?? r else { return }
+        self.retires_settle(owner)
         self.settles_at_close(owner, slot != null && self.body.is_boxed(s))
+    }
+
+    /// The tasks `owner` holds have another owner now — a binding, a list, a
+    /// `Tasks` — so the frame no longer joins them on their own account.
+    mut fn retires_settle(owner: Reg) {
+        self.deferred = [d for d in self.deferred if !d.work.settles(owner)]
     }
 
     /// The tasks `owner` holds are joined as the frame now open closes — and

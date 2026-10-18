@@ -340,6 +340,8 @@ impl LowerCx {
         if self.is_record_shape(sh) { self.defect("a record is built by `packed_struct`, never slot by slot") }
         let dst = self.array_sized(sh, size)
         for r in slots { self.push_slot(dst, r) }
+        // a box of tasks is joined with the frame that built it, until a binding owns it
+        if slots.any(self.view.types.owns_one_task(self.out.type_of_reg(it))) { self.settles_at_close(dst, false) }
         dst
     }
 
@@ -360,6 +362,7 @@ impl LowerCx {
     /// One more slot. A nullable scalar is its word and its presence —
     /// the runtime keeps absence in the cell's mark, so no box.
     mut fn push_slot(box: Reg, v: Reg) {
+        self.retires_settle(v)
         let ty = self.out.type_of_reg(v)
         if !self.scalar_nullable(ty) { return self.array_push(box, v) }
         self

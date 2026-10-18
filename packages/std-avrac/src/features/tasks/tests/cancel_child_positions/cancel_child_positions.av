@@ -1,0 +1,95 @@
+// proves: a task is joined by the frame that holds it, and cancelled first when
+// that frame is leaving because its own task was cancelled — wherever the
+// `spawn` stands: a binding, a dropped value, an argument, a list handed as an
+// argument, a receiver, a `??` operand, an interpolation hole, a `select`
+// head. Each case cancels the parent and reads the order the defers ran in:
+// the child's `l` before the parent's `p` (or `s`), once each.
+use @std.time.{ms, secs, sleep}
+
+fn leaf(log: Cell<string>) -> int {
+    defer log.set(log.get() + "l")
+    sleep(secs(60))
+    0
+}
+
+fn peek(t: Task<int>) -> bool { t.done }
+
+fn count(ts: List<Task<int>>) -> int { ts.length }
+
+fn bound(log: Cell<string>) -> int {
+    defer log.set(log.get() + "p")
+    let t = spawn leaf(log)
+    sleep(secs(60))
+    0
+}
+
+fn dropped(log: Cell<string>) -> int {
+    defer log.set(log.get() + "p")
+    let _ = spawn leaf(log)
+    sleep(secs(60))
+    0
+}
+
+fn argument(log: Cell<string>) -> int {
+    defer log.set(log.get() + "p")
+    let a = peek(spawn leaf(log))
+    sleep(secs(60))
+    0
+}
+
+fn listed(log: Cell<string>) -> int {
+    defer log.set(log.get() + "p")
+    let a = count([spawn leaf(log), spawn leaf(log)])
+    sleep(secs(60))
+    0
+}
+
+fn receiver(log: Cell<string>) -> int {
+    defer log.set(log.get() + "p")
+    let a = (spawn leaf(log)).done
+    sleep(secs(60))
+    0
+}
+
+fn coalesced(log: Cell<string>) -> int {
+    defer log.set(log.get() + "p")
+    let none: Task<int>? = null
+    let a = peek(none ?? (spawn leaf(log)))
+    sleep(secs(60))
+    0
+}
+
+fn held(log: Cell<string>) -> int {
+    defer log.set(log.get() + "p")
+    let a = "${(spawn leaf(log)).done}"
+    sleep(secs(60))
+    0
+}
+
+fn heading(log: Cell<string>) -> int {
+    defer log.set(log.get() + "p")
+    select {
+        r in spawn leaf(log) -> r
+    }
+}
+
+fn cancelled(work: fn(Cell<string>) -> int) -> string {
+    let log = Cell.new("")
+    let t = spawn work(log)
+    sleep(ms(2))
+    t.cancel()
+    let _ = t.await catch c -> { -1 }
+    log.get()
+}
+
+[
+    "bound ${cancelled(bound)}",
+    "dropped ${cancelled(dropped)}",
+    "argument ${cancelled(argument)}",
+    "listed ${cancelled(listed)}",
+    "receiver ${cancelled(receiver)}",
+    "coalesced ${cancelled(coalesced)}",
+    "held ${cancelled(held)}",
+    "heading ${cancelled(heading)}",
+]
+    .join(", ")
