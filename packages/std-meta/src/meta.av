@@ -382,6 +382,32 @@ export fn embed(path: string) -> string {
 /// the call — so whatever is keyed by it is never kept, never read stale.
 export fn code_hash<F>(_f: F) -> string? { null }
 
+/// RUNS `body` UNDER A CATCH POINT: absent when it ran to its end, the
+/// trap's words when a trap on this task ended it. Whatever the body wrote
+/// stands, and only the trap's own task is caught — a trap on another
+/// task, a stack overflow and an unguarded trap still end the process.
+/// The compiler lowers a DIRECT CALL of this fn to the runtime's guarded
+/// run, and refuses it handed on as a value (`type.guard_value`).
+export fn guarded(_body: fn() -> bool) -> string? { null }
+
+/// RUNS `body` UNDER A CATCH POINT and brings back what it answered, of
+/// any type: `.Ok(answer)`, or `.Err(words)` when a trap on this task ended
+/// it. The answer travels through a slot this fn owns, so the runtime reads
+/// no answer and every type crosses the same way.
+export fn contained<T>(body: fn() -> T) -> Result<T, string> {
+    let slot: Cell<List<T>> = Cell.new([])
+    let ended = guarded(
+        () -> {
+            slot.set([body()])
+            true
+        },
+    )
+    match ended {
+        words? -> .Err(words)
+        null -> .Ok(slot.get()[0])
+    }
+}
+
 /// The whole `Type` a name resolves to from where the CALLER stands
 /// — this file, its imports included, through the same resolution
 /// an ordinary type reference goes through. Absent for a name

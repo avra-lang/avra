@@ -1,0 +1,150 @@
+//! `tree/chord.av` — A KEY WITH ITS MODIFIERS, and what a node does when it
+//! is pressed. A `Chord` is written once as text (`"ctrl+s"`, `"alt+Enter"`,
+//! `"F5"`) and read once, by `chord`, into a value no target has to parse
+//! again: SEALED, so every chord anywhere is one the door below answered.
+//!
+//! The key is a single character, written as it is typed unshifted, or one
+//! of the named keys; the modifiers are `ctrl`, `alt` and `shift`, in any
+//! order, each once. Tab and Shift-Tab move the focus, and Ctrl-D ends the
+//! input, so a binding cannot take them.
+use @std.meta.{sealed}
+use @std.text.{ascii_lower, codepoints}
+
+/// A key and the modifiers held with it.
+@sealed
+export type Chord = { key: string, ctrl: bool, alt: bool, shift: bool }
+
+/// What a node does when its chord is pressed while the node, or anything it
+/// holds, has the focus.
+export type Binding = { chord: Chord, handler: fn() -> void }
+
+/// The keys that have a name rather than a character, as written.
+const named = [
+    "Enter",
+    "Escape",
+    "Tab",
+    "Space",
+    "Backspace",
+    "Delete",
+    "Up",
+    "Down",
+    "Left",
+    "Right",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Plus",
+    "F1",
+    "F2",
+    "F3",
+    "F4",
+    "F5",
+    "F6",
+    "F7",
+    "F8",
+    "F9",
+    "F10",
+    "F11",
+    "F12",
+]
+
+/// The named key `word` spells in any case, as it is written above.
+fn named_key(word: string) -> string? { named.find(ascii_lower(it) == ascii_lower(word)) }
+
+/// The modifier a word names, as its lower-case word.
+fn modifier(word: string) -> string? { ["ctrl", "alt", "shift"].find(it == ascii_lower(word)) }
+
+/// The chord `text` writes, or the words that say why it is none. The words
+/// are spoken where the chord is written.
+export fn chord(text: string) -> Result<Chord, string> {
+    let parts = text.split("+")
+    let word? = parts.last() else { return .Err(no_key(text)) }
+    if word == "" { return .Err(no_key(text)) }
+    let held = parts.slice(0, parts.length - 1)
+    let words = [modifier(m) ?? "" for m in held]
+    let unknown = [j for j, w in words if w == ""].first()
+    if unknown != null { return .Err(unknown_modifier(held[unknown!], text)) }
+    let twice = [j for j, w in words if words.slice(0, j).contains(w)].first()
+    if twice != null { return .Err(repeated(held[twice!], text)) }
+    let key? = key_of(word) else { return .Err(unknown_key(word, text)) }
+    let made = Chord {
+        key: key,
+        ctrl: words.contains("ctrl"),
+        alt: words.contains("alt"),
+        shift: words.contains("shift"),
+    }
+    reserved(made, text)
+}
+
+/// A key as it is stored: a named key in its written case, a character as typed.
+fn key_of(word: string) -> string? { named_key(word) ?? typed(word) }
+
+/// A single character, written as typed unshifted.
+fn typed(word: string) -> string? { if codepoints(word).length == 1 && ascii_lower(word) == word { word } else { null } }
+
+/// The chord, unless the terminal keeps it.
+fn reserved(c: Chord, text: string) -> Result<Chord, string> {
+    if c.key == "Tab" && !c.ctrl && !c.alt { return .Err(focus_key(text)) }
+    if c.key == "d" && c.ctrl && !c.alt && !c.shift { return .Err(end_key(text)) }
+    .Ok(c)
+}
+
+impl Chord {
+    /// The chord as it is written: modifiers in a fixed order, then the key.
+    fn text() -> string {
+        if self.ctrl { ["ctrl"] } else { [] }
+            .concat(if self.alt { ["alt"] } else { [] })
+            .concat(if self.shift { ["shift"] } else { [] })
+            .concat([self.key])
+            .join("+")
+    }
+}
+
+/// The chord `text` writes, or none.
+export fn parsed(text: string) -> Chord? {
+    match chord(text) { .Ok(c) -> c, .Err(_) -> null }
+}
+
+/// A node that does `handler` on `chord`.
+export fn bound(c: Chord, handler: fn() -> void) -> Binding { Binding { chord: c, handler: handler } }
+
+/// A node that does `handler` on the chord `text` writes. A chord that is
+/// none stops the program at the first paint with the words that say why;
+/// write it `const` to have it settle where it is written.
+export fn bind(text: string, handler: fn() -> void) -> Binding {
+    match chord(text) { .Ok(c) -> bound(c, handler), .Err(why) -> bind_refused(why) }
+}
+
+extern fn avra_trap(message: string)
+
+fn bind_refused(why: string) -> Binding {
+    avra_trap(why)
+    Binding { chord: Chord { key: "", ctrl: false, alt: false, shift: false }, handler: idle }
+}
+
+fn idle() {}
+
+// ── voices ──────────────────────────────────────────────────────
+
+fn no_key(text: string) -> string {
+    "`${text}` names no key: a chord ends in the key, as in `ctrl+s` or `F5`"
+}
+
+fn unknown_modifier(word: string, text: string) -> string {
+    "`${word}` in `${text}` is no modifier: the modifiers are `ctrl`, `alt` and `shift`"
+}
+
+fn repeated(word: string, text: string) -> string { "`${word}` is held twice in `${text}`" }
+
+fn unknown_key(word: string, text: string) -> string {
+    "`${word}` in `${text}` is no key: a key is one character, written as typed unshifted (`s`, not `S` — hold `shift` for that), or one of ${named.join(", ")}"
+}
+
+fn focus_key(text: string) -> string {
+    "`${text}` is a focus key: Tab and Shift-Tab move the focus, so a binding cannot take them"
+}
+
+fn end_key(text: string) -> string {
+    "`${text}` ends the input: Ctrl-D is the terminal's, so a binding cannot take it"
+}
