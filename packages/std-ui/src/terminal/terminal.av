@@ -12,10 +12,11 @@ use app.{Act, Shown, running, shown, stood, notice_node}
 use tree.controls.{Control}
 use tree.node.{Said, Node, Attribute}
 use realize.tui.said.{said_of}
-use realize.tui.tui.{focused, placed}
+use realize.tui.tui.{focused, placed, raster}
 use realize.tui.hit.{hit, list_at, list_nodes, places}
 use tree.lists.{flatten}
-use tree.view.{View}
+use tree.view.{View, rooted}
+use terminal.screen.{Screen, screen}
 use native.net.{over_http}
 use native.sources.{opened, served}
 use terminal.keys.{Key, Paste, heard, keys, paste_cap, resume}
@@ -23,18 +24,26 @@ use terminal.keys.{Key, Paste, heard, keys, paste_cap, resume}
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+extern fn avra_fd_tty_size(fd: int) -> int
+extern fn avra_fd_tty_raw(fd: int, mode: int) -> int
+extern fn avra_fd_exit_writes(fd: int, bytes: Bytes)
 
 /// Who holds the focus: the path the control stands at, and its place
 /// among the controls that could take it — where the focus goes when that
 /// control leaves the screen.
 type Focus = { path: string, at: int }
 
+/// A terminal's size in cells.
+type Size = { width: int, height: int }
+
 /// An app in a terminal `width` cells wide: the screen its last paint
 /// showed, who holds the focus, and whether the input has ended.
 export type Terminal = {
     shown: Shown,
-    width: int,
-    height: int,
+    size: Cell<Size>,
+    on_screen: Screen?,
+    leaves: fn(string) -> void,
     focus: Cell<Focus?> = Cell.new(null),
     ended: Cell<bool> = Cell.new(false),
     active: Cell<bool> = Cell.new(true),
@@ -52,13 +61,40 @@ export fn terminal<V: View>(
     height: int = 24,
     paste_limit: int = paste_cap,
 ) -> Terminal {
+    let nowhere: Screen? = null
     let made = Terminal {
         shown: shown(view, rows: height, spaced: true),
-        width: width,
-        height: height,
+        size: Cell.new(Size { width: width, height: height }),
+        on_screen: nowhere,
+        leaves: (_s: string) -> {},
         paste_limit: paste_limit,
     }
     let _ = made.fit()
+    made
+}
+
+/// `view` in a terminal that is written in place: `width` by `height`
+/// cells, its bytes going through `screen`'s seat, and `leaves` told what
+/// the process is to leave the terminal as whenever it ends. The screen is
+/// entered by the first paint.
+export fn terminal_in_place<V: View>(
+    view: fn() -> V,
+    width: int,
+    height: int,
+    screen: Screen,
+    leaves: fn(string) -> void,
+    paste_limit: int = paste_cap,
+) -> Terminal {
+    let made = Terminal {
+        shown: shown(view, rows: height, spaced: true),
+        size: Cell.new(Size { width: width, height: height }),
+        on_screen: screen,
+        leaves: leaves,
+        paste_limit: paste_limit,
+    }
+    let _ = made.fit()
+    leaves(screen.parts())
+    made.paint_grid()
     made
 }
 
@@ -199,11 +235,11 @@ impl Terminal {
 
     /// How many rows of `l` the screen has lines for.
     fn room(l: Listed) -> int {
-        let lines = [focused(r, self.width, null).split("\n").length for r in l.rows]
+        let lines = [focused(r, self.width(), null).split("\n").length for r in l.rows]
         let taken = lines.fold(0, (a: int, n: int) -> a + n)
         let each = if l.rows.is_empty() { 1 } else { (taken + l.rows.length - 1) / l.rows.length }
         let rest = self.screen().split("\n").length - taken
-        let fits = (self.height - rest) / if each < 1 { 1 } else { each }
+        let fits = (self.height() - rest) / if each < 1 { 1 } else { each }
         if fits < 1 { 1 } else { fits }
     }
 
@@ -215,6 +251,62 @@ impl Terminal {
         self.slid(l, l.from + by * size)
     }
 
+    /// The screen's width in cells.
+    fn width() -> int { self.size.get().width }
+
+    /// The screen's height in lines.
+    fn height() -> int { self.size.get().height }
+
+    /// Whether the screen is written in place.
+    fn live() -> bool { self.on_screen != null }
+
+    /// The grid the screen shows, drawn on the screen in place: only what
+    /// changed since the last. A failed turn's words stand under the view.
+    fn paint_grid() {
+        let screen? = self.on_screen else { return }
+        let root? = self.shown.tree.get() else { return }
+        let said? = self.shown.app.failed.get() else {
+            screen.paint(raster(root, self.width(), self.height(), self.focused()?.seat))
+            return
+        }
+        screen
+            .paint(
+                raster(
+                    rooted([root, notice_node(said)]),
+                    self.width(),
+                    self.height(),
+                    self.focused()?.seat,
+                ),
+            )
+    }
+
+    /// The terminal changed size: the screen is cleared, the window refitted
+    /// and the whole screen written again.
+    fn resized(width: int, height: int) {
+        self.size.set(Size { width: width, height: height })
+        let screen? = self.on_screen else { return }
+        screen.resized()
+        let _ = self.fit()
+        self.shown.app.paint()
+        self.paint_grid()
+    }
+
+    /// The terminal answered the keyboard query: the kitty protocol is
+    /// pushed, and the process is to pop it as it leaves.
+    fn kitty_asked() {
+        let screen? = self.on_screen else { return }
+        if screen.kitty.get() { return }
+        (screen.out)(screen.pushes())
+        (self.leaves)(screen.parts())
+    }
+
+    /// The screen is left as it was found, and nothing is left to do at exit.
+    fn leave() {
+        let screen? = self.on_screen else { return }
+        screen.leave()
+        (self.leaves)("")
+    }
+
     /// The control under the cell `x`, `y` of the screen as the layout placed
     /// it takes the focus and is acted on as a press: a button presses, a box
     /// changes over, a field or a slider only takes the focus. True when a
@@ -222,7 +314,7 @@ impl Terminal {
     fn click(x: int, y: int) -> bool {
         let root? = self.shown.tree.get() else { return false }
         let on = self.reachable()
-        let boxes = placed(root, self.width, self.focused()?.seat)
+        let boxes = placed(root, self.width(), self.focused()?.seat)
         let seat? = hit(root, boxes, x, y, (s: int) -> on.any(it.seat == s)) else { return false }
         let at? = [j for j, c in on if c.seat == seat].first() else { return false }
         self.rests(on, at)
@@ -233,7 +325,7 @@ impl Terminal {
     /// over none: which list a wheel turned there moves.
     fn list_under(x: int, y: int) -> int {
         let root? = self.shown.tree.get() else { return 0 }
-        list_at(root, placed(root, self.width, self.focused()?.seat), x, y) ?? 0
+        list_at(root, placed(root, self.width(), self.focused()?.seat), x, y) ?? 0
     }
 
     /// The wheel moves the window `by` rows, held inside the rows there are.
@@ -357,6 +449,7 @@ impl Terminal {
             },
             .Reports(flags) -> {
                 self.keyboard.set(flags)
+                self.kitty_asked()
                 false
             },
             .Enter -> self.act(entered),
@@ -381,9 +474,9 @@ impl Terminal {
     /// last turn has failed.
     fn screen() -> string {
         let root? = self.shown.tree.get() else { return "" }
-        let drawn = focused(root, self.width, self.focused()?.seat)
+        let drawn = focused(root, self.width(), self.focused()?.seat)
         let said? = self.shown.app.failed.get() else { return drawn }
-        "${drawn}\n${focused(notice_node(said), self.width, null)}"
+        "${drawn}\n${focused(notice_node(said), self.width(), null)}"
     }
 
     /// The screen as a reader finds it, with no terminal's drawing.
@@ -393,12 +486,17 @@ impl Terminal {
 // ── the terminal itself ─────────────────────────────────────────
 
 const input = 0
+const output = 1
 const chunk = 4096
 
 impl Terminal {
     /// The screen as the terminal prints it after a turn, and what the
     /// walk said of the tree.
     fn printed() {
+        if self.live() {
+            self.paint_grid()
+            return
+        }
         println("")
         println(self.screen())
         self.shown.app.warn()
@@ -438,15 +536,49 @@ fn read(on: Terminal) -> bool {
 }
 
 /// THE APP: `view` in this terminal, drawn now and after every turn
-/// that ran — a key, a timer, an answer — until the input ends.
-export fn mount<V: View>(view: fn() -> V, width: int = 80) {
-    let on = terminal(view, width)
-    println(on.screen())
+/// that ran — a key, a timer, an answer — until the input ends. On a
+/// terminal the screen is written in place (`inplace` forces it either way);
+/// otherwise each screen is printed under the last.
+export fn mount<V: View>(view: fn() -> V, width: int = 80, height: int = 24, inplace: bool? = null) {
+    let size = avra_fd_tty_size(output)
+    let live = inplace ?? (size > 0)
+    let columns = if size > 0 { size / 65536 } else { width }
+    let lines = if size > 0 { size % 65536 } else { height }
+    let on = if live { entered(view, columns, lines) } else { terminal(view, width, height) }
+    if !live { println(on.screen()) }
     on.shown.app.warn()
     let before = running()
     stood(on.shown.app)
     let inbox = opened(on.shown.app, over_http)
     let _ = spawn read(on)
     served(on.shown.app, inbox, () -> on.printed())
+    on.leave()
+    if live { let _ = avra_fd_tty_raw(input, 0) }
     stood(before)
+}
+
+/// The terminal taken over: the input unechoed and unbuffered with its signals
+/// kept, the screen written in place on the output, and the process told what
+/// to leave the terminal as before the first byte.
+fn entered<V: View>(view: fn() -> V, columns: int, lines: int) -> Terminal {
+    let _ = avra_fd_tty_raw(input, 1)
+    let sent = (s: string) -> write_all(output, s.bytes())
+    let leaves = (s: string) -> avra_fd_exit_writes(output, s.bytes())
+    terminal_in_place(view, columns, lines, screen(sent), leaves)
+}
+
+/// `bytes` written whole to `fd`, waiting for it to take them when it will not
+/// yet: a few tries, then the rest is let go.
+fn write_all(fd: int, bytes: Bytes) {
+    mut at = 0
+    mut tries = 0
+    while at < bytes.length && tries < 8 {
+        let put = avra_fd_write(fd, bytes, at)
+        if put < 0 {
+            tries = tries + 1
+            let _ = avra_fiber_park_fd(fd, 1, 100)
+        } else {
+            at = at + put
+        }
+    }
 }

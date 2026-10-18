@@ -2,11 +2,13 @@
 //! kept and asserted whole, so "a one-cell change writes one cursor move and
 //! one character" is a string, not a feeling.
 use @std.text.{codepoints, from_codepoint}
-use @std.ui.terminal.screen.{Tile, Grid, Pos, Screen, parting, screen}
+use @std.ui.realize.tui.paint.{Grid, Pos, Tile}
+use @std.ui.terminal.keys.{kitty_off, modes_off, modes_on}
+use @std.ui.terminal.screen.{Screen, parted, parting, screen}
 
 fn esc() -> string { from_codepoint(27) }
 
-fn enter() -> string { "${esc()}[?1049h${esc()}[?25l${esc()}[2J" }
+fn enter() -> string { "${esc()}[?1049h${esc()}[?25l${esc()}[2J${modes_on()}" }
 
 fn at(x: int, y: int) -> string { "${esc()}[${y + 1};${x + 1}H" }
 
@@ -193,7 +195,8 @@ spec "a screen written in place" {
             after(f, grid(["ab"])) == enter() + at(0, 0) + "ab"
         }
         then "is what the runtime writes at an exit" {
-            parting() == "${esc()}[0m${esc()}[?25h${esc()}[?1049l"
+            parting() == "${modes_off()}${esc()}[0m${esc()}[?25h${esc()}[?1049l" &&
+                parted(true) == kitty_off() + parting()
         }
     }
 }
