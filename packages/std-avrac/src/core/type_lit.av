@@ -1,0 +1,95 @@
+//! The type literal's vocabulary: the type_words and constructors a `v.type(T)`
+//! spelling is made of, and the nodes a spelling means — the receiver's
+//! `interned` call over the type as a `TypeLit` value.
+use core.{
+    Expr,
+    ExprId,
+    Span,
+    TypeRef,
+    SyntaxArena,
+    Plain,
+    Scoped,
+    plain,
+    mut_mark,
+    settled_mark,
+    flatten,
+}
+
+/// A word that spells a shape of its own.
+type TypeWord = { name: string, variant: string }
+
+/// A constructor: the shape it spells and the types it takes.
+type TypeApplied = { name: string, variant: string, arity: int }
+
+export const type_words: List<TypeWord> = [
+    TypeWord { name: "int", variant: "Int" },
+    TypeWord { name: "float", variant: "Float" },
+    TypeWord { name: "bool", variant: "Bool" },
+    TypeWord { name: "string", variant: "Str" },
+    TypeWord { name: "Bytes", variant: "Bytes" },
+    TypeWord { name: "ptr", variant: "Ptr" },
+    TypeWord { name: "void", variant: "Void" },
+]
+
+export const type_applieds: List<TypeApplied> = [
+    TypeApplied { name: "List", variant: "List", arity: 1 },
+    TypeApplied { name: "Map", variant: "Map", arity: 2 },
+    TypeApplied { name: "Result", variant: "Res", arity: 2 },
+]
+
+impl SyntaxArena {
+    /// What `subject.type(t)` means: the spelling's nodes, then the
+    /// receiver's `interned` call over it, which answers last.
+    fn type_lit_nodes(subject: ExprId, t: TypeRef, span: Span?) -> List<ExprId> {
+        let spelt = spelled_nodes(self, t, span)
+        spelt
+            .concat(
+                [
+                    self
+                        .alloc_expr(Expr.MethodCall(subject, Plain("interned"), [spelt.last()!]), span),
+                ],
+            )
+    }
+}
+
+/// A written type as a `TypeLit` VALUE's nodes, the value last — bare
+/// variants, heard from the `interned` seat. A hole is marked as the
+/// literal's, so a binding of the wrong type refuses as a hole.
+fn spelled_nodes(store: SyntaxArena, t: TypeRef, span: Span?) -> List<ExprId> {
+    if t.optional { return variant_nodes(store, "Opt", [spelled_nodes(store, plain(t), span)], span) }
+    if t.arrow { return fn_nodes(store, t, span) }
+    let word: TypeWord? = type_words.find(it.name == t.name)
+    if word != null { return variant_nodes(store, word!.variant, [], span) }
+    let found: TypeApplied? = type_applieds.find(it.name == t.name)
+    if found == null {
+        let hole = store.alloc_expr(Expr.Ident(Scoped(t.name)), t.span ?? span)
+        store.mark_hole(hole)
+        return variant_nodes(store, "Id", [[hole]], span)
+    }
+    variant_nodes(store, found!.variant, [spelled_nodes(store, a, span) for a in t.args], span)
+}
+
+/// `fn(a, mut b) -> r` — the seats, their marks, the answer: the
+/// LAST written type is the answer, the fn-type builder's contract.
+fn fn_nodes(store: SyntaxArena, t: TypeRef, span: Span?) -> List<ExprId> {
+    let seats = t.args.length - 1
+    let params = [spelled_nodes(store, t.args[j], span) for j in 0..seats]
+    let muts = [store.alloc_expr(Expr.BoolLit(mut_mark(t.marks, j)), span) for j in 0..seats]
+    let consts = [store.alloc_expr(Expr.BoolLit(settled_mark(t.marks, j)), span) for j in 0..seats]
+    let ret = spelled_nodes(store, t.args[seats], span)
+    let a1 = flatten(params)
+        .concat([store.alloc_expr(Expr.ListLit([p.last()! for p in params]), span)])
+    let a2 = muts.concat([store.alloc_expr(Expr.ListLit(muts), span)])
+    let a3 = consts.concat([store.alloc_expr(Expr.ListLit(consts), span)])
+    variant_nodes(store, "Fn", [a1, a2, a3, ret], span)
+}
+
+/// A variant over its argument nodes: every argument's nodes, then the
+/// variant over each one's last.
+fn variant_nodes(store: SyntaxArena, name: string, args: List<List<ExprId>>, span: Span?) -> List<
+    ExprId,
+> {
+    flatten(args)
+        .concat([store.alloc_expr(Expr.VariantLit(Plain(name), [a.last()! for a in args]), span)])
+}
+

@@ -48,7 +48,6 @@ use core.{
     pronoun_param_id,
 }
 use features.{chained_binder}
-use features.expr_spine.{words, applieds}
 use @std.text.{Text, builder}
 extern fn avra_float_text_bits(bits: int) -> string
 
@@ -1402,6 +1401,11 @@ impl SourceText {
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ArmsMatch(arms) -> grouped("match it ${self.arms_braced(arms, id, depth, c)}", atom_tier, parent),
+            .TypeLit(subject, ty) -> grouped(
+                "${self.expression(subject, postfix_tier, depth, c)}.type(${spelled(ty)})",
+                postfix_tier,
+                parent,
+            ),
             .Pipe(_, _) -> self.pipe_rendered(self.pipe_walk(id, depth), parent, depth, c),
             .Bitnot(value) -> grouped("~${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),
@@ -2271,9 +2275,17 @@ impl SourceText {
             match chained! {
                 .MethodCall(receiver, name, args) -> {
                     if self.store.ident_name(receiver) == chained_binder {
-                        let tail = self.type_lit_tail(present, name, args) ?? "${source_name(name.of)}${self.args_wrapped(args, depth)}"
                         return grouped(
-                            "${self.expression(subject, postfix_tier, depth, c)}?.${tail}",
+                            "${self.expression(subject, postfix_tier, depth, c)}?.${source_name(name.of)}${self.args_wrapped(args, depth)}",
+                            postfix_tier,
+                            parent,
+                        )
+                    }
+                },
+                .TypeLit(receiver, ty) -> {
+                    if self.store.ident_name(receiver) == chained_binder {
+                        return grouped(
+                            "${self.expression(subject, postfix_tier, depth, c)}?.type(${spelled(ty)})",
                             postfix_tier,
                             parent,
                         )
@@ -2455,28 +2467,15 @@ impl SourceText {
         "${self.params(params, depth)} ->"
     }
 
-    /// `.type(T)`'s own tail, `type(T)` with no receiver — absent when
-    /// `id`'s call is not that sugar, or its argument does not reverse
-    /// (`type_lit_spelling`). The one detector a plain method call and
-    /// a `?.`-propagated one (match_optional's chained_binder
-    /// shortcut, which prints its own receiver as `subject?`) share,
-    /// so both read the sugar back the same way for the same reason.
-    fn type_lit_tail(id: ExprId, name: Plain, args: List<ExprId>) -> string? {
-        if name.of != "interned" || args.length != 1 || !self.store.is_type_lit(id) { return null }
-        let ty? = self.type_lit_spelling(args[0]) else { return null }
-        "type(${ty})"
-    }
-
     /// One `.` chain LINK's own text, no receiver: `.type(T)`'s
     /// read-back, or `.name(args)`. Rendered at the fallback column —
     /// a link, like a comma list's item, is pre-rendered before the
     /// chain it belongs to decides flat or broken.
-    mut fn method_link_text(id: ExprId, name: Plain, args: List<ExprId>, depth: int) -> string {
+    mut fn method_link_text(name: Plain, args: List<ExprId>, depth: int) -> string {
         // A link lands at `depth + 1` once the chain breaks (postfix_chain_doc's
         // own `nest(4, ...)`), so its OWN call — if IT also wraps — must
         // nest from THAT column, never from the chain's.
-        let tail? = self.type_lit_tail(id, name, args) else { return ".${source_name(name.of)}${self.call_tail(args, depth + 1)}" }
-        ".${tail}"
+        ".${source_name(name.of)}${self.call_tail(args, depth + 1)}"
     }
 
     /// A postfix `.` chain's root and its links, walked from the
@@ -2498,8 +2497,12 @@ impl SourceText {
                 let inner = self.chain_walk(subject, depth)
                 ChainWalk {
                     root: inner.root,
-                    links: inner.links.concat([self.method_link_text(e, name, args, depth)]),
+                    links: inner.links.concat([self.method_link_text(name, args, depth)]),
                 }
+            },
+            .TypeLit(subject, ty) -> {
+                let inner = self.chain_walk(subject, depth)
+                ChainWalk { root: inner.root, links: inner.links.concat([".type(${spelled(ty)})"]) }
             },
             rest -> unlinked(e),
         }
@@ -2593,38 +2596,6 @@ impl SourceText {
     /// A `?` a following `.` would meet and lex with as `?.`.
     fn bare_propagate(e: ExprId) -> bool {
         match self.store.expr(e) { .Propagate(_) -> true, rest -> false }
-    }
-
-    /// `v.type(T)`'s argument read back to `T` — the SAME `words`/
-    /// `applieds` tables the sugar spelled it with (features/
-    /// expr_spine/type_lit.av), or `null` when the shape does not
-    /// reverse (a fn type: no site has needed one back yet).
-    fn type_lit_spelling(id: ExprId) -> string? {
-        match self.store.expr(id) {
-            .VariantLit(name, args) -> self.type_variant_spelling(name.of, args),
-            rest -> null,
-        }
-    }
-
-    fn type_variant_spelling(variant: string, args: List<ExprId>) -> string? {
-        if variant == "Opt" {
-            let inner? = self.type_lit_spelling(args[0]) else { return null }
-            return "${inner}?"
-        }
-        if args.length == 1 && self.store.is_hole(args[0]) { return self.type_hole_name(args[0]) }
-        let word? = words.find(it.variant == variant) else { return self.type_applied_spelling(variant, args) }
-        word.name
-    }
-
-    fn type_hole_name(id: ExprId) -> string? {
-        match self.store.expr(id) { .Ident(name) -> source_name(name.of), rest -> null }
-    }
-
-    fn type_applied_spelling(variant: string, args: List<ExprId>) -> string? {
-        let applied? = applieds.find(it.variant == variant) else { return null }
-        let parts = [self.type_lit_spelling(a) for a in args]
-        if parts.any(it == null) { return null }
-        "${applied.name}<${joined([p! for p in parts], ", ")}>"
     }
 }
 
