@@ -65,12 +65,20 @@ extern uint32_t avra_turn_word;
 // Out of line: stamp the box and file it in the turn's change log.
 void avra_box_changed(void* payload);
 
-// A write to a box: one load, one compare, nothing more for a box no site
-// has read.
+// A write to a box: for a box no site has read, a byte compared in place.
+// The flags are their own byte, so the test loads and masks nothing and
+// clobbers no register; the stamp is read only for an observed box.
+#if !defined(__BYTE_ORDER__) || __BYTE_ORDER__ != __ORDER_LITTLE_ENDIAN__
+#error "the kind word's fields are read by byte position, which assumes a little-endian target"
+#endif
+#define AVRA_FLAGS_AT 5
+#define AVRA_STAMP_AT 6
 static inline void avra_box_touch(void* payload) {
-    uint32_t w = (uint32_t)((Header*)payload - 1)->kind_word;
-    if (__builtin_expect((w & AVRA_FLAGS_MASK) == AVRA_OBSERVED, 0) && (w & AVRA_STAMP_MASK) != avra_turn_word) {
-        avra_box_changed(payload);
+    const uint8_t* at = (const uint8_t*)((Header*)payload - 1);
+    if (__builtin_expect(at[AVRA_FLAGS_AT] == (AVRA_OBSERVED >> 8), 0)) {
+        uint16_t stamp;
+        __builtin_memcpy(&stamp, at + AVRA_STAMP_AT, sizeof stamp);
+        if (stamp != (uint16_t)(avra_turn_word >> 16)) avra_box_changed(payload);
     }
 }
 
