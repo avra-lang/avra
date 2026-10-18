@@ -1338,6 +1338,7 @@ impl SourceText {
             .Pipe(_, _) -> self.pipe_rendered(self.pipe_walk(id, depth), parent, depth, c),
             .Bitnot(value) -> grouped("~${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),
+            .Table(row, header, rows) -> grouped(self.table_text(row, header, rows, depth), atom_tier, parent),
             .Comp(elem, clauses) -> self.comprehension(elem, clauses, parent, depth),
             .MapLit(keys, values) -> grouped(self.map_lit_text(id, keys, values, depth, c), atom_tier, parent),
             .Index(subject, index) -> {
@@ -1587,10 +1588,7 @@ impl SourceText {
         if p < parent { "(${rendered})" } else { rendered }
     }
 
-    /// A list's text: the header and rows `table<Row> { … }`
-    /// desugared into (`store.table_of` — a row type and header the
-    /// rows' own fields cannot answer once the table is empty), or
-    /// the ordinary bracketed list, ONE LINE OR MANY as it was
+    /// A list's text: the bracketed list, ONE LINE OR MANY as it was
     /// written — the written-layout rule `struct_decl`/`enum_decl`
     /// already use for a declaration's own fields and variants,
     /// generalized here: each element drains the trivia before its
@@ -1598,37 +1596,28 @@ impl SourceText {
     /// between two elements stays between them instead of sliding to
     /// the literal's end.
     mut fn list_lit_text(id: ExprId, elems: List<ExprId>, depth: int, col: int = -1) -> string {
-        let tbl? = self.store.table_of(id) else {
-            if elems.is_empty() { return "[]" }
-            let span = self.store.expr_span(id)
-            if self.width_decides(span) {
-                return self
-                    .wrapped_list(
-                        "[",
-                        [self.expression(e, loosest_tier, depth + 1) for e in elems],
-                        "]",
-                        false,
-                        depth,
-                        col,
-                    )
-            }
-            if self.span_flat(span) { return "[${joined([self.expression(e, loosest_tier, depth) for e in elems], ", ")}]" }
-            let body = flatten(
-                [self
-                    .trivia_before(start_of(self.store.expr_span(e)), depth + 1)
-                    .concat(
-                        [
-                            source_line(
-                                depth + 1,
-                                "${self.expression(e, loosest_tier, depth + 1)},",
-                            ),
-                        ],
-                    ) for e in elems],
-            )
-                .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
-            return "[\n${joined(body, "\n")}\n${source_line(depth, "]")}"
+        if elems.is_empty() { return "[]" }
+        let span = self.store.expr_span(id)
+        if self.width_decides(span) {
+            return self
+                .wrapped_list(
+                    "[",
+                    [self.expression(e, loosest_tier, depth + 1) for e in elems],
+                    "]",
+                    false,
+                    depth,
+                    col,
+                )
         }
-        self.table_text(tbl.row_type, tbl.header, elems, depth)
+        if self.span_flat(span) { return "[${joined([self.expression(e, loosest_tier, depth) for e in elems], ", ")}]" }
+        let body = flatten(
+            [self
+                .trivia_before(start_of(self.store.expr_span(e)), depth + 1)
+                .concat([source_line(depth + 1, "${self.expression(e, loosest_tier, depth + 1)},")]) for e in elems],
+        )
+            .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
+        return "[\n${joined(body, "\n")}\n${source_line(depth, "]")}"
+
     }
 
     /// A map's text, one line or many as it was written — an entry
@@ -1683,12 +1672,12 @@ impl SourceText {
         "table<${row_type}> {\n${joined([source_line(depth + 1, l) for l in lines], "\n")}\n${source_line(depth, "}")}"
     }
 
-    /// One row's cells, rendered — a table's own row is always a
-    /// `StructLit` (`features/tables/builders.av`'s `build_table`);
-    /// the catch-all is the builder's own invariant, never a program's.
+    /// One row's cells, rendered — a table's own row is always the cell
+    /// list its builder kept; the catch-all is that invariant, never a
+    /// program's.
     mut fn table_row(e: ExprId, depth: int) -> List<string> {
         match self.store.expr(e) {
-            .StructLit(name, fields, values) -> [self.expression(v, cell_tier, depth) for v in values],
+            .ListLit(cells) -> [self.expression(v, cell_tier, depth) for v in cells],
             rest -> [],
         }
     }
