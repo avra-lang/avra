@@ -1075,6 +1075,7 @@ int64_t avra_sig_number(int64_t kind) {
         case 6: return SIGPIPE;
         case 7: return SIGALRM;
         case 8: return SIGCHLD;
+        case 9: return SIGWINCH;
         default: avra_trap("a signal kind the runtime does not know");
     }
     return 0;
