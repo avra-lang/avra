@@ -269,6 +269,36 @@ spec "tree/rows — a list builds only its window" {
             measured && asked && there && marked && done && cleared && again && twice && thrice
         }
     }
+    given "two windowed lists on one screen" {
+        then "each has a path of its own, and scrolling one leaves the other" {
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(100),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: keyed(i) },
+                        )
+                    }
+                    list {
+                        windowed(
+                            rows_of(100),
+                            (i: int) -> keyed(i + 1000),
+                            (i: int) -> tapper i + 1000 { key: keyed(i + 1000) },
+                        )
+                    }
+                },
+            )
+            let paths = s.windows()
+            let moved = s.scroll(paths[1], 50, 60)
+            paths.length == 2 &&
+                paths[0] != paths[1] &&
+                moved &&
+                s.text().contains("row 1050") &&
+                s.text().contains("row 0 ") &&
+                !s.text().contains("row 1000")
+        }
+    }
     given "a row key that is not the one the list found it by" {
         then "is said, once" {
             let s = headless(

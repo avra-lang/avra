@@ -43,6 +43,7 @@ export type Standing = {
     was_under: Cell<List<Under>>,
     by_order: Cell<bool>,
     step: Cell<string?>,
+    route: Cell<string>,
     said: Cell<List<string>>,
     window: Cell<Window?>,
     counted: Cell<int>,
@@ -82,6 +83,7 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>)
         was_under: Cell.new(empty),
         by_order: Cell.new(false),
         step: Cell.new(nowhere),
+        route: Cell.new(""),
         said: said,
         window: Cell.new(unwindowed),
         counted: counted,
@@ -137,6 +139,7 @@ impl Standing {
             u.standing.opened()
             u.standing.by_order.set(shared[j])
             u.standing.step.set(under(above, u.step))
+            u.standing.route.set("${self.route.get()}/${u.step}")
         }
         self.under.set(now)
         [u.standing for u in now]
@@ -251,7 +254,7 @@ impl Standing {
 
     /// The standing at `path` below this one, the path a standing stands at.
     fn find(path: string) -> Standing? {
-        if self.step.get() == path { return self }
+        if self.route.get() == path { return self }
         for u in self.under.get() {
             let hit? = u.standing.find(path) else { continue }
             return hit
@@ -261,7 +264,7 @@ impl Standing {
 
     /// The paths of the windowed lists at and below this standing.
     fn windows() -> List<string> {
-        let own = if self.window.get() == null { [] } else { [self.step.get() ?? ""] }
+        let own = if self.window.get() == null { [] } else { [self.route.get()] }
         own.concat(flatten([u.standing.windows() for u in self.under.get()]))
     }
 
