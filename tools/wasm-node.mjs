@@ -9,7 +9,7 @@
 // says so — never a silent pass.
 import { WASI } from "node:wasi";
 import fs from "node:fs";
-import { hostedTasks, jspiAvailable } from "../runtime/dom/tasks.js";
+import { faultWords, hostedTasks, jspiAvailable } from "../runtime/dom/tasks.js";
 
 const wasi = new WASI({
     version: "preview1",
@@ -27,7 +27,11 @@ if (!hosted) {
     process.exitCode = 3;
 } else {
     let instance = null;
-    const tasks = hostedTasks(() => instance.exports);
+    // a fault in a spawned task ends the run as a trap does: its words, exit 2
+    const tasks = hostedTasks(() => instance.exports, (e) => {
+        console.error(faultWords(e));
+        process.exit(2);
+    });
     const imports = { ...wasi.getImportObject(), avra_host: tasks.imports };
     instance = await WebAssembly.instantiate(module, imports);
     // wasi.start would call _start synchronously; the entry must be a promising export.
@@ -55,7 +59,7 @@ async function entered(wasi, instance, tasks) {
         if (tasks.stranded() > 0) console.error(`wasm-node: ${tasks.stranded()} task stack(s) never ended`);
     } catch (e) {
         // a trap or an exit after the first handover surfaces here, not in start()
-        console.error(String(e && e.message ? e.message : e));
+        console.error(faultWords(e));
         return 2;
     }
     return code;

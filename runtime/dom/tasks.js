@@ -7,13 +7,21 @@
 //
 // Needs WebAssembly.Suspending / WebAssembly.promising.
 
+// What a fault in a task is, in the program's own words: the engine's call
+// stack running out is the task's stack overflowing, as a native guard page
+// says it. Anything else is its own message.
+export function faultWords(e) {
+  if (e instanceof RangeError && /call stack/i.test(e.message)) return "avra: a task's stack overflowed";
+  return String(e && e.message ? e.message : e);
+}
+
 export function jspiAvailable() {
   return typeof WebAssembly.Suspending === "function" && typeof WebAssembly.promising === "function";
 }
 
 // The imports a hosted module names, and `start` to run its entry on the
 // first task's stack. `exports()` reads the instance's exports once it exists.
-export function hostedTasks(exports) {
+export function hostedTasks(exports, fault = (e) => { throw e; }) {
   const slots = new Map();
   let wake = null;
   let live = 0;
@@ -47,9 +55,15 @@ export function hostedTasks(exports) {
       if (!next.running) {
         next.running = true;
         live += 1;
-        entry()().finally(() => {
-          live -= 1;
-        });
+        entry()().then(
+          () => {
+            live -= 1;
+          },
+          (e) => {
+            live -= 1;
+            fault(e);
+          },
+        );
       } else {
         next.resume();
       }
