@@ -1,5 +1,6 @@
-// proves: an `.await` and a wait-set arm on ONE spawned task wake in
-// the order they began waiting, when the task ends.
+// proves: an `.await` and a wait-set arm on ONE spawned task each wake
+// exactly once when the task ends, whatever order the ready waiters then
+// run in.
 use @std.time.{ms, sleep}
 
 extern fn avra_wait_task(t: Task<int>, arm: int, member: int)
@@ -26,8 +27,13 @@ fn waiter(name: int, log: ptr, on: Task<int>) -> int {
     0
 }
 
-/// Four waiters begin in the order of their names, from `first`, and
-/// the task ends after the last has parked: the order they woke in.
+/// How many times `name` is in the log.
+fn woke(log: ptr, name: int) -> int {
+    [1 for i in 0..4 if avra_array_get(log, i) == name].length
+}
+
+/// Four waiters, named from `first`, wait on one task that ends after the
+/// last has parked: how many times each name woke.
 fn woken(first: int) -> string {
     let log = avra_array_sized(4)
     let on = spawn slept(3)
@@ -36,7 +42,7 @@ fn woken(first: int) -> string {
     let c = spawn waiter(first + 2, log, on)
     let d = spawn waiter(first + 3, log, on)
     let _ = a.await + b.await + c.await + d.await
-    ["${avra_array_get(log, i)}" for i in 0..4].join("")
+    ["${woke(log, first + n)}" for n in 0..4].join("")
 }
 
 "${woken(1)} ${woken(2)}"

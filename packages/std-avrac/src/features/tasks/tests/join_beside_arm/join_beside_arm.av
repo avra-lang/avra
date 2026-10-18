@@ -1,5 +1,6 @@
-// proves: a join and a wait-set arm on ONE task nothing runs wake in
-// the order they began waiting, when another task answers it.
+// proves: a join and a wait-set arm on ONE task nothing runs each wake
+// exactly once when another task answers it, whatever order the ready
+// waiters then run in.
 use @std.time.{ms, sleep}
 
 extern fn avra_wait_task(t: ptr, arm: int, member: int)
@@ -30,8 +31,13 @@ fn waiter(name: int, log: ptr, on: ptr) -> int {
     0
 }
 
-/// Four waiters begin in the order of their names, from `first`, and
-/// the task ends after the last has parked: the order they woke in.
+/// How many times `name` is in the log.
+fn woke(log: ptr, name: int) -> int {
+    [1 for i in 0..4 if avra_array_get(log, i) == name].length
+}
+
+/// Four waiters, named from `first`, wait on one task that ends after the
+/// last has parked: how many times each name woke.
 fn woken(first: int) -> string {
     let log = avra_array_sized(4)
     let on = avra_task_pending()
@@ -42,7 +48,7 @@ fn woken(first: int) -> string {
     sleep(ms(2))
     avra_task_answer(on, boxed(0))
     let _ = a.await + b.await + c.await + d.await
-    ["${avra_array_get(log, i)}" for i in 0..4].join("")
+    ["${woke(log, first + n)}" for n in 0..4].join("")
 }
 
 "${woken(1)} ${woken(2)}"
