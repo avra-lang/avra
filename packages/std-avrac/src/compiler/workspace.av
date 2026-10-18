@@ -1937,6 +1937,12 @@ impl Workspace {
             .Compute -> nothing(),
         }
         touch(self.items(f))
+        // A RESOLVE UNDER AN OPEN EXPANSION IS A SMALLER VIEW: the
+        // expansion is still minting, so the tables sized here are
+        // short of the arena it ends with. Its answer serves the run
+        // that asked and is never kept — the next ask resolves the
+        // finished arena.
+        let partial = self.relation(Family.Expanded).open(f.index)
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
         // per-expression tables are sized to the arena as it stands —
@@ -1968,11 +1974,13 @@ impl Workspace {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
         let ids = self.decls.ids()
-        resolved_of(
+        let facts = resolved_of(
             self
                 .relation(Family.Resolved)
                 .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r), ids)),
         )
+        if partial { self.relation(Family.Resolved).evict_call(f.index) }
+        facts
     }
 
     /// The statements of generated declarations that are members, or
