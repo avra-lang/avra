@@ -4,13 +4,13 @@
 //! event of its own or submits its form; one a reader could not reach — in a dialog
 //! that is not open — is not on the screen, and a disabled one does not
 //! speak.
-use tree.identity.{steps, root as root_step, path}
+use tree.identity.{steps, shared, root as root_step, path, Owner}
 use tree.node.{Node, Prim, EventKind, Said}
 use tree.sink.{Sink, draw}
 
 /// A control on the screen: the node, the form it stands in, the path it
 /// stands at — its own across paints — and its seat in the walk of the tree.
-export type Control = { node: Node, form: Node?, path: string, seat: int }
+export type Control = { node: Node, form: Node?, path: string, ordered: bool, seat: int }
 
 /// Whether what a node holds is on the screen: a dialog shows its content
 /// only while it is open.
@@ -76,6 +76,21 @@ fn path_to(above: List<Open>, index: int, n: Node) -> string {
     )
 }
 
+/// Whether the node at `index` under `parent` is told from a sibling by
+/// order alone.
+fn crowded_at(parent: Node?, index: int) -> bool {
+    let under? = parent else { return false }
+    shared([c.box.stand() for c in under.children])[index]
+}
+
+/// Whether any step down to the node at `index` under the open nodes
+/// `above` is told from a sibling by order alone.
+fn crowded_to(above: List<Open>, index: int) -> bool {
+    [crowded_at(if j == 0 { null } else { above[j - 1].node }, o.index) for j, o in above]
+        .concat([crowded_at(above.last()?.node, index)])
+        .any(it)
+}
+
 /// The finder: a target of THE one walk (`tree/sink.av`), so the seat
 /// it files a control under is the seat every other target of that walk
 /// is handed for the same node. A path is built only for a control found.
@@ -94,6 +109,7 @@ impl Sink for Finder {
                         node: n,
                         form: under?.form,
                         path: path_to(above, index, n),
+                        ordered: crowded_to(above, index),
                         seat: seat,
                     },
                 )
@@ -124,6 +140,9 @@ export fn controls(root: Node) -> List<Control> {
 }
 
 impl Control {
+    /// The owner a control's work is filed under.
+    fn owner() -> Owner { Owner { key: self.path, ordered: self.ordered } }
+
     /// Whether the control can speak at all.
     fn disabled() -> bool { self.node.disabled() }
 
