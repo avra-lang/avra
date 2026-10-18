@@ -14,7 +14,7 @@
 //! refused where it stands. Every word a member says is checked against
 //! the library's own declaration — a primitive against `Prim`, an
 //! attribute against `Attribute`, a style against `Style`, an event
-//! against `EventKind`'s words, what it says against `Handler` — so each
+//! against the platforms' enums (`@host`), what it says against `Handler` — so each
 //! fact has the one table its type already is, and a word or a type that
 //! does not fit is refused at the member, never inside this file.
 //!
@@ -47,7 +47,7 @@ use @std.meta.{
     type_named,
     composes,
 }
-use tree.node.{Node, Prim, Attribute, EventKind, Action, Handler}
+use tree.node.{Node, Prim, Attribute, Action, Handler}
 use tree.dom_event.{DomEvent}
 use tree.seats.{SeatRow, seat, seat_named}
 use tree.terminal_key.{Key}
@@ -266,7 +266,6 @@ fn composition_problems(t: Type) -> List<Diagnostic> {
 type Vocabulary = {
     prims: List<Variant>,
     attributes: List<Variant>,
-    kinds: List<Variant>,
     web: List<Variant>,
     keys: List<Variant>,
     box: List<Field>,
@@ -289,7 +288,6 @@ const stand_name = "Stand"
 fn vocabulary() -> Vocabulary? {
     let prim? = type_exported(tree_module, "Prim") else { return null }
     let attribute? = type_exported(tree_module, "Attribute") else { return null }
-    let kind? = type_exported(tree_module, "EventKind") else { return null }
     let web? = type_exported(tree_module, "DomEvent") else { return null }
     let key? = type_exported(tree_module, "Key") else { return null }
     let box? = type_exported(style_module, box_name) else { return null }
@@ -298,7 +296,6 @@ fn vocabulary() -> Vocabulary? {
     Vocabulary {
         prims: prim.variants,
         attributes: attribute.variants,
-        kinds: kind.variants,
         web: web.variants,
         keys: key.variants,
         box: box.fields,
@@ -398,9 +395,6 @@ impl Vocabulary {
     /// it. ABSENCE IS THE OPTION'S OWN NULL: a handler left unset binds
     /// no action, so a control nobody hears emits nothing.
     fn event(t: Type, f: Field, says: List<Param>) -> Part {
-        let kind? = self.kinds.find(word_of(it) == f.name) else {
-            return refused(no_event(f, [word_of(k) for k in self.kinds]))
-        }
         let handler? = hearing(says, quote { bound }) else { return refused(unsayable(f, says)) }
         Part {
             problems: self.hosted(f),
@@ -416,18 +410,16 @@ impl Vocabulary {
     }
 
     /// The const that declares an event seat, beside its component: the
-    /// owner and event it is, its semantic kind, and what each platform calls
+    /// owner and event it is, and what each platform calls
     /// it, read off the seat's `@host`. Named by owner and event, so the
     /// seats are ordered by the one name that tells them apart.
     fn seat_row(t: Type, f: Field) -> Directive {
-        let kind = self.kinds.find(word_of(it) == f.name)
         let marks = marks_of(f, host_mark)
         let named = "${t.name}\$${f.name}"
         let row = quote {
             SeatRow {
                 owner: ${literal(t.name)},
                 event: ${literal(f.name)},
-                kind: EventKind.${kind?.name ?? ""},
                 web: ${self.hosted_as(marks, web_label, "DomEvent")},
                 terminal: ${self.hosted_as(marks, terminal_label, "Key")},
                 prevent: ${flag_code(hosted_flag(marks, prevent_label))},
@@ -512,10 +504,8 @@ const attr_mark = "attr"
 const children_mark = "children"
 const style_mark = "style"
 
-/// The annotation that names a view's primitive, and the mark that gives
-/// an event kind its word.
+/// The annotation that names a view's primitive.
 const prim_mark = "prim"
-const word_mark = "word"
 
 /// The mark that says what a platform calls an event, and the settings it
 /// takes.
@@ -555,9 +545,6 @@ fn children(f: Field, m: Mark) -> Part {
         rest -> refused(not_children(m, f)),
     }
 }
-
-/// The word an `EventKind` answers to — its `@word`.
-fn word_of(kind: Variant) -> string { kind.marks.find(it.name == word_mark)?.args?.first() ?? kind.name }
 
 /// The `Handler` arm that hears what an event says: ONE arm per thing a
 /// control can say, and absent for anything else.
@@ -634,7 +621,7 @@ fn unread(t: Type) -> Diagnostic {
         "defect",
         t.at,
         "defect: `@derive(View)` could not read the library's own vocabulary over `${t.name}`",
-        "`Prim`, `Attribute`, `EventKind`, `Box`, `Style` and `Stand` are read by their modules' names — one moved",
+        "`Prim`, `Attribute`, `Box`, `Style` and `Stand` are read by their modules' names — one moved",
     )
 }
 
@@ -788,15 +775,6 @@ fn not_children(m: Mark, f: Field) -> Diagnostic {
         m.at,
         "a node's children are views, and `${f.name}` is `${f.kind.spelled()}`",
         "`@children` marks a `List<dyn View>`",
-    )
-}
-
-fn no_event(f: Field, known: List<string>) -> Diagnostic {
-    refuse_as_at(
-        "event",
-        f.at,
-        "`${f.name}` is no event a target hears",
-        "a primitive's events are ${ticked(known)}",
     )
 }
 
