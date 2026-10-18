@@ -54,7 +54,11 @@ for src in "$fixtures"/*/; do
     "$avra" run "$pkg" >"$work/$name.eval.out" 2>"$work/$name.eval.err" || { say "$name: eval run failed"; cat "$work/$name.eval.err" >&2; fail=1; continue; }
     "$native" >"$work/$name.native.out" 2>&1 || true
     "$node" --no-warnings $jspi "$here/wasm-node.mjs" "$wasm" >"$work/$name.wasm.out" 2>"$work/$name.wasm.err" || true
-    if ! diff -u "$work/$name.native.out" "$work/$name.wasm.out" >"$work/$name.diff" 2>&1; then
+    if [ -f "$src/expected.txt" ] && ! diff -u "$src/expected.txt" "$work/$name.native.out" >"$work/$name.diff" 2>&1; then
+        say "$name: native stdout differs from its expected.txt (all three engines could share the mistake)"
+        cat "$work/$name.diff" >&2
+        fail=1
+    elif ! diff -u "$work/$name.native.out" "$work/$name.wasm.out" >"$work/$name.diff" 2>&1; then
         say "$name: wasm stdout differs from native"
         cat "$work/$name.diff" >&2
         fail=1

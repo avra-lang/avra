@@ -1,8 +1,15 @@
 #!/bin/sh
-# THE HOSTED SCHEDULER, TESTED: one line of its wasm port broken at a time,
-# and the `tasks` fixture must stop agreeing with native for each. The C
-# runtime tests cannot see this half — it exists only in a wasm build — so the
-# fixture is the oracle, and a break it survives is a gap in it.
+# THE HOSTED SCHEDULER, TESTED: one piece of its wasm port broken at a time,
+# and a fixture must stop agreeing with its oracle for each. The C runtime
+# tests cannot see this half — it exists only in a wasm build and in the JS
+# host — so the fixtures (`tasks`, `cancel`) are the oracle, and a break they
+# survive is a gap in them. Each kill names the numbered claims of the
+# `cancel` fixture that moved, so a claim no break reaches is visible.
+#
+# A break is either a replacement in runtime/avra_fiber.c (built for wasm and
+# swapped into the archive for the length of one build) or one in the JS host
+# (runtime/dom/tasks.js, run from a copy). A break that does not apply is
+# reported: the source moved and this table did not.
 #
 # NOT HERE, AND WHY: dropping the stack-pointer restore after a resume
 # (`shadow_set(mine)` in `fiber_switched`) is not killed by any fixture, and
@@ -12,12 +19,9 @@
 # inside its frame while another task allocates in the same region. The
 # restore stays on the strength of that trace. THE DEADLINE: a program
 # construct that parks inside a memory-resident frame (an escaping local) is
-# the day to add the break here.
-#
-# Each break replaces ONE piece of runtime/avra_fiber.c, builds that object for
-# wasm, swaps it into the archive for the length of one build, and runs the
-# fixture under the host. A break that does not apply is reported: it means
-# the source moved and this table did not.
+# the day to add the break here. The scheduler's own cancel and `within`
+# logic is shared with native and mutation-tested by the C runtime tests
+# (`make runtime-mutations`); what these breaks reach is the port under it.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -34,26 +38,58 @@ command -v "$node" >/dev/null 2>&1 || skip "node not on PATH"
 command -v clang >/dev/null 2>&1 || skip "clang not on PATH"
 clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 target"
 ( cd "$tree" && make -s wasm-runtime ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
-jspi=""
 if "$node" --experimental-wasm-jspi -e 0 >/dev/null 2>&1; then jspi="--experimental-wasm-jspi"; else skip "this Node has no JSPI"; fi
 
-cp -R "$here/wasm-fixtures/tasks" "$work/pkg"
 cp "$lib" "$work/clean.a"
 restore() { cp "$work/clean.a" "$lib"; ( cd "$tree" && make -s wasm-runtime ) >/dev/null 2>&1 || true; }
 trap restore EXIT
 
-# the fixture's answer under the clean archive is the oracle
-want=$("$avra" build --target wasm32 "$work/pkg" 2>/dev/null | tail -1)
-[ -f "$want" ] || { say "the clean fixture did not build"; exit 1; }
-clean_out=$("$node" --no-warnings $jspi "$here/wasm-node.mjs" "$want" 2>&1) || true
-case "$clean_out" in spawned*) : ;; *) say "the clean fixture does not answer: $clean_out"; exit 1 ;; esac
+# Build and run every fixture with the archive as it stands, under the host
+# in `$1` (a directory holding tools/wasm-node.mjs and runtime/dom/tasks.js).
+# Answers each fixture's stdout and stderr, after its name.
+observe() {
+    host=$1
+    tag=$2
+    for f in tasks cancel; do
+        cp -R "$here/wasm-fixtures/$f" "$work/$tag-$f"
+        out=$("$avra" build --target wasm32 "$work/$tag-$f" 2>/dev/null | tail -1)
+        if [ -f "$out" ]; then
+            res=$(timeout 30 "$node" --no-warnings $jspi "$host/tools/wasm-node.mjs" "$out" 2>&1) || true
+        else
+            res="(build failed)"
+        fi
+        printf '== %s\n%s\n' "$f" "$res"
+    done
+}
+
+clean_host=$tree
+clean_out=$(observe "$clean_host" clean)
+# the oracle: every fixture's stdout is its expected.txt
+for f in tasks cancel; do
+    got=$(printf '%s\n' "$clean_out" | awk -v f="$f" '$0=="== " f{on=1; next} /^== /{on=0} on' | grep -v '^wasm-node:' || true)
+    [ "$got" = "$(cat "$here/wasm-fixtures/$f/expected.txt")" ] || { say "the clean $f fixture does not answer its expected.txt:"; printf '%s\n' "$got" >&2; exit 1; }
+done
 
 fail=0
 tried=0
-try() { # name old new
-    name=$1
+verdict() { # name out
+    if [ "$2" = "$clean_out" ]; then
+        say "$1: SURVIVED — the fixtures still agree"
+        fail=1
+        return 0
+    fi
+    claims=""
+    for n in 1 2 3 4 5 6 7; do
+        a=$(printf '%s\n' "$clean_out" | grep -a "^$n " || true)
+        b=$(printf '%s\n' "$2" | grep -a "^$n " || true)
+        [ "$a" = "$b" ] || claims="$claims $n"
+    done
+    say "$1: killed${claims:+ (cancel claims moved:$claims)}"
+}
+
+c_break() { # name old new
     tried=$((tried + 1))
-    python3 - "$tree/runtime/avra_fiber.c" "$work/mut.c" "$2" "$3" <<'PY' || { say "$name: its line is not in the source"; fail=1; return 0; }
+    python3 - "$tree/runtime/avra_fiber.c" "$work/mut.c" "$2" "$3" <<'PY' || { say "$1: its line is not in the source"; fail=1; return 0; }
 import sys
 src, out, old, new = sys.argv[1:5]
 text = open(src).read()
@@ -63,32 +99,47 @@ open(out, "w").write(text.replace(old, new))
 PY
     clang --target=wasm32-wasip1 -DAVRA_INSTRUMENTS=0 -I"$tree/runtime" -Oz -Wno-deprecated -ffunction-sections -fdata-sections \
         -D_WASI_EMULATED_MMAN -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_GETPID -c -o "$work/avra_fiber.o" "$work/mut.c" 2>/dev/null \
-        || { say "$name: does not build"; fail=1; return 0; }
+        || { say "$1: does not build"; fail=1; return 0; }
     cp "$work/clean.a" "$lib"
     ( cd "$work" && ar r "$lib" avra_fiber.o ) >/dev/null 2>&1
-    # a package of its own each time: a kept binary must not answer for the archive that changed
-    cp -R "$here/wasm-fixtures/tasks" "$work/pkg$tried"
-    got=$("$avra" build --target wasm32 "$work/pkg$tried" 2>/dev/null | tail -1)
-    if [ -f "$got" ]; then
-        out=$(timeout 20 "$node" --no-warnings $jspi "$here/wasm-node.mjs" "$got" 2>&1) || true
-    else
-        out="(build failed)"
-    fi
-    if [ "$out" = "$clean_out" ]; then
-        say "$name: SURVIVED — the fixture still agrees"
-        fail=1
-    else
-        say "$name: killed"
-    fi
+    verdict "$1" "$(observe "$tree" "m$tried")"
+    cp "$work/clean.a" "$lib"
 }
 
-try "a fresh task starts on its parent's shadow stack" \
+js_break() { # name old new
+    tried=$((tried + 1))
+    h=$work/jshost$tried
+    mkdir -p "$h/tools" "$h/runtime/dom"
+    cp "$here/wasm-node.mjs" "$h/tools/"
+    python3 - "$tree/runtime/dom/tasks.js" "$h/runtime/dom/tasks.js" "$2" "$3" <<'PY' || { say "$1: its line is not in the source"; fail=1; return 0; }
+import sys
+src, out, old, new = sys.argv[1:5]
+text = open(src).read()
+if text.count(old) != 1:
+    sys.exit(1)
+open(out, "w").write(text.replace(old, new))
+PY
+    verdict "$1" "$(observe "$h" "j$tried")"
+}
+
+c_break "a fresh task starts on its parent's shadow stack" \
     "    shadow_set(g_current->sp);
     fiber_start();" \
     "    fiber_start();"
-try "a finished task is suspended for ever" \
+c_break "a finished task is suspended for ever" \
     "avra_host_switch(self, next, self->state == FIBER_DONE);" \
     "avra_host_switch(self, next, 0);"
+js_break "an ended task's slot answers the next task at its address" \
+    "      if (ends) slots.delete(from);
+      else slot(from).running = true;" \
+    "      slot(from).running = true;"
+js_break "a suspended task is never resumed" \
+    "        next.resume();" \
+    "        void next;"
+js_break "the world waits for ever" \
+    "        setTimeout(resolve, Number((ns + 999999n) / 1000000n));" \
+    "        void ns;"
+
 
 [ "$fail" -eq 0 ] || exit 1
-say "$tried hosted breaks, each killed by the tasks fixture"
+say "$tried port breaks, each killed by the fixtures"
