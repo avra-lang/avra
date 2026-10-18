@@ -47,7 +47,7 @@ use core.{
     same_param_id,
     pronoun_param_id,
 }
-use features.{chained_binder}
+use features.{chained_binder, spread_entry}
 use features.expr_spine.{words, applieds}
 use @std.text.{Text, builder}
 extern fn avra_float_text_bits(bits: int) -> string
@@ -1813,28 +1813,27 @@ impl SourceText {
             return self
                 .wrapped_list(
                     "{",
-                    ["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, f in fields],
+                    [self.field_text(f, values[j], depth + 1) for j, f in fields],
                     "}",
                     true,
                     depth,
                     col,
                 )
         }
-        if self.span_flat(span) { return "{ ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }" }
+        if self.span_flat(span) { return "{ ${joined([self.field_text(f, values[j], depth) for j, f in fields], ", ")} }" }
         let body = flatten(
             [self
                 .trivia_before(start_of(self.store.expr_span(values[j])), depth + 1)
-                .concat(
-                    [
-                        source_line(
-                            depth + 1,
-                            "${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)},",
-                        ),
-                    ],
-                ) for j, f in fields],
+                .concat([source_line(depth + 1, "${self.field_text(f, values[j], depth + 1)},")]) for j, f in fields],
         )
             .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// One literal entry: `name: value`, or a spread's `..record`.
+    mut fn field_text(f: Plain, v: ExprId, depth: int) -> string {
+        if f.of == spread_entry { return "..${self.expression(v, postfix_tier, depth)}" }
+        "${source_name(f.of)}: ${self.expression(v, loosest_tier, depth)}"
     }
 
     /// A string literal's text: `"""raw"""` for the node the lexer's
