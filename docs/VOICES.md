@@ -17,7 +17,7 @@ which only shrinks.
 | block | 1 | 0 | 0 | 0 |
 | resolve | 33 | 17 | 17 | 2 |
 | lower | 8 | 1 | 1 | 0 |
-| type | 119 | 71 | 71 | 6 |
+| type | 120 | 71 | 71 | 6 |
 | flow | 17 | 11 | 11 | 0 |
 | annotation | 17 | 2 | 2 | 0 |
 | manifest | 30 | 20 | 20 | 0 |
@@ -26,7 +26,7 @@ which only shrinks.
 | const | 6 | 5 | 5 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 260 | 152 | 152 | 8 |
+| **all** | 261 | 152 | 152 | 8 |
 
 ## Rules
 

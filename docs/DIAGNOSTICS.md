@@ -3738,7 +3738,7 @@ error[flow.unbounded_cleanup]: this `defer`'s body waits, and no `within` it wri
   ·           ┬
   ·           ╰── waits here
 ──╯
-help: bound the cleanup in its own body — `defer { let _ = within ms(100) { … } }`
+help: bound the cleanup in its own body — `defer { let _ = within ms(100) { … } }`, the block ending on a value
 ```
 
 ## type.duplicate_param
