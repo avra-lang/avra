@@ -37,7 +37,7 @@ type Sides = { start: int, end: int, top: int, bottom: int }
 /// One child along its container's main axis: the size it asks for there
 /// (`base`), the least it can be squeezed to, that ask held to that least,
 /// its share of growth, whether it holds its size rather than shrink, its
-/// margins on each axis, its size across when that is known before the
+/// padding along the main axis (a shrink is shared by what is inside it), its margins on each axis, its size across when that is known before the
 /// main axis is, whether it stretches across, and the least it takes across
 /// (its padding there).
 type Item = {
@@ -47,6 +47,7 @@ type Item = {
     hyp: int,
     grow: int,
     rigid: bool,
+    padded: int,
     m0: int,
     m1: int,
     c0: int,
@@ -70,6 +71,10 @@ type Flow = { rects: List<Rect>, sure: List<bool>, content_h: int }
 /// A width no content reaches: text laid in it never wraps.
 const unbounded = 1000000
 
+/// The widest a tree is laid out: far wider than any screen, and narrow enough
+/// that no length overflows once carried in sixtieths.
+const widest = 100000000
+
 /// Lengths are carried in sixtieths of a unit, as a browser carries them
 /// in sixtieths of a pixel: a share that does not divide keeps its fraction
 /// down the tree, and only the boxes handed back are snapped to whole units.
@@ -79,7 +84,16 @@ const unit = 60
 export fn place(root: Node, m: dyn Measure, width: int) -> Placed {
     let cx = Ctx { m: m, known: no_sizes() }
     whole(
-        arrange(cx, root, "0", 0, 0, fixed_w(cx, root) ?? at_least_zero(width) * unit, null, false),
+        arrange(
+            cx,
+            root,
+            "0",
+            0,
+            0,
+            fixed_w(cx, root) ?? smaller(at_least_zero(width), widest) * unit,
+            null,
+            false,
+        ),
     )
 }
 
@@ -104,7 +118,7 @@ fn own_of(cx: Ctx, n: Node, avail: int) -> Extent {
     Extent { w: e.w * unit, h: e.h * unit }
 }
 
-fn kept_of(cx: Ctx, n: Node) -> int { cx.m.kept(n) * unit }
+fn kept_of(cx: Ctx, n: Node, path: string) -> int { cx.m.kept(n, path) * unit }
 
 fn no_sizes() -> Cell<Map<string, int>> { Cell.new({}) }
 
@@ -207,9 +221,9 @@ fn max_w(cx: Ctx, n: Node, path: string) -> int {
         () -> {
             let pad = sides(cx, n.box.layout.pad)
             let own = cx.m.own(n, unbounded).w * unit
-            let kids = [margin_x(cx, c) + (fixed_w(cx, c) ?? max_w(cx, c, "${path}.${i}")) for i, c in n.children]
+            let kids = [margin_x(cx, c) + (fixed_w(cx, c) ?? max_w(cx, c, "${path}.${i}")) for i, c in n.children if cx.m.holds(n) && !cx.m.hidden(c)]
             let inside = if axis_of(n) is .Row { kids.sum() + gap_along(cx, n, .Row) * at_least_zero(kids.length - 1) } else { kids.max() ?? 0 }
-            pad.start + pad.end + kept_of(cx, n) + bigger(own, inside)
+            pad.start + pad.end + kept_of(cx, n, path) + bigger(own, inside)
         },
     )
 }
@@ -223,10 +237,10 @@ fn min_w(cx: Ctx, n: Node, path: string) -> int {
         () -> {
             let pad = sides(cx, n.box.layout.pad)
             let own = cx.m.min_own(n) * unit
-            let kids = [margin_x(cx, c) + (fixed_w(cx, c) ?? min_w(cx, c, "${path}.${i}")) for i, c in n.children]
+            let kids = [margin_x(cx, c) + (fixed_w(cx, c) ?? min_w(cx, c, "${path}.${i}")) for i, c in n.children if cx.m.holds(n) && !cx.m.hidden(c)]
             let along = axis_of(n) is .Row && !wraps(n)
             let inside = if along { kids.sum() + gap_along(cx, n, .Row) * at_least_zero(kids.length - 1) } else { kids.max() ?? 0 }
-            pad.start + pad.end + kept_of(cx, n) + bigger(own, inside)
+            pad.start + pad.end + kept_of(cx, n, path) + bigger(own, inside)
         },
     )
 }
@@ -239,7 +253,7 @@ fn height_at(cx: Ctx, n: Node, path: string, w: int) -> int {
         "H${path}:${w}",
         () -> {
             let pad = sides(cx, n.box.layout.pad)
-            let iw = at_least_zero(w - pad.start - pad.end - kept_of(cx, n))
+            let iw = at_least_zero(w - pad.start - pad.end - kept_of(cx, n, path))
             fixed_h(cx, n) ?? pad.top +
                 pad.bottom +
                 own_of(cx, n, iw).h +
@@ -273,6 +287,7 @@ fn item_of(cx: Ctx, n: Node, path: string, i: int, iw: int, ih: int?, dir: Axis,
             hyp: bigger(wide, least),
             grow: if fills(l.width) { bigger(1, l.grow) } else { l.grow },
             rigid: fixed(l.width) != null,
+            padded: pads.start + pads.end,
             m0: mg.start,
             m1: mg.end,
             c0: mg.top,
@@ -299,6 +314,7 @@ fn item_of(cx: Ctx, n: Node, path: string, i: int, iw: int, ih: int?, dir: Axis,
             hyp: bigger(tall, least),
             grow: if fills(l.height) { bigger(1, l.grow) } else { l.grow },
             rigid: fixed(l.height) != null,
+            padded: pads.top + pads.bottom,
             m0: mg.top,
             m1: mg.bottom,
             c0: mg.start,
@@ -355,7 +371,7 @@ fn flexed(items: List<Item>, avail: int?, gap: int) -> Flexed {
     let room? = avail else { return whole_sizes([item.hyp for item in items]) }
     let gaps = gap * at_least_zero(items.length - 1)
     let growing = [outer(item, item.hyp) for item in items].sum() + gaps < room
-    let factors = [if growing { item.grow } else if item.rigid { 0 } else { item.base } for item in items]
+    let factors = [if growing { item.grow } else if item.rigid { 0 } else { at_least_zero(item.base - item.padded) } for item in items]
     mut frozen = [factors[i] == 0 || growing && item.base > item.hyp || !growing && item.base < item.hyp for i, item in items]
     mut sizes = [item.hyp for item in items]
     for _round in 0..items.length + 1 {
@@ -464,13 +480,25 @@ fn placed_across(near: int, a: Align, space: int, size: int, extent: int, backwa
 /// margin on its cross end comes first.
 fn flipped(item: Item, backwards: bool) -> Item { if backwards { item with { c0: item.c1, c1: item.c0 } } else { item } }
 
+fn empty_rect() -> Rect { Rect { x: 0, y: 0, w: 0, h: 0 } }
+
+/// A container none of whose children takes a place: every box empty.
+fn unplaced(n: Node) -> Flow {
+    Flow {
+        rects: [empty_rect() for _c in n.children],
+        sure: [false for _c in n.children],
+        content_h: 0,
+    }
+}
+
 /// The container's children placed in an inner box `iw` wide and, when
 /// known, `ih` high, with the height their layout asks for.
 fn flow(cx: Ctx, n: Node, path: string, iw: int, ih: int?) -> Flow {
-    if n.children.is_empty() { return Flow { rects: [], sure: [], content_h: 0 } }
+    let shown = if cx.m.holds(n) { [i for i in in_order(n.children) if !cx.m.hidden(n.children[i])] } else { [] }
+    if shown.is_empty() { return unplaced(n) }
     let dir = axis_of(n)
     let wrapped = wraps(n) || reversed(n)
-    let items = [flipped(item_of(cx, n, path, i, iw, ih, dir, wrapped), reversed(n)) for i in in_order(n.children)]
+    let items = [flipped(item_of(cx, n, path, i, iw, ih, dir, wrapped), reversed(n)) for i in shown]
     let along = if dir is .Row { iw } else { ih }
     let gap = gap_along(cx, n, dir)
     let across_gap = if dir is .Row { cx.m.gap_y(n.gap() ?? .None) } else { cx.m.gap_x(n.gap() ?? .None) } * unit
@@ -483,7 +511,7 @@ fn flow(cx: Ctx, n: Node, path: string, iw: int, ih: int?) -> Flow {
     let rows = stacked_lines(natural, across_gap, definite, wrapped)
     let align = n.box.layout.align ?? .Stretch
     let extent = definite ?? natural.sum() + across_gap * (lines.length - 1)
-    mut rects: List<Rect> = [Rect { x: 0, y: 0, w: 0, h: 0 } for _c in n.children]
+    mut rects: List<Rect> = [empty_rect() for _c in n.children]
     mut sure = [false for _c in n.children]
     for k, line in lines {
         for j, item in line {
@@ -541,7 +569,7 @@ fn cross_of(cx: Ctx, n: Node, path: string, item: Item, span: Span) -> int {
 fn arrange(cx: Ctx, n: Node, path: string, x: int, y: int, w: int, asked_h: int?, sure: bool) -> Placed {
     let h = asked_h ?? fixed_h(cx, n)
     let pad = sides(cx, n.box.layout.pad)
-    let kept = kept_of(cx, n)
+    let kept = kept_of(cx, n, path)
     let iw = at_least_zero(w - pad.start - pad.end - kept)
     let own = own_of(cx, n, iw)
     let ih = if sure || fixed(n.box.layout.height) != null { less(h, pad.top + pad.bottom + own.h) } else { null }
