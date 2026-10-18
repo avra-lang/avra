@@ -275,14 +275,21 @@ def check(measured, accepted, host, ratio, slack, require):
     return refusals, gated, words
 
 
-def check_warm(measured, accepted, host, require):
+def on_ci():
+    return os.environ.get("GITHUB_ACTIONS") == "true" or os.environ.get("CI") == "true"
+
+
+def check_warm(measured, accepted, host, require, report_only=False):
     """The DB 07 warm-edit gate. Answers (refusals, gated, words), the
     same shape as `check`. A warm row is the MEASURED PRESENT with
     `WARM_RATIO` of slack for a shared runner's variance — the ticket's
     60/300 ms target stands as a comment, never as the enforced value,
     because a row at the goal would refuse every run and nothing could
     land. A machine with no warm row refuses only when the caller asks
-    (`--require`)."""
+    (`--require`). With `report_only` (a shared CI runner) the clock is
+    printed with its ceiling and limit and a `::warning::` past the limit,
+    and never refuses: the exact work counters (tools/work_ratchet.py) are
+    the failing gate there."""
     refusals, gated, words = [], 0, []
     rows_here = {k: v for k, v in accepted.items() if k[0] == host and k[1] == WARM_COMMAND}
     if not rows_here:
@@ -308,17 +315,21 @@ def check_warm(measured, accepted, host, require):
         goal = WARM_GOAL.get(p)
         stretch = ", goal %dms" % goal if goal else ""
         line = "%dms vs ceiling %dms (limit %.0fms)%s" % (now, ceiling, limit, stretch)
+        verdict = "PASS" if now <= limit else ("WARN" if report_only else "FAIL")
         print("speed: %s: warm %s: %s%s"
-              % ("PASS" if now <= limit else "FAIL", p, line,
+              % (verdict, p, line,
                  "" if now <= limit else " (over by %.0fms)" % (now - limit)))
-        if now > limit:
+        if now > limit and report_only:
+            print("::warning::speed: warm %s: %s (over by %.0fms) — reported, not gated on CI"
+                  % (p, line, now - limit))
+        elif now > limit:
             refusals.append(("warm %s" % p, "%s (over by %.0fms)" % (line, now - limit)))
     return refusals, gated, words
 
 
 def gate_warm(measured, accepted, host, require):
     print("speed: warm-edit host %s" % host)
-    fail, gated, words = check_warm(measured, accepted, host, require)
+    fail, gated, words = check_warm(measured, accepted, host, require, on_ci())
     seen = len({k for k in measured if k[0] == WARM_COMMAND})
     print("speed: %d warm scenario(s) measured, %d gated here" % (seen, gated))
     for why in words:
@@ -633,7 +644,25 @@ def self_test():
             assert wmrows[(host, "warm", "unchanged")] == 50, wmrows
     finally:
         BUDGET = keep
-    print("speed_ratchet self-test: 34 fixture(s) held")
+    # on CI the clock is reported, never refused; a non-clock refusal still stands
+    ci_over = dict(wm)
+    ci_over[("warm", "unchanged")] = 10 ** 6
+    fail, gated, _ = check_warm(ci_over, warm_base, host, False, True)
+    assert fail == [] and gated == 2, (fail, gated)
+    assert [r for r, _ in check_warm(ci_over, warm_base, host, False)[0]] == ["warm unchanged"]
+    ci_short = {k: v for k, v in ci_over.items() if k != ("warm", "edit")}
+    assert [r for r, _ in check_warm(ci_short, warm_base, host, False, True)[0]] == ["warm edit"]
+    keep_env = dict(os.environ)
+    try:
+        os.environ.pop("GITHUB_ACTIONS", None)
+        os.environ["CI"] = "true"
+        assert gate_warm(ci_over, warm_base, host, False) == 0
+        os.environ.pop("CI")
+        assert gate_warm(ci_over, warm_base, host, False) == 1
+    finally:
+        os.environ.clear()
+        os.environ.update(keep_env)
+    print("speed_ratchet self-test: 35 fixture(s) held")
     return 0
 
 
