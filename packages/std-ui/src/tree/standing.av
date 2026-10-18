@@ -50,6 +50,7 @@ export type Standing = {
     placed: Cell<Map<string, int>>,
     extent: Cell<int>,
     geometry: Cell<bool>,
+    limit: Cell<int>,
     pin: Cell<string?>,
     pin_at: Cell<int>,
     reveal: Cell<string?>,
@@ -66,11 +67,11 @@ export const first_window: int = 40
 /// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
     let nothing: List<string> = []
-    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(false))
+    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(false), Cell.new(0))
 }
 
 /// A standing nothing has stood at, in the walk that says into `said`.
-fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>) -> Standing {
+fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>, limit: Cell<int>) -> Standing {
     let nowhere_placed: Map<string, int> = {}
     let none: Hold? = null
     let nowhere: string? = null
@@ -90,6 +91,7 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>)
         placed: Cell.new(nowhere_placed),
         extent: Cell.new(0),
         geometry: geometry,
+        limit: limit,
         pin: Cell.new(nowhere),
         pin_at: Cell.new(-1),
         reveal: Cell.new(nowhere),
@@ -132,7 +134,7 @@ impl Standing {
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
         let now = [Under {
             step: s,
-            standing: stood.get(s) ?? stands_in(self.said, self.counted, self.geometry),
+            standing: stood.get(s) ?? stands_in(self.said, self.counted, self.geometry, self.limit),
         } for s in steps]
         let above = if drawn { null } else { self.step.get() }
         for j, u in now {
@@ -186,10 +188,8 @@ impl Standing {
     /// told it, kept inside the rows there are — else the first screenful.
     fn window_of(count: int) -> Window {
         let told? = self.window.get() else {
-            let first = Window {
-                from: 0,
-                to: if count < first_window { count } else { first_window },
-            }
+            let room = if self.limit.get() > 0 { self.limit.get() } else { first_window }
+            let first = Window { from: 0, to: if count < room { count } else { room } }
             self.window.set(first)
             return first
         }
@@ -202,6 +202,10 @@ impl Standing {
     /// scroll height): a windowed list stands a spacer for them from its
     /// first paint, so the target finds the list and measures it.
     fn geometric() { self.geometry.set(true) }
+
+    /// The target's screen holds `rows` rows: a windowed list not yet told
+    /// its window builds that many, not a default screenful.
+    fn first_rows(rows: int) { self.limit.set(rows) }
 
     /// Whether a windowed list stands spacers for its unbuilt rows.
     fn spaces() -> bool { self.geometry.get() || self.extent.get() > 0 }
