@@ -1,5 +1,9 @@
 //! `avra voices` — what every registered voice carries beyond its
 //! words: a witness, help, a structured fix where its row owes one.
+//! A help's code form is RUN: a structured fix spliced into its witness
+//! must clear its refusal and still parse, and a remedy row (a refusal
+//! and the same program with the form applied) must hold — `bad_fix`,
+//! `bad_remedy`; a form with neither is `no_remedy`.
 //! `--report` prints the inventory; `--gaps` the current gap lines;
 //! `--baseline <file>` gates — a gap the baseline does not list
 //! refuses, and so does a baseline line whose gap is gone (the file
@@ -7,7 +11,7 @@
 use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
 use @std.avrac.compiler.{rules as rule_table}
-use @std.avrac.compiler.dev.{shown_codes, kind_gaps, rule_gaps, gap_lines, coverage_report}
+use @std.avrac.compiler.dev.{shown_codes, kind_gaps, rule_gaps, remedy_gaps, gap_lines, coverage_report}
 
 type VoicesCmd = {}
 
@@ -18,7 +22,7 @@ impl Runnable for VoicesCmd {
             println(coverage_report(runs, rule_table))
             return 0
         }
-        let gaps = gap_lines(kind_gaps(runs).concat(rule_gaps(rule_table)))
+        let gaps = gap_lines(kind_gaps(runs).concat(remedy_gaps(runs)).concat(rule_gaps(rule_table)))
         if args.has_flag("gaps") {
             for g in gaps { println(g) }
             return 0
@@ -55,7 +59,7 @@ fn pruned(path: string, kept: List<string>) -> int {
 
 // ── Voices ──────────────────────────────────────────────────────
 
-const voices_header: string = "# KNOWN voice gaps, one TAB-separated line each: a kind or rule, and what\n# it lacks (no_witness, no_help, no_fix, no_doc). This file only ever\n# SHRINKS — `avra voices --baseline <this file> --accept` prunes what a\n# fix made gone, and no path through it ADDS a line: a new voice gets its\n# help, fix and witness in the code, or a human adds the line here,\n# reviewed at adoption and every time after. `make voices` gates.\n"
+const voices_header: string = "# KNOWN voice gaps, one TAB-separated line each: a kind or rule, and what\n# it lacks (no_witness, no_help, no_fix, no_doc, bad_fix, bad_remedy, no_remedy). This file only ever\n# SHRINKS — `avra voices --baseline <this file> --accept` prunes what a\n# fix made gone, and no path through it ADDS a line: a new voice gets its\n# help, fix and witness in the code, or a human adds the line here,\n# reviewed at adoption and every time after. `make voices` gates.\n"
 
 fn usage() -> int {
     eprintln("voices: one of --report, --gaps or --baseline <file> is required")
