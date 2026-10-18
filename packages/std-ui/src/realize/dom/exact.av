@@ -1,11 +1,17 @@
 //! `realize/dom/exact.av` — EXACT PATCHES: a state write updates only the
 //! text that reads it. A SITE is one text node whose words hold a value
 //! computed from state. The page watches the CELLS its sites read: at mount
-//! each cell is observed and filed under its sites; a turn asks which observed
-//! cells were written, recomputes only the sites under them, and says
-//! `SetText` where the words changed. Every site the compiler cannot place
-//! (an opaque call, a structure change) is not here at all and the full paint
-//! speaks for it.
+//! each site observes its cells and the page files the cells' keys under the
+//! site; a turn asks which observed cells were written, recomputes only the
+//! sites under them, and says `SetText` where the words changed. A site the
+//! compiler cannot place (an opaque call, a structure change) is not here at
+//! all and the full paint speaks for it.
+//!
+//! A SITE HOLDS NO CELL. The compiler writes each site's `observe` as a
+//! closure over the typed cells it reads, so a cell is handed to the runtime
+//! at a pointer seat by the code that owns it, and what comes back is a KEY: a
+//! number that names a box and opens nothing. The page indexes keys; it never
+//! turns a number into a pointer.
 //!
 //! THE TURN'S ORDER IS THE LAW: the stamp moves on FIRST, then the log is
 //! taken. A write after the stamp moved stores a stamp the observer has not
@@ -14,63 +20,45 @@
 use tree.identity.{NodeId}
 use realize.dom.patch.{Patch}
 
-extern fn avra_ptr_at(address: int) -> ptr?
-extern fn avra_box_observe(cell: ptr) -> int
-extern fn avra_box_unobserve(cell: ptr) -> int
 extern fn avra_turn_next() -> int
 extern fn avra_changes_take() -> List<int>
 
-/// A text the page holds whose words read state. `cells` are the state
-/// cells (as the runtime names a box: its address) the value reads, `words`
-/// recomputes the whole text from the state as it stands, and `shown` is what
-/// the page was last told.
-export type Site = { node: NodeId, cells: List<int>, words: fn() -> string, shown: Cell<string> }
-
-/// The sites a page watches, the distinct cells they read, and the cells filed
-/// under their sites: a cell's address as text maps to the positions of the
-/// sites that read it.
-export type Watch = { sites: List<Site>, cells: List<int>, under: Map<string, List<int>> }
-
-/// A cell's key in the index.
-fn key_of(cell: int) -> string { "${cell}" }
-
-/// The positions of `sites` whose `cells` hold `cell`.
-fn readers(sites: List<Site>, cell: int) -> List<int> { [i for i, s in sites if s.cells.contains(cell)] }
-
-/// Every distinct cell the sites read, in the order first met.
-fn cells_of(sites: List<Site>) -> List<int> {
-    sites.fold([]) { seen, s -> seen.concat([c for c in s.cells if !seen.contains(c)]) }
+/// A text the page holds whose words read state. `words` recomputes the whole
+/// text from the state as it stands; `observe` observes each cell the text
+/// reads and answers their keys; `release` lets them go; `shown` is what the
+/// page was last told.
+export type Site = {
+    node: NodeId,
+    words: fn() -> string,
+    observe: fn() -> List<int>,
+    release: fn() -> void,
+    shown: Cell<string>,
 }
 
-/// The cell at an address, observed (false for an address that is no box).
-fn observed(cell: int) -> bool {
-    let box? = avra_ptr_at(cell) else { return false }
-    avra_box_observe(box) == 1
-}
+/// The sites a page watches, and the keys filed under them: a key as text maps
+/// to the positions of the sites that read that cell.
+export type Watch = { sites: List<Site>, under: Map<string, List<int>> }
 
-/// The cell at an address, no longer observed.
-fn released_cell(cell: int) {
-    let box? = avra_ptr_at(cell) else { return }
-    let _ = avra_box_unobserve(box)
-}
+fn key_of(key: int) -> string { "${key}" }
 
-/// `sites` under watch: each cell they read is observed and filed once.
+/// `sites` under watch: each observes its cells, and each key is filed under
+/// the sites that gave it.
 export fn watching(sites: List<Site>) -> Watch {
-    let cells = cells_of(sites)
     mut index: Map<string, List<int>> = {}
-    for c in cells {
-        let _ = observed(c)
-        index.set(key_of(c), readers(sites, c))
+    for at, site in sites {
+        for key in site.observe() {
+            index.set(key_of(key), (index.get(key_of(key)) ?? []).concat([at]))
+        }
     }
-    Watch { sites: sites, cells: cells, under: index }
+    Watch { sites: sites, under: index }
 }
 
 impl Watch {
-    /// The positions of the sites under the cells the runtime logged, each once.
+    /// The positions of the sites under the keys the runtime logged, each once.
     fn affected(changed: List<int>) -> List<int> {
         changed
-            .fold([]) { seen, c ->
-                let under = self.under.get(key_of(c)) ?? []
+            .fold([]) { seen, key ->
+                let under = self.under.get(key_of(key)) ?? []
                 seen.concat([i for i in under if !seen.contains(i)])
             }
     }
@@ -88,19 +76,20 @@ impl Watch {
     /// The cells observed again after the stamp wrapped: a box stamped a full
     /// cycle ago would read as already written this turn.
     fn observed_again() {
-        for c in self.cells { let _ = observed(c) }
+        for site in self.sites {
+            let _ = site.observe()
+        }
     }
 
     /// THE TURN: the stamp moves on first, the log is taken second, and only
     /// the sites under the changed cells are recomputed.
     fn turn() -> List<Patch> {
         if avra_turn_next() == 1 { self.observed_again() }
-        let changed = avra_changes_take()
-        [p for at in self.affected(changed) for p in self.refreshed(at)]
+        [p for at in self.affected(avra_changes_take()) for p in self.refreshed(at)]
     }
 
-    /// The page stops watching: every cell it observed is let go.
+    /// The page stops watching: every cell its sites observed is let go.
     fn released() {
-        for c in self.cells { released_cell(c) }
+        for site in self.sites { (site.release)() }
     }
 }
