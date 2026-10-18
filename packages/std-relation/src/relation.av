@@ -442,7 +442,11 @@ fn helper_decodable_under(k: Kind, seen: List<string>) -> bool {
             .Record(fs) -> if seen.contains(n) {
                 true
             } else {
-                fs.all((f: Field) -> !marked(f, "local") && helper_decodable_under(f.kind, seen.concat([n])))
+                fs
+                    .all(
+                        (f: Field) -> !marked(f, "local") &&
+                            helper_decodable_under(f.kind, seen.concat([n])),
+                    )
             },
             .Dense(_) or .Over(_) or .Plain -> false,
         },
@@ -493,9 +497,10 @@ fn instance_shape(n: string, args: List<Kind>) -> NamedShape {
     let shape = named_shape(n)
     match shape {
         .Record(fs) -> NamedShape.Record([f with { kind: filled_in(f.kind, args) } for f in fs]),
-        .Payload(vs) -> NamedShape.Payload(
-            [v with { fields: [f with { kind: filled_in(f.kind, args) } for f in v.fields] } for v in vs],
-        ),
+        .Payload(vs) -> NamedShape
+            .Payload(
+                [v with { fields: [f with { kind: filled_in(f.kind, args) } for f in v.fields] } for v in vs],
+            ),
         .Dense(_) or .Tagged(_) or .Over(_) or .Plain -> shape,
     }
 }
@@ -1318,7 +1323,12 @@ fn write_each(k: Kind, owner: Owner) -> Code {
 /// A generated helper's own name: a type as spelled, made an identifier — `Asked` is `asked`, a
 /// container's instance `SideTable<TypeId?>` is `side_table_of_type_id_opt_`.
 fn helper_id(spelled: string) -> string {
-    snake(spelled).replace("<", "_of_").replace(">", "_").replace("?", "_opt").replace(",", "_").replace(" ", "")
+    snake(spelled)
+        .replace("<", "_of_")
+        .replace(">", "_")
+        .replace("?", "_opt")
+        .replace(",", "_")
+        .replace(" ", "")
 }
 
 /// Every kind reachable from a set of columns that needs a helper — a record or a payload
@@ -1399,16 +1409,15 @@ fn stored_shape(t: Type) -> int {
 
 /// The declaration a kind names, when it names one.
 fn stored_type_of(t: Type, k: Kind) -> Type? {
-    match k {
-        .Named(n, _) -> stored_type(t, n),
-        rest -> null,
-    }
+    match k { .Named(n, _) -> stored_type(t, n), rest -> null }
 }
 
 /// A declaration's spelling: its name, then each field or variant with each field's shape and marks.
 fn described(ty: Type) -> string {
-    let fs = [("${f.name}:${f.ty}:${[m.name for m in f.marks].join("+")}") for f in ty.fields].join(",")
-    let vs = [("${v.name}(${[("${f.name}:${f.ty}") for f in v.fields].join(",")})") for v in ty.variants].join(",")
+    let fs = ["${f.name}:${f.ty}:${[m.name for m in f.marks].join("+")}" for f in ty.fields]
+        .join(",")
+    let vs = ["${v.name}(${["${f.name}:${f.ty}" for f in v.fields].join(",")})" for v in ty.variants]
+        .join(",")
     "${ty.name}{${fs}}|${vs}"
 }
 
@@ -1510,17 +1519,23 @@ fn helper_members(t: Type, k: Kind, owner: Owner, hashing: bool) -> List<Decls> 
         .Record(fs) -> {
             let writers = column_writers(n, fs, owner)
             let reads = [quote { W { ${f.name}: ${read_value(f.kind, owner)} } } for f in columns(fs)]
-            [quote { static fn write_${id}(w: Writer, v: ${n}) -> void { written_all(w, v, [${..writers}]) } }]
+            [
+                quote { static fn write_${id}(w: Writer, v: ${n}) -> void { written_all(w, v, [${..writers}]) } },
+            ]
                 .concat(
                     if fs.all((f: Field) -> !marked(f, "local")) {
-                        [quote { static fn read_${id}(rd: Reader) -> Result<${n}, CodecFault> { .Ok(${base} { ..${reads} }) } }]
+                        [
+                            quote { static fn read_${id}(rd: Reader) -> Result<${n}, CodecFault> { .Ok(${base} { ..${reads} }) } },
+                        ]
                     } else {
                         []
                     },
                 )
                 .concat(
                     if hashing {
-                        [quote { static fn hash_${id}(h: StableHasher, v: ${n}) -> StableHasher { ${folded_record(quote { h }, quote { v }, fs, owner)} } }]
+                        [
+                            quote { static fn hash_${id}(h: StableHasher, v: ${n}) -> StableHasher { ${folded_record(quote { h }, quote { v }, fs, owner)} } },
+                        ]
                     } else {
                         []
                     },
@@ -1538,7 +1553,9 @@ fn helper_members(t: Type, k: Kind, owner: Owner, hashing: bool) -> List<Decls> 
             ]
                 .concat(
                     if hashing {
-                        [quote { static fn hash_${id}(h: StableHasher, v: ${n}) -> StableHasher { match v { ${hash_arms(vs, owner)} } } }]
+                        [
+                            quote { static fn hash_${id}(h: StableHasher, v: ${n}) -> StableHasher { match v { ${hash_arms(vs, owner)} } } },
+                        ]
                     } else {
                         []
                     },
@@ -1813,7 +1830,6 @@ fn by_key_member(t: Type, keys: List<Field>) -> Decls {
         }
     }
 }
-
 
 fn stored_unfit(t: Type, f: Field) -> Diagnostic {
     refuse_as_at(
