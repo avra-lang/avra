@@ -49,7 +49,7 @@ use @std.meta.{
 }
 use tree.node.{Node, Prim, Attribute, EventKind, Action, Handler}
 use tree.dom_event.{DomEvent}
-use tree.seats.{SeatRow, seat}
+use tree.seats.{SeatRow, seat, seat_named}
 use tree.terminal_key.{Key}
 use tree.lists.{flatten}
 use tree.identity.{Stand, stand_of, steps, shared}
@@ -76,7 +76,7 @@ export trait View {
         let said? = vocabulary() else { return Declared { made: [], problems: [unread(t)] } }
         let word? = prim_word(t) else { return composition(said, t) }
         if t.body != null { return unmade(t, [primitive_body(t)]) }
-        let parts = [said.part(f) for f in t.fields]
+        let parts = [said.part(t, f) for f in t.fields]
         let problems = [d for p in parts for d in p.problems].concat(said.unfit(t, word, parts))
         if !problems.is_empty() { return unmade(t, problems) }
         let node = quote {
@@ -335,10 +335,10 @@ fn refused(why: Diagnostic) -> Part { Part { problems: [why] } }
 
 impl Vocabulary {
     /// What `f` projects to: its event, or the one thing its mark says.
-    fn part(f: Field) -> Part {
+    fn part(t: Type, f: Field) -> Part {
         if f.state { return refused(stateful_primitive(f)) }
         let says? = f.says else { return self.marked(f) }
-        let marked? = f.marks.find(it.name != host_mark) else { return self.event(f, says) }
+        let marked? = f.marks.find(it.name != host_mark) else { return self.event(t, f, says) }
         refused(marked_event(f, marked))
     }
 
@@ -397,7 +397,7 @@ impl Vocabulary {
     /// `on press` → the action the node binds while an instance hears
     /// it. ABSENCE IS THE OPTION'S OWN NULL: a handler left unset binds
     /// no action, so a control nobody hears emits nothing.
-    fn event(f: Field, says: List<Param>) -> Part {
+    fn event(t: Type, f: Field, says: List<Param>) -> Part {
         let kind? = self.kinds.find(word_of(it) == f.name) else {
             return refused(no_event(f, [word_of(k) for k in self.kinds]))
         }
@@ -407,7 +407,7 @@ impl Vocabulary {
             events: [
                 quote {
                     match self.${f.name} {
-                        bound? -> [Action { kind: EventKind.${kind.name}, handler: ${handler} }]
+                        bound? -> [Action { seat: seat_named(${literal(t.name)}, ${literal(f.name)}), handler: ${handler} }]
                         null -> []
                     }
                 },
