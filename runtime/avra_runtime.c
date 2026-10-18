@@ -3653,6 +3653,117 @@ int64_t avra_fd_write(int64_t fd, const char* bytes, int64_t from) {
     }
 }
 
+// ── The terminal: its size, its mode, and what it is left as ─────
+
+#if defined(__wasm32__)
+int64_t avra_fd_tty_size(int64_t fd) { (void)fd; return 0; }
+int64_t avra_fd_tty_raw(int64_t fd, int64_t on) { (void)fd; (void)on; return 0; }
+void avra_fd_exit_writes(int64_t fd, const char* bytes) { (void)fd; (void)bytes; }
+#else
+#include <sys/ioctl.h>
+#include <termios.h>
+
+int64_t avra_fd_tty_size(int64_t fd) {
+    struct winsize ws;
+    if (ioctl((int)fd, TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0 || ws.ws_row == 0) return 0;
+    return (int64_t)ws.ws_col * 65536 + (int64_t)ws.ws_row;
+}
+
+// WHAT THE PROCESS LEAVES BEHIND is read by an exit handler and a signal
+// handler, so it is plain data written before either can run: the bytes, a
+// terminal mode saved before it was changed, and the handlers' priors.
+static int g_leave_fd = -1;
+static char* g_leave_bytes = NULL;
+static size_t g_leave_len = 0;
+static int g_tty_fd = -1;
+static int g_tty_saved = 0;
+static struct termios g_tty_was;
+static int g_leave_armed = 0;
+static struct sigaction g_leave_prior[NSIG];
+static const int g_leave_signals[] = { SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL };
+
+// Async-signal-safe: write(2) and tcsetattr(3) only. Idempotent — the bytes
+// go out once, the mode is given back once.
+static void leave_now(void) {
+    if (g_leave_len > 0 && g_leave_fd >= 0) {
+        size_t at = 0;
+        while (at < g_leave_len) {
+            ssize_t put = write(g_leave_fd, g_leave_bytes + at, g_leave_len - at);
+            if (put < 0 && errno == EINTR) continue;
+            if (put <= 0) break;
+            at += (size_t)put;
+        }
+        g_leave_len = 0;
+    }
+    if (g_tty_saved) {
+        tcsetattr(g_tty_fd, TCSANOW, &g_tty_was);
+        g_tty_saved = 0;
+    }
+}
+
+// A terminating signal: leave, give the signal back to whoever had it, and
+// raise it again so the process ends as it would have.
+static void leave_on_signal(int sig) {
+    leave_now();
+    sigaction(sig, &g_leave_prior[sig], NULL);
+    raise(sig);
+}
+
+static void leave_arm(void) {
+    if (g_leave_armed) return;
+    g_leave_armed = 1;
+    atexit(leave_now);
+    for (size_t i = 0; i < sizeof g_leave_signals / sizeof g_leave_signals[0]; i++) {
+        int sig = g_leave_signals[i];
+        struct sigaction now;
+        if (sigaction(sig, NULL, &now) != 0) continue;
+        if (now.sa_handler == SIG_IGN) continue;
+        struct sigaction mine;
+        memset(&mine, 0, sizeof mine);
+        mine.sa_handler = leave_on_signal;
+        sigemptyset(&mine.sa_mask);
+        mine.sa_flags = SA_ONSTACK | SA_RESETHAND;
+        g_leave_prior[sig] = now;
+        sigaction(sig, &mine, NULL);
+    }
+}
+
+int64_t avra_fd_tty_raw(int64_t fd, int64_t on) {
+    if (!isatty((int)fd)) return 0;
+    leave_arm();
+    if (!on) {
+        if (!g_tty_saved) return 0;
+        tcsetattr(g_tty_fd, TCSANOW, &g_tty_was);
+        g_tty_saved = 0;
+        return 1;
+    }
+    if (g_tty_saved) return 1;
+    struct termios raw;
+    if (tcgetattr((int)fd, &raw) != 0) return 0;
+    g_tty_was = raw;
+    g_tty_fd = (int)fd;
+    cfmakeraw(&raw);
+    raw.c_oflag |= OPOST | ONLCR;
+    if (tcsetattr((int)fd, TCSANOW, &raw) != 0) return 0;
+    g_tty_saved = 1;
+    return 1;
+}
+
+void avra_fd_exit_writes(int64_t fd, const char* bytes) {
+    size_t n = bytes_len(bytes);
+    char* copy = n > 0 ? malloc(n) : NULL;
+    if (n > 0 && !copy) avra_trap("out of memory keeping the bytes a terminal is left with");
+    if (n > 0) memcpy(copy, bytes, n);
+    char* old = g_leave_bytes;
+    g_leave_len = 0;
+    g_leave_bytes = copy;
+    g_leave_fd = (int)fd;
+    g_leave_len = n;
+    free(old);
+    if (n > 0) leave_arm();
+}
+#endif
+
 
 // A list slot holding fresh text — the list owns the one reference.
 static void push_fresh_text(void* arr, const char* s, size_t n) {
