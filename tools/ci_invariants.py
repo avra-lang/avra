@@ -30,7 +30,7 @@ lists and refuses by name:
                    before it builds one: the route rides the wire, the build branch
                    comes last, and a merge-base compiler too old to read the tree
                    falls back to the seed (`make bootstrap`).
-  path-gate        `runtime-keep` runs on a PR only when prepare's path gate
+  path-gate        `runtime-keep` and `layout-oracle` run on a PR only when prepare's path gate
                    (tools/ci_path_gate.py) says a path it reads changed; main's
                    push and a hand-run owe it always.
   race-split       a `labeled` run never shares its concurrency group with the other
@@ -214,19 +214,23 @@ def check_release_order(jobs):
 LIGHT_JOBS = ("prepare", "keepers-static", "gate", "codecs", "test")
 
 
+GATED = (("runtime-keep", "runtime_keep"), ("layout-oracle", "layout_oracle"))
+
+
 def check_path_gate(workflow_text):
-    """`runtime-keep` is conditioned on prepare's path-gate output, and that
+    """Each path-gated job is conditioned on prepare's path-gate output, and that
     output is the path gate's own decision. Answers (refusals, words)."""
     jobs = parse_jobs(workflow_text)
     refusals = []
-    cond = re.search(r"^    if:\s*(.+)$", jobs.get("runtime-keep", ""), re.M)
-    if not cond or "needs.prepare.outputs.runtime_keep == '1'" not in cond.group(1):
-        refusals.append("`runtime-keep` is not gated on `needs.prepare.outputs.runtime_keep`")
-    if "tools/ci_path_gate.py runtime-keep" not in jobs.get("prepare", ""):
-        refusals.append("`prepare` does not ask tools/ci_path_gate.py whether runtime-keep is owed")
+    for job, output in GATED:
+        cond = re.search(r"^    if:\s*(.+)$", jobs.get(job, ""), re.M)
+        if not cond or "needs.prepare.outputs.%s == '1'" % output not in cond.group(1):
+            refusals.append("`%s` is not gated on `needs.prepare.outputs.%s`" % (job, output))
+        if "tools/ci_path_gate.py %s" % job not in jobs.get("prepare", ""):
+            refusals.append("`prepare` does not ask tools/ci_path_gate.py whether %s is owed" % job)
     if refusals:
         return refusals, []
-    return [], ["path-gate: runtime-keep runs on the path gate's decision"]
+    return [], ["path-gate: %s run on the path gate's decision" % ", ".join(job for job, _ in GATED)]
 
 
 def check_race_split(workflow_text):
@@ -678,6 +682,10 @@ rt-header:
                                  "    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'")
     assert ungated_rk != real_wf
     assert any("runtime-keep" in x for x in check_path_gate(ungated_rk)[0]), check_path_gate(ungated_rk)
+    ungated_lo = real_wf.replace("    if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'",
+                                 "    if: needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'")
+    assert ungated_lo != real_wf
+    assert any("layout-oracle" in x for x in check_path_gate(ungated_lo)[0]), check_path_gate(ungated_lo)
 
     real_dup = open(CHECKS, encoding="utf-8").read()
     assert check_dup_run(real_dup)[0] == [], check_dup_run(real_dup)
