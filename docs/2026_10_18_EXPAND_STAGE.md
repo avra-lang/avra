@@ -90,11 +90,11 @@ Rules that keep it one spelling:
 - **Why not a `generated` block inside the component.** It would be a second place the generator
   can live, and `Declared` is already the answer type.
 
-Relation to the #898 asset draft: its picked spelling is `asset name = "path"` (values, a const
-handle). That stays the SMALL path: one file, no new names. The component forms here are for what
-a value cannot be — a folder whose members are fields, a schema whose tables are TYPES.
-`asset art = "art"` over a folder is then `icons`/`folder` under the hood; the owner chooses
-the keyword (decision 2).
+Relation to the UI assets work: see §1.9. Short form — the 10-05 design wrote assets as
+components (`export picture hero { source, variant { … } }`, `export icons glyph`, `export typeface
+inter`); #898's `asset NAME = "path"` + `Provider` was a v1 retreat because "the declaring-expansion
+probe FAILED (an annotation can't hand a path to embed)". This stage is the missing piece, so the
+component forms return and `asset` becomes the unpinned member of the same family.
 
 ## 1.3 The query
 
@@ -245,6 +245,24 @@ the new `Family` and `Read` consumers.
 
 Dependencies: E4 and E6 need #898's one judge for octets. E0–E3 need nothing outside main.
 
+## 1.9 Reconciliation with the UI assets work (read: 268468b7 design, #898, DB doc A14.1, UI lead log)
+
+| UI-lane fact | how this design meets it |
+|---|---|
+| the probe failed: a Declares annotation cannot give `embed` a path (embed wants a literal at its own call; `const.reach` forbids other reads) | the generator reads through the four door verbs (§1.3) on a `Path` seat of its own instance — the literal is still judged once (`embed_placed`), the read is the door's, no `embed` call needed |
+| v1 REQUIRES the pin (`asset logo: Picture = "p"`) because a desugared const cannot take its type from bytes | a generator reads `head(path, n)` and EMITS the typed const, so the type comes from the bytes with no new statement kind. `asset logo = "p"` becomes `asset` the component: its `expand` runs the collected `Provider`s (#898: `provide(path, octets) -> Self?`) on the head and emits `export const logo: <winner's type> = …` |
+| `Provider.provide` takes octets | unchanged. Kinds stay library code in `@std/assets`; the expand stage only supplies WHEN and HOW OFTEN it runs (once per instance, re-run only when its `Range`/`Octets` digest moves) |
+| 10-05 forms `picture`, `icons`, `typeface`, `variant { mode: .Dark, source }` | each is a component implementing `Expands`; `variant` children are routed into a `List<Variant>` field (S3b routing, already built), so each variant's file is another `Path` seat and another read of the same row |
+| "unreached costs zero bytes", shipped name `<stem>.<key8>.<ext>`, key = source bytes ⊕ recipe ⊕ codec | NOT in `Generated`. A handle's `id` is path-derived and its size is a header read, so declarations never hold content. The content key is a separate BUILD query over an `Octets` input per reached asset (the UI log's table gathered by a mark through `collect … in closure`). Editing pixels moves that build query and cuts off at `Generated` — exactly the §1.6 "same header → 0 computes" row |
+| the asset table is gathered by a MARK | a generator's `quote` may carry the mark (`@asset export const ${n}: Picture = …`); marks on generated declarations gather like written ones. ASSUMED: needs one witness that a generated declaration's mark reaches `collect` (E3) |
+| A14.1 `@icons("assets/icons") type Icons` | the annotation spelling of `icons`; its events table (add file → Listing moves; edit one svg → one constant; comment above → syntax digest unchanged, expansion stands) is §1.6, with `Generated`'s row as the saved expansion. A14.1's "the query call from the annotation (`t2`, the trap)" is what E2 removes |
+| path rules: `embed` beside its source, asset verbs from the package root (log 2026-10-17) | one rule per verb family stays: the read verbs here take the ASSET rule (package root), never embed's |
+| #898's widened embed judge (text or octets, one judge) | the four verbs call that same judge; E2 depends on #898 landing it |
+
+Consequence for the phases: E4 (`icons`) and E6 (`typeface`) are the 10-05 design's own kinds;
+add **E3b: `asset` as a component** (unpinned form via `Provider`), which retires the pin
+requirement and the "type from bytes" sugar-backlog item.
+
 ---
 
 # Part 2 — compile-time validation as refinement
@@ -365,7 +383,7 @@ That is the "a green check that never failed" law.
 | # | decision | recommendation |
 |---|---|---|
 | 1 | Generator surface: one `Expands` trait over a component's settings record, instance and annotation sharing it | yes — P6, zero new kinds |
-| 2 | Assets: keep `asset name = "path"` (values, #898) for single files and add component providers (`icons`, `typeface`, `schema`) for folders and types, or make the folder form a component too | keep both; `asset` is the 90% case and already built |
+| 2 | Assets: restore the 10-05 component forms (`picture`, `icons`, `typeface`, `variant` children) and make `asset logo = "p"` the unpinned member of the same family (type from bytes via `Provider`), instead of `asset` being a separate pinned statement | yes — the expand stage removes the only reason for the v1 retreat |
 | 3 | A provider that mints top-level TYPES (`schema db` → `db.User`): a type path through a generated root (new resolve case) vs a generated real module | probe first (E5); prefer the type path, it keeps names lazy |
 | 4 | Refinement enforces at literals and `Age(literal)` only; computed values cross through `Age(x) -> Result` | yes — refinement without `where`, one rule fn for compiler and runtime |
 | 5 | `@sealed` and refinement stay orthogonal (seal wins the voice when both refuse) | yes |
