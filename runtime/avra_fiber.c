@@ -2524,6 +2524,23 @@ void avra_task_settle_all(void* list) {
     for (int64_t i = 0; i < a->len; i++) avra_task_settle((void*)(uintptr_t)a->data[i]);
 }
 
+// A handle to a running task is released. The scheduler holds one reference
+// of its own for as long as the task runs, so the last handle outside it is
+// the second: its release is where the task is joined (the owner's frame is
+// ending its life), and a copy's earlier release joins nothing.
+void avra_task_release(void* task) {
+    if (!task || task_cells(task)[GATE_OPEN]) return;
+    if (((const Header*)task - 1)->rc != 2) return;
+    avra_task_settle(task);
+}
+
+// The same for a list of tasks released by its last handle: each member is
+// its own owner, so each is joined.
+void avra_tasks_release(void* list) {
+    if (!list || ((const Header*)list - 1)->rc != 1) return;
+    avra_task_settle_all(list);
+}
+
 int64_t avra_task_done(void* task) {
     return task_cells(task)[GATE_OPEN];
 }
