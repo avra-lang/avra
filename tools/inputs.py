@@ -284,10 +284,16 @@ def inert_faults(pkg, sources):
         for row in EXTERN.findall(text):
             if row not in INERT[pkg]["rows"]:
                 out.append(f"{path}: `@std.{pkg}` is INERT and declares `{row}` — pin the row, or the package is WORLD")
-        for used in sorted(packages_used(text)):
-            if used != pkg and used not in INERT:
-                out.append(f"{path}: `@std.{pkg}` is INERT and imports `@std.{used}`, which is not")
+        for used, name, _ in imports(text):
+            if used != pkg and used not in INERT and not valued(used, name):
+                out.append(f"{path}: `@std.{pkg}` is INERT and imports `{name}` of `@std.{used}`, which is not")
     return out
+
+
+def valued(pkg, name):
+    """Whether a name of a WORLD package is a value or a type — no read of
+    the world — so an INERT package may take it."""
+    return WORLD.get(pkg, {}).get(name) in (P, T)
 
 
 def body_from(text, at):
@@ -484,7 +490,9 @@ def selftest():
         sys.exit("inputs: self-test failed — a classified file was refused")
     if not inert_faults("path", [("p.av", "extern fn avra_host_env(n: string) -> string?\n")]) \
             or not inert_faults("path", [("p.av", "use @std.io.{env}\n")]) \
-            or inert_faults("text", [("t.av", "use @std.text.{trim}\nextern fn avra_str_parses_int(s: string) -> bool\n")]):
+            or inert_faults("text", [("t.av", "use @std.text.{trim}\nextern fn avra_str_parses_int(s: string) -> bool\n")]) \
+            or inert_faults("path", [("p.av", "use @std.time.{Duration, ms}\n")]) \
+            or not inert_faults("path", [("p.av", "use @std.time.{Duration, now_ms}\n")]):
         sys.exit("inputs: self-test failed — an inert package is held to its own source")
     WORLD["px"] = {"quiet": P, "one_line": P, "loud": P, "far": P, "named": P, "env": "env"}
     px = [("p.av", "extern fn avra_host_env(n: string) -> string?\n"
