@@ -46,7 +46,7 @@ fn example_root(a: Analysis) -> Code? {
 /// the entry of the package those files complete, under a lawful
 /// manifest. One one-shot workspace is alive at a time, so the one
 /// before is let go.
-fn analysed(before: string, files: Map<string, string>) -> Analysis {
+fn example_analysis(before: string, files: Map<string, string>) -> Analysis {
     if files.is_empty() { return analyze_source(before) }
     mut all = files
     all.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n")
@@ -60,7 +60,7 @@ fn analysed(before: string, files: Map<string, string>) -> Analysis {
 /// Whether `rule`, applied to `before`, answers a rewrite whose
 /// rendered text — re-parsed — is span-blind equal to `after`.
 export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string, files: Map<string, string> = {}) -> bool {
-    let root? = example_root(analysed(before, files)) else { return false }
+    let root? = example_root(example_analysis(before, files)) else { return false }
     let hit? = nearest_fix(applied, root) else { return false }
     let text? = hit.rendered() else { return false }
     same_fingerprint(text, after)
@@ -78,7 +78,7 @@ export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
 /// splices) leaves a file that still analyses clean. There is no
 /// rewritten form to fingerprint against, unlike `checks_fixes`.
 export fn checks_delete(applied: fn(Code) -> Fix?, before: string, files: Map<string, string> = {}) -> bool {
-    let a = analysed(before, files)
+    let a = example_analysis(before, files)
     let root? = example_root(a) else { return false }
     let hit? = nearest_fix(applied, root) else { return false }
     let what? = deleted(hit) else { return false }
@@ -90,7 +90,7 @@ export fn checks_delete(applied: fn(Code) -> Fix?, before: string, files: Map<st
         return false
     }
     let after? = spliced(a.view.source.text, edits) else { return false }
-    analysed(after, files).clean()
+    example_analysis(after, files).clean()
 }
 
 fn same_fingerprint(rendered: string, after: string) -> bool {
