@@ -28,6 +28,8 @@ export type Live = {
     bound: Cell<List<Bound>> = Cell.new([]),
     heard: Cell<List<Heard>> = Cell.new([]),
     watch: Cell<Watch?> = Cell.new(null),
+    answered: Cell<int> = Cell.new(0),
+    declined: Cell<int> = Cell.new(0),
 }
 
 /// A page nothing was painted on.
@@ -81,8 +83,15 @@ impl Live {
     /// written since the last paint. None before a paint has placed any.
     fn exact_turn() -> List<Patch>? {
         let w? = self.watch.get() else { return null }
-        w.turn()
+        let said = w.turn()
+        if said == null { self.declined.set(self.declined.get() + 1) } else { self.answered.set(self.answered.get() + 1) }
+        said
     }
+
+    /// How many turns the exact path answered and how many it declined (a
+    /// structural cell was written, or the page cannot be placed), since this
+    /// page was made.
+    fn exact_counts() -> string { "answered ${self.answered.get()} declined ${self.declined.get()}" }
 
     /// The page's readings, watched anew after a paint: the old watch is let
     /// go first, then every reading the paint placed is observed.

@@ -104,7 +104,7 @@ export trait View {
         }
     }
 
-    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark, words_mark] }
+    static fn marks(t: Type) -> List<string> { [attr_mark, children_mark, style_mark] }
 }
 
 /// A view that was refused: the impl that stands in for it, and why.
@@ -338,10 +338,10 @@ impl Vocabulary {
     /// The one thing a member's marks say. Each mark is read by its own
     /// word, so a member saying two things shows as two parts.
     fn marked(f: Field) -> Part {
+        if says_state(f) { return Part {} }
         let said = [self.attribute(f, m) for m in marks_of(f, attr_mark)]
             .concat([children(f, m) for m in marks_of(f, children_mark)])
             .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
-            .concat([Part {} for m in marks_of(f, words_mark)])
         if said.length > 1 { return refused(says_twice(f)) }
         said.first() ?? refused(says_nothing(f))
     }
@@ -432,7 +432,6 @@ impl Vocabulary {
 /// The marks a member says its projection with.
 const attr_mark = "attr"
 const children_mark = "children"
-const words_mark = "words"
 const style_mark = "style"
 
 /// The annotation that names a view's primitive, and the mark that gives
@@ -500,17 +499,23 @@ fn joined(runs: List<Code>) -> Code {
     quote { flatten([${..runs}]) }
 }
 
-/// The readings a primitive carries: the closure its `@words(said)` field
-/// holds and the cells its `@words(cells)` field holds, made one reading when
-/// the cells are any. A primitive without both has none.
+/// The readings a primitive carries: the closure its field of type
+/// `fn() -> string` holds and the cells its `Cells` field holds, made one
+/// reading when the cells are any. A primitive without both has none.
 fn sites_code(t: Type) -> Code {
-    let said? = t.fields.find(words_marked(it, "Said")) else { return quote { [] } }
-    let read? = t.fields.find(words_marked(it, "Cells")) else { return quote { [] } }
+    let said? = t.fields.find(it.ty == said_type) else { return quote { [] } }
+    let read? = t.fields.find(it.ty == cells_type) else { return quote { [] } }
     quote { sighted(self.site, self.${said.name}, self.${read.name}) }
 }
 
-/// Whether a field wears `@words(<role>)`.
-fn words_marked(f: Field, role: string) -> bool { marks_of(f, words_mark).any(it.args.first() == role) }
+/// The spellings a field wears to carry what the compiler knows of its text:
+/// the closure that says the words again and the cells it reads.
+const said_type = "Words"
+const cells_type = "Cells"
+
+/// Whether a field is one the compiler fills to carry a reading, which no
+/// attribute, child or style says.
+fn says_state(f: Field) -> bool { f.ty == said_type || f.ty == cells_type }
 
 /// The primitive a component named with `@prim` — `@prim(.Button)` says
 /// `Button` — absent when it named none.

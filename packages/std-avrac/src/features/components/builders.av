@@ -117,10 +117,10 @@ fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
 
 /// `within ms(5) { … }` / `text "hi" { … }` — an instance with its
 /// head value.
-/// What a sited instance adds to its literal, and the nodes it minted.
-type Again = { fields: List<Field>, minted: List<ExprId> }
+/// The closure an instance is extended by, and every node its copy made.
+type Again = { root: ExprId, minted: List<ExprId> }
 
-/// The sentence that says what the extra field means.
+/// The sentence that says what the extension means.
 fn said_again_note(word: string) -> string {
     "`${word}` says its words again as a closure, so a write to a place they read can be answered by those words alone"
 }
@@ -456,7 +456,6 @@ impl Builder {
         )
         let filled = [Field { name: f, value: heads[j] } for j, f in r.head]
             .concat(fn_filled)
-            .concat(again.fields)
             .concat(set)
             .concat(named)
             .concat([self.collected(pl, settings) for pl in places])
@@ -472,26 +471,23 @@ impl Builder {
         let instance = self
             .store
             .alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span)
-        if !again.minted.is_empty() { self.store.extend(instance, said_again_note(word), again.minted) }
+        if again != null { self.store.extend(literal, said_again_note(word), [again!.root], again!.minted) }
         .Ok(instance)
     }
 
-    /// A SITED component's head text, said again: the field it marks holds
-    /// a closure over a COPY of the head's expression, minted beside the
-    /// instance before names resolve, so the closure's captures are found
-    /// as any written lambda's are. A head with no hole in it says nothing
-    /// again: its text never changes.
-    fn said_again(r: Record, heads: List<ExprId>) -> Again {
-        let field? = r.sited else { return Again { fields: [], minted: [] } }
-        let head? = heads.first() else { return Again { fields: [], minted: [] } }
-        if !self.holey(head) { return Again { fields: [], minted: [] } }
+    /// A SITED component's head text, said again: a closure over a COPY of the
+    /// head's expression, minted beside the literal before names resolve, so its
+    /// captures are found as any written lambda's are. A component that takes no
+    /// closure of the kind, and a head with no hole in it, mint nothing; the
+    /// lowering uses the closure only for a slot of `@std/meta`'s `Words`.
+    fn said_again(r: Record, heads: List<ExprId>) -> Again? {
+        if !r.words { return null }
+        let head? = heads.first() else { return null }
+        if !self.holey(head) { return null }
         mut copying = copier(self.store, self.store, [], [], self.words.door)
         let copy = copying.expr(head)
         let lambda = self.store.alloc_expr(Expr.Lambda([], copy), self.store.expr_span(head))
-        Again {
-            fields: [Field { name: field, value: lambda }],
-            minted: copying.made_exprs.concat([lambda]),
-        }
+        Again { root: lambda, minted: copying.made_exprs.concat([lambda]) }
     }
 
     /// Whether an expression is a text with a hole in it.
