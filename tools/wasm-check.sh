@@ -32,6 +32,10 @@ if [ ! -f "$tree/build/libavra_runtime.a" ]; then
     ( cd "$tree" && make -s build/libavra_runtime.a ) || { say "the host runtime archive did not build"; exit 1; }
 fi
 
+# A module with tasks runs under JSPI; Node before it ships on needs the flag.
+jspi=""
+if "$node" --experimental-wasm-jspi -e 0 >/dev/null 2>&1; then jspi="--experimental-wasm-jspi"; fi
+
 fail=0
 for src in "$fixtures"/*/; do
     name=$(basename "$src")
@@ -49,7 +53,7 @@ for src in "$fixtures"/*/; do
     [ -f "$wasm" ] || { say "$name: no .wasm was written ($wasm)"; fail=1; continue; }
     "$avra" run "$pkg" >"$work/$name.eval.out" 2>"$work/$name.eval.err" || { say "$name: eval run failed"; cat "$work/$name.eval.err" >&2; fail=1; continue; }
     "$native" >"$work/$name.native.out" 2>&1 || true
-    "$node" --no-warnings "$here/wasm-node.mjs" "$wasm" >"$work/$name.wasm.out" 2>"$work/$name.wasm.err" || true
+    "$node" --no-warnings $jspi "$here/wasm-node.mjs" "$wasm" >"$work/$name.wasm.out" 2>"$work/$name.wasm.err" || true
     if ! diff -u "$work/$name.native.out" "$work/$name.wasm.out" >"$work/$name.diff" 2>&1; then
         say "$name: wasm stdout differs from native"
         cat "$work/$name.diff" >&2

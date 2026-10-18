@@ -253,11 +253,13 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 	@rm -f $@
 	@ar rcs $@ $^
 
-# THE RUNTIME AS WEBASSEMBLY, one object per file, MINUS the two that have no
-# wasm body: a fiber switches stacks and a core forks, and wasm can do neither
-# without the stack-switching proposal. Excluding them HERE makes the law — a
-# DOM app must never link them — structural rather than a hope, and a program
-# links only the members it reaches in any case.
+# THE RUNTIME AS WEBASSEMBLY, one object per file, MINUS the one that has no
+# wasm body: a core forks, and wasm cannot. The scheduler is IN, hosted: its
+# tasks run on stacks the host makes (JSPI, or asyncify), so its OS halves —
+# stacks, poller, signals, the case runner — are compiled out
+# (runtime/avra_fiber.c, AVRA_HOSTED). Excluding the core HERE makes the law
+# structural rather than a hope, and a program links only the members it
+# reaches in any case.
 # THE WASM TOOLCHAIN IS FOUND, by the rule the compiler finds it by
 # (packages/cli/src/commands/shared.av, `wasm_tools`): the clang `LLVM_PREFIX`
 # names when it has one, else the PATH's; and the first triple that clang has
@@ -280,7 +282,7 @@ WASM_INSTRUMENTS ?= 0
 # setjmp/longjmp to throw and catch (the module links libsetjmp for the
 # rest). No other member is built so, and the exnref encoding is LLVM's default.
 WASM_SJLJ_avra_runtime.c := -mllvm -wasm-enable-sjlj -mexception-handling
-WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wildcard runtime/*.c))
+WASM_RUNTIME_SRCS := $(filter-out runtime/avra_cores.c,$(wildcard runtime/*.c))
 WASM_RUNTIME_OBJS := $(patsubst runtime/%.c,build/wasm32/%.o,$(WASM_RUNTIME_SRCS))
 WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
 
@@ -303,10 +305,15 @@ build/wasm32/%.o: %.c build/%.sha
 
 -include $(patsubst %.o,%.d,$(WASM_RUNTIME_OBJS) $(WASM_PACKAGE_OBJS))
 
+# THE CORE OBJECT IS THE ARCHIVE'S FIRST MEMBER: the program imports every
+# runtime row from `avra:rt`, and a member that names one of them plain
+# (`env`) while the row is still undefined is a module mismatch at the link.
+# The linker takes members in archive order, so the object that DEFINES the
+# rows goes first and nothing meets an undefined one.
 $(WASM_RUNTIME_LIB): $(WASM_RUNTIME_OBJS)
 	@mkdir -p build/wasm32
 	@rm -f $@
-	@$(WASM_AR) rcs $@ $^
+	@$(WASM_AR) rcs $@ build/wasm32/avra_runtime.o $(filter-out build/wasm32/avra_runtime.o,$^)
 
 wasm-runtime: $(WASM_RUNTIME_LIB)
 
