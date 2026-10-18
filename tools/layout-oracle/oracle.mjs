@@ -175,26 +175,24 @@ function solved(cases, work) {
 
 const PAGE = `<!doctype html><meta charset=utf-8><style>body{margin:0}</style><body></body>`;
 
-// The page the realizer wrote is laid in a host WIDTH wide. A box lands where
-// its parent landed plus its offset from the parent's corner snapped to a
-// whole unit, halves up — the solver's own law, read off the browser's exact
-// numbers.
+// The page the realizer wrote is laid in a host WIDTH wide. Each box is read
+// as the browser paints it: its edges, from the root's corner, snapped to the
+// nearest whole unit, halves up — the law the solver hands its boxes back by.
 const BROWSER = `(html, widthPx) => {
   const host = document.createElement("div");
   host.style.cssText = "position:absolute;left:0;top:0;width:" + widthPx + "px";
   document.body.appendChild(host);
   host.innerHTML = html;
   const root = host.lastElementChild;
-  const rects = (el, parent, out) => {
-    const r = el.getBoundingClientRect();
-    const rx = r.x - parent.exact.x, ry = r.y - parent.exact.y;
-    const x = parent.x + Math.round(rx), y = parent.y + Math.round(ry);
-    out.push([x, y, Math.round(rx + r.width) - Math.round(rx), Math.round(ry + r.height) - Math.round(ry)]);
-    for (const k of el.children) rects(k, { exact: r, x, y }, out);
-    return out;
-  };
   const origin = root.getBoundingClientRect();
-  const out = rects(root, { exact: origin, x: 0, y: 0 }, []);
+  const out = [];
+  const walk = (el) => {
+    const r = el.getBoundingClientRect();
+    const l = Math.round(r.x - origin.x), t = Math.round(r.y - origin.y);
+    out.push([l, t, Math.round(r.x + r.width - origin.x) - l, Math.round(r.y + r.height - origin.y) - t]);
+    for (const k of el.children) walk(k);
+  };
+  walk(root);
   document.body.removeChild(host);
   return out;
 }`;
@@ -241,7 +239,7 @@ async function shrunk(spec, browser, work) {
 
 async function main() {
   const rand = prng(SEED);
-  const cases = FIXED_CASES.concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
+  const cases = args.tree ? [JSON.parse(args.tree)] : FIXED_CASES.concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-oracle-"));
   const binary = firefoxBinary();
   if (!binary) { console.log("layout-oracle: ran 0 trees — no Firefox on this machine (FIREFOX names one)"); process.exit(process.env.CI === "true" ? 1 : 0); }
