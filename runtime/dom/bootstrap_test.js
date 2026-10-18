@@ -4,7 +4,7 @@
 // wire the program changed is the wire this test speaks.
 import { createApplier, createFetches, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { NO_ID, OP, SAYS } from "./wire.gen.js";
-import { stubDocument, stubElement, textOf } from "./stub_dom.js";
+import { dispatch, stubDocument, stubElement, textOf } from "./stub_dom.js";
 
 // A fixture encoder — the CONSUMING side is what is under test; the
 // producing side's exact bytes are pinned by the Avra wire test.
@@ -150,39 +150,39 @@ check("an element that leaves takes its focus with it", s.doc.activeElement, nul
 const c = page();
 c.apply(frame(create(0, "button"), listen(0, 1, "click", SAYS.nothing, "", false), place(0, NO_ID, NO_ID)));
 const button = c.mount.childNodes[0];
-button.listeners.get("click")();
+dispatch(c.mount, button, "click");
 check("an event the page was told to hear is echoed: who, the kind as given, nothing said", c.sent[0], [0, 1, null]);
 
 c.apply(frame(create(5, "input"), listen(5, 2, "input", SAYS.text, "value", false), place(5, NO_ID, 0)));
 const field = c.mount.childNodes[1];
 field.value = "typed here";
-field.listeners.get("input")();
+dispatch(c.mount, field, "input");
 check("an event that says text sends the property the patch named", c.sent[1], [5, 2, { says: SAYS.text, value: "typed here" }]);
 
 c.apply(frame(create(6, "input"), listen(6, 3, "change", SAYS.flag, "checked", false), place(6, NO_ID, 5)));
 const box = c.mount.childNodes[2];
 box.checked = true;
-box.listeners.get("change")();
+dispatch(c.mount, box, "change");
 check("an event that says a flag sends it", c.sent[2], [6, 3, { says: SAYS.flag, value: true }]);
 
 c.apply(frame(unlisten(6, 3), listen(6, 3, "change", SAYS.number, "value", false)));
 box.value = "42";
-box.listeners.get("change")();
+dispatch(c.mount, box, "change");
 check("an event heard anew says what it is now asked", c.sent[3], [6, 3, { says: SAYS.number, value: 42 }]);
 box.value = "not a number";
-box.listeners.get("change")();
+dispatch(c.mount, box, "change");
 check("a control that cannot say a number says nothing", c.sent[4], [6, 3, null]);
 
 c.apply(frame(unlisten(0, 1)));
-check("unlisten removes the listener", button.listeners.has("click"), false);
+check("unlisten removes the listener", c.apply.ears.has(0), false);
 
 c.apply(frame(create(7, "form"), listen(7, 4, "submit", SAYS.nothing, "", true), place(7, NO_ID, NO_ID)));
 let prevented = 0;
-c.mount.childNodes[0].listeners.get("submit")({ preventDefault: () => { prevented++; } });
+dispatch(c.mount, c.mount.childNodes[0], "submit", { preventDefault: () => { prevented++; } });
 check("an event the patch says to stop is stopped, and echoed", [prevented, c.sent[5]], [1, [7, 4, null]]);
 let kept = 0;
 c.apply(frame(listen(5, 1, "click", SAYS.nothing, "", false)));
-field.listeners.get("click")({ preventDefault: () => { kept++; } });
+dispatch(c.mount, field, "click", { preventDefault: () => { kept++; } });
 check("an event it does not say to stop keeps its own answer", kept, 0);
 
 // ── a verb of the element's own ──
