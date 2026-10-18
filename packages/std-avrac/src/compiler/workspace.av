@@ -94,7 +94,7 @@ use diagnostics.{
 use @std.errors.{Loc}
 use @std.testing.{words}
 use compiler.host.{Host, Manifest, InputName, memory_host}
-use compiler.store.{Store, Keeping}
+use compiler.store.{Store, Keeping, pack_released}
 use compiler.lower.{Unit, FieldPlan, CodeFacts}
 use compiler.families.{Family}
 use compiler.typing.{new_type_cx}
@@ -143,7 +143,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Map<string, int>>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Map<string, int>>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, held_pack: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -180,6 +180,7 @@ fn new_keys() -> Keys {
         viewed: Cell.new(no_viewed),
         view_marks: Cell.new(no_marks),
         store_root: Cell.new(""),
+        held_pack: Cell.new(""),
         keeping: Cell.new(Keeping.Disk),
         compiler_id: Cell.new(""),
         build_mode: Cell.new(""),
@@ -1147,6 +1148,8 @@ impl Workspace {
         self.db.kernel.folds_forgotten()
         self.decls.let_go(stand_voice(why))
         self.stand.set(why)
+        if !self.keys.held_pack.get().is_empty() { pack_released(self.keys.held_pack.get()) }
+        self.keys.held_pack.set("")
     }
 
     fn ensured(d: DeclId) {
