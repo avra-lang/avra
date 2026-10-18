@@ -32,28 +32,31 @@ fn named(ws: Workspace, name: string) -> DeclId { [x.id for x in ws.decls.all_de
 /// The structural places of the declaration `name`.
 fn structural_of(ws: Workspace, name: string) -> List<int> { ws.structural_places(named(ws, name)) }
 
+/// Whether a set holds the one place `n`, and nothing else.
+fn only_n(ws: Workspace, keys: List<int>) -> bool { keys.length == 1 && keys[0] == key_of_n(ws) }
+
 /// The key of the top-level `state n`.
 fn key_of_n(ws: Workspace) -> int { place_key(StatePlace.Global(named(ws, "n"))) }
 
 spec "compiler/workspace — the structural set" {
     given "a text an instance says again" {
         then "reads no structural place: its reading answers for it" {
-            let ws = structural_workspace("fn covered() -> said { said \"a ${n}\" }\n")
+            let ws = structural_workspace("fn covered() -> said { said \"a \${n}\" }\n")
             structural_of(ws, "covered").is_empty()
         }
     }
     given "a label no reading covers" {
         then "makes the cell structural" {
-            let ws = structural_workspace("fn labelled() -> plain { plain \"a ${n}\" }\n")
-            structural_of(ws, "labelled") == [key_of_n(ws)]
+            let ws = structural_workspace("fn labelled() -> plain { plain \"a \${n}\" }\n")
+            only_n(ws, structural_of(ws, "labelled"))
         }
     }
     given "a conditional that reads the cell" {
         then "makes it structural, though a text beside it is sited" {
             let ws = structural_workspace(
-                "fn branched() -> said {\n    if n > 1 { said \"big\" } else { said \"a ${n}\" }\n}\n",
+                "fn branched() -> said {\n    if n > 1 { said \"big\" } else { said \"a \${n}\" }\n}\n",
             )
-            structural_of(ws, "branched") == [key_of_n(ws)]
+            only_n(ws, structural_of(ws, "branched"))
         }
     }
     given "a loop over the cell" {
@@ -61,19 +64,19 @@ spec "compiler/workspace — the structural set" {
             let ws = structural_workspace(
                 "fn looped() -> int {\n    mut t = 0\n    for i in 0..n { t = t + i }\n    t\n}\n",
             )
-            structural_of(ws, "looped") == [key_of_n(ws)]
+            only_n(ws, structural_of(ws, "looped"))
         }
     }
     given "a helper the view calls" {
         then "makes the cell structural through the call" {
             let ws = structural_workspace(
-                "fn helper() -> int { n }\nfn viewed() -> plain { plain \"v ${helper()}\" }\n",
+                "fn helper() -> int { n }\nfn viewed() -> plain { plain \"v \${helper()}\" }\n",
             )
-            structural_of(ws, "viewed") == [key_of_n(ws)]
+            only_n(ws, structural_of(ws, "viewed"))
         }
         then "but not when the call sits inside a text an instance says again" {
             let ws = structural_workspace(
-                "fn helper() -> int { n }\nfn viewed() -> said { said \"v ${helper()}\" }\n",
+                "fn helper() -> int { n }\nfn viewed() -> said { said \"v \${helper()}\" }\n",
             )
             structural_of(ws, "viewed").is_empty()
         }
@@ -81,7 +84,7 @@ spec "compiler/workspace — the structural set" {
     given "a local state read outside any reading" {
         then "is the declaration's own structural place" {
             let ws = structural_workspace(
-                "fn local() -> plain {\n    state k: int = 1\n    plain \"k ${k}\"\n}\n",
+                "fn local() -> plain {\n    state k: int = 1\n    plain \"k \${k}\"\n}\n",
             )
             structural_of(ws, "local").length == 1
         }
