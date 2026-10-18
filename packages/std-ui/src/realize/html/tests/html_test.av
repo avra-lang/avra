@@ -4,6 +4,8 @@
 use @std.ui.tree.node.{Node, Prim}
 use @std.ui.realize.html.html.{fragment, render, page, Page}
 use @std.ui.env.{Env}
+use @std.ui.realize.html.css.{all_rules, class_names}
+use @std.text.{codepoints}
 use @std.ui.style.box.{Box}
 use @std.ui.style.layout.{Layout, around}
 use @std.ui.style.style.{Style}
@@ -282,30 +284,79 @@ spec "std/ui html — primitives" {
                 ),
                 Env {},
             )
-            css.contains("\n.w-8{width:8px}") &&
-                css.contains("\n.dir-row>.w-8{flex-shrink:0}") &&
-                css.contains("\n.h-3{height:3px}") &&
-                css.contains("\n.dir-col>.h-3{flex-shrink:0}")
+            css.contains("\n.w-fixed{width:var(--w)}") &&
+                css.contains("\n.dir-row>.w-fixed{flex-shrink:0}") &&
+                css.contains("\n.h-fixed{height:var(--h)}") &&
+                css.contains("\n.dir-col>.h-fixed{flex-shrink:0}")
         }
         then "a node that fills in both directions names its class once" {
             fragment(boxed(.Column, Layout { width: .Fill }, [])) == "<div class=\"dir-col w-fill\"></div>"
         }
         then "a growth given to a fill is its share" {
             render(boxed(.Row, Layout { grow: 3 }, []), Env {})
-                .contains("\n.grow-3{flex-grow:3;--grow:3}")
+                .contains("\n.grow{flex-grow:var(--grow)}")
         }
-        then "wrap, margin and order are written, a reverse order named without a sign" {
+        then "wrap, margin and order are written, an order by a class that reads its property" {
             let css = render(
                 boxed(.Row, Layout { wrap: .WrapReverse, margin: around(.S), order: -2 }, []),
                 Env {},
             )
             css.contains("\n.wrap-rev{flex-wrap:wrap-reverse}") &&
                 css.contains("\n.mis-s{margin-inline-start:var(--space-s)}") &&
-                css.contains("\n.order-n2{order:-2}")
+                css.contains("\n.order{order:var(--order)}")
         }
         then "every box is measured by its border" { sheet().contains("\n*,*::before,*::after{box-sizing:border-box}\n") }
         then "text breaks at spaces and a word longer than its line breaks where it must" {
             sheet().contains("\nbody{margin:0;overflow-wrap:break-word;")
+        }
+    }
+}
+
+spec "std/ui html — no value reaches a class name" {
+    given "fixed sizes, a growth and an order" {
+        then "a node names the classes that read them, and writes no style attribute" {
+            fragment(
+                boxed(
+                    .Column,
+                    Layout { width: .Fixed(8), height: .Fixed(3), grow: 2, order: -2 },
+                    [],
+                ),
+            ) == "<div class=\"dir-col w-fixed h-fixed grow order\"></div>"
+        }
+        then "two nodes of different sizes are the same markup" {
+            fragment(boxed(.Row, Layout { width: .Fixed(8) }, [])) == fragment(boxed(.Row, Layout { width: .Fixed(99) }, []))
+        }
+        then "a node that states none writes no style" {
+            fragment(boxed(.Column, Layout { width: .Fill }, [])) == "<div class=\"dir-col w-fill\"></div>"
+        }
+    }
+    given "the vocabulary" {
+        then "every rule a node names is one of its rules" {
+            let all = all_rules().map(it.name)
+            let nodes = [
+                boxed(
+                    .Row,
+                    Layout {
+                        width: .Fixed(8),
+                        grow: 3,
+                        order: 1,
+                        gap: .L,
+                        align: .Center,
+                        wrap: .Wrap,
+                        pad: around(.M),
+                    },
+                    [],
+                ),
+                boxed(
+                    .Column,
+                    Layout { height: .Fill, margin: around(.S), distribute: .SpaceBetween },
+                    [],
+                ),
+            ]
+            nodes.all((n) -> class_names(n).all((c) -> all.contains(c)))
+        }
+        then "no class name carries a number" {
+            !all_rules().any((r) -> codepoints(r.name).any((c) -> c >= 48 && c <= 57))
         }
     }
 }
