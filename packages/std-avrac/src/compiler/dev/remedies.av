@@ -203,9 +203,9 @@ export fn rows() -> List<RemedyRow> {
             applied: Witness
                 .Package(
                     {
-                        "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n",
+                        "/w/avra.toml": app_manifest + x_dependency,
                         "/w/src/main.av": "1\n",
-                        "/w/vendor/dep/avra.toml": "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n",
+                        "/w/vendor/dep/avra.toml": x_package,
                         "/w/vendor/dep/src/y.av": "export fn d() -> int { 1 }\n",
                     },
                 ),
@@ -396,14 +396,14 @@ export fn rows() -> List<RemedyRow> {
             kind: "resolve.not_a_dependency",
             says: "is not a dependency of this package",
             refused: Witness.Package({"/w/avra.toml": app_manifest, "/w/src/main.av": "use @x.y.{z}\n1\n"}),
-            applied: Witness.Package({"/w/avra.toml": app_manifest + "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n", "/w/src/main.av": "use @x.y.{z}\n1\n", "/w/vendor/dep/avra.toml": "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n", "/w/vendor/dep/src/y.av": "export fn z() -> int { 1 }\n"}),
+            applied: Witness.Package({"/w/avra.toml": app_manifest + x_dependency, "/w/src/main.av": "use @x.y.{z}\n1\n", "/w/vendor/dep/avra.toml": x_package, "/w/vendor/dep/src/y.av": "export fn z() -> int { 1 }\n"}),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "resolve.package_form",
             says: "names no package",
             refused: Witness.Package({"/w/avra.toml": app_manifest, "/w/src/main.av": "use @solo.{z}\n1\n"}),
-            applied: Witness.Package({"/w/avra.toml": app_manifest + "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n", "/w/src/main.av": "use @x.y.a.{z}\n1\n", "/w/vendor/dep/avra.toml": "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n", "/w/vendor/dep/src/a/a.av": "export fn z() -> int { 1 }\n"}),
+            applied: Witness.Package({"/w/avra.toml": app_manifest + x_dependency, "/w/src/main.av": "use @x.y.a.{z}\n1\n", "/w/vendor/dep/avra.toml": x_package, "/w/vendor/dep/src/a/a.av": "export fn z() -> int { 1 }\n"}),
             becomes: Then.Clean,
         },
     ]
@@ -461,3 +461,9 @@ const entry_collect: string = "type Entry = { name: string }\ncollect xs: List<E
 
 /// The words two quote-pattern refusals share.
 const whole_field: string = "binds only its WHOLE field"
+
+/// The manifest lines that make `@x/y` a path dependency of the app.
+const x_dependency: string = "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n"
+
+/// The dependency's own manifest.
+const x_package: string = "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n"
