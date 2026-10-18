@@ -31,14 +31,21 @@ export fn rows() -> List<RemedyRow> {
             kind: "type.lambda",
             says: "a generic fn is not a value",
             refused: Witness.Source("fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = ident\nf(1)"),
-            applied: Witness.Source("fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = (x0) -> ident(x0)\nf(1)"),
+            applied: Witness
+                .Source("fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = (x0) -> ident(x0)\nf(1)"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.extern_value",
             says: "an extern fn is not a value",
-            refused: Witness.Source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")"),
-            applied: Witness.Source("extern fn avra_host_is_dir(path: string) -> int\nlet f = (x0: string) -> avra_host_is_dir(x0)\nf(\"corpus\")"),
+            refused: Witness
+                .Source(
+                    "extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")",
+                ),
+            applied: Witness
+                .Source(
+                    "extern fn avra_host_is_dir(path: string) -> int\nlet f = (x0: string) -> avra_host_is_dir(x0)\nf(\"corpus\")",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
@@ -58,15 +65,24 @@ export fn rows() -> List<RemedyRow> {
         RemedyRow {
             kind: "type.receiver",
             says: "is not `mut`",
-            refused: Witness.Source("type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length"),
-            applied: Witness.Source("type B = { xs: List<int> }\nimpl B {\n    mut fn put(v: int) { self.xs.push(v) }\n}\nmut b = B { xs: [] }\nb.put(1)\nb.xs.length"),
+            refused: Witness
+                .Source(
+                    "type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length",
+                ),
+            applied: Witness
+                .Source(
+                    "type B = { xs: List<int> }\nimpl B {\n    mut fn put(v: int) { self.xs.push(v) }\n}\nmut b = B { xs: [] }\nb.put(1)\nb.xs.length",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.place",
             says: "is not `mut`",
             refused: Witness.Source("fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length"),
-            applied: Witness.Source("fn grow(xs: List<int>) -> List<int> { xs.concat([1]) }\nlet v = grow([1])\nv.length"),
+            applied: Witness
+                .Source(
+                    "fn grow(xs: List<int>) -> List<int> { xs.concat([1]) }\nlet v = grow([1])\nv.length",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
@@ -135,8 +151,14 @@ export fn rows() -> List<RemedyRow> {
         RemedyRow {
             kind: "type.const_pattern",
             says: "is a const here, so this arm compares",
-            refused: Witness.Source("enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\nf(M.B)"),
-            applied: Witness.Source("enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n        _ -> 4\n    }\n}\nf(M.B)"),
+            refused: Witness
+                .Source(
+                    "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\nf(M.B)",
+                ),
+            applied: Witness
+                .Source(
+                    "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n        _ -> 4\n    }\n}\nf(M.B)",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
@@ -178,28 +200,50 @@ export fn rows() -> List<RemedyRow> {
             kind: "manifest.unsupported_dependency",
             says: "is not a path dependency",
             refused: manifest(app_manifest + "\n[dependencies]\n\"@x/y\" = \"1.0\"\n"),
-            applied: Witness.Package({"/w/avra.toml": app_manifest + "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n", "/w/src/main.av": "1\n", "/w/vendor/dep/avra.toml": "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n", "/w/vendor/dep/src/y.av": "export fn d() -> int { 1 }\n"}),
+            applied: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n",
+                        "/w/src/main.av": "1\n",
+                        "/w/vendor/dep/avra.toml": "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n",
+                        "/w/vendor/dep/src/y.av": "export fn d() -> int { 1 }\n",
+                    },
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.trait",
             says: "is not part of `T`",
-            refused: Witness.Source("trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n    fn extra() -> int { 2 }\n}\n1"),
-            applied: Witness.Source("trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n}\nimpl P {\n    fn extra() -> int { 2 }\n}\n1"),
+            refused: Witness
+                .Source(
+                    "trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n    fn extra() -> int { 2 }\n}\n1",
+                ),
+            applied: Witness
+                .Source(
+                    "trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n}\nimpl P {\n    fn extra() -> int { 2 }\n}\n1",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.alias_copy",
             says: "is a copy of `p`",
-            refused: Witness.Source("type R = { n: int }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn shadow(p: R) {\n    mut q = p\n    q.bump()\n}\n1"),
-            applied: Witness.Source("type R = { n: int }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn shadow(mut p: R) {\n    p.bump()\n}\n1"),
+            refused: Witness
+                .Source(
+                    "type R = { n: int }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn shadow(p: R) {\n    mut q = p\n    q.bump()\n}\n1",
+                ),
+            applied: Witness
+                .Source(
+                    "type R = { n: int }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn shadow(mut p: R) {\n    p.bump()\n}\n1",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.derive_contract",
             says: "a trait's `derive` answers the declarations it makes",
             refused: Witness.Source("trait T {\n    static fn derive(n: int) -> int { n }\n}\n1"),
-            applied: with_meta("use @std.meta.{Type, Directive}\ntrait T {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n1"),
+            applied: with_meta(
+                "use @std.meta.{Type, Directive}\ntrait T {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n1",
+            ),
             becomes: Then.Clean,
         },
         RemedyRow {
@@ -212,8 +256,14 @@ export fn rows() -> List<RemedyRow> {
         RemedyRow {
             kind: "type.registry_hole",
             says: "this hole takes the rest",
-            refused: Witness.Source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}"),
-            applied: Witness.Source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    .C -> 0\n    .D -> 0\n}"),
+            refused: Witness
+                .Source(
+                    "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}",
+                ),
+            applied: Witness
+                .Source(
+                    "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    .C -> 0\n    .D -> 0\n}",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
@@ -226,8 +276,13 @@ export fn rows() -> List<RemedyRow> {
         RemedyRow {
             kind: "flow.unbounded_cleanup",
             says: "this `defer`'s body waits",
-            refused: Witness.Source("extern fn avra_fiber_sleep(ms: int)\nfn clean() {\n    defer avra_fiber_sleep(1)\n}\nclean()"),
-            applied: with_time("use @std.time.{ms}\nextern fn avra_fiber_sleep(ms: int)\nfn clean() {\n    defer {\n        let _ = within ms(100) { avra_fiber_sleep(1) }\n    }\n}\nclean()"),
+            refused: Witness
+                .Source(
+                    "extern fn avra_fiber_sleep(ms: int)\nfn clean() {\n    defer avra_fiber_sleep(1)\n}\nclean()",
+                ),
+            applied: with_time(
+                "use @std.time.{ms}\nextern fn avra_fiber_sleep(ms: int)\nfn clean() {\n    defer {\n        let _ = within ms(100) { avra_fiber_sleep(1) }\n    }\n}\nclean()",
+            ),
             becomes: Then.Clean,
         },
     ]
@@ -248,10 +303,7 @@ export fn row_fails(r: RemedyRow) -> bool {
     if !drawn.contains("[${r.kind}]") || !drawn.contains(r.says) { return true }
     let out = rendered_over(r.applied)
     if unreadable(out) || out.contains(r.says) { return true }
-    match r.becomes {
-        .Clean -> out.contains("error["),
-        .Draws(k) -> !out.contains("error[${k}]"),
-    }
+    match r.becomes { .Clean -> out.contains("error["), .Draws(k) -> !out.contains("error[${k}]") }
 }
 
 /// Whether a rendering holds a refusal of the program's own text — a
