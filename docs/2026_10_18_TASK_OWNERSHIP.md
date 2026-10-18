@@ -47,7 +47,8 @@ already decides, for every register of a task type, where its last owner
 ends, across regions and merges: that point is where it places the Release.
 Make a task-typed Release the place the task is joined (cancelled first when
 the releasing task is unwinding because it was cancelled), when it is the last
-external handle. Every position in the table is covered by construction, a
+external handle. `Ins.Release` stays the instruction; the engines dispatch on
+the register's type (below). Every position in the table is covered by construction, a
 bound task keeps its frame-close join (its Release is there), and a merge
 cannot lose it. Both engines get it, because the lowering and the memory
 pass are the one semantics. It needs the last-handle test: the running
@@ -82,6 +83,47 @@ Release is that. (c) is native-only unless mirrored; (b) is sound but leaves
 the law dependent on a consumer list. Recommend (a), landing in this order:
 the row alone (`Unhosted`), then its arm and the memory-pass rule, then the
 witness above flipping green on the evaluator, native and wasm.
+
+## The constraint, and the shape that obeys it (DB lead, approved)
+
+`Ins.Release` STAYS THE INSTRUCTION. The memory pass must not emit
+`CallRt("avra_task_release")` where it emits a release: that is the escape
+hatch of CLAUDE.md's IR law (an existing instruction, a registry row, no
+vocabulary growth, and the release becomes invisible to every pass that
+reasons about releases). The two ENGINES dispatch instead, on the released
+register's STATIC TYPE, as for every other release law:
+
+- a `Task`-typed release runs the TASK path: the last-handle test, then
+  (cancelling first if the releasing task is unwinding by a cancel) park and
+  join, then the plain release;
+- a `List<Task>` or `Tasks`-typed release runs the same path over each
+  member (the list's elements are the owners);
+- every other type releases as today.
+
+The memory pass is unchanged: it already places the Release at the end of
+each owner's life, in the arm, across the merge. What changes is what an
+engine does when the register it releases is a task.
+
+Timing (DB lead): the join is at the TEMPORARY'S OWN release, right after
+`f(spawn g())`, which is structured and earlier than the frame's close. A bound
+task keeps its frame-close join (its release is there), so `owns_tasks`
+becomes a redundant second join that costs nothing (a done task joins free)
+and can be deleted once the new path is witnessed.
+
+## The ladder (rows first)
+
+1. ROWS ALONE, hosted `Unhosted`, with their C bodies and the keeper table:
+   `avra_task_release(task)` and `avra_tasks_release(list)`. Both borrow
+   their seat (the engine's own release follows them), answer void, may
+   park (`waits: true`), and are `wasm: true` once the hosted scheduler is
+   in. Gates on the standing seed because nothing declares or calls them.
+2. THE ARMS: the backend emit and the evaluator dispatch a Task- or
+   task-list-typed `Release` to the row; the declarations; the seed refresh
+   first, since a declaration naming a row is legal only to a compiler that
+   carries it.
+3. THE WITNESS: `tasks/tests/cancel_child_positions` flips green on the
+   evaluator, native and wasm; a mutation (the dispatch dropped) turns it
+   red.
 
 ## Open
 
