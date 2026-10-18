@@ -17,7 +17,8 @@ enum Rec {
     DropAttr(id: int, name: string)
     SetProp(id: int, name: string, says: int, value: string)
     SetText(id: int, content: string)
-    Listen(id: int, ear: Ear)
+    Define(ear: Ear)
+    Listen(id: int, kind: int, says: int)
     Unlisten(id: int, kind: int)
     Style(css: string)
     Call(id: int, verb: string)
@@ -68,8 +69,8 @@ impl Reader {
     fn ear() -> Ear {
         Ear {
             kind: self.int(),
-            event: self.text(),
             says: self.int(),
+            event: self.text(),
             reads: self.text(),
             prevents: self.int() != 0,
         }
@@ -87,7 +88,8 @@ impl Reader {
             .DropAttr -> Rec.DropAttr(self.id(), self.text()),
             .SetProp -> Rec.SetProp(self.id(), self.text(), self.int(), self.text()),
             .SetText -> Rec.SetText(self.id(), self.text()),
-            .Listen -> Rec.Listen(self.id(), self.ear()),
+            .Define -> Rec.Define(self.ear()),
+            .Listen -> Rec.Listen(self.id(), self.int(), self.int()),
             .Unlisten -> Rec.Unlisten(self.id(), self.int()),
             .Style -> Rec.Style(self.text()),
             .Call -> Rec.Call(self.id(), self.text()),
@@ -132,6 +134,7 @@ export type Host = {
     top: List<int> = [],
     faults: List<string> = [],
     sheet: string = "",
+    defs: List<Ear> = [],
 }
 
 /// A host showing nothing.
@@ -276,6 +279,15 @@ impl Host {
         self.rewrite(id, "listen", (s) -> s with { ears: s.ears.concat([ear]) })
     }
 
+    /// A listen, resolved by the definition an earlier record gave its seat.
+    mut fn listened(id: int, kind: int, says: int) {
+        let ear? = self.defs.find(it.kind == kind && it.says == says) else {
+            return self
+                .fault("listen names ${id} saying ${says} of seat ${kind}, which no define told")
+        }
+        self.listen(id, ear)
+    }
+
     /// Whether `id`'s door stands open.
     fn open(id: int) -> bool { self.live(id)?.seen?.props?.any(it.name == door) ?? false }
 
@@ -317,7 +329,8 @@ impl Host {
                 .rewrite(id, "drop_attr", (s) -> s with { attrs: [a for a in s.attrs if a.name != name] }),
             .SetProp(id, name, says, value) -> self.set_prop(id, name, says, value),
             .SetText(id, content) -> self.set_text(id, content),
-            .Listen(id, ear) -> self.listen(id, ear),
+            .Define(ear) -> { self.defs = self.defs.concat([ear]) },
+            .Listen(id, kind, says) -> self.listened(id, kind, says),
             .Unlisten(id, kind) -> self
                 .rewrite(id, "unlisten", (s) -> s with { ears: [e for e in s.ears if e.kind != kind] }),
             .Style(css) -> { self.sheet = css },
@@ -371,7 +384,8 @@ fn rec_line(r: Rec) -> string {
         .DropAttr(id, name) -> "unattr ${id} ${name}",
         .SetProp(id, name, says, value) -> "prop ${id} ${name}=${says}:${quoted(value)}",
         .SetText(id, content) -> "retext ${id} ${quoted(content)}",
-        .Listen(id, ear) -> "listen ${id} ${ear.kind}:${ear.event}:${ear.says}:${ear.reads}:${ear.prevents}",
+        .Define(ear) -> "define ${ear.kind}:${ear.event}:${ear.says}:${ear.reads}:${ear.prevents}",
+        .Listen(id, kind, says) -> "listen ${id} ${kind}:${says}",
         .Unlisten(id, kind) -> "unlisten ${id} ${kind}",
         .Style(_) -> "style",
         .Call(id, verb) -> "call ${id} ${verb}",
