@@ -1746,7 +1746,29 @@ Syntax the grammar lacks:
   while parsing `stmt`" AT the `++`, and that is the WHOLE refusal —
   the fn draws no type complaint of its own, and typing is not
   suppressed here (a sibling fn's error reports in the same run).
-  `xs.concat(ys)` is the spelling.
+  `xs.concat(ys)` is a spelling, and `[..xs, ..ys]` is the other
+  (one box, sized once).
+- A SPREAD'S REFUSALS ARE LAWS, not pending sugar (`..` is one spelling in
+  a record literal, a list, a map, a variadic seat, a call's named seats and
+  a pattern; probed, both engines):
+  - A RECORD SPREADS ONLY UNDER ITS TYPE'S NAME: `{ ..a, x: 3 }` is a MAP
+    literal — `type.spread_map` "`..` in a map spreads a map, found `P`";
+    the record is `P { ..a, x: 3 }`.
+  - `P { x, ..rest }` (binding the remainder) is F0100 "expected `}` to
+    close the `match`" at `..rest`: a record pattern's `..` discards, and
+    `P { x, .. }` is the spelling.
+  - A LIST SPREADS ONLY INTO ITS OWN ELEMENT TYPE: `let c: List<int?> = [null,
+    ..xs]` is `type.list_element` "the first is `List<int?>`, this is
+    `List<int>`" — lists do not widen element-wise.
+  - `f(..xs)` INTO FIXED SEATS is `type.spread_seat` "`..` spreads into a
+    seat that takes the rest of the arguments, and `g` declares none" — a
+    list's length is a run-time fact, a seat a compile-time one; declare
+    `..rest: List<T>`. A RECORD spread fills named seats by field name
+    (`f(..opts)`), plain seats only: a `mut`, `state`, `const` or `isolated`
+    seat is `type.spread_seat` too.
+  - `is` OVER A LIST OR RECORD PATTERN BINDS ONLY UNDER `if`
+    (`type.is_bind`), and a refutable destructuring `let` needs its `else`
+    (`type.let_pattern`): `let [first, ..] = xs else { return … }`.
 - `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
   > 0)` compiles — which retires the double negative `![…].any(!it)`.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
