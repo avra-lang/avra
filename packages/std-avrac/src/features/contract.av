@@ -135,7 +135,7 @@ export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [
 /// IS the runtime slot; a default is the declaration whose body
 /// fills it. `lacking` names what it leaves out ON PURPOSE (`@lacks`).
 @derive(Fingerprint)
-export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [], states: List<bool> = [] }
+export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [], states: List<bool> = [], roles: List<string> = [] }
 
 /// A field a record leaves out on purpose, and the reason a read hears.
 @derive(Fingerprint)
@@ -157,7 +157,22 @@ fn named_list(names: List<string>) -> string {
     joined(["`${n}`" for n in names], ", ")
 }
 
+/// THE MARK A FIELD WEARS TO SAY WHAT IT HOLDS OF ITS COMPONENT'S TEXT, and
+/// the roles its argument names: the closure that says the words again, the
+/// cells that closure reads, the cells the paint reads that no closure
+/// answers for, and whether the subtree can be placed at all.
+export const words_mark = "words"
+export const role_said = "said"
+export const role_cells = "cells"
+export const role_structural = "structural"
+export const role_opaque = "opaque"
+
 impl StructSig {
+    /// The role slot `j` wears (`@words(<role>)`), none for a field without one.
+    fn role_at(j: int) -> string {
+        if j < self.roles.length { self.roles[j] } else { "" }
+    }
+
     /// A named field's slot, when declared — THE lookup every
     /// consumer shares.
     fn slot_of(name: string) -> int? {
@@ -362,6 +377,13 @@ export type LowerCx = {
     // the per-declaration QUERY of the state places a declaration reaches,
     // asked by a body only for the declarations it names
     decl_places: fn(DeclId) -> List<int>,
+    // the same query for the places read at paint time that no reading
+    // answers for
+    decl_structural: fn(DeclId) -> List<int>,
+    // THE FRAME'S ROOTS: the expressions this body's own code is, for the
+    // places it reads at paint time. None for a body whose code is not one
+    // expression (the entry's statements), which is read as opaque.
+    roots: List<ExprId>? = null,
     dispatch: Dispatch,
     out: Emitter,
     body: BodyRegs,

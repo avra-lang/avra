@@ -54,15 +54,46 @@ fn run_placed(el: Tagged, r: Reading) -> List<Placed> {
     }
 }
 
-/// The placed readings a page watches, and the keys filed under them: a
-/// cell's key as text maps to the positions of the readings that read it.
-export type Watch = { placed: List<Placed>, under: Map<string, List<int>> }
+/// The cells the paint reads that no reading answers for, over the whole page,
+/// each once.
+fn structural_cells(page: List<Element>) -> List<ptr> {
+    page.fold([]) { seen, e -> seen.concat([c for c in structural_of(e) if !seen.contains(c)]) }
+}
+
+fn structural_of(e: Element) -> List<ptr> {
+    let el? = e.tagged() else { return [] }
+    el.structural.concat([c for k in el.kids for c in structural_of(k)])
+}
+
+/// Whether any node of the page cannot have its structural reads placed, or
+/// was drawn by a composition.
+fn opaque_in(page: List<Element>) -> bool { page.any(opaque_element(it)) }
+
+fn opaque_element(e: Element) -> bool {
+    let el? = e.tagged() else { return false }
+    el.opaque || el.kids.any(opaque_element(it))
+}
+
+/// The placed readings a page watches, the keys filed under them (a cell's
+/// key as text maps to the positions of the readings that read it), and what
+/// takes the full paint instead: the cells the paint reads that no reading
+/// answers for, and whether the page can be placed at all.
+export type Watch = {
+    placed: List<Placed>,
+    under: Map<string, List<int>>,
+    structural: List<ptr>,
+    opaque: bool,
+}
 
 fn key_of(cell: ptr) -> string { "${avra_box_key(cell)}" }
 
-/// `placed` under watch: each reading's cells observed, each cell's key
-/// filed under the readings that read it.
-export fn watching(placed: List<Placed>) -> Watch {
+/// A painted page under watch: each reading's cells observed and filed under
+/// the readings that read them, and the structural cells observed too, so a
+/// write to one is logged and the turn knows to paint whole.
+export fn watching(page: List<Element>) -> Watch {
+    let placed = placed_in(page)
+    let structural = structural_cells(page)
+    for cell in structural { let _ = avra_box_observe(cell) }
     mut index: Map<string, List<int>> = {}
     for at, p in placed {
         for cell in p.reading.cells {
@@ -71,7 +102,7 @@ export fn watching(placed: List<Placed>) -> Watch {
             index.set(key, (index.get(key) ?? []).concat([at]))
         }
     }
-    Watch { placed: placed, under: index }
+    Watch { placed: placed, under: index, structural: structural, opaque: opaque_in(page) }
 }
 
 impl Watch {
@@ -97,21 +128,34 @@ impl Watch {
     /// Every cell observed again after the stamp wrapped: a cell stamped a
     /// full cycle ago would read as already written this turn.
     fn observed_again() {
+        for cell in self.structural { let _ = avra_box_observe(cell) }
         for p in self.placed {
             for cell in p.reading.cells { let _ = avra_box_observe(cell) }
         }
     }
 
-    /// THE TURN: the stamp moves on first, the log is taken second, and only
-    /// the readings under the changed cells are recomputed.
-    fn turn() -> List<Patch> {
-        if avra_turn_next() == 1 { self.observed_again() }
-        [p for at in self.affected(taken()) for p in self.refreshed(at)]
+    /// Whether any key the runtime logged is a cell the paint reads outside a
+    /// reading.
+    fn structural_among(changed: List<int>) -> bool {
+        self.structural.any((c) -> changed.contains(avra_box_key(c)))
     }
 
-    /// The page stops watching: every cell its readings observed is let go,
-    /// once however many readings read it.
+    /// THE TURN: the stamp moves on first, the log is taken second. A page
+    /// that cannot be placed, or one where a structural cell was written, is
+    /// not the exact path's to answer — it declines, and the full paint
+    /// speaks. Otherwise only the readings under the changed cells are
+    /// recomputed.
+    fn turn() -> List<Patch>? {
+        if avra_turn_next() == 1 { self.observed_again() }
+        let changed = taken()
+        if self.opaque || self.structural_among(changed) { return null }
+        [p for at in self.affected(changed) for p in self.refreshed(at)]
+    }
+
+    /// The page stops watching: every cell its readings and its structure
+    /// observed is let go, once however many read it.
     fn released() {
+        for cell in self.structural { let _ = avra_box_unobserve(cell) }
         for key in self.under.keys() {
             let at = (self.under.get(key) ?? [])[0]
             for cell in self.placed[at].reading.cells {
@@ -119,6 +163,14 @@ impl Watch {
             }
         }
     }
+}
+
+/// The keys of the cells written this turn, the runtime's log taken and let go.
+fn taken() -> List<int> {
+    let log = avra_changes_take()
+    let keys = [avra_array_get(log, i) for i in 0..avra_array_len(log)]
+    avra_rc_release(log)
+    keys
 }
 
 /// A patch as a reader spells it: a text change in full, any other by its
@@ -138,14 +190,6 @@ export fn spelled(p: Patch) -> string {
         .Style(_) -> "Style",
         .Call(id, verb) -> "Call #${id.n} ${verb}",
     }
-}
-
-/// The keys of the cells written this turn, the runtime's log taken and let go.
-fn taken() -> List<int> {
-    let log = avra_changes_take()
-    let keys = [avra_array_get(log, i) for i in 0..avra_array_len(log)]
-    avra_rc_release(log)
-    keys
 }
 
 /// How two answers to one turn differ: null when the exact path said exactly

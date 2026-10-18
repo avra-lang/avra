@@ -8,7 +8,17 @@
 //! slot read at the field's compile-time index) — zero new
 //! instructions anywhere.
 use core.{ExprId, StmtId, Reg, TypeId, Binding, filled}
-use features.{LowerCx, StructSig, slot_want, StatePlace, site_places_of}
+use features.{
+    LowerCx,
+    StructSig,
+    slot_want,
+    StatePlace,
+    site_places_of,
+    structural_places_of,
+    role_cells,
+    role_opaque,
+    role_structural,
+}
 use features.cells.{cell_holding}
 
 /// The copy: values evaluate in written order, then the record whole
@@ -69,7 +79,8 @@ fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId
 /// any other slot its default — typing guaranteed one — a call to the
 /// field's own body, as instantiated at this literal.
 export fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
-    if cx.view.decls.cells_slot(sig, slot) { return cells_reg(cx, e, sig.types[slot]) }
+    if cx.view.decls.cells_slot(sig, slot) { return watched_reg(cx, e, sig, slot) }
+    if sig.role_at(slot) == role_opaque { return cx.const_bool(opaque_frame(cx)) }
     if cx.view.decls.sited_slot(sig, slot) {
         return cx
             .const_int_as(
@@ -113,14 +124,17 @@ export fn lower_named_of(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg 
     r
 }
 
-/// The `Cells` an omitted slot holds: the state cells the literal's minted
-/// closure reads, packed as a list. A closure that reads a place the compiler
-/// cannot name, or one it cannot reach a cell for in this body, holds none —
-/// the text it says is then never patched on its own.
-fn cells_reg(mut cx: LowerCx, e: ExprId, ty: TypeId) -> Reg {
-    let regs = placed_cells(cx, e)
+/// The `Cells` an omitted slot holds, by the role its field wears: the cells
+/// the literal's minted closure reads, or the cells its frame reads at paint
+/// time that no reading answers for. A role no one reads here holds none.
+fn watched_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
+    let regs = match sig.role_at(slot) {
+        role_cells -> placed_cells(cx, e),
+        role_structural -> structural_cells(cx, e),
+        rest -> [],
+    }
     let size = cx.box_size(regs.length)
-    cx.grown_box(cx.view.types.shape_of(cx.viewed(ty)), size, regs)
+    cx.grown_box(cx.view.types.shape_of(cx.viewed(sig.types[slot])), size, regs)
 }
 
 /// The cell of each place the literal's closure reads, or none at all when any
@@ -132,6 +146,47 @@ fn placed_cells(mut cx: LowerCx, e: ExprId) -> List<Reg> {
     let regs: List<Reg?> = [cell_of_place(cx, lam, p) for p in places]
     if regs.any(it == null) { return [] }
     [r! for r in regs]
+}
+
+/// The places this frame reads at paint time that no reading answers for, or
+/// none when it cannot say (an opaque frame is judged by `opaque_frame`).
+fn structural_set(cx: LowerCx) -> List<StatePlace> {
+    let roots? = cx.roots else { return [StatePlace.Unknown] }
+    [p for r in roots for p in structural_places_of(cx.view, cx.names, r, cx.decl_structural)]
+}
+
+/// The cells of the frame's structural places, when every one can be handed
+/// over here.
+fn structural_cells(mut cx: LowerCx, e: ExprId) -> List<Reg> {
+    if opaque_frame(cx) { return [] }
+    let regs: List<Reg?> = [local_cell(cx, e, p) for p in structural_set(cx)]
+    [r! for r in regs]
+}
+
+/// Whether a page cannot place this frame's structural reads: one of them is a
+/// place with no name, or has no cell to hand over here. Such a subtree is
+/// always painted whole.
+fn opaque_frame(cx: LowerCx) -> bool {
+    !structural_set(cx).all((p) -> placeable(cx, p))
+}
+
+/// Whether a place has a cell in THIS body: a top-level state always, a local
+/// only when the body itself defines it.
+fn placeable(cx: LowerCx, p: StatePlace) -> bool {
+    match p {
+        .Global(_) -> true,
+        .Local(f, s) -> f == cx.view.file && cx.body.slot_of(s) != null,
+        .Unknown -> false,
+    }
+}
+
+/// The cell a placeable place has in this body.
+fn local_cell(mut cx: LowerCx, e: ExprId, p: StatePlace) -> Reg? {
+    match p {
+        .Global(d) -> cx.state_decl_cell(d),
+        .Local(_, s) -> cx.state_cell_of(e, Binding.Def(s)),
+        .Unknown -> null,
+    }
 }
 
 /// The closure the builder minted into a literal: the field value whose node
