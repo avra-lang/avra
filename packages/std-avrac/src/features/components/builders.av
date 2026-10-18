@@ -120,6 +120,9 @@ fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
 /// What a sited instance adds to its literal, and the nodes it minted.
 type Again = { fields: List<Field>, minted: List<ExprId> }
 
+/// What an instance adds when it has nothing to say again.
+fn unsaid() -> Again { Again { fields: [], minted: [] } }
+
 /// The sentence that says what the extra field means.
 fn said_again_note(word: string) -> string {
     "`${word}` says its words again as a closure, so a write to a place they read can be answered by those words alone"
@@ -482,9 +485,9 @@ impl Builder {
     /// as any written lambda's are. A head with no hole in it says nothing
     /// again: its text never changes.
     fn said_again(r: Record, heads: List<ExprId>) -> Again {
-        let field? = r.sited else { return Again { fields: [], minted: [] } }
-        let head? = heads.first() else { return Again { fields: [], minted: [] } }
-        if !self.holey(head) { return Again { fields: [], minted: [] } }
+        let field? = r.sited else { return unsaid() }
+        let head? = heads.first() else { return unsaid() }
+        if !self.holey(head) { return unsaid() }
         mut copying = copier(self.store, self.store, [], [], self.words.door)
         let copy = copying.expr(head)
         let lambda = self.store.alloc_expr(Expr.Lambda([], copy), self.store.expr_span(head))
