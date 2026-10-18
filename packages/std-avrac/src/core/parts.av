@@ -11,6 +11,15 @@
 export const spread_entry: string = ".."
 
 impl SyntaxArena {
+    /// A destructuring `let` still waiting for its block, when the statement is one.
+    fn open_let(s: StmtId) -> LetParts? {
+        let v? = self.stmt_value(s) else { return null }
+        match self.expr(v) {
+            .LetPattern(pat, subject, otherwise, held) -> if held == null { LetParts { pat: pat, subject: subject, otherwise: otherwise } } else { null },
+            _ -> null,
+        }
+    }
+
     /// A list pattern's parts, when the pattern is one.
     fn seq_parts(p: PatId) -> SeqParts? {
         match self.pat(p) {
@@ -677,3 +686,5 @@ fn name_over(name: Scoped, tparams: List<Plain>, of: TypeRef) -> NamedParts {
 
 export type SeqParts = { before: List<PatId>, rest: List<PatId>, after: List<PatId> }
 export type FieldsParts = { name: string, fields: List<string>, args: List<PatId>, open: bool }
+
+export type LetParts = { pat: PatId, subject: ExprId, otherwise: ExprId? }

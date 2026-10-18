@@ -900,6 +900,7 @@ fn names_said(names: List<string>) -> string {
 }
 
 fn needs_catch_all(mut cx: TypeCx, e: ExprId, sname: string) {
+    if cx.view.store.minted_by_let(e) { return refutable_let(cx, e, sname) }
     cx
         .emit(
             refusal(
@@ -908,6 +909,20 @@ fn needs_catch_all(mut cx: TypeCx, e: ExprId, sname: string) {
                 "a `match` over `${sname}` needs a catch-all arm",
                 "this match",
                 "end with `_ -> …` or `rest -> …`",
+            ),
+        )
+}
+
+/// A destructuring `let` over a pattern that can refuse the value.
+fn refutable_let(mut cx: TypeCx, e: ExprId, sname: string) {
+    cx
+        .emit(
+            refusal(
+                "type.let_pattern",
+                cx.loc_of(e),
+                "this `let` takes a `${sname}` apart by a pattern that can refuse it, and says nothing for the values it refuses",
+                "this `let`",
+                "add an `else` that leaves — `let [first, ..] = xs else { return … }`",
             ),
         )
 }
