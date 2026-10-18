@@ -24,6 +24,7 @@ use core.{
     StaticBox,
 }
 use diagnostics.{loc_at, refusal, Diag}
+use features.lists.{listed}
 use features.{
     LowerCx,
     capture_lane,
@@ -87,10 +88,44 @@ impl LowerCx {
     /// call to its own default body for each seat no argument writes.
     /// Typing held every unwritten seat to a default.
     mut fn seated_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+        let variadic: int? = self.view.decls.variadic_of(d)
+        if variadic != null { return self.variadic_regs(e, d, variadic!, args, regs) }
         let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
         if seats.length < regs.length { return regs }
         let defaults = self.view.decls.seat_defaults(d)
         [if i >= 0 { regs[i] } else { self.default_reg(e, defaults[j]) } for j, i in self.view.store.seat_plan(args, seats)]
+    }
+
+    /// A variadic callee's registers: the seats before its `..` seat as
+    /// written, then ONE list of every argument past them — plain ones
+    /// its elements, a `..` one joined in. A lone spread hands its list
+    /// over as it stands: the callee borrows, as it does any argument.
+    mut fn variadic_regs(e: ExprId, d: DeclId, k: int, args: List<ExprId>, regs: List<Reg>) -> List<
+        Reg,
+    > {
+        let spreads = [self.view.store.spread_operand(a) != null for a in args.slice(k, args.length)]
+        let extras = regs.slice(k, regs.length)
+        let packed = if spreads.length == 1 && spreads[0] { extras[0] } else { listed(self, self.variadic_shape(e, d), extras, spreads) }
+        regs.slice(0, k).concat([packed])
+    }
+
+    /// The shape of the list a variadic seat takes, as this call
+    /// instantiates it.
+    fn variadic_shape(e: ExprId, d: DeclId) -> Type {
+        let declared? = (self.view.decls.sig(d)?.fn_sig()?.params ?? []).last() else { return Type.Error }
+        let sub? = self.facts.subst_at(e) else { return self.view.types.shape_of(self.viewed(declared)) }
+        self
+            .view
+            .types
+            .shape_of(
+                self
+                    .viewed(
+                        self
+                            .view
+                            .types
+                            .substituted(declared, sub.target, [self.concrete(t) for t in sub.args]),
+                    ),
+            )
     }
 
     mut fn default_reg(e: ExprId, body: DeclId?) -> Reg {

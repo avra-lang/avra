@@ -1,7 +1,7 @@
 //! A list lowers as the runtime aggregate: one `avra_array_new`,
 //! then a push per element — the CallRt escape hatch carrying the
 //! whole feature, zero new instructions.
-use core.{ExprId, StmtId, Reg, CompClause}
+use core.{ExprId, StmtId, Reg, CompClause, Type}
 use features.{LowerCx, Pipeline, Clause, Source, Lookup}
 
 fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
@@ -11,27 +11,30 @@ fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
     cx.grown_box(cx.shape_at(e), size, regs)
 }
 
-/// A literal with `..` entries: each run of plain elements is a box of
-/// its own, each spread is the list itself, and the parts join in
-/// written order by `concat`. A lone spread is a copy.
+/// A literal with `..` entries, built by `listed`.
 fn spread_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>, regs: List<Reg>) -> Reg {
-    let sh = cx.shape_at(e)
+    listed(cx, cx.shape_at(e), regs, [spreads(cx, k) for k in elems])
+}
+
+/// A list from values in written order, `spreads[j]` saying value `j` is
+/// a list whose elements join in: each run of plain values is a box of
+/// its own, each spread is the list itself, and the parts join in order
+/// by `concat`. A lone spread is a copy.
+export fn listed(mut cx: LowerCx, sh: Type, regs: List<Reg>, spreads: List<bool>) -> Reg {
+    if !spreads.any(it) { return cx.grown_box(sh, cx.box_size(regs.length), regs) }
     mut parts: List<Reg> = []
     mut run: List<Reg> = []
-    for j, k in elems {
-        if !spreads(cx, k) {
-            run.push(regs[j])
+    for j, r in regs {
+        if !spreads[j] {
+            run.push(r)
         } else {
             if !run.is_empty() { parts.push(cx.grown_box(sh, cx.box_size(run.length), run)) }
             run = []
-            parts.push(regs[j])
+            parts.push(r)
         }
     }
     if !run.is_empty() { parts.push(cx.grown_box(sh, cx.box_size(run.length), run)) }
-    if parts.length == 1 {
-        let len = cx.measure_of(elems[0], parts[0], cx.type_at(elems[0]))
-        return cx.array_slice(sh, parts[0], cx.const_int(0), len)
-    }
+    if parts.length == 1 { return cx.array_slice(sh, parts[0], cx.const_int(0), cx.array_len(Type.Int, parts[0])) }
     mut joined = parts[0]
     for p in parts.drop(1) { joined = cx.array_concat(sh, joined, p) }
     joined

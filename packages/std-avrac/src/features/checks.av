@@ -847,6 +847,10 @@ impl TypeCx {
     /// cannot take passes through for the seat law's own words.
     mut fn placed(e: ExprId, callee: string, d: DeclId?, args: List<ExprId>, wants: List<TypeId>) -> Placed? {
         let declared? = d else { return self.unplaced(callee, args, wants) }
+        let variadic: int? = self.view.decls.variadic_of(declared)
+        if variadic != null { return self.variadic_placed(e, callee, variadic!, args, wants) }
+        let spread: ExprId? = args.find((a) -> self.view.store.spread_operand(a) != null)
+        if spread != null { return self.spread_into_fixed(spread!, callee) }
         let seats: List<string> = self.view.decls.facts_of(declared)?.seats ?? []
         let defaults = self.view.decls.seat_defaults(declared)
         if args.all((a) -> self.view.store.arg_label(a) == null) { return self.by_position(e, callee, defaults, args, wants) }
@@ -881,6 +885,8 @@ impl TypeCx {
     /// method, a contract's member, an extern — takes positional
     /// arguments alone.
     mut fn unplaced(callee: string, args: List<ExprId>, wants: List<TypeId>) -> Placed? {
+        let spread: ExprId? = args.find((a) -> self.view.store.spread_operand(a) != null)
+        if spread != null { return self.spread_into_fixed(spread!, callee) }
         let named? = args.find((a) -> self.view.store.arg_label(a) != null) else { return as_written(args, wants) }
         self.seats_unnamed(named, callee)
     }
@@ -1106,6 +1112,69 @@ impl TypeCx {
                     "pass exactly ${want} — `avra docs ${callee}` shows the signature",
                 ),
             )
+    }
+
+    /// A variadic callee: its last seat takes every argument past the
+    /// seats before it — each plain one an element, a `..` one the list
+    /// itself — so the arguments judge as that many seats, each with the
+    /// want its place gives.
+    mut fn variadic_placed(
+        e: ExprId,
+        callee: string,
+        k: int,
+        args: List<ExprId>,
+        wants: List<TypeId>,
+    ) -> Placed? {
+        if wants.length <= k { return as_written(args, wants) }
+        let named: ExprId? = args.find((a) -> self.view.store.arg_label(a) != null)
+        if named != null { return self.variadic_named(named!, callee) }
+        if args.length < k { return self.variadic_short(e, callee, k, args.length) }
+        let elem? = self.view.types.element(self.view.types.seen_through(wants[k])) else { return as_written(args, wants) }
+        let tail = [if self.view.store.spread_operand(a) != null { wants[k] } else { elem } for a in args.slice(k, args.length)]
+        Placed { args: args, wants: wants.slice(0, k).concat(tail) }
+    }
+
+    mut fn variadic_named(a: ExprId, callee: string) -> Placed? {
+        self
+            .emit(
+                refusal(
+                    "type.variadic",
+                    self.loc_of(a),
+                    "`${callee}` takes the rest of its arguments in a `..` seat, which a call writes by position — `${self.view.store.arg_label(a) ?? ""}:` names a seat",
+                    "named here",
+                    "write the arguments in order",
+                ),
+            )
+        null
+    }
+
+    mut fn variadic_short(e: ExprId, callee: string, k: int, found: int) -> Placed? {
+        self
+            .emit(
+                refusal(
+                    "type.variadic",
+                    self.loc_of(e),
+                    "`${callee}` needs ${k} before its `..` seat, found ${found} arguments",
+                    "this call",
+                    "pass the ${k}, then any number more",
+                ),
+            )
+        null
+    }
+
+    /// `..xs` where the callee has no seat that takes the rest.
+    mut fn spread_into_fixed(a: ExprId, callee: string) -> Placed? {
+        self
+            .emit(
+                refusal(
+                    "type.spread_seat",
+                    self.loc_of(a),
+                    "`..` spreads into a seat that takes the rest of the arguments, and `${callee}` declares none",
+                    "spread here",
+                    "declare `..rest: List<T>` on `${callee}`, or pass each element — a list's length is known at run time, a seat's at compile time",
+                ),
+            )
+        null
     }
 
     mut fn seats_unnamed(a: ExprId, callee: string) -> Placed? {
