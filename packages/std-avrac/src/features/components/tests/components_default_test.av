@@ -1,18 +1,11 @@
 // `@default` on an event: the bare statements of an instance are its
 // handler, `gate { n = x + 1 }` being `gate { on press { n = x + 1 } }`.
+// The compiler reads the mark itself, so no derive claims it.
 use @std.avrac.compiler.{Program}
 use @std.avrac.testing.{Module, provided, refused_in, answered}
 
-/// A reader that claims `@default`, as a library's view derive does.
-fn reader() -> string {
-    "use @std.meta.{Type, Directive}\nexport trait Reads {\n    static fn derive(t: Type) -> List<Directive> { [] }\n\n    static fn marks(t: Type) -> List<string> { [\"default\"] }\n}\n"
-}
-
-/// A component declaration under the reader.
-fn declared(body: string) -> string { "use @std.meta.{derive}\nuse @x.c.{Reads}\n@derive(Reads)\n" + body }
-
 /// A module of the program's own, so its component's word opens instances.
-fn kit(body: string) -> Module { Module { name: "kit", text: declared(body) } }
+fn kit(body: string) -> Module { Module { name: "kit", text: body } }
 
 fn gate() -> Module {
     kit("export component gate {\n    size: int = 1\n    @default on press\n    on release\n}\n")
@@ -22,7 +15,7 @@ fn gate() -> Module {
 fn opened(block: string, after: string) -> Program {
     provided(
         "use kit.{gate}\nstate n: int = 0\nfn v() -> string {\n    let x = 5\n    let a = gate ${block}\n    ${after}\n    \"\${n}\"\n}\nv()",
-        reader(),
+        "",
         [gate()],
     )
 }
@@ -47,22 +40,31 @@ spec "features/components — a default event" {
             )
         }
     }
+    given "a component no view derives" {
+        then "takes a default too — a worker's message" {
+            answered(
+                provided(
+                    "use kit.{worker}\nstate n: int = 0\nfn v() -> string {\n    let a = worker { n = 4 }\n    let f? = a.message else { return \"unheard\" }\n    f(\"hi\")\n    \"\${n}\"\n}\nv()",
+                    "",
+                    [kit("export component worker {\n    @default on message(text: string)\n}\n")],
+                ),
+            ) == "4"
+        }
+    }
     given "a declaration" {
         then "marks at most one event" {
             refused_in(
                 provided(
-                    declared("component pair {\n    @default on a\n    @default on b\n}\n") + "1",
-                    reader(),
+                    "1",
+                    "",
+                    [kit("export component pair {\n    @default on a\n    @default on b\n}\n")],
                 ),
                 "a component has one default event, and `pair` marks `a`, `b` `@default`",
             )
         }
         then "marks an event, never a field" {
             refused_in(
-                provided(
-                    declared("component flat {\n    @default size: int = 1\n}\n") + "1",
-                    reader(),
-                ),
+                provided("1", "", [kit("export component flat {\n    @default size: int = 1\n}\n")]),
                 "only an event can be a component's default, and `size` of `flat` is a field",
             )
         }
