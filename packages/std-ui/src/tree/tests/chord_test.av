@@ -1,0 +1,96 @@
+//! A key with its modifiers, written once as text and read once into a
+//! value; and the binding that bubbles from the focused node out to the root.
+use @std.ui.components.{button, column}
+use @std.ui.headless.{headless}
+use @std.ui.tree.chord.{Chord, bind, chord, parsed}
+
+/// The chord `text` writes, as it reads back, or the words that refuse it.
+fn read(text: string) -> string {
+    match chord(text) { .Ok(c) -> c.text(), .Err(why) -> why }
+}
+
+once fn log() -> Cell<List<string>> { Cell.new([]) }
+
+fn said(what: string) -> fn() -> void { () -> log().push(what) }
+
+spec "a chord is written once and read once" {
+    given "a chord written as text" {
+        then "reads back with its modifiers in a fixed order" {
+            read("ctrl+s") == "ctrl+s" &&
+                read("shift+alt+ctrl+Enter") == "ctrl+alt+shift+Enter" &&
+                read("F5") == "F5"
+        }
+        then "names a key in any case, as written" {
+            read("ctrl+pagedown") == "ctrl+PageDown" &&
+                read("escape") == "Escape" &&
+                read("alt+SPACE") == "alt+Space"
+        }
+        then "holds a single character as typed" { read("alt+/") == "alt+/" && read("ctrl+1") == "ctrl+1" }
+    }
+    given "a chord that is none" {
+        then "says which modifier is no modifier" {
+            read("ctlr+s") == "`ctlr` in `ctlr+s` is no modifier: the modifiers are `ctrl`, `alt` and `shift`"
+        }
+        then "says the key is missing" {
+            read("ctrl+") == "`ctrl+` names no key: a chord ends in the key, as in `ctrl+s` or `F5`" &&
+                read("") == "`` names no key: a chord ends in the key, as in `ctrl+s` or `F5`"
+        }
+        then "says a modifier is held twice" { read("ctrl+ctrl+s") == "`ctrl` is held twice in `ctrl+ctrl+s`" }
+        then "says an upper-case letter is shift" {
+            read("ctrl+S")
+                .starts_with(
+                    "`S` in `ctrl+S` is no key: a key is one character, written as typed unshifted (`s`, not `S` — hold `shift` for that)",
+                )
+        }
+        then "says a word is no key" { read("ctrl+ss").contains("`ss` in `ctrl+ss` is no key") }
+    }
+    given "the keys the terminal keeps" {
+        then "Tab and Shift-Tab move the focus" {
+            read("Tab") == "`Tab` is a focus key: Tab and Shift-Tab move the focus, so a binding cannot take them" &&
+                read("shift+tab").contains("is a focus key")
+        }
+        then "Ctrl-D ends the input" { read("ctrl+d").contains("ends the input") }
+        then "Ctrl-Tab and Alt-Tab are free" { read("ctrl+tab") == "ctrl+Tab" && read("alt+Tab") == "alt+Tab" }
+    }
+    given "the fallible door" {
+        then "answers none for a chord that is none, and the chord for one that is not" {
+            parsed("ctlr+s") == null && parsed("ctrl+s") != null
+        }
+    }
+}
+
+spec "a binding bubbles from the focused node to the root" {
+    given "a root and a button each binding Ctrl-S" {
+        then "the button's binding is the nearest, the root's meets a key from elsewhere" {
+            log().set([])
+            let s = headless(
+                () -> column {
+                    keys: [bind("ctrl+s", said("all"))]
+                    button "Save" { keys: [bind("ctrl+s", said("one"))] }
+                    button "Other" {}
+                },
+            )
+            let one = s.key_in("Save", "ctrl+s")
+            let all = s.key_in("Other", "ctrl+s")
+            let root = s.key("ctrl+s")
+            one && all && root && log().get().join(",") == "one,all,all"
+        }
+        then "a node lists the chords live for it, nearest first" {
+            let s = headless(
+                () -> column {
+                    keys: [bind("ctrl+q", said("q"))]
+                    button "Save" { keys: [bind("ctrl+s", said("s"))] }
+                },
+            )
+            s.bindings_in("Save").join(",") == "ctrl+s,ctrl+q"
+        }
+        then "a chord no live binding names runs nothing" {
+            log().set([])
+            let s = headless(() -> column { button "Save" { keys: [bind("ctrl+s", said("s"))] } })
+            !s.key_in("Save", "ctrl+x") &&
+                !s.key("ctrl+s") &&
+                !s.key_in("Save", "ctlr+s") &&
+                log().get().is_empty()
+        }
+    }
+}
