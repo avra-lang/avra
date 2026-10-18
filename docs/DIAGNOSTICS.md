@@ -486,7 +486,7 @@ while n < 1 {
 ```
 
 ```
-error[flow.spent_arm]: a list arm is taken once — a member that answered stays ready, so a loop would take it every turn
+error[flow.spent_arm]: a list arm is taken once, so no loop holds it
   ╭─[witness.av:8:9]
 8 │         r in jobs -> r
   ·         ┬
@@ -591,7 +591,7 @@ error[type.component_body]: a component is made of what its body holds, and noth
   · ┬
   · ╰── holds statements
 ──╯
-help: a body is composed by the library whose components it is made of — write one of them in it, or `use` the library; a component of fields and `fn`s holds none
+help: write a component of a library in the body, or `use` the library
 ```
 
 ## type.component_head
@@ -2232,7 +2232,7 @@ error[type.derive_contract]: a trait's `derive` answers the declarations it make
   ·               ┬
   ·               ╰── declared here
 ──╯
-help: take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>`, or `Declared` when it also has problems to speak, as a `static fn`
+help: take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` (or `Declared`) as a `static fn`
 ```
 
 ## shape.identity_clash
@@ -3076,7 +3076,7 @@ error[type.match]: `match` chooses over an enum, found `int`
   ·       ┬
   ·       ╰── this is `int`
 ──╯
-help: variant patterns (`.a`) choose over an enum — match literals (`5 -> …`) or bind the value (`n -> …`) here, or declare an `enum`
+help: match literals (`5 -> …`), bind the value (`n -> …`), or declare an `enum` for variant patterns (`.a`)
 ```
 
 ## type.variant_arity
@@ -3227,7 +3227,7 @@ f(M.B)
 ```
 
 ```
-warning[type.const_pattern]: `a` is a const here, so this arm compares — it does not take the values the arms above left
+warning[type.const_pattern]: `a` is a const here, so this arm compares
    ╭─[witness.av:10:9]
 10 │         a -> 3
    ·         ┬
@@ -3525,7 +3525,7 @@ error[type.once_fn]: `once fn seed` answers `int`, which the runtime cannot keep
   · ┬
   · ╰── declared here
 ──╯
-help: a `once` value is one the runtime owns — a string, a list, a map, an enum, or a record wider than one scalar field
+help: a `once` answer is a managed value — a string, list, map, enum, or a record wider than one scalar
 ```
 
 ## type.const_seat
@@ -3648,7 +3648,7 @@ o(1, 2)
 ```
 
 ```
-error[type.param_default]: `b` has no default and follows `a`, which has one — a call writes its seats in order, so `a` could never be left to its default
+error[type.param_default]: `b` has no default and follows `a`, which has one — defaulted seats come last
   ╭─[witness.av:1:15]
 1 │ fn o(a: int = 1, b: int) -> int { b }
   ·               ┬
