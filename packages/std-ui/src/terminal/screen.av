@@ -13,19 +13,8 @@
 //! two, so the terminal never draws half a character.
 use @std.text.{from_codepoint}
 use tree.lists.{flatten}
-
-/// One cell's drawing (a tile): the grapheme that starts there, whether it takes two cells, and
-/// its style — 0 is the terminal's own; bits 0–4 are bold, dim, italic,
-/// underline and inverse; bits 8–15 a foreground colour and 16–23 a
-/// background, each 0 for none and else 1 plus a 256-colour index. The right
-/// half of a wide glyph is `Tile { text: "", wide: false, style: 0 }`.
-export type Tile = { text: string, wide: bool, style: int }
-
-/// Where a cell stands: column and line, from zero.
-export type Pos = { x: int, y: int }
-
-/// A screen's cells, row by row, and where the caret goes (none: hidden).
-export type Grid = { width: int, height: int, cells: List<Tile>, cursor: Pos? }
+use realize.tui.paint.{Grid, Pos, Tile}
+use terminal.keys.{kitty_off, kitty_on, modes_off, modes_on}
 
 /// A style bit and the attribute code it asks for.
 type Attribute = { bit: int, code: string }
@@ -144,24 +133,36 @@ export type Screen = {
     shown: Cell<Grid?>,
     open: Cell<bool>,
     caret: Cell<bool>,
+    kitty: Cell<bool>,
 }
 
 /// A screen whose bytes go to `out`.
 export fn screen(out: fn(string) -> void) -> Screen {
     let nothing: Grid? = null
-    Screen { out: out, shown: Cell.new(nothing), open: Cell.new(false), caret: Cell.new(false) }
+    Screen {
+        out: out,
+        shown: Cell.new(nothing),
+        open: Cell.new(false),
+        caret: Cell.new(false),
+        kitty: Cell.new(false),
+    }
 }
 
-/// What a process leaves its terminal as: the style reset, the caret shown,
-/// the alternate screen left. Also what the runtime writes if the process
-/// ends any other way.
-export fn parting() -> string { "${esc()}[0m${esc()}[?25h${esc()}[?1049l" }
+/// What a process leaves its terminal as: the input modes off, the style
+/// reset, the caret shown, the alternate screen left. Also what the runtime
+/// writes if the process ends any other way.
+export fn parting() -> string { parted(false) }
+
+/// `parting`, with the kitty keyboard protocol popped first when it was pushed.
+export fn parted(kitty: bool) -> string {
+    if kitty { kitty_off() } else { "" } + modes_off() + "${esc()}[0m${esc()}[?25h${esc()}[?1049l"
+}
 
 impl Screen {
     /// The alternate screen, cleared, the caret hidden: the first thing a
     /// screen writes.
     fn enter() {
-        (self.out)("${esc()}[?1049h${esc()}[?25l${esc()}[2J")
+        (self.out)("${esc()}[?1049h${esc()}[?25l${esc()}[2J${modes_on()}")
         self.open.set(true)
         self.caret.set(false)
         self.shown.set(null)
@@ -170,9 +171,21 @@ impl Screen {
     /// The screen as it was found.
     fn leave() {
         if !self.open.get() { return }
-        (self.out)(parting())
+        (self.out)(self.parts())
         self.open.set(false)
+        self.kitty.set(false)
         self.shown.set(null)
+    }
+
+    /// What this screen leaves behind now: the kitty protocol popped if it
+    /// was pushed.
+    fn parts() -> string { parted(self.kitty.get()) }
+
+    /// The terminal answered the keyboard query: the kitty protocol is pushed,
+    /// and the bytes that do it are answered.
+    fn pushes() -> string {
+        self.kitty.set(true)
+        kitty_on()
     }
 
     /// The terminal changed size: what it shows is no longer known, so the
