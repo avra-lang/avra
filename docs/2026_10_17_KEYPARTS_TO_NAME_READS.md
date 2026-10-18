@@ -50,43 +50,53 @@ stand. The part that cannot move piecemeal is the IDENTITY of an object: its key
 the parts, so changing what the parts are changes every key at once and strands every stored
 object. That is the one flag day, and it comes last, after nothing else reads the parts.
 
+## Where it stands (after K1-K4d, K5a)
+
+Measured on `check packages/cli`, one literal moved (body edit) and one `export fn` added (interface edit):
+
+| | before | now |
+|---|---|---|
+| body edit: judge_fallbacks | ~420 | 0 |
+| interface edit: judge_fallbacks | 420 | 3-4 |
+| interface edit: narrowed names judgement | 674 ms | 60 ms, ~700 lookups |
+| first kept verdict, body edit | 246 ms | 10 ms |
+| KeyParts builds on an edit | 1056 | 86 |
+| building a module's view (reach) per edit | ~350 ms (2 views) | from producer rows |
+
+What is left of KeyParts: it is still the IDENTITY of an object (its key is a hash of the parts), the
+judge's fallback, and what `keep` writes the file rows' reads from. The cost of deriving it is now
+`view_parts` (a module's reach, the narrowed index) and 86 `key_parts` builds per edit.
+
 ## Steps
 
-Each step lands alone, green on `cache-attacks-a/b` and the core suite under
-`AVRA_DB_VERIFY=producers,filesaid`, with its counter drop in the PR body.
+K1-K4d are done (see the PR). K5 is in two parts, because the second is the one flag day.
 
-K1 — the judge by stored stamps (done on `db-07k-judge`). A row also reads `sp <module>`: the
-digest of the module's record seen-lines and its file listing, kept in the module's producer
-row. A row whose stamps stand is judged without rebuilding any view; the rebuild is the
-fallback, counted by `judge_fallbacks` (0 on a body edit, ratcheted at 0). Witness: judge
-~415 ms → ~0, `keyparts` builds 1056 → 86.
+K5a - views from producer rows (no key changes). A module's reach read each reached module's record
+by decoding it: `place_files` (the `file` lines), the non-builtin `ref` rows, the re-export lines and
+the typed index (every declaration row's wires). Those are now lines of the producer row (`placed`,
+`rrefs`, `reexport`, `typed`), made by the same functions from the same record, so every key is the
+one the record route computed. `narrow_index` still reads records (24-47 ms an edit) and moves next.
+Receipt: reach of two views 346 ms -> producer-row walks; interface-edit `keep` ~690 -> ~515 ms and
+`load` ~1.3 -> ~1.1 s.
 
-K2 — a held file's object key is its stored row (done, same branch): `okey-row` is kept beside
-the other file rows and read for a file held because its rows stand. A file whose rows moved
-still derives its key from the parts.
+K5b - delete KeyParts. An object's key stops carrying the view: key = (compiler, module, path, text,
+runs, gathered), and the row it names carries its reads, judged by `file_judged` exactly as the
+file rows are today (frame stamp, forms diff by name, text, runs, gathered). The view machinery
+(`view_parts`, `reach`, `narrow_index`, `seen_by_name`, `NarrowIndex`, `Reach`, `parts_wire`/`parts_of`
+and `key_parts_exemplars`) is deleted; `keep_interfaces`' blanket cache clear goes with it. Two
+things must exist first and are the reason K5b is its own flag day:
+ 1. a file's reads at keep time must come from what its analysis READ, not from `seen_by_name`
+    (today `reads_of_parts(k)` names the modules in `k.seen`; without KeyParts the seen set is the
+    modules the typer asked, taken from the engine's recorded reads);
+ 2. an object row under a text-only key is overwritten by the next build that reads different
+    names, so two contexts no longer coexist under one store — the attacks that count rows
+    (`store-clean`, `cache-attacks-b`'s size cases) are re-baselined in the same commit.
+Witness: a body or interface edit builds no `KeyParts`; `judge_fallbacks` stays at 0/4; cold
+`check` of the compiler's own tree writes no more rows than today.
 
-K3 — kept-settle lines as name reads. Each line kind (`u c m f b e`) becomes a read
-`(name, digest)` kept with the settlement row; `*_stands` becomes the generic judge. The value
-and its reads are ONE row (today two non-atomic writes, A2 #3). Witness: the first kept-settle
-verdict stops costing a view build (175 ms), `kept_settle.av` shrinks by the six fns.
-
-K4 — reads by NAME for the file rows. The names a file's analysis resolved (the leaves its
-`Analysis` read: declaration wire + signature digest, as `typed_said_pass` already collects)
-replace `Seen` / `SeenSet`. The stored stamp of K1 is the module-grain placeholder this
-replaces. Witness: a body edit leaves every importer's rows unsuspected (suspect rows 365 → ~1),
-and a signature edit suspects exactly the files that read that declaration.
-
-K5 — the flag day. Objects are keyed by their reads (K4's names); `object_key_of_parts` and
-`KeyParts` go, with `view_parts`, `reach`, `narrow_index`, `seen_by_name`, `stands_in`'s
-formats and the record's `ref`/`file` columns that only fed them. One commit rewrites every key
-and the store restarts cold; the packaged seed is refreshed in the same landing.
-
-## Order and cost
-
-K1–K2 are done and measured. K3 ~1 day. K4 ~2–3 days (the reverse index over names, the leaf
-collection for every file answer, a witness per answer family). K5 ~1 day plus a cold bootstrap
-cycle. K5 must follow db-externs' codec work only if the reads are stored through it; the
-current text rows suffice, so the codec is not on this path.
+The (file, name) relation in `@std/relation` (an index by name over a file's spelled names) is
+the one source that replaces `tokens_of`'s row and `spelling`'s per-file map; it lands with K5b,
+since K5b is what deletes `narrow_index`, the last reader that wants names by file.
 
 ## What each step must keep true
 
