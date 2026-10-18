@@ -16,6 +16,7 @@
 extern int64_t avra_fd_tty_size(int64_t fd);
 extern int64_t avra_fd_tty_raw(int64_t fd, int64_t on);
 extern void avra_fd_exit_writes(int64_t fd, const char* bytes);
+extern void avra_sig_raise(int64_t kind);
 extern const char* avra_bytes_adopted(const void* p, int64_t n);
 
 static int g_checks = 0;
@@ -34,7 +35,7 @@ static int cooked(int fd) {
 
 static const char* bytes_of(const char* s) { return avra_bytes_adopted(s, (int64_t)strlen(s)); }
 
-enum { QUIET, EXIT0, TRAP_EXIT, TERM, FAULT, DISARMED, INTERRUPT };
+enum { QUIET, EXIT0, TRAP_EXIT, TERM, FAULT, DISARMED, INTERRUPT, RAISED };
 
 // A child that raises the terminal's mode and arms its parting bytes, then
 // ends the way `how` says. Answers its wait status.
@@ -45,6 +46,7 @@ static int child_ends(int slave, int how) {
         avra_fd_exit_writes(slave, bytes_of("<BYE>"));
         if (how == DISARMED) avra_fd_exit_writes(slave, bytes_of(""));
         if (how == TERM) raise(SIGTERM);
+        if (how == RAISED) avra_sig_raise(1);
         if (how == FAULT) raise(SIGSEGV);
         if (how == TRAP_EXIT) exit(2);
         exit(0);
@@ -117,6 +119,11 @@ int main(void) {
     CHECK(WIFSIGNALED(s) && WTERMSIG(s) == SIGTERM, "a terminating signal still ends the process by it");
     CHECK(master_holds(master, "<BYE>"), "a terminating signal leaves its bytes");
     CHECK(cooked(slave), "a terminating signal gives the mode back");
+
+    s = child_ends(slave, RAISED);
+    CHECK(WIFSIGNALED(s) && WTERMSIG(s) == SIGINT, "a raised SIGINT ends the process by it, as one from outside would");
+    CHECK(master_holds(master, "<BYE>"), "a raised SIGINT leaves its bytes");
+    CHECK(cooked(slave), "a raised SIGINT gives the mode back");
 
     s = child_ends(slave, FAULT);
     CHECK(WIFSIGNALED(s) && WTERMSIG(s) == SIGSEGV, "a fault still ends the process by it");
