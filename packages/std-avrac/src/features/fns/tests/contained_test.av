@@ -22,6 +22,13 @@ fn guarding(main: string) -> Program {
 
 fn answered(main: string) -> string { guarding(main).run() catch e -> e }
 
+/// The run's refusal is the const law, names the closure's own read, and never the guard.
+fn reads_world(main: string) -> bool {
+    let words = answered(main)
+    words.contains("a const cannot read the world") && words.contains("reaches `avra_now_ns`") &&
+        !words.contains("avra_guard")
+}
+
 fn refused_once(main: string, phrase: string) -> bool { refused_in(guarding(main), phrase) }
 
 spec "features/fns — contained brings back a word or a pointer" {
@@ -50,6 +57,18 @@ spec "features/fns — contained brings back a word or a pointer" {
             answered(
                 "fn none() -> int? { null }\nmatch contained(none) {\n    .Ok(x) -> \"ok \${x ?? 9}\",\n    .Err(w) -> w,\n}",
             ) == "ok 9"
+        }
+    }
+    given "a const settling a guarded run" {
+        then "a pure body settles" {
+            answered(
+                "fn pure() -> int { 41 + 1 }\nconst N: string = match contained(pure) {\n    .Ok(n) -> \"\${n}\",\n    .Err(w) -> w,\n}\nN",
+            ) == "42"
+        }
+        then "a body that reads the world is refused, naming its own read" {
+            reads_world(
+                "extern fn avra_now_ns() -> int\nfn clocked() -> int { avra_now_ns() }\nconst N: string = match contained(clocked) {\n    .Ok(n) -> \"\${n}\",\n    .Err(w) -> w,\n}\nN",
+            )
         }
     }
     given "the verbs read as values" {
