@@ -7,7 +7,9 @@
 //! Ids are opaque: compared or looked up, never inspected. All
 //! allocation goes through the one `alloc_*` seam per arena, so
 //! interning can arrive without call-site churn.
-use @std.meta.{dense, derive, Field, Mark as MetaMark, Named}
+// LICENSED modules.unused_import: `Rewrite` is named by GENERATED code — the
+// `NodeFacts` delegation writes `means`'s answer here
+use @std.meta.{dense, derive, Field, Mark as MetaMark, Named, Rewrite}
 use @std.errors.{Loc}
 use @std.relation.{relation, arena}
 
@@ -398,7 +400,7 @@ export fn stmt_makers() -> List<Maker<Stmt>> {
 @derive(Makes)
 @relation
 @arena
-export collect enum Expr: Identity, Kids, Heirs = @expr_node in package by it.name
+export collect enum Expr: Identity, Kids, Heirs, NodeFacts = @expr_node in package by it.name
 
 /// Marks a record as `Expr`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -416,24 +418,6 @@ export fn is_literal(e: Expr) -> bool {
 /// it was typed before the seat was known.
 export fn hears_want(e: Expr) -> bool {
     match e { .ListLit(_) or .Comp(_, _) or .Collect(_) or .Lambda(_, _) -> true, _ -> false }
-}
-
-/// A FORM THE SOURCE SPELLS AS A VALUE — a scalar, text, a list, a
-/// map, a variant, a lambda, `null`. The parts inside may be computed; the
-/// FORM is what this asks about.
-///
-/// A NAMED TYPE'S SEAT TAKES ONE DIRECTLY (`let id: UserId = 5`):
-/// the name's shape becomes the want and the literal fills it.
-/// Nothing COMPUTED wears a name it was not given, which is the
-/// opacity half of the named-type law and what makes the name worth
-/// having. A REGISTRY, every arm spelled: the day a new value form
-/// lands it must decide whether a name adopts it.
-export fn literal_form(e: Expr) -> bool {
-    match e {
-        .Body(word, _, _, _) -> body_literal(word),
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) or .Range(_, _) -> true,
-        .Ident(_) or .Receiver or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error or .Env(_) -> false,
-    }
 }
 
 /// THE BUILT-IN BODY WORDS — `text` and `quote` — and the behavior
@@ -465,7 +449,7 @@ export fn body_behavior(word: string) -> BodyBehavior {
 }
 
 /// Whether a body of this word is a value form the source spells.
-fn body_literal(word: string) -> bool {
+export fn body_literal(word: string) -> bool {
     body_rows().find(it.word == word)?.literal ?? false
 }
 
@@ -574,6 +558,9 @@ export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynam
 export fn named_ref(name: string) -> TypeRef {
     TypeRef { name: name, args: [], optional: false, dynamic: false, arrow: false, span: null }
 }
+
+/// The answer a fn declares by writing none: `void`.
+export const void_ref: TypeRef = named_ref("void")
 
 export fn plain(t: TypeRef) -> TypeRef {
     t with { optional: false }
@@ -734,9 +721,11 @@ export fn pat_node(_node: Named) {}
 /// the two agree, because a suffix anchor already fixes that hole's
 /// end — which is why the mark reads there as a statement of what the
 /// hole does rather than a change to it.
+@derive(Identity)
 export type Hole = { name: string, ty: TypeRef?, greedy: bool }
 
 /// A hole and the literal text that follows it.
+@derive(Identity)
 export type FormatPart = { hole: Hole, piece: string }
 
 /// The format a `grammar` declaration read. Its holes became the

@@ -9,6 +9,7 @@ use core.{
     ExprId,
     Nominal,
     Param,
+    PatId,
     Plain,
     Scoped,
     StmtId,
@@ -56,12 +57,17 @@ export type Binary = { op: BinOp, left: ExprId, right: ExprId }
 @sequence
 export type Not = { value: ExprId }
 
-/// `~value` — bitwise not, written as itself. `rewrite` is what it
-/// MEANS (`value ^ -1`), minted with the node and walked in its place;
-/// the operand is read OFF it (`bitnot_operand`), so it is held once.
+/// `~value` — bitwise not, written as itself. What it MEANS (`value ^ -1`)
+/// is minted beside it (`means`) and walked in its place.
 @expr_node
 @sequence
-export type Bitnot = { rewrite: ExprId }
+export type Bitnot = { value: ExprId }
+
+/// `value |> stage` — the stage applied to the value, which becomes its
+/// first argument. What it means is the call (`minted`), walked in its place.
+@expr_node
+@sequence
+export type Pipe = { value: ExprId, stage: ExprId }
 
 /// The first aggregate — homogeneous scalar elements.
 @expr_node
@@ -116,7 +122,7 @@ export type Component = { word: string, heads: List<ExprId>, block: ExprId?, vie
 
 @expr_node
 @branches
-export type If = { cond: ExprId, on_true: ExprId, on_false: ExprId }
+export type If = { cond: ExprId, on_true: ExprId, on_false: ExprId? }
 
 /// Multi-way choice; `fallback` is the total `_` arm.
 @expr_node
@@ -209,13 +215,14 @@ export type Chain = { subject: ExprId, name: Plain }
 /// which is the whole cost of writing it.
 @expr_node
 @sequence
-export type Force = { value: ExprId }
+export type Force = { subject: ExprId }
 
 /// `subject is .variant` — the tag test; typing demands an enum
-/// subject that names the variant, and answers bool.
+/// subject that names the variant, and answers bool. `asked` is the
+/// pattern as written (`right`): `.V`, `.V(x)` or a type test `c: T`.
 @expr_node
 @sequence
-export type Is = { subject: ExprId, variant: Plain }
+export type Is = { left: ExprId, right: PatId }
 
 /// `.name(args)` — a variant of the enum the site EXPECTS; the
 /// want names the enum, the literal names the variant.
@@ -228,7 +235,7 @@ export type VariantLit = { name: Plain, args: List<ExprId> }
 /// `null` right here, so the fn must promise a nullable.
 @expr_node
 @sequence
-export type Propagate = { value: ExprId }
+export type Propagate = { subject: ExprId }
 
 /// `subject catch <recovery>` — recover from a Result's
 /// failure. Arms mirror Match's shape: `variants[j]` names the
@@ -254,10 +261,11 @@ export type MethodCall = { subject: ExprId, name: Plain, args: List<ExprId> }
 export type Error = {}
 
 /// `collect { … }` — a list of every value its statements would
-/// discard, in the order they ran; `body` is a block with no tail.
+/// discard, in the order they ran; its last statement is gathered like
+/// any other, so it holds statements and no tail.
 @expr_node
 @sequence
-export type Collect = { body: ExprId }
+export type Collect = { stmts: List<StmtId> }
 
 /// `b"…"` — octets, carried as the spelling between the quotes;
 /// `byte_string_octets` (grammar/lexer.av) is what it holds.
