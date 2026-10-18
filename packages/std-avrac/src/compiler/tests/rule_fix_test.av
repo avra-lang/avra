@@ -53,6 +53,15 @@ fn fix_apps_of(main: string, only: string? = null) -> List<Application> {
     p.fix_applications("/w/src/main.av", analysed(a), only)
 }
 
+/// `repair_applications` over a program that has errors — the REPAIR
+/// door `avra fix --repair` reads, never the proved tier.
+fn repair_apps_of(main: string, only: string? = null) -> List<Application> {
+    let ws = fix_ws_of(main)
+    let p: Program = ws.program("/w/src/main.av")
+    let a = p.entry_file()!
+    p.repair_applications("/w/src/main.av", analysed(a), a.diagnostics, only)
+}
+
 spec "avra fix" {
     given "a null-check idiom the IR proof confirms" {
         then "one Application, PROVED" {
@@ -494,4 +503,45 @@ fn disjoint_apps() -> List<Application> {
 
 fn edit_at(lo: int, hi: int, text: string) -> Edit {
     Edit { loc: Loc { file: "app.av", lo: lo, hi: hi }, replacement: text }
+}
+
+spec "avra fix --repair" {
+    given "an error whose own remedy clears it" {
+        then "a one-letter typo is repaired, and the splice is the name" {
+            let src = "fn alpha() -> int { 1 }\nalph()\n"
+            let apps = repair_apps_of(src)
+            apps.length == 1 &&
+                apps[0].repaired &&
+                apps[0].kind == "resolve.unresolved" &&
+                fix_applied(src, apps) ?? "" == "fn alpha() -> int { 1 }\nalpha()\n"
+        }
+        then "a plain let that is assigned becomes a mut" {
+            let src = "let x = 1\nx = 2\nx\n"
+            let apps = repair_apps_of(src)
+            apps.length == 1 &&
+                apps[0].repaired &&
+                fix_applied(src, apps) ?? "" == "mut x = 1\nx = 2\nx\n"
+        }
+        then "a scalar at a text seat is interpolated" {
+            let src = "let s: string = 5\ns\n"
+            fix_applied(src, repair_apps_of(src)) ?? "" == "let s: string = \"\${5}\"\ns\n"
+        }
+    }
+    given "an error whose remedy is a guess" {
+        then "a low-confidence assertion is never offered to the repair door" {
+            repair_apps_of("fn f(n: int) -> int { n }\nlet v: int? = null\nf(v)\n").is_empty()
+        }
+        then "a repair that trades its error for another is not repaired" {
+            repair_apps_of("fn alpha(a: int) -> int { a }\nalph()\n")
+                .all((ap: Application) -> !ap.repaired)
+        }
+        then "a suggestion whose splice leaves its error standing is not repaired" {
+            let src = "fn alpha() -> int { 1 }\nalph()\n"
+            let ws = fix_ws_of(src)
+            let p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            let blank = [Edit { loc: Loc { file: null, lo: 0, hi: 0 }, replacement: " " }]
+            !p.repair_clears("/w/src/main.av", analysed(a), a.diagnostics, blank)
+        }
+    }
 }

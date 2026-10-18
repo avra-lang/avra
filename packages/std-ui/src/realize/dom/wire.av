@@ -25,6 +25,7 @@
 //! checked-in copy is not what this file says.
 use @std.meta.{derive}
 use tree.identity.{NodeId}
+use @std.http_message.message.{Request}
 use tree.node.{EventKind, Said}
 use realize.dom.buf.{Buf, buf}
 use tree.codes.{Codes, Coded}
@@ -189,14 +190,27 @@ fn table_source(name: string, rows: List<Coded>) -> string {
 type Answers = { word: string, name: string }
 
 /// THE NAMES A PROGRAM ANSWERS TO. `entry` is the compiler's: a reactor's
-/// own statements, where an app says `mount(view)`. `event` and `seat`
-/// are the web module's two host fns (`web/web.av`), each under the
+/// own statements, where an app says `mount(view)`. `event`, `seat` and
+/// `fired` and `answered` are the web module's host fns (`web/web.av`), each under the
 /// name it is declared by. The wasm board's own run (`make ui-board`) is
 /// what holds these to the module.
 const answers = [
     Answers { word: "entry", name: "avra_main" },
     Answers { word: "event", name: "avra_ui_event" },
     Answers { word: "seat", name: "avra_ui_seat" },
+    Answers { word: "fired", name: "avra_ui_fired" },
+    Answers { word: "answered", name: "avra_ui_answered" },
+]
+
+/// THE ROWS A PAGE ANSWERS: the names the web module imports and the
+/// host supplies — the frame sink and the two timer verbs
+/// (`web/web.av`).
+const rows = [
+    Answers { word: "frame", name: "avra_dom_frame" },
+    Answers { word: "arm", name: "avra_ui_arm" },
+    Answers { word: "disarm", name: "avra_ui_disarm" },
+    Answers { word: "get", name: "avra_ui_get" },
+    Answers { word: "abort", name: "avra_ui_abort" },
 ]
 
 fn names_source(name: string, rows: List<Answers>) -> string {
@@ -214,6 +228,29 @@ export fn host_table() -> string {
         table_source("OP", Op.coded()),
         table_source("SAYS", Says.coded()),
         names_source("HOST", answers),
+        names_source("ROWS", rows),
     ]
         .join("\n")
+}
+
+/// A request as the host reads it, once, to send with its own `fetch`: the
+/// wire's version, then the method's word, the URL, the wait in
+/// milliseconds (none: -1), the fields as a count and name/value pairs, and
+/// the body as its content type (empty for none) and its octets — every
+/// number four bytes, every text its byte length then its bytes, as a frame.
+export fn request_frame(r: Request) -> Bytes {
+    let out = buf()
+    out.push_byte(wire_version)
+    out.push_str(r.method.word())
+    out.push_str(r.url)
+    out.push_int(r.timeout_ms ?? -1)
+    out.push_int(r.headers.length)
+    for h in r.headers {
+        out.push_str(h.name)
+        out.push_str(h.value)
+    }
+    let body = r.body.encoded()
+    out.push_str(body.kind)
+    out.push_octets(body.bytes)
+    out.take()
 }

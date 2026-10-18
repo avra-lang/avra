@@ -71,7 +71,7 @@ use client.{
 use wire.{Transport, Securing, plainly}
 use jar.{Jar}
 use form.{FormField}
-use @std.http_message.message.{Body as SentBody, Header, Method, Request as SentRequest}
+use @std.http_message.message.{Body as SentBody, Encoded, Header, Method, Request as SentRequest}
 use pool.{Pool, Carrier, H2Carrier, pool, origin_of}
 
 /// A request body, by kind.
@@ -150,10 +150,13 @@ fn payload_of(b: SentBody) -> Payload {
         .Empty -> .Empty,
         .Text(text) -> .Text(text),
         .Json(text) -> .Octets(text.bytes(), "application/json"),
-        .Form(fields) -> .Form([FormField { name: f.name, value: f.value } for f in fields]),
+        .Form(_) -> encoded_payload(b.encoded()),
         .Octets(bytes, kind) -> .Octets(bytes, kind),
     }
 }
+
+/// A body already encoded, as the client sends it.
+fn encoded_payload(e: Encoded) -> Payload { .Octets(e.bytes, e.kind) }
 
 /// `o`, with the bounds a request names laid over its own.
 fn bounded(r: SentRequest, o: Options) -> Options {

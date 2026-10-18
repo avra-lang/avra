@@ -5,6 +5,7 @@ every test survives is a law nothing holds; a pattern that no longer
 matches the source is a break nobody is checking. Either fails the run.
 
     mutations.py <build dir> <cc flags> <object>...
+    MUTATION_SHARD=<k>/<n> mutations.py ...   # only the breaks numbered k mod n
 
 The objects are the runtime's, the scheduler's own left out. A break is
 one line, or the few that make one fault. Each runs apart from the
@@ -474,14 +475,18 @@ def tried(numbered):
     return name, "alive", ""
 
 
-print(f"runtime-mutations: {WORKERS} workers over {len(ALL)} breaks", file=sys.stderr)
+# One of N interleaved parts, so the breaks can run on N runners at once; every part checks
+# every break it owns, and the parts together own them all.
+part, parts = (int(x) for x in os.environ.get("MUTATION_SHARD", "0/1").split("/"))
+OWNED = [(at, b) for at, b in enumerate(ALL) if at % parts == part]
+print(f"runtime-mutations: {WORKERS} workers over {len(OWNED)} of {len(ALL)} breaks (part {part + 1} of {parts})", file=sys.stderr)
 with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-    results = list(pool.map(tried, enumerate(ALL)))
+    results = list(pool.map(tried, OWNED))
 for name, how, by in results:
     print(f"  {name}: " + {"killed": f"killed by {by}", "alive": "SURVIVED every runtime test", "rotten": by}[how])
 killed = sum(how == "killed" for _, how, _ in results)
 alive = sum(how == "alive" for _, how, _ in results)
 rotten = sum(how == "rotten" for _, how, _ in results)
 bound = sum("outlived" in by for _, how, by in results if how == "killed")
-print(f"runtime-mutations: {killed} of {len(ALL)} killed, {killed - bound} by a failing check and {bound} by the bound" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
+print(f"runtime-mutations: {killed} of {len(OWNED)} killed, {killed - bound} by a failing check and {bound} by the bound" + (f"; {alive} survive" if alive else "") + (f"; {rotten} no longer apply" if rotten else ""))
 sys.exit(1 if alive or rotten else 0)

@@ -107,7 +107,7 @@ SPAWNS = re.compile(r"\.(run(?=\(\))|outcome|start)\(")
 # An INERT package reads nothing: the rows it may declare, and the one
 # name of it that does read. Held to the package's own source.
 INERT = {
-    "meta": {"rows": {"avra_embed", "avra_type_named"}, "world": {"embed": "read"}},
+    "meta": {"rows": {"avra_embed", "avra_embed_octets", "avra_type_named"}, "world": {"embed": "read"}},
     "relation": {"rows": {"avra_trap", "avra_qtrace"}, "world": {}},
     "text": {
         "rows": {"avra_str_from_codepoint", "avra_str_parsed_float", "avra_str_parsed_int",
@@ -126,13 +126,14 @@ INERT = {
     "path": {"rows": set(), "world": {}},
     "testing": {"rows": set(), "world": {}},
     "toml": {"rows": set(), "world": {}},
+    "url": {"rows": set(), "world": {}},
 }
 
 # A runtime row a scope file declares for itself.
 ROWS = {
     "avra_host_env": "env", "avra_host_is_dir": "read", "avra_io_list": "read",
     "avra_selfhost_file_exists": "read", "avra_selfhost_read_file": "read",
-    "avra_fd_read": "read", "avra_ffi_open": "read", "avra_embed": "read",
+    "avra_fd_read": "read", "avra_ffi_open": "read", "avra_embed": "read", "avra_embed_octets": "read",
     "avra_spawn_in": "spawn", "avra_spawn_status": "spawn", "avra_exec_self": "spawn",
     "avra_self_dir": "tool", "avra_now_ns": "clock",
     "avra_own_pid": "pid", "avra_pid_alive": "pid",
