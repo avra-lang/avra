@@ -260,8 +260,8 @@ export const grammar_of_grammars: Grammar = Grammar {
             ],
         ),
 
-        // build_arg = NAME ( "=" ( NAME | NUMBER | STRING ) )?
-        // A bare name is a capture's label; a name given a value
+        // build_arg = NAME ( "=" term )?
+        // A bare name is a capture's label; a name given a term
         // is a payload the rule STATES.
         rule_def(
             "build_arg",
@@ -269,29 +269,52 @@ export const grammar_of_grammars: Grammar = Grammar {
                 seq_to(
                     [
                         cap("name", named("NAME")),
+                        item(group([seq([item(lit("=")), cap("term", rule_ref("term"))])])) with { rep: Rep.Opt },
+                    ],
+                    Build.Call("build_arg", ["name", "term"]),
+                ),
+            ],
+        ),
+
+        // term = build | NUMBER | STRING | "[" ( term ( "," term )* ","? )? "]"
+        // What a stated payload is written as: a word or a node built
+        // in place (a `build`), a literal, or a list of terms.
+        rule_def(
+            "term",
+            [
+                seq_to([cap("b", rule_ref("build"))], Build.Call("term_build", ["b"])),
+                seq_to([cap("t", named("NUMBER"))], Build.Call("term_text", ["t"])),
+                seq_to([cap("t", named("STRING"))], Build.Call("term_text", ["t"])),
+                seq_to(
+                    [
+                        item(lit("[")),
                         item(
                             group(
                                 [
                                     seq(
                                         [
-                                            item(lit("=")),
-                                            cap(
-                                                "fixed",
+                                            cap("items", rule_ref("term")),
+                                            item(
                                                 group(
                                                     [
-                                                        seq([item(named("NAME"))]),
-                                                        seq([item(named("NUMBER"))]),
-                                                        seq([item(named("STRING"))]),
+                                                        seq(
+                                                            [
+                                                                item(lit(",")),
+                                                                cap("items", rule_ref("term")),
+                                                            ],
+                                                        ),
                                                     ],
                                                 ),
-                                            ),
+                                            ) with { rep: Rep.Star },
+                                            item(lit(",")) with { rep: Rep.Opt },
                                         ],
                                     ),
                                 ],
                             ),
                         ) with { rep: Rep.Opt },
+                        expecting(lit("]"), "expected ']' to close the list"),
                     ],
-                    Build.Call("build_arg", ["name", "fixed"]),
+                    Build.Call("term_list", ["items"]),
                 ),
             ],
         ),
