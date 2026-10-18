@@ -402,10 +402,14 @@ fn decodable(k: Kind) -> bool {
 /// WHO OWNS THE HELPERS a codec's generated code calls, and whether every record is a helper of
 /// its own: a row with no record and no payload enum column inlines everything, any other row
 /// and every stored type writes and reads each record by a helper, so a lambda can read one back.
-type Owner = { name: string, all: bool }
+type Owner = { name: string, all: bool, ordinal: bool }
 
 fn row_owner(t: Type) -> Owner {
-    Owner { name: t.name, all: stable(t).any((f: Field) -> kind_needs(f.kind, [], true)) }
+    Owner {
+        name: t.name,
+        all: stable(t).any((f: Field) -> kind_needs(f.kind, [], true)),
+        ordinal: false,
+    }
 }
 
 /// Whether a relation's stable columns reach a payload-carrying enum or a
@@ -550,6 +554,28 @@ fn tag_read(r: Code, k: Kind) -> Code {
     let names = [literal(v) for v in tags(k)]
     let variants = [quote { ${name(k.spelled())}.${v} } for v in tags(k)]
     quote { tagged(${r}.variant([${..names}]), [${..variants}]) }
+}
+
+/// A tagged value's variant place, for a codec whose shape fingerprint guards the order.
+fn tag_code(e: Code, k: Kind) -> Code {
+    let arms: List<Arms> = [quote { .${tags(k)[i]} -> ${i} } for i in 0..tags(k).length]
+    quote { match ${e} { ${arms} } }
+}
+
+/// `tag_read`'s ordinal twin: the variant standing at the place read.
+fn tag_read_code(r: Code, k: Kind) -> Code {
+    let variants = [quote { ${name(k.spelled())}.${v} } for v in tags(k)]
+    quote { tagged(${r}.ordinal(${tags(k).length}), [${..variants}]) }
+}
+
+/// A tagged value written: its name for a hashed row, its place for a guarded codec.
+fn tag_written(w: Code, e: Code, k: Kind, owner: Owner) -> Code {
+    if owner.ordinal { quote { ${w}.count(${tag_code(e, k)}) } } else { quote { ${w}.text(${tag_of(e, k)}) } }
+}
+
+/// A tagged value read back, by the form `tag_written` wrote.
+fn tag_reader(r: Code, k: Kind, owner: Owner) -> Code {
+    if owner.ordinal { tag_read_code(r, k) } else { tag_read(r, k) }
 }
 
 /// The marks that file a field in a lookup.
@@ -1238,7 +1264,7 @@ fn read_value(k: Kind, owner: Owner) -> Code {
         } else {
             match instance_shape(n, args) {
                 .Dense(field) -> quote { dense_read(rd, ${literal(n)}, (${"i"}) -> ${n} { ..${[quote { W { ${field}: ${name("i")} } }]} })? },
-                .Tagged(_) -> quote { ${tag_read(quote { rd }, k)}? },
+                .Tagged(_) -> quote { ${tag_reader(quote { rd }, k, owner)}? },
                 .Over(_) or .Record(_) or .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
             }
         },
@@ -1260,7 +1286,7 @@ fn read_each(k: Kind, owner: Owner) -> Code {
         } else {
             match instance_shape(n, args) {
                 .Dense(field) -> quote { (r: Reader) -> dense_read(r, ${literal(n)}, (${"i"}) -> ${n} { ..${[quote { W { ${field}: ${name("i")} } }]} }) },
-                .Tagged(_) -> quote { (r: Reader) -> ${tag_read(quote { r }, k)} },
+                .Tagged(_) -> quote { (r: Reader) -> ${tag_reader(quote { r }, k, owner)} },
                 .Over(_) or .Record(_) or .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
             }
         },
@@ -1287,7 +1313,7 @@ fn written(w: Code, e: Code, k: Kind, owner: Owner) -> Code {
                 },
                 .Over(shape) -> written(w, quote { ${e}.of }, shape, owner),
                 .Dense(field) -> quote { ${w}.dense(${literal(n)}, ${e}.${field}) },
-                .Tagged(_) or .Plain -> quote { ${w}.text(${tag_of(e, k)}) },
+                .Tagged(_) or .Plain -> tag_written(w, e, k, owner),
                 .Payload(_) -> quote { a_relation_field_kind_with_no_stable_encoding() },
             }
         },
@@ -1319,7 +1345,7 @@ fn write_each(k: Kind, owner: Owner) -> Code {
                 },
                 .Over(shape) -> quote { (w: Writer, v: ${k.spelled()}) -> ${written(quote { w }, quote { v.of }, shape, owner)} },
                 .Dense(field) -> quote { (w: Writer, v: ${k.spelled()}) -> w.dense(${literal(n)}, v.${field}) },
-                .Tagged(_) or .Plain -> quote { (w: Writer, v: ${k.spelled()}) -> w.text(${tag_of(quote { v }, k)}) },
+                .Tagged(_) or .Plain -> quote { (w: Writer, v: ${k.spelled()}) -> ${tag_written(quote { w }, quote { v }, k, owner)} },
                 .Payload(_) -> quote { a_relation_field_kind_with_no_stable_encoding() },
             }
         },
@@ -1393,7 +1419,7 @@ fn stored_fields(t: Type) -> List<Field> {
 fn stored_wire(t: Type) -> List<Field> { [f for f in stored_fields(t) if !marked(f, "local")] }
 
 /// A stored type's helpers are the type's own, and every record is one.
-fn stored_owner(t: Type) -> Owner { Owner { name: t.name, all: true } }
+fn stored_owner(t: Type) -> Owner { Owner { name: t.name, all: true, ordinal: true } }
 
 /// A reached declaration: the type itself, or one the compiler names.
 fn stored_type(t: Type, n: string) -> Type? { if n == t.name { t } else { type_named(n) } }
@@ -1405,10 +1431,14 @@ fn stored_helpers(t: Type) -> List<Decls> {
     [d for k in helper_types(stored_wire(t), seeded) for d in helper_members(t, k, stored_owner(t), false)]
 }
 
+/// The number of the stored byte layout: it moves with the layout, so a store written under
+/// another one misses once instead of being read as this one.
+const stored_format: int = 2
+
 /// A stored type's fingerprint, folded at derive time: its own declaration and every type it
 /// reaches, so a type that moves under a reached one moves too.
 fn stored_shape(t: Type) -> int {
-    mut h = stable_hasher(text_hash(stable_name(t)))
+    mut h = stable_hasher(text_hash(stable_name(t))).int(stored_format)
     for k in helper_types(stored_wire(t), [Kind.Named(t.name, [])]) {
         h = h.text(k.spelled())
         let ty? = stored_type_of(t, k) else { continue }
@@ -1443,14 +1473,14 @@ fn stored_generated(t: Type) -> Decls {
 
             fn encoded_in(scope: dyn Scope) -> Bytes {
                 let ${w} = writer_in(scope)
-                ${name(w)}.int(${shape})
+                ${name(w)}.fixed(${shape})
                 ${stored_write(t)}
                 ${name(w)}.bytes()
             }
 
             static fn decoded_in(scope: dyn Scope, b: Bytes) -> Result<${t}, CodecFault> {
                 let rd = reader_in(scope, b)
-                if rd.int()? != ${shape} { fail CodecFault.OtherShape }
+                if rd.fixed()? != ${shape} { fail CodecFault.OtherShape }
                 let v = ${stored_read(t)}
                 if !rd.done() { fail CodecFault.Trailing }
                 v
@@ -1563,7 +1593,7 @@ fn helper_members(t: Type, k: Kind, owner: Owner, hashing: bool) -> List<Decls> 
                 quote {
                 static fn write_${id}(w: Writer, v: ${n}) -> void { match v { ${write_arms(vs, owner)} } }
                 static fn read_${id}(rd: Reader) -> Result<${n}, CodecFault> {
-                    let tag = rd.text()?
+                    let tag = ${read_tag(vs, owner)}
                     ${read_body(vs, base, owner)}
                 }
             },
@@ -1586,13 +1616,19 @@ fn helper_members(t: Type, k: Kind, owner: Owner, hashing: bool) -> List<Decls> 
 /// fields never share a name and none can shadow the writer.
 fn binder(i: int) -> string { "p${i}" }
 
-fn write_arms(vs: List<Variant>, owner: Owner) -> List<Arms> { [write_arm(v, owner) for v in vs] }
+fn write_arms(vs: List<Variant>, owner: Owner) -> List<Arms> { [write_arm(i, v, owner) for i, v in vs] }
 
-fn write_arm(v: Variant, owner: Owner) -> Arms {
-    if v.fields.is_empty() { return quote { .${v.name} -> w.text(${literal(v.name)}) } }
-    let binders = [binder(i) for i in 0..v.fields.length]
-    let parts = [quote { (wt: Writer) -> ${written(quote { wt }, name(binder(i)), f.kind, owner)} } for i, f in v.fields]
+fn write_arm(i: int, v: Variant, owner: Owner) -> Arms {
+    if v.fields.is_empty() { return quote { .${v.name} -> ${variant_written(i, v, owner)} } }
+    let binders = [binder(j) for j in 0..v.fields.length]
+    let parts = [quote { (wt: Writer) -> ${written(quote { wt }, name(binder(j)), f.kind, owner)} } for j, f in v.fields]
+    if owner.ordinal { return quote { .${v.name}(${..binders}) -> written_ordinal(w, ${i}, [${..parts}]) } }
     quote { .${v.name}(${..binders}) -> written_tagged(w, ${literal(v.name)}, [${..parts}]) }
+}
+
+/// A payload-free variant's tag: its place for a guarded codec, its name otherwise.
+fn variant_written(i: int, v: Variant, owner: Owner) -> Code {
+    if owner.ordinal { quote { w.count(${i}) } } else { quote { w.text(${literal(v.name)}) } }
 }
 
 fn hash_arms(vs: List<Variant>, owner: Owner) -> List<Arms> { [hash_arm(v, owner) for v in vs] }
@@ -1605,12 +1641,18 @@ fn hash_arm(v: Variant, owner: Owner) -> Arms {
     quote { .${v.name}(${..binders}) -> ${acc} }
 }
 
+/// The tag read: a variant's place under a guarded codec, its name otherwise.
+fn read_tag(vs: List<Variant>, owner: Owner) -> Code {
+    if owner.ordinal { quote { rd.ordinal(${vs.length})? } } else { quote { rd.text()? } }
+}
+
 fn read_body(vs: List<Variant>, n: string, owner: Owner) -> Code {
     mut acc: Code = quote { .Err(CodecFault.NotVariant) }
     mut i = vs.length
     while i > 0 {
         i = i - 1
-        acc = quote { if tag == ${literal(vs[i].name)} { ${read_ok(vs[i], n, owner)} } else { ${acc} } }
+        let hit = if owner.ordinal { quote { tag == ${i} } } else { quote { tag == ${literal(vs[i].name)} } }
+        acc = quote { if ${hit} { ${read_ok(vs[i], n, owner)} } else { ${acc} } }
     }
     acc
 }

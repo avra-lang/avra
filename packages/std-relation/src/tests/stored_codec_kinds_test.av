@@ -2,7 +2,7 @@
 // payload-free enum; an enum's variant is its place, guarded by the shape fingerprint; and a
 // `@relation` row with a nested record reads back under its own hash.
 use @std.relation.{codec, relation}
-use @std.relation.stable.{indexed_scope, Scope}
+use @std.relation.stable.{indexed_scope, CodecFault, Scope}
 
 type Todo = { key: string, n: int }
 
@@ -14,6 +14,12 @@ enum Held { Only(t: Todo), Nothing }
 
 @codec
 enum Plain { Alpha, Beta }
+
+@codec
+enum Old { Alpha, Beta(n: int) }
+
+@codec
+enum Moved { Beta(n: int), Alpha }
 
 @relation
 type Board = { id: int, todo: Todo, todos: List<Todo> }
@@ -52,6 +58,13 @@ fn plain_back() -> bool {
     }
 }
 
+fn moved_refused() -> bool {
+    match Moved.decoded_in(here(), Old.Beta(1).encoded_in(here())) {
+        .Ok(_) -> false,
+        .Err(e) -> e == CodecFault.OtherShape,
+    }
+}
+
 fn board() -> Board { Board { id: 0, todo: Todo { key: "k", n: 1 }, todos: [Todo { key: "j", n: 2 }] } }
 
 fn row_back() -> bool {
@@ -70,6 +83,12 @@ spec "std/relation — the stored codec's kinds" {
     given "enums" {
         then "a record-payload enum and a payload-free one read back as themselves" {
             held_back() && plain_back()
+        }
+        then "a variant is one octet past the eight-octet fingerprint" {
+            Old.Alpha.encoded_in(here()).length == 9
+        }
+        then "variants declared in another order refuse, never misread" {
+            moved_refused()
         }
     }
     given "a relation row with a nested record" {
