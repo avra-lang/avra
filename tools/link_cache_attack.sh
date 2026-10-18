@@ -8,6 +8,7 @@
 # and an unchanged set must still be a cache hit.
 set -u
 cd "$(dirname "$0")/.."
+. tools/lib/failed_tail.sh
 R=build/link-cache-attack; T=$R/toolchain; fails=0; steps=0
 rm -rf "$R" .avra-cache && mkdir -p $R/app/src $T/build
 # a toolchain of its own, so its archive can move: the compiler, the tree
@@ -43,7 +44,7 @@ value() { # value <n>: the package object answers n
 S() { # S <label> <want: built|cache hit> <want output> [<env assignment>]
     steps=$((steps+1))
     env ${4:-} $T/build/avra build --time $R/app/src/main.av > $R/out 2> $R/err; st=$?
-    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $1: did not build (status $st): $(head -3 $R/err | tr '\n' ' ')"; return; fi
+    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $1: did not build (status $st)"; failed_tail $R/out $R/err; return; fi
     how=$(grep -oE "cache hit|built" $R/err | tail -1)
     got=$($R/app/src/main 2>&1)
     if [ "$how" != "$2" ] || [ "$got" != "$3" ]; then fails=$((fails+1)); echo "FAIL  $1: $how, printed '$got' — wanted $2, '$3'"; fi
