@@ -58,16 +58,18 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     }
     r.unknowns()
     if !r.doc.has_section("package") {
-        r
-            .speak(
-                refusal(
-                    "manifest.no_package",
-                    r.at(0, 0),
-                    "a manifest declares its package — `[package]` is missing",
-                    "this manifest",
-                    "add `[package]` with `name` and `version`",
-                ),
-            )
+        if !r.unreadable() {
+            r
+                .speak(
+                    refusal(
+                        "manifest.no_package",
+                        r.at(0, 0),
+                        "a manifest declares its package — `[package]` is missing",
+                        "this manifest",
+                        "add `[package]` with `name` and `version`",
+                    ),
+                )
+        }
         return Manifest {
             name: "",
             version: "",
@@ -245,6 +247,10 @@ impl Reader {
         self.voices.push(d)
     }
 
+    /// Whether the text had a syntax error: what the document lacks may
+    /// be what the error swallowed, so an absence is no finding.
+    fn unreadable() -> bool { !self.doc.errors.is_empty() }
+
     fn at(lo: int, hi: int) -> Loc? {
         loc_at(self.src.file, span_of(lo, hi))
     }
@@ -259,6 +265,7 @@ impl Reader {
         let e: TomlEntry? = self.doc.entry("package", key)
         let text: string? = if e == null { null } else { toml_text(e!.value) }
         if text != null && text!.length > 0 { return text! }
+        if e == null && self.unreadable() { return "" }
         let at: Loc? = if e == null { self.header_at("package") } else { self.entry_at(e!) }
         self
             .speak(refusal(kind, at, "`[package]` needs ${wanted}", "here", "add it under `[package]`"))
@@ -276,6 +283,10 @@ impl Reader {
     /// never a degraded load.
     fn unknowns() {
         for s in self.doc.sections() {
+            if s.is_empty() {
+                for e in self.doc.entries_of(s) { self.speak(self.rootless_key(e)) }
+                continue
+            }
             if !known_section(s) {
                 self
                     .speak(
@@ -293,6 +304,16 @@ impl Reader {
                 }
             }
         }
+    }
+
+    fn rootless_key(e: TomlEntry) -> Diag {
+        warning(
+            "manifest.unknown_key",
+            self.entry_at(e),
+            "`${e.key}` sits before any `[section]` header, so nothing reads it",
+            "ignored",
+            "move it under the section it belongs to — `name` and `version` go under `[package]`",
+        )
     }
 
     fn unknown_key(s: string, e: TomlEntry) -> Diag {

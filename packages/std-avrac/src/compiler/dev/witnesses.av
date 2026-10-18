@@ -19,7 +19,7 @@ use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
 use compiler.{avra, new_workspace, one_shot_let_go}
 use compiler.host.{memory_host}
-use testing.{vendored_meta, vendored_meta_as, real_meta_source}
+use testing.{vendored_meta, vendored_meta_as, real_meta_source, vendored_prelude, vendored_task}
 
 /// How a code is witnessed. ABSENCE HAS TWO CAUSES and they are named
 /// apart: a code nobody has written a witness for is a DEBT, and one
@@ -116,23 +116,27 @@ export fn rendered_over(w: Witness) -> string {
 
 /// A package witness's files, each under its path.
 fn package_text(files: Map<string, string>) -> string {
-    joined(["// ${path}\n${text}" for path, text in files if !vendored_meta_path(path)], "\n")
+    joined(["// ${path}\n${text}" for path, text in files if !is_carried(path)], "\n")
 }
 
-/// Whether a file is `@std/meta` (or its dependency) carried in beside the
-/// witness — the toolchain's own text, never the witness's.
-fn vendored_meta_path(path: string) -> bool {
-    path.starts_with("/w/vendor/meta/") || path.starts_with("/w/vendor/errors/")
-}
+/// Whether a package witness's file is the toolchain's, laid out beside the
+/// program — never the witness itself, so a golden does not print it.
+fn is_carried(path: string) -> bool { path.starts_with("/w/vendor/") || path.starts_with("/std/") }
 
 /// A package witness compiled: its files laid out in memory at `/w`,
 /// and what the program there says. One one-shot workspace is alive at a
 /// time, so the one before is let go.
 fn package_report(files: Map<string, string>) -> string {
     one_shot_let_go()
-    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    let host = memory_host(files, files.keys())
+    let ws = new_workspace(
+        if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host },
+        "/w",
+        avra(),
+    )
     ws.alone()
-    ws.program("/w/src/main.av").report()
+    let entry: string? = if files.has("/w/src/main.av") { "/w/src/main.av" } else { null }
+    match ws.program(entry).check() { .Ok(warned) -> warned, .Err(report) -> report }
 }
 
 /// One code's witness, run — what `avra docs` shows beside the
@@ -721,12 +725,238 @@ fn witnesses() -> List<CodeWitness> {
             witness: manifest(app_manifest + "frobnicate = 1\n"),
         },
         CodeWitness {
+            code: "manifest.syntax",
+            witness: manifest(app_manifest + "\n[package]\nname = \"other\"\n"),
+        },
+        CodeWitness {
             code: "manifest.unset_link_variable",
             witness: manifest(app_manifest + "\n[link]\nsearch = [\"\${NOPE_VAR}/lib\"]\n"),
         },
         CodeWitness {
             code: "manifest.bad_tool_from",
             witness: manifest(app_manifest + "\n[process.tools]\ngit = { from = \"nowhere\" }\n"),
+        },
+        CodeWitness {
+            code: "collect.kind",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.scope",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in everywhere as Entry { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.order",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name }\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.not_a_list",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: int = @tag in self as Entry { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.not_a_record",
+            witness: Witness
+                .Source("collect xs: List<int> = @tag in self as int { name: it.name } by it.name\n1"),
+        },
+        CodeWitness {
+            code: "collect.proj_type",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.fields",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string, module: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.path",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.label } by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.order_key",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.nope\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.order_uncomparable",
+            witness: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.mark\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.self_read",
+            witness: Witness
+                .Source(
+                    "export component widget {\n    run: fn(int) -> int?\n}\ntype Entry = { name: string }\ncollect xs: List<Entry> = widget in closure as Entry { name: it.name } by it.name\nexport widget cyclic { n -> if xs.length > n { n } else { null } }\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect_enum.scope",
+            witness: Witness
+                .Source(
+                    "export component widget {\n    run: fn(int) -> int?\n}\nexport widget a { n -> null }\ncollect enum S = widget in closure by it.name\n1",
+                ),
+        },
+        CodeWitness {
+            code: "collect.closure_fold",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + "\n[lib]\n",
+                        "/w/src/lib.av": "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in closure as Entry { name: it.name } by it.name\nconst n: int = xs.length\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "const.budget",
+            witness: Witness.Source("const n: int = (0..99999999).fold(0, (a, b) -> a + b)\nn"),
+        },
+        CodeWitness {
+            code: "const.param",
+            witness: Witness.Source("fn g(x: int) -> int {\n    const k: int = x + 1\n    k\n}\ng(1)"),
+        },
+        CodeWitness {
+            code: "const.form",
+            witness: Witness
+                .Source(
+                    "fn mk() -> fn(int) -> int { (x: int) -> x }\nconst f: fn(int) -> int = mk()\nf(1)",
+                ),
+        },
+        CodeWitness {
+            code: "flow.produce",
+            witness: Witness.Source("let s = produce<int>(1) { yield 1 }\n1"),
+        },
+        CodeWitness {
+            code: "flow.callback_pointer",
+            witness: Witness.Source("extern fn avra_probe_cb(cb: fn(int) -> ptr) -> int\n1"),
+        },
+        CodeWitness { code: "type.quote_meta", witness: Witness.Source("let q = quote { 1 }\n1") },
+        CodeWitness {
+            code: "type.quote_hole",
+            witness: with_meta(
+                "use @std.meta.{Code}\nlet xs = [1, 2]\nlet w = quote { fn f(x: \${xs}) -> int { 1 } }\n1",
+            ),
+        },
+        CodeWitness {
+            code: "manifest.link_option",
+            witness: manifest(app_manifest + "\n[link]\nlibs = [\"-lm\"]\n"),
+        },
+        CodeWitness {
+            code: "manifest.link_flag",
+            witness: manifest(app_manifest + "\n[link]\ndynamic_symbols = \"yes\"\n"),
+        },
+        CodeWitness {
+            code: "manifest.bad_budget",
+            witness: manifest(app_manifest + "\n[lifted]\nsteps = 0\n"),
+        },
+        CodeWitness { code: "manifest.borrowed_raw", witness: borrowed_raw() },
+        CodeWitness {
+            code: "collect.order_mixed",
+            witness: with_meta(
+                "use @std.meta.{Named}\ntrait Mark {\n    fn label() -> string\n}\nimpl Mark for int {\n    fn label() -> string { \"i\" }\n}\nimpl Mark for string {\n    fn label() -> string { self }\n}\nfn mark(what: Named, label: dyn Mark) -> void {}\n@mark(\"a\")\nfn alpha() {}\n@mark(1)\nfn beta() {}\ntype Entry = { name: string }\ncollect xs: List<Entry> = @mark in self as Entry { name: it.name } by it.mark.args[0]\n1",
+            ),
+        },
+        CodeWitness {
+            code: "collect.dense",
+            witness: with_meta(
+                "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\nfn a() {}\n@numbered(2)\nfn b() {}\ntype MarkInfo = { name: string, args: List<string> }\ntype Entry = { name: string, mark: MarkInfo }\ncollect xs: List<Entry> = @numbered in self as Entry { name: it.name, mark: it.mark } by it.mark.args[0] dense\n1",
+            ),
+        },
+        CodeWitness {
+            code: "collect_enum.tie",
+            witness: with_meta(
+                "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\ntype Dot = {}\n@numbered(0)\ntype Line = { to: int }\ncollect enum Shape = @numbered in self by it.mark.args[0]\n1",
+            ),
+        },
+        CodeWitness {
+            code: "collect_enum.member",
+            witness: with_meta(
+                "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\n@numbered(0)\ntype Wrap<T> = { held: T }\ncollect enum Shape = @numbered in self by it.mark.args[0] dense\n1",
+            ),
+        },
+        CodeWitness {
+            code: "collect_enum.variant",
+            witness: with_meta_modules(
+                "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\ncollect enum Command = @tag in package by it.name\n1",
+                {
+                    "/w/src/a/a.av": "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n@tag(\"one\")\nfn run() {}\n",
+                    "/w/src/b/b.av": "use @std.meta.{Named}\nfn tag(what: Named, label: string) -> void {}\n@tag(\"two\")\nfn run() {}\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "collect_enum.self",
+            witness: with_meta(
+                "use @std.meta.{Named}\nfn numbered(what: Named, ordinal: int) -> void {}\ntrait Rank {\n    fn versus(other: Self) -> int\n}\n@numbered(0)\ntype Dot = { at: int }\nimpl Rank for Dot {\n    fn versus(other: Dot) -> int { self.at - other.at }\n}\ncollect enum Item: Rank = @numbered in self by it.mark.args[0] dense\n1",
+            ),
+        },
+        CodeWitness {
+            code: "type.quote_pat_subj",
+            witness: Witness.Source("match 1 { quote { 1 } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_shape",
+            witness: Witness.Source("match 1 { quote { 1\n2 } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_hole",
+            witness: Witness.Source("match 1 { quote { \${1 + 1} } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_type",
+            witness: Witness.Source("match 1 { quote { let x: \${T}? = null } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_seat",
+            witness: Witness.Source("match 1 { quote { let l\${x}_y = 1 } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_mixed",
+            witness: Witness.Source("match 1 { quote { \${x}(\${x}) } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "type.quote_pat_run",
+            witness: Witness.Source("match 1 { quote { f(\${..a}, \${..b}) } -> true, _ -> false }"),
+        },
+        CodeWitness {
+            code: "const.reach",
+            witness: with_prelude(
+                "fn noisy() -> int {\n    println(\"x\")\n    1\n}\nconst n: int = noisy()\nn",
+            ),
+        },
+        CodeWitness {
+            code: "flow.end_arm",
+            witness: with_task(
+                "use @std.task.{Source}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n    }\n}\n0",
+            ),
+        },
+        CodeWitness {
+            code: "flow.no_fate",
+            witness: with_provider(
+                "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n}\n0\n",
+                "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n",
+            ),
         },
         CodeWitness {
             code: "resolve.no_module",
@@ -938,6 +1168,60 @@ fn entry_program(main: string, others: Map<string, string>) -> Witness {
 
 /// A lawful manifest, for a witness to add one wrong line to.
 const app_manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
+
+/// A package witness whose program sees `@std/meta`, vendored in memory.
+fn with_meta(main: string) -> Witness { with_meta_modules(main, {}) }
+
+/// `with_meta`, with more files of the program's own beside the entry.
+fn with_meta_modules(main: string, more: Map<string, string>) -> Witness {
+    mut files = {
+        "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+        "/w/src/main.av": main,
+    }
+    for path, text in more { files.set(path, text) }
+    Witness.Package(vendored_meta(files))
+}
+
+/// A package witness whose program imports from a provider package,
+/// `@x/c`, whose one file is `provider` — a component declared elsewhere.
+fn with_provider(main: string, provider: string) -> Witness {
+    let meta_dep = "[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n"
+    Witness
+        .Package(
+            vendored_meta(
+                {
+                    "/w/avra.toml": app_manifest + "\n" + meta_dep + "\"@x/c\" = { path = \"vendor/c\" }\n",
+                    "/w/src/main.av": main,
+                    "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+                    "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + provider,
+                },
+            ),
+        )
+}
+
+/// A package witness whose toolchain carries the real `@std/task`.
+fn with_task(main: string) -> Witness {
+    Witness.Package(vendored_task({"/w/avra.toml": app_manifest, "/w/src/main.av": main}))
+}
+
+/// A package witness whose toolchain carries the real `@std/prelude`, so
+/// its program reads `println` as a file in a package does.
+fn with_prelude(main: string) -> Witness {
+    Witness.Package(vendored_prelude({"/w/avra.toml": app_manifest, "/w/src/main.av": main}))
+}
+
+/// A dependency that asks for raw linker options, under an app that names it.
+fn borrowed_raw() -> Witness {
+    Witness
+        .Package(
+            {
+                "/w/avra.toml": app_manifest + "\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
+                "/w/src/main.av": "use @acme.dep.{d}\nd(1)\n",
+                "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n[link.raw]\nflags = [\"-o\", \"/tmp/x\"]\n",
+                "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int { n }\n",
+            },
+        )
+}
 
 /// A package witness over files laid out as the program at `/w`, beside a
 /// lawful manifest.
