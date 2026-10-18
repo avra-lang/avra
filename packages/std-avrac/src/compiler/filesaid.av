@@ -5,7 +5,7 @@
 //! hand-folded key and judged beside it under `AVRA_DB_VERIFY`: the two must agree on
 //! which files hold.
 use @std.text.{parse_int}
-use core.{digest_of, joined, qtrace, traced, ModulePath, module_path, distinct}
+use core.{digest_of, joined, qtrace, traced, ModulePath, module_path, distinct, flatten}
 use core.debug.{db_verified_files}
 use compiler.{Want}
 use compiler.store.{Store, Stored, Reading, node_key, read_name, read_spelled}
@@ -21,6 +21,7 @@ enum FileRead {
     Seen(string)
     SeenSet
     SeenPart(string)
+    SeenForms(string)
 }
 
 impl FileRead {
@@ -34,6 +35,7 @@ impl FileRead {
             .Seen(m) -> "seen ${m}",
             .SeenSet -> "seen-set ${path}",
             .SeenPart(m) -> "sp ${m}",
+            .SeenForms(m) -> "sf ${m}",
         }
     }
 }
@@ -52,6 +54,7 @@ fn file_read_of(name: string, path: string) -> FileRead? {
         }
         name.starts_with("seen ") -> FileRead.Seen(name.substring(5, name.length))
         name.starts_with("sp ") -> FileRead.SeenPart(name.substring(3, name.length))
+        name.starts_with("sf ") -> FileRead.SeenForms(name.substring(3, name.length))
         _ -> null
     }
 }
@@ -65,7 +68,7 @@ fn answer_in(k: KeyParts, r: FileRead) -> string? {
         .Gathered -> digest_of(fields_wire(k.gathered)),
         .Seen(m) -> seen_answer(k, m),
         .SeenSet -> digest_of(seen_digest(k.seen)),
-        .SeenPart(_) -> null,
+        .SeenPart(_) or .SeenForms(_) -> null,
     }
 }
 
@@ -92,13 +95,22 @@ impl Workspace {
             .keep_reading(family, key, bytes, reads_of_parts(k).concat(self.seen_stamps(store, k)))
     }
 
-    /// What each module a file reads stood as, whole, when its answer was kept: the name the
-    /// judge asks first, so a module whose stamp stands never has its views rebuilt.
+    /// What each module a file reads stood as when its answer was kept — its frame and its plain
+    /// free fns' forms: the names the judge asks first, so a module whose stamps stand, or whose
+    /// moved fns the file never spells, never has its views rebuilt.
     fn seen_stamps(store: Store, k: KeyParts) -> List<Reading> {
-        [Reading {
-            name: FileRead.SeenPart(m).name(k.path),
-            digest: self.seen_stamp(store, module_path(m.split("."))),
-        } for m in distinct([k.module].concat([s.module for s in k.seen]))]
+        flatten(
+            [[
+                Reading {
+                    name: FileRead.SeenPart(m).name(k.path),
+                    digest: self.seen_stamp(store, module_path(m.split("."))),
+                },
+                Reading {
+                    name: FileRead.SeenForms(m).name(k.path),
+                    digest: self.forms_stamp(store, module_path(m.split("."))),
+                },
+            ] for m in distinct([k.module].concat([s.module for s in k.seen]))],
+        )
     }
 
     /// A file's kept answer, while every answer it stood on has its digest.
@@ -146,9 +158,43 @@ impl Workspace {
         if reads.any(it == null) { return false }
         let m = self.module_path_of(path)
         let stamps = [r! for r in reads if r != null && r!.name.starts_with("sp ")]
-        let cheap = !stamps.is_empty() && stamps.all((r) -> self.stamp_stands(store, r))
+        let forms = [r! for r in reads if r != null && r!.name.starts_with("sf ")]
+        let cheap = !stamps.is_empty() &&
+            stamps.all((r) -> self.stamp_stands(store, r)) &&
+            forms.all((r) -> self.forms_stand(store, path, r))
         if !cheap { work_judge_fallback() }
-        reads.all((r) -> self.read_stands(store, m, path, r!, cheap))
+        let judged = reads.all((r) -> self.read_stands(store, m, path, r!, cheap))
+        if judged &&
+            cheap &&
+            db_verified_files() &&
+            !reads.all((r) -> self.read_stands(store, m, path, r!, false)) {
+            self.defect(cheap_unsound(path))
+        }
+        judged
+    }
+
+    /// Whether a module's plain free fns stand as a row read them: their forms are the ones it
+    /// read, or the fns that moved are none the file spells.
+    fn forms_stand(store: Store, path: string, r: Reading) -> bool {
+        let read? = file_read_of(r.name, "") else { return false }
+        match read {
+            .SeenForms(m) -> {
+                let at = module_path(m.split("."))
+                if self.forms_stamp(store, at) == r.digest { return true }
+                let moved? = self.moved_forms(store, at, r.digest) else { return false }
+                let spelled? = self.spelled_idents(store, path) else { return false }
+                !spelled.any((n: string) -> moved.has(n))
+            },
+            rest -> false,
+        }
+    }
+
+    /// The names a file mentions, as its module's record spells them; null where it does not say.
+    fn spelled_idents(store: Store, path: string) -> List<string>? {
+        let pr? = self.producers_for(store, self.module_path_of(path)) else { return null }
+        let line? = pr.files.find(it[1] == path) else { return null }
+        if line.length < 7 || line[5] == "" { return null }
+        line[5].split(",")
     }
 
     /// Whether a module's stamp still has the digest a row read it at.
@@ -166,7 +212,7 @@ impl Workspace {
         let read? = file_read_of(r.name, path) else { return false }
         match read {
             .Text -> digest_of(self.text_digest(path)) == r.digest,
-            .SeenPart(_) -> true,
+            .SeenPart(_) or .SeenForms(_) -> true,
             .Seen(_) or .SeenSet -> cheap || self.stood_on(self.key_parts_cached(store, m, path), r.name) == r.digest,
             .Run(_) or .Runs or .Gathered -> self.lite_answer(store, m, path, read) == r.digest,
         }
@@ -268,4 +314,8 @@ impl Workspace {
         let line? = lines.find(read_name(it) == read) else { return true }
         line.substring(0, line.index_of(" ")) != digest_of(self.text_digest(path))
     }
+}
+
+fn cheap_unsound(path: string) -> string {
+    "the kept rows of `${path}` stood by their modules' stamps and moved fns where its own views say they moved — a stamp stands for a view only while every part of the view is covered by it, so one part of this file's view is not"
 }
