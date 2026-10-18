@@ -62,7 +62,7 @@ function generate(rand, depth) {
   if (chance(0.1)) layout.order = between(-2, 3);
   if (leaf) {
     if (chance(0.3)) {
-      if (chance(0.3)) layout.width = { fixed: between(4, 40) };
+      if (chance(0.3)) layout.width = { fixed: between(2, 40) };
       return { prim: "Text", text: words(rand), layout, kids: [] };
     }
     if (chance(0.85)) layout.width = { fixed: between(4, 70) };
@@ -94,7 +94,15 @@ function rooted(spec) {
 // The tree that showed a fixed size squeezed by a fill beside it: a row of a
 // fixed box and a fill, a gap and a pad round them.
 const leaf = (layout) => ({ prim: "Leaf", layout, kids: [] });
+const text = (words, layout = {}) => ({ prim: "Text", text: words, layout, kids: [] });
 const FIXED_CASES = [
+  // a word wider than its box is cut where it must, and no further: a text
+  // held by a fixed width, a fixed column holding one, and a row that cannot
+  // give a word the room it asks for
+  { prim: "Column", layout: { width: { fixed: 5 } }, kids: [text("abcdefghij klm")] },
+  { prim: "Column", layout: {}, kids: [text("abcdefghij klm", { width: { fixed: 3 } })] },
+  { prim: "Row", layout: { width: { fixed: 10 } }, kids: [text("abcdefgh"), text("ijklmnop")] },
+  { prim: "Row", layout: { gap: "Xs", width: { fixed: 12 } }, kids: [text("abc defghijkl"), leaf({ width: { fixed: 6 }, height: { fixed: 2 } })] },
   { prim: "Row", layout: { gap: "Xs", pad: { start: "Xs", end: "Xs", top: "None", bottom: "None" }, width: { fixed: 60 } }, kids: [leaf({ width: { fixed: 10 }, height: { fixed: 3 } }), leaf({ width: "Fill", height: { fixed: 3 } })] },
 ];
 
