@@ -1,23 +1,21 @@
 //! `app/asks.av` — the sources a handler asks for by name. Each is a
 //! `Want`, data, handed to the app's loop: no task, no host row is named
-//! here, so the same call runs on every target. Spans are whole
-//! milliseconds because `@std/time` carries fiber rows a page does not
-//! have; the native sources take its `Duration` and call these.
+//! here, so the same call runs on every target.
 use app.{Act, Async, Fetch, Want, running}
 use @std.http_message.message.{Reply, Request}
+use @std.time.{Duration}
 
-/// `act` runs as a turn once `span` milliseconds have gone by. False when
-/// no loop runs.
-export fn after_ms(span: int, act: Act) -> bool {
+/// `act` runs as a turn once `span` has gone by. False when no loop runs.
+export fn later(span: Duration, act: Act) -> bool {
     let on? = running() else { return false }
-    on.ask(Want.After(span), act)
+    on.ask(Want.After(span.ms), act)
 }
 
-/// `act` runs as a turn every `period` milliseconds, until the loop ends.
-/// False when no loop runs.
-export fn every_ms(period: int, act: Act) -> bool {
+/// `act` runs as a turn every `period`, until the loop ends. False when no
+/// loop runs.
+export fn repeating(period: Duration, act: Act) -> bool {
     let on? = running() else { return false }
-    on.ask(Want.Every(period), act)
+    on.ask(Want.Every(period.ms), act)
 }
 
 /// `held` is loading now, and becomes what `parse` makes of `request`'s
