@@ -560,18 +560,32 @@ impl Workspace {
 
     /// The key of a run: the manifest's, when every line it holds still stands; else folded.
     fn confirmed_key(store: Store, under: Keyed) -> string {
+        let reading = self.clock()
         let row = store.get(Stored.Fp, self.manifest_key(under))
+        self.timed("manifest read", reading)
         if row != null {
+            let parsing = self.clock()
             let lines = row!.split("\n")
             let entries = [read_entry(l) for l in lines.slice(1, lines.length)]
+            self.timed("manifest parse", parsing)
             if !entries.any(it == null) && self.manifest_stands(under, [e! for e in entries]) { return lines[0] }
         }
         self.program_key(under.named, under.beside)
     }
 
     fn manifest_stands(under: Keyed, entries: List<ManifestEntry>) -> bool {
-        joined(self.closure(under.named), "\n") == joined([c for e in entries for c in e.covered()], "\n") &&
-            entries.all((e) -> self.entry_stands(e))
+        let closing = self.clock()
+        let same = joined(self.closure(under.named), "\n") == joined([c for e in entries for c in e.covered()], "\n")
+        self.timed("closure", closing)
+        same && entries.all((e) -> self.entry_timed(e))
+    }
+
+    /// One entry confirmed, its time kept under what kind of input it is.
+    fn entry_timed(e: ManifestEntry) -> bool {
+        let confirming = self.clock()
+        let stands = self.entry_stands(e)
+        self.timed(e.kind_word(), confirming)
+        stands
     }
 
     fn entry_stands(e: ManifestEntry) -> bool {
@@ -584,8 +598,12 @@ impl Workspace {
         }
     }
 
-    /// A directory's files as one word, as a walk lists them now.
-    fn listing_word(dir: string) -> string { digest_of(joined(self.all_files(dir), "\n")) }
+    /// A directory's files as one word, as a walk lists them now — the files `source_inputs`
+    /// reads of it: a dependency's tests are no input, so they are never walked.
+    fn listing_word(dir: string) -> string {
+        let files = if dir == self.packages()[0].src { self.all_files(dir) } else { self.all_files_no_tests(dir) }
+        digest_of(joined(files, "\n"))
+    }
 
     /// The key a finished derivation keeps under: its closure remembered
     /// first, so the next ask — before anything is read — names the same
@@ -1081,6 +1099,17 @@ impl ManifestEntry {
             .Input(path, line) -> "I\t${path}\t${line}",
             .Embed(path, line) -> "E\t${path}\t${line}",
             .Object(path, line) -> "O\t${path}\t${line}",
+        }
+    }
+
+    /// What kind of input the entry confirms, as a phase's name.
+    fn kind_word() -> string {
+        match self {
+            .Covered(_) -> "covered",
+            .Listing(_, _) -> "listings",
+            .Input(_, _) -> "inputs",
+            .Embed(_, _) -> "embeds",
+            .Object(_, _) -> "objects",
         }
     }
 
