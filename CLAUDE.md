@@ -1065,9 +1065,10 @@ registry is the idiom engine's spec, written by dogfooding.
   refusal and still parse (`bad_fix`), and a REMEDY ROW — a refusal and
   the same program with the help's form applied — must come out as the
   row says (`bad_remedy`); a help that names a form with neither is
-  `no_remedy`, baselined and only shrinking. It found F2033's
-  `(x: T0) -> f(x)`: no `T0` is a type anywhere, so the help now writes
-  the wrapper over the fn's own arity and lets the seat pin the types.
+  `no_remedy`, baselined and only shrinking. Its own test pins F2033's old
+  `(x: T0) -> f(x)` as a failing row: no `T0` is a type anywhere, so the
+  help now writes the wrapper over the fn's own arity and lets the seat
+  pin the types.
 - EVERY VOICE CARRIES WHAT ITS ROW OWES, AND THE REGISTRY HOLDS IT. A
   kind's help is a property of its voice and its structured fix a
   property of its law, so the row says which: `DiagCode.remedy` is
