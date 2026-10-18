@@ -123,6 +123,7 @@ extern const char avra_rt_held_avra_slot_present __asm__(AVRA_RT_LABEL(avra_slot
 extern const char avra_rt_held_avra_array_last_present __asm__(AVRA_RT_LABEL(avra_array_last_present));
 extern const char avra_rt_held_avra_array_len __asm__(AVRA_RT_LABEL(avra_array_len));
 extern const char avra_rt_held_avra_box_observe __asm__(AVRA_RT_LABEL(avra_box_observe));
+extern const char avra_rt_held_avra_box_key __asm__(AVRA_RT_LABEL(avra_box_key));
 extern const char avra_rt_held_avra_box_unobserve __asm__(AVRA_RT_LABEL(avra_box_unobserve));
 extern const char avra_rt_held_avra_turn_next __asm__(AVRA_RT_LABEL(avra_turn_next));
 extern const char avra_rt_held_avra_changes_take __asm__(AVRA_RT_LABEL(avra_changes_take));
@@ -338,6 +339,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_array_last_present,
     &avra_rt_held_avra_array_len,
     &avra_rt_held_avra_box_observe,
+    &avra_rt_held_avra_box_key,
     &avra_rt_held_avra_box_unobserve,
     &avra_rt_held_avra_turn_next,
     &avra_rt_held_avra_changes_take,
@@ -615,6 +617,8 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_array_len(AVRA_RT_PT
     "avra_array_len: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_box_observe(AVRA_RT_PTR)), int64_t),
     "avra_box_observe: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_box_key(AVRA_RT_PTR)), int64_t),
+    "avra_box_key: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_box_unobserve(AVRA_RT_PTR)), int64_t),
     "avra_box_unobserve: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_turn_next()), int64_t),
