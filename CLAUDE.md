@@ -1060,7 +1060,32 @@ registry is the idiom engine's spec, written by dogfooding.
   inside the generic impl that wants the wrap. A REMEDY NAMES A FORM
   THAT PARSES WHERE IT IS SPOKEN — the `where` is half the claim, and
   the keeper this wants compiles the named form in the refusing
-  context.
+  context. IT EXISTS (`make voices`, compiler/dev/remedies.av): a
+  structured fix is spliced into its lone witness and must clear its
+  refusal and still parse (`bad_fix`), and a REMEDY ROW — a refusal and
+  the same program with the help's form applied — must come out as the
+  row says (`bad_remedy`); a help that names a form with neither is
+  `no_remedy`, baselined and only shrinking. Its own test pins F2033's old
+  `(x: T0) -> f(x)` as a failing row: no `T0` is a type anywhere, so the
+  help now writes the wrapper over the fn's own arity and lets the seat
+  pin the types.
+- EVERY VOICE CARRIES WHAT ITS ROW OWES, AND THE REGISTRY HOLDS IT. A
+  kind's help is a property of its voice and its structured fix a
+  property of its law, so the row says which: `DiagCode.remedy` is
+  `Remedy.Help` (words only — the default) or `Remedy.Fix` (the law
+  states a machine-applicable edit, so the voice carries a
+  `Suggestion`). `make voices` (`avra voices`) reads the registry and
+  the compiler's own rendering of each witness — never source text —
+  and refuses a NEW kind or rule that lacks a witness, help, or, under
+  `Remedy.Fix`, a `fix (` line; `tools/voices.baseline` lists the gaps
+  that stand and only shrinks, and `docs/VOICES.md` is the generated
+  inventory. A refusal passing `null` help is
+  `compiler.helpless_refusal`'s finding. A seat judging a value
+  against its want words its refusal through `seat_mismatch` — one verb
+  holds the label, the help and the conversion (`text`, `[x]`, `x!`, a
+  named type's wrap), so no seat re-words the remedy. A suggestion
+  applies under `avra fix --repair` only when it is `Confidence.High`
+  and its splice clears the error it came with and mints none.
 - A LINT COUNTS WHAT ITS DOCTRINE COUNTS, never a proxy that
   correlates. F2040 was written to count HIDDEN VARIANTS where the
   doctrine counts ANSWERING ARMS: measured tree-wide, 191 sites
@@ -1592,8 +1617,6 @@ files (F3017 names both files), a pattern or construction with the wrong payload
 compiler's help is the note.
 
 Syntax the grammar lacks:
-- Struct destructuring in `let` (`let Sp { lo, hi } = s`):
-  "expected `=` while parsing `stmt`".
 - AN IMPORT IS SPELLED WITH DOTS, and this file writes package names
   with a SLASH throughout (`@std/io`, `@std/text`) because that is the
   package's name in prose. The `use` line is not:
@@ -1697,11 +1720,13 @@ Syntax the grammar lacks:
   SPEAKS: F2033 "a generic fn is not a value — no single signature to
   wear", whose help writes the wrapper. Genericity is all of it — a
   non-generic `mut`-seat fn fills `fn(mut Cx) -> int` clean.
-- The bare component form (`Cfg d { depth = 8 }`): "expected BREAK
-  while parsing `stmt`" — `component Cfg d { … }` is the form.
-  Instantiation is a STATEMENT: as a fn's tail it answers `void`
-  ("the body answers `void` but `made` declares `Cfg`") — bind,
-  then return the name.
+- INSTANTIATION IS A STATEMENT: as a fn's tail an instance
+  (`Cfg d { depth: 8 }`) answers `void` ("the body answers `void`
+  but `made` declares `Cfg`") — bind, then return the name. The bare
+  form `Cfg d { … }` parses (the old `component Cfg d { … }` is
+  "expected `{`"), and its block is `key: value` — `Cfg d { depth =
+  8 }` is `build.failed` "`Cfg` declares no `List` field, so its
+  block holds settings only — `key: value`".
 - A SHELL `${VAR}` INSIDE AN AVRA STRING IS AVRA'S INTERPOLATION.
   `"echo ${HOME}"` is F3000 "`HOME` is not defined" when no binding
   has that name — and SILENT when one does: with `let HOME = "/tmp/
@@ -1740,11 +1765,14 @@ Syntax the grammar lacks:
   variant and literal arms take the comma.
 - A match arm whose body is an EMPTY BLOCK (`1 -> {}` in statement
   position): `{}` is an empty map — F2013 "a `match`'s arms
-  disagree: `void` vs the first arm's `{}`".
-- A `\u` ESCAPE in a string literal: `"\uFFFD"` is not refused — the
-  lexer keeps an unknown escape as its two characters, so the text
-  holds a backslash and a `u`. Spell a code point with `@std/text`'s
-  `from_codepoint(65533)` (sugar backlog: `\u{…}` escapes).
+  disagree: `{}` vs the first arm's `void`" (the order reads
+  backwards from the arms; re-probed at 70e317d6).
+- STRING ESCAPES: `"\uFFFD"` and `"\u0041"` ARE escapes (four hex
+  digits; `.length` 3 and 1), re-probed at 70e317d6 — the old entry
+  that said the lexer keeps `\u` as two characters is deleted. The
+  two that are NOT: `\0` (`"ab\0cd".length` is 6) and `\u{…}`
+  (`"\u{1F600}".length` is 9). Spell a NUL with `@std/text`'s
+  `from_codepoint(0)` (sugar backlog: `\u{…}` escapes).
 - A BARE NAME IN A PATTERN IS A CONST'S OR A BINDER'S, BY ITS
   BINDING — never by its spelling. `match c { escape -> …, _ -> … }`
   COMPARES where a `const escape` is in scope (declared, imported
@@ -1871,20 +1899,16 @@ Wants the typer does not carry yet:
   this entry on a hunch) while writing `std-errors`' `Traced<E>`:
   `cause() -> dyn Error? { match self { .A(x) -> x, .B(y) -> y } }`
   over two different concrete Error types compiled clean.
-- A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
-  "`Box` is generic — a trait impl over a generic type is recorded,
-  not landed". Inherent generic impls (`impl Box<T>`) land.
-  NOT EVERY GENERIC TYPE WANTS THIS, though — `@std/errors`'
-  `Traced<E>` (the `? context` propagation carrier) LOOKS like an
-  instance and is not: its `cause()` deliberately answers the
+- `@std/errors`' `Traced<E>` (the `? context` propagation carrier)
+  keeps `cause`/`context`/`trace` as its own inherent methods,
+  permanently, not as a workaround: its `cause()` answers the
   concrete `E` it holds, and a trait member's answer is fixed by
   its signature (`Error.cause() -> dyn Error?`), so no `impl Error`
-  could ever return the narrower type — lifting F2031 would not
-  change this. `cause`/`context`/`trace` stay `Traced<E>`'s own
-  inherent methods for that reason, permanently, not as a workaround
-  (found while writing avra-8sb5.40.1; the real want it surfaced is
-  a bound on the type's OWN parameter, `type Traced<E: Error>` —
-  ROADMAP's sugar backlog, not this entry).
+  could return the narrower type. (A trait impl over a generic type,
+  `impl Show for Box<T>`, LANDED — checks and runs, re-probed at
+  70e317d6; the entry that called it F2031 is deleted. The real
+  want `Traced` surfaced is a bound on the type's OWN parameter,
+  `type Traced<E: Error>` — ROADMAP's sugar backlog.)
 - A BOUND LANDS ON A FREE FN'S PARAMETERS AND NOWHERE ELSE, so a
   GENERIC TYPE CANNOT READ ITS KEY. `type T<K: Tr, V> = { … }` and
   `impl T<K: Tr, V> {` are both F0100 AT the `<` ("expected `=`" /
@@ -1947,13 +1971,6 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   (and a copy: nothing here mutates in place).
 - `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
-- AN EMPTY LITERAL ADOPTS A NULLABLE AGGREGATE WANT NOW: `let xs:
-  List<int>? = []`, `let m: Map<string, int>? = {}` and a `->
-  List<int>? { [] }` tail all compile at 48e8e62 (probed). This
-  entry is DELETED — it quoted F2024, stale since the want began
-  deciding the literal. An empty STRING adopted `string?` before it.
-  (`??`'s want is its NON-nullable answer type, so `parts(k)?.params
-  ?? []` always compiled, unrelated.)
 
 Runtime facts, ours to ratify:
 - `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is

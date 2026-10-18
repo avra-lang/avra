@@ -1,0 +1,96 @@
+// What a voice carries beyond its words, read from its witness's own
+// rendering: help, a fix where the row owes one, and a witness at all.
+use @std.avrac.compiler.dev.{Shown, Witness, kind_gaps, rule_gaps, gap_lines}
+use @std.avrac.compiler.{RuleEntry}
+use features.{Code, Fix, Fixes}
+use @std.avrac.diagnostics.{DiagCode, Remedy}
+
+fn said(kind: string, remedy: Remedy, witness: Witness, rendered: string) -> Shown {
+    Shown {
+        code: DiagCode { kind: kind, summary: "s", remedy: remedy },
+        witness: witness,
+        rendered: rendered,
+        fired: true,
+    }
+}
+
+fn never_fires(_c: Code) -> Fix? { null }
+
+/// A rule fixture: documented, with the given examples and reason.
+fn rule_with(fixes: List<Fixes>, says: List<string>) -> RuleEntry {
+    RuleEntry {
+        name: "r",
+        module: "t",
+        run: never_fires,
+        root: [],
+        kinds: [],
+        doc: "d",
+        fixes: fixes,
+        keeps: ["k"],
+        law: [],
+        says: says,
+    }
+}
+
+fn rule_gap_lines(r: RuleEntry) -> string {
+    gap_lines(rule_gaps([r])).join(";")
+}
+
+fn gaps_of(s: Shown) -> string {
+    gap_lines(kind_gaps([s])).join(";")
+}
+
+fn plain_voice() -> string {
+    "error[k.a]: m\n  ╭─[witness.av:1:1]\n1 │ x\n  · ┬\n──╯"
+}
+
+fn with_help() -> string {
+    plain_voice() + "\nhelp: do this"
+}
+
+fn with_fix() -> string {
+    with_help() + "\nfix (high): do that\n  y"
+}
+
+spec "voices coverage" {
+    given "a witnessed kind" {
+        then "one that renders no help lacks help" {
+            gaps_of(said("k.a", Remedy.Help, Witness.Source("x"), plain_voice())) == "k.a\tno_help"
+        }
+        then "one that renders help has no gap" {
+            gaps_of(said("k.a", Remedy.Help, Witness.Source("x"), with_help())) == ""
+        }
+        then "a Fix row whose witness renders no fix lacks the fix" {
+            gaps_of(said("k.a", Remedy.Fix, Witness.Source("x"), with_help())) == "k.a\tno_fix"
+        }
+        then "a Fix row whose witness renders help and a fix has no gap" {
+            gaps_of(said("k.a", Remedy.Fix, Witness.Source("x"), with_fix())) == ""
+        }
+        then "a Help row owes no fix, so a fix line is no gap either" {
+            gaps_of(said("k.a", Remedy.Help, Witness.Source("x"), with_fix())) == ""
+        }
+        then "a help line under ANOTHER kind's head answers for that kind only" {
+            let two = plain_voice() + "\nerror[k.b]: n\nhelp: other"
+            gaps_of(said("k.a", Remedy.Help, Witness.Source("x"), two)) == "k.a\tno_help"
+        }
+    }
+    given "a kind with no source that reaches it" {
+        then "an absent witness is a debt" {
+            gaps_of(said("k.a", Remedy.Help, Witness.Absent, "")) == "k.a\tno_witness"
+        }
+        then "a stated fact owes nothing" {
+            gaps_of(said("k.a", Remedy.Fix, Witness.Beyond("a package"), "")) == ""
+        }
+    }
+    given "a rule" {
+        then "one with neither a rewrite example nor a stated reason lacks a fix" {
+            rule_gap_lines(rule_with([], [])) == "t.r\tno_fix"
+        }
+        then "one that states why it only says owes no fix" {
+            rule_gap_lines(rule_with([], ["a rewrite would touch the whole loop"])) == ""
+        }
+        then "one with a rewrite example owes none" {
+            rule_gap_lines(rule_with([Fixes { before: "a", after: "b" }], [])) == ""
+        }
+    }
+}

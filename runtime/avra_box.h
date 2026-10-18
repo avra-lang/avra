@@ -39,10 +39,15 @@ enum { MARK_OWNED = 1, MARK_ABSENT = 2 };
 // and a LENGTH — a string's text length, a record's payload bytes.
 typedef struct {
     uint32_t tag;
-    int32_t kind;
+    int32_t kind_word;
     int32_t rc;
     uint32_t len;
 } Header;
+
+// The kind is the low byte of its word: every reader asks for exactly that
+// byte, whatever the word's other bytes hold. The kind is -8..4.
+static inline int32_t avra_kind(const Header* h) { return (int8_t)h->kind_word; }
+static inline void avra_set_kind(Header* h, int32_t kind) { h->kind_word = kind; }
 
 // A slot array: `cap` cells at `data`, `len` of them written, and
 // one MARK byte per cell after the cells: `MARK_OWNED` when the cell

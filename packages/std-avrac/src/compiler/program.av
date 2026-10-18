@@ -55,6 +55,8 @@ use features.{
 }
 use features.quote.{QuotePatSemantics}
 use features.enums.{EnumPatSemantics}
+use features.lists.{ListPatSemantics}
+use features.structs.{FieldPatSemantics}
 use features.formats.{FormatPatSemantics}
 use features.narrows.{NarrowPatSemantics}
 
@@ -90,11 +92,15 @@ export fn new_dispatch() -> Dispatch {
     let formatpats: dyn PatSemantics = FormatPatSemantics {}
     let narrowpats: dyn PatSemantics = NarrowPatSemantics {}
     let quotepats: dyn PatSemantics = QuotePatSemantics {}
+    let listpats: dyn PatSemantics = ListPatSemantics {}
+    let fieldpats: dyn PatSemantics = FieldPatSemantics {}
     Dispatch {
         enumpats: enumpats,
         formatpats: formatpats,
         narrowpats: narrowpats,
         quotepats: quotepats,
+        listpats: listpats,
+        fieldpats: fieldpats,
     }
 }
 
@@ -143,6 +149,7 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         [c.word for c in words.components if c.own],
         lang.keywords,
     )
+    let door = words with { door: sugar_door(lang) }
     let build = (name: string, args: List<Captured<Token, LangNode>>, loc: Loc?) -> build_named(
         lang.builders,
         store,
@@ -150,7 +157,7 @@ fn parsed_as(lang: Language, store: SyntaxArena, src: SourceFile, words: BlockWo
         args,
         loc_span(loc),
         src.text,
-        words,
+        door,
     )
     let o = if telling { run_grammar<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) } else { run_untold<Token, LangNode>(lang.syntax!, lexed.tokens, avra_lexeme(), build) }
     // a remark means nothing to any pass; it rides the store so the
@@ -616,6 +623,13 @@ impl Program {
         self.lowered_as(entry, every, false)
     }
 
+    /// WHAT THE ENTRY REACHES, lowered: the lowering from the entry, for a
+    /// reader that asks what a program CARRIES where `files_checked` lowers
+    /// every declared body (the build's objects are the files'). A QUERY: it
+    /// settles nothing — the scheduler bit stands as the build settled it, so
+    /// the units it asks are the ones the build already holds.
+    fn reached() -> Lowered { self.lowered_bodies(self.entry?.at, false, false) }
+
     /// Whether the program's ROOT waits: the entry file's own
     /// expressions, or every file's when a `programs` binary runs them
     /// all. A top-level `spawn` or waiting read is no declaration, so the
@@ -624,6 +638,18 @@ impl Program {
         if entry != null { return self.ws.file_links_scheduler(self.files[entry!].view.file) }
         if !programs { return false }
         self.files.any((a) -> self.ws.file_links_scheduler(a.view.file))
+    }
+
+    /// WHETHER THE PROGRAM LINKS A SCHEDULER, settled from the members and the
+    /// entry root (a member that spawns or waits, or a wait at the root's top
+    /// level — the root is no declaration, so the cancel pass cannot see it) —
+    /// once, BEFORE any body lowers, so every `while` of the program is
+    /// judged by one bit. A library that runs no top-level statement
+    /// (`entry` null, `programs` false) has no root.
+    fn settle_schedulers(entry: int?, programs: bool) {
+        let ws = self.ws
+        touch(ws.references())
+        ws.decls.record_schedulers(ws.members_link_scheduler() || self.root_links(entry, programs))
     }
 
     fn lowered_bodies(entry: int?, every: bool, programs: bool) -> Lowered {
@@ -636,13 +662,6 @@ impl Program {
         // its callee's cancel bits, so that fact settles here too.
         touch(ws.references())
         touch(ws.cancel_reach())
-        // WHETHER THE PROGRAM LINKS A SCHEDULER: a member that spawns or
-        // waits, or a wait at the ENTRY ROOT's top level — the root is no
-        // declaration, so the cancel pass cannot see it. Settled once
-        // here, before any body lowers, so every `while` of the program
-        // is judged by one bit. A library that runs no top-level
-        // statement (`entry` null, `programs` false) has no root.
-        ws.decls.record_schedulers(ws.members_link_scheduler() || self.root_links(entry, programs))
         let lo = memory(
             self
                 .ws
@@ -670,6 +689,7 @@ impl Program {
     /// A program lowered, with what its host fns owe the program beyond
     /// their own declarations.
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
+        self.settle_schedulers(entry, programs)
         let lo = self.lowered_bodies(entry, every, programs)
         lo with { diagnostics: lo.diagnostics.concat(self.ws.host_fn_voices([a.view.file for a in self.files])) }
     }

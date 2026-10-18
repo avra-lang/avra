@@ -4,28 +4,32 @@
 //! `let name = expression`, or `let name: type = expression`, the
 //! binding holding what it declares; `let name? = e else { … }`
 //! binds through absence; `let _ = expression` runs it and keeps
-//! nothing.
+//! nothing. `let [a, ..rest] = xs` and `let P { x, y } = p` take a value
+//! apart by a pattern, `else { … }` for the shapes it may refuse; the
+//! pattern scopes over the rest of the block as a `match` arm's does.
 use features.{LanguageFeature, BuilderRow}
 use features.let_stmt.{unmutated_mut}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
-use diagnostics.{DiagCode}
+use diagnostics.{DiagCode, Remedy}
 
 export fn let_stmt() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name         | build
-        "state_stmt" | build_state
-        "let_else"   | build_let_else
+        name       | build
+        "let_else" | build_let_else
+        "let_pat"  | build_let_pattern
     }
     let codes = table<DiagCode> {
-        kind           | summary
-        "type.binding" | "an annotated binding holds what it declares"
+        kind               | summary                                       | remedy
+        "type.binding"     | "an annotated binding holds what it declares" | Remedy.Fix
+        "type.let_pattern" | "a destructuring `let` stands inside a block" | Remedy.Help
     }
     LanguageFeature let_stmt {
         gram: grammar {
             stmt = "let" "_" "=" value:expression END -> Stmt.Discard
             stmt = "let" b:NAME "?" "=" s:expression ( tb:trailing )? "else" "{" ( e:stmt | BREAK )* "}" END -> let_else(b, s, tb, e) @head(s)
+            stmt = "let" p:destructure "=" s:expression ( "else" "{" ( e:stmt | BREAK )* "}" )? END -> let_pat(p, s, e)
             stmt = "let" name:NAME ( ":" ty:type )? "=" value:expression END @recover(sync_to: "END") -> Stmt.Let
-            stmt = w:STATE n:NAME ( ":" t:type )? "=" v:expression END -> state_stmt(n, t, v)
+            stmt = is_state:STATE name:NAME ( ":" ty:type )? "=" value:expression END -> Stmt.MutLet
         }
         diags: codes
         builders: rows

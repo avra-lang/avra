@@ -1,15 +1,20 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, binop_of, Pat, PatId, want, TypeRef, pronoun_param, Plain, Scoped, span_of}
-use features.{
-    LangNode,
-    Builder,
+use core.{
     void_ref,
-    zip_defect,
-    aligned_binds,
-    between,
-    chained_binder,
-    marked_seats,
+    Expr,
+    ExprId,
+    binop_of,
+    Pat,
+    PatId,
+    want,
+    TypeRef,
+    pronoun_param,
+    Plain,
+    Scoped,
+    some_list,
+    spread_entry,
 }
+use features.{LangNode, Builder, expr_id_at, zip_defect, aligned_binds, chained_binder, params_at}
 use grammar.{Token}
 
 fn build_int_lit(b: Builder) -> Result<LangNode, string> {
@@ -59,10 +64,8 @@ fn mixed_bitwise(first: string, second: string) -> string {
 /// and walked in its place, so no pass learns a rule for `~`.
 fn build_bitnot(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
-    let ones = b.expr_node(Expr.IntLit(0 - 1))
-    let rewrite = b.expr_node(Expr.Binary(want(binop_of("^"), "the xor operator")?, v, ones))
-    let sugar = b.expr_node(Expr.Bitnot(rewrite))
-    b.store.mint_for(sugar, [ones, rewrite], bitnot_means(b.source_of(sugar), b.source_of(v)))
+    let sugar = b.expr_node(Expr.Bitnot(v))
+    let _ = b.store.mean(sugar, bitnot_means(b.source_of(sugar), b.source_of(v)), b.words.door)
     b.wrap_expr(sugar)
 }
 
@@ -91,25 +94,14 @@ fn build_asked_bind(b: Builder) -> Result<LangNode, string> {
     if n.text == "null" { return b.make_pat(Pat.Lit(b.store.alloc_expr(Expr.NullLit, b.span))) }
     b.make_pat(Pat.Bind(Scoped(n.text)))
 }
-/// `l is …`, the tag or type test the pattern names. A payload list
-/// or a bound type is kept beside the node as that pattern: the `if`
-/// that means to bind desugars it to a match, and a payload `is`
-/// anywhere else has enums name it and refuse.
+/// `l is …`, the tag or type test the pattern names. The node keeps
+/// the pattern: the `if` that means to bind desugars it to a match,
+/// and a payload `is` anywhere else has enums name it and refuse.
 fn asked_expr(b: Builder, l: ExprId, asked: PatId) -> Result<LangNode, string> {
     match b.store.pat(asked) {
-        .Variant(name, args) -> tag_test(b, l, name, asked, !args.is_empty()),
-        .Typed(_, ty) -> tag_test(b, l, Plain(ty.name), asked, true),
+        .Variant(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> b.wrap_expr(b.expr_node(Expr.Is(l, asked))),
         rest -> .Err(compare_without_right_side()),
     }
-}
-
-fn tag_test(b: Builder, l: ExprId, tag: Plain, asked: PatId, binds: bool) -> Result<
-    LangNode,
-    string,
-> {
-    let id = b.expr_node(Expr.Is(l, tag))
-    if binds { b.store.mark_is_payload(id, asked, true) }
-    b.wrap_expr(id)
 }
 
 /// `-v` is `0 - v`: the parse desugars, so no pass learns a node.
@@ -128,204 +120,30 @@ fn build_neg(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Binary(minus, zero, v))
 }
 
-/// `v ( ! | ? )*` folds left, each link choosing its node: `!`
-/// insists, `?` propagates. `x!!` insists twice, which the TYPE
-/// then refuses — the second `!` has nothing left to unwrap. The
-/// LADDER owns this parse; both nodes' meaning lives in `nullable`.
-/// The node a force-position token names — propagation when `?`.
-fn force_link(link: string, value: ExprId) -> Expr {
-    if link == "?" { return Expr.Propagate(value) }
-    Expr.Force(value)
+/// `subject.name(args)` — a method call; an argument the pronoun rides
+/// becomes a one-seat lambda (`xs.map(it * 2)`).
+fn build_method_link(b: Builder) -> Result<LangNode, string> {
+    let args = [b.store.pronouned(a) for a in b.exprs(2)?]
+    b.make_expr(Expr.MethodCall(b.expr(0)?, Plain((b.token(1)?).text), args))
 }
 
-/// `v ( .name | .name(args) | ?.name | [i] | (args) | ?.(args) | { … } | .type(T) )*`
-/// — ONE postfix star: property links, method calls, chains, indexes,
-/// applications, trailing blocks and type literals interleave freely, folded left
-/// in SOURCE order (a merge over the capture families' spans). The
-/// paren WITNESS in a link's window makes a dot a METHOD call; a
-/// bare paren group applies the value built so far; a block widens
-/// the call built so far by the call protocol, its `else` beside it.
-/// The ladder owns the parse; each node's meaning lives with its
-/// feature.
-fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
-    mut acc = b.expr(0)?
-    let links = b.tokens(1)?
-    let names = b.tokens(2)?
-    let opens = b.tokens(3)?
-    let margs = b.exprs(4)?
-    let indexes = b.exprs(5)?
-    let calls = b.tokens(6)?
-    let cargs = b.exprs(7)?
-    let forces = b.tokens(8)?
-    let blocks = b.exprs(9)?
-    let elses = b.exprs(10)?
-    let spellings = b.type_refs(11)?
-    let chained = b.type_refs(12)?
-    let call_chains = b.tokens(13)?
-    if links.length != names.length { return .Err(zip_defect) }
-    let whole? = b.span else { return .Err("defect: a postfix chain without a span — the arena and the grammar disagree") }
-    let starts = whole.lo
-    let ends = whole.hi
-    // the five families' cursors — each turn folds the link whose
-    // anchor comes first in the source
-    mut jn = 0
-    mut ji = 0
-    mut jc = 0
-    mut jf = 0
-    mut jb = 0
-    mut jt = 0
-    mut jq = 0
-    mut jx = 0
-    // a block after a block is a mistake named, never a third argument;
-    // a block after a type literal too — a literal is no call
-    mut blocked = false
-    mut spelled = false
-    while jn < names.length ||
-        ji < indexes.length ||
-        jc < calls.length ||
-        jf < forces.length ||
-        jb < blocks.length ||
-        jt < spellings.length ||
-        jq < chained.length {
-        let np = if jn < names.length { names[jn].span.lo } else { ends }
-        let ip = if ji < indexes.length { span_lo(b, indexes[ji]) ?? ends } else { ends }
-        let cp = if jc < calls.length { calls[jc].span.lo } else { ends }
-        let fp = if jf < forces.length { forces[jf].span.lo } else { ends }
-        let bp = if jb < blocks.length { span_lo(b, blocks[jb]) ?? ends } else { ends }
-        let tp = if jt < spellings.length { spellings[jt].span?.lo ?? ends } else { ends }
-        let qp = if jq < chained.length { chained[jq].span?.lo ?? ends } else { ends }
-        if tp < np && tp < ip && tp < cp && tp < fp && tp < bp && tp < qp {
-            blocked = false
-            spelled = true
-            acc = type_literal(b, acc, spellings[jt])?
-            jt = jt + 1
-        } else if qp < np && qp < ip && qp < cp && qp < fp && qp < bp {
-            blocked = false
-            spelled = true
-            acc = chained_type_literal(b, acc, chained[jq])?
-            jq = jq + 1
-        } else if bp < np && bp < ip && bp < cp && bp < fp {
-            if spelled {
-                return .Err(
-                    "a trailing block follows a type literal — a literal is no call, and a block belongs to one",
-                )
-            }
-            if blocked {
-                return .Err(
-                    "a second trailing block follows the first — `else { … }` fills the next fn seat, and a block statement starts on its own line",
-                )
-            }
-            let upto = if jb + 1 < blocks.length { span_lo(b, blocks[jb + 1]) ?? ends } else { ends }
-            acc = b.trailed(acc, [blocks[jb]].concat(args_between(b, elses, bp, upto)))?
-            jb = jb + 1
-            blocked = true
-        } else {
-            blocked = false
-            spelled = false
-            if fp < np && fp < ip && fp < cp {
-                acc = b
-                    .store
-                    .alloc_expr(force_link(forces[jf].text, acc), span_of(starts, forces[jf].span.hi))
-                jf = jf + 1
-            } else if np <= ip && np <= cp {
-                let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
-                let called = opens.any(between(it.span.lo, np, upto))
-                let name = names[jn]
-                let link = links[jn].text
-                jn = jn + 1
-                if called {
-                    let margs_here = [b.store.pronouned(a) for a in args_between(b, margs, np, upto)]
-                    let hi = if more_links(
-                        jn,
-                        ji,
-                        jc,
-                        jf,
-                        jb,
-                        jt,
-                        jq,
-                        names,
-                        indexes,
-                        calls,
-                        forces,
-                        blocks,
-                        spellings,
-                        chained,
-                    ) {
-                        call_hi(b, name, margs_here)
-                    } else {
-                        ends
-                    }
-                    acc = if link == "?." {
-                        chained_call(b, acc, name.text, margs_here)
-                    } else {
-                        b
-                            .store
-                            .alloc_expr(
-                                Expr.MethodCall(acc, Plain(name.text), margs_here),
-                                span_of(starts, hi),
-                            )
-                    }
-                } else {
-                    acc = b
-                        .store
-                        .alloc_expr(prop_link(link, acc, name.text), span_of(starts, name.span.hi))
-                }
-            } else if ip <= cp {
-                ji = ji + 1
-                let hi = if more_links(
-                    jn,
-                    ji,
-                    jc,
-                    jf,
-                    jb,
-                    jt,
-                    jq,
-                    names,
-                    indexes,
-                    calls,
-                    forces,
-                    blocks,
-                    spellings,
-                    chained,
-                ) {
-                    span_hi(b, indexes[ji - 1]) ?? ends
-                } else {
-                    ends
-                }
-                acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji - 1]), span_of(starts, hi))
-            } else {
-                let upto = next_anchor(b, names, indexes, calls, jn, ji, jc + 1, ends)
-                let args_here = args_between(b, cargs, cp, upto)
-                jc = jc + 1
-                let hi = if more_links(
-                    jn,
-                    ji,
-                    jc,
-                    jf,
-                    jb,
-                    jt,
-                    jq,
-                    names,
-                    indexes,
-                    calls,
-                    forces,
-                    blocks,
-                    spellings,
-                    chained,
-                ) {
-                    call_hi(b, calls[jc - 1], args_here)
-                } else {
-                    ends
-                }
-                // a chain mark stands directly before its own paren, so
-                // the first unspent one behind this paren is this call's
-                let through = jx < call_chains.length && call_chains[jx].span.lo < cp
-                if through { jx = jx + 1 }
-                acc = if through { chained_apply(b, acc, args_here) } else { b.store.alloc_expr(Expr.CallValue(acc, args_here), span_of(starts, hi)) }
-            }
-        }
-    }
-    b.wrap_expr(acc)
+fn build_chained_call_link(b: Builder) -> Result<LangNode, string> {
+    let args = [b.store.pronouned(a) for a in b.exprs(2)?]
+    b.wrap_expr(chained_call(b, b.expr(0)?, (b.token(1)?).text, args))
+}
+
+fn build_chained_apply_link(b: Builder) -> Result<LangNode, string> {
+    b.wrap_expr(chained_apply(b, b.expr(0)?, b.exprs(1)?))
+}
+
+/// `subject { … }` and `subject { … } else { … }` — the call so far
+/// takes the blocks as its last arguments. Only a call takes one, and
+/// never after a type literal or another block.
+fn build_trailed_link(b: Builder) -> Result<LangNode, string> {
+    let subject = b.expr(0)?
+    if b.store.spells_a_type(subject) { return .Err(block_after_literal()) }
+    if b.store.ends_in_block(subject) { return .Err(second_block()) }
+    b.wrap_expr(b.trailed(subject, [b.expr(1)?].concat(some_list(expr_id_at(b.args, 2))))?)
 }
 
 /// `a?.m(args)` IS `match a { null -> null, v? -> v.m(args) }`: the
@@ -348,95 +166,6 @@ fn chained_apply(b: Builder, subject: ExprId, args: List<ExprId>) -> ExprId {
     b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
 }
 
-/// The nearest UNCONSUMED anchor past the cursors — the window's
-/// end for the link being folded.
-fn next_anchor(
-    b: Builder,
-    names: List<Token>,
-    indexes: List<ExprId>,
-    calls: List<Token>,
-    jn: int,
-    ji: int,
-    jc: int,
-    ends: int,
-) -> int {
-    mut best = ends
-    if jn < names.length && names[jn].span.lo < best { best = names[jn].span.lo }
-    if ji < indexes.length {
-        let lo: int? = span_lo(b, indexes[ji])
-        if lo != null && lo! < best { best = lo! }
-    }
-    if jc < calls.length && calls[jc].span.lo < best { best = calls[jc].span.lo }
-    best
-}
-
-/// The argument exprs written inside one link's window.
-fn args_between(b: Builder, margs: List<ExprId>, after: int, before: int) -> List<ExprId> {
-    mut out: List<ExprId> = []
-    for a in margs {
-        let lo: int? = span_lo(b, a)
-        if lo != null && between(lo!, after, before) { out.push(a) }
-    }
-    out
-}
-
-fn span_lo(b: Builder, e: ExprId) -> int? {
-    let sp? = b.store.expr_span(e) else { return null }
-    sp.lo
-}
-
-fn span_hi(b: Builder, e: ExprId) -> int? {
-    let sp? = b.store.expr_span(e) else { return null }
-    sp.hi
-}
-
-/// A call's own end. Its closing delimiter is a literal, never
-/// captured — the last argument's true end is the tightest bound on
-/// hand, and an empty argument list falls back to the anchor token
-/// (the name, or the bare-call's open paren), narrower than the
-/// truth rather than reaching past it into whatever follows.
-fn call_hi(b: Builder, anchor: Token, args: List<ExprId>) -> int {
-    let last? = args.last() else { return anchor.span.hi }
-    span_hi(b, last) ?? anchor.span.hi
-}
-
-/// Whether any family still has an unconsumed link past these
-/// cursors — the fold's own while-condition, asked again after a
-/// step. The LAST link in a chain has no later construct to guess an
-/// end from being short of: `ends`, the whole match's real close, is
-/// exactly right there, and only an interior link needs the
-/// narrower, closing-delimiter-blind estimate.
-fn more_links(
-    jn: int,
-    ji: int,
-    jc: int,
-    jf: int,
-    jb: int,
-    jt: int,
-    jq: int,
-    names: List<Token>,
-    indexes: List<ExprId>,
-    calls: List<Token>,
-    forces: List<Token>,
-    blocks: List<ExprId>,
-    spellings: List<TypeRef>,
-    chained: List<TypeRef>,
-) -> bool {
-    jn < names.length ||
-        ji < indexes.length ||
-        jc < calls.length ||
-        jf < forces.length ||
-        jb < blocks.length ||
-        jt < spellings.length ||
-        jq < chained.length
-}
-
-/// The node a link token names — the chain when absence rides it.
-fn prop_link(link: string, subject: ExprId, name: string) -> Expr {
-    if link == "?." { return Expr.Chain(subject, Plain(name)) }
-    Expr.Prop(subject, Plain(name))
-}
-
 fn compare_without_right_side() -> string {
     "a comparison's right side is a value, or the pattern an `is` names"
 }
@@ -445,13 +174,9 @@ fn compare_without_right_side() -> string {
 /// block: the written seats, or the pronoun's one seat when no seat
 /// is written and the body reads `it`, or none.
 fn build_trailing(b: Builder) -> Result<LangNode, string> {
-    let consts = b.tokens(0)?
-    let muts = b.tokens(1)?
-    let ps = b.tokens(2)?
-    let body = b.block_of(b.stmts(3)?)
-    let from: int = b.span?.lo ?? 0
-    let unwritten: List<TypeRef?> = [null for p in ps]
-    let seats = if ps.is_empty() && b.store.pronoun_rides(body) { [pronoun_param] } else { marked_seats(b.store, ps, unwritten, muts, consts, from) }
+    let written = params_at(b.args, 0)
+    let body = b.block_of(b.stmts(1)?)
+    let seats = if written.is_empty() && b.store.pronoun_rides(body) { [pronoun_param] } else { written }
     b.make_expr(Expr.Lambda(seats, body))
 }
 
@@ -517,4 +242,20 @@ fn build_catch(b: Builder) -> Result<LangNode, string> {
                     ca,
                 ),
         )
+}
+
+// ── voices ──
+
+fn block_after_literal() -> string {
+    "a trailing block follows a type literal — a literal is no call, and a block belongs to one"
+}
+
+fn second_block() -> string {
+    "a second trailing block follows the first — `else { … }` fills the next fn seat, and a block statement starts on its own line"
+}
+
+/// `f(..xs)` — an argument that spreads: the `Named` node `..` wearing its
+/// operand, which the callee's variadic seat takes whole.
+fn build_spread_arg(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Named(Plain(spread_entry), b.expr(0)?))
 }

@@ -1,0 +1,100 @@
+//! `avra voices` — what every registered voice carries beyond its
+//! words: a witness, help, a structured fix where its row owes one.
+//! A help's code form is RUN: a structured fix spliced into its witness
+//! must clear its refusal and still parse, and a remedy row (a refusal
+//! and the same program with the form applied) must hold — `bad_fix`,
+//! `bad_remedy`; a form with neither is `no_remedy`.
+//! `--report` prints the inventory; `--gaps` the current gap lines;
+//! `--baseline <file>` gates — a gap the baseline does not list
+//! refuses, and so does a baseline line whose gap is gone (the file
+//! only shrinks: `--accept` prunes it and never adds a line).
+use @std.cli.{CliResult, Runnable, command, flag, option}
+use @std.io.{write_text}
+use @std.avrac.compiler.{rules as rule_table}
+use @std.avrac.compiler.dev.{
+    shown_codes,
+    kind_gaps,
+    rule_gaps,
+    remedy_gaps,
+    gap_lines,
+    coverage_report,
+}
+
+type VoicesCmd = {}
+
+impl Runnable for VoicesCmd {
+    fn run(args: CliResult) -> int {
+        let runs = shown_codes()
+        if args.has_flag("report") {
+            println(coverage_report(runs, rule_table))
+            return 0
+        }
+        let gaps = gap_lines(
+            kind_gaps(runs).concat(remedy_gaps(runs)).concat(rule_gaps(rule_table)),
+        )
+        if args.has_flag("gaps") {
+            for g in gaps { println(g) }
+            return 0
+        }
+        let baseline = args.option("baseline")
+        if baseline == "" { return usage() }
+        held(rooted(baseline), gaps, args.has_flag("accept"), runs.length, rule_table.length)
+    }
+}
+
+/// The gate: new gaps and stale baseline lines are both refusals.
+fn held(path: string, gaps: List<string>, accept: bool, kinds: int, rule_count: int) -> int {
+    let accepted = baseline_lines(path)
+    let news = [g for g in gaps if !accepted.contains(g)]
+    let stale = [a for a in accepted if !gaps.contains(a)]
+    if accept { return pruned(path, [a for a in accepted if gaps.contains(a)]) }
+    for g in news { eprintln(new_gap(g)) }
+    for a in stale { eprintln(stale_line(a)) }
+    eprintln(examined(kinds, rule_count, gaps.length, accepted.length))
+    if news.is_empty() && stale.is_empty() { 0 } else { 1 }
+}
+
+fn baseline_lines(path: string) -> List<string> {
+    // LICENSED compiler.host_asked_directly: a command's read of the file it was given, at this instant — no query frame is open
+    let text = disk_host().spared_text(path).as_text() ?? ""
+    [l for l in text.split("\n") if l != "" && !l.starts_with("#")]
+}
+
+fn pruned(path: string, kept: List<string>) -> int {
+    let _ = write_text(path, voices_header + kept.map(it + "\n").join(""))
+    println("voices: ${kept.length} gap(s) kept")
+    0
+}
+
+// ── Voices ──────────────────────────────────────────────────────
+
+const voices_header: string = "# KNOWN voice gaps, one TAB-separated line each: a kind or rule, and what\n# it lacks (no_witness, no_help, no_fix, no_doc, bad_fix, bad_remedy, no_remedy). This file only ever\n# SHRINKS — `avra voices --baseline <this file> --accept` prunes what a\n# fix made gone, and no path through it ADDS a line: a new voice gets its\n# help, fix and witness in the code, or a human adds the line here,\n# reviewed at adoption and every time after. `make voices` gates.\n"
+
+fn usage() -> int {
+    eprintln("voices: one of --report, --gaps or --baseline <file> is required")
+    2
+}
+
+fn new_gap(line: string) -> string {
+    "voices: NEW gap — ${line.replace("\t", " ")}: a voice carries help, a fix where its row owes one, and a witness (compiler/dev/witnesses.av) — give it that, never a baseline line"
+}
+
+fn stale_line(line: string) -> string {
+    "voices: STALE baseline line — ${line.replace("\t", " ")} is paid: run `avra voices --baseline <file> --accept` to prune it"
+}
+
+fn examined(kinds: int, rule_count: int, gaps: int, accepted: int) -> string {
+    "voices: ${kinds} kind(s) and ${rule_count} rule(s) examined, ${gaps} gap(s) found, ${accepted} baselined"
+}
+
+export command voices {
+    description: "What every registered voice carries: a witness, help, a structured fix where its row owes one"
+    flag report { description: "print the inventory table (docs/VOICES.md's generated content)" }
+    flag gaps { description: "print every current gap, one baseline line each" }
+    flag accept { description: "with --baseline: prune lines whose gap is paid; never adds one" }
+    option {
+        name: "baseline"
+        description: "gate against this baseline file: a new gap or a stale line refuses"
+    }
+    run: VoicesCmd {}
+}

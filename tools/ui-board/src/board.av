@@ -12,6 +12,9 @@
 //!
 //! The board names no target. A page mounts it (`web/`) and so does a
 //! terminal (`term/`).
+use @std.time.{ms}
+use @std.ui.app.{Async, Fetch, fetch, fetched, later}
+use @std.http_message.message.{Body, Reply, Request}
 use @std.ui.components.{
     button,
     card,
@@ -44,6 +47,8 @@ state filter: Show = .All
 state dark: bool = false
 state newest_first: bool = false
 state dialog_open: bool = false
+state reminded: bool = false
+state synced: Fetch<int> = fetch()
 state seq: int = 5
 state tasks: List<Todo> = [
     Todo { id: "t1", title: "Draft the spec", done: true },
@@ -208,10 +213,55 @@ component board {
     }
 }
 
+/// The reminder fires: the footer says so.
+fn remind_now() -> bool {
+    reminded = true
+    true
+}
+
+/// What the server said, as a count of tasks.
+fn counted(r: Reply) -> Result<int, string> {
+    if r.status == 200 { .Ok(r.body.length) } else { .Err("status ${r.status}") }
+}
+
+/// The tasks are asked for: one request, whatever target sends it.
+fn sync() {
+    let _ = fetched(
+        synced,
+        Request.post("/tasks", Body.Json("[1,2]")).header("x-board", "1"),
+        counted,
+    )
+}
+
+/// How the last sync stands, in words.
+fn synced_words() -> string {
+    match synced.state() {
+        .Idle -> "",
+        .Loading -> " · syncing",
+        .Failed(why) -> " · sync failed: ${why}",
+        .Ready(n) -> " · synced ${n}",
+    }
+}
+
+/// A reminder is asked for: a timer, whatever the target keeps it with.
+fn remind() {
+    let _ = later(ms(100), remind_now)
+}
+
 component footer {
     row {
         layout: spread_layout()
-        text "${open_count()} open · ${done_count()} done of ${tasks.length}" { style: Style { color: .Muted } }
+        text "${open_count()} open · ${done_count()} done of ${tasks.length}${if reminded { " · reminder" } else { "" }}${synced_words()}" {
+            style: Style { color: .Muted }
+        }
+        button "Sync" {
+            on press { sync() }
+            style: sunk_style()
+        }
+        button "Remind me" {
+            on press { remind() }
+            style: sunk_style()
+        }
         button "About" {
             on press { dialog_open = true }
             style: sunk_style()

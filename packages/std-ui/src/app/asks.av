@@ -1,0 +1,55 @@
+//! `app/asks.av` — the sources a handler asks for by name. Each is a
+//! `Want`, data, handed to the app's loop: no task, no host row is named
+//! here, so the same call runs on every target.
+use app.{Act, Async, Fetch, Want, running}
+use @std.http_message.message.{Reply, Request}
+use @std.time.{Duration}
+
+/// `act` runs as a turn once `span` has gone by. False when no loop runs.
+export fn later(span: Duration, act: Act) -> bool {
+    let on? = running() else { return false }
+    on.ask(Want.After(span.ms), act)
+}
+
+/// `act` runs as a turn every `period`, until the loop ends. False when no
+/// loop runs.
+export fn repeating(period: Duration, act: Act) -> bool {
+    let on? = running() else { return false }
+    on.ask(Want.Every(period.ms), act)
+}
+
+/// `held` is loading now, and becomes what `parse` makes of `request`'s
+/// reply: `Ready` with its answer, or `Failed` with its refusal — the words
+/// `parse` gives, or why no reply came. THE LATEST ASK WINS: each ask takes
+/// the next number, and an answer lands only if its number is still the
+/// latest, so an older ask answering late never shows. False, and the fetch
+/// untouched, when no loop runs. The request is data, so the page's host
+/// and a native client send the same value.
+export fn fetched<T>(held: Fetch<T>, request: Request, parse: fn(Reply) -> Result<T, string>) -> bool {
+    let on? = running() else { return false }
+    let ask = held.asks.get() + 1
+    held.asks.set(ask)
+    held.now.set(Async.Loading)
+    let into: Cell<Result<Reply, string>?> = Cell.new(null)
+    on.ask(Want.Get(request, into), () -> landed(held, ask, into, parse))
+}
+
+/// The reply has come: it shows if its ask is still the latest.
+fn landed<T>(
+    held: Fetch<T>,
+    ask: int,
+    into: Cell<Result<Reply, string>?>,
+    parse: fn(Reply) -> Result<T, string>,
+) -> bool {
+    let answer? = into.get() else { return false }
+    let latest = held.asks.get() == ask
+    if latest { held.now.set(settled(answer, parse)) }
+    latest
+}
+
+fn settled<T>(answer: Result<Reply, string>, parse: fn(Reply) -> Result<T, string>) -> Async<T> {
+    match answer {
+        .Ok(reply) -> match parse(reply) { .Ok(v) -> Async.Ready(v), .Err(m) -> Async.Failed(m) },
+        .Err(why) -> Async.Failed(why),
+    }
+}

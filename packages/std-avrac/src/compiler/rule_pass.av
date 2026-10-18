@@ -115,7 +115,13 @@ fn rewrite_diag(a: Analysed, at: At, r: RuleEntry, f: Fix) -> Diag? {
         description: "rewrite to `${text}`",
         edits: [edit],
     }
-    warning(rule_id(r), loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
+    warning(
+        rule_id(r),
+        loc,
+        "${rule_id(r)} — this is provably `${text}`",
+        "this code",
+        applied_by(r),
+    ) with { suggestions: [sg] }
 }
 
 fn delete_diags(a: Analysed, at: At, r: RuleEntry, what: List<DeclId>) -> List<Diag> {
@@ -132,5 +138,12 @@ fn delete_diag(a: Analysed, at: At, r: RuleEntry, what: List<DeclId>) -> Diag? {
     let loc? = code_at(a, at).loc() else { return null }
     let edits? = delete_edits(a, a.view.source.text, what) else { return null }
     let sg = Suggestion { confidence: Confidence.High, description: "delete this", edits: edits }
-    warning(rule_id(r), loc, "${rule_id(r)} — this is provably dead", "this code", null) with { suggestions: [sg] }
+    warning(rule_id(r), loc, "${rule_id(r)} — this is provably dead", "this code", applied_by(r)) with { suggestions: [sg] }
+}
+
+/// A finding's help: the commands that explain the rule and apply the edit.
+/// The rule's own doc is read by `avra docs`, never here — a finding's help is
+/// built on every check of a body, and a doc is another file's text.
+fn applied_by(r: RuleEntry) -> string {
+    "`avra docs ${rule_id(r)}` says why; `avra fix --only ${rule_id(r)}` applies it"
 }

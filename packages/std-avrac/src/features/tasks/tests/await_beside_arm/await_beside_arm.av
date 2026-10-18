@@ -1,21 +1,20 @@
-// proves: an `.await` and a wait-set arm on ONE spawned task wake in
-// the order they began waiting, when the task ends.
-use @std.time.{ms, sleep}
+// proves: an `.await` and a wait-set arm on ONE spawned task, both
+// parked when the task ends, each wake exactly once, whatever order the
+// ready waiters then run in.
 
 extern fn avra_wait_task(t: Task<int>, arm: int, member: int)
 extern fn avra_wait_park() -> int
+extern fn avra_task_pending() -> ptr
+extern fn avra_task_answer(t: ptr, v: ptr)
+extern fn avra_task_join(t: ptr) -> ptr
 extern fn avra_array_sized(n: int) -> ptr
 extern fn avra_array_push(a: ptr, v: int)
 extern fn avra_array_get(a: ptr, i: int) -> int
 
-fn slept(wait: int) -> int {
-    sleep(ms(wait))
-    wait
-}
-
-/// An odd name waits on `on` in a set, an even one awaits it; each
-/// notes its name as it wakes.
-fn waiter(name: int, log: ptr, on: Task<int>) -> int {
+/// An odd name waits on `on` in a set, an even one awaits it; each opens
+/// `parked` with no yield before it parks and notes its name as it wakes.
+fn waiter(name: int, parked: ptr, log: ptr, on: Task<int>) -> int {
+    avra_task_answer(parked, avra_array_sized(1))
     if name % 2 == 1 {
         avra_wait_task(on, 0, 0)
         let _ = avra_wait_park()
@@ -26,17 +25,31 @@ fn waiter(name: int, log: ptr, on: Task<int>) -> int {
     0
 }
 
-/// Four waiters begin in the order of their names, from `first`, and
-/// the task ends after the last has parked: the order they woke in.
+/// How many times `name` is in the log.
+fn woke(log: ptr, name: int) -> int {
+    [1 for i in 0..4 if avra_array_get(log, i) == name].length
+}
+
+/// Four waiters, named from `first`, wait on one task that ends once
+/// every one has parked: how many times each name woke.
 fn woken(first: int) -> string {
     let log = avra_array_sized(4)
-    let on = spawn slept(3)
-    let a = spawn waiter(first, log, on)
-    let b = spawn waiter(first + 1, log, on)
-    let c = spawn waiter(first + 2, log, on)
-    let d = spawn waiter(first + 3, log, on)
+    let release = avra_task_pending()
+    let on = spawn {
+        let _ = avra_task_join(release)
+        3
+    }
+    let gates = [avra_task_pending(), avra_task_pending(), avra_task_pending(), avra_task_pending()]
+    let a = spawn waiter(first, gates[0], log, on)
+    let b = spawn waiter(first + 1, gates[1], log, on)
+    let c = spawn waiter(first + 2, gates[2], log, on)
+    let d = spawn waiter(first + 3, gates[3], log, on)
+    for g in gates {
+        let _ = avra_task_join(g)
+    }
+    avra_task_answer(release, avra_array_sized(1))
     let _ = a.await + b.await + c.await + d.await
-    ["${avra_array_get(log, i)}" for i in 0..4].join("")
+    ["${woke(log, first + n)}" for n in 0..4].join("")
 }
 
 "${woken(1)} ${woken(2)}"
