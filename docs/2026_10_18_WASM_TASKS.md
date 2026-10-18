@@ -112,9 +112,11 @@ in):
 
 So: TWO artifacts from one link. The clean one carries `avra_park` as an
 import for `Suspending`; the fallback is the same link plus the asyncify
-pass over the `parks` slice, produced only under `--wasm-fallback` (off by
-default, so a build for a JSPI-only audience pays no extra build time or
-output). The measurement above is the asyncified-vs-clean gap on real Avra
+pass over the `parks` slice, BUILT BY DEFAULT for a web target;
+`--no-wasm-fallback` opts out. Default-on, because off-by-default would
+break a page silently on iOS 26 and older unless its author knew to ask.
+The fallback costs build time and server disk only: it is fetched on
+demand, so JSPI users pay nothing. The measurement above is the asyncified-vs-clean gap on real Avra
 output; the JSPI-only binary is by construction the clean row.
 
 ## The may-park set
