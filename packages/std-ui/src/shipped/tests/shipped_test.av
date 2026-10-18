@@ -1,0 +1,121 @@
+//! Shipped state: a document of what was named, written back by name, with
+//! a moved shape or a misfit value dropped and spoken — and the rest kept.
+//! The registry is the process's, so each case names states of its own.
+use @std.json.{Json, parse, to_text}
+use @std.ui.shipped.{applied, document, ship}
+
+state shown: int = 3
+state moved: int = 3
+state fits: int = 3
+state kept: int = 3
+state twin: int = 1
+state other: string = "a"
+state odd: int = 1
+state roundtrip: int = 5
+state lone: int = 1
+
+/// Name an int state to ship under `name`, by its place's reader and writer.
+fn number(name: string, shape: string, read: fn() -> string, write: fn(int) -> void) {
+    ship(name, shape, read, (j: string) -> int_written(j, write))
+}
+
+fn int_written(j: string, write: fn(int) -> void) -> bool {
+    let n? = (parse(j) catch Json.Null).int() else { return false }
+    write(n)
+    true
+}
+
+fn text_written(j: string, write: fn(string) -> void) -> bool {
+    let s? = (parse(j) catch Json.Null).text() else { return false }
+    write(s)
+    true
+}
+
+spec "std/ui shipped — state carried to the next module" {
+    given "a state named before mount" {
+        then "is in the document with its shape and value" {
+            number("shown", "int", () -> "${shown}", (n: int) -> { shown = n })
+            document().contains("\"shown\":{\"shape\":\"int\",\"value\":3}")
+        }
+        then "is written back by name" {
+            number("fits", "int", () -> "${fits}", (n: int) -> { fits = n })
+            let names = applied("{\"fits\":{\"shape\":\"int\",\"value\":9}}")
+            names.is_empty() && fits == 9
+        }
+    }
+    given "a state whose shape moved" {
+        then "is dropped, and the others in the document still apply" {
+            number("moved", "int", () -> "${moved}", (n: int) -> { moved = n })
+            number("kept", "int", () -> "${kept}", (n: int) -> { kept = n })
+            let names = applied(
+                "{\"moved\":{\"shape\":\"int?\",\"value\":9},\"kept\":{\"shape\":\"int\",\"value\":7}}",
+            )
+            names.join(",") == "moved" && moved == 3 && kept == 7
+        }
+    }
+    given "a document" {
+        then "that names no state of the program leaves every state alone" {
+            number("twin", "int", () -> "${twin}", (n: int) -> { twin = n })
+            applied("{\"nobody\":{\"shape\":\"int\",\"value\":5}}").is_empty() && twin == 1
+        }
+        then "whose value does not fit its type drops that state" {
+            ship(
+                "other",
+                "string",
+                () -> to_text(Json.Str(other)),
+                (j: string) -> text_written(j, (s: string) -> { other = s }),
+            )
+            applied("{\"other\":{\"shape\":\"string\",\"value\":5}}").join(",") == "other" &&
+                other == "a"
+        }
+        then "that is no JSON writes nothing" { applied("{not json").is_empty() }
+    }
+    given "a hostile document" {
+        then "with a name written twice writes nothing" {
+            number("lone", "int", () -> "${lone}", (n: int) -> { lone = n })
+            applied(
+                    "{\"lone\":{\"shape\":\"int\",\"value\":2},\"lone\":{\"shape\":\"int\",\"value\":3}}",
+                )
+                    .is_empty() &&
+                lone == 1
+        }
+        then "with no value drops that state" {
+            applied("{\"lone\":{\"shape\":\"int\"}}").join(",") == "lone" && lone == 1
+        }
+        then "with no shape drops that state" {
+            applied("{\"lone\":{\"value\":4}}").join(",") == "lone" && lone == 1
+        }
+        then "with a null value drops that state" {
+            applied("{\"lone\":{\"shape\":\"int\",\"value\":null}}").join(",") == "lone" &&
+                lone == 1
+        }
+        then "that is an array, a string or empty writes nothing" {
+            applied("[1]").is_empty() &&
+                applied("\"x\"").is_empty() &&
+                applied("{}").is_empty() &&
+                lone == 1
+        }
+    }
+    given "a name and a shape with quotes, a `<` or a non-ASCII letter" {
+        then "come back as they went, and stand safe in a script element" {
+            number(
+                "od\"d é</script>",
+                "Pin<row:int,\"q\">",
+                () -> "${odd}",
+                (n: int) -> { odd = n },
+            )
+            let doc = document()
+            !doc.contains("</script>") &&
+                applied(doc.replace("\"value\":1", "\"value\":8")).is_empty() &&
+                odd == 8
+        }
+    }
+    given "the document one module said" {
+        then "restores the states of the module that reads it" {
+            number("roundtrip", "int", () -> "${roundtrip}", (n: int) -> { roundtrip = n })
+            let said = document()
+            roundtrip = 99
+            applied(said).is_empty() && roundtrip == 5
+        }
+    }
+}

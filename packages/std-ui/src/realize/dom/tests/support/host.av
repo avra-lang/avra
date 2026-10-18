@@ -21,6 +21,7 @@ enum Rec {
     Unlisten(id: int, kind: int)
     Style(css: string)
     Call(id: int, verb: string)
+    Kept(words: int, kinds: List<string>)
 }
 
 // ── reading a frame ─────────────────────────────────────────────
@@ -91,6 +92,7 @@ impl Reader {
             .Unlisten -> Rec.Unlisten(self.id(), self.int()),
             .Style -> Rec.Style(self.text()),
             .Call -> Rec.Call(self.id(), self.text()),
+            .Adopt -> Rec.Kept(self.int(), [self.text() for j in 0..self.int()]),
         }
     }
 }
@@ -322,6 +324,9 @@ impl Host {
                 .rewrite(id, "unlisten", (s) -> s with { ears: [e for e in s.ears if e.kind != kind] }),
             .Style(css) -> { self.sheet = css },
             .Call(id, verb) -> self.call(id, verb),
+            .Kept(_, names) -> {
+                if !names.is_empty() { self.fault("adopt: this model holds no server page") }
+            },
         }
     }
 
@@ -375,5 +380,6 @@ fn rec_line(r: Rec) -> string {
         .Unlisten(id, kind) -> "unlisten ${id} ${kind}",
         .Style(_) -> "style",
         .Call(id, verb) -> "call ${id} ${verb}",
+        .Kept(sum, names) -> "adopt ${sum} ${names.join(",")}",
     }
 }

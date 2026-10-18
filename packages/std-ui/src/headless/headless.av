@@ -17,8 +17,11 @@ extern fn avra_clock_virtual(on: int)
 /// A screen nobody draws.
 export type Screen = { shown: Shown, net: Cell<fn(Request) -> Result<Reply, string>> = Cell.new(unwired) }
 
-/// `view` on a screen held in memory, painted once.
-export fn headless<V: View>(view: fn() -> V) -> Screen { Screen { shown: shown(view) } }
+/// `view` on a screen held in memory, painted once. `rows` is a viewport's
+/// worth of rows for a windowed list, none by default: it builds every row.
+export fn headless<V: View>(view: fn() -> V, rows: int = 0) -> Screen {
+    Screen { shown: shown(view, rows: rows) }
+}
 
 impl Screen {
     /// The `nth` control named `name`, counted in reading order from
@@ -32,7 +35,7 @@ impl Screen {
     /// The control named `name` speaks `kind`, saying `said`.
     fn speak(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn_of(c.path, () -> c.says(kind, said))
+        self.painted(self.shown.app.turn_of(c.path, () -> c.says(kind, said)))
     }
 
     /// The user presses the control named `name`. False when no handler
@@ -40,7 +43,7 @@ impl Screen {
     /// press.
     fn press(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn_of(c.path, () -> c.pressed())
+        self.painted(self.shown.app.turn_of(c.path, () -> c.pressed()))
     }
 
     /// The user gives the control named `name` its text — all of it, as a
@@ -59,7 +62,7 @@ impl Screen {
     /// key in a field does.
     fn submit(name: string, nth: int = 0) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.shown.app.turn_of(c.path, () -> c.sends())
+        self.painted(self.shown.app.turn_of(c.path, () -> c.sends()))
     }
 
     /// The user sends away what stands over the screen, as the key or a
@@ -68,7 +71,7 @@ impl Screen {
     fn dismiss() -> bool {
         let over? = self.shown.over() else { return false }
         let action? = over.events.find(it.kind == EventKind.Dismiss) else { return false }
-        self.shown.app.turn(() -> action.fire(null))
+        self.painted(self.shown.app.turn(() -> action.fire(null)))
     }
 
     /// The screen's requests go over `net` from now: a test's own network,
@@ -77,7 +80,14 @@ impl Screen {
 
     /// `act` runs as a turn, as a source of the loop would leave it: a
     /// paint follows when it ran.
-    fn turn(act: Act) -> bool { self.shown.app.turn(act) }
+    fn turn(act: Act) -> bool { self.painted(self.shown.app.turn(act)) }
+
+    /// A verb is one whole interaction: the screen shows it before the verb
+    /// answers, whether or not a loop holds the app's frames.
+    fn painted(ran: bool) -> bool {
+        let _ = self.shown.app.flush()
+        ran
+    }
 
     /// `body` runs while the screen's loop does: what a source leaves in
     /// the inbox runs as turns beside it, and the screen follows. The
@@ -97,10 +107,12 @@ impl Screen {
 
     /// The body waits `span` of the clock while the loop runs: what falls
     /// due within it runs, and a job started in that wait begins at its
-    /// end, so a zero wait drains nothing a job still has to start.
+    /// end, so a zero wait drains nothing a job still has to start. The screen
+    /// shows all of it when the wait ends.
     fn advance(span: Duration) {
         sleep(span)
         sleep(ms(0))
+        let _ = self.shown.app.flush()
     }
 
     /// The words of the failure that ended the last turn, until a turn
@@ -113,6 +125,32 @@ impl Screen {
 
     /// How many component instances the screen keeps.
     fn held() -> int { self.shown.app.held() }
+
+    /// The windowed lists the screen stands, by path.
+    fn windows() -> List<string> { self.shown.app.stands.windows() }
+
+    /// The user scrolls the windowed list at `path` so rows `from` up to `to`
+    /// are on the screen. False when no such list stands.
+    fn scroll(path: string, from: int, to: int) -> bool { self.scroll_measured(path, from, to, 0) }
+
+    /// The same, and the rows measure `extent` tall: the rows not built are
+    /// spaced at that height.
+    fn scroll_measured(path: string, from: int, to: int, extent: int) -> bool {
+        self.painted(self.shown.app.scrolled(path, from, to, extent, null))
+    }
+
+    /// The same, and the focus rests on the row named `key`, which stays
+    /// built wherever the window goes.
+    fn scroll_pinned(path: string, from: int, to: int, extent: int, key: string) -> bool {
+        self.painted(self.shown.app.scrolled(path, from, to, extent, key))
+    }
+
+    /// How many standings the walk keeps: the witness that a list keeps only
+    /// the rows that hold something.
+    fn standings() -> int { self.shown.app.stands.standings() }
+
+    /// How many rows windowed lists built in the last paint.
+    fn built() -> int { self.shown.app.stands.built() }
 
     /// What the last paint said of the tree it was handed.
     fn warnings() -> List<string> { self.shown.app.warnings() }

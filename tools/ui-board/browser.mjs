@@ -18,8 +18,10 @@ const [url, ...named_words] = process.argv.slice(2);
 const word = (name) => { const at = named_words.indexOf(name); return at < 0 ? null : named_words[at + 1]; };
 const shots = word("--shots");
 const source = word("--source");
+const hydrated = word("--hydrated");
+const tampered = word("--tampered");
 const page = await openPage(firefoxBinary(), url);
-const { read, press, type } = page;
+const { read, press, type, frame } = page;
 
 let failed = 0;
 const claim = (words, holds, seen = "") => {
@@ -159,10 +161,12 @@ await read(`${named("Draft the spec")}.click(), 1`);
 const carried = named("Wire the event channel");
 await read(`(() => { const b = ${carried}; b.focus(); b.witness = "kept"; ${row("t2")}.witness = "t2"; })(), 1`);
 await read(`${named("Newest first")}.click(), 1`);
+await frame();
 claim("Newest first turns the rows end for end", (await keys()).join() === "t5,t4,t2,t1", await keys());
 claim("a keyed row carried to another place is the same element", await read(`${row("t2")}.witness`) === "t2");
 claim("and the focus is kept on the control inside it", await read(`(() => { const b = ${carried}; return [document.activeElement === b, b.witness]; })()`).then((v) => v.join() === "true,kept"));
 await read(`${named("Newest first")}.click(), 1`);
+await frame();
 claim("the rows turn back, the focus still kept", (await keys()).join() === "t1,t2,t4,t5" && await read(`document.activeElement === ${carried}`), await keys());
 
 // ── the dev loop ────────────────────────────────────────────────
@@ -173,8 +177,12 @@ if (source) {
   const says = (words) => `document.body.textContent.includes(${JSON.stringify(words)})`;
   claim("the dev page names the module it loaded", (await read(`document.querySelector('meta[name="avra-module"]').content`)).length > 0);
 
-  fs.writeFileSync(source, written.replace(`heading "Tasks"`, `heading "Chores"`));
+  await read(`(window.witness = "kept", 1)`);
+  const ticked = (await rows())[1].done;
+  fs.writeFileSync(source, written.replace(`fn title() -> string { "Tasks" }`, `fn title() -> string { "Chores" }`));
   claim("a view edited where it stands reaches the running page", await until(says("Chores")) && !(await read(says("Tasks"))));
+  claim("and the page was not reloaded to show it", await read(`window.witness`) === "kept");
+  claim("and the state the page had comes through the edit: a ticked box stays ticked", ticked === true && (await rows())[1].done === true, await rows());
   await shot("edited");
 
   fs.writeFileSync(source, `${written}\nfn broken( {\n`);
@@ -182,7 +190,7 @@ if (source) {
   claim("a build that fails is shown over the page, naming the file", await until(`${failure} && !${failure}.hidden && ${failure}.textContent.includes(${JSON.stringify(path.basename(source))})`));
   await shot("failed");
   await press(named("Wire the event channel"));
-  claim("the last good page keeps running under it", await read(says("Chores")) && (await rows())[1].done);
+  claim("the last good page keeps running under it", await read(says("Chores")) && (await rows())[1].done === false);
 
   fs.writeFileSync(source, written);
   claim("the mended source is served, and the failure is gone", await until(`${says("Tasks")} && !(${failure} && !${failure}.hidden)`));
@@ -190,5 +198,34 @@ if (source) {
 
 claim("nothing reached the console while the board was used", page.complaints().length === 0, page.complaints());
 await page.close();
+
+// The module has run and painted: the page says so itself.
+const standing = async (p) => { for (let i = 0; i < 200; i++) { if (await p.read(`document.documentElement.getAttribute("data-avra") === "ready"`).catch(() => false)) { await p.frame(); return true; } await new Promise((go) => setTimeout(go, 100)); } return false; };
+
+// ── a server's page, adopted by the module ──────────────────────
+// The elements the server drew are marked before the module runs.
+if (hydrated) {
+  const adopted = await openPage(firefoxBinary(), hydrated);
+  const asked = adopted.read;
+  const ready = `document.querySelector("#app button") !== null && [...document.querySelectorAll("#app *")].length > 0`;
+  claim("a server's page stands before the module runs", await asked(`[...document.querySelectorAll("#app *")].every((el) => el.__served === true) && ${ready}`));
+  claim("the module stands on it", await standing(adopted));
+  const total = await asked(`document.querySelectorAll("#app *").length`);
+  const kept = await asked(`[...document.querySelectorAll("#app *")].filter((el) => el.__served === true).length`);
+  claim("the module took the server's elements over and built none", kept === total, `${kept} of ${total}`);
+  claim("the module started from the state the server shipped: the done tasks, in the dark", (await asked(`[...document.querySelectorAll("li")].map((li) => li.dataset.key)`)).join() === "t1,t4" && await asked(`getComputedStyle(document.body).backgroundColor`) === "rgb(18, 18, 18)");
+  await adopted.press(`document.querySelector('[aria-label="Light mode"]')`);
+  claim("and the page answers a press through the adopted elements", await asked(`document.querySelector('[aria-label="Dark mode"]') !== null`));
+  claim("nothing reached the console while the server's page was adopted", adopted.complaints().length === 0, adopted.complaints());
+  await adopted.close();
+}
+if (tampered) {
+  const torn = await openPage(firefoxBinary(), tampered);
+  await standing(torn);
+  claim("a page the module did not draw is drawn again whole", await torn.read(`document.querySelectorAll('#app [aria-label]').length >= 5 && document.querySelector('[aria-label="Light mode"]') !== null`));
+  await torn.press(`document.querySelector('[aria-label="Light mode"]')`);
+  claim("and it answers a press", await torn.read(`document.querySelector('[aria-label="Dark mode"]') !== null`));
+  await torn.close();
+}
 console.log(failed === 0 ? "ui-browser: every claim holds" : `ui-browser: ${failed} claim(s) FAILED`);
 process.exit(failed === 0 ? 0 : 1);

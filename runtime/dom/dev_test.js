@@ -24,9 +24,9 @@ const stream = () => {
   return { addEventListener: (name, hear) => heard.set(name, hear), say: (name, data) => heard.get(name)({ data }) };
 };
 // The client over a fresh page running module `abc`.
-const client = () => {
+const client = (swap = null) => {
   const made = { doc: page(), events: stream(), reloads: 0 };
-  watch({ doc: made.doc, mine: "abc", events: made.events, reload: () => { made.reloads++; } });
+  watch({ doc: made.doc, mine: "abc", events: made.events, reload: () => { made.reloads++; }, swap });
   made.showing = () => { const panel = made.doc.getElementById("avra-dev-failure"); return panel && !panel.hidden ? panel.textContent : ""; };
   return made;
 };
@@ -51,6 +51,24 @@ test("the same module built again clears what was shown", broke.showing() === ""
 broke.events.say("failed", "again");
 broke.events.say("built", "xyz");
 test("a mended build of another module reloads", broke.reloads === 1);
+
+// A page that can swap takes the new module over itself.
+{
+  let swaps = 0;
+  const swapping = client(async () => { swaps++; });
+  await swapping.events.say("built", "xyz");
+  test("another module is swapped under the page, which is not reloaded", swaps === 1 && swapping.reloads === 0);
+  await swapping.events.say("built", "xyz");
+  test("the module that stands after a swap is left alone", swaps === 1 && swapping.reloads === 0);
+  await swapping.events.say("built", "abc");
+  test("a module that is not the one standing swaps again", swaps === 2);
+  const failing = client(async () => { throw new Error("no page"); });
+  const warn = console.warn;
+  console.warn = () => {};
+  await failing.events.say("built", "xyz");
+  console.warn = warn;
+  test("a swap that fails reloads the page", failing.reloads === 1);
+}
 
 console.log(`dev: ${passed}/${passed + failed}`);
 process.exit(failed === 0 ? 0 : 1);

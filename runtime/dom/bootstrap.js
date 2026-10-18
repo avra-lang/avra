@@ -9,6 +9,7 @@
 //
 // Same file for every app.
 import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS } from "./wire.gen.js";
+import { createWindows } from "./windows.js";
 
 export { WIRE_VERSION, HOST, ROWS };
 
@@ -42,6 +43,7 @@ export function parseFrame(bytes) {
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
     else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
+    else if (op === OP.adopt) patches.push({ op, words: int(), kinds: Array.from({ length: int() }, str) });
     else throw new Error(`unknown patch op ${op}`);
   }
   return patches;
@@ -73,7 +75,7 @@ function caretOf(el) {
 
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
-export function createApplier(doc, mount, send = () => {}, styleEl = null) {
+export function createApplier(doc, mount, send = () => {}, styleEl = null, repair = () => {}) {
   const byId = new Map();
   const need = (id) => {
     const el = byId.get(id);
@@ -108,7 +110,83 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     };
   };
 
+  // THE PAGE A SERVER SENT IS ADOPTED, never drawn over: its nodes, taken in
+  // document order, are the elements the program counted out under the same
+  // numbers. Markers (comments) are the writer's, between texts a parser
+  // would join. A page that is not the program's elements is emptied, loudly,
+  // and the program draws from nothing.
+  const nameOf = (n) => String(n.nodeName ?? n.tagName).toLowerCase();
+  const kindOf = nameOf;
+  const marker = (n) => nameOf(n) === "#comment";
+  const standing = () => {
+    const out = [];
+    const walk = (parent) => {
+      for (const n of Array.from(parent.childNodes || [])) {
+        if (marker(n)) continue;
+        out.push(n);
+        walk(n);
+      }
+    };
+    walk(mount);
+    return out;
+  };
+  const emptied = () => {
+    byId.clear();
+    while (mount.childNodes.length > 0) mount.removeChild(mount.childNodes[0]);
+  };
+  let broken = false;
+  // One number over the words of every text, in document order, folded as the
+  // program folds its own (`words_of`, realize/html/print.av): a parser or a
+  // proxy that dropped a newline or rewrote a word holds other words than the
+  // program drew.
+  const PRIME = 1000000007;
+  const BASE = 131;
+  const mixed = (acc, text) => {
+    const octets = new TextEncoder().encode(text);
+    let at = acc;
+    for (const b of octets) at = (at * BASE + b + 1) % PRIME;
+    return (at * BASE + octets.length + 1) % PRIME;
+  };
+  const wordsOf = (nodes) => nodes.filter((n) => kindOf(n) === "#text").reduce((acc, n) => mixed(acc, n.textContent), 7) + 1;
+  // The elements the last adoption took, whose controls may hold what a user
+  // typed before the program could hear it.
+  let taken = [];
+  const adopt = (kinds, words) => {
+    const nodes = standing();
+    if (kinds.length === 0) {
+      if (nodes.length > 0) { console.warn("avra: the page held elements this program does not draw — emptied"); emptied(); }
+      return;
+    }
+    if (nodes.length !== kinds.length || nodes.some((n, j) => kindOf(n) !== kinds[j]) || wordsOf(nodes) !== words) {
+      console.warn("avra: the page held is not the one this program draws — drawn again from nothing");
+      emptied();
+      broken = true;
+      return;
+    }
+    nodes.forEach((n, j) => keep(j, n));
+    taken = nodes;
+  };
+
+  // A control that holds more than its markup seeded was typed in before the
+  // program stood: it says so once, through the listener the program bound,
+  // and its handler learns what the page already shows. One listener per
+  // control: the first that reads the property.
+  const replay = () => {
+    const nodes = taken;
+    taken = [];
+    for (const el of nodes) {
+      for (const held of (el.__avra_listeners || new Map()).values()) {
+        if (!held.reads || el[held.reads] === undefined) continue;
+        const seeded = held.reads === "checked" ? el.getAttribute("checked") !== null : el.getAttribute(held.reads) ?? "";
+        if (el[held.reads] === seeded) continue;
+        held.listener(null);
+        break;
+      }
+    }
+  };
+
   const apply = {
+    [OP.adopt]: (p) => adopt(p.kinds, p.words),
     [OP.create]: (p) => keep(p.id, doc.createElement(p.tag)),
     [OP.create_text]: (p) => keep(p.id, doc.createTextNode(p.content)),
     // A NODE THAT MOVES IS THE SAME NODE, with all the page keeps on it. One
@@ -143,7 +221,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
         send(p.id, p.kind, saidBy(el, p.says, p.reads));
       };
       el.addEventListener(p.event, listener);
-      held.set(p.kind, { event: p.event, listener });
+      held.set(p.kind, { event: p.event, listener, reads: p.reads });
     },
     [OP.unlisten]: (p) => {
       const el = need(p.id);
@@ -163,7 +241,12 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   };
 
   return function applyFrame(bytes) {
-    for (const p of parseFrame(bytes)) apply[p.op](p);
+    for (const p of parseFrame(bytes)) {
+      apply[p.op](p);
+      if (broken) break;
+    }
+    if (broken) { broken = false; queueMicrotask(repair); return; }
+    replay();
   };
 }
 
@@ -214,6 +297,17 @@ export function sendEvent(mod, who, what, said) {
   event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
 }
 
+// The program's `scrolled(len, from, to, extent)` — `HOST.scrolled` — says which
+// rows of a windowed list the page shows and how tall they measure. The first
+// `len` octets of the seat are the list's path, a line break, and the key of the
+// row the focus rests on (none after it for none).
+export function sendScrolled(mod, path, from, to, extent, pin = "") {
+  const bytes = new TextEncoder().encode(`${path}\n${pin}`);
+  const at = Number(mod[HOST.seat](BigInt(bytes.length)));
+  new Uint8Array(mod.memory.buffer, at, bytes.length).set(bytes);
+  mod[HOST.scrolled](BigInt(bytes.length), BigInt(from), BigInt(to), BigInt(extent));
+}
+
 // The page's timers, for the program's asks. The program names a timer by
 // a number it counted out (`arm(token, ms, repeat)`), the host keeps the
 // handle, and `fired(token)` re-enters the program as a turn. A timer let
@@ -237,6 +331,11 @@ export function createTimers(clock, fired) {
       held.delete(t);
     },
     count: () => held.size,
+    // Every timer a module that stood down armed is let go.
+    clear: () => {
+      for (const timer of held.values()) (timer.again ? clock.clearInterval : clock.clearTimeout)(timer.handle);
+      held.clear();
+    },
   };
 }
 
@@ -306,6 +405,14 @@ export function createFetches(fetchFn, answered, clock = globalThis) {
       mine.controller.abort();
     },
     count: () => held.size,
+    // Every request a module that stood down asked is aborted, unanswered.
+    clear: () => {
+      for (const mine of held.values()) {
+        if (mine.timer !== null) clock.clearTimeout(mine.timer);
+        mine.controller.abort();
+      }
+      held.clear();
+    },
   };
 }
 
@@ -318,40 +425,112 @@ export function sendAnswer(mod, token, status, octets) {
   mod[HOST.answered](BigInt(token), BigInt(status), BigInt(octets.length));
 }
 
+// The page's frames, for the program's paints. The program asks for one when
+// state moved (`next()`), once until it comes; the host calls `painted` from
+// the display's own frame (`raf`, the page's requestAnimationFrame, or a
+// test's), and the program paints once however many turns moved it.
+export function createFrames(raf, painted) {
+  let pending = false;
+  return {
+    next: () => {
+      if (pending) return;
+      pending = true;
+      raf(() => { pending = false; painted(); });
+    },
+    waiting: () => pending,
+  };
+}
+
+// The print a server stamped on the mount, none (0) for a page it did not
+// send: the program compares it against the page it would draw itself.
+export function printOf(mount) {
+  const text = mount.getAttribute ? mount.getAttribute("data-avra-print") : null;
+  return /^[1-9][0-9]{0,15}$/.test(text ?? "") ? Number(text) : 0;
+}
+
+// The state a server shipped into the page, as octets: none for a page that
+// carries none.
+export function stateOf(doc) {
+  const block = doc && doc.getElementById ? doc.getElementById("avra-state") : null;
+  return block ? new TextEncoder().encode(block.textContent) : new Uint8Array(0);
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
 // `style` are a real page's or a stub's; `wasi(memory)` answers the
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
-// the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a) }) {
+// the name it lacks. `hot(swap)` is handed the verb that replaces the
+// module under the page: `swap(source)` asks the running module to say its
+// page, lets go of what it armed and asked, and starts the new one over the
+// elements the page holds — so its first paint is a diff against them.
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb), hot = null, state = null }) {
+  // The module events, answers and fires reach: the one running now.
   let mod = null;
   const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
+  const frames = createFrames(raf, () => mod[HOST.painted]());
   const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
-  const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
-  mod = await instantiate(source, {
-    wasi: wasi(() => mod.memory),
-    // The seat is a Bytes: the pointer names its box, and the LENGTH comes
-    // from the runtime's own reader, exported by the module.
-    rt: {
-      [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); },
-      [ROWS.arm]: timers.arm,
-      [ROWS.disarm]: timers.disarm,
-      [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
-      [ROWS.abort]: fetches.abort,
-    },
-  });
-  const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");
-  if (lacks.length > 0) {
-    throw new Error(`the module exports no ${lacks.join(", ")} — a page runs a program whose statements \`mount\` a view (\`use @std.ui.web.{mount}\`)`);
+  const windows = createWindows(document, mount, (path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin));
+  const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style, () => mod[HOST.repaired]());
+
+  // Start a module. Its rows reach IT, not the module running before it.
+  // `left` is the page that module said: none for a first start.
+  // `state` is the shipped state it takes: the document a server wrote into the
+  // page, or the one the module that stood down said.
+  const start = async (from, left, state) => {
+    const own = { module: null };
+    const exports = await instantiate(from, {
+      wasi: wasi(() => own.module.memory),
+      // The seat is a Bytes: the pointer names its box, and the LENGTH comes
+      // from the runtime's own reader, exported by the module.
+      rt: {
+        [ROWS.frame]: (ptr) => { const bytes = frameOf(own.module.memory, ptr, own.module.avra_bytes_len); sent(bytes); apply(bytes); queueMicrotask(windows.check); },
+        [ROWS.arm]: timers.arm,
+        [ROWS.disarm]: timers.disarm,
+        [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(own.module.memory, ptr, own.module.avra_bytes_len).slice()),
+        [ROWS.abort]: fetches.abort,
+        [ROWS.next_paint]: frames.next,
+        [ROWS.stood]: () => BigInt(left ? 0 : printOf(mount)),
+      },
+    });
+    own.module = exports;
+    const lacks = Object.values(HOST).filter((name) => typeof exports[name] !== "function");
+    if (lacks.length > 0) {
+      throw new Error(`the module exports no ${lacks.join(", ")} — a page runs a program whose statements \`mount\` a view (\`use @std.ui.web.{mount}\`)`);
+    }
+    // A REACTOR: initialize the C runtime once, then the program's own
+    // statements — never a `main` that exits.
+    exports._initialize();
+    if (left && left.length > 0) {
+      const at = Number(exports[HOST.seat](BigInt(left.length)));
+      new Uint8Array(exports.memory.buffer, at, left.length).set(left);
+      exports[HOST.took](BigInt(left.length));
+    }
+    if (state && state.length > 0) {
+      const at = Number(exports[HOST.seat](BigInt(state.length)));
+      new Uint8Array(exports.memory.buffer, at, state.length).set(state);
+      exports[HOST.stated](BigInt(state.length));
+    }
+    mod = exports;
+    const code = exports[HOST.entry]();
+    if (code !== 0) throw new Error(`the program's statements answered ${code}`);
+    return exports;
+  };
+
+  const first = await start(source, null, state ?? stateOf(document));
+  // Said last: a reader of the page knows the module stands and has painted.
+  if (document.documentElement) document.documentElement.setAttribute("data-avra", "ready");
+  if (hot) {
+    hot(async (next) => {
+      const said = frameOf(mod.memory, Number(mod[HOST.said]()), mod.avra_bytes_len).slice();
+      const shipped = frameOf(mod.memory, Number(mod[HOST.state_said]()), mod.avra_bytes_len).slice();
+      timers.clear();
+      fetches.clear();
+      return start(next, said, shipped);
+    });
   }
-  // A REACTOR: initialize the C runtime once, then the program's own
-  // statements — never a `main` that exits.
-  mod._initialize();
-  const code = mod[HOST.entry]();
-  if (code !== 0) throw new Error(`the program's statements answered ${code}`);
-  return mod;
+  return first;
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

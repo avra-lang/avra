@@ -5,6 +5,8 @@
 use tree.identity.{NodeId}
 use tree.node.{Node, Action, EventKind, Said}
 use realize.html.element.{Element, lowered}
+use realize.html.print.{kinds_of, print_of, words_of}
+use realize.dom.snapshot.{Page, said as said_page}
 use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars}
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
@@ -17,7 +19,10 @@ type Bound = { id: NodeId, action: Action }
 /// A page as last painted: its elements, the next number it will give
 /// one, every rule a paint has named so far and the theme's variables
 /// the sheet was last written with, the handlers its elements bound, and
-/// what the user was heard to do to it since.
+/// what the user was heard to do to it since. `stood` is the print of the page
+/// a server sent, none when it sent none, and `adopting` the elements the
+/// first frame tells the host it keeps. `sheet` is the sheet the host
+/// holds, and `handed` the page a module that stood down said.
 export type Live = {
     page: Cell<List<Element>> = Cell.new([]),
     next: Cell<int> = Cell.new(0),
@@ -25,6 +30,10 @@ export type Live = {
     worn: Cell<string?> = Cell.new(null),
     bound: Cell<List<Bound>> = Cell.new([]),
     heard: Cell<List<Heard>> = Cell.new([]),
+    stood: Cell<int> = Cell.new(0),
+    adopting: Cell<Patch?> = Cell.new(null),
+    sheet: Cell<string> = Cell.new(""),
+    handed: Cell<Page?> = Cell.new(null),
 }
 
 /// A page nothing was painted on.
@@ -39,6 +48,21 @@ fn rules_of(n: Node) -> List<CssRule> {
 fn rules_of_notice(notice: Node?) -> List<CssRule> {
     let node? = notice else { return [] }
     rules_of(node)
+}
+
+/// An element and what it holds, hearing nothing: the page as a server's
+/// HTML stands before any listener is on it.
+fn unheard(e: Element) -> Element {
+    match e {
+        .Text(_) -> e,
+        .Tag(el) -> Element.Tag(el with { hears: [], kids: [unheard(k) for k in el.kids] }),
+    }
+}
+
+/// The patch that opens a first frame over a server's page, none otherwise.
+fn present_adopt(adopting: Patch?) -> List<Patch> {
+    let said? = adopting else { return [] }
+    [said]
 }
 
 /// Every handler an element and what it holds bound, by who hears it.
@@ -57,6 +81,14 @@ impl Live {
     /// The handlers are kept anew EVERY paint: two trees that draw alike
     /// may still close over different values.
     fn patches(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        self.take_handed(root, theme)
+        let print = self.stood.get()
+        if print != 0 {
+            self.stood.set(0)
+            self.adopt(root, theme, print)
+        }
+        let adopted = self.adopting.get()
+        self.adopting.set(null)
         let restyled = self.restyled(root, theme, notice)
         let now = diff(
             self.page.get(),
@@ -68,7 +100,73 @@ impl Live {
         self.next.set(now.next)
         self.heard.set([])
         self.bound.set([b for e in now.page for b in bound_in(e)])
-        restyled.concat(now.patches)
+        present_adopt(adopted).concat(restyled).concat(now.patches)
+    }
+
+    /// THE PAGE A SERVER SENT, ADOPTED: when the tree this module draws first
+    /// folds to the print the server stamped, the page stands as that tree
+    /// with its numbers counted out as a first paint counts them — hearing
+    /// nothing yet, wearing the sheet — and the paint after it is the ordinary
+    /// diff against it: listeners and nothing built. When it does not, the
+    /// page stays empty and the first frame tells the host to clear what it
+    /// holds, so the two never diverge in silence.
+    fn adopt(root: Node, theme: Theme, print: int) {
+        let run = lowered(root)
+        let rules = distinct_rules(rules_of(root))
+        let css = page_sheet(rules, theme, [])
+        if print_of(run, css) != print {
+            self.adopting.set(Patch.Adopt([], 0))
+            return
+        }
+        self.sheet.set(css)
+        let placed = diff([], run, [], 0)
+        self.page.set([unheard(e) for e in placed.page])
+        self.next.set(placed.next)
+        self.rules.set(rules)
+        self.worn.set(root_vars(theme))
+        self.adopting.set(Patch.Adopt(kinds_of(placed.page), words_of(placed.page)))
+    }
+
+    /// The page a module left, taken over once: the first paint only.
+    fn take_handed(root: Node, theme: Theme) {
+        let left? = self.handed.get() else { return }
+        self.handed.set(null)
+        self.take_over(left, root, theme)
+    }
+
+    /// THE PAGE A MODULE LEFT, TAKEN OVER: the elements the host holds stand
+    /// as the module that stood down said them, under their numbers, hearing
+    /// nothing yet — so the first paint is a diff against them: what an edit
+    /// changed, and the listeners this module binds. The sheet is kept when
+    /// this tree's classes write the same one, and sent again when they do not.
+    fn take_over(left: Page, root: Node, theme: Theme) {
+        self.page.set([unheard(e) for e in left.elements])
+        self.next.set(left.next)
+        let rules = distinct_rules(rules_of(root))
+        if page_sheet(rules, theme, []) != left.sheet { return }
+        self.rules.set(rules)
+        self.worn.set(root_vars(theme))
+        self.sheet.set(left.sheet)
+    }
+
+    /// The page as it stands, said for a module that takes over.
+    fn said() -> Bytes {
+        said_page(
+            Page { elements: self.page.get(), next: self.next.get(), sheet: self.sheet.get() },
+        )
+    }
+
+    /// The page as the module first drew it: nothing built, nothing held —
+    /// what a host that lost its elements asks for.
+    fn reset() {
+        self.page.set([])
+        self.next.set(0)
+        self.rules.set([])
+        self.worn.set(null)
+        self.sheet.set("")
+        self.bound.set([])
+        self.heard.set([])
+        self.adopting.set(null)
     }
 
     /// A notice stands BESIDE the view: after its elements, at the page's
@@ -93,7 +191,9 @@ impl Live {
         if rules.length == self.rules.get().length && self.worn.get() == vars { return [] }
         self.rules.set(rules)
         self.worn.set(vars)
-        [Patch.Style(page_sheet(rules, theme, []))]
+        let css = page_sheet(rules, theme, [])
+        self.sheet.set(css)
+        [Patch.Style(css)]
     }
 
     /// `patches`, as the frame a host applies.
