@@ -12,7 +12,8 @@ use app.{Act, Shown, running, shown, stood, notice_node}
 use tree.controls.{Control}
 use tree.node.{Said, Node, Attribute}
 use realize.tui.said.{said_of}
-use realize.tui.tui.{focused}
+use realize.tui.tui.{focused, placed}
+use realize.tui.hit.{hit, list_at, list_nodes, places}
 use tree.lists.{flatten}
 use tree.view.{View}
 use native.net.{over_http}
@@ -65,17 +66,6 @@ export fn terminal<V: View>(
 /// in all, the window it built, and the nodes of the rows built.
 type Listed = { path: string, count: int, from: int, to: int, rows: List<Node> }
 
-/// The rows of windowed lists in a tree, in reading order: each says it is
-/// one by where it stands in its list.
-fn placed_rows(n: Node) -> List<Node> {
-    let own = if n.attrs.any(places) { [n] } else { [] }
-    own.concat(flatten([placed_rows(k) for k in n.children]))
-}
-
-fn places(a: Attribute) -> bool {
-    match a { .Placed(_, _, _) -> true, _ -> false }
-}
-
 /// How many rows the list in all has, as a row says.
 fn of_rows(attrs: List<Attribute>) -> int {
     let held? = attrs.find(places) else { return 0 }
@@ -121,6 +111,15 @@ fn one_line(text: string) -> string {
     )
 }
 
+/// A click: a field or a slider takes the focus and does nothing more; any
+/// other control is acted on as Enter acts on it.
+fn clicked(c: Control) -> bool {
+    match c.node.prim {
+        .Field or .Slider -> false,
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch -> entered(c),
+    }
+}
+
 /// A typed character: a field takes it after what it holds, a slider
 /// moves on `+` and `-`, and a space acts as Enter does elsewhere.
 fn typed(c: Control, ch: string) -> bool {
@@ -163,13 +162,17 @@ impl Terminal {
         on[at]
     }
 
-    /// The windowed list the screen shows, first of them: where it stands, how
-    /// many rows it has in all, and the window it built.
-    fn listed() -> Listed? {
+    /// The windowed list the screen shows, first of them.
+    fn listed() -> Listed? { self.listed_nth(0) }
+
+    /// The `nth` windowed list the screen shows, in reading order: where it
+    /// stands, how many rows it has in all, and the window it built.
+    fn listed_nth(nth: int) -> Listed? {
         let root? = self.shown.tree.get() else { return null }
-        let path? = self.shown.app.stands.windows().first() else { return null }
+        let path? = self.shown.app.stands.windows().drop(nth).first() else { return null }
+        let held? = list_nodes(root).drop(nth).first() else { return null }
         let list? = self.shown.app.stands.find(path) else { return null }
-        let rows = placed_rows(root)
+        let rows = [c for c in held.children if c.attrs.any(places)]
         let count = of_rows(rows.first()?.attrs ?? [])
         let w = list.window_of(count)
         Listed { path: path, count: count, from: w.from, to: w.to, rows: rows }
@@ -212,9 +215,30 @@ impl Terminal {
         self.slid(l, l.from + by * size)
     }
 
+    /// The control under the cell `x`, `y` of the screen as the layout placed
+    /// it takes the focus and is acted on as a press: a button presses, a box
+    /// changes over, a field or a slider only takes the focus. True when a
+    /// handler ran.
+    fn click(x: int, y: int) -> bool {
+        let root? = self.shown.tree.get() else { return false }
+        let on = self.reachable()
+        let boxes = placed(root, self.width, self.focused()?.seat)
+        let seat? = hit(root, boxes, x, y, (s: int) -> on.any(it.seat == s)) else { return false }
+        let at? = [j for j, c in on if c.seat == seat].first() else { return false }
+        self.rests(on, at)
+        self.act(clicked)
+    }
+
+    /// The windowed list under the cell `x`, `y` — the first when the cell is
+    /// over none: which list a wheel turned there moves.
+    fn list_under(x: int, y: int) -> int {
+        let root? = self.shown.tree.get() else { return 0 }
+        list_at(root, placed(root, self.width, self.focused()?.seat), x, y) ?? 0
+    }
+
     /// The wheel moves the window `by` rows, held inside the rows there are.
-    fn wheel(by: int) {
-        let l? = self.listed() else { return }
+    fn wheel(nth: int, by: int) {
+        let l? = self.listed_nth(nth) else { return }
         let size = l.to - l.from
         let last = if l.count - size < 0 { 0 } else { l.count - size }
         let from = if l.from + by < 0 { 0 } else if l.from + by > last { last } else { l.from + by }
@@ -242,6 +266,9 @@ impl Terminal {
     /// `act` runs as a turn: a paint follows when it ran.
     fn turn(act: Act) -> bool { self.shown.app.turn(act) }
 
+    /// The focus rests on the control at `at` among `on`.
+    fn rests(on: List<Control>, at: int) { self.focus.set(Focus { path: on[at].path, at: at }) }
+
     /// The focus moves `by` controls on, around the ends.
     fn move(by: int) {
         let on = self.reachable()
@@ -252,7 +279,7 @@ impl Terminal {
             self.move(by)
             return
         }
-        self.focus.set(Focus { path: on[to].path, at: to })
+        self.rests(on, to)
     }
 
     /// The focus would wrap past the ends of what the window built: the
@@ -271,7 +298,7 @@ impl Terminal {
     fn act(by: fn(Control) -> bool) -> bool {
         let on = self.reachable()
         let at? = self.resting(on) else { return false }
-        self.focus.set(Focus { path: on[at].path, at: at })
+        self.rests(on, at)
         self.shown.app.turn_of(on[at].path, () -> by(on[at]))
     }
 
@@ -309,9 +336,10 @@ impl Terminal {
                 self.edge(true)
                 false
             },
-            .Escape or .Chord(_, _, _) or .Click(_, _, _, _, _) -> false,
-            .Wheel(_, _, toward_end) -> {
-                self.wheel(if toward_end { 3 } else { -3 })
+            .Escape or .Chord(_, _, _) -> false,
+            .Click(x, y, _, _, _) -> self.click(x, y),
+            .Wheel(x, y, toward_end) -> {
+                self.wheel(self.list_under(x, y), if toward_end { 3 } else { -3 })
                 false
             },
             .Paste(.Text(text)) -> self.act((c: Control) -> pasted(c, text)),
