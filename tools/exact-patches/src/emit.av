@@ -102,13 +102,26 @@ export fn manifest_of(name: string) -> string {
     "[package]\nname = \"@ui/${name}\"\nversion = \"0.0.1\"\ndescription = \"A generated view program\"\n\n[bin]\nname = \"${name}\"\npath = \"src/main.av\"\n"
 }
 
-/// The program as a package's main: its source, then a line that reads the view.
+/// The program as a package's main: its source, then the driver. The screen
+/// is painted, then shown after each turn of writes, one frame a paint.
 export fn main_of(p: Program) -> string {
     source_of(p)
-            .replace("use @std.ui.components.", "use @std.ui.tree.view.{tree_of}\nuse @std.ui.components.") +
-        "println(\"" +
-        dollar() +
-        "{tree_of(view()).children.length}\")\n"
+            .replace("use @std.ui.components.", "use @std.ui.headless.{headless}\nuse @std.ui.components.") +
+        driver_lines(p).join("\n") +
+        "\n"
 }
 
-fn dollar() -> string { "\$" }
+fn driver_lines(p: Program) -> List<string> {
+    ["let screen = headless(view)", "println(screen.text())"]
+        .concat([l for t in p.turns for l in turn_lines(t)])
+}
+
+fn turn_lines(turn: List<int>) -> List<string> {
+    [
+        "let _ = screen.turn(() -> {",
+        [x for k in turn for x in ["    step(${k})"]].join("\n"),
+        "    true",
+        "})",
+        "println(screen.text())",
+    ]
+}
