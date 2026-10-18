@@ -36,7 +36,7 @@ if (mode === "windowed") {
   const total = await read(`document.documentElement.scrollHeight`);
   for (const at of [0, 0.5, 0.999, 0.25]) {
     const t0 = Date.now();
-    await read(`window.scrollTo(0, Math.floor((document.documentElement.scrollHeight - innerHeight) * ${at})); 1`);
+    await read(`(window.scrollTo(0, Math.floor((document.documentElement.scrollHeight - innerHeight) * ${at})), 1)`);
     await settle();
     const spent = Date.now() - t0;
     const nodes = await read(`document.querySelectorAll("*").length`);
