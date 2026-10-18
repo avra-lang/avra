@@ -22,7 +22,7 @@ export enum Then {
 
 /// One help's claim, run: `refused` draws the voice (its words hold
 /// `says`), and `applied` is `refused` with the help's form written in.
-export type RemedyRow = { kind: string, says: string, refused: string, applied: string, becomes: Then }
+export type RemedyRow = { kind: string, says: string, refused: Witness, applied: Witness, becomes: Then }
 
 /// The refusals the rows are held to, in registry order.
 export fn rows() -> List<RemedyRow> {
@@ -30,162 +30,396 @@ export fn rows() -> List<RemedyRow> {
         RemedyRow {
             kind: "type.lambda",
             says: "a generic fn is not a value",
-            refused: "fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = ident\nf(1)",
-            applied: "fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = (x0) -> ident(x0)\nf(1)",
+            refused: Witness.Source("fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = ident\nf(1)"),
+            applied: Witness
+                .Source("fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = (x0) -> ident(x0)\nf(1)"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.extern_value",
             says: "an extern fn is not a value",
-            refused: "extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")",
-            applied: "extern fn avra_host_is_dir(path: string) -> int\nlet f = (x0: string) -> avra_host_is_dir(x0)\nf(\"corpus\")",
+            refused: Witness
+                .Source(
+                    "extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")",
+                ),
+            applied: Witness
+                .Source(
+                    "extern fn avra_host_is_dir(path: string) -> int\nlet f = (x0: string) -> avra_host_is_dir(x0)\nf(\"corpus\")",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.mut_fn",
             says: "`mut fn` marks a method that writes its receiver",
-            refused: "mut fn f() -> int { 1 }\nf()",
-            applied: "fn f() -> int { 1 }\nf()",
+            refused: Witness.Source("mut fn f() -> int { 1 }\nf()"),
+            applied: Witness.Source("fn f() -> int { 1 }\nf()"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.seat",
             says: "is `mut`, and this is a value",
-            refused: "fn f(mut n: int) -> int { n }\nf(1)",
-            applied: "fn f(n: int) -> int { n }\nf(1)",
+            refused: Witness.Source("fn f(mut n: int) -> int { n }\nf(1)"),
+            applied: Witness.Source("fn f(n: int) -> int { n }\nf(1)"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.receiver",
             says: "is not `mut`",
-            refused: "type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length",
-            applied: "type B = { xs: List<int> }\nimpl B {\n    mut fn put(v: int) { self.xs.push(v) }\n}\nmut b = B { xs: [] }\nb.put(1)\nb.xs.length",
+            refused: Witness
+                .Source(
+                    "type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length",
+                ),
+            applied: Witness
+                .Source(
+                    "type B = { xs: List<int> }\nimpl B {\n    mut fn put(v: int) { self.xs.push(v) }\n}\nmut b = B { xs: [] }\nb.put(1)\nb.xs.length",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.place",
             says: "is not `mut`",
-            refused: "fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length",
-            applied: "fn grow(xs: List<int>) -> List<int> { xs.concat([1]) }\nlet v = grow([1])\nv.length",
+            refused: Witness.Source("fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length"),
+            applied: Witness
+                .Source(
+                    "fn grow(xs: List<int>) -> List<int> { xs.concat([1]) }\nlet v = grow([1])\nv.length",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.fail",
             says: "`fail` raises on a `Result`",
-            refused: "fn f() -> int {\n    fail 1\n}\nf()",
-            applied: "fn f() -> Result<int, int> {\n    fail 1\n}\nlet r = f()\n1",
+            refused: Witness.Source("fn f() -> int {\n    fail 1\n}\nf()"),
+            applied: Witness.Source("fn f() -> Result<int, int> {\n    fail 1\n}\nlet r = f()\n1"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.variant_arity",
             says: "carries `int`, given nothing",
-            refused: "enum S {\n    a(int)\n    b\n}\nlet x = S.a()\n2",
-            applied: "enum S {\n    a(int)\n    b\n}\nlet x = S.a(1)\n2",
+            refused: Witness.Source("enum S {\n    a(int)\n    b\n}\nlet x = S.a()\n2"),
+            applied: Witness.Source("enum S {\n    a(int)\n    b\n}\nlet x = S.a(1)\n2"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.with_struct",
             says: "`with` copies a struct",
-            refused: "let n = 3\nlet m = n with { x: 1 }\n2",
-            applied: "type P = { x: int }\nlet p = P { x: 0 }\nlet m = p with { x: 1 }\n2",
+            refused: Witness.Source("let n = 3\nlet m = n with { x: 1 }\n2"),
+            applied: Witness.Source("type P = { x: int }\nlet p = P { x: 0 }\nlet m = p with { x: 1 }\n2"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.match",
             says: "`match` chooses over an enum",
-            refused: "let n = 3\nmatch n {\n    .a -> 1\n}",
-            applied: "let n = 3\nmatch n {\n    3 -> 1\n    _ -> 0\n}",
+            refused: Witness.Source("let n = 3\nmatch n {\n    .a -> 1\n}"),
+            applied: Witness.Source("let n = 3\nmatch n {\n    3 -> 1\n    _ -> 0\n}"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.list_scalar",
             says: "a list element takes its type from its value",
-            refused: "let xs = [null, null]\n1",
-            applied: "let xs: List<int?> = [null, null]\n1",
+            refused: Witness.Source("let xs = [null, null]\n1"),
+            applied: Witness.Source("let xs: List<int?> = [null, null]\n1"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.applied",
             says: "a map's keys are strings",
-            refused: "let m: Map<int, int> = {}\n1",
-            applied: "let m: Map<string, int> = {}\n1",
+            refused: Witness.Source("let m: Map<int, int> = {}\n1"),
+            applied: Witness.Source("let m: Map<string, int> = {}\n1"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.type_value",
             says: "is a type, not a value",
-            refused: "type P = { x: int }\nmut p = P\n1",
-            applied: "type P = { x: int }\nlet p = P { x: 1 }\np.x",
+            refused: Witness.Source("type P = { x: int }\nmut p = P\n1"),
+            applied: Witness.Source("type P = { x: int }\nlet p = P { x: 1 }\np.x"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.list",
             says: "a comprehension walks a list",
-            refused: "[x for x in 1]",
-            applied: "[x for x in [1]]",
+            refused: Witness.Source("[x for x in 1]"),
+            applied: Witness.Source("[x for x in [1]]"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "resolve.receiver",
             says: "names a method's receiver",
-            refused: "let self = 1\nself",
-            applied: "let me = 1\nme",
+            refused: Witness.Source("let self = 1\nself"),
+            applied: Witness.Source("let me = 1\nme"),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.const_pattern",
             says: "is a const here, so this arm compares",
-            refused: "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\nf(M.B)",
-            applied: "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n        _ -> 4\n    }\n}\nf(M.B)",
-            becomes: Then.Clean,
-        },
-        RemedyRow {
-            kind: "type.spread_value",
-            says: "`..` spreads `int`, which has no fields",
-            refused: "type P = { x: int }\nlet p = P { ..5, x: 1 }\n2",
-            applied: "type P = { x: int }\nlet q = P { x: 0 }\nlet p = P { ..q, x: 1 }\n2",
-            becomes: Then.Clean,
-        },
-        RemedyRow {
-            kind: "type.spread_nullable",
-            says: "which may be null",
-            refused: "type P = { x: int }\nlet a: P? = null\nlet p = P { ..a, x: 1 }\n2",
-            applied: "type P = { x: int }\nlet a: P? = null\nlet p = P { ..(a ?? P { x: 0 }), x: 1 }\n2",
-            becomes: Then.Clean,
-        },
-        RemedyRow {
-            kind: "type.spread_generic",
-            says: "takes type parameters",
-            refused: "type G<T> = { v: T }\nlet g = G { v: 1 }\nlet h = G { ..g }\n2",
-            applied: "type G<T> = { v: T }\nlet g = G { v: 1 }\nlet h = g with { v: 2 }\n2",
-            becomes: Then.Clean,
-        },
-        RemedyRow {
-            kind: "type.spread_map",
-            says: "`..` in a map spreads a map, found `int`",
-            refused: "let m = { ..5 }\n2",
-            applied: "let a = {\"k\": 1}\nlet m = { ..a, \"j\": 2 }\n2",
-            becomes: Then.Clean,
-        },
-        RemedyRow {
-            kind: "type.spread_list",
-            says: "`..` in a list spreads a list, found `int`",
-            refused: "let a = [..5]\n2",
-            applied: "let xs = [1]\nlet a = [..xs, 2]\n2",
-            becomes: Then.Clean,
-        },
-        RemedyRow {
-            kind: "type.spread_seat",
-            says: "`..` spreads into a seat that takes the rest of the arguments, and `g` declares none",
-            refused: "fn g(a: int, b: int) -> int { a }\nlet c = g(1, ..[2])\nc",
-            applied: "fn g(a: int, ..b: List<int>) -> int { a }\nlet c = g(1, ..[2])\nc",
+            refused: Witness
+                .Source(
+                    "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n    }\n}\nf(M.B)",
+                ),
+            applied: Witness
+                .Source(
+                    "enum M {\n    A\n    B\n}\nconst a = M.A\nfn f(m: M) -> int {\n    match m {\n        .A -> 1\n        .B -> 2\n        a -> 3\n        _ -> 4\n    }\n}\nf(M.B)",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "type.member_pattern",
             says: "`as` takes a gathered variant whole",
-            refused: "enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a as x -> 1\n}",
-            applied: "enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a(x) -> 1\n}",
+            refused: Witness.Source("enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a as x -> 1\n}"),
+            applied: Witness.Source("enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a(x) -> 1\n}"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.bad_version",
+            says: "a version is `MAJOR.MINOR.PATCH`",
+            refused: manifest("[package]\nname = \"app\"\nversion = \"one\"\n"),
+            applied: manifest(app_manifest),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.lib_name",
+            says: "a library is named for its package",
+            refused: manifest(app_manifest + "\n[lib]\nname = \"other\"\npath = \"src/main.av\"\n"),
+            applied: manifest(app_manifest + "\n[lib]\nname = \"app\"\npath = \"src/main.av\"\n"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.bad_opt_level",
+            says: "`opt_level` is 0, 1, 2, 3",
+            refused: manifest(app_manifest + "\n[profile.release]\nopt_level = 9\n"),
+            applied: manifest(app_manifest + "\n[profile.release]\nopt_level = 2\n"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.bad_tool_from",
+            says: "a tool comes from `path`, `env` or `abs`",
+            refused: manifest(app_manifest + "\n[process.tools]\ngit = { from = \"nowhere\" }\n"),
+            applied: manifest(app_manifest + "\n[process.tools]\ngit = { from = \"path\" }\n"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.unsupported_dependency",
+            says: "is not a path dependency",
+            refused: manifest(app_manifest + "\n[dependencies]\n\"@x/y\" = \"1.0\"\n"),
+            applied: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + x_dependency,
+                        "/w/src/main.av": "1\n",
+                        "/w/vendor/dep/avra.toml": x_package,
+                        "/w/vendor/dep/src/y.av": "export fn d() -> int { 1 }\n",
+                    },
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.trait",
+            says: "is not part of `T`",
+            refused: Witness
+                .Source(
+                    "trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n    fn extra() -> int { 2 }\n}\n1",
+                ),
+            applied: Witness
+                .Source(
+                    "trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n}\nimpl P {\n    fn extra() -> int { 2 }\n}\n1",
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.alias_copy",
+            says: "is a copy of `p`",
+            refused: Witness
+                .Source(
+                    "type R = { n: int }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn shadow(p: R) {\n    mut q = p\n    q.bump()\n}\n1",
+                ),
+            applied: Witness
+                .Source(
+                    "type R = { n: int }\nimpl R {\n    mut fn bump() { self.n = self.n + 1 }\n}\nfn shadow(mut p: R) {\n    p.bump()\n}\n1",
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.derive_contract",
+            says: "a trait's `derive` answers the declarations it makes",
+            refused: Witness.Source("trait T {\n    static fn derive(n: int) -> int { n }\n}\n1"),
+            applied: with_meta(
+                "use @std.meta.{Type, Directive}\ntrait T {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n1",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "resolve.place",
+            says: "a mutation lands on a place",
+            refused: Witness.Source("1 = 2"),
+            applied: Witness.Source("mut x = 1\nx = 2\nx"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.registry_hole",
+            says: "this hole takes the rest",
+            refused: Witness
+                .Source(
+                    "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}",
+                ),
+            applied: Witness
+                .Source(
+                    "enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    .C -> 0\n    .D -> 0\n}",
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.defer_inert",
+            says: "deferring a value does nothing",
+            refused: Witness.Source("errdefer 1"),
+            applied: Witness.Source("fn stop() {}\ndefer stop()\n1"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "flow.unbounded_cleanup",
+            says: "this `defer`'s body waits",
+            refused: Witness
+                .Source(
+                    "extern fn avra_fiber_sleep(ms: int)\nfn clean() {\n    defer avra_fiber_sleep(1)\n}\nclean()",
+                ),
+            applied: with_time(
+                "use @std.time.{ms}\nextern fn avra_fiber_sleep(ms: int)\nfn clean() {\n    defer {\n        let _ = within ms(100) {\n            avra_fiber_sleep(1)\n            0\n        }\n    }\n}\nclean()",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "flow.end_arm",
+            says: "can end and this `select` does not say what then",
+            refused: with_task(
+                "use @std.task.{Source}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n    }\n}\n0",
+            ),
+            applied: with_task(
+                "use @std.task.{Source}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n        src.ended -> 0\n    }\n}\n0",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "flow.no_fate",
+            says: "a handler that can fail must name a fate",
+            refused: with_provider(
+                "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n}\n0\n",
+                work_provider,
+            ),
+            applied: with_provider(
+                "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n    dead: \"letter\"\n}\n0\n",
+                work_provider,
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.link_flag",
+            says: "is `true` or `false`",
+            refused: manifest(app_manifest + "\n[link]\ndynamic_symbols = \"yes\"\n"),
+            applied: manifest(app_manifest + "\n[link]\ndynamic_symbols = true\n"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.bad_budget",
+            says: "is a count of at least 1",
+            refused: manifest(app_manifest + "\n[lifted]\nsteps = 0\n"),
+            applied: manifest(app_manifest + "\n[lifted]\nsteps = 600000\n"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.syntax",
+            says: "is declared twice",
+            refused: manifest(app_manifest + "\n[package]\nname = \"other\"\n"),
+            applied: manifest(app_manifest),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "collect.not_a_list",
+            says: "must declare a `List<T>`",
+            refused: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: int = @tag in self as Entry { name: it.name } by it.name\n1",
+                ),
+            applied: Witness.Source(entry_collect),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "collect.proj_type",
+            says: "disagrees with the declared element",
+            refused: Witness
+                .Source(
+                    "type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name\n1",
+                ),
+            applied: Witness.Source(entry_collect),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "const.budget",
+            says: "a const ran past its budget",
+            refused: Witness.Source("const n: int = (0..99999999).fold(0, (a, b) -> a + b)\nn"),
+            applied: Witness.Source("let n: int = (0..99999999).fold(0, (a, b) -> a + b)\nn"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "const.param",
+            says: "a const cannot read a run-time parameter",
+            refused: Witness.Source("fn g(x: int) -> int {\n    const k: int = x + 1\n    k\n}\ng(1)"),
+            applied: Witness.Source("fn g(const x: int) -> int {\n    const k: int = x + 1\n    k\n}\ng(1)"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.quote_pat_shape",
+            says: "matches one node",
+            refused: Witness.Source("match 1 { quote { 1\n2 } -> true, _ -> false }"),
+            applied: Witness.Source("match 1 { quote { f(\${..xs}) } -> true, _ -> false }"),
+            becomes: Then.Draws("type.quote_pat_subj"),
+        },
+        RemedyRow {
+            kind: "type.quote_pat_hole",
+            says: "names a fresh variable",
+            refused: Witness.Source("match 1 { quote { \${1 + 1} } -> true, _ -> false }"),
+            applied: Witness.Source("match 1 { quote { \${x} } -> true, _ -> false }"),
+            becomes: Then.Draws("type.quote_pat_subj"),
+        },
+        RemedyRow {
+            kind: "type.quote_pat_type",
+            says: whole_field,
+            refused: Witness.Source("match 1 { quote { let x: \${T}? = null } -> true, _ -> false }"),
+            applied: Witness.Source("match 1 { quote { let x: \${T} = null } -> true, _ -> false }"),
+            becomes: Then.Draws("type.quote_pat_subj"),
+        },
+        RemedyRow {
+            kind: "type.quote_pat_seat",
+            says: whole_field,
+            refused: Witness.Source("match 1 { quote { let l\${x}_y = 1 } -> true, _ -> false }"),
+            applied: Witness.Source("match 1 { quote { let \${x} = 1 } -> true, _ -> false }"),
+            becomes: Then.Draws("type.quote_pat_subj"),
+        },
+        RemedyRow {
+            kind: "resolve.not_a_dependency",
+            says: "is not a dependency of this package",
+            refused: Witness.Package({"/w/avra.toml": app_manifest, "/w/src/main.av": "use @x.y.{z}\n1\n"}),
+            applied: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + x_dependency,
+                        "/w/src/main.av": "use @x.y.{z}\n1\n",
+                        "/w/vendor/dep/avra.toml": x_package,
+                        "/w/vendor/dep/src/y.av": z_module,
+                    },
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "resolve.package_form",
+            says: "names no package",
+            refused: Witness.Package({"/w/avra.toml": app_manifest, "/w/src/main.av": "use @solo.{z}\n1\n"}),
+            applied: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + x_dependency,
+                        "/w/src/main.av": "use @x.y.a.{z}\n1\n",
+                        "/w/vendor/dep/avra.toml": x_package,
+                        "/w/vendor/dep/src/a/a.av": z_module,
+                    },
+                ),
             becomes: Then.Clean,
         },
     ]
@@ -202,9 +436,9 @@ export fn remedy_failures() -> List<string> {
 }
 
 export fn row_fails(r: RemedyRow) -> bool {
-    let drawn = avra().check(new_source_file("witness.av", r.refused))
+    let drawn = rendered_over(r.refused)
     if !drawn.contains("[${r.kind}]") || !drawn.contains(r.says) { return true }
-    let out = avra().check(new_source_file("witness.av", r.applied))
+    let out = rendered_over(r.applied)
     if unreadable(out) || out.contains(r.says) { return true }
     match r.becomes { .Clean -> out.contains("error["), .Draws(k) -> !out.contains("error[${k}]") }
 }
@@ -223,10 +457,7 @@ export fn unsound_fixes(runs: List<Shown>) -> List<string> {
 }
 
 fn unsound(s: Shown) -> bool {
-    let text = match s.witness {
-        .Source(t) -> t,
-        .Package(_) or .Built(_) or .Absent or .Beyond(_) -> "",
-    }
+    let text = match s.witness { .Source(t) -> t, .Package(_) or .Absent or .Beyond(_) -> "" }
     if text.is_empty() { return false }
     let drawn = [d for d in avra().analyze(new_source_file("witness.av", text)).diagnostics if d.kind == s.code.kind]
     [spliced_fails(s.code.kind, text, d, sg) for d in drawn for sg in d.suggestions].any(it)
@@ -237,3 +468,21 @@ fn spliced_fails(kind: string, text: string, d: Diag, sg: Suggestion) -> bool {
     let out = avra().check(new_source_file("witness.av", after))
     unreadable(out) || out.contains("[${kind}]: ${d.message}")
 }
+
+/// The provider package of a component whose handler can fail.
+const work_provider: string = "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n"
+
+/// A lawful collect over the entry record.
+const entry_collect: string = "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1"
+
+/// The words two quote-pattern refusals share.
+const whole_field: string = "binds only its WHOLE field"
+
+/// The manifest lines that make `@x/y` a path dependency of the app.
+const x_dependency: string = "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n"
+
+/// The dependency's own manifest.
+const x_package: string = "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n"
+
+/// The module the dependency fixtures export `z` from.
+const z_module: string = "export fn z() -> int { 1 }\n"
