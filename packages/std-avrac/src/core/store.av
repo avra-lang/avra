@@ -146,12 +146,12 @@ export type SyntaxArena = {
     // the DSL text an expression-position `grammar { … }` literal
     // read, by the `Grammar` struct literal it fully expanded into —
     // the raw block's own words, never rebuilt from the expansion
-    grammar_lits: Cell<List<string?>>,
+    grammar_lits: Cell<Map<string, string>>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
     // the WRITTEN types rather than inferred from the fields
-    struct_targs: Cell<List<List<TypeRef>>>,
+    struct_targs: Cell<Map<string, List<TypeRef>>>,
     // a written `{ … }`'s own closing-brace offset, by the Block whose
     // span `tail_scoped` narrowed to its lone tail value for
     // diagnostics — printing only, absent everywhere the node's own
@@ -209,8 +209,8 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         means_notes: list_cell(),
         is_payloads: list_cell(),
         instance_owners: list_cell(),
-        grammar_lits: list_cell(),
-        struct_targs: list_cell(),
+        grammar_lits: map_cell(),
+        struct_targs: map_cell(),
         written_close: list_cell(),
         quotes_at: map_cell(),
         sublangs: list_cell(),
@@ -278,8 +278,6 @@ impl SyntaxArena {
         self.means_notes.push(null)
         self.is_payloads.push(null)
         self.instance_owners.push(null)
-        self.grammar_lits.push(null)
-        self.struct_targs.push([])
         self.written_close.push(null)
         self.on_handlers.push(null)
         ExprId { index: self.exprs.add(e, span) }
@@ -349,14 +347,14 @@ impl SyntaxArena {
     /// into this `Grammar` struct literal — its own DSL text, the
     /// mark's code 147.
     fn mark_grammar_lit(e: ExprId, text: string) {
-        self.grammar_lits.set_at(e.index, text)
+        self.grammar_lits.put("${e.index}", text)
         self
             .expr_fingerprints
             .set_at(e.index, fp(147, [self.expr_fingerprints.get()[e.index], fp_str(text)]))
     }
 
     fn grammar_lit_of(e: ExprId) -> string? {
-        self.grammar_lits.get()[e.index]
+        self.grammar_lits.get().get("${e.index}")
     }
 
     /// `tail_scoped` narrowed this Block's own span to its lone tail
@@ -521,8 +519,8 @@ impl SyntaxArena {
     /// the expression's identity: `Box<int> { … }` and `Box<string> {
     /// … }` are different literals even where their fields read alike.
     fn mark_struct_targs(e: ExprId, args: List<TypeRef>) {
-        self.struct_targs.set_at(e.index, args)
         if !args.is_empty() {
+            self.struct_targs.put("${e.index}", args)
             self
                 .expr_fingerprints
                 .set_at(
@@ -536,7 +534,7 @@ impl SyntaxArena {
     }
 
     /// The written type arguments a literal carries, in written order.
-    fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.get()[e.index] }
+    fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.get().get("${e.index}") ?? [] }
 
     /// The type arguments a literal OR instance writes: an instance's
     /// live on its expansion's literal.

@@ -546,9 +546,20 @@ impl Rebuilder {
 
     // ── minting ──
 
+    /// Every fact the source expression wears, onto its copy: the flat
+    /// forms through `wear_expr`, the sparse payloads (a literal's written
+    /// type arguments, a `grammar { … }` literal's text) beside them.
+    mut fn wear_facts(e: ExprId, id: ExprId) {
+        self.dst.wear_expr(id, self.src.expr_marks_at(e))
+        let targs = self.src.struct_targs_of(e)
+        if !targs.is_empty() { self.dst.mark_struct_targs(id, [self.tref(a) for a in targs]) }
+        let text: string? = self.src.grammar_lit_of(e)
+        if text != null { self.dst.mark_grammar_lit(id, text!) }
+    }
+
     mut fn minted_expr(e: ExprId, x: Expr, holed: bool) -> ExprId {
         let id = self.dst.alloc_expr(x, self.src.expr_span(e))
-        self.dst.wear_expr(id, self.src.expr_marks_at(e))
+        self.wear_facts(e, id)
         if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
         if self.src.is_sugar_match(e) { self.dst.mark_sugar_match(id) }
         let noted: string? = self.src.means_note(e)
@@ -559,10 +570,6 @@ impl Rebuilder {
         }
         let ip: PayloadIs? = self.src.is_payload(e)
         if ip != null { self.dst.mark_is_payload(id, self.pat(ip!.pat), ip!.has_else) }
-        let gl: string? = self.src.grammar_lit_of(e)
-        if gl != null { self.dst.mark_grammar_lit(id, gl!) }
-        let targs = self.src.struct_targs_of(e)
-        if !targs.is_empty() { self.dst.mark_struct_targs(id, [self.tref(a) for a in targs]) }
         let wc: int? = self.src.written_close(e)
         if wc != null { self.dst.mark_written_close(id, wc!) }
         let bp: BodyParts? = x.body_of()
