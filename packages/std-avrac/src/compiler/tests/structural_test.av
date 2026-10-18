@@ -146,3 +146,22 @@ spec "compiler/workspace — the structural set" {
         }
     }
 }
+
+/// The fingerprint of the file's last statement, the declaration a body names.
+fn last_fp(ws: Workspace) -> int {
+    let p = ws.parsed(ws.file_id("/w/src/main.av"))
+    p.store.stmt_fingerprint(p.stmts.last()!)
+}
+
+spec "compiler/store — a sited text's extension is part of its declaration" {
+    given "two views that differ only inside a sited hole" {
+        then "fingerprint apart" {
+            last_fp(structural_workspace("fn v() -> said { said \"a \${n}\" }\n")) != last_fp(structural_workspace("fn v() -> said { said \"a \${n + 1}\" }\n"))
+        }
+    }
+    given "two views written the same way" {
+        then "fingerprint alike" {
+            last_fp(structural_workspace("fn v() -> said { said \"a \${n}\" }\n")) == last_fp(structural_workspace("fn v() -> said { said \"a \${n}\" }\n"))
+        }
+    }
+}
