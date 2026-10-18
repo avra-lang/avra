@@ -4173,14 +4173,16 @@ const char* avra_embed_octets(const char* path) {
 }
 
 /* ── Change tracking ─────────────────────────────────────────────
-   A site that reads a box OBSERVES it. A write to an observed box that has
-   not been written this turn stamps it and files it in the change log, once;
-   the turn takes the log and re-renders only what read those boxes. The log
-   holds a reference to each box it names, so a box freed in the turn is still
-   there to be named. One thread runs the loop, so the log is a plain array. */
+   A site that reads a box OBSERVES it, and an observed box is HELD: observing
+   takes a reference and unobserving gives it back, so a box cannot die while
+   a site still names it, and no header is ever written after it was freed.
+   A write to an observed box that has not been written this turn stamps it
+   and files its key in the change log, once; the turn takes the log and
+   re-renders only what read those boxes. A KEY names a box by its address and
+   opens nothing. One thread runs the loop, so the log is a plain array. */
 uint32_t avra_turn_word = AVRA_STAMP_ONE;
 
-static void** g_changes;
+static int64_t* g_changes;
 static size_t g_changes_len, g_changes_cap;
 
 __attribute__((noinline, cold))
@@ -4189,28 +4191,39 @@ void avra_box_changed(void* payload) {
     h->kind_word = (int32_t)(((uint32_t)h->kind_word & ~AVRA_STAMP_MASK) | avra_turn_word);
     if (g_changes_len == g_changes_cap) {
         g_changes_cap = g_changes_cap ? g_changes_cap * 2 : 64;
-        g_changes = (void**)realloc(g_changes, g_changes_cap * sizeof(void*));
+        g_changes = (int64_t*)realloc(g_changes, g_changes_cap * sizeof(int64_t));
         if (g_changes == NULL) avra_trap("out of memory logging a change");
     }
-    avra_rc_retain(payload);
-    g_changes[g_changes_len++] = payload;
+    g_changes[g_changes_len++] = (int64_t)(uintptr_t)payload;
 }
 
-/* A box a site reads: observed from now, and stamped as not yet written this
-   turn, so its first write files it. A pointer that is not a box answers 0. */
+/* A box's key: its address, as a number. */
+int64_t avra_box_key(void* p) {
+    return avra_hdr(p) ? (int64_t)(uintptr_t)p : 0;
+}
+
+/* A box a site reads: held and observed from now, and stamped as not yet
+   written this turn, so its first write files it. Observing a box already
+   observed only stamps it again, so it is held once. A pointer that is not
+   a counted box answers 0. */
 int64_t avra_box_observe(void* p) {
     Header* h = avra_hdr(p);
     if (h == NULL || avra_kind(h) < 0) return 0;
     uint32_t stale = (avra_turn_word - AVRA_STAMP_ONE) & AVRA_STAMP_MASK;
+    int held = ((uint32_t)h->kind_word & AVRA_FLAGS_MASK) == AVRA_OBSERVED;
     h->kind_word = (int32_t)(((uint32_t)h->kind_word & 0xFFu) | AVRA_OBSERVED | stale);
+    if (!held) avra_rc_retain(p);
     return 1;
 }
 
-/* A box no site reads any more. */
+/* A box no site reads any more: let go. A box that was not observed is left
+   alone. */
 int64_t avra_box_unobserve(void* p) {
     Header* h = avra_hdr(p);
     if (h == NULL || avra_kind(h) < 0) return 0;
+    if (((uint32_t)h->kind_word & AVRA_FLAGS_MASK) != AVRA_OBSERVED) return 0;
     h->kind_word = (int32_t)((uint32_t)h->kind_word & 0xFFu);
+    avra_rc_release(p);
     return 1;
 }
 
@@ -4223,11 +4236,11 @@ int64_t avra_turn_next(void) {
     return 0;
 }
 
-/* The boxes written this turn, once each, in the order they were first
-   written, as a list the caller owns; the log starts empty again. */
+/* The keys of the boxes written this turn, once each, in the order they were
+   first written, as a list the caller owns; the log starts empty again. */
 void* avra_changes_take(void) {
     void* out = avra_array_new();
-    for (size_t i = 0; i < g_changes_len; i++) avra_array_push_moved(out, g_changes[i]);
+    for (size_t i = 0; i < g_changes_len; i++) avra_array_push(out, g_changes[i]);
     g_changes_len = 0;
     return out;
 }
