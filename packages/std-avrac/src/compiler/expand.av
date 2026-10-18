@@ -940,7 +940,13 @@ impl Workspace {
         if quote_kind(src, q) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
         let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
-        mut rb = copier(src, self.decls.store_of(f), thunks, hole_runs(src, q))
+        mut rb = copier(
+            src,
+            self.decls.store_of(f),
+            thunks,
+            hole_runs(src, q),
+            sugar_door(self.lang),
+        )
         let copied_stmts: List<StmtId> = match body.view {
             .Verbatim(ss, _) -> ss,
             .None or .Expanded(_) -> [],
@@ -983,7 +989,7 @@ impl Workspace {
     fn copied_written(f: FileId, origin: FileId, src: SyntaxArena, at: int) -> Copied {
         let e? = self.decls.default_at(origin, at) else { return nothing_copied() }
         let dst = self.decls.store_of(f)
-        mut rb = copier(src, dst, [], [])
+        mut rb = copier(src, dst, [], [], sugar_door(self.lang))
         let stmts = [dst.alloc_stmt(Stmt.ExprStmt(rb.expr(e)))]
         self.noted_copy(f, origin, src, at, rb)
         Copied { stmts: stmts, arms: [] }

@@ -23,6 +23,14 @@ fn op_rows() -> List<PayloadRow> {
         },
         PayloadRow {
             owner: "E",
+            variant: "Is",
+            payloads: [
+                Field { name: "left", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "right", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+            ],
+        },
+        PayloadRow {
+            owner: "E",
             variant: "Co",
             payloads: [
                 Field { name: "left", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
@@ -109,6 +117,25 @@ spec "features/node_grammar — an operator table's builds" {
             !op_refuses(
                 "e = left:operand @operators { left \"+=\" -> E.Co }\noperand = v:NAME -> lit(v)\n",
                 "spells no operator",
+            )
+        }
+    }
+    given "a suffix with its own node build" {
+        then "builds its node from the climb's seats, the tier's words from the branch's" {
+            let src = "prog = x:e ( BREAK )* EOF -> x\ne = left:operand @operators { none \"==\" suffix \"is\" tag -> E.Is } -> E.Bin\ntag = \".\" n:NAME -> tag(n)\noperand = v:NAME -> lit(v)\n"
+            op_run(src, "a is .V") == "(E.Is (lit a) (tag V)) |" &&
+                op_run(src, "a == b") == "(E.Bin == (lit a) (lit b)) |"
+        }
+        then "is refused when the node has an operator seat the suffix word cannot fill" {
+            op_refuses(
+                "e = left:operand @operators { none \"==\" suffix \"is\" tag -> E.Bin } -> E.Bin\ntag = \".\" n:NAME -> tag(n)\noperand = v:NAME -> lit(v)\n",
+                "the word `is`, which spells no operator",
+            )
+        }
+        then "is refused when it names a node that is not there" {
+            op_refuses(
+                "e = left:operand @operators { none \"==\" suffix \"is\" tag -> E.Nope } -> E.Bin\ntag = \".\" n:NAME -> tag(n)\noperand = v:NAME -> lit(v)\n",
+                "no such variant is declared",
             )
         }
     }

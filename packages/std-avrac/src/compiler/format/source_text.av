@@ -1317,8 +1317,6 @@ impl SourceText {
     /// looking ahead.
     mut fn expression(id: ExprId, parent: int, depth: int, col: int = -1) -> string {
         let c = resolved_col(col, depth)
-        let piped = self.pipe_walk(id, depth)
-        if !piped.links.is_empty() { return self.pipe_rendered(piped, parent, depth, c) }
         match self.store.expr(id) {
             // A negative literal is stored folded, but it still has
             // unary precedence on the page: `(-3).field` must keep
@@ -1337,11 +1335,8 @@ impl SourceText {
             .Receiver -> grouped("self", atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
-            .Bitnot(rewrite) -> grouped(
-                "~${self.expression(self.store.bitnot_operand(rewrite), unary_tier, depth, c + 1)}",
-                unary_tier,
-                parent,
-            ),
+            .Pipe(_, _) -> self.pipe_rendered(self.pipe_walk(id, depth), parent, depth, c),
+            .Bitnot(value) -> grouped("~${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),
             .Comp(elem, clauses) -> self.comprehension(elem, clauses, parent, depth),
             .MapLit(keys, values) -> grouped(self.map_lit_text(id, keys, values, depth, c), atom_tier, parent),
@@ -1457,22 +1452,11 @@ impl SourceText {
                 parent,
             ),
             .Force(value) -> grouped("${self.expression(value, postfix_tier, depth, c)}!", postfix_tier, parent),
-            .Is(subject, variant) -> {
-                let payload: PayloadIs? = self.store.is_payload(id)
-                if payload != null {
-                    grouped(
-                        "${self.expression(subject, 5, depth, c)} is ${self.pattern(payload!.pat, depth)}",
-                        4,
-                        parent,
-                    )
-                } else {
-                    grouped(
-                        "${self.expression(subject, 5, depth, c)} is .${source_name(variant.of)}",
-                        4,
-                        parent,
-                    )
-                }
-            },
+            .Is(subject, asked) -> grouped(
+                "${self.expression(subject, 5, depth, c)} is ${self.pattern(asked, depth)}",
+                4,
+                parent,
+            ),
             .VariantLit(name, args) -> {
                 let head = ".${source_name(name.of)}"
                 grouped(
@@ -2414,8 +2398,6 @@ impl SourceText {
     /// broken continuation line (`grammar/lexer.av`'s `continued_by`),
     /// so the walk never crosses a `?.`.
     mut fn chain_walk(e: ExprId, depth: int) -> ChainWalk {
-        // a piped call is a pipeline's, never a link: it stands as the root
-        if self.store.is_piped(e) { return unlinked(e) }
         match self.store.expr(e) {
             .Prop(subject, name) -> {
                 let inner = self.chain_walk(subject, depth)
@@ -2460,38 +2442,30 @@ impl SourceText {
     }
 
     /// A pipeline's root and its stages, walked from the LAST stage
-    /// inward: a piped call's first argument is the value it was
-    /// handed (`store.is_piped`), so that argument extends the walk
-    /// and the call's remainder is the stage as it was written. A
-    /// stage with nothing left in its parentheses prints bare where
-    /// the bare form reads back as the same call, and a `?` or `!`
-    /// on a stage's answer rides the stage (`x |> f(a)?`).
+    /// inward: a `Pipe`'s value extends the walk and its stage stands as
+    /// it was written, a `?` or `!` on the stage's answer riding it
+    /// (`x |> f(a)?`).
     mut fn pipe_walk(e: ExprId, depth: int) -> ChainWalk {
         match self.store.expr(e) {
-            .Propagate(call) if self.store.is_piped(call) -> suffixed(self.pipe_walk(call, depth), "?"),
-            .Force(call) if self.store.is_piped(call) -> suffixed(self.pipe_walk(call, depth), "!"),
-            .Call(callee, pins, args) if self.store.is_piped(e) -> self
-                .piped_stage(e, args, "${source_name(callee.of)}${self.pins(pins)}", pins.is_empty(), depth),
-            .MethodCall(subject, name, args) if self.store.is_piped(e) -> {
-                let head = "${self.chain_subject(subject, depth + 1)}.${source_name(name.of)}"
-                self.piped_stage(e, args, head, true, depth)
-            },
-            .CallValue(subject, args) if self.store.is_piped(e) -> {
-                let head = "(${self.expression(subject, loosest_tier, depth + 1)})"
-                self.piped_stage(e, args, head, self.store.expr_is_closure(subject), depth)
+            .Pipe(value, stage) -> {
+                let inner = self.pipe_walk(value, depth)
+                ChainWalk {
+                    root: inner.root,
+                    links: inner.links.concat([self.stage_text(stage, depth + 1)]),
+                }
             },
             rest -> unlinked(e),
         }
     }
 
-    /// One stage: the walk through the piped value, then `head` and
-    /// the arguments written after it.
-    mut fn piped_stage(e: ExprId, args: List<ExprId>, head: string, short: bool, depth: int) -> ChainWalk {
-        let value? = args.first() else { return unlinked(e) }
-        let inner = self.pipe_walk(value, depth)
-        let written = args.slice(1, args.length)
-        let tail = if short && written.is_empty() { "" } else { self.call_tail(written, depth + 1) }
-        ChainWalk { root: inner.root, links: inner.links.concat(["${head}${tail}"]) }
+    /// A stage as written; a lambda keeps its group, bare its body would read
+    /// the rest of the pipeline.
+    mut fn stage_text(stage: ExprId, depth: int) -> string {
+        let text = self.expression(stage, pipe_tier + 1, depth)
+        match self.store.expr(stage) {
+            .Lambda(params, _) if !is_pronoun(params) -> "(${text})",
+            rest -> text,
+        }
     }
 
     /// A pipeline, width-decided as an operator run is: flat, or one
@@ -2528,10 +2502,9 @@ impl SourceText {
         if self.bare_propagate(subject) { "(${text})" } else { text }
     }
 
-    /// A `?` a following `.` would meet and lex with as `?.` — a
-    /// pipeline's own `?` already stands inside the pipeline's group.
+    /// A `?` a following `.` would meet and lex with as `?.`.
     fn bare_propagate(e: ExprId) -> bool {
-        match self.store.expr(e) { .Propagate(value) -> !self.store.is_piped(value), rest -> false }
+        match self.store.expr(e) { .Propagate(_) -> true, rest -> false }
     }
 
     /// `v.type(T)`'s argument read back to `T` — the SAME `words`/

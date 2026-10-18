@@ -25,6 +25,7 @@ export enum Filled {
     Arms(arms: List<Arm>)
     Params(ps: List<Param>)
     Inits(inits: Inits)
+    Pat(p: PatId)
     Unplaceable(why: string)
 }
 
@@ -89,6 +90,8 @@ export type Rebuilder = {
     // the open nodes, innermost last: whether a name of each came
     // through a hole
     holed: List<bool>,
+    // how a copied sugar's meaning is minted anew beside the copy
+    door: Means,
 }
 
 /// A classifying walk over a store's quote body, `runs` the run mark
@@ -114,6 +117,7 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         misfits: [],
         unplaceable: [],
         holed: [],
+        door: no_door,
     }
 }
 
@@ -125,6 +129,7 @@ export fn copier(
     dst: SyntaxArena,
     fills: List<fn(HoleKind) -> Filled>,
     runs: List<bool>,
+    door: Means,
 ) -> Rebuilder {
     Rebuilder {
         src: src,
@@ -145,6 +150,7 @@ export fn copier(
         misfits: [],
         unplaceable: [],
         holed: [],
+        door: door,
     }
 }
 
@@ -280,7 +286,7 @@ impl Rebuilder {
         if k != null {
             self.classify(k!, HoleKind.Binder)
             if !self.copying { return p }
-            return self.dst.alloc_pat(Pat.Bind(Scoped(self.fill_name(k!))))
+            return self.fill_pat(k!)
         }
         self.holed.push(false)
         let rebuilt = self.src.pat(p).rebuilt(self)
@@ -520,15 +526,18 @@ impl Rebuilder {
     mut fn minted_expr(e: ExprId, x: Expr, holed: bool) -> ExprId {
         let id = self.dst.alloc_expr(x, self.src.expr_span(e))
         if self.src.is_trailing(e) { self.dst.mark_trailing(id) }
-        if self.src.is_piped(e) { self.dst.mark_piped(id) }
         if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
         if self.src.is_hole(e) { self.dst.mark_hole(id) }
         if self.src.is_raw_string(e) { self.dst.mark_raw_string(id) }
         if self.src.is_sugar_match(e) { self.dst.mark_sugar_match(id) }
         if self.src.statement_if(e) { self.dst.mark_statement_if(id) }
         let noted: string? = self.src.means_note(e)
-        if noted != null { self.dst.mint_for(id, self.copies_of(self.src.minted_nodes(e)), noted!) }
-        let ip: PayloadIs? = self.src.is_payload(e)
+        if noted != null {
+            let minted = self.dst.mean(id, noted!, self.door)
+            self.made_exprs = self.made_exprs.concat(minted)
+            self.made_from = self.made_from.concat([e for _m in minted])
+        }
+        let ip: PayloadIs? = self.src.payload_marked(e)
         if ip != null { self.dst.mark_is_payload(id, self.pat(ip!.pat), ip!.has_else) }
         let gl: string? = self.src.grammar_lit_of(e)
         if gl != null { self.dst.mark_grammar_lit(id, gl!) }
@@ -551,12 +560,6 @@ impl Rebuilder {
             self.made_from.push(e)
         }
         id
-    }
-
-    /// Where the copy of each source node stands — the nodes a copied
-    /// sugar's meaning minted answer for the sugar's own copy.
-    fn copies_of(from: List<ExprId>) -> List<ExprId> {
-        [self.made_exprs[i] for i, s in self.made_from if from.any(same_expr(it, s))]
     }
 
     mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {
@@ -652,7 +655,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 self.dst.alloc_expr(Expr.Error)
             },
-            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 self.dst.alloc_expr(Expr.Error)
             },
@@ -668,7 +671,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
+            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -681,7 +684,19 @@ impl Rebuilder {
             .Type(t) -> t.name,
             .Names(ts) -> ts.first() ?? "",
             .Unplaceable(why) -> self.unplaced_name(k, why),
-            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> self.misfit(k),
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> self.misfit(k),
+        }
+    }
+
+    /// A binder seat's fill: a pattern id stands as itself, a name is bound.
+    mut fn fill_pat(k: int) -> PatId {
+        match self.filled(k, HoleKind.Binder) {
+            .Pat(p) -> p,
+            .Name(t) -> self.dst.alloc_pat(Pat.Bind(Scoped(t))),
+            .Names(ts) -> self.dst.alloc_pat(Pat.Bind(Scoped(ts.first() ?? ""))),
+            .Type(t) -> self.dst.alloc_pat(Pat.Bind(Scoped(t.name))),
+            .Unplaceable(why) -> self.dst.alloc_pat(Pat.Bind(Scoped(self.unplaced_name(k, why)))),
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> self.dst.alloc_pat(Pat.Bind(Scoped(self.misfit(k)))),
         }
     }
 
@@ -691,7 +706,7 @@ impl Rebuilder {
             .Name(t) -> [t],
             .Type(t) -> [t.name],
             .Unplaceable(why) -> [self.unplaced_name(k, why)],
-            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> [self.misfit(k)],
+            .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> [self.misfit(k)],
         }
     }
 
@@ -700,7 +715,7 @@ impl Rebuilder {
             .Type(t) -> t,
             .Name(t) -> named_ref(t),
             .Unplaceable(why) -> named_ref(self.unplaced_name(k, why)),
-            .Names(_) or .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) -> named_ref(self.misfit(k)),
+            .Names(_) or .Exprs(_) or .Expr(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> named_ref(self.misfit(k)),
         }
     }
 
@@ -712,7 +727,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) or .Params(_) or .Inits(_) -> {
+            .Exprs(_) or .Name(_) or .Names(_) or .Type(_) or .Arms(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -726,7 +741,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Params(_) or .Inits(_) -> {
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Params(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -740,7 +755,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 []
             },
-            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Inits(_) -> {
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Inits(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 []
             },
@@ -754,7 +769,7 @@ impl Rebuilder {
                 self.unplaced(k, why)
                 spoiled_inits()
             },
-            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) -> {
+            .Exprs(_) or .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) or .Params(_) or .Pat(_) -> {
                 self.misfits.push(k)
                 spoiled_inits()
             },

@@ -1,0 +1,40 @@
+// A template whose match arm heads on a hole takes a PATTERN id there:
+// the copy holds the very pattern, never a name read off it.
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.core.{ExprId, PatId, Filled, HoleKind, copier, hole_runs, no_door}
+
+spec "compiler — a pattern hole" {
+    given "a template match whose pattern is a hole" {
+        then "the copy holds the filled pattern and subject themselves" {
+            let src = parse_source("quote { match \${0} { \${1} -> 1, _ -> 0 } }")
+            let dst = parse_source("let x = 1\nmatch x { .A -> 1, _ -> 0 }")
+            let written = dst.store.stmt_value(dst.stmts[1])!
+            match dst.store.expr(written) {
+                .Match(subject, arms) -> {
+                    let body = src.store.answer_of(src.stmts[0])!
+                    let ss = match src.store.expr(body).body_of()!.view {
+                        .Verbatim(stmts, _) -> stmts,
+                        rest -> [],
+                    }
+                    let fills = [
+                        (kind: HoleKind) -> Filled.Expr(subject),
+                        (kind: HoleKind) -> Filled.Pat(arms[0].pats[0]),
+                    ]
+                    mut rb = copier(
+                        src.store,
+                        dst.store,
+                        fills,
+                        hole_runs(src.store, body),
+                        no_door,
+                    )
+                    let copied = rb.stmts(ss)
+                    match dst.store.expr(dst.store.answer_of(copied.last()!)!) {
+                        .Match(s, made) -> s.index == subject.index && made[0].pats[0].index == arms[0].pats[0].index,
+                        rest -> false,
+                    }
+                },
+                rest -> false,
+            }
+        }
+    }
+}
