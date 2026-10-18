@@ -177,14 +177,13 @@ icon glyph.close {}              // glyph is a const of generated record type Gl
 - nothing needs `use art.{close}`: no member is a namespace entry, so no member must exist
   while names are being made.
 
-A provider that must mint top-level types (`@schema` → `User`, `Order`) has a root namespace
-the same way: `schema db {…}` mints a single name `db`, and `db.User` is a TYPE PATH under a
-generated record-of-types. That needs one new resolve case, a type path through a generated
-root (**ASSUMED**: needs a probe of `type_decl` through a field-shaped qualifier; flagged as
-decision 3 because it is the only place resolve grows).
-
-If that probe fails, the fallback is `use db.{User}` with `schema db` generating a real
-module in the file's store — heavier, same query.
+A provider that must mint top-level types (`schema db {…}` → `User`, `Order`) generates a real
+MODULE (lead's decision): `db` is the instance's name, its generated declarations are the module's
+members, and `db.User` / `use db.{User}` resolve as any module member does. No new resolve case;
+`explain` and docs see a module (P7). The module's member NAMES depend on the input, so a name
+lookup into it asks `Generated(f, maker)` — the same two-tier lookup `expanded` already serves
+(`expand.av:99`) — and a file that never names `db` never runs it. ASSUMED: a generated module's
+member lookup rides that two-tier path unchanged; E5's witness settles it.
 
 ## 1.5 Hygiene and diagnostics
 
@@ -236,7 +235,7 @@ Each phase lands alone; each has a counted witness, not a green run.
 | E2 | the four read verbs through the door; `reads` recorded | edit one input file that one instance reads → exactly that instance recomputes; the other two reuse |
 | E3 | `Expands` trait + instance spelling for a component | `picture hero {…}` and `@expands(Picture)` on a record generate byte-identical code; one test, both spellings |
 | E4 | first provider: `icons` (Listing + Range) | icon pixel edit → 0 computes; icon added → 1 compute, members' sigs only |
-| E5 | `schema` provider + the type-path-through-a-generated-root case | whitespace edit to `schema.sql` → 1 compute, 0 re-typing |
+| E5 | `schema` provider generating a module; `db.User` resolves as a module member | whitespace edit to `schema.sql` → 1 compute, 0 re-typing |
 | E6 | `typeface` (Range over font directory tables) | table-preserving edit → 0 computes |
 
 Keepers owed (CLAUDE.md's "a check that never failed is untested"): witness that E2 fails with
@@ -382,8 +381,20 @@ That is the "a green check that never failed" law.
 
 | # | decision | recommendation |
 |---|---|---|
-| 1 | Generator surface: one `Expands` trait over a component's settings record, instance and annotation sharing it | yes — P6, zero new kinds |
-| 2 | Assets: restore the 10-05 component forms (`picture`, `icons`, `typeface`, `variant` children) and make `asset logo = "p"` the unpinned member of the same family (type from bytes via `Provider`), instead of `asset` being a separate pinned statement | yes — the expand stage removes the only reason for the v1 retreat |
-| 3 | A provider that mints top-level TYPES (`schema db` → `db.User`): a type path through a generated root (new resolve case) vs a generated real module | probe first (E5); prefer the type path, it keeps names lazy |
-| 4 | Refinement enforces at literals and `Age(literal)` only; computed values cross through `Age(x) -> Result` | yes — refinement without `where`, one rule fn for compiler and runtime |
-| 5 | `@sealed` and refinement stay orthogonal (seal wins the voice when both refuse) | yes |
+| 1 | Generator surface: one `Expands` trait over a component's settings record, instance and annotation sharing it | yes — P6, zero new kinds. **Lead recommends yes.** |
+| 2 | Assets: ONE spelling. `asset name = "path"` is the single-file case of the component providers (`picture hero { source: … }`), a projection of the provider shape, not a second concept. Type from bytes via `Provider`; variants, folders, fonts are the same family | **Lead recommends yes.** Migration below |
+| 3 | A provider that mints top-level TYPES (`schema db` → `db.User`) generates a real module | **Lead recommends the module**: no new resolve case, `db.User` resolves as any member, `explain` sees a module |
+| 4 | Refinement enforces at literals and `Age(literal)` only; computed values cross through `Age(x) -> Result` | **Lead recommends yes** — refinement without `where`, one rule fn for compiler and runtime |
+| 5 | `@sealed` and refinement stay orthogonal (seal wins the voice when both refuse) | **Lead recommends yes** |
+
+## Migration of #898's `asset` statement (decision 2)
+
+| step | change | gate |
+|---|---|---|
+| M1 | land #898 as is (the `asset` statement desugars to `provided<Kind>("path")`; pinned form works today) | its own tests |
+| M2 | E3b: `asset` becomes a component whose `expand` runs the collected `Provider`s; `asset logo: Picture = "p"` and unpinned `asset logo = "p"` both keep parsing | the #898 program tests pass unchanged; the unpinned form newly compiles |
+| M3 | `picture hero { source: "p" }` lands as the same generator with a kind pinned; `asset logo = "p"` is documented as its single-file projection | one test: both spellings generate byte-identical code |
+| M4 | the grammar rule for `asset` is generated from (or defined as sugar over) the component form; no second builder remains | `make idioms` clean; the statement's builder deleted |
+| M5 | docs and `avra new app` write the component spellings; `asset` stays as the short form | doc build |
+
+No author-visible break at any step: every `asset` line written under #898 keeps meaning what it meant.
