@@ -36,6 +36,9 @@ browser() {
     for n in $sizes; do
         d="$work/web_$n"; mkdir -p "$d"; cp -R "$tree/tools/ui-bench" "$d/ui-bench"
         sed "s/^fill([0-9]*)\$/fill($n)/" "$tree/tools/ui-bench/src/main.av" > "$d/ui-bench/src/main.av"
+        if [ "${MODE:-}" = windowed ]; then
+            sed "s/^mount(view)\$/mount(view_windowed)/; s/^use @ui.bench.{\(.*\)}\$/use @ui.bench.{\1, view_windowed}/" "$d/ui-bench/src/main.av" > "$d/ui-bench/src/m.av" && mv "$d/ui-bench/src/m.av" "$d/ui-bench/src/main.av"
+        fi
         "$avra" build --target wasm --wasm_reactor "$d/ui-bench" >"$d/out.txt" 2>"$d/err.txt" || { cat "$d/err.txt"; echo "ui-bench: the web bench did not build"; return 1; }
         wasm=$(tail -1 "$d/out.txt")
         node "$tree/tools/ui-bench/serve.mjs" "$wasm" "$tree/runtime/dom" >"$d/serve.txt" 2>&1 &
@@ -43,7 +46,7 @@ browser() {
         until grep -q '^serving http' "$d/serve.txt" 2>/dev/null; do tries=$((tries + 1)); [ "$tries" -lt 50 ] || { echo "ui-bench: the page never came up"; return 1; }; sleep 0.1; done
         url=$(sed -n 's/^serving \(http[^ ]*\).*$/\1/p' "$d/serve.txt")
         echo "=== Firefox, $n rows"
-        node "$tree/tools/ui-bench/measure.mjs" "$url"
+        node "$tree/tools/ui-bench/measure.mjs" "$url" "${MODE:-}"
     done
 }
 

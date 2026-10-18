@@ -43,10 +43,17 @@ export type Standing = {
     was_under: Cell<List<Under>>,
     by_order: Cell<bool>,
     step: Cell<string?>,
+    route: Cell<string>,
     said: Cell<List<string>>,
     window: Cell<Window?>,
     counted: Cell<int>,
     placed: Cell<Map<string, int>>,
+    extent: Cell<int>,
+    geometry: Cell<bool>,
+    pin: Cell<string?>,
+    pin_at: Cell<int>,
+    reveal: Cell<string?>,
+    honored: Cell<int>,
 }
 
 /// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
@@ -59,11 +66,11 @@ export const first_window: int = 40
 /// The root of a walk: a standing nothing has stood at.
 export fn standing() -> Standing {
     let nothing: List<string> = []
-    stands_in(Cell.new(nothing), Cell.new(0))
+    stands_in(Cell.new(nothing), Cell.new(0), Cell.new(false))
 }
 
 /// A standing nothing has stood at, in the walk that says into `said`.
-fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
+fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>) -> Standing {
     let nowhere_placed: Map<string, int> = {}
     let none: Hold? = null
     let nowhere: string? = null
@@ -76,10 +83,17 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>) -> Standing {
         was_under: Cell.new(empty),
         by_order: Cell.new(false),
         step: Cell.new(nowhere),
+        route: Cell.new(""),
         said: said,
         window: Cell.new(unwindowed),
         counted: counted,
         placed: Cell.new(nowhere_placed),
+        extent: Cell.new(0),
+        geometry: geometry,
+        pin: Cell.new(nowhere),
+        pin_at: Cell.new(-1),
+        reveal: Cell.new(nowhere),
+        honored: Cell.new(0),
     }
 }
 
@@ -116,12 +130,16 @@ impl Standing {
     fn children(steps: List<string>, shared: List<bool>, drawn: bool) -> List<Standing> {
         mut stood: Map<string, Standing> = {}
         for u in self.was_under.get() { stood.set(u.step, u.standing) }
-        let now = [Under { step: s, standing: stood.get(s) ?? stands_in(self.said, self.counted) } for s in steps]
+        let now = [Under {
+            step: s,
+            standing: stood.get(s) ?? stands_in(self.said, self.counted, self.geometry),
+        } for s in steps]
         let above = if drawn { null } else { self.step.get() }
         for j, u in now {
             u.standing.opened()
             u.standing.by_order.set(shared[j])
             u.standing.step.set(under(above, u.step))
+            u.standing.route.set("${self.route.get()}/${u.step}")
         }
         self.under.set(now)
         [u.standing for u in now]
@@ -129,7 +147,7 @@ impl Standing {
 
     /// `children`, for the rows of a WINDOWED list: `steps` are the rows in
     /// the window, opened as `children` opens them, the first at index
-    /// `from`. A standing that holds an instance and stood at a step outside
+    /// of `at_rows`. A standing that holds an instance and stood at a step outside
     /// the window stays, unopened, while its row is in the source — what a
     /// row's instance holds survives its scrolling away, and goes only when
     /// its key leaves the source. Each kept row remembers the index it was
@@ -139,7 +157,7 @@ impl Standing {
     fn children_windowed(
         steps: List<string>,
         shared: List<bool>,
-        from: int,
+        at_rows: List<int>,
         still: fn(string, int) -> bool,
         find: fn() -> Map<string, int>,
     ) -> List<Standing> {
@@ -152,7 +170,7 @@ impl Standing {
         let carried = [u for u in held if found.has(u.step)]
         self.under.set(self.under.get().concat(carried))
         mut here: Map<string, int> = {}
-        for j, s in steps { here.set(s, from + j) }
+        for j, s in steps { here.set(s, at_rows[j]) }
         for u in carried { here.set(u.step, found.get(u.step) ?? 0) }
         self.placed.set(here)
         opened
@@ -180,6 +198,50 @@ impl Standing {
         Window { from: if from < 0 { 0 } else { from }, to: to }
     }
 
+    /// The target keeps room for rows a list leaves unbuilt (a page's
+    /// scroll height): a windowed list stands a spacer for them from its
+    /// first paint, so the target finds the list and measures it.
+    fn geometric() { self.geometry.set(true) }
+
+    /// Whether a windowed list stands spacers for its unbuilt rows.
+    fn spaces() -> bool { self.geometry.get() || self.extent.get() > 0 }
+
+    /// How tall a row stands in the target's measure, as the target last
+    /// measured it: none (zero) until it has.
+    fn extent_of() -> int { self.extent.get() }
+
+    /// A target tells the list standing here how tall its rows measure.
+    fn measured(extent: int) { self.extent.set(extent) }
+
+    /// The row the target's focus rests on, by key, kept built wherever the
+    /// window goes: none when the focus is elsewhere.
+    fn pinned_key() -> string? { self.pin.get() }
+
+    /// Where the pinned row was last found.
+    fn pin_found() -> int { self.pin_at.get() }
+
+    /// The target tells the list its focus rests on the row at `key`.
+    fn pin_to(key: string?) { self.pin.set(key) }
+
+    /// The pinned row was found at `i`.
+    fn pin_noted(i: int) { self.pin_at.set(i) }
+
+    /// The number of the last ask to show a row that the list honored.
+    fn honored_nth() -> int { self.honored.get() }
+
+    /// The list brings `key` into view for ask number `nth`: its window moves
+    /// there, and the row asks the target to scroll to it, once.
+    fn reveals(key: string, nth: int) {
+        self.honored.set(nth)
+        self.reveal.set(key)
+    }
+
+    /// The key a target is asked to scroll to, until it has.
+    fn revealing() -> string? { self.reveal.get() }
+
+    /// The target has scrolled to the revealed row.
+    fn revealed() { self.reveal.set(null) }
+
     /// A target tells the list standing here which rows to build.
     fn windowed(from: int, to: int) { self.window.set(Window { from: from, to: to }) }
 
@@ -192,7 +254,7 @@ impl Standing {
 
     /// The standing at `path` below this one, the path a standing stands at.
     fn find(path: string) -> Standing? {
-        if self.step.get() == path { return self }
+        if self.route.get() == path { return self }
         for u in self.under.get() {
             let hit? = u.standing.find(path) else { continue }
             return hit
@@ -202,7 +264,7 @@ impl Standing {
 
     /// The paths of the windowed lists at and below this standing.
     fn windows() -> List<string> {
-        let own = if self.window.get() == null { [] } else { [self.step.get() ?? ""] }
+        let own = if self.window.get() == null { [] } else { [self.route.get()] }
         own.concat(flatten([u.standing.windows() for u in self.under.get()]))
     }
 

@@ -9,6 +9,7 @@
 //
 // Same file for every app.
 import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS } from "./wire.gen.js";
+import { createWindows } from "./windows.js";
 
 export { WIRE_VERSION, HOST, ROWS };
 
@@ -214,6 +215,17 @@ export function sendEvent(mod, who, what, said) {
   event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
 }
 
+// The program's `scrolled(len, from, to, extent)` — `HOST.scrolled` — says which
+// rows of a windowed list the page shows and how tall they measure. The first
+// `len` octets of the seat are the list's path, a line break, and the key of the
+// row the focus rests on (none after it for none).
+export function sendScrolled(mod, path, from, to, extent, pin = "") {
+  const bytes = new TextEncoder().encode(`${path}\n${pin}`);
+  const at = Number(mod[HOST.seat](BigInt(bytes.length)));
+  new Uint8Array(mod.memory.buffer, at, bytes.length).set(bytes);
+  mod[HOST.scrolled](BigInt(bytes.length), BigInt(from), BigInt(to), BigInt(extent));
+}
+
 // The page's timers, for the program's asks. The program names a timer by
 // a number it counted out (`arm(token, ms, repeat)`), the host keeps the
 // handle, and `fired(token)` re-enters the program as a turn. A timer let
@@ -346,13 +358,14 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
   const frames = createFrames(raf, () => mod[HOST.painted]());
   const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
+  const windows = createWindows(document, mount, (path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin));
   const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
     // The seat is a Bytes: the pointer names its box, and the LENGTH comes
     // from the runtime's own reader, exported by the module.
     rt: {
-      [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); },
+      [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); queueMicrotask(windows.check); },
       [ROWS.arm]: timers.arm,
       [ROWS.disarm]: timers.disarm,
       [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
