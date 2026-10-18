@@ -382,19 +382,41 @@ That is the "a green check that never failed" law.
 | # | decision | recommendation |
 |---|---|---|
 | 1 | Generator surface: one `Expands` trait over a component's settings record, instance and annotation sharing it | yes — P6, zero new kinds. **Lead recommends yes.** |
-| 2 | Assets: ONE spelling. `asset name = "path"` is the single-file case of the component providers (`picture hero { source: … }`), a projection of the provider shape, not a second concept. Type from bytes via `Provider`; variants, folders, fonts are the same family | **Lead recommends yes.** Migration below |
+| 2 | Assets: ONE spelling, from syntax that already exists. The single-file case is the plain component instance `picture logo { source: "art/logo.svg" }` (probed, §Probe below). The `asset` KEYWORD retires; `asset` may remain as an ordinary component word for "kind read from the bytes" | **Lead recommends yes; owner: "if we have a better existing syntax … I am all ears" — this is it.** Migration below |
 | 3 | A provider that mints top-level TYPES (`schema db` → `db.User`) generates a real module | **Lead recommends the module**: no new resolve case, `db.User` resolves as any member, `explain` sees a module |
 | 4 | Refinement enforces at literals and `Age(literal)` only; computed values cross through `Age(x) -> Result` | **Lead recommends yes** — refinement without `where`, one rule fn for compiler and runtime |
 | 5 | `@sealed` and refinement stay orthogonal (seal wins the voice when both refuse) | **Lead recommends yes** |
+
+## Probe: the single-file spelling with syntax that exists (decision 2)
+
+Checked with `avra check` on scratch files, base `70e317d6` (a lone file; `component` declared in it).
+
+| spelling | result |
+|---|---|
+| `picture logo { source: "art/logo.svg" }` (name + block) | **compiles**; `logo.source` reads |
+| `export picture logo { source: "…" }` (exported declaration) | **compiles** |
+| `let logo = picture "art/logo.svg"` (value head, `component picture(source: string)`) | **compiles**; `logo.source` reads |
+| `export const logo = picture "art/logo.svg"` (value head as a const) | **compiles** |
+| `let logo = picture "…" { alt: "A" }` (value head + block) | **compiles** |
+| `picture logo "art/logo.svg"` (name AND value head) | refused: "expected BREAK while parsing `stmt`" |
+| `picture logo "art/logo.svg"` over a name-headed component | refused: `build.failed` "`picture` takes no head value — name it at a statement (`picture name { … }`), or write `picture { … }`" |
+| `picture("art/logo.svg")` (call spelling) | refused: "`picture` is a component, and a parenthesis after its word is read as a call" |
+
+**Recommendation.** The block form, always: `picture logo { source: "art/logo.svg" }`. One line for
+one file, the same shape as a folder (`icons glyph { source: "art/icons" }`), a variant list, or a
+font with a licence — nothing to relearn when a file grows a `dark:` variant. The value-head form
+is a const (a value), not a named declaration, so it cannot mint a module, a folder record, or a
+type: it would be a second spelling that covers only the smallest case. Name-plus-value
+(`picture logo "path"`) does not parse and would need grammar for no gain.
 
 ## Migration of #898's `asset` statement (decision 2)
 
 | step | change | gate |
 |---|---|---|
 | M1 | land #898 as is (the `asset` statement desugars to `provided<Kind>("path")`; pinned form works today) | its own tests |
-| M2 | E3b: `asset` becomes a component whose `expand` runs the collected `Provider`s; `asset logo: Picture = "p"` and unpinned `asset logo = "p"` both keep parsing | the #898 program tests pass unchanged; the unpinned form newly compiles |
-| M3 | `picture hero { source: "p" }` lands as the same generator with a kind pinned; `asset logo = "p"` is documented as its single-file projection | one test: both spellings generate byte-identical code |
-| M4 | the grammar rule for `asset` is generated from (or defined as sugar over) the component form; no second builder remains | `make idioms` clean; the statement's builder deleted |
-| M5 | docs and `avra new app` write the component spellings; `asset` stays as the short form | doc build |
+| M2 | E3b: `picture` (and `blob`, `typeface`, `icons`) as `Expands` components; `asset` as a plain component word whose `expand` runs the collected `Provider`s (kind from bytes) | the #898 program tests pass through the new spellings |
+| M3 | every `asset logo: Picture = "p"` line is rewritten to `picture logo { source: "p" }` by one script over the tree and the docs | `make gate`, the program tests unchanged |
+| M4 | the `asset` statement's grammar rule and builder are deleted; `asset` stays only as the component word | `make idioms` clean |
+| M5 | docs and `avra new app` write the component spellings | doc build |
 
-No author-visible break at any step: every `asset` line written under #898 keeps meaning what it meant.
+No author-visible loss: an unpinned single file still takes its kind from its bytes (`asset logo { source: "p" }`), and a pinned one names its kind by the word.
