@@ -99,7 +99,7 @@ fn extern_note(m: ModulePath, row: Row, facts: DeclFacts) -> ExternNote {
 
 /// What a file's names look like to a reader of its module: the name each of its declarations
 /// binds, a plain free fn's marked with `*`, and whether any declaration was written by an annotation.
-type FileNames = { path: string, generated: bool, bound: List<string> }
+type FileNames = { path: string, generated: bool, head: string, bound: List<string> }
 
 /// The `path<TAB>ordinal` of every declaration an annotation wrote.
 fn made_ordinals(fields: List<List<string>>) -> List<string> {
@@ -108,13 +108,24 @@ fn made_ordinals(fields: List<List<string>>) -> List<string> {
 
 /// A file's names from its decoded rows.
 fn file_names(rows: List<FiledRow>, made: List<string>, path: string) -> FileNames {
-    FileNames {
-        path: path,
-        generated: made.any(it.starts_with("${path}\t")),
-        bound: flatten(
-            [some_name(bound_name(d.row!, made.contains(joined([path, "${d.row!.ordinal}"], "\t")))) for d in rows if d.parts[1] == path],
-        ),
-    }
+    let bound = flatten(
+        [some_name(bound_name(d.row!, made.contains(joined([path, "${d.row!.ordinal}"], "\t")))) for d in rows if d.parts[1] == path],
+    )
+    let generated = made.any(it.starts_with("${path}\t"))
+    FileNames { path: path, generated: generated, head: head_of(bound, generated), bound: bound }
+}
+
+/// A file's names as one head: the digest of those that are not plain free fns, whether it holds
+/// generated code, and the digest of every bound name.
+export fn head_of(bound: List<string>, generated: bool) -> string {
+    joined(
+        [
+            names_digest_of([b for b in bound if !b.starts_with("*")]),
+            if generated { "1" } else { "0" },
+            names_digest_of(bound),
+        ],
+        ".",
+    )
 }
 
 /// The name a declaration binds, marked `*` when it is a free fn nothing generated or annotated;
@@ -223,7 +234,13 @@ fn path_line(tag: string, path: string) -> string { joined([tag, field_text(path
 /// A line a file files a value on: the path last, which is never empty.
 fn narrow_line(n: FileNames) -> string {
     joined(
-        ["narrow", if n.generated { "1" } else { "0" }, joined(n.bound, " "), field_text(n.path)],
+        [
+            "narrow",
+            if n.generated { "1" } else { "0" },
+            n.head,
+            joined(n.bound, " "),
+            field_text(n.path),
+        ],
         "\t",
     )
 }
@@ -256,7 +273,12 @@ export fn producers_read(m: ModulePath, text: string) -> Producers? {
         links: tagged_paths(rows, "link"),
         implementors: tagged_paths(rows, "implementor"),
         refs: filings(rows, "refs"),
-        narrows: [FileNames { path: text_of_field(r[3]), generated: r[1] == "1", bound: r[2].split(" ") } for r in rows if r[0] == "narrow"],
+        narrows: [FileNames {
+            path: text_of_field(r[4]),
+            generated: r[1] == "1",
+            head: r[2],
+            bound: r[3].split(" "),
+        } for r in rows if r[0] == "narrow"],
         seen: seen_line_of(rows),
         files: [r for r in rows if r[0] == "file"],
     }
@@ -270,7 +292,7 @@ fn producer_line(r: List<string>) -> bool {
         "name" or "word" or "mark" or "refs" -> r.length == 3,
         "extern" -> r.length == 4,
         "seen" -> r.length == 2,
-        "narrow" -> r.length == 4,
+        "narrow" -> r.length == 5,
         "file" -> r.length >= 3,
         "import" or "gathers" -> r.length >= 2,
         "reexport" -> r.length >= 5,
