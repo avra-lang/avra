@@ -1,0 +1,47 @@
+diff --git a/runtime/avra_box.h b/runtime/avra_box.h
+index 640beea1..e4bb91a4 100644
+--- a/runtime/avra_box.h
++++ b/runtime/avra_box.h
+@@ -47,7 +47,9 @@ typedef struct {
+ // The kind is the low byte of its word: every reader asks for exactly that
+ // byte, whatever the word's other bytes hold. The kind is -8..4.
+ static inline int32_t avra_kind(const Header* h) { return (int8_t)h->kind_word; }
+-static inline void avra_set_kind(Header* h, int32_t kind) { h->kind_word = kind; }
++static inline void avra_set_kind(Header* h, int32_t kind) { h->kind_word = (h->kind_word & ~0xFF) | (kind & 0xFF); }
++extern uint32_t avra_epoch_word;
++static inline void avra_box_touch(void* payload) { Header* h = (Header*)payload - 1; h->kind_word = (h->kind_word & 0xFF) | (int32_t)avra_epoch_word; }
+ 
+ // A slot array: `cap` cells at `data`, `len` of them written, and
+ // one MARK byte per cell after the cells: `MARK_OWNED` when the cell
+diff --git a/runtime/avra_runtime.c b/runtime/avra_runtime.c
+index 8ab8869b..0fadbe90 100644
+--- a/runtime/avra_runtime.c
++++ b/runtime/avra_runtime.c
+@@ -733,7 +733,7 @@ static void* box_alloc(size_t size, int32_t kind) {
+         h = (Header*)fresh(sizeof(Header) + (cls ? cls * CLASS_BYTES : bytes));
+     }
+     h->tag = AVRA_TAG;
+-    avra_set_kind(h, kind);
++    h->kind_word = kind & 0xFF;
+     h->rc = 1;
+     h->len = (uint32_t)bytes;
+     acc_box(kind, (int64_t)(sizeof(Header) + bytes));
+@@ -2035,7 +2035,10 @@ int64_t avra_enum_word(void* box) {
+ }
+ 
+ // The same one level down: the box in a slot, made unique in place.
++uint32_t avra_epoch_word;
++
+ void* avra_slot_unique(void* arr, int64_t i) {
++    avra_box_touch(arr);
+     void* p = (void*)(uintptr_t)avra_array_get(arr, i);
+     if (!is_shared(p)) return p;
+     AvraArray* a = (AvraArray*)arr;
+@@ -2060,6 +2063,7 @@ void* avra_owned_slot_unique(void* arr, int64_t i) {
+ 
+ // A write into a slot: the old owned content is released.
+ void avra_slot_set(void* arr, int64_t i, int64_t v) {
++    avra_box_touch(arr);
+     AvraArray* a = (AvraArray*)arr;
+     avra_array_get(arr, i);
+     if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);

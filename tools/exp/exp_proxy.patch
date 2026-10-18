@@ -1,0 +1,40 @@
+diff --git a/runtime/avra_runtime.c b/runtime/avra_runtime.c
+index 80de43ad..0a09f0d1 100644
+--- a/runtime/avra_runtime.c
++++ b/runtime/avra_runtime.c
+@@ -1580,7 +1580,11 @@ void avra_array_reserve(void* arr, int64_t spare) {
+     }
+ }
+ 
++int64_t g_exp_version;
++#define EXP_BUMP() (g_exp_version++)
++
+ void avra_array_push(void* arr, int64_t v) {
++    EXP_BUMP();
+     CENSUS(g_list_pushes++);
+     CENSUS(note_push(AVRA_CALLER()));
+     AvraArray* a = (AvraArray*)arr;
+@@ -2060,6 +2064,7 @@ void* avra_owned_slot_unique(void* arr, int64_t i) {
+ 
+ // A write into a slot: the old owned content is released.
+ void avra_slot_set(void* arr, int64_t i, int64_t v) {
++    EXP_BUMP();
+     AvraArray* a = (AvraArray*)arr;
+     avra_array_get(arr, i);
+     if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
+@@ -2775,6 +2780,7 @@ const char* avra_strs_text(void* arr) {
+ // the caller (no retain when the slot owned it, one when it did
+ // not), so the answer is owned either way.
+ int64_t avra_array_pop(void* arr) {
++    EXP_BUMP();
+     AvraArray* a = (AvraArray*)arr;
+     if (a->len == 0) avra_trap("pop on an empty list");
+     a->len--;
+@@ -2783,6 +2789,7 @@ int64_t avra_array_pop(void* arr) {
+ }
+ 
+ void* avra_array_pop_owned(void* arr) {
++    EXP_BUMP();
+     AvraArray* a = (AvraArray*)arr;
+     if (a->len == 0) avra_trap("pop on an empty list");
+     a->len--;
