@@ -1714,7 +1714,15 @@ static void ages_noted(int64_t now);
 // each task owns a SHADOW STACK of its own and the stack pointer is
 // handed over with the thread: saved before a handover, restored when it
 // comes back, and set to the top of a fresh task's at its first run.
-#define HOSTED_STACK ((size_t)128 << 10)
+#define HOSTED_STACK ((size_t)256 << 10)
+
+// THE FLOOR OF A STACK IS A CANARY, checked at every handover: the first
+// words of the block read as they were written, or the task overran its
+// stack. Frames that live in linear memory are few (a call's depth is the
+// engine's, and its limit is a RangeError the host speaks as this same
+// overflow); a check on every fn's entry would cost a call-heavy program
+// more than it saves.
+#define HOSTED_CANARY 0xC0DEF00Du
 
 static inline void* shadow_get(void) {
     void* p;
@@ -1728,14 +1736,25 @@ static inline void shadow_set(void* p) { __asm__ volatile("local.get %0\n\tgloba
 static void fiber_bound(Fiber* f) {
     char* low = malloc(HOSTED_STACK);
     if (!low) avra_trap("the scheduler ran out of memory for a task's stack");
+    for (int i = 0; i < 4; i++) ((uint32_t*)low)[i] = HOSTED_CANARY;
     f->base = low;
     f->sp = (void*)(((uintptr_t)low + HOSTED_STACK) & ~(uintptr_t)15);
+}
+
+static inline void canary_held(const Fiber* f) {
+    if (!f->base) return;
+    const uint32_t* c = (const uint32_t*)f->base;
+    if (__builtin_expect(c[0] != HOSTED_CANARY || c[1] != HOSTED_CANARY || c[2] != HOSTED_CANARY || c[3] != HOSTED_CANARY, 0)) avra_trap("a task's stack overflowed");
 }
 
 static void host_idle(int64_t timeout_ns) { avra_host_idle(timeout_ns); }
 
 static inline void fiber_switched(Fiber* self, Fiber* next) {
     void* mine = shadow_get();
+    // the thread's first stack has run without being started: it is marked so
+    // a handover back to it resumes it, and never starts it as a fresh task
+    if (!self->sp) self->sp = mine;
+    canary_held(self);
     avra_host_switch(self, next, self->state == FIBER_DONE);
     shadow_set(mine);
 }

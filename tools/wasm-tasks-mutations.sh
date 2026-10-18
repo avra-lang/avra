@@ -11,6 +11,15 @@
 # (runtime/dom/tasks.js, run from a copy). A break that does not apply is
 # reported: the source moved and this table did not.
 #
+# NOT HERE, AND WHY (the canary): the check at a handover that a task's stack
+# block still reads as it was written (`canary_held`) is not killed by any
+# fixture. A hosted stack overflows only through frames that live in linear
+# memory, which Avra source does not produce — a call's depth is bounded first
+# by the engine, and the host speaks that limit as the same overflow (the
+# `stack_overflow` fixture and its break below). THE DEADLINE: the first
+# construct whose frames sit in memory is the day a fixture can overrun the
+# canary, and its break joins this table.
+#
 # NOT HERE, AND WHY: dropping the stack-pointer restore after a resume
 # (`shadow_set(mine)` in `fiber_switched`) is not killed by any fixture, and
 # the case that would kill it cannot be built from Avra source: a function
@@ -50,7 +59,7 @@ trap restore EXIT
 observe() {
     host=$1
     tag=$2
-    for f in tasks cancel; do
+    for f in tasks cancel stack_overflow; do
         cp -R "$here/wasm-fixtures/$f" "$work/$tag-$f"
         out=$("$avra" build --target wasm32 "$work/$tag-$f" 2>/dev/null | tail -1)
         if [ -f "$out" ]; then
@@ -65,9 +74,13 @@ observe() {
 clean_host=$tree
 clean_out=$(observe "$clean_host" clean)
 # the oracle: every fixture's stdout is its expected.txt
-for f in tasks cancel; do
+for f in tasks cancel stack_overflow; do
     got=$(printf '%s\n' "$clean_out" | awk -v f="$f" '$0=="== " f{on=1; next} /^== /{on=0} on' | grep -v '^wasm-node:' || true)
-    [ "$got" = "$(cat "$here/wasm-fixtures/$f/expected.txt")" ] || { say "the clean $f fixture does not answer its expected.txt:"; printf '%s\n' "$got" >&2; exit 1; }
+    if [ -f "$here/wasm-fixtures/$f/refuses.txt" ]; then
+        printf '%s\n' "$got" | grep -q "$(cat "$here/wasm-fixtures/$f/refuses.txt")" || { say "the clean $f fixture does not say its refuses.txt:"; printf '%s\n' "$got" >&2; exit 1; }
+    else
+        [ "$got" = "$(cat "$here/wasm-fixtures/$f/expected.txt")" ] || { say "the clean $f fixture does not answer its expected.txt:"; printf '%s\n' "$got" >&2; exit 1; }
+    fi
 done
 
 fail=0
@@ -136,6 +149,10 @@ js_break "an ended task's slot answers the next task at its address" \
 js_break "a suspended task is never resumed" \
     "        next.resume();" \
     "        void next;"
+js_break "an engine's stack overflow is spoken bare" \
+    "  if (e instanceof RangeError && /call stack/i.test(e.message)) return \"avra: a task's stack overflowed\";
+" \
+    ""
 js_break "the world waits for ever" \
     "        setTimeout(resolve, Number((ns + 999999n) / 1000000n));" \
     "        void ns;"
