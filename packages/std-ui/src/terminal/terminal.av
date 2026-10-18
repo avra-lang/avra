@@ -73,7 +73,7 @@ export fn terminal<V: View>(
         shown: shown(view, rows: height, spaced: true),
         size: Cell.new(Size { width: width, height: height }),
         on_screen: nowhere,
-        leaves: (_s: string) -> {},
+        leaves: unspoken,
         interrupts: stopped,
         moded: moded_nothing,
         paste_limit: paste_limit,
@@ -161,6 +161,8 @@ fn interrupt_bound(root: Node, seat: int?) -> bool {
 
 fn stopped() {}
 
+fn unspoken(_s: string) {}
+
 fn moded_nothing(_mode: int) {}
 
 // ── what a key does to the control that holds the focus ─────────
@@ -190,7 +192,7 @@ fn slid(c: Control, by: int) -> bool {
 fn pasted(c: Control, text: string) -> bool {
     match c.node.prim {
         .Field -> c.says(.Input, Said.Text(said_of(c.node.attrs).value + one_line(text))),
-        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> false,
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> false,
     }
 }
 
@@ -207,7 +209,7 @@ fn one_line(text: string) -> string {
 fn clicked(c: Control) -> bool {
     match c.node.prim {
         .Field or .Slider -> false,
-        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch -> entered(c),
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Key -> entered(c),
     }
 }
 
@@ -665,7 +667,7 @@ export fn mount<V: View>(view: fn() -> V, width: int = 80, height: int = 24, inp
     let live = inplace ?? (size > 0)
     let columns = if size > 0 { size / 65536 } else { width }
     let lines = if size > 0 { size % 65536 } else { height }
-    let on = if live { entered(view, columns, lines) } else { terminal(view, width, height) }
+    let on = if live { taken_over(view, columns, lines) } else { terminal(view, width, height) }
     if !live { println(on.screen()) }
     on.shown.app.warn()
     let before = running()
@@ -683,7 +685,7 @@ export fn mount<V: View>(view: fn() -> V, width: int = 80, height: int = 24, inp
 /// The terminal taken over: the input unechoed and unbuffered with its signals
 /// kept, the screen written in place on the output, and the process told what
 /// to leave the terminal as before the first byte.
-fn entered<V: View>(view: fn() -> V, columns: int, lines: int) -> Terminal {
+fn taken_over<V: View>(view: fn() -> V, columns: int, lines: int) -> Terminal {
     let _ = avra_fd_tty_raw(input, 1)
     let sent = (s: string) -> write_all(output, s.bytes())
     let leaves = (s: string) -> avra_fd_exit_writes(output, s.bytes())
