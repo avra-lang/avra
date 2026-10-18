@@ -7,14 +7,17 @@
 //   node tools/layout-oracle/oracle.mjs [--cases N] [--seed S] [--show K] [--width W]
 //
 // Leaves are empty boxes of a given size (or of none, which stretch or grow),
-// so no text enters: this checks the layout algorithm and the stylesheet that
-// writes it, not the measure of any text.
+// or text of random words. The page is set in a font whose every character is
+// one pixel wide and one high (cellfont.mjs), so a character is a cell and the
+// browser's soft wrapping of the real <span> is comparable with the cell
+// measure.
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { firefoxBinary, openPage } from "../ui-board/firefox.mjs";
+import { cellFontBase64 } from "./cellfont.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const tree = path.resolve(here, "../..");
@@ -42,6 +45,11 @@ const ALIGNS = ["Start", "Center", "End", "Stretch"];
 const DISTRIBUTES = ["Start", "Center", "End", "SpaceBetween", "SpaceAround", "SpaceEvenly"];
 const WRAPS = ["NoWrap", "Wrap", "WrapReverse"];
 
+function words(rand) {
+  const n = 1 + Math.floor(rand() * 6);
+  return Array.from({ length: n }, () => "abcdefghijklmnopqrstuvwxyz".slice(0, 1 + Math.floor(rand() * 9))).join(" ");
+}
+
 function generate(rand, depth) {
   const pick = (xs) => xs[Math.floor(rand() * xs.length)];
   const chance = (p) => rand() < p;
@@ -53,6 +61,10 @@ function generate(rand, depth) {
   if (chance(0.2)) layout.grow = between(1, 3);
   if (chance(0.1)) layout.order = between(-2, 3);
   if (leaf) {
+    if (chance(0.3)) {
+      if (chance(0.3)) layout.width = { fixed: between(4, 40) };
+      return { prim: "Text", text: words(rand), layout, kids: [] };
+    }
     if (chance(0.85)) layout.width = { fixed: between(4, 70) };
     else if (chance(0.5)) layout.width = "Fill";
     if (chance(0.85)) layout.height = { fixed: between(2, 30) };
@@ -74,6 +86,7 @@ function generate(rand, depth) {
 
 // A page's root has no parent to space it, order it or share room with it.
 function rooted(spec) {
+  if (spec.prim === "Text") return { prim: "Column", layout: {}, kids: [spec] };
   const { margin, order, grow, ...layout } = spec.layout;
   return { ...spec, layout };
 }
@@ -107,6 +120,7 @@ function layoutSrc(l) {
 }
 
 function nodeSrc(n) {
+  if (n.prim === "Text") return `placed(text_node("${n.text}"), ${layoutSrc(n.layout)})`;
   const prim = n.prim === "Leaf" ? "Column" : n.prim;
   return `boxed(.${prim}, ${layoutSrc(n.layout)}, [${n.kids.map(nodeSrc).join(", ")}])`;
 }
@@ -119,17 +133,19 @@ use @std.ui.env.{Env}
 use @std.ui.style.layout.{Layout, Edge}
 use @std.ui.style.tokens.{Size}
 use @std.ui.style.theme.{Theme}
-use @std.ui.place.measure.{Measure, Extent}
+use @std.ui.place.measure.{Measure, Extent, Cells}
 use @std.ui.place.solve.{place, Placed}
 use @std.ui.realize.html.html.{render}
-use @std.ui.realize.tests.support.{boxed}
+use @std.ui.realize.tests.support.{boxed, placed, text_node}
 
 type Pixels = { theme: Theme }
 
 impl Measure for Pixels {
-    fn own(_n: Node, _avail: int) -> Extent { Extent { w: 0, h: 0 } }
-    fn kept(_n: Node) -> int { 0 }
-    fn min_own(_n: Node) -> int { 0 }
+    fn own(n: Node, avail: int) -> Extent { Cells {}.own(n, avail) }
+    fn kept(_n: Node, _path: string) -> int { 0 }
+    fn hidden(_n: Node) -> bool { false }
+    fn holds(_n: Node) -> bool { true }
+    fn min_own(n: Node) -> int { Cells {}.min_own(n) }
     fn gap_x(z: Size) -> int { self.theme.space_of(z) }
     fn gap_y(z: Size) -> int { self.theme.space_of(z) }
     fn pad_x(z: Size) -> int { self.theme.space_of(z) }
@@ -173,7 +189,7 @@ function solved(cases, work) {
 
 // ── the browser's side ───────────────────────────────────────────
 
-const PAGE = `<!doctype html><meta charset=utf-8><style>body{margin:0}</style><body></body>`;
+const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:cell;src:url(data:font/ttf;base64,${cellFontBase64()})}body{margin:0;font:1px/1px cell}</style><body></body>`;
 
 // The page the realizer wrote is laid in a host WIDTH wide. Each box is read
 // as the browser paints it: its edges, from the root's corner, snapped to the
@@ -182,7 +198,7 @@ const BROWSER = `(html, widthPx) => {
   const host = document.createElement("div");
   host.style.cssText = "position:absolute;left:0;top:0;width:" + widthPx + "px";
   document.body.appendChild(host);
-  host.innerHTML = html;
+  host.innerHTML = "<style>:root{--face-body:cell !important}</style>" + html;
   const root = host.lastElementChild;
   const origin = root.getBoundingClientRect();
   const out = [];
@@ -246,6 +262,7 @@ async function main() {
   const page = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-page-"));
   fs.writeFileSync(path.join(page, "index.html"), PAGE);
   const browser = await openPage(binary, "file://" + path.join(page, "index.html"), { width: 1200, height: 900 });
+  await browser.read('document.fonts.load("1px cell").then((faces) => faces.length)');
   const verdicts = await compare(cases, browser, work);
   const failing = verdicts.map((v, i) => (v ? i : -1)).filter((i) => i >= 0);
   for (const i of failing.slice(0, SHOW)) {

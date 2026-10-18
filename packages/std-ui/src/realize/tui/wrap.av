@@ -33,9 +33,25 @@ export fn wrap(text: string, width: int) -> List<string> {
 }
 
 fn paragraph(p: string, w: int) -> List<string> {
-    let words = [[piece] for word in p.split(" ") if word != "" for piece in cut(word, w)]
+    let words = [piece for word in p.split(" ") if word != "" for piece in cut(word, w)]
     if words.is_empty() { return [""] }
-    flowed(words, " ", w)
+    filled(words, w)
+}
+
+/// The words on lines of at most `w` cells, a space between, each line
+/// taking words until the next would pass it.
+fn filled(words: List<string>, w: int) -> List<string> {
+    mut out: List<string> = []
+    mut line = ""
+    for word in words {
+        if line != "" && cells(line) + 1 + cells(word) <= w {
+            line = "${line} ${word}"
+        } else {
+            if line != "" { out.push(line) }
+            line = word
+        }
+    }
+    out.concat([line])
 }
 
 /// `s` in runs of at most `width` cells, cut between clusters; whole when
@@ -61,23 +77,3 @@ fn packed(gs: List<string>, w: int) -> List<string> {
     }
     if line == "" { out } else { out.concat([line]) }
 }
-
-/// Parts laid on lines: single-line parts share a line, `sep` apart,
-/// until the next would pass `w`; a multi-line part takes its own lines.
-/// A part with no lines, or one blank line, is skipped.
-export fn flowed(parts: List<List<string>>, sep: string, w: int) -> List<string> {
-    mut out: List<string> = []
-    mut cur = ""
-    for ls in [p for p in parts if !is_blank(p)] {
-        if ls.length == 1 && cur != "" && cells(cur) + cells(sep) + cells(ls[0]) <= w {
-            cur = cur + sep + ls[0]
-        } else {
-            if cur != "" { out.push(cur) }
-            cur = ""
-            if ls.length == 1 { cur = ls[0] } else { out = out.concat(ls) }
-        }
-    }
-    if cur == "" { out } else { out.concat([cur]) }
-}
-
-fn is_blank(ls: List<string>) -> bool { ls.is_empty() || ls.length == 1 && ls[0] == "" }
