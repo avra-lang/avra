@@ -392,6 +392,20 @@ export fn rows() -> List<RemedyRow> {
             applied: Witness.Source("match 1 { quote { let \${x} = 1 } -> true, _ -> false }"),
             becomes: Then.Draws("type.quote_pat_subj"),
         },
+        RemedyRow {
+            kind: "resolve.not_a_dependency",
+            says: "is not a dependency of this package",
+            refused: Witness.Package({"/w/avra.toml": app_manifest, "/w/src/main.av": "use @x.y.{z}\n1\n"}),
+            applied: Witness.Package({"/w/avra.toml": app_manifest + "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n", "/w/src/main.av": "use @x.y.{z}\n1\n", "/w/vendor/dep/avra.toml": "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n", "/w/vendor/dep/src/y.av": "export fn z() -> int { 1 }\n"}),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "resolve.package_form",
+            says: "names no package",
+            refused: Witness.Package({"/w/avra.toml": app_manifest, "/w/src/main.av": "use @solo.{z}\n1\n"}),
+            applied: Witness.Package({"/w/avra.toml": app_manifest + "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep\" }\n", "/w/src/main.av": "use @x.y.{z}\n1\n", "/w/vendor/dep/avra.toml": "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n", "/w/vendor/dep/src/y.av": "export fn z() -> int { 1 }\n"}),
+            becomes: Then.Clean,
+        },
     ]
 }
 
