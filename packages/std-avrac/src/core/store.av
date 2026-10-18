@@ -111,9 +111,6 @@ export type SyntaxArena = {
     // the forms an expression was written in, by id — one record, so a
     // template copy carries them all through `wear_expr`
     expr_marks: Cell<List<ExprMarks>>,
-    // a call written as a PIPE (`x |> f(a)`), its first argument
-    // a call written as a TYPE LITERAL (`v.type(T)`)
-    type_lits: Cell<List<bool>>,
     // a record's `..R` entries, by its statement
     spreads: Cell<List<List<Spread>>>,
     // a collect's `dense` mark, by its statement: its order is data,
@@ -200,7 +197,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pat_fingerprints: list_cell(),
         param_spans: list_cell(),
         expr_marks: list_cell(),
-        type_lits: list_cell(),
         spreads: list_cell(),
         collect_dense: list_cell(),
         statement_ifs: list_cell(),
@@ -271,7 +267,6 @@ impl SyntaxArena {
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_fingerprints.push(e.identity(self))
         self.expr_marks.push(no_expr_marks())
-        self.type_lits.push(false)
         self.statement_ifs.push(false)
         self.minted_by.push(null)
         self.meaning.push(null)
@@ -322,15 +317,14 @@ impl SyntaxArena {
         [filler(labels, seats[j], j) for j in 0..seats.length]
     }
 
-    /// A call written as a TYPE LITERAL — the mark is part of the
-    /// node: a receiver that cannot answer refuses in the literal's words.
-    fn mark_type_lit(e: ExprId) {
-        self.type_lits.set_at(e.index, true)
-        self.expr_fingerprints.set_at(e.index, fp(112, [self.expr_fingerprints.get()[e.index]]))
-    }
-
+    /// The call a type literal means, never one a program wrote: a receiver
+    /// that cannot answer refuses in the literal's words.
     fn is_type_lit(e: ExprId) -> bool {
-        self.type_lits.get()[e.index]
+        let sugar? = self.minted_for(e) else { return false }
+        match self.expr(sugar) {
+            .TypeLit(_, _) -> same_expr(self.meant(sugar) ?? sugar, e),
+            _ -> false,
+        }
     }
 
     /// Whether this value is a type literal, or the chain over one

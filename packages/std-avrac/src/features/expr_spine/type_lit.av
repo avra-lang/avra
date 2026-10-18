@@ -7,30 +7,8 @@
 //! NAME is a hole — a `TypeId` binding in scope
 //! (`cx.type(Map<string, want>)`). A declared type has no spelling
 //! here: its id is a binding, so the hole is how it is named.
-use core.{Expr, ExprId, TypeRef, plain, mut_mark, settled_mark, Plain, Scoped}
+use core.{Expr, ExprId, TypeRef, plain, Scoped, some_list, type_words, type_applieds}
 use features.{Builder, LangNode, chained_binder}
-
-/// A word that spells a shape of its own.
-type Word = { name: string, variant: string }
-
-/// A constructor: the shape it spells and the types it takes.
-type Applied = { name: string, variant: string, arity: int }
-
-export const words: List<Word> = [
-    Word { name: "int", variant: "Int" },
-    Word { name: "float", variant: "Float" },
-    Word { name: "bool", variant: "Bool" },
-    Word { name: "string", variant: "Str" },
-    Word { name: "Bytes", variant: "Bytes" },
-    Word { name: "ptr", variant: "Ptr" },
-    Word { name: "void", variant: "Void" },
-]
-
-export const applieds: List<Applied> = [
-    Applied { name: "List", variant: "List", arity: 1 },
-    Applied { name: "Map", variant: "Map", arity: 2 },
-    Applied { name: "Result", variant: "Res", arity: 2 },
-]
 
 /// `subject.type(T)` — the literal over the value so far.
 fn build_type_link(b: Builder) -> Result<LangNode, string> {
@@ -42,13 +20,16 @@ fn build_chained_type_link(b: Builder) -> Result<LangNode, string> {
     b.wrap_expr(chained_type_literal(b, b.expr(0)?, b.type_ref(1)?)?)
 }
 
-/// The literal's call: the receiver's `interned` over the spelling,
-/// marked so a receiver that cannot answer refuses in the literal's words.
+/// `v.type(T)` keeps what was written; the receiver's `interned` call over
+/// the spelling is minted beside it, and a type no literal can spell is
+/// refused where it is written.
 fn type_literal(b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprId, string> {
-    let lit = spelling(b, t)?
-    let call = b.store.alloc_expr(Expr.MethodCall(subject, "interned", [lit]), b.span)
-    b.store.mark_type_lit(call)
-    .Ok(call)
+    let fault? = unspellable(t) else {
+        let sugar = b.expr_node(Expr.TypeLit(subject, t))
+        let _ = b.store.mean(sugar, type_means(b.source_of(sugar)), b.words.door)
+        return .Ok(sugar)
+    }
+    .Err(fault)
 }
 
 /// `a?.type(T)` IS `match a { null -> null, v? -> v.type(T) }`, the
@@ -60,57 +41,25 @@ fn chained_type_literal(b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprI
     .Ok(b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span))
 }
 
-/// A written type as a `TypeLit` VALUE — bare variants, heard from
-/// the `interned` seat. A hole is marked as the literal's, so a
-/// binding of the wrong type refuses as a hole.
-fn spelling(b: Builder, t: TypeRef) -> Result<ExprId, string> {
-    if t.optional { return variant(b, t, "Opt", [spelling(b, plain(t))?]) }
-    if t.dynamic { return .Err(no_spelling("`dyn ${t.name}`")) }
-    if t.arrow { return fn_spelling(b, t) }
-    let word: Word? = words.find(it.name == t.name)
-    if word != null {
-        if !t.args.is_empty() { return .Err("`${t.name}` takes no type arguments") }
-        return variant(b, t, word!.variant, [])
-    }
-    let found: Applied? = applieds.find(it.name == t.name)
-    if found == null {
-        if !t.args.is_empty() { return .Err(no_spelling("`${t.name}<…>`")) }
-        let hole = b.store.alloc_expr(Expr.Ident(Scoped(t.name)), t.span)
-        b.store.mark_hole(hole)
-        return variant(b, t, "Id", [hole])
-    }
-    let applied = found!
-    if t.args.length != applied.arity { return .Err("`${t.name}` is applied to ${t.args.length} types; it takes ${applied.arity}") }
-    variant(b, t, applied.variant, [spelling(b, a)? for a in t.args])
-}
-
-/// `fn(a, mut b) -> r` — the seats, their marks, the answer: the
-/// LAST written type is the answer, the fn-type builder's contract.
-fn fn_spelling(b: Builder, t: TypeRef) -> Result<ExprId, string> {
-    let seats = t.args.length - 1
-    let params = [spelling(b, t.args[j])? for j in 0..seats]
-    let muts = [b.store.alloc_expr(Expr.BoolLit(mut_mark(t.marks, j)), t.span) for j in 0..seats]
-    let consts = [b.store.alloc_expr(Expr.BoolLit(settled_mark(t.marks, j)), t.span) for j in 0..seats]
-    let ret = spelling(b, t.args[seats])?
-    variant(
-        b,
-        t,
-        "Fn",
-        [
-            b.store.alloc_expr(Expr.ListLit(params), t.span),
-            b.store.alloc_expr(Expr.ListLit(muts), t.span),
-            b.store.alloc_expr(Expr.ListLit(consts), t.span),
-            ret,
-        ],
-    )
-}
-
-fn variant(b: Builder, t: TypeRef, name: string, args: List<ExprId>) -> Result<ExprId, string> {
-    .Ok(b.store.alloc_expr(Expr.VariantLit(Plain(name), args), t.span))
+/// Why a type has no spelling, when it has none: a `dyn`, a word or a
+/// declared name given arguments, a constructor of the wrong arity.
+fn unspellable(t: TypeRef) -> string? {
+    if t.optional { return unspellable(plain(t)) }
+    if t.dynamic { return no_spelling("`dyn ${t.name}`") }
+    let inner = [f for a in t.args for f in some_list(unspellable(a))].first()
+    if t.arrow { return inner }
+    if type_words.any(it.name == t.name) { return if t.args.is_empty() { null } else { "`${t.name}` takes no type arguments" } }
+    let applied? = type_applieds.find(it.name == t.name) else { return if t.args.is_empty() { null } else { no_spelling("`${t.name}<…>`") } }
+    if t.args.length != applied.arity { return "`${t.name}` is applied to ${t.args.length} types; it takes ${applied.arity}" }
+    inner
 }
 
 // ── The voices ──
 
 fn no_spelling(what: string) -> string {
     "a type literal spells a structural type — ${what} names a declaration, whose id is a binding: name that binding instead"
+}
+
+fn type_means(written: string) -> string {
+    "`${written}` folds the type's spelling through the receiver's `interned`"
 }
