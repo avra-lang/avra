@@ -9,7 +9,9 @@ use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
 use realize.dom.wire.{frame}
+use realize.dom.exact.{Watch, watching, placed_in, disagreement}
 use style.theme.{Theme}
+use @std.io.{env}
 
 /// An element that hears an event, and what it does then.
 type Bound = { id: NodeId, action: Action }
@@ -25,10 +27,18 @@ export type Live = {
     worn: Cell<string?> = Cell.new(null),
     bound: Cell<List<Bound>> = Cell.new([]),
     heard: Cell<List<Heard>> = Cell.new([]),
+    watch: Cell<Watch?> = Cell.new(null),
 }
 
 /// A page nothing was painted on.
 export fn live() -> Live { Live {} }
+
+extern fn avra_trap(message: string)
+
+/// How the exact path runs, from `AVRA_EXACT`: unset is off, `check` runs it
+/// beside every full paint and traps when they disagree.
+// LICENSED input.debug_flag: a staging flag is the process's own, not an input
+once fn exact_mode() -> string { env("AVRA_EXACT") ?? "" }
 
 /// Every rule a tree's nodes name, in walk order.
 fn rules_of(n: Node) -> List<CssRule> {
@@ -57,6 +67,33 @@ impl Live {
     /// The handlers are kept anew EVERY paint: two trees that draw alike
     /// may still close over different values.
     fn patches(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        if exact_mode() == "" { return self.painted(root, theme, notice) }
+        let exact = self.exact_turn()
+        let full = self.painted(root, theme, notice)
+        self.rewatched()
+        let mine? = exact else { return full }
+        let why? = disagreement(mine, full) else { return full }
+        if exact_mode() == "check" { avra_trap("exact patches disagree with the full paint: ${why}") }
+        full
+    }
+
+    /// What the exact path says of this turn: the readings under the cells
+    /// written since the last paint. None before a paint has placed any.
+    fn exact_turn() -> List<Patch>? {
+        let w? = self.watch.get() else { return null }
+        w.turn()
+    }
+
+    /// The page's readings, watched anew after a paint: the old watch is let
+    /// go first, then every reading the paint placed is observed.
+    fn rewatched() {
+        let old = self.watch.get()
+        if old != null { old!.released() }
+        self.watch.set(watching(placed_in(self.page.get())))
+    }
+
+    /// The full paint, as it always was.
+    fn painted(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
         let restyled = self.restyled(root, theme, notice)
         let now = diff(
             self.page.get(),
