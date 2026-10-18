@@ -15,6 +15,7 @@ use tree.node.{Node, Attribute, Prim, Action, submits_among}
 use tree.seats.{always_seat_of}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
 use realize.html.css.{class_names, box_vars, drawn_box, CssVar}
+use @std.assets.{Picture}
 
 /// One piece of a page: an element, or a run of text.
 export enum Element {
@@ -80,6 +81,24 @@ fn flag(name: HtmlAttrName, on: bool, value: string) -> List<Wrote> {
     [Wrote { name: name, value: value, on: on }]
 }
 
+/// A picture as the attributes that draw it: where it is read from, and the
+/// size it keeps whatever has loaded. A bundled picture is read from the
+/// site's assets by its id.
+fn picture_wrote(p: Picture) -> List<Wrote> {
+    match p {
+        .Bundled(id, width, height, _) -> sized("/assets/${id}", width, height),
+        .Remote(url, width, height) -> sized(url.text(), width, height),
+    }
+}
+
+fn sized(src: string, width: int, height: int) -> List<Wrote> {
+    [
+        Wrote { name: .Src, value: src },
+        Wrote { name: .Width, value: "${width}" },
+        Wrote { name: .Height, value: "${height}" },
+    ]
+}
+
 /// A component property as what it writes, or nothing (content and
 /// levels are drawn, not attached). Every arm spelled.
 fn wrote(a: Attribute) -> List<Wrote> {
@@ -87,7 +106,8 @@ fn wrote(a: Attribute) -> List<Wrote> {
         .Value(v) -> [Wrote { name: .Value, value: v }],
         .Amount(n) -> [Wrote { name: .Value, value: "${n}" }],
         .Placeholder(t) -> [Wrote { name: .Placeholder, value: t }],
-        .Src(u) -> [Wrote { name: .Src, value: u.text() }],
+        .Source(p) -> picture_wrote(p),
+        .Decorative(on) -> flag(.AriaHidden, on, "true"),
         .Alt(t) -> [Wrote { name: .Alt, value: t }],
         .Href(u) -> [Wrote { name: .Href, value: u.text() }],
         .Min(n) -> [Wrote { name: .Min, value: "${n}" }],

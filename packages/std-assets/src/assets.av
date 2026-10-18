@@ -4,16 +4,30 @@
 //! these the octets of a file, and a handle is a settled value.
 
 use @std.text.{parse_int}
-use @std.meta.{Provider, Marker, Named}
+use @std.meta.{Provider, Marker, Named, sealed}
+use @std.url.{Url}
 
-/// Where a picture's pixels come from, and how big it draws.
+/// Where a picture's pixels come from, and how big it draws. SEALED: a
+/// bundled picture is what a kind's `provide` read from a file the build
+/// has, a remote one what `remote` accepted — so no value is a remote
+/// address the page may not load.
+@sealed
 export enum Picture {
     /// A file the build has. `id` names it by its package-relative path
     /// and never by a row number; `tone` is the dominant colour as
     /// 0xRRGGBB, 0 until rasters are decoded.
     Bundled(id: int, width: int, height: int, tone: int)
     /// A name for bytes someone else has, sized by the author.
-    Remote(url: string, width: int, height: int)
+    Remote(url: Url, width: int, height: int)
+}
+
+/// A picture someone else serves: an http or https address, sized by the
+/// author (layout never jumps), never fetched, transformed or shipped. Absent
+/// for any other scheme and for a size that is not positive.
+export fn remote(url: Url, width: int, height: int) -> Picture? {
+    if url.scheme != "http" && url.scheme != "https" { return null }
+    if width < 1 || height < 1 { return null }
+    Picture.Remote(url, width, height)
 }
 
 /// The mark an `asset` declaration wears, so a `collect` over `@bundled`

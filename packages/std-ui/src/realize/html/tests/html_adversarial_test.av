@@ -6,6 +6,7 @@ use @std.ui.realize.html.html.{fragment, render, page, Page}
 use @std.ui.realize.html.writer.{HtmlOp, source}
 use @std.ui.realize.html.tags.{HtmlAttr}
 use @std.ui.tree.url.{url, local, absolute}
+use @std.assets.{id_of}
 use @std.ui.env.{Env}
 use @std.ui.style.theme.{default_theme}
 use @std.ui.realize.tests.support.{
@@ -15,6 +16,7 @@ use @std.ui.realize.tests.support.{
     text_node,
     heading_node,
     image_node,
+    picture_at,
     link_node,
     button_node,
     switch_node,
@@ -80,7 +82,7 @@ fn hostile_nodes() -> List<Node> {
         card_node(h, []),
         keyed(leaf(.Item, []), h),
         leaf(.Field, [.Label(h), .Placeholder(h)]),
-        leaf(.Icon, [.Src(local(h)), .Name(h)]),
+        leaf(.Icon, [.Source(picture_at(h)), .Name(h)]),
         leaf(.Dialog, [.Label(h), .Open(true)]),
         leaf(.Alert, [.Text(h)]),
         leaf(.Spinner, [.Label(h)]),
@@ -109,7 +111,7 @@ spec "std/ui html — adversarial" {
             fragment(switch_node("", false)) == "<label><input type=\"checkbox\" role=\"switch\" aria-label=\"\"><span></span></label>"
         }
         then "an empty link keeps its target" { fragment(link_node("", "/a")) == "<a aria-label=\"\" href=\"/a\"></a>" }
-        then "an empty image source is a path with no scheme" { fragment(image_node("", "")) == "<img src=\"\" alt=\"\">" }
+        then "an empty image source is a path with no scheme" { fragment(image_node("", "")) == "<img src=\"/assets/${id_of("")}\" width=\"10\" height=\"10\" alt=\"\">" }
         then "an empty page title is an empty title" {
             page(Page { title: "" }, holding(.Column, [])).contains("<title></title>")
         }
@@ -187,7 +189,7 @@ spec "std/ui html — adversarial" {
             fragment(leaf(.Link, [.Href(local("javascript:x"))])) == "<a href=\"./javascript:x\"></a>"
         }
         then "a URL is safe on whatever primitive carries it" {
-            fragment(leaf(.Image, [.Href(local("vbscript:x")), .Src(local("/ok"))])) == "<img href=\"./vbscript:x\" src=\"/ok\">"
+            fragment(leaf(.Image, [.Href(local("vbscript:x")), .Source(picture_at("/ok"))])) == "<img href=\"./vbscript:x\" src=\"/assets/${id_of("/ok")}\" width=\"10\" height=\"10\">"
         }
         then "no value of the type spells a URL the reader refuses" {
             scripts
