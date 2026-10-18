@@ -176,12 +176,41 @@ native-only. The tangles that make this a review and not a mechanical move:
    needs the draw; the tick and the poller coupling are OS. On wasm the seed
    stays usable (it is how the 4-engine witness plan gets determinism), so
    `avra_tick` must exist there as a plain flag the host sets.
-4. **Preemption.** Native cancel points on loop back-edges read `avra_tick`,
-   which a timer signal raises. A wasm page has no signal: the host raises
-   the flag from a `setTimeout`, but JS cannot interrupt a running wasm
-   stack, so a tight loop with no park never sees it. This is cooperative
-   cancellation only; the doc must say so, and `within` around pure compute
-   does not fire until the next park or back-edge check the host got to run.
+4. **Preemption — choose a source for the tick.** Native cancel points on
+   loop back-edges read `avra_tick`, which a timer signal raises. A wasm page
+   has one thread, so nothing can set a flag while wasm runs. Two sources:
+   - **(a) A compiler-inserted BACK-EDGE BUDGET.** Each loop back-edge counts
+     down and calls the scheduler's cold side at zero. Deterministic (the same
+     program yields at the same iteration on every engine, which also makes a
+     seeded schedule reproducible), no timer, and the same on EVERY target, so
+     `within` and cancel cut pure compute everywhere, wasm included.
+   - **(b) A Worker and a SharedArrayBuffer.** Where the page is cross-origin
+     isolated, the app runs in a Worker and the main thread raises the tick
+     with `Atomics`. Real-time, no per-edge arithmetic beyond today's byte
+     read, but it exists only where isolation does, and then only on wasm.
+
+   **Pick (a), universal; (b) is an accelerator for a later slice.** Cost,
+   measured (wasm32 -O2 via binaryen 133, node 24.19, best of 5; a floor, since
+   real bodies are heavier than these):
+
+   | check | tight loop (4e8 iterations) | recursion (fib 40) |
+   |---|---|---|
+   | none | 286 ms | 289 ms |
+   | flag byte load (today's native check, never raised) | 329 ms (+15%) | n/a |
+   | loop-LOCAL counter, check every 2^20 | 342 ms (+20%) | n/a |
+   | global budget, decrement at each edge or entry | 359 ms (+23%) | 855 ms (2.96x) |
+
+   Native shows the same shape on fib (331 to 845 ms), so the cost is the
+   memory counter on a body of a few instructions, not wasm. The design
+   follows the numbers: **loops count in a register-resident local** (no
+   memory traffic: the +20% row, and the compiler can hoist it), and
+   **recursion checks at function entry only in fns the call-graph pass
+   (`cancel_reach.av`) proves recursive**, on the global budget. fib is the
+   worst case of that rule; a recursive fn with a real body pays the same
+   few instructions against more work. The recursion row is the open cost:
+   measure it on the real compiler's output before the slice that inserts
+   the checks, and consider checking only every Nth entry by depth.
+
 5. **The case runner** (L3171-3797) and the listing (`avra tasks <pid>`) are
    native-only test and tooling surfaces; excluded.
 6. **Cores and the offload threads** stay out (`avra_cores.c`, F4).
