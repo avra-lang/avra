@@ -301,11 +301,11 @@ export fn rows() -> List<RemedyRow> {
             says: "a handler that can fail must name a fate",
             refused: with_provider(
                 "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n}\n0\n",
-                "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n",
+                work_provider,
             ),
             applied: with_provider(
                 "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n    dead: \"letter\"\n}\n0\n",
-                "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n",
+                work_provider,
             ),
             becomes: Then.Clean,
         },
@@ -339,7 +339,7 @@ export fn rows() -> List<RemedyRow> {
                 ),
             applied: Witness
                 .Source(
-                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1",
+                    entry_collect,
                 ),
             becomes: Then.Clean,
         },
@@ -352,7 +352,7 @@ export fn rows() -> List<RemedyRow> {
                 ),
             applied: Witness
                 .Source(
-                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1",
+                    entry_collect,
                 ),
             becomes: Then.Clean,
         },
@@ -386,14 +386,14 @@ export fn rows() -> List<RemedyRow> {
         },
         RemedyRow {
             kind: "type.quote_pat_type",
-            says: "binds only its WHOLE field",
+            says: whole_field,
             refused: Witness.Source("match 1 { quote { let x: \${T}? = null } -> true, _ -> false }"),
             applied: Witness.Source("match 1 { quote { let x: \${T} = null } -> true, _ -> false }"),
             becomes: Then.Draws("type.quote_pat_subj"),
         },
         RemedyRow {
             kind: "type.quote_pat_seat",
-            says: "binds only its WHOLE field",
+            says: whole_field,
             refused: Witness.Source("match 1 { quote { let l\${x}_y = 1 } -> true, _ -> false }"),
             applied: Witness.Source("match 1 { quote { let \${x} = 1 } -> true, _ -> false }"),
             becomes: Then.Draws("type.quote_pat_subj"),
@@ -444,3 +444,12 @@ fn spliced_fails(kind: string, text: string, d: Diag, sg: Suggestion) -> bool {
     let out = avra().check(new_source_file("witness.av", after))
     unreadable(out) || out.contains("[${kind}]: ${d.message}")
 }
+
+/// The provider package of a component whose handler can fail.
+const work_provider: string = "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n"
+
+/// A lawful collect over the entry record.
+const entry_collect: string = "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1"
+
+/// The words two quote-pattern refusals share.
+const whole_field: string = "binds only its WHOLE field"
