@@ -1189,7 +1189,20 @@ impl TypeCx {
         if unwritten != null { return self.seat_unwritten(e, callee, unwritten!) }
         self.overwritten_args(args, seats, fills)
         let whole = [j for j, f in fills if f != null && f!.field < 0]
-        Placed { args: [args[fills[j]!.arg] for j in whole], wants: [wants[j] for j in whole] }
+        let pins = [self.field_pin(args, fills, j, wants[j]) for j, f in fills if f != null && f!.field >= 0 && self.view.types.open(wants[j])]
+        Placed {
+            args: [args[fills[j]!.arg] for j in whole],
+            wants: [wants[j] for j in whole],
+            pins: pins,
+        }
+    }
+
+    /// The pin a field puts on the type parameter its seat is typed by.
+    fn field_pin(args: List<ExprId>, fills: List<SeatFill?>, j: int, want: TypeId) -> FieldPin {
+        let fill = fills[j]!
+        let at = args[fill.arg]
+        let sig = self.fields_of(self.type_at(at))!
+        FieldPin { have: sig.types[fill.field], want: want, name: sig.names[fill.field], at: at }
     }
 
     /// The field names argument `a` spreads, none for a plain argument.
@@ -1230,7 +1243,7 @@ impl TypeCx {
         if s < 0 { return self.spread_no_seat(a, callee, name) }
         let m = self.view.decls.seat_mark(d, s)
         if m.mutable || m.state || m.settled || m.unshared { return self.spread_place_seat(a, callee, name) }
-        if self.view.types.open(wants[s]) { return self.spread_open_seat(a, callee, name) }
+        if self.view.types.open(wants[s]) { return true }
         let sig? = self.fields_of(self.type_at(a)) else { return true }
         if sig.types[i] != wants[s] { return self.spread_field_type(a, callee, name, sig.types[i], wants[s]) }
         true
@@ -1306,20 +1319,6 @@ impl TypeCx {
                     "`${callee}`'s seat `${name}` takes a place or a settled value, and a spread's field is neither",
                     "spread here",
                     "write `${name}` beside the spread",
-                ),
-            )
-        false
-    }
-
-    mut fn spread_open_seat(a: ExprId, callee: string, name: string) -> bool {
-        self
-            .emit(
-                refusal(
-                    "type.spread_seat",
-                    self.loc_of(a),
-                    "`${callee}`'s seat `${name}` is typed by a type parameter, which only an argument written at the call pins",
-                    "spread here",
-                    "write `${name}: …` beside the spread",
                 ),
             )
         false
@@ -2405,7 +2404,12 @@ fn block_word(n: int) -> string {
 }
 
 /// A call's arguments in seat order, and the seats they fill.
-export type Placed = { args: List<ExprId>, wants: List<TypeId> }
+export type Placed = { args: List<ExprId>, wants: List<TypeId>, pins: List<FieldPin> = [] }
+
+/// A spread field that fills a seat typed by a type parameter: the field's
+/// type pins the parameter as a written argument's would, and `at` is the
+/// spread it came from.
+export type FieldPin = { have: TypeId, want: TypeId, name: string, at: ExprId }
 
 /// Arguments that fill their seats as written.
 fn as_written(args: List<ExprId>, wants: List<TypeId>) -> Placed { Placed { args: args, wants: wants } }

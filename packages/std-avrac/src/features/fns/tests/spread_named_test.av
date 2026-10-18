@@ -34,6 +34,12 @@ spec "features/fns — a record spread into named seats" {
                 "type A = { n: int }\ntype G = { by: int }\nimpl A {\n    fn add(by: int) -> int { self.n + by }\n}\nA { n: 1 }.add(..G { by: 2 })",
             ) == "3"
         }
+        then "a field pins a type parameter as an argument does" {
+            shown("type K = { x: string }\nfn id<T>(x: T) -> T { x }\nid(..K { x: \"pinned\" })") == "pinned"
+        }
+        then "a field and an argument that agree pin one type parameter" {
+            shown("type K = { a: int }\nfn two<T>(a: T, b: T) -> T { b }\ntwo(..K { a: 1 }, b: 2)") == "2"
+        }
         then "a generic callee fills a concrete seat" {
             shown(
                 "type K = { n: int }\nfn pick<T>(x: T, n: int) -> int { n }\npick(\"s\", ..K { n: 4 })",
@@ -66,11 +72,12 @@ spec "features/fns — a record spread into named seats" {
                 .report()
                 .contains("takes a place or a settled value, and a spread's field is neither")
         }
-        then "a field into a seat typed by a type parameter" {
-            refused_with(
-                "type K = { x: int }\nfn f<T>(x: T) -> int { 1 }\nf(..K { x: 1 })",
-                "is typed by a type parameter, which only an argument written at the call pins",
+        then "a field and an argument pinning one type parameter differently" {
+            analyze_source(
+                "type K = { a: int }\nfn two<T>(a: T, b: T) -> int { 1 }\ntwo(..K { a: 1 }, b: \"s\")",
             )
+                .report()
+                .contains("this spread's field `a` is `int`")
         }
         then "a non-record source" { refused_with("${P}area(..5)", "`..` spreads `int`, which has no fields") }
         then "a nullable source" {
