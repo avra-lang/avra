@@ -17,7 +17,7 @@ use tree.lists.{flatten}
 use tree.view.{View}
 use native.net.{over_http}
 use native.sources.{opened, served}
-use terminal.keys.{Key, heard, keys}
+use terminal.keys.{Key, heard, keys, resume}
 
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
@@ -36,6 +36,8 @@ export type Terminal = {
     height: int,
     focus: Cell<Focus?> = Cell.new(null),
     ended: Cell<bool> = Cell.new(false),
+    active: Cell<bool> = Cell.new(true),
+    keyboard: Cell<int> = Cell.new(-1),
 }
 
 /// `view` in a terminal `width` cells wide and `height` lines tall. The
@@ -91,6 +93,24 @@ fn slid(c: Control, by: int) -> bool {
     let to = reads.amount + by
     if reads.max > reads.min && (to < reads.min || to > reads.max) { return false }
     c.says(.Change, Said.Number(to))
+}
+
+/// Pasted text: a field takes it after what it holds, as one input and with
+/// its line breaks and tabs as spaces and other control characters dropped;
+/// no other control hears it, whatever the words in it say.
+fn pasted(c: Control, text: string) -> bool {
+    match c.node.prim {
+        .Field -> c.says(.Input, Said.Text(said_of(c.node.attrs).value + one_line(text))),
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider -> false,
+    }
+}
+
+/// `text` on one line: breaks and tabs become spaces, other control
+/// characters go.
+fn one_line(text: string) -> string {
+    from_codepoints(
+        [if c == 9 || c == 10 || c == 13 { 32 } else { c } for c in codepoints(text) if c >= 32 || c == 9 || c == 10 || c == 13],
+    )
 }
 
 /// A typed character: a field takes it after what it holds, a slider
@@ -184,6 +204,15 @@ impl Terminal {
         self.slid(l, l.from + by * size)
     }
 
+    /// The wheel moves the window `by` rows, held inside the rows there are.
+    fn wheel(by: int) {
+        let l? = self.listed() else { return }
+        let size = l.to - l.from
+        let last = if l.count - size < 0 { 0 } else { l.count - size }
+        let from = if l.from + by < 0 { 0 } else if l.from + by > last { last } else { l.from + by }
+        let _ = self.windowed(l, from, from + size)
+    }
+
     /// The window goes to the start, or to the end of the list.
     fn edge(last: bool) {
         let l? = self.listed() else { return }
@@ -272,6 +301,24 @@ impl Terminal {
                 self.edge(true)
                 false
             },
+            .Escape or .Chord(_, _, _) or .Click(_, _) -> false,
+            .Wheel(_, _, toward_end) -> {
+                self.wheel(if toward_end { 3 } else { -3 })
+                false
+            },
+            .Paste(text) -> self.act((c: Control) -> pasted(c, text)),
+            .FocusIn -> {
+                self.active.set(true)
+                false
+            },
+            .FocusOut -> {
+                self.active.set(false)
+                false
+            },
+            .Reports(flags) -> {
+                self.keyboard.set(flags)
+                false
+            },
             .Enter -> self.act(entered),
             .Erase -> self.act(erased),
             .Char(ch) -> self.act((c: Control) -> typed(c, ch)),
@@ -322,10 +369,11 @@ impl Terminal {
 /// read leaves unfinished — a character or an escape sequence it cut —
 /// stands in `held` before the next. A turn that ends the input ends the
 /// loop.
-fn keyed(on: Terminal, held: Cell<Bytes>, bytes: Bytes) -> Act {
+fn keyed(on: Terminal, held: Cell<Bytes>, draining: Cell<bool>, bytes: Bytes) -> Act {
     () -> {
-        let run = heard(held.get().concat(bytes))
+        let run = resume(held.get().concat(bytes), draining.get())
         held.set(run.held)
+        draining.set(run.draining)
         on.press(run.keys)
         if on.ended.get() { on.shown.app.close() }
         true
@@ -336,6 +384,7 @@ fn keyed(on: Terminal, held: Cell<Bytes>, bytes: Bytes) -> Act {
 /// act in the app's inbox, and its end ends the loop.
 fn read(on: Terminal) -> bool {
     let held: Cell<Bytes> = Cell.new("".bytes())
+    let draining = Cell.new(false)
     while true {
         let _ = avra_fiber_park_fd(input, 0, -1)
         let token = avra_fd_read(input, chunk)
@@ -343,7 +392,7 @@ fn read(on: Terminal) -> bool {
             on.shown.app.close()
             return true
         }
-        if !on.shown.app.post_unowned(keyed(on, held, avra_fd_taken(token))) { return true }
+        if !on.shown.app.post_unowned(keyed(on, held, draining, avra_fd_taken(token))) { return true }
     }
     true
 }
