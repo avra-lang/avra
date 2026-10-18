@@ -4328,13 +4328,21 @@ int64_t avra_box_key(void* p) {
     return avra_hdr(p) ? (int64_t)(uintptr_t)p : 0;
 }
 
+/* Whether a box can be observed: a counted box, or one that lives for the
+   process (a `once` answer, which a top-level state's cell is), whose header
+   is the runtime's own to write. A box the backend laid out as data carries
+   every flag set, and its header may sit in read-only memory. */
+static int observable(Header* h) {
+    return ((uint32_t)h->kind_word & AVRA_FLAGS_MASK) != AVRA_FLAGS_MASK && avra_kind(h) != KIND_DEAD;
+}
+
 /* A box a site reads: held and observed from now, and stamped as not yet
    written this turn, so its first write files it. Observing a box already
    observed only stamps it again, so it is held once. A pointer that is not
    a counted box answers 0. */
 int64_t avra_box_observe(void* p) {
     Header* h = avra_hdr(p);
-    if (h == NULL || avra_kind(h) < 0) return 0;
+    if (h == NULL || !observable(h)) return 0;
     uint32_t stale = (avra_turn_word - AVRA_STAMP_ONE) & AVRA_STAMP_MASK;
     int held = ((uint32_t)h->kind_word & AVRA_FLAGS_MASK) == AVRA_OBSERVED;
     h->kind_word = (int32_t)(((uint32_t)h->kind_word & 0xFFu) | AVRA_OBSERVED | stale);
@@ -4346,7 +4354,7 @@ int64_t avra_box_observe(void* p) {
    alone. */
 int64_t avra_box_unobserve(void* p) {
     Header* h = avra_hdr(p);
-    if (h == NULL || avra_kind(h) < 0) return 0;
+    if (h == NULL) return 0;
     if (((uint32_t)h->kind_word & AVRA_FLAGS_MASK) != AVRA_OBSERVED) return 0;
     h->kind_word = (int32_t)((uint32_t)h->kind_word & 0xFFu);
     avra_rc_release(p);
