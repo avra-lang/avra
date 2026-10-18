@@ -12,6 +12,7 @@
 #include <llvm-c/Transforms/PassBuilder.h>
 #include <llvm-c/Error.h>
 #include <llvm-c/BitReader.h>
+#include <llvm-c/Support.h>
 #include <llvm-c/Linker.h>
 #include <llvm-c/Comdat.h>
 #include <stdlib.h>
@@ -973,6 +974,35 @@ LLVMValueRef avra_llvm_build_cleanup_landing(LLVMModuleRef m, LLVMBuilderRef b) 
     return pad;
 }
 
+// THE WASM FORM of the unwind landing: a cleanup funclet, not a landing pad.
+// Its personality is the wasm one (declared here, defined by the runtime), and
+// the pad is the token every call inside the funclet names.
+LLVMValueRef avra_llvm_build_cleanup_funclet(LLVMModuleRef m, LLVMBuilderRef b) {
+    LLVMValueRef fn = LLVMGetBasicBlockParent(LLVMGetInsertBlock(b));
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef personality = LLVMGetNamedFunction(m, "__gxx_wasm_personality_v0");
+    if (!personality) {
+        personality = LLVMAddFunction(m, "__gxx_wasm_personality_v0", LLVMFunctionType(LLVMInt32TypeInContext(ctx), NULL, 0, 1));
+    }
+    LLVMSetPersonalityFn(fn, personality);
+    LLVMValueRef parent = LLVMConstNull(LLVMTokenTypeInContext(ctx));
+    return LLVMBuildCleanupPad(b, parent, NULL, 0, "unwound");
+}
+
+// A call made inside a cleanup funclet names the funclet it belongs to.
+LLVMValueRef avra_llvm_build_funclet_call(LLVMBuilderRef b, LLVMTypeRef fn_type, LLVMValueRef fn_val, LLVMValueRef* args, int count, LLVMValueRef pad) {
+    LLVMValueRef bundle_args[1] = { pad };
+    LLVMOperandBundleRef bundle = LLVMCreateOperandBundle("funclet", 7, bundle_args, 1);
+    LLVMValueRef r = LLVMBuildCallWithOperandBundles(b, fn_type, fn_val, args, (unsigned)count, &bundle, 1, "");
+    LLVMDisposeOperandBundle(bundle);
+    return r;
+}
+
+// The funclet ends and the unwind goes on to the caller.
+void avra_llvm_build_cleanup_ret(LLVMBuilderRef b, LLVMValueRef pad) {
+    LLVMBuildCleanupRet(b, pad, NULL);
+}
+
 void avra_llvm_build_resume(LLVMBuilderRef b, LLVMValueRef pad) {
     LLVMBuildResume(b, pad);
 }
@@ -1100,12 +1130,22 @@ static int target_is_wasm(const char* triple) {
    registry could be written twice. */
 static pthread_once_t wasm_registry = PTHREAD_ONCE_INIT;
 static void wasm_registry_open(void) {
+    // WEBASSEMBLY EXCEPTION HANDLING, for the cleanups a trap unwinds through:
+    // the same switches clang's -fwasm-exceptions sets.
+    const char* eh_options[] = { "avra", "-wasm-enable-eh", "-exception-model=wasm", "-wasm-use-legacy-eh=false" };
+    LLVMParseCommandLineOptions(4, eh_options, "");
     LLVMInitializeWebAssemblyTargetInfo();
     LLVMInitializeWebAssemblyTarget();
     LLVMInitializeWebAssemblyTargetMC();
     LLVMInitializeWebAssemblyAsmPrinter();
 }
 static void wasm_target_ready(void) { pthread_once(&wasm_registry, wasm_registry_open); }
+
+/* The target's feature string: a wasm module may use exceptions, which is
+   what lets a trap's cleanups run; every other target takes its CPU's own. */
+static const char* target_features(const char* triple) {
+    return target_is_wasm(triple) ? "+exception-handling" : "";
+}
 
 /* A target machine per triple, kept for the process — `set_module_target`
    wants one ONLY for its data layout, and building one per module is the same
@@ -1125,7 +1165,7 @@ static LLVMTargetMachineRef target_machine_for(const char* triple) {
         if (error) LLVMDisposeMessage(error);
         return NULL;
     }
-    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", LLVMCodeGenLevelNone, LLVMRelocPIC, LLVMCodeModelDefault);
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), target_features(triple), LLVMCodeGenLevelNone, LLVMRelocPIC, LLVMCodeModelDefault);
     g_target_cache[g_target_cache_n].triple = strdup(triple);
     g_target_cache[g_target_cache_n].tm = tm;
     g_target_cache_n++;
@@ -1334,7 +1374,7 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
     LLVMCodeGenOptLevel cg = level < 0 ? LLVMCodeGenLevelDefault : level == 0 ? LLVMCodeGenLevelNone
                            : level == 1 ? LLVMCodeGenLevelLess
                            : level == 2 ? LLVMCodeGenLevelDefault : LLVMCodeGenLevelAggressive;
-    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), "", cg, LLVMRelocPIC, LLVMCodeModelDefault);
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, baseline_cpu(triple), target_features(triple), cg, LLVMRelocPIC, LLVMCodeModelDefault);
     LLVMSetTarget(m, triple);
     sites_placed(m, triple);
     LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);

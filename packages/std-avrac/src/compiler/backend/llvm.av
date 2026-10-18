@@ -61,12 +61,12 @@ type Emit = {
     rt: Map<string, RtSig>,
     // whether each box a row mints is counted by its type (AVRA_CENSUS_TYPES)
     census: bool,
-    // THE BODY'S UNWIND COVER (a wasm module has none: `unwinds` is false
-    // there and every call is plain): its instructions, the `Cleanup`s open at
+    // THE BODY'S UNWIND COVER (`funclets`: a wasm module's cleanups are
+    // funclets, native ones landing pads): its instructions, the `Cleanup`s open at
     // each position (`cleanups_open`), the instruction being emitted, and
     // the landing blocks built so far, by the cleanups they run
     ins: List<Ins>,
-    unwinds: bool,
+    funclets: bool,
     open: List<List<int>>,
     at: int,
     pads: Map<string, ptr>,
@@ -371,7 +371,7 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
         let bd = l.fns[p]
         if mine.get(bd.name) != null {
             let f = avra_llvm_get_named_function(m, mangled(bd.name))
-            let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f, !wasm)
+            let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f, wasm)
             if failure != null { return wreck(m, path, failure!) }
             if bd.weak { avra_llvm_set_weak_odr(f) }
             // a wasm module runs no task, so it files no site
@@ -608,7 +608,7 @@ fn emit_body(
     rt: Map<string, RtSig>,
     bd: Body,
     f: ptr,
-    unwinds: bool,
+    funclets: bool,
 ) -> string? {
     mut vals: List<ptr> = []
     // LICENSED loops.push_loop: a RANGE walk — comprehensions iterate lists only
@@ -627,8 +627,8 @@ fn emit_body(
         rt: rt,
         census: avra_llvm_census_types() != 0,
         ins: bd.ins,
-        unwinds: unwinds,
-        open: if unwinds { cleanups_open(bd.ins) } else { [] },
+        funclets: funclets,
+        open: cleanups_open(bd.ins),
         at: 0,
         pads: {},
     }

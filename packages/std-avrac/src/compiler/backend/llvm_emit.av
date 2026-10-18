@@ -52,7 +52,6 @@ impl Emit {
     /// else one that may unwind, landing on the block that makes the open
     /// cleanups and hands the unwind on.
     fn emitted(fty: ptr, f: ptr, args: ptr, n: int) -> ptr {
-        if !self.unwinds { return avra_llvm_build_call(self.b, fty, f, args, n, "") }
         let open = self.open[self.at]
         if open.is_empty() || avra_llvm_is_nounwind(f) != 0 { return avra_llvm_build_call(self.b, fty, f, args, n, "") }
         avra_llvm_build_invoke(self.b, fty, f, args, n, self.landing(open))
@@ -68,28 +67,45 @@ impl Emit {
         let here = avra_llvm_get_insert_block(self.b)
         let block = avra_llvm_append_basic_block(self.lc, self.fn_val, "unwind")
         avra_llvm_position_at_end(self.b, block)
-        let pad = avra_llvm_build_cleanup_landing(self.m, self.b)
-        for ci in reversed(open) { self.cleaned(self.ins[ci]) }
-        avra_llvm_build_resume(self.b, pad)
+        if self.funclets {
+            let pad = avra_llvm_build_cleanup_funclet(self.m, self.b)
+            for ci in reversed(open) { self.cleaned(self.ins[ci], pad) }
+            avra_llvm_build_cleanup_ret(self.b, pad)
+        } else {
+            let pad = avra_llvm_build_cleanup_landing(self.m, self.b)
+            for ci in reversed(open) { self.cleaned(self.ins[ci], null) }
+            avra_llvm_build_resume(self.b, pad)
+        }
         avra_llvm_position_at_end(self.b, here)
         self.pads.set(key, block)
         block
     }
 
-    /// One `Cleanup`'s call, made plainly.
-    fn cleaned(i: Ins) {
+    /// One `Cleanup`'s call, made plainly — or, in a funclet, naming it.
+    fn cleaned(i: Ins, funclet: ptr?) {
         match i {
             .Cleanup(callee, args, _) -> {
                 let f = avra_llvm_get_named_function(self.m, mangled(callee))
                 let arr = avra_llvm_value_array_new(args.length)
                 for j, a in args { avra_llvm_value_array_set(arr, j, self.vals[a.index]) }
-                let _ = avra_llvm_build_call(
+                let pad? = funclet else {
+                    let _ = avra_llvm_build_call(
+                        self.b,
+                        avra_llvm_fn_type_of(f),
+                        f,
+                        arr,
+                        args.length,
+                        "",
+                    )
+                    return
+                }
+                let _ = avra_llvm_build_funclet_call(
                     self.b,
                     avra_llvm_fn_type_of(f),
                     f,
                     arr,
                     args.length,
-                    "",
+                    pad,
                 )
             },
             .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> nothing(),
