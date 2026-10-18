@@ -149,6 +149,7 @@ extern const char avra_rt_held_avra_array_pop __asm__(AVRA_RT_LABEL(avra_array_p
 extern const char avra_rt_held_avra_array_pop_owned __asm__(AVRA_RT_LABEL(avra_array_pop_owned));
 extern const char avra_rt_held_avra_array_concat __asm__(AVRA_RT_LABEL(avra_array_concat));
 extern const char avra_rt_held_avra_array_concat_reusing __asm__(AVRA_RT_LABEL(avra_array_concat_reusing));
+extern const char avra_rt_held_avra_array_extend __asm__(AVRA_RT_LABEL(avra_array_extend));
 extern const char avra_rt_held_avra_array_slice __asm__(AVRA_RT_LABEL(avra_array_slice));
 extern const char avra_rt_held_avra_array_slice_reusing __asm__(AVRA_RT_LABEL(avra_array_slice_reusing));
 extern const char avra_rt_held_avra_str_contains __asm__(AVRA_RT_LABEL(avra_str_contains));
@@ -360,6 +361,7 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_array_pop_owned,
     &avra_rt_held_avra_array_concat,
     &avra_rt_held_avra_array_concat_reusing,
+    &avra_rt_held_avra_array_extend,
     &avra_rt_held_avra_array_slice,
     &avra_rt_held_avra_array_slice_reusing,
     &avra_rt_held_avra_str_contains,
@@ -659,6 +661,8 @@ _Static_assert(__builtin_classify_type(avra_array_concat(AVRA_RT_PTR, AVRA_RT_PT
     "avra_array_concat: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_array_concat_reusing(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_array_concat_reusing: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_array_extend(AVRA_RT_PTR, AVRA_RT_PTR)), void),
+    "avra_array_extend: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_array_slice(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_array_slice: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_array_slice_reusing(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)) == AVRA_RT_POINTER,
