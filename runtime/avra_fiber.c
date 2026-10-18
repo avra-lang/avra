@@ -1075,10 +1075,15 @@ int64_t avra_sig_number(int64_t kind) {
         case 6: return SIGPIPE;
         case 7: return SIGALRM;
         case 8: return SIGCHLD;
+        case 9: return SIGWINCH;
         default: avra_trap("a signal kind the runtime does not know");
     }
     return 0;
 }
+
+// A signal raised on this process: the platform's number for the kind, as
+// a signal from outside would arrive.
+void avra_sig_raise(int64_t kind) { raise((int)avra_sig_number(kind)); }
 
 // The wait over `sig` is done: the poller's registration goes, and the
 // disposition Avra spent is given back, so the signal is the process's
