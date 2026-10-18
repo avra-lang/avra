@@ -49,11 +49,11 @@ const shape = (n) => {
 };
 const every = (n, hit, out = []) => { if (hit(n)) out.push(n); n.childNodes.forEach((c) => every(c, hit, out)); return out; };
 // A control by its accessible name, among those that listen.
-const named = (name, under = mount) => every(under, (n) => n.attrs["aria-label"] === name && ears.has(n.__avra_id));
+const named = (name, under = mount) => every(under, (n) => n.attrs["aria-label"] === name && ears(n.__avra_id).length > 0);
 // A keyed row by its key.
 const keyed = (key) => every(mount, (n) => n.attrs["data-key"] === key)[0] || null;
 const fire = (n) => {
-  const [, ear] = [...ears.get(n.__avra_id)][0];
+  const [, ear] = ears(n.__avra_id)[0];
   dispatch(mount, n, ear.event, { bubbles: false });
   return ear.event;
 };

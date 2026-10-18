@@ -178,7 +178,7 @@ dispatch(c.mount, box, "change");
 check("a control that cannot say a number says nothing", c.sent[4], [6, 3, null]);
 
 c.apply(frame(unlisten(0, 1)));
-check("unlisten removes the listener", c.apply.ears.has(0), false);
+check("unlisten removes the listener", c.apply.ears(0).length > 0, false);
 
 c.apply(frame(create(7, "form"), listen(7, 4, "submit", SAYS.nothing, "", true), place(7, NO_ID, NO_ID)));
 let prevented = 0;

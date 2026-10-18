@@ -54,7 +54,7 @@ function line(n) {
   const props = Object.keys(n).filter((k) => !BUILT.has(k) && n[k] !== "" && n[k] !== false)
     .map((k) => [nameOf(k), n[k]]).sort((a, b) => (a[0] < b[0] ? -1 : 1))
     .map(([name, value]) => ` .${name}=${propShown(value)}`).join("");
-  const ears = [...(page.apply.ears.get(n.__avra_id) || [])].map(([kind, ear]) => [kind, ear.event]).sort((a, b) => a[0] - b[0])
+  const ears = page.apply.ears(n.__avra_id).map(([kind, ear]) => [kind, ear.event]).sort((a, b) => a[0] - b[0])
     .map(([kind, event]) => ` @${kind}:${event}`).join("");
   return number + n.tagName + attrs + props + ears;
 }
@@ -78,7 +78,7 @@ const echoText = ([who, kind, said]) => `${who} ${kind} ${said ? said.says : SAY
 // to the page, shuts the element.
 function spoken(page, id, event) {
   const el = find(page.mount, id);
-  const hears = [...(page.apply.ears.get(id) || [])].some(([, ear]) => ear.event === event);
+  const hears = page.apply.ears(id).some(([, ear]) => ear.event === event);
   if (!el || !hears) return { echo: `nothing on ${id} hears ${event}`, stopped: false };
   page.sent.length = 0;
   let stopped = false;
