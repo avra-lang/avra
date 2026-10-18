@@ -59,9 +59,12 @@ for src in "$fixtures"/*/; do
         ws=0
         "$native" >"$work/$name.native.out" 2>&1 || ns=$?
         "$node" --no-warnings $jspi "$here/wasm-node.mjs" "$wasm" >"$work/$name.wasm.out" 2>&1 || ws=$?
+        fb="${wasm%.wasm}.asyncify.wasm"
+        fs=0
+        if [ -f "$fb" ]; then "$node" --no-warnings "$here/wasm-node.mjs" --asyncify "$fb" >"$work/$name.asyncify.out" 2>&1 || fs=$?; else fs=2; echo "(no fallback built)" >"$work/$name.asyncify.out"; fi
         if "$avra" run "$pkg" >/dev/null 2>&1; then say "$name: the evaluator ran it to the end, and it must refuse"; fail=1; continue; fi
-        if [ "$ns" -eq 2 ] && [ "$ws" -eq 2 ] && grep -q "$want" "$work/$name.native.out" && grep -q "$want" "$work/$name.wasm.out"; then
-            say "$name: eval refuses; native and wasm end 2 saying \`$want\`"
+        if [ "$ns" -eq 2 ] && [ "$ws" -eq 2 ] && [ "$fs" -eq 2 ] && grep -q "$want" "$work/$name.native.out" && grep -q "$want" "$work/$name.wasm.out" && grep -q "$want" "$work/$name.asyncify.out"; then
+            say "$name: eval refuses; native, wasm and its fallback end 2 saying \`$want\`"
         else
             say "$name: native status $ns, wasm status $ws, and each must end 2 saying \`$want\`"
             tail -3 "$work/$name.native.out" "$work/$name.wasm.out" >&2
@@ -86,6 +89,21 @@ for src in "$fixtures"/*/; do
         fail=1
     else
         say "$name: eval == native == wasm"
+        # THE FALLBACK says the same: a program that runs tasks has an asyncified twin
+        fb="${wasm%.wasm}.asyncify.wasm"
+        if [ -f "$fb" ]; then
+            "$node" --no-warnings "$here/wasm-node.mjs" --asyncify "$fb" >"$work/$name.asyncify.out" 2>"$work/$name.asyncify.err" || true
+            if diff -u "$work/$name.native.out" "$work/$name.asyncify.out" >"$work/$name.diff" 2>&1; then
+                say "$name: ... and its asyncified fallback ($(stat -c%s "$wasm" 2>/dev/null || stat -f%z "$wasm") B clean, $(stat -c%s "$fb" 2>/dev/null || stat -f%z "$fb") B asyncified)"
+            else
+                say "$name: the asyncified fallback differs from native"
+                cat "$work/$name.diff" >&2
+                fail=1
+            fi
+        elif [ -f "$src/expected.txt" ] && grep -q "avra_host" "$wasm"; then
+            say "$name: a program that runs tasks built no fallback"
+            fail=1
+        fi
     fi
 done
 

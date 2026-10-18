@@ -6,29 +6,33 @@
 // A module that imports `avra_host` has a hosted scheduler (tasks): it runs
 // under JSPI (`node --experimental-wasm-jspi` until Node ships it on), the
 // program's entry on the first task's stack. Without JSPI it exits 3 and
-// says so — never a silent pass.
+// says so — never a silent pass. `--asyncify <module>` is the fallback host:
+// the asyncified module (`app.asyncify.wasm`) driven without suspending a
+// stack, on any Node.
 import { WASI } from "node:wasi";
 import fs from "node:fs";
-import { faultWords, hostedTasks, jspiAvailable } from "../runtime/dom/tasks.js";
+import { asyncifyTasks, faultWords, hostedTasks, jspiAvailable } from "../runtime/dom/tasks.js";
 
+const fallback = process.argv[2] === "--asyncify";
+const file = fallback ? process.argv[3] : process.argv[2];
 const wasi = new WASI({
     version: "preview1",
-    args: [process.argv[2]],
+    args: [file],
     env: {},
     returnOnExit: true,
 });
-const module = await WebAssembly.compile(fs.readFileSync(process.argv[2]));
+const module = await WebAssembly.compile(fs.readFileSync(file));
 const hosted = WebAssembly.Module.imports(module).some((i) => i.module === "avra_host");
 if (!hosted) {
     const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
     process.exitCode = wasi.start(instance);
-} else if (!jspiAvailable()) {
+} else if (!fallback && !jspiAvailable()) {
     console.error("wasm-node: the module has tasks and this Node has no JSPI — run with --experimental-wasm-jspi");
     process.exitCode = 3;
 } else {
     let instance = null;
     // a fault in a spawned task ends the run as a trap does: its words, exit 2
-    const tasks = hostedTasks(() => instance.exports, (e) => {
+    const tasks = (fallback ? asyncifyTasks : hostedTasks)(() => instance.exports, (e) => {
         console.error(faultWords(e));
         process.exit(2);
     });

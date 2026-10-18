@@ -1759,6 +1759,15 @@ static inline void fiber_switched(Fiber* self, Fiber* next) {
     shadow_set(mine);
 }
 
+// THE FALLBACK HOST'S BUFFERS: a host that unwinds a task's frames instead of
+// suspending its stack keeps them in memory of the module's own.
+__attribute__((export_name("avra_asyncify_buffer")))
+void* avra_asyncify_buffer(int bytes) {
+    void* p = calloc(1, (size_t)bytes);
+    if (!p) avra_trap("the scheduler ran out of memory for a task's unwind buffer");
+    return p;
+}
+
 // The host starts a fresh task here, on the stack it made for it; the first
 // thing it does is stand on the task's shadow stack.
 __attribute__((export_name("avra_task_entry")))

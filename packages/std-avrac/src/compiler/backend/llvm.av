@@ -468,6 +468,18 @@ export fn unsupported_on_wasm(l: Lowered) -> List<string> {
         .concat(distinct([p.name for p in l.libraries if p.library != "" && !p.wasm]))
 }
 
+/// Whether a program calls a runtime row that may switch a task out: it runs
+/// tasks, and a wasm build of it has a fallback for a host that cannot suspend
+/// a stack. The same reading of the rows `unsupported_on_wasm` makes.
+export fn runs_tasks(l: Lowered) -> bool {
+    let rt = rt_index()
+    let called = [n! for bd in l.fns.concat([l.entry]) for i in bd.ins for n in [hosted_symbol(i)] if n != null]
+    called.any((n) -> row_waits(rt, n))
+}
+
+/// Whether the runtime row `name` may switch the task that calls it out.
+fn row_waits(rt: Map<string, RtSig>, name: string) -> bool { rt.get(name)?.waits ?? false }
+
 /// THE CLOSURE LAW: every name a program's steps call is one the
 /// module will declare — a body the program lowered, a runtime row,
 /// or one of its own externs. The first that is not, named, instead
