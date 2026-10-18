@@ -284,7 +284,7 @@ type Hold = {
     // each held collector, with the set its record says it gathered
     gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
-    unit_asks: Cell<Map<string, List<ConstAsk>>>,
+    unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
     owners: Cell<Map<string, DeclId>>,
     serving: Cell<bool>,
     warm: Cell<bool>,
@@ -539,8 +539,9 @@ export type Workspace = {
     /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
     /// The whole-program read-reach fixpoint over the declarations' call
-    /// graph — whether each declaration reads `state`, transitively.
-    read_fixpoint: Fixpoint<bool>,
+    /// graph — which `state` places each declaration reads, transitively,
+    /// as sorted `place_key`s (`features/read_set.av`).
+    read_fixpoint: Fixpoint<List<int>>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -827,7 +828,7 @@ fn read_reach_verified(ws: Workspace, arg: int) -> int {
     ws.db.changed_at(key(Family.ReadReach, arg))
 }
 fn decl_reads_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.decl_reads_state(decl_at_arg(arg)))
+    touch(ws.decl_places(decl_at_arg(arg)).length)
     ws.db.changed_at(key(Family.DeclReads, arg))
 }
 fn input_verified(ws: Workspace, arg: int) -> int {
@@ -1031,7 +1032,7 @@ fn built(
         clock: clock,
         phases: list_cell(),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
-        read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
+        read_fixpoint: new_fixpoint<List<int>>(kernel, Family.DeclReads.ordinal, [], places_join, places_fp),
         input_index: map_cell(),
         input_names: list_cell(),
         manifest_texts: list_cell(),
@@ -1114,6 +1115,13 @@ impl Workspace {
     fn relation(fam: Family) -> Relation<DbRow> {
         self.standing()
         self.db.relation(fam.ordinal)
+    }
+
+    /// The set of one unit's const asks, newly held in `unit_asks` under `key`.
+    fn unit_asks_opened(key: string) -> Cell<Map<string, ConstAsk>> {
+        let asks: Cell<Map<string, ConstAsk>> = map_cell()
+        self.hold.unit_asks.put(key, asks)
+        asks
     }
 
     /// A ONE-SHOT WORKSPACE ENDS ITS OWN CYCLE: the families and the
@@ -1937,6 +1945,12 @@ impl Workspace {
             .Compute -> nothing(),
         }
         touch(self.items(f))
+        // A RESOLVE UNDER AN OPEN EXPANSION IS A SMALLER VIEW: the
+        // expansion is still minting, so the tables sized here are
+        // short of the arena it ends with. Its answer serves the run
+        // that asked and is never kept — the next ask resolves the
+        // finished arena.
+        let partial = self.relation(Family.Expanded).open(f.index)
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
         // per-expression tables are sized to the arena as it stands —
@@ -1968,11 +1982,13 @@ impl Workspace {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
         let ids = self.decls.ids()
-        resolved_of(
+        let facts = resolved_of(
             self
                 .relation(Family.Resolved)
                 .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r), ids)),
         )
+        if partial { self.relation(Family.Resolved).evict_call(f.index) }
+        facts
     }
 
     /// The statements of generated declarations that are members, or
