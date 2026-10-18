@@ -109,6 +109,19 @@ Still hand, each for a stated reason: `Param` (holds itself through `says`, and 
 
 **Mutation witness (Children).** With `Match` re-worded `@apart` the walk stops reaching its arms and `core/children_adversarial` fails two cases ("a match's subject and every arm's value are children…", "a match's written guard is reached between subject and value"); restored, green. The existing adversarial tests already pinned the exact order the generic walk must reproduce (guard before value).
 
-**Shape (slice 5) is held, and why.** `shallow_*` values are compared with the rule patterns BAKED into the compiler binary (`known_kinds`, `rules_table.av`'s "rule baked by an older compiler… rebuild the compiler"). Replacing the literal tags 300/305/306 with derived folds moves every shallow value of a node that holds an `Arm` or `CompClause` (`match`, comprehension), so the baked idiom rules over those nodes would stop matching until the compiler is rebuilt twice, and the committed seed carries the old values. Options: (a) Shape as its own landing followed by `make seed`; (b) keep the two shallow rows and retire only their `kids_*` rows now. Decision pending with the lead.
+**Shape (slice 5) — built on its own branch (`land-generic-shape`), a landing that wants a `make seed` right after it.**
+`Matchable` reads `Arm`, `CompClause`, `Param`, `Variant`, `Case` and `FormatPart` off their declarations: a holder wearing `@apart` folds each by the record's own identity (`fp_list([each.identity(self) …])`, which is EXACTLY what the old `param_fps`/`variant_fps`/`case_fps` rows computed, so those shallow values do not move), every other holder folds the declaration shallowly (a record's fields in order, an enum's variant by its own name) and reports its ids as kids. Retired: the six shallow rows, the `Arm`/`CompClause` kids rows, `shallow_comp_clause(s)`, `kids_comp_clauses`, `kids_of_comp_clause`, `case_fps`, `variant_fps`. `Hole`/`FormatPart` gained `@derive(Identity)`. `Matchable` now claims the `@apart` word.
+
+What moves: only the shallow values of nodes whose holder is NOT `@apart` and holds an `Arm`, `CompClause` or `FormatPart` — `Match`, `Comp`, the format pattern. `shallow_*` values are compared with rule patterns BAKED into the compiler binary (`known_kinds`, rules_table.av's "rule baked by an older compiler… rebuild the compiler"), so a compiler built by a compiler with the old values carries stale baked patterns for exactly those nodes.
+
+**The baked-rule witness (PROBED, avra-nodes1b).** A scratch file with `match k { .Ready -> true, _ -> false }` (rule `enums.bool_variant_match`) and `[n > 0 for n in src].all(it)` (rule `lists.bool_comprehension_list`), checked by each generation:
+
+| compiler | rule findings |
+|---|---|
+| gen1 — built from this tree by the STANDING compiler | none (baked patterns stale: the hazard) |
+| gen2 — after one `make avra` | `bool_comprehension_list` x2, `bool_variant_match` x2 |
+| gen3 — after a second `make avra` | the same |
+
+So a rule over `match` and over a comprehension fires again after `make avra` once and is stable at the second; the committed seed is gen0 in that table, which is why the landing is followed by `make seed`. Suites on the gen3 compiler: core 318 + 2 programs, quote 134, enums 478 + 17, lists 344 + 21, features/tests 202 + 29, results 85 + 7, expr_spine 740 + 13 — all identical to the pre-change baseline; `make fingerprints` clean (190 parts lists); `fmt --check` clean over std-avrac and std-meta.
 
 Build notes found on the way: `within` is a reserved word (F3002); BSD `sed` has no `\b` (a silent no-op, caught by a failed build); a bare variant in the element of a list comprehension hears the LIST's want, so a derive that builds enum variants inside a comprehension must qualify them (`CompClause.Head(…)`), as the hand verbs always did.
