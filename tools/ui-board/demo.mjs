@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import { run } from "../../runtime/dom/bootstrap.js";
 import { wasiPreview1 } from "../../runtime/dom/wasi.js";
-import { stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js";
+import { dispatch, stubDocument, stubElement, textOf } from "../../runtime/dom/stub_dom.js";
 
 const mount = stubElement("root");
 // The page's timers, by hand: what was armed, and a way to let it fire.
@@ -35,7 +35,7 @@ let writes = 0;
 // and the test lets the display's frame come.
 const rafs = [];
 const frame = () => { for (const cb of rafs.splice(0)) cb(); };
-const mod = await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
+const { mod, ears } = await run(new Uint8Array(fs.readFileSync(process.argv[2])), {
   document: stubDocument(),
   mount,
   style,
@@ -54,10 +54,15 @@ const shape = (n) => {
 };
 const every = (n, hit, out = []) => { if (hit(n)) out.push(n); n.childNodes.forEach((c) => every(c, hit, out)); return out; };
 // A control by its accessible name, among those that listen.
-const named = (name, under = mount) => every(under, (n) => n.attrs["aria-label"] === name && n.listeners.size > 0);
+const named = (name, under = mount) => every(under, (n) => n.attrs["aria-label"] === name && ears.has(n.__avra_id));
 // A keyed row by its key.
 const keyed = (key) => every(mount, (n) => n.attrs["data-key"] === key)[0] || null;
-const fire = (n) => { const [event, listener] = [...n.listeners][0]; listener(); frame(); return event; };
+const fire = (n) => {
+  const [, ear] = [...ears.get(n.__avra_id)][0];
+  dispatch(mount, n, ear.event, { bubbles: false });
+  frame();
+  return ear.event;
+};
 // What one event cost the wire: frames and bytes since the last ask.
 const spent = () => { const s = `${frames} frame(s), ${writes} byte(s)`; frames = 0; writes = 0; return s; };
 

@@ -76,6 +76,24 @@ function caretOf(el) {
 // test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   const byId = new Map();
+  // WHO HEARS WHAT IS DATA HERE, NEVER A LISTENER ON EACH ELEMENT: an element's
+  // seats (id -> seat -> what it says), and one capturing listener per event
+  // word on the mount that finds the hearers on the way up from the target.
+  const ears = new Map();
+  const armed = new Set();
+  const heard = (ev) => {
+    for (let el = ev.target; el && el !== mount; el = el.parentNode) {
+      const mine = ears.get(el.__avra_id);
+      if (mine) {
+        for (const [seat, ear] of mine) {
+          if (ear.event !== ev.type) continue;
+          if (ear.prevents && ev.preventDefault) ev.preventDefault();
+          send(el.__avra_id, seat, saidBy(el, ear.says, ear.reads));
+        }
+      }
+      if (!ev.bubbles) break;
+    }
+  };
   const need = (id) => {
     const el = byId.get(id);
     if (!el) throw new Error(`a patch names element ${id}, which is not on the page`);
@@ -84,6 +102,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   // An element that leaves takes everything under it.
   const forget = (el) => {
     byId.delete(el.__avra_id);
+    ears.delete(el.__avra_id);
     for (const child of el.childNodes || []) forget(child);
   };
   const keep = (id, el) => { el.__avra_id = id; byId.set(id, el); };
@@ -137,21 +156,19 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     },
     [OP.set_text]: (p) => { need(p.id).textContent = p.content; },
     [OP.listen]: (p) => {
-      const el = need(p.id);
-      const held = el.__avra_listeners || (el.__avra_listeners = new Map());
-      const listener = (ev) => {
-        if (p.prevents && ev) ev.preventDefault();
-        send(p.id, p.kind, saidBy(el, p.says, p.reads));
-      };
-      el.addEventListener(p.event, listener);
-      held.set(p.kind, { event: p.event, listener });
+      need(p.id);
+      const mine = ears.get(p.id) || ears.set(p.id, new Map()).get(p.id);
+      mine.set(p.kind, { event: p.event, says: p.says, reads: p.reads, prevents: p.prevents });
+      if (!armed.has(p.event)) {
+        armed.add(p.event);
+        mount.addEventListener(p.event, heard, true);
+      }
     },
     [OP.unlisten]: (p) => {
-      const el = need(p.id);
-      const held = el.__avra_listeners && el.__avra_listeners.get(p.kind);
-      if (!held) return;
-      el.removeEventListener(held.event, held.listener);
-      el.__avra_listeners.delete(p.kind);
+      const mine = ears.get(p.id);
+      if (!mine) return;
+      mine.delete(p.kind);
+      if (mine.size === 0) ears.delete(p.id);
     },
     [OP.style]: (p) => { if (styleEl) styleEl.textContent = p.css; },
     // A VERB OF THE ELEMENT'S OWN, asked for by name: the program says
@@ -163,9 +180,12 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     },
   };
 
-  return function applyFrame(bytes) {
+  const applyFrame = (bytes) => {
     for (const p of parseFrame(bytes)) apply[p.op](p);
   };
+  // What each element hears, for a reader of the page to inspect.
+  applyFrame.ears = ears;
+  return applyFrame;
 }
 
 // Load the module and run it in a page. The host supplies `rt` (its own
@@ -387,7 +407,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   mod._initialize();
   const code = mod[HOST.entry]();
   if (code !== 0) throw new Error(`the program's statements answered ${code}`);
-  return mod;
+  return { mod, ears: apply.ears };
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

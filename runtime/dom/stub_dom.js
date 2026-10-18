@@ -72,6 +72,14 @@ export function stubDocument({ carries = false } = {}) {
 
 export const stubElement = node;
 
+// An event on `target`, as a page delivers it: the mount's capturing listener
+// for `type` hears it, with the target the event happened to. `bubbles` is
+// true unless the event says otherwise (a dialog's `cancel` does not).
+export function dispatch(mount, target, type, ev = {}) {
+  const heard = mount.listeners.get(type);
+  if (heard) heard({ bubbles: true, ...ev, target, type });
+}
+
 // What a reader of the page sees under `n`: its own text nodes and every
 // element's below it, in order.
 export function textOf(n) {
