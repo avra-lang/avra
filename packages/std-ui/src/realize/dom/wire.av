@@ -14,6 +14,8 @@
 //!   unlisten     id, seat
 //!   style        css
 //!   call         id, verb
+//!   set_var      id, property (`--w`), value
+//!   drop_var     id, property
 //!
 //! A `define` tells a host once what a seat's event is called, what it reads
 //! and whether the page's own answer is stopped; every `listen` of that seat
@@ -43,7 +45,7 @@ use realize.dom.patch.{Patch, Listening, Says, Held, held_says}
 use realize.html.tags.{HtmlTag}
 
 /// The wire's version: a host built for another REFUSES, never misapplies.
-export const wire_version = 12
+export const wire_version = 13
 
 /// A `place`'s `after`: the first place, the end of the parent's run, or — from
 /// here up — a sibling's id plus this much.
@@ -71,6 +73,8 @@ export enum Op {
     @code(11) Style
     @code(12) Call
     @code(13) Define
+    @code(14) SetVar
+    @code(15) DropVar
 }
 
 /// The op a patch is written under. Every patch spelled.
@@ -88,6 +92,8 @@ fn op_of(p: Patch) -> Op {
         .Unlisten(_, _) -> .Unlisten,
         .Style(_) -> .Style,
         .Call(_, _) -> .Call,
+        .SetVar(_, _, _) -> .SetVar,
+        .DropVar(_, _) -> .DropVar,
     }
 }
 
@@ -188,6 +194,15 @@ impl Buf {
             .DropAttr(id, name) -> {
                 self.push_id(id)
                 self.push_str(name.word())
+            },
+            .SetVar(id, property, value) -> {
+                self.push_id(id)
+                self.push_str(property)
+                self.push_str(value)
+            },
+            .DropVar(id, property) -> {
+                self.push_id(id)
+                self.push_str(property)
             },
             .SetProp(id, name, value) -> {
                 self.push_id(id)

@@ -54,9 +54,10 @@ function line(n) {
   const props = Object.keys(n).filter((k) => !BUILT.has(k) && n[k] !== "" && n[k] !== false)
     .map((k) => [nameOf(k), n[k]]).sort((a, b) => (a[0] < b[0] ? -1 : 1))
     .map(([name, value]) => ` .${name}=${propShown(value)}`).join("");
+  const vars = Object.keys(n.vars).sort().map((k) => ` ${k}=${quoted(n.vars[k])}`).join("");
   const ears = page.apply.ears(n.__avra_id).map(([kind, ear]) => [kind, ear.event]).sort((a, b) => a[0] - b[0])
     .map(([kind, event]) => ` @${kind}:${event}`).join("");
-  return number + n.tagName + attrs + props + ears;
+  return number + n.tagName + attrs + props + vars + ears;
 }
 const lines = (n, indent) => n.childNodes.flatMap((c) => [indent + line(c), ...lines(c, indent + "  ")]);
 const told = (mount) => lines(mount, "").join("\n");

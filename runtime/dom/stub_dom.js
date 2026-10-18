@@ -7,8 +7,8 @@
 // carried by `moveBefore` keeps both. A page's root is the node named
 // `root`: what stands under one stands on the page.
 function node(tagName, doc = null) {
-  return {
-    tagName, childNodes: [], attrs: {}, textContent: "", parentNode: null, listeners: new Map(),
+  const n = {
+    tagName, childNodes: [], attrs: {}, vars: {}, textContent: "", parentNode: null, listeners: new Map(),
     ownerDocument: doc, scrollTop: 0, selectionStart: null, selectionEnd: null, selectionDirection: "none",
     get nextSibling() {
       if (!this.parentNode) return null;
@@ -39,6 +39,9 @@ function node(tagName, doc = null) {
     focus() { if (this.ownerDocument && this.isConnected) this.ownerDocument.activeElement = this; },
     setSelectionRange(start, end, direction = "none") { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; },
   };
+  // The custom properties an element's style object holds, kept beside its attributes.
+  n.style = { setProperty(k, v) { n.vars[k] = v; }, removeProperty(k) { delete n.vars[k]; } };
+  return n;
 }
 
 // What a page drops from an element taken off it, and from all under it.
