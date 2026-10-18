@@ -410,7 +410,7 @@ seed: $(COMPILER_OBJS)
 recover: $(COMPILER_OBJS)
 	@mkdir -p build
 	@clang -w -O1 -rdynamic bootstrap/seed.ll $(SEED_LINK_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
+	    -L$(LLVM_PREFIX)/lib -lLLVM -lm -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
 
@@ -701,7 +701,7 @@ seed-check: $(COMPILER_OBJS)
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(SEED_LINK_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
+	    -L$(LLVM_PREFIX)/lib -lLLVM -lm -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@sh tools/capped.sh build/seed-check/out 200000 build/avra-seed-check build packages/cli \
 	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; \
