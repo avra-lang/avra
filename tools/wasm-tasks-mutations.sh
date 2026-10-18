@@ -140,8 +140,8 @@ c_break "a fresh task starts on its parent's shadow stack" \
     fiber_start();" \
     "    fiber_start();"
 c_break "a finished task is suspended for ever" \
-    "avra_host_switch(self, next, self->state == FIBER_DONE);" \
-    "avra_host_switch(self, next, 0);"
+    "avra_host_switch(self, next, self->state == FIBER_DONE, (void*)avra_task_entry, (void*)avra_asyncify_buffer);" \
+    "avra_host_switch(self, next, 0, (void*)avra_task_entry, (void*)avra_asyncify_buffer);"
 js_break "an ended task's slot answers the next task at its address" \
     "      if (ends) slots.delete(from);
       else slot(from).running = true;" \

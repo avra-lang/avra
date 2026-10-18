@@ -22,29 +22,38 @@ if (!jspiAvailable()) {
 }
 
 const module = await WebAssembly.compile(fs.readFileSync(process.argv[2]));
-let instance = null;
-const tasks = hostedTasks(() => instance.exports);
-const wasi = wasiPreview1(
-  () => instance.exports.memory,
-  (code) => {
-    throw new Error(`exit ${code}`);
-  },
-);
-const imports = { wasi_snapshot_preview1: wasi, avra_host: tasks.imports };
-for (const i of WebAssembly.Module.imports(module)) {
-  if (i.module !== "wasi_snapshot_preview1" && i.module !== "avra_host") {
-    imports[i.module] = { ...(imports[i.module] ?? {}), [i.name]: () => { throw new Error(`no host row ${i.name}`); } };
+
+// A module of its own, run to its first prompt: a refused plain call leaves
+// the scheduler mid-wait, so the checks that follow it stand on another.
+async function booted() {
+  let instance = null;
+  const tasks = hostedTasks(() => instance.exports);
+  const wasi = wasiPreview1(
+    () => instance.exports.memory,
+    (code) => {
+      throw new Error(`exit ${code}`);
+    },
+  );
+  const imports = { wasi_snapshot_preview1: wasi, avra_host: tasks.imports };
+  for (const i of WebAssembly.Module.imports(module)) {
+    if (i.module !== "wasi_snapshot_preview1" && i.module !== "avra_host") {
+      imports[i.module] = { ...(imports[i.module] ?? {}), [i.name]: () => { throw new Error(`no host row ${i.name}`); } };
+    }
   }
+  instance = await WebAssembly.instantiate(module, imports);
+  instance.exports._initialize();
+  await tasks.enter("avra_main");
+  return { instance, tasks };
 }
-instance = await WebAssembly.instantiate(module, imports);
-instance.exports._initialize();
-await tasks.enter("avra_main");
+
+const plain = await booted();
+const { instance, tasks } = await booted();
 
 // 8. a program entered by a plain call has no stack to suspend: the first park
 // is refused, and the host speaks it in the program's words
 let refused = null;
 try {
-  instance.exports.avra_probe_wait(1);
+  plain.instance.exports.avra_probe_wait(1n);
 } catch (e) {
   refused = e;
 }
@@ -53,11 +62,11 @@ check(refused && faultWords(refused) === PARKED_UNDER_HOST, "and the host speaks
 
 // 9. the same callback entered through `enter` runs to its answer, as many
 // times as it is asked, one after another
-check((await tasks.enter("avra_probe_wait", 1)) === 2, "an entered callback parks and answers");
-check((await tasks.enter("avra_probe_wait", 41)) === 42, "and the next entry does too");
+check((await tasks.enter("avra_probe_wait", 1n)) === 2n, "an entered callback parks and answers");
+check((await tasks.enter("avra_probe_wait", 41n)) === 42n, "and the next entry does too");
 check(tasks.stranded() === 0, "no stack is left behind by the entries");
 // entries that arrive together are turns, and turns are serial: the second waits for the first
-const together = await Promise.all([tasks.enter("avra_probe_wait", 1), tasks.enter("avra_probe_wait", 5), tasks.enter("avra_probe_wait", 9)]);
+const together = await Promise.all([tasks.enter("avra_probe_wait", 1n), tasks.enter("avra_probe_wait", 5n), tasks.enter("avra_probe_wait", 9n)]);
 check(together.join(",") === "2,6,10", "entries that arrive together each answer");
 check(tasks.deepest() === 1, "and never stand inside the program at once");
 
