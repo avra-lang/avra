@@ -295,34 +295,6 @@ version = "0.1.0"
 use @x.near.{used}
 use @x.far.{helper}
 "${used(helper(1))}"
-// /w/vendor/near/avra.toml
-[package]
-name = "@x/near"
-version = "0.1.0"
-
-[dependencies]
-"@x/far" = { path = "../far" }
-
-// /w/vendor/near/src/near.av
-use @x.far.{helper}
-extern fn page_row(n: int) -> int
-export fn used(n: int) -> int {
-    page_row(helper(n))
-}
-
-// /w/vendor/far/avra.toml
-[package]
-name = "@x/far"
-version = "0.1.0"
-
-// /w/vendor/far/src/far.av
-export fn helper(n: int) -> int {
-    n * 2
-}
-extern fn page_row(n: int) -> int {
-    0
-}
-
 ```
 
 ```
@@ -355,34 +327,6 @@ extern fn page_row(n: int) -> int {
     n
 }
 "${used(1)}"
-// /w/vendor/near/avra.toml
-[package]
-name = "@x/near"
-version = "0.1.0"
-
-[dependencies]
-"@x/far" = { path = "../far" }
-
-// /w/vendor/near/src/near.av
-use @x.far.{helper}
-extern fn page_row(n: int) -> int
-export fn used(n: int) -> int {
-    page_row(helper(n))
-}
-
-// /w/vendor/far/avra.toml
-[package]
-name = "@x/far"
-version = "0.1.0"
-
-// /w/vendor/far/src/far.av
-export fn helper(n: int) -> int {
-    n * 2
-}
-extern fn far_event(n: int) -> int {
-    n
-}
-
 ```
 
 ```
@@ -806,24 +750,6 @@ version = "0.1.0"
 use @x.c.{port}
 let p = port 70000
 p.n
-// /w/vendor/c/avra.toml
-[package]
-name = "@x/c"
-version = "0.1.0"
-
-[dependencies]
-"@std/meta" = { path = "../meta" }
-
-// /w/vendor/c/src/c.av
-use @std.meta.{Diagnostic, refuse}
-
-export component port(n: int) {
-    fn check() -> List<Diagnostic> {
-        if self.n > 0 && self.n < 65536 { return [] }
-        [refuse("a port is 1 to 65535, this is ${self.n}")]
-    }
-}
-
 ```
 
 ```
@@ -985,35 +911,6 @@ use @x.c.{plain}
 @plain
 fn f() -> int { 1 }
 f()
-// /w/vendor/c/avra.toml
-[package]
-name = "@x/c"
-version = "0.1.0"
-
-[dependencies]
-"@std/meta" = { path = "../meta" }
-
-// /w/vendor/c/src/c.av
-use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
-export fn plain(f: Fn) -> List<Diagnostic> {
-    [refuse("`${f.name}` is plain")]
-}
-export fn badkind(f: Fn) -> List<Diagnostic> {
-    [refuse_as("not a word", "a refusal under a bad kind")]
-}
-export trait Traps {
-    static fn derive(t: Type) -> Declared {
-        let none: List<Directive> = []
-        Declared { made: [none[3]] }
-    }
-}
-export trait Fields {
-    static fn derive(t: Type) -> List<Directive> {
-        let rows: List<Decls> = [quote { enum E { A } }]
-        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
-    }
-}
-
 ```
 
 ```
@@ -1045,35 +942,6 @@ use @x.c.{badkind}
 @badkind
 fn f() -> int { 1 }
 f()
-// /w/vendor/c/avra.toml
-[package]
-name = "@x/c"
-version = "0.1.0"
-
-[dependencies]
-"@std/meta" = { path = "../meta" }
-
-// /w/vendor/c/src/c.av
-use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
-export fn plain(f: Fn) -> List<Diagnostic> {
-    [refuse("`${f.name}` is plain")]
-}
-export fn badkind(f: Fn) -> List<Diagnostic> {
-    [refuse_as("not a word", "a refusal under a bad kind")]
-}
-export trait Traps {
-    static fn derive(t: Type) -> Declared {
-        let none: List<Directive> = []
-        Declared { made: [none[3]] }
-    }
-}
-export trait Fields {
-    static fn derive(t: Type) -> List<Directive> {
-        let rows: List<Decls> = [quote { enum E { A } }]
-        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
-    }
-}
-
 ```
 
 ```
@@ -1148,35 +1016,6 @@ use @x.c.{Traps}
 @derive(Traps)
 type T = { x: int }
 0
-// /w/vendor/c/avra.toml
-[package]
-name = "@x/c"
-version = "0.1.0"
-
-[dependencies]
-"@std/meta" = { path = "../meta" }
-
-// /w/vendor/c/src/c.av
-use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
-export fn plain(f: Fn) -> List<Diagnostic> {
-    [refuse("`${f.name}` is plain")]
-}
-export fn badkind(f: Fn) -> List<Diagnostic> {
-    [refuse_as("not a word", "a refusal under a bad kind")]
-}
-export trait Traps {
-    static fn derive(t: Type) -> Declared {
-        let none: List<Directive> = []
-        Declared { made: [none[3]] }
-    }
-}
-export trait Fields {
-    static fn derive(t: Type) -> List<Directive> {
-        let rows: List<Decls> = [quote { enum E { A } }]
-        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
-    }
-}
-
 ```
 
 ```
@@ -1208,35 +1047,6 @@ use @x.c.{plain}
 @plain
 fn f() -> int { 1 }
 f()
-// /w/vendor/c/avra.toml
-[package]
-name = "@x/c"
-version = "0.1.0"
-
-[dependencies]
-"@std/meta" = { path = "../meta" }
-
-// /w/vendor/c/src/c.av
-use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
-export fn plain(f: Fn) -> List<Diagnostic> {
-    [refuse("`${f.name}` is plain")]
-}
-export fn badkind(f: Fn) -> List<Diagnostic> {
-    [refuse_as("not a word", "a refusal under a bad kind")]
-}
-export trait Traps {
-    static fn derive(t: Type) -> Declared {
-        let none: List<Directive> = []
-        Declared { made: [none[3]] }
-    }
-}
-export trait Fields {
-    static fn derive(t: Type) -> List<Directive> {
-        let rows: List<Decls> = [quote { enum E { A } }]
-        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
-    }
-}
-
 ```
 
 ```
@@ -1265,35 +1075,6 @@ use @x.c.{Fields}
 @derive(Fields)
 type T = { x: int }
 0
-// /w/vendor/c/avra.toml
-[package]
-name = "@x/c"
-version = "0.1.0"
-
-[dependencies]
-"@std/meta" = { path = "../meta" }
-
-// /w/vendor/c/src/c.av
-use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}
-export fn plain(f: Fn) -> List<Diagnostic> {
-    [refuse("`${f.name}` is plain")]
-}
-export fn badkind(f: Fn) -> List<Diagnostic> {
-    [refuse_as("not a word", "a refusal under a bad kind")]
-}
-export trait Traps {
-    static fn derive(t: Type) -> Declared {
-        let none: List<Directive> = []
-        Declared { made: [none[3]] }
-    }
-}
-export trait Fields {
-    static fn derive(t: Type) -> List<Directive> {
-        let rows: List<Decls> = [quote { enum E { A } }]
-        [Directive { twin: "", name: "gen", at: t.at, source: quote { fn gen(..${rows}) {} } }]
-    }
-}
-
 ```
 
 ```
