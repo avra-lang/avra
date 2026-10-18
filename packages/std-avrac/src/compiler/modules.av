@@ -485,7 +485,7 @@ impl Workspace {
             } else if shared && self.closes_cycle(from, m) {
                 diags.push(reexport_cycle(at, from.key, m.package() ?? ""))
             } else if claimed != null && !same_decl(claimed!, id!) {
-                diags.push(reexport_twice(at, u.bound_as(j)))
+                if !self.declared_twice_here(p, u.bound_as(j)) { diags.push(reexport_twice(at, u.bound_as(j))) }
             } else {
                 imports.push(Import { decl: id!, at: at, renamed: u.bound_as(j), shared: shared })
             }
@@ -501,6 +501,13 @@ impl Workspace {
             [self.parsed(self.file_id(path)).voices.list.filter(is_error(it)) for path in self.module_files(m)],
         )
             .first()
+    }
+
+    /// Whether the module of `p`'s file declares `name` twice — a surface
+    /// already refused as contradictory, so a re-export of the name that
+    /// meets it adds no finding.
+    fn declared_twice_here(p: Parsed, name: string) -> bool {
+        self.namespace(self.decls.file(self.file_id(p.source.file)).module_id).clashes.any(it.name == name)
     }
 
     /// A TEST READS ITS MODULE'S PRIVATE NAMES. Whether `asker` is a file
