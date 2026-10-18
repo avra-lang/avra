@@ -11,9 +11,18 @@
 // stack running out is the task's stack overflowing, as a native guard page
 // says it. Anything else is its own message.
 export function faultWords(e) {
+  if (e instanceof UnwindOverflow) return "avra: a task's stack overflowed";
   if (e instanceof RangeError && /call stack/i.test(e.message)) return "avra: a task's stack overflowed";
   if (typeof WebAssembly.SuspendError === "function" && e instanceof WebAssembly.SuspendError) return PARKED_UNDER_HOST;
   return String(e && e.message ? e.message : e);
+}
+
+// A task's frames did not fit the buffer they were unwound into: the same
+// overflow as a native guard page, spoken in the same words.
+export class UnwindOverflow extends Error {
+  constructor() {
+    super("a task's frames overran its unwind buffer");
+  }
 }
 
 // A task parked while a host callback was on the stack: JS frames cannot be
@@ -134,9 +143,9 @@ export function hostedTasks(exports, fault = (e) => { throw e; }) {
 // whichever the scheduler named. `exports().avra_asyncify_buffer(bytes)`
 // is the module's allocator for those buffers.
 const UNWOUND = 1;
-const BUFFER_BYTES = 256 * 1024;
+const BUFFER_BYTES = 512 * 1024;
 
-export function asyncifyTasks(exports, fault = (e) => { throw e; }) {
+export function asyncifyTasks(exports, fault = (e) => { throw e; }, bytes = BUFFER_BYTES) {
   const tasks = new Map();
   let current = null;
   let pending = null;
@@ -146,10 +155,10 @@ export function asyncifyTasks(exports, fault = (e) => { throw e; }) {
   let peak = 0;
 
   const buffer = () => {
-    const at = exports().avra_asyncify_buffer(BUFFER_BYTES);
+    const at = exports().avra_asyncify_buffer(bytes);
     const view = new Int32Array(exports().memory.buffer, at, 2);
     view[0] = at + 8;
-    view[1] = at + BUFFER_BYTES;
+    view[1] = at + bytes;
     return at;
   };
 
@@ -197,11 +206,20 @@ export function asyncifyTasks(exports, fault = (e) => { throw e; }) {
       try {
         got = task.replay();
       } catch (e) {
-        fault(e);
+        // asyncify traps (`unreachable`) when an unwind crosses the end of its buffer, and
+        // is left unwinding: that is a task's stack overflowing, not a fault of the program
+        const unwinding = exports().asyncify_get_state() === UNWOUND;
+        fault(unwinding && e instanceof WebAssembly.RuntimeError ? new UnwindOverflow() : e);
         return answer;
       }
       if (exports().asyncify_get_state() === UNWOUND) {
-        exports().asyncify_stop_unwind();
+        try {
+          exports().asyncify_stop_unwind();
+        } catch (e) {
+          // the end of the buffer is checked as the unwind is closed
+          fault(e instanceof WebAssembly.RuntimeError ? new UnwindOverflow() : e);
+          return answer;
+        }
         task.parked = true;
       } else {
         if (task === first) answer = got;
