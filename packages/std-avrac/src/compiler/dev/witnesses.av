@@ -33,7 +33,7 @@ export enum Witness {
     Package(files: Map<string, string>)
     /// A package built as far as lowering and linking say: what only a
     /// whole program refuses (a statement in a module, a host fn's symbol).
-    Built(files: Map<string, string>)
+    Built(files: Map<string, string>, entry: string?)
     Beyond(why: string)
 }
 
@@ -44,7 +44,7 @@ impl Witness {
     /// added after it, which is a hole in different clothes.
     fn runs() -> bool {
         match self {
-            .Source(_) or .Package(_) or .Built(_) -> true,
+            .Source(_) or .Package(_) or .Built(_, _) -> true,
             .Absent or .Beyond(_) -> false,
         }
     }
@@ -54,7 +54,7 @@ impl Witness {
     fn owed() -> bool {
         match self {
             .Absent -> true,
-            .Source(_) or .Package(_) or .Built(_) or .Beyond(_) -> false,
+            .Source(_) or .Package(_) or .Built(_, _) or .Beyond(_) -> false,
         }
     }
 }
@@ -64,11 +64,12 @@ export type CodeWitness = { code: string, witness: Witness }
 
 /// A package witness BUILT: what the program there says, then what
 /// lowering says of it.
-fn built_report(files: Map<string, string>) -> string {
+fn built_report(files: Map<string, string>, entry: string?) -> string {
     one_shot_let_go()
-    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    let ws = new_workspace(memory_host(files, files.keys()) with { std_root: "/std" }, "/w", avra())
     ws.alone()
-    let p = ws.program("/w/src/main.av")
+    let p = ws.program(entry)
+    if entry == null { return p.run() catch e -> e }
     joined(
         [r for r in [p.report(), p.rendered(p.lowered().diagnostics), p.warnings()] if !r.is_empty()],
         "\n\n",
@@ -85,7 +86,7 @@ impl Shown {
     fn witness_source() -> string {
         match self.witness {
             .Source(text) -> text,
-            .Package(files) or .Built(files) -> package_text(files),
+            .Package(files) or .Built(files, _) -> package_text(files),
             .Absent or .Beyond(_) -> "",
         }
     }
@@ -109,7 +110,7 @@ export fn rendered_over(w: Witness) -> string {
     match w {
         .Source(text) -> avra().check(new_source_file("witness.av", text)),
         .Package(files) -> package_report(files),
-        .Built(files) -> built_report(files),
+        .Built(files, entry) -> built_report(files, entry),
         .Absent or .Beyond(_) -> "",
     }
 }
@@ -206,7 +207,7 @@ fn entry(s: Shown) -> string {
 fn body(s: Shown) -> List<string> {
     match s.witness {
         .Source(text) -> ["```avra", text, "```", "", "```", s.rendered, "```"],
-        .Package(files) or .Built(files) -> ["```", package_text(files), "```", "", "```", s.rendered, "```"],
+        .Package(files) or .Built(files, _) -> ["```", package_text(files), "```", "", "```", s.rendered, "```"],
         .Beyond(why) -> ["No witness here: ${why}."],
         .Absent -> ["No witness yet."],
     }
@@ -817,12 +818,151 @@ fn witnesses() -> List<CodeWitness> {
                 },
             ),
         },
+        CodeWitness { code: "parse.trailing", witness: Witness.Beyond(grammar_golden_trailing) },
+        CodeWitness { code: "build.failed", witness: Witness.Beyond(grammar_golden_builder) },
+        CodeWitness { code: "language.defect", witness: Witness.Beyond(defect_golden) },
+        CodeWitness {
+            code: "block.parse",
+            witness: entry_program(
+                "use a.{sql, Other}\nlet q: Other = sql { TWO x }\n1",
+                {"/w/src/a/a.av": block_grammar},
+            ),
+        },
+        CodeWitness {
+            code: "resolve.block_word",
+            witness: entry_program(
+                "use a.{sql, Other}\ntype sql = { n: int }\n1",
+                {"/w/src/a/a.av": block_grammar},
+            ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_unreached",
+            witness: entry_program(
+                "use a.{x}\nx()\n",
+                {"/w/src/a/a.av": "export use b.{x}\n", "/w/src/b/b.av": "export use a.{x}\n"},
+            ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_twice",
+            witness: entry_program(
+                "use facade.{twice}\ntwice(1)\n",
+                {
+                    "/w/src/facade/a.av": "export use util.{twice}\nexport fn twice(n: int) -> int {\n    n\n}\n",
+                    "/w/src/util/m.av": "export fn twice(n: int) -> int {\n    n * 2\n}\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_cycle",
+            witness: entered(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                    "/w/src/main.av": "use @std.low.{g}\ng()\n",
+                    "/std/std-low/avra.toml": "[package]\nname = \"@std/low\"\nversion = \"0.1.0\"\n",
+                    "/std/std-low/src/low.av": "export fn g() -> int {\n    1\n}\nexport use @std.high.{h}\n",
+                    "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
+                    "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
+                },
+                main_entry,
+            ),
+        },
+        CodeWitness {
+            code: "resolve.kept_apart",
+            witness: entry_program(
+                "helper(1)\n",
+                {
+                    "/w/src/a.av": "fn helper(n: int) -> int {\n    n * 2\n}\nexport fn from_a() -> int {\n    helper(1)\n}\n",
+                    "/w/src/b.av": "fn helper(n: int) -> int {\n    n * 3\n}\nexport fn from_b() -> int {\n    helper(1)\n}\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.private_apart",
+            witness: entered(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                    "/w/src/main.av": "fn idle() -> int {\n    1\n}\n",
+                    "/w/src/build/mod.av": "fn shipped(n: int) -> int {\n    n + 1\n}\nfn twin() -> int {\n    1\n}\nexport fn built(n: int) -> int {\n    shipped(n)\n}\n",
+                    "/w/src/build/other.av": "fn twin() -> int {\n    2\n}\n",
+                    "/w/src/build/tests/twin_test.av": "use build.{twin}\n1",
+                },
+                "/w/src/build/tests/twin_test.av",
+            ),
+        },
+        CodeWitness {
+            code: "manifest.duplicate_package",
+            witness: entered(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/greet\" = { path = \"vendor/greet\" }\n\"@acme/words\" = { path = \"vendor/words2\" }\n",
+                    "/w/src/main.av": "use @acme.greet.{greet}\ngreet(2)\n",
+                    "/w/vendor/greet/avra.toml": "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/words\" = { path = \"../words\" }\n",
+                    "/w/vendor/greet/src/greet.av": "use @acme.words.{word}\nexport fn greet(n: int) -> int {\n    n + word()\n}\n",
+                    "/w/vendor/words/avra.toml": "[package]\nname = \"@acme/words\"\nversion = \"0.1.0\"\n",
+                    "/w/vendor/words/src/words.av": "export fn word() -> int {\n    40\n}\n",
+                    "/w/vendor/words2/avra.toml": "[package]\nname = \"@acme/words\"\nversion = \"0.1.0\"\n",
+                    "/w/vendor/words2/src/words.av": "export fn word() -> int {\n    41\n}\n",
+                },
+                main_entry,
+            ),
+        },
+        CodeWitness {
+            code: "manifest.no_target",
+            witness: entered({"/w/avra.toml": app_manifest}, null),
+        },
+        CodeWitness {
+            code: "type.component_format",
+            witness: provided_program(
+                "use @x.c.{loose}\nloose \"/x\" { 1 }",
+                "use @std.meta.{Code}\ntype Format = { n: int }\nexport component loose(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.body} }\n    }\n}\n",
+            ),
+        },
+        CodeWitness {
+            code: "type.not_offered",
+            witness: Witness
+                .Source(
+                    "type Offer = { req: string, db: int, user: string }\nfn handle(f: fn(Offer) -> string) -> string {\n    f(Offer { req: \"GET /\", db: 7, user: \"ada\" })\n}\nhandle { db, reqq -> \"x\" }",
+                ),
+        },
+        CodeWitness {
+            code: "type.within",
+            witness: Witness
+                .Source(
+                    "type Lim = { ms: int }\nfn spin() {\n    let _n = 1\n}\nlet x = within Lim { ms: 5 } { spin() }\n0",
+                ),
+        },
+        CodeWitness {
+            code: "type.isolated",
+            witness: Witness
+                .Source(
+                    "fn run(isolated make: fn() -> int) -> int { make() }\nlet c = Cell.new(1)\nrun(() -> c.get())",
+                ),
+        },
+        CodeWitness {
+            code: "type.pattern",
+            witness: Witness.Source("const word = \"a\"\nmatch 1 {\n    word -> 1\n    _ -> 0\n}"),
+        },
+        CodeWitness {
+            code: "type.host_absence",
+            witness: Witness
+                .Source("extern fn avra_host_env(name: string?) -> string\navra_host_env(null).length"),
+        },
+        CodeWitness {
+            code: "type.host_fn",
+            witness: Witness.Source("extern fn avra_trap(msg: string) -> int {\n    msg.length\n}\n1"),
+        },
+        CodeWitness {
+            code: "type.syntax_action",
+            witness: Witness.Source("grammar sql {\n    where = = c:NAME\n}\n1"),
+        },
     ]
     rows
 }
 
 /// The one module body a module witness imports from.
 const util_fn: string = "export fn f() -> int { 1 }\n"
+
+/// The entry a built witness runs from: the package's own `src/main.av`.
+const main_entry: string? = "/w/src/main.av"
 
 /// A program with `@std/meta` beside it, built — and the modules beside its entry.
 fn meta_program(main: string, modules: Map<string, string> = {}) -> Witness {
@@ -831,12 +971,12 @@ fn meta_program(main: string, modules: Map<string, string> = {}) -> Witness {
         "/w/src/main.av": main,
     }
     for path, text in modules { files.set(path, text) }
-    Witness.Built(vendored_meta(files))
+    Witness.Built(vendored_meta(files), main_entry)
 }
 
 /// A program over one provider package `@x/c` (which sees `@std/meta`), built.
 fn provided_program(main: string, provider: string) -> Witness {
-    Witness.Built(provided_files(main, provider, real_meta_source()))
+    Witness.Built(provided_files(main, provider, real_meta_source()), main_entry)
 }
 
 fn provided_files(main: string, provider: string, meta: string) -> Map<string, string> {
@@ -856,7 +996,8 @@ const annotators: string = "use @std.meta.{Fn, Type, Named, Decls, Diagnostic, D
 
 /// A program over the same provider whose `@std/meta` has a moved shape.
 fn moved_meta_program(main: string) -> Witness {
-    Witness.Built(provided_files(main, annotators, real_meta_source().replace("message", "msg")))
+    Witness
+        .Built(provided_files(main, annotators, real_meta_source().replace("message", "msg")), main_entry)
 }
 
 /// A program `app` over two packages: `@x/near`, which names an extern bodiless
@@ -872,17 +1013,24 @@ fn near_far_program(main: string, far_src: string) -> Witness {
                 "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n",
                 "/w/vendor/far/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\n" + far_src,
             },
+            main_entry,
         )
 }
 
 /// An annotated fn the `plain` annotation refuses.
 const plain_main: string = "use @x.c.{plain}\n@plain\nfn f() -> int { 1 }\nf()"
 
+/// The grammar module the block witnesses stand on: a word `sql` over one keyword.
+const block_grammar: string = "export type Other = { n: int }\nexport fn mk(n: int) -> Other { Other { n: n } }\nexport grammar sql {\n    one = \"ONE\" v:NAME -> mk(v)\n}\n"
+
+/// A program entered at `entry` (or at none), over exactly `files`.
+fn entered(files: Map<string, string>, entry: string?) -> Witness { Witness.Built(files, entry) }
+
 /// A program of one entry and the files beside it, built.
 fn entry_program(main: string, others: Map<string, string>) -> Witness {
     mut files = {"/w/avra.toml": app_manifest, "/w/src/main.av": main}
     for path, text in others { files.set(path, text) }
-    Witness.Built(files)
+    Witness.Built(files, main_entry)
 }
 
 /// A lawful manifest, for a witness to add one wrong line to.
@@ -924,5 +1072,11 @@ const code_hash_golden: string = "the refusal is spoken inside a const's settlem
 /// carries a body root yet is no fn or method (a seat default, a spec case),
 /// and no annotation stands on either.
 const wrap_kind_golden: string = "a declaration with a body root that is no fn or method is a seat default or a spec case, and no annotation can stand on either — `@a` before `then` is a parse error"
+
+/// Where the engine's own refusals are witnessed: the full language recovers
+/// every miss as `parse.expected`, so only a grammar of its own reaches them.
+const grammar_golden_trailing: string = "the Avra program rule recovers every miss as `parse.expected`, so input left over is reached only by a grammar without recovery — the golden is grammar/tests/executor_test.av (\"trailing input reports but keeps the partial result\")"
+const grammar_golden_builder: string = "no builder of the Avra grammar rejects its captures, so a builder's refusal is reached only by a grammar built to — the golden is grammar/tests/executor_test.av (the `boom` builder)"
+const defect_golden: string = "a defect is the compiler's own bug reaching a program, so no source is written to produce it — the golden is compiler/tests/language_test.av"
 
 const quiet_never_golden: string = "a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av"

@@ -46,25 +46,57 @@ help: it could begin with `yield`, PKG, `component`, COMPONENT, `use`, `export`,
 
 input remains after the program ended
 
-No witness yet.
+No witness here: the Avra program rule recovers every miss as `parse.expected`, so input left over is reached only by a grammar without recovery — the golden is grammar/tests/executor_test.av ("trailing input reports but keeps the partial result").
 
 ## build.failed
 
 a builder rejected its captures
 
-No witness yet.
+No witness here: no builder of the Avra grammar rejects its captures, so a builder's refusal is reached only by a grammar built to — the golden is grammar/tests/executor_test.av (the `boom` builder).
 
 ## language.defect
 
 the language definition itself is defective
 
-No witness yet.
+No witness here: a defect is the compiler's own bug reaching a program, so no source is written to produce it — the golden is compiler/tests/language_test.av.
 
 ## block.parse
 
 a sublanguage block parses by its grammar
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use a.{sql, Other}
+let q: Other = sql { TWO x }
+1
+// /w/src/a/a.av
+export type Other = { n: int }
+export fn mk(n: int) -> Other { Other { n: n } }
+export grammar sql {
+    one = "ONE" v:NAME -> mk(v)
+}
+
+```
+
+```
+error[block.parse]: expected `ONE` while parsing `one`
+  ╭─[/w/src/main.av:2:22]
+2 │ let q: Other = sql { TWO x }
+  ·                      ┬
+──╯
+help: the block is parsed by the grammar its word declares — write the shape that grammar names
+
+error[language.defect]: defect: a block that never expanded
+
+error[language.defect]: defect: register r1 defines out of mint order — r0 is next (mint operands first, the answer last)
+
+error[language.defect]: defect: register r2 defines out of mint order — r1 is next (mint operands first, the answer last)
+```
 
 ## resolve.unresolved
 
@@ -522,7 +554,23 @@ help: only fns and fn-typed values take arguments
 
 a lambda takes a record seat's fields by name, and only the fields it offers
 
-No witness yet.
+```avra
+type Offer = { req: string, db: int, user: string }
+fn handle(f: fn(Offer) -> string) -> string {
+    f(Offer { req: "GET /", db: 7, user: "ada" })
+}
+handle { db, reqq -> "x" }
+```
+
+```
+error[type.not_offered]: `reqq` is not offered here — this seat offers `req`, `db`, `user`
+  ╭─[witness.av:5:8]
+5 │ handle { db, reqq -> "x" }
+  ·        ┬
+  ·        ╰── `reqq` asked for here
+──╯
+help: name what the seat offers, in any order and any subset
+```
 
 ## type.task_escape
 
@@ -549,7 +597,24 @@ help: keep it in a binding or a list of tasks here — its answer can leave: `t.
 
 `within` answers its block or the deadline it ran past
 
-No witness yet.
+```avra
+type Lim = { ms: int }
+fn spin() {
+    let _n = 1
+}
+let x = within Lim { ms: 5 } { spin() }
+0
+```
+
+```
+error[type.within]: a `within` answers what its block did or the deadline it ran past, and this block answers nothing
+  ╭─[witness.av:5:32]
+5 │ let x = within Lim { ms: 5 } { spin() }
+  ·                                ┬
+  ·                                ╰── answers nothing
+──╯
+help: answer what the block did — end it on a value
+```
 
 ## flow.broken
 
@@ -803,7 +868,48 @@ help: change the instance's settings, or the library's `check` that refuses them
 
 a `Format` head is `@std.meta`'s pattern type
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{loose}
+loose "/x" { 1 }
+// /w/vendor/c/avra.toml
+[package]
+name = "@x/c"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "../meta" }
+
+// /w/vendor/c/src/c.av
+use @std.meta.{Code}
+type Format = { n: int }
+export component loose(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { ${self.body} }
+    }
+}
+
+```
+
+```
+error[type.component_format]: a `Format` head is `@std.meta`'s pattern type, and `path`'s `Format` names another
+  ╭─[/w/vendor/c/src/c.av:3:8]
+3 │ export component loose(path: Format) {
+  ·        ┬
+  ·        ╰── this component
+──╯
+help: `use @std.meta.{Format}`, or rename the other type
+```
 
 ## type.component_event
 
@@ -1481,13 +1587,88 @@ help: an exported name is its module's one declaration — rename one, or drop t
 
 a private name two files declare is each file's own
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+helper(1)
+
+// /w/src/a.av
+fn helper(n: int) -> int {
+    n * 2
+}
+export fn from_a() -> int {
+    helper(1)
+}
+
+// /w/src/b.av
+fn helper(n: int) -> int {
+    n * 3
+}
+export fn from_b() -> int {
+    helper(1)
+}
+
+```
+
+```
+error[resolve.kept_apart]: `helper` is private to each of `a.av` and `b.av` — a private name two files declare is each file's own
+  ╭─[/w/src/main.av:1:1]
+1 │ helper(1)
+  · ┬
+  · ╰── read here
+──╯
+help: `export` one declaration to share it across the module, or declare this file's own
+```
 
 ## resolve.private_apart
 
 a test reads a private name its module declares once
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+fn idle() -> int {
+    1
+}
+
+// /w/src/build/mod.av
+fn shipped(n: int) -> int {
+    n + 1
+}
+fn twin() -> int {
+    1
+}
+export fn built(n: int) -> int {
+    shipped(n)
+}
+
+// /w/src/build/other.av
+fn twin() -> int {
+    2
+}
+
+// /w/src/build/tests/twin_test.av
+use build.{twin}
+1
+```
+
+```
+error[resolve.private_apart]: `twin` is private to each of `mod.av` and `other.av` in `build` — a test reads a private name its module declares once
+  ╭─[/w/src/build/tests/twin_test.av:1:1]
+1 │ use build.{twin}
+  · ┬
+  · ╰── in this use
+──╯
+help: rename one declaration, or test each through a name its own file exports
+```
 
 ## resolve.import_clash
 
@@ -1522,19 +1703,134 @@ help: list each name once — drop the repeat
 
 a module's surface names each name once
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use facade.{twice}
+twice(1)
+
+// /w/src/facade/a.av
+export use util.{twice}
+export fn twice(n: int) -> int {
+    n
+}
+
+// /w/src/util/m.av
+export fn twice(n: int) -> int {
+    n * 2
+}
+
+```
+
+```
+error[resolve.reexport_twice]: `twice` is already on this module's surface
+  ╭─[/w/src/facade/a.av:1:8]
+1 │ export use util.{twice}
+  ·        ┬
+  ·        ╰── re-exported here
+──╯
+help: a module exports each name once — re-export this one under another name with `as`
+```
 
 ## resolve.reexport_unreached
 
 a re-export names a declaration
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use a.{x}
+x()
+
+// /w/src/a/a.av
+export use b.{x}
+
+// /w/src/b/b.av
+export use a.{x}
+
+```
+
+```
+error[resolve.reexport_unreached]: `b` re-exports `x`, and no declaration stands behind it
+  ╭─[/w/src/a/a.av:1:8]
+1 │ export use b.{x}
+  ·        ┬
+  ·        ╰── in this use
+──╯
+help: a re-export names a declaration — import `x` from the module that declares it, or break the re-export cycle
+
+error[resolve.reexport_unreached]: `a` re-exports `x`, and no declaration stands behind it
+  ╭─[/w/src/b/b.av:1:8]
+1 │ export use a.{x}
+  ·        ┬
+  ·        ╰── in this use
+──╯
+help: a re-export names a declaration — import `x` from the module that declares it, or break the re-export cycle
+
+error[resolve.reexport_unreached]: `a` re-exports `x`, and no declaration stands behind it
+  ╭─[/w/src/main.av:1:1]
+1 │ use a.{x}
+  · ┬
+  · ╰── in this use
+──╯
+help: a re-export names a declaration — import `x` from the module that declares it, or break the re-export cycle
+```
 
 ## resolve.reexport_cycle
 
 a re-export never closes a package cycle
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use @std.low.{g}
+g()
+
+// /std/std-low/avra.toml
+[package]
+name = "@std/low"
+version = "0.1.0"
+
+// /std/std-low/src/low.av
+export fn g() -> int {
+    1
+}
+export use @std.high.{h}
+
+// /std/std-high/avra.toml
+[package]
+name = "@std/high"
+version = "0.1.0"
+
+// /std/std-high/src/high.av
+use @std.low.{g}
+export fn h() -> int {
+    g() + 1
+}
+
+```
+
+```
+error[resolve.reexport_cycle]: `@std/high` already uses `@std/low`, so re-exporting from it here would close a package cycle
+  ╭─[/std/std-low/src/low.av:4:8]
+4 │ export use @std.high.{h}
+  ·        ┬
+  ·        ╰── in this use
+──╯
+help: packages never depend in a cycle — re-export both from a FACADE package above them, one made of `export use` lines
+```
 
 ## resolve.nested_use
 
@@ -1749,7 +2045,18 @@ help: write `name = "app"`, or drop the key
 
 running a package needs a `[bin]` or `src/main.av`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+```
+
+```
+error[manifest.no_target]: `/w/avra.toml` declares no `[bin]`, and `src/main.av` does not exist — nothing to run
+help: add `[bin]` with `path`, or `src/main.av`
+```
 
 ## manifest.no_source
 
@@ -1919,7 +2226,65 @@ No witness yet.
 
 one package name is one directory
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@acme/greet" = { path = "vendor/greet" }
+"@acme/words" = { path = "vendor/words2" }
+
+// /w/src/main.av
+use @acme.greet.{greet}
+greet(2)
+
+// /w/vendor/greet/avra.toml
+[package]
+name = "@acme/greet"
+version = "0.1.0"
+
+[dependencies]
+"@acme/words" = { path = "../words" }
+
+// /w/vendor/greet/src/greet.av
+use @acme.words.{word}
+export fn greet(n: int) -> int {
+    n + word()
+}
+
+// /w/vendor/words/avra.toml
+[package]
+name = "@acme/words"
+version = "0.1.0"
+
+// /w/vendor/words/src/words.av
+export fn word() -> int {
+    40
+}
+
+// /w/vendor/words2/avra.toml
+[package]
+name = "@acme/words"
+version = "0.1.0"
+
+// /w/vendor/words2/src/words.av
+export fn word() -> int {
+    41
+}
+
+```
+
+```
+error[manifest.duplicate_package]: `@acme/words` is claimed by two directories: `/w/vendor/words` and `/w/vendor/words2`
+  ╭─[/w/avra.toml:7:1]
+7 │ "@acme/words" = { path = "vendor/words2" }
+  · ┬
+  · ╰── this dependency
+──╯
+help: one name is one package — point both at one directory
+```
 
 ## manifest.prelude_floor
 
@@ -2831,12 +3196,6 @@ error[loop.label]: `break` names a loop by what its `for` binds, and `y` is no e
 help: a `while` has no name — `break` alone ends the innermost loop
 ```
 
-## flow.source_loop
-
-a `for` over a `Source` walks a running supply
-
-No witness yet.
-
 ## type.quote_hole
 
 a hole takes what its seat takes
@@ -2895,19 +3254,55 @@ No witness yet.
 
 a named grammar's action names a fn of its own module, with its arity
 
-No witness yet.
+```avra
+grammar sql {
+    where = = c:NAME
+}
+1
+```
+
+```
+error[type.syntax_action]: `grammar sql` does not parse: expected NAME, `not`, STRING or `(` while parsing `labeled`
+  ╭─[witness.av:1:1]
+1 │ grammar sql {
+  · ┬
+  · ╰── this grammar
+──╯
+help: the notation is the grammar DSL's — rules, `|` alternatives, `x:ITEM` captures, `-> action(x)`
+```
 
 ## resolve.block_word
 
 a block word is the file's alone — no type, fn or binding may wear it
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
 
-## type.list_empty
+// /w/src/main.av
+use a.{sql, Other}
+type sql = { n: int }
+1
+// /w/src/a/a.av
+export type Other = { n: int }
+export fn mk(n: int) -> Other { Other { n: n } }
+export grammar sql {
+    one = "ONE" v:NAME -> mk(v)
+}
 
-an empty list has no element type to infer
+```
 
-No witness yet.
+```
+error[resolve.block_word]: `sql` is a block word here, and nothing else in this file may wear it
+  ╭─[/w/src/main.av:2:1]
+2 │ type sql = { n: int }
+  · ┬
+  · ╰── this name
+──╯
+help: rename it, or import the word under another name
+```
 
 ## type.list_element
 
@@ -3475,7 +3870,23 @@ help: a slot holds a value — `void` and a type name are not one
 
 a pattern fits the shape it tests: a variant of the enum, with exactly its payloads, or a literal of the type
 
-No witness yet.
+```avra
+const word = "a"
+match 1 {
+    word -> 1
+    _ -> 0
+}
+```
+
+```
+error[type.pattern]: a `string` never matches `int`
+  ╭─[witness.av:3:5]
+3 │     word -> 1
+  ·     ┬
+  ·     ╰── this is `string`
+──╯
+help: a pattern is of the subject's type — write a `int` pattern
+```
 
 ## type.member_pattern
 
@@ -3891,7 +4302,20 @@ No witness yet.
 
 a runtime row's seat takes no absence — core's C reads every pointer it is handed
 
-No witness yet.
+```avra
+extern fn avra_host_env(name: string?) -> string
+avra_host_env(null).length
+```
+
+```
+error[type.host_absence]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence
+  ╭─[witness.av:1:1]
+1 │ extern fn avra_host_env(name: string?) -> string
+  · ┬
+  · ╰── declared here
+──╯
+help: core's rows are the compiler's own C and every one of them READS the pointer it is handed, so absence there is a null nothing tests: the compiled program faults and the evaluator's fault takes the compiler down with it. A PACKAGE's C may take a pointer-or-NULL and mean it, and that seat is untouched — a row never does. Spell this one without the `?`.
+```
 
 ## type.extern_value
 
@@ -3928,7 +4352,22 @@ No witness yet.
 
 a host fn defines the symbol its name spells — its seats and its answer are words and pointers a host hands over, plain
 
-No witness yet.
+```avra
+extern fn avra_trap(msg: string) -> int {
+    msg.length
+}
+1
+```
+
+```
+error[type.host_fn]: `avra_trap` is the runtime's own symbol — a host fn cannot define it again
+  ╭─[witness.av:1:1]
+1 │ extern fn avra_trap(msg: string) -> int {
+  · ┬
+  · ╰── defined here
+──╯
+help: name the host fn for what the host asks of this program
+```
 
 ## type.embed_literal
 
@@ -4002,7 +4441,21 @@ help: move the defaulted seats last, or give `b` a default too
 
 an `isolated` seat takes a fn that shares nothing with its caller — a lambda capturing no identity, a declared fn, or an `isolated` parameter
 
-No witness yet.
+```avra
+fn run(isolated make: fn() -> int) -> int { make() }
+let c = Cell.new(1)
+run(() -> c.get())
+```
+
+```
+error[type.isolated]: `make` of `run` is `isolated`, and this fn captures `c`, which is `Cell<int>` — an isolated fn shares nothing with its caller
+  ╭─[witness.av:3:5]
+3 │ run(() -> c.get())
+  ·     ┬
+  ·     ╰── captured here
+──╯
+help: make it inside the fn, so each place it runs makes its own
+```
 
 ## type.mismatch
 
