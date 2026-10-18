@@ -29,6 +29,8 @@ use @std.time.{now_ns}
 use compiler.backend.{
     in_symbol_order,
     emit_object,
+    emit_index,
+    EmitIndex,
     objects_made,
     inlines_runtime,
     Owned,
@@ -692,8 +694,8 @@ impl Workspace {
         }
         let stay = [bd for bd in lo.fns if by_name.get(bd.name) == null]
         let owed = [stub! for stub in [self.decls.unlowered_stub(w) for w in unlowered] if stub != null]
-        let stand = held_stubs(self)
-            .concat(owed)
+        // a symbol is one body: a held stub stands only where nothing lowered the symbol
+        let stand = undeclared(held_stubs(self).concat(owed), lo.fns)
             .concat(stay)
             .concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
         // a held module nobody read is never minted, so nothing else declares its cases
@@ -704,11 +706,11 @@ impl Workspace {
     /// THE PROGRAM MODULE'S KEY BY ITS OWN BYTES — written as bitcode at `bc`, and
     /// what compiles them. A module that cannot be read back has no key: an empty
     /// read would key every program alike.
-    fn bytes_keyed(full: Lowered, bc: string, which: Owned, tools: Toolchain) -> Result<
+    fn bytes_keyed(full: Lowered, ix: EmitIndex, bc: string, which: Owned, tools: Toolchain) -> Result<
         string,
         BuildError,
     > {
-        let broke = emit_closed(full, bc, which, tools.target)
+        let broke = emit_closed(full, ix, bc, which, tools.target)
         if broke != null { fail BuildError.EmitFailed(broke!) }
         match read_bytes(bc) {
             .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", digest_of_octets(bytes), tools.opt, tools.runtime])),
@@ -840,10 +842,11 @@ impl Workspace {
             }
         }
         mut made: List<Made> = []
+        let ix = emit_index(full)
         for i in occupied_buckets(full) {
             // LICENSED input.scratch_name: a call-unique scratch name, never an input of what is built
             let bc = "${build_cache_root(self)}/obj/${node_key(Stored.Obj, ["bc-scratch", "${i}", "${now_ns()}"])}.bc"
-            let key = self.bytes_keyed(full, bc, Owned.Bucket(i, PROGRAM_BUCKETS), tools)?
+            let key = self.bytes_keyed(full, ix, bc, Owned.Bucket(i, PROGRAM_BUCKETS), tools)?
             if traced() { qtrace("Q\tbucket\t${i}\t${key}\n") }
             made.push(self.bucket_made(i, key))
         }
@@ -1034,8 +1037,9 @@ fn digest_of_file(text: string) -> string { "${text.length}.${digest_of(text)}" 
 /// Every owed object's module built and handed to a worker — the first
 /// refusal, or null. `objects_made` waits for them.
 fn handed(full: Lowered, owed: List<Made>, opt: int, target: string) -> string? {
+    let ix = emit_index(full)
     for o in owed {
-        let broke = emit_object(full, o.obj, o.which, opt, target)
+        let broke = emit_object(full, ix, o.obj, o.which, opt, target)
         if broke != null { return broke }
     }
     null
