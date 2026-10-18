@@ -8,15 +8,19 @@
 // program's own declarations — see realize/dom/wire.av.
 //
 // Same file for every app.
-import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS } from "./wire.gen.js";
+import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS, TAGS, AFTER } from "./wire.gen.js";
 
 export { WIRE_VERSION, HOST, ROWS };
 
-// A frame's patches, in order. An id is a number in eight little-endian
-// bytes — the same width however deep its element sits — and `NO_ID` where
-// a record names none: the page itself as a parent, the first place as a
-// sibling. Every other number is four bytes; a text is its byte length,
-// then its bytes.
+// A `place` that follows no sibling but the end of the parent's run.
+export const APPENDED = -2;
+
+// A frame's patches, in order. An id is one more than its number in seven-bit
+// groups, so zero is `NO_ID`, where a record names none: the page itself as a
+// parent. A `place` says where it goes with one number: the first place, the
+// end of the parent's run, or two more than the sibling it follows. A tag is
+// its place among `TAGS`. Every other number is four bytes; a text is its
+// byte length, then its bytes.
 export function parseFrame(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const decoder = new TextDecoder();
@@ -26,14 +30,17 @@ export function parseFrame(bytes) {
     throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
   }
   const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
-  const id = () => { const lo = dv.getUint32(i, true); const hi = dv.getInt32(i + 4, true); i += 8; return hi * 4294967296 + lo; };
+  const varint = () => { let n = 0, scale = 1, b; do { b = bytes[i++]; n += (b & 127) * scale; scale *= 128; } while (b >= 128); return n; };
+  const id = () => varint() - 1;
+  const after = () => { const v = varint(); return v === AFTER.first ? NO_ID : v === AFTER.append ? APPENDED : v - AFTER.sibling; };
+  const tag = () => TAGS[varint()];
   const str = () => { const len = int(); const s = decoder.decode(bytes.subarray(i, i + len)); i += len; return s; };
   const patches = [];
   while (i < bytes.length) {
     const op = bytes[i++];
-    if (op === OP.create) patches.push({ op, id: id(), tag: str() });
+    if (op === OP.create) patches.push({ op, id: id(), tag: tag() });
     else if (op === OP.create_text || op === OP.set_text) patches.push({ op, id: id(), content: str() });
-    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: id() });
+    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: after() });
     else if (op === OP.remove) patches.push({ op, id: id() });
     else if (op === OP.set_attr) patches.push({ op, id: id(), name: str(), value: str() });
     else if (op === OP.drop_attr) patches.push({ op, id: id(), name: str() });
@@ -137,7 +144,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     [OP.place]: (p) => {
       const parent = p.parent === NO_ID ? mount : need(p.parent);
       const el = need(p.id);
-      const before = (p.after === NO_ID ? parent.childNodes[0] : need(p.after).nextSibling) || null;
+      const before = (p.after === NO_ID ? parent.childNodes[0] : p.after === APPENDED ? null : need(p.after).nextSibling) || null;
       if (before === el || (el.parentNode === parent && el.nextSibling === before)) return;
       carry(parent, el, before);
     },

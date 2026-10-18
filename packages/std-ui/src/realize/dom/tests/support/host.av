@@ -4,8 +4,12 @@
 //! the diff, so what it ends holding is what the patches SAID. A record a
 //! page could not apply — an element it does not hold, a sibling under
 //! another parent, a number given twice — is a FAULT, kept and told.
-use realize.dom.wire.{Op, wire_version, no_id}
+use realize.dom.wire.{Op, wire_version, no_id, after_first, after_append, after_sibling}
+use realize.html.tags.{HtmlTag}
 use realize.dom.patch.{Says}
+
+/// A `place`'s `after` that names no sibling but the end of the run.
+const appended = -2
 
 /// One record of a frame.
 enum Rec {
@@ -53,11 +57,31 @@ impl Reader {
         if w >= 2147483648 { w - 4294967296 } else { w }
     }
 
-    /// Eight little-endian bytes as a signed number.
-    fn id() -> int {
-        let low = self.word()
-        self.int() * 4294967296 + low
+    /// Seven-bit groups, the low group first, as a number from zero up.
+    fn varint() -> int {
+        mut n = 0
+        mut scale = 1
+        while true {
+            let b = self.byte()
+            n = n + b % 128 * scale
+            scale = scale * 128
+            if b < 128 { return n }
+        }
+        n
     }
+
+    /// An id is one more than its number; zero is no id.
+    fn id() -> int { self.varint() - 1 }
+
+    /// Where a `place` puts its element: the first place, the end of the
+    /// parent's run (`appended`), or the sibling it follows.
+    fn after() -> int {
+        let v = self.varint()
+        if v == after_first { no_id } else if v == after_append { appended } else { v - after_sibling }
+    }
+
+    /// A tag by its place among the tags.
+    fn tag() -> string { HtmlTag.every()[self.varint()].word() }
 
     /// A length, then that many bytes as text.
     fn text() -> string {
@@ -80,9 +104,9 @@ impl Reader {
     /// writes it. Every op spelled.
     fn record(op: Op) -> Rec {
         match op {
-            .Create -> Rec.Create(self.id(), self.text()),
+            .Create -> Rec.Create(self.id(), self.tag()),
             .CreateText -> Rec.CreateText(self.id(), self.text()),
-            .Place -> Rec.Place(self.id(), self.id(), self.id()),
+            .Place -> Rec.Place(self.id(), self.id(), self.after()),
             .Remove -> Rec.Remove(self.id()),
             .SetAttr -> Rec.SetAttr(self.id(), Pair { name: self.text(), value: self.text() }),
             .DropAttr -> Rec.DropAttr(self.id(), self.text()),
@@ -234,6 +258,7 @@ impl Host {
         }
         if parent != no_id && self.holds(parent, id) { return self.fault("place puts ${id} under itself") }
         self.lift(id)
+        let after = if after == appended { self.under(parent).last() ?? no_id } else { after }
         if after != no_id && !self.under(parent).contains(after) {
             self.put(id, h with { stood: Stood.Loose })
             return self
@@ -374,11 +399,14 @@ export fn records(frame: Bytes) -> List<string> { [rec_line(r) for r in read(fra
 /// An id as a line spells it: `-` where a record names none.
 fn id_word(id: int) -> string { if id == no_id { "-" } else { "${id}" } }
 
+/// What a `place` follows, as a line spells it: `end` where the run's end is said.
+fn after_word(after: int) -> string { if after == appended { "end" } else { id_word(after) } }
+
 fn rec_line(r: Rec) -> string {
     match r {
         .Create(id, tag) -> "create ${id} ${tag}",
         .CreateText(id, content) -> "text ${id} ${quoted(content)}",
-        .Place(id, parent, after) -> "place ${id} in ${id_word(parent)} after ${id_word(after)}",
+        .Place(id, parent, after) -> "place ${id} in ${id_word(parent)} after ${after_word(after)}",
         .Remove(id) -> "remove ${id}",
         .SetAttr(id, at) -> "attr ${id} ${at.name}=${quoted(at.value)}",
         .DropAttr(id, name) -> "unattr ${id} ${name}",

@@ -1,9 +1,9 @@
 //! `realize/dom/wire.av` — patches as BYTES, and the one table a host
 //! reads them by. A frame is the version, then one record per patch:
 //!
-//!   create       id, tag
+//!   create       id, tag (its place among the tags, `TAGS`)
 //!   create_text  id, content
-//!   place        id, parent (none: the page), after (none: first)
+//!   place        id, parent (none: the page), after (first, append, or a sibling)
 //!   remove       id
 //!   set_attr     id, name, value
 //!   drop_attr    id, name
@@ -20,10 +20,13 @@
 //! saying that thing is then the element's id and two numbers. A frame is
 //! self-contained unless it is told what an earlier frame defined.
 //!
-//! A record opens with its op's code (`Op`). An id is a number in eight
-//! little-endian bytes — the same width however deep its node sits — and
-//! `NO_ID` where a record names none; every other number is four; a text
-//! is its byte length then its bytes. A frame of the version alone is a
+//! A record opens with its op's code (`Op`). An id is a number in seven-bit
+//! groups (`push_varint`) of one more than the id, so zero is `NO_ID`, where
+//! a record names none; a `place`'s `after` is zero for the first place, one
+//! for the end of the parent's run — said only of a parent made in the same
+//! frame, whose run the frame itself has built — and two more than a
+//! sibling's id otherwise; every other number is four bytes; a text is its
+//! byte length then its bytes. A frame of the version alone is a
 //! page that did not change.
 //!
 //! A host holds NO copy of these numbers by hand: `host_table` writes its
@@ -37,9 +40,16 @@ use tree.seats.{Seat, seat_numbered}
 use realize.dom.buf.{Buf, buf}
 use tree.codes.{Codes, Coded}
 use realize.dom.patch.{Patch, Listening, Says, Held, held_says}
+use realize.html.tags.{HtmlTag}
 
 /// The wire's version: a host built for another REFUSES, never misapplies.
-export const wire_version = 11
+export const wire_version = 12
+
+/// A `place`'s `after`: the first place, the end of the parent's run, or — from
+/// here up — a sibling's id plus this much.
+export const after_first = 0
+export const after_append = 1
+export const after_sibling = 2
 
 /// What stands where a record names no element: the page itself as a
 /// parent, the first place as a sibling. No id is ever negative.
@@ -111,14 +121,20 @@ export fn echo(who: int, what: int, tag: int, num: int, text: string?) -> Echo? 
 }
 
 impl Buf {
-    /// An id as eight little-endian bytes — one a host reads as a number
-    /// — and where there is none, the number no id is. A host's number is
-    /// whole only to 2^53, so that is how many elements one page can
-    /// ever have been given.
-    fn push_id(id: NodeId?) {
-        let n = id?.n ?? no_id
-        self.push_int(n)
-        self.push_int(n >> 32)
+    /// An id as one more than its number in seven-bit groups, and where there
+    /// is none, zero. A host's number is whole only to 2^53, so that is how
+    /// many elements one page can ever have been given.
+    fn push_id(id: NodeId?) { self.push_varint((id?.n ?? no_id) + 1) }
+
+    /// Where a `place` puts its element among the parent's, said as `after`
+    /// is: the end of a run `kept` knows whole, or the sibling it follows.
+    fn push_after(parent: NodeId?, after: NodeId?, kept: Kept) {
+        let was = after?.n ?? no_id
+        let appends = kept.ends_with(parent, was)
+        self
+            .push_varint(
+                if appends { after_append } else if was == no_id { after_first } else { was + after_sibling },
+            )
     }
 
     /// What a host is told once of a seat's event saying `to.says`.
@@ -141,13 +157,14 @@ impl Buf {
     }
 
     /// One patch as its record, after the definition it needs.
-    fn push_patch(p: Patch, told: Cell<List<int>>) {
+    fn push_patch(p: Patch, told: Cell<List<int>>, kept: Kept) {
         self.defined(p, told)
         self.push_byte(op_of(p).code())
         match p {
             .Create(id, tag) -> {
+                kept.made(id)
                 self.push_id(id)
-                self.push_str(tag.word())
+                self.push_varint(tag.ordinal())
             },
             .CreateText(id, content) or .SetText(id, content) -> {
                 self.push_id(id)
@@ -156,9 +173,13 @@ impl Buf {
             .Place(id, parent, after) -> {
                 self.push_id(id)
                 self.push_id(parent)
-                self.push_id(after)
+                self.push_after(parent, after, kept)
+                kept.placed(id, parent)
             },
-            .Remove(id) -> self.push_id(id),
+            .Remove(id) -> {
+                kept.left(id)
+                self.push_id(id)
+            },
             .SetAttr(id, name, value) -> {
                 self.push_id(id)
                 self.push_str(name.word())
@@ -200,12 +221,51 @@ fn listening_in(p: Patch) -> Listening? {
 /// What a definition is for: a seat saying one of the four things.
 fn definition_key(to: Listening) -> int { to.action.seat.number() * 4 + to.says.code() }
 
+/// WHICH RUNS A FRAME KNOWS WHOLE: an element made in this frame has no
+/// children but the ones this frame places, so the end of its run is the last
+/// one placed — and a `place` that follows it can say "the end" and no id.
+/// Anything that moves or removes a child breaks that, and the parent is
+/// let go: its later places name the sibling they follow.
+type Kept = {
+    whole: Cell<List<int>> = Cell.new([]),
+    last: Cell<Map<string, int>> = Cell.new({}),
+    under: Cell<Map<string, int>> = Cell.new({}),
+}
+
+impl Kept {
+    fn made(id: NodeId) { self.whole.push(id.n) }
+
+    /// Whether `after` is the last child placed under `parent`, which this
+    /// frame made and has not disturbed; an empty run is "the first place".
+    fn ends_with(parent: NodeId?, after: int) -> bool {
+        let p? = parent else { return false }
+        if !self.whole.get().contains(p.n) { return false }
+        self.last.get().get("${p.n}") ?? no_id == after
+    }
+
+    /// `id` placed under `parent`: the end of that run, and no longer a child
+    /// of wherever it stood.
+    fn placed(id: NodeId, parent: NodeId?) {
+        self.left(id)
+        let p? = parent else { return }
+        self.last.put("${p.n}", id.n)
+        self.under.put("${id.n}", p.n)
+    }
+
+    /// `id` taken off the run it stood in: that run is no longer known whole.
+    fn left(id: NodeId) {
+        let from? = self.under.get().get("${id.n}") else { return }
+        self.whole.set([w for w in self.whole.get() if w != from])
+    }
+}
+
 /// Patches as one frame. `told` holds the definitions an earlier frame of the
 /// same page sent, and is added to; a frame given none defines what it needs.
 export fn frame(patches: List<Patch>, told: Cell<List<int>> = Cell.new([])) -> Bytes {
     let b = buf()
     b.push_byte(wire_version)
-    for p in patches { b.push_patch(p, told) }
+    let known = Kept {}
+    for p in patches { b.push_patch(p, told, known) }
     b.take()
 }
 
@@ -243,6 +303,11 @@ const rows = [
     Answers { word: "abort", name: "avra_ui_abort" },
 ]
 
+/// Every tag's word, in the order a `create` numbers them by.
+fn tags_source() -> string {
+    "export const TAGS = [${["\"${t.word()}\"" for t in HtmlTag.every()].join(", ")}];"
+}
+
 fn names_source(name: string, rows: List<Answers>) -> string {
     "export const ${name} = { ${["${r.word}: \"${r.name}\"" for r in rows].join(", ")} };"
 }
@@ -257,6 +322,8 @@ export fn host_table() -> string {
         "export const NO_ID = ${no_id};",
         table_source("OP", Op.coded()),
         table_source("SAYS", Says.coded()),
+        tags_source(),
+        "export const AFTER = { first: ${after_first}, append: ${after_append}, sibling: ${after_sibling} };",
         names_source("HOST", answers),
         names_source("ROWS", rows),
     ]
