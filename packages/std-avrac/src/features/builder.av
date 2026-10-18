@@ -2,6 +2,9 @@
 //! world, and its methods are the whole vocabulary a feature needs.
 use core.{
     SyntaxArena,
+    void_ref,
+    Means,
+    no_door,
     Spread,
     found_at,
     Expr,
@@ -92,7 +95,7 @@ export type Instanced = { name: string, declared: string }
 
 /// The words a file's imports open blocks with — named grammars and
 /// components — and the named instances its bodies may list.
-export type BlockWords = { grammars: List<BlockGrammar> = [], components: List<ComponentWord> = [], instances: List<Instanced> = [] }
+export type BlockWords = { grammars: List<BlockGrammar> = [], components: List<ComponentWord> = [], instances: List<Instanced> = [], door: Means = no_door }
 
 impl BlockWords {
     fn is_empty() -> bool { self.grammars.is_empty() && self.components.is_empty() }
@@ -419,9 +422,6 @@ export fn type_ref_at(args: List<Captured<Token, LangNode>>, i: int) -> TypeRef?
     match args[i] { .Node(.NType(t)) -> t, _ -> null }
 }
 
-/// The answer a fn declares by writing none: `void`.
-export const void_ref: TypeRef = named_ref("void")
-
 /// The pattern at `args[i]`, when that capture is one.
 export fn pat_id_at(args: List<Captured<Token, LangNode>>, i: int) -> PatId? {
     match args[i] { .Node(.NPat(id)) -> id, _ -> null }
@@ -589,45 +589,6 @@ export fn between(at: int, after: int, before: int) -> bool {
     at > after && at < before
 }
 
-/// Seats with their marks: a `mut` or `const` token between the
-/// previous name (or `from`, before the first) and a name marks that
-/// seat. ONE window law, so every param list — a fn's, a method's, a
-/// lambda's, a fn type's — reads the same marks the same way.
-export fn marked_seats(
-    store: SyntaxArena,
-    ps: List<Token>,
-    tys: List<TypeRef?>,
-    muts: List<Token>,
-    consts: List<Token>,
-    from: int,
-) -> List<Param> {
-    [Param {
-        name: Scoped(p.text),
-        ty: tys[j],
-        default: null,
-        promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo),
-        id: store.alloc_param_id(p.span),
-    } for j, p in ps]
-}
-
-/// One seat's contract: the `mut` and `const` tokens written in its
-/// window — the window a mark shares with the name it precedes.
-fn seat_mark_of(muts: List<Token>, consts: List<Token>, after: int, before: int) -> SeatMark {
-    SeatMark {
-        mutable: muts.any(mark_within(it, after, before)),
-        settled: consts.any(mark_within(it, after, before)),
-    }
-}
-
-/// Where seat `j`'s mark may start: after the previous name, or `from`.
-fn seat_since(ps: List<Token>, j: int, from: int) -> int {
-    if j == 0 { from } else { ps[j - 1].span.lo }
-}
-
-fn mark_within(t: Token, after: int, before: int) -> bool {
-    between(t.span.lo, after, before)
-}
-
 /// A side table a `@facet` may name: the word, and the store mark it
 /// writes, keyed by the node the maker just made.
 type FacetRow = { side: string, mark: fn(SyntaxArena, StmtId) -> void }
@@ -639,6 +600,8 @@ fn facet_rows() -> List<FacetRow> {
         FacetRow { side: "once", mark: (st, id) -> st.mark_once(id) },
         FacetRow { side: "state", mark: (st, id) -> st.mark_state(id) },
         FacetRow { side: "host", mark: (st, id) -> st.mark_host(id) },
+        FacetRow { side: "mutating", mark: (st, id) -> st.mark_mutating(id) },
+        FacetRow { side: "static", mark: (st, id) -> st.mark_static(id) },
     ]
 }
 

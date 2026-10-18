@@ -309,17 +309,15 @@ impl Code {
         }
     }
 
-    /// This node's own CALL ARGUMENTS: a `Call`'s kids whole, a
-    /// `MethodCall`'s or a `CallValue`'s kids past its subject (the
-    /// first) — empty for every other kind, spelled (a REGISTRY: three
-    /// answering arms). A name found here is HANDED to this call,
-    /// never a name merely read as a method's own RECEIVER.
+    /// This node's own CALL ARGUMENTS: its kids past the ones the node
+    /// says are no argument (`args_after` — a method's subject) — empty
+    /// for a node that is no call. A name found here is HANDED to this
+    /// call, never a name merely read as a method's own RECEIVER.
     fn call_args() -> List<Code> {
         match self.at {
-            .Expr(id) -> match self.of.view.store.expr(id) {
-                .Call(_, _, _) -> self.kids(),
-                .MethodCall(_, _, _) or .CallValue(_, _) -> self.kids().slice(1, self.kids().length),
-                .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .ListLit(_) or .Comp(_, _) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Named(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) or .Range(_, _) or .Env(_) -> [],
+            .Expr(id) -> {
+                let skip? = self.of.view.store.expr(id).args_after() else { return [] }
+                self.kids().slice(skip, self.kids().length)
             },
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> [],
         }
@@ -439,7 +437,7 @@ impl Code {
     /// are always expression holes).
     fn atomic() -> bool {
         match self.at {
-            .Expr(id) -> atomic_at(self.of.view.store.expr(id)),
+            .Expr(id) -> self.of.view.store.expr(id).atomic(),
             .Stmt(_) or .Pat(_) or .Field(_, _) or .Param(_, _) -> false,
         }
     }
@@ -931,17 +929,6 @@ export fn spliced_text(c: Code) -> string {
     if c.atomic() { c.text() } else { "(${c.text()})" }
 }
 
-/// The atomic registry ITSELF — every leaf and postfix-chain shape
-/// (a literal, a name, an index, a call, a method call, a property,
-/// a construction) needs no parentheses wherever it lands; anything
-/// with an outer operator or a lower-precedence form does.
-fn atomic_at(e: Expr) -> bool {
-    match e {
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .VariantLit(_, _) or .Call(_, _, _) or .MethodCall(_, _, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Range(_, _) or .Env(_) -> true,
-        .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Named(_, _) or .Error -> false,
-    }
-}
-
 /// A TYPE in hand: the registry it was interned into, and the id —
 /// every projection reads the registry alone.
 export type Ty = { types: TypeRegistry, id: TypeId }
@@ -1098,10 +1085,10 @@ fn pure_of(of: Analysed, at: At) -> bool {
 /// Whether this node's OWN kind ever admits purity — the kid fold in
 /// `pure_at` still has the final word for every arm answering true.
 fn could_be_pure(of: Analysed, id: ExprId) -> bool {
-    match of.view.store.expr(id) {
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .Binary(_, _, _) or .Bitnot(_) or .Not(_) or .Force(_) or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Coalesce(_, _) or .Chain(_, _) or .Is(_, _) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> true,
-        .MethodCall(_, _, _) -> method_could_be_pure(of, id),
-        .Comp(_, _) or .Collect(_) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Call(_, _, _) or .Match(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Error -> false,
+    match of.view.store.expr(id).purity() {
+        .Never -> false,
+        .Always -> true,
+        .ByRow -> method_could_be_pure(of, id),
     }
 }
 
