@@ -78,20 +78,34 @@ def merge_times(root, prior):
 
 
 def splits(path):
-    """package -> the paths (under the package) its suite is proved by, and
-    the items (`package/path`) that must run first in their shard."""
-    out, cold = {}, set()
+    """package -> the items its suite is proved by (a path under the package, or an `@group`),
+    the items (`package/item`) that must run first in their shard, and each group's paths.
+    A row is `<package> <path> [cold]` or `<package> @<group> <path>... [cold]`."""
+    out, cold, groups = {}, set(), {}
     try:
         with open(path) as f:
             for line in f:
                 parts = line.split("#")[0].split()
-                if len(parts) in (2, 3):
-                    out.setdefault(parts[0], []).append(parts[1])
-                    if parts[2:] == ["cold"]:
-                        cold.add(f"{parts[0]}/{parts[1]}")
+                if len(parts) < 2:
+                    continue
+                if parts[-1] == "cold":
+                    cold.add(f"{parts[0]}/{parts[1]}")
+                    parts = parts[:-1]
+                out.setdefault(parts[0], []).append(parts[1])
+                if parts[1].startswith("@"):
+                    groups[f"{parts[0]}/{parts[1]}"] = parts[2:]
     except FileNotFoundError:
         pass
-    return out, cold
+    return out, cold, groups
+
+
+def item_paths(item, groups):
+    """The `packages/...` paths one packed item is proved by: a package, a path under it, or
+    every path of a group."""
+    pkg, _, rest = item.partition("/")
+    if rest.startswith("@"):
+        return [f"packages/{pkg}/{p}" for p in groups[item]]
+    return [f"packages/{item}"]
 
 
 def split_items(names, table):
@@ -107,10 +121,11 @@ def is_proof(path):
         return any(l.lstrip().startswith("spec ") or l.lstrip().startswith("spec(") for l in f)
 
 
-def unreached(root, table):
+def unreached(root, table, groups=None):
     """Proof files under a split package that no listed path holds."""
     gone = []
-    for pkg, paths in table.items():
+    for pkg, listed in table.items():
+        paths = [q for p in listed for q in ((groups or {})[f"{pkg}/{p}"] if p.startswith("@") else [p])]
         base = os.path.join(root, "packages", pkg)
         for p in paths:
             if not os.path.isdir(os.path.join(base, p)):
@@ -166,7 +181,15 @@ def self_test():
         with open(os.path.join(d, "measured"), "w") as f:
             f.write("cli 300\n")
         assert layered_weights([os.path.join(d, "seed"), os.path.join(d, "measured"), os.path.join(d, "none")]) == {"cli": 300, "std-ui": 5}
-    print("shards: self-test passed — 10 fixtures")
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "splits")
+        with open(f, "w") as fh:
+            fh.write("p src/a cold\np @g src/b src/c  # a group\np src/d\n")
+        table, cold, groups = splits(f)
+        assert table == {"p": ["src/a", "@g", "src/d"]} and cold == {"p/src/a"} and groups == {"p/@g": ["src/b", "src/c"]}, (table, cold, groups)
+        assert item_paths("p/@g", groups) == ["packages/p/src/b", "packages/p/src/c"]
+        assert item_paths("p/src/d", groups) == ["packages/p/src/d"] and item_paths("cli", groups) == ["packages/cli"]
+    print("shards: self-test passed — 12 fixtures")
 
 
 if __name__ == "__main__":
@@ -176,9 +199,12 @@ if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
     root = os.path.join(here, "..")
     ci = os.path.join(root, ".github", "ci")
-    table, cold = splits(os.path.join(ci, "suite-splits.txt"))
+    table, cold, groups = splits(os.path.join(ci, "suite-splits.txt"))
+    if sys.argv[1:2] == ["--paths"]:
+        print(" ".join(item_paths(sys.argv[2], groups)))
+        sys.exit(0)
     if sys.argv[1:] == ["--check-splits"]:
-        bad = unreached(root, table)
+        bad = unreached(root, table, groups)
         for b in bad:
             print(f"shards: {b} — outside every path in .github/ci/suite-splits.txt, so no shard proves it")
         if not bad:

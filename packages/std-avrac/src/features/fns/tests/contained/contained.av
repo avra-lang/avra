@@ -1,0 +1,55 @@
+// proves: `contained(body)` runs a closure under a catch point and brings
+// back what it answered — a bool, an int, text, a list, a record — as
+// `.Ok`, or a trap on this task as `.Err(words)`; what the body wrote
+// before the trap stands, a guard inside a guard catches its own trap, and
+// the program goes on; both engines
+use @std.meta.{contained}
+
+state count: int = 0
+
+type Pair = { a: int, b: string }
+
+fn bump() -> bool {
+    count = count + 1
+    true
+}
+
+fn bad() -> bool {
+    count = count + 10
+    let xs = [1, 2]
+    let i = 5
+    xs[i] == 3
+}
+
+fn bad_text() -> string {
+    let xs = ["x"]
+    let i = 3
+    xs[i]
+}
+
+fn pair() -> Pair { Pair { a: 7, b: "seven" } }
+
+fn worded(r: Result<bool, string>) -> string {
+    match r { .Ok(ran) -> "ok ${ran}", .Err(words) -> "err ${words}" }
+}
+
+println(worded(contained(bump)))
+println(worded(contained(bad)))
+println("count=${count}")
+println(worded(contained(() -> false)))
+println(worded(contained(bump)))
+println("count=${count}")
+// a guard inside a guard: the inner catches, the outer's body goes on
+println(worded(contained(() -> worded(contained(bad)) == "")))
+println("count=${count}")
+// any word or pointer comes back, at its own type
+match contained(() -> 41 + 1) { .Ok(n) -> println("int ${n + 1}"), .Err(w) -> println("err ${w}") }
+match contained(() -> "kept " + "text") { .Ok(t) -> println(t), .Err(w) -> println("err ${w}") }
+match contained(() -> [1, 2, 3]) {
+    .Ok(xs) -> println("list ${xs.length}"),
+    .Err(w) -> println("err ${w}"),
+}
+match contained(pair) { .Ok(p) -> println("record ${p.a} ${p.b}"), .Err(w) -> println("err ${w}") }
+match contained(bad_text) { .Ok(t) -> println(t), .Err(w) -> println("text body: ${w}") }
+// an empty list and an empty text are answers, not absence
+match contained(() -> "") { .Ok(t) -> println("empty [${t}]"), .Err(w) -> println("err ${w}") }

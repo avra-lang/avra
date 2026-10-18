@@ -3964,6 +3964,12 @@ No witness yet.
 
 No witness yet.
 
+## type.guard_value
+
+`guarded` is lowered where it is called — handed on uncalled it would run nothing
+
+No witness here: `guarded` is `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/fns/tests/contained_test.av.
+
 ## type.named_arg
 
 a named argument writes a seat its callee declares, once — only a declared fn's, method's or static's seats have names
