@@ -1,0 +1,43 @@
+//! `tree/seats.av` — THE SEATS A PROGRAM'S COMPONENTS DECLARE. Each event
+//! seat of a primitive is a const the View derive writes beside the component
+//! (`@seat`), carrying what the platforms call it. `seat_rows` gathers them
+//! over everything the program imports, in name order, so a seat's number is
+//! its place in that list: dense, and the same wherever the build is read.
+use @std.meta.{Named, Marker}
+use tree.dom_event.{DomEvent}
+use tree.node.{EventKind}
+use tree.terminal_key.{Key}
+
+/// A seat's number: its place among the program's seats.
+export type Seat = int
+
+/// The mark the View derive puts on a seat's row.
+export fn seat(_d: Named) -> Marker { Marker {} }
+
+/// One event seat: the component and event it is, what the semantic kind
+/// is, and what each platform calls it.
+export type SeatRow = {
+    owner: string,
+    event: string,
+    kind: EventKind,
+    web: DomEvent?,
+    terminal: Key?,
+    prevent: bool,
+}
+
+/// A gathered row. The collection holds rows and nothing else.
+export type Gathered = { row: SeatRow }
+
+/// Every seat in the program's closure, ordered by the row's const name.
+export collect seat_rows: List<Gathered> = @seat in closure as Gathered { row: it } by it.name
+
+/// The seat a component's event is, when the program declares one.
+export fn seat_of(owner: string, event: string) -> Seat? {
+    [Seat(j) for j, g in seat_rows if g.row.owner == owner && g.row.event == event].first()
+}
+
+/// The seats two components of one name declare, as `owner.event`: a name
+/// the table orders by must name one seat.
+export fn ties(rows: List<SeatRow>) -> List<string> {
+    ["${r.owner}.${r.event}" for j, r in rows if rows.slice(0, j).any(it.owner == r.owner && it.event == r.event)]
+}

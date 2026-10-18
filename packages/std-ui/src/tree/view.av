@@ -49,6 +49,7 @@ use @std.meta.{
 }
 use tree.node.{Node, Prim, Attribute, EventKind, Action, Handler}
 use tree.dom_event.{DomEvent}
+use tree.seats.{SeatRow, seat}
 use tree.terminal_key.{Key}
 use tree.lists.{flatten}
 use tree.identity.{Stand, stand_of, steps, shared}
@@ -101,7 +102,8 @@ export trait View {
                         }
                     },
                 },
-            ],
+            ]
+                .concat([said.seat_row(t, f) for f in t.fields if f.says != null]),
         }
     }
 
@@ -413,6 +415,42 @@ impl Vocabulary {
         }
     }
 
+    /// The const that declares an event seat, beside its component: the
+    /// owner and event it is, its semantic kind, and what each platform calls
+    /// it, read off the seat's `@host`. Named by owner and event, so the
+    /// seats are ordered by the one name that tells them apart.
+    fn seat_row(t: Type, f: Field) -> Directive {
+        let kind = self.kinds.find(word_of(it) == f.name)
+        let marks = marks_of(f, host_mark)
+        let named = "${t.name}\$${f.name}"
+        let row = quote {
+            SeatRow {
+                owner: ${literal(t.name)},
+                event: ${literal(f.name)},
+                kind: EventKind.${kind?.name ?? ""},
+                web: ${self.hosted_as(marks, web_label, "DomEvent")},
+                terminal: ${self.hosted_as(marks, terminal_label, "Key")},
+                prevent: ${if hosted_flag(marks) { quote { true } } else { quote { false } }},
+            }
+        }
+        Directive {
+            twin: "",
+            name: named,
+            at: t.at,
+            source: quote {
+                @seat
+                export const ${named}: SeatRow = ${row}
+            },
+        }
+    }
+
+    /// The variant a platform's setting names, as the code that spells it.
+    fn hosted_as(marks: List<Mark>, label: string, enum_name: string) -> Code {
+        let w? = [a.value for m in marks for a in m.named if a.label == label].first() else { return quote { null } }
+        if enum_name == "Key" { return quote { Key.${w} } }
+        quote { DomEvent.${w} }
+    }
+
     /// What an event's `@host(web: .Click, terminal: .Enter)` gets wrong: a
     /// second `@host`, a setting no platform has, a variant the platform's
     /// own enum lacks. Each setting is checked against the enum it names.
@@ -483,6 +521,11 @@ const host_mark = "host"
 const web_label = "web"
 const terminal_label = "terminal"
 const prevent_label = "prevent"
+
+/// Whether an event's `@host` says `prevent: true`.
+fn hosted_flag(marks: List<Mark>) -> bool {
+    [a.value for m in marks for a in m.named if a.label == prevent_label].first() == "true"
+}
 
 /// The mark that says an attribute is its node's own words.
 const facet_mark = "facet"
