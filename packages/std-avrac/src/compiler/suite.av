@@ -52,7 +52,7 @@ enum Hearing {
 
 /// A suite's own module, as one derivation tells it: every case in scope and
 /// the file its body is in, and each program the entry calls.
-fn suite_module(d: Derived, only: string?, calls: List<ProgramCall>) -> ProgramModule {
+fn suite_module(d: Derived, only: List<string>, calls: List<ProgramCall>) -> ProgramModule {
     let told = [s for s in d.said if in_scope(only, s.path)]
     let cases = flatten([s.cases for s in told])
     ProgramModule {
@@ -66,9 +66,9 @@ impl Workspace {
     /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
     /// its sources — a module tree, a vendored dependency, a test that reaches
     /// past the library's own dependencies — each proved on its own. `only`
-    /// scopes the run to the proofs at or under one path; labels are told from
+    /// scopes the run to the proofs at or under any of its paths; labels are told from
     /// `told_from`.
-    fn suites(only: string?, told_from: string, tools: Toolchain) -> Result<
+    fn suites(only: List<string>, told_from: string, tools: Toolchain) -> Result<
         List<BuildOutcome>,
         string,
     > {
@@ -76,7 +76,7 @@ impl Workspace {
         mut out: List<BuildOutcome> = if own == null { [] } else { [own!] }
         for root in [r for r in self.nested_roots(joined_path(self.root, "src")) if in_scope(only, r)] {
             let inner = self.nested_at(root)
-            let made: BuildOutcome? = inner.suite(null, told_from, tools)?
+            let made: BuildOutcome? = inner.suite([], told_from, tools)?
             inner.discarded()
             if made != null { out.push(made!) }
         }
@@ -92,13 +92,16 @@ impl Workspace {
 
     /// Whether this run proves the rule examples: std-avrac's own, once, in an
     /// unscoped run or one whose scope holds `src/compiler`.
-    fn proves_rules(only: string?) -> bool {
+    fn proves_rules(only: List<string>) -> bool {
         let home = joined_path(self.root, "src/compiler")
         self.manifest(0).name == "@std/avrac" && in_scope(only, home)
     }
 
     /// One suite's binary, or null when there is nothing to prove.
-    fn suite(only: string?, told_from: string, tools: Toolchain) -> Result<BuildOutcome?, string> {
+    fn suite(only: List<string>, told_from: string, tools: Toolchain) -> Result<
+        BuildOutcome?,
+        string,
+    > {
         // A rule's examples run NATIVE, right here, at build time —
         // no evaluator, no generated case: std-avrac testing ITSELF
         // means its own rules are already part of the standing
@@ -116,7 +119,7 @@ impl Workspace {
         let refuses = [r for r in self.refuses_tests() if in_scope(only, r.path)]
         let programs = [path for path in self.program_tests() if in_scope(only, path)]
         let under = Keyed {
-            named: "suite:${only ?? ""}",
+            named: "suite:${joined(only, ",")}",
             beside: [beside(path, "expected") for path in programs],
         }
         let binary = joined_path(joined_path(self.root, "build"), "suite")
@@ -292,13 +295,12 @@ impl Workspace {
 /// The file beside a program that wears its stem and this extension.
 fn beside(path: string, extension: string) -> string { joined_path(dir_of(path), "${stem_of(path)}.${extension}") }
 
-/// Whether a run scoped to `only` reaches `path`: every path when unscoped,
-/// else the path itself and what lies under it.
-fn in_scope(only: string?, path: string) -> bool {
-    let scope? = only else { return true }
+/// Whether a run scoped to `only` reaches `path`: every path when unscoped (no scope),
+/// else a path that is, or lies under, one of the scopes.
+fn in_scope(only: List<string>, path: string) -> bool {
+    if only.is_empty() { return true }
     let at = normalized(path)
-    let top = normalized(scope)
-    at == top || under_dir(at, top)
+    only.any((scope) -> at == normalized(scope) || under_dir(at, normalized(scope)))
 }
 
 impl Workspace {
