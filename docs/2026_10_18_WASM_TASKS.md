@@ -147,6 +147,48 @@ asyncify's conservative indirect-call rule.
 5. A task-using program test, run under node JSPI and under asyncify, eval
    == wasm. This is the missing real measurement.
 
+## The split of `avra_fiber.c` (slice 1) — what the review must decide
+
+Read of the file, 2026-10-18. The single suspension point already exists:
+`avra_wait_park` ends every wait row, and its one OS-dependent step is
+`run_next()` -> `switch_to()`. So slice 1 adds no `rt_sigs` row. It splits
+the file behind a small port (`switch_to`, `now`, `idle_wait`, `stack_get/put`,
+`poll_wake`): the pure scheduler (waiters, filing and claiming, the deadline,
+choosing, waiting, a task's life, the shield — about 60%) compiles for wasm;
+the switch (L52-155), time, the poller, stacks, the guard and the listing stay
+native-only. The tangles that make this a review and not a mechanical move:
+
+1. **The data carries the OS.** `Fiber` holds its stack (`sp`, `floor`,
+   `base`, `guard`, `wide`) and a waiter's `on` is a union of `fd`, `timer`,
+   `gate` and `sig`. The port needs these behind an opaque stack sub-record
+   and the fd/sig arms compiled out on wasm, or the pure part cannot name
+   its own structs.
+2. **Evaluator tasks** (L2897-3098) are *virtual fibers* (`fiber_new(NULL,
+   1)`) sharing the policy: `next_with_world` asks the evaluator's machine
+   (`g_vnext_asking`) who runs next and traps if a compiled task meets one.
+   They need no switch, but they are entangled with `run_next_with_world`.
+   Proposal: they stay in the pure part (they ARE the policy's second
+   client) and the wasm build never creates one; a keeper asserts the wasm
+   archive references no `avra_vtask_*` caller.
+3. **The seeded order** (L3098-3171) is a test instrument: it draws the next
+   turn from a schedule, holds `avra_tick` raised (an atomic the cold side of
+   every checked back-edge reads) and calls `poll_counted`. The pure part
+   needs the draw; the tick and the poller coupling are OS. On wasm the seed
+   stays usable (it is how the 4-engine witness plan gets determinism), so
+   `avra_tick` must exist there as a plain flag the host sets.
+4. **Preemption.** Native cancel points on loop back-edges read `avra_tick`,
+   which a timer signal raises. A wasm page has no signal: the host raises
+   the flag from a `setTimeout`, but JS cannot interrupt a running wasm
+   stack, so a tight loop with no park never sees it. This is cooperative
+   cancellation only; the doc must say so, and `within` around pure compute
+   does not fire until the next park or back-edge check the host got to run.
+5. **The case runner** (L3171-3797) and the listing (`avra tasks <pid>`) are
+   native-only test and tooling surfaces; excluded.
+6. **Cores and the offload threads** stay out (`avra_cores.c`, F4).
+7. **Footprint D1** (a program that neither spawns nor waits links no
+   scheduler object) must hold after the split: the new `avra_sched.o` must
+   not become reachable from `avra_runtime.o`. `make footprint` is the keeper.
+
 ## Witness plan for the open items
 
 Every test below is a program test run four ways: evaluator, native,
