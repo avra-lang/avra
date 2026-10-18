@@ -2,10 +2,12 @@
 //! target draws them: every control carries the name it is announced by,
 //! every state crosses as an attribute, and an image has its alternative.
 use @std.ui.tree.url.{local}
+use @std.ui.realize.tests.support.{picture_at}
 use @std.ui.components.{
     text,
     heading,
     image,
+    image_words,
     icon,
     divider,
     button,
@@ -34,11 +36,30 @@ fn html(v: dyn View) -> string { render(tree_of(v), Env {}) }
 spec "std/ui a11y — every control is named" {
     given "an image" {
         then "carries its alternative as a real attribute" {
-            html(image local("cat.png") { alt: "A cat" }).contains("alt=\"A cat\"")
+            html(image picture_at("cat.png") { alt: "A cat" }).contains("alt=\"A cat\"")
+        }
+    }
+    given "a decorative image" {
+        then "is hidden from a reader and carries an empty alternative" {
+            let drawn = html(image picture_at("rule.png") { decorative: true })
+            drawn.contains("alt=\"\"") && drawn.contains("aria-hidden=\"true\"")
+        }
+    }
+    given "an image's two ways to be understood" {
+        then "exactly one is accepted" {
+            image_words("A cat", false).is_empty() && image_words("", true).is_empty()
+        }
+        then "neither is refused, saying where the words go" {
+            image_words("", false).map(it.message) == ["an image says its words where it is used — `alt: \"…\"` or `decorative: true`"]
+        }
+        then "both is refused" {
+            image_words("A cat", true).map(it.message) == [
+                "an image is described or decorative, never both — drop `alt:` or `decorative: true`",
+            ]
         }
     }
     given "an icon" {
-        then "is announced by its name, never silent" { html(icon local("x.svg") { name: "Close" }).contains("aria-label=\"Close\"") }
+        then "is announced by its name, never silent" { html(icon picture_at("x.svg") { name: "Close" }).contains("aria-label=\"Close\"") }
     }
     given "a button, link, field, checkbox, switch and slider" {
         then "each is announced by its label" {
