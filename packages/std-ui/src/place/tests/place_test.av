@@ -149,10 +149,10 @@ spec "std/ui place — cells" {
         }
     }
     given "wrapping" {
-        then "a row that overflows continues on the next line" {
+        then "a row that wraps continues on the next line" {
             at(
                 row(
-                    Layout { gap: .None },
+                    Layout { gap: .None, wrap: .Wrap },
                     [button_node("one"), button_node("two"), button_node("six")],
                 ),
                 15,
@@ -208,17 +208,55 @@ spec "std/ui place — cells" {
         }
     }
     given "defaults" {
-        then "a row keeps one space between its children and flows onto a new line" {
-            at(row(Layout {}, [button_node("one"), button_node("two"), button_node("six")]), 18) == "row 0,0 18x3\n  button 0,0 7x1\n  button 8,0 7x1\n  button 0,2 7x1"
+        then "a row keeps one space between its children and does not wrap unless it is told to" {
+            at(row(Layout {}, [button_node("one"), button_node("two"), button_node("six")]), 18) == "row 0,0 18x1\n  button 0,0 7x1\n  button 8,0 7x1\n  button 16,0 7x1"
         }
     }
     given "a whole screen" {
-        then "every box lies inside its parent from forty to eighty cells" {
-            [w for w in 40..80 if !inside(place(app(), Cells {}, w), Rect { x: 0, y: 0, w: w, h: 1000 })]
+        then "every box lies inside its parent from sixty to a hundred cells" {
+            [w for w in 60..100 if !inside(place(app(), Cells {}, w), Rect { x: 0, y: 0, w: w, h: 1000 })]
                 .is_empty()
         }
         then "the same tree places to the same boxes twice" {
             describe(app(), place(app(), Cells {}, 50)) == describe(app(), place(app(), Cells {}, 50))
+        }
+    }
+    given "sizes that hold, ask and fill" {
+        then "a fixed size holds beside a fill, which takes what is left" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        laid(text_node(""), Layout { width: .Fixed(10), height: .Fixed(1) }),
+                        laid(text_node(""), Layout { width: .Fill, height: .Fixed(1) }),
+                    ],
+                ),
+                30,
+            ) == "row 0,0 30x1\n  text 0,0 10x1\n  text 10,0 20x1"
+        }
+        then "a fill shares what is left by its growth" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        laid(text_node(""), Layout { width: .Fill }),
+                        laid(text_node(""), Layout { width: .Fill, grow: 3 }),
+                    ],
+                ),
+                40,
+            ) == "row 0,0 40x0\n  text 0,0 10x0\n  text 10,0 30x0"
+        }
+        then "text asks its words and gives way to what holds, no further than its longest word" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        text_node("aaaa bbbb"),
+                        laid(text_node(""), Layout { width: .Fixed(20), height: .Fixed(1) }),
+                    ],
+                ),
+                15,
+            ) == "row 0,0 15x2\n  text 0,0 4x2\n  text 4,0 20x1"
         }
     }
 }

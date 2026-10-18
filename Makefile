@@ -359,7 +359,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser layout-oracle h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -958,6 +958,13 @@ ui-board:
 ui-browser:
 	@sh tools/ui_board_browser.sh
 
+# THE LAYOUT SOLVER AGAINST THE WEB TARGET: std-ui's `place` and Firefox running
+# the page the real html realizer writes, on the same random trees (fixed seeds),
+# every box in agreement (tools/layout-oracle). Skips, spoken, where Firefox or
+# node is absent.
+layout-oracle:
+	@sh tools/layout_oracle.sh
+
 # A fingerprint tag NAMES a node kind: inside one fold space no two
 # kinds may wear one number, or they fingerprint alike by construction.
 fingerprints:
@@ -1021,7 +1028,7 @@ KEEPERS_A1 = speed-ratchet fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = fingerprints vocab families-left layers hooks-released inputs whole-reads cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack voices defects \
-            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads \
+            ui-host ui-host-test ui-board ui-browser layout-oracle tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
@@ -1281,7 +1288,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
-gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser layout-oracle families-left layers hooks-released codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
