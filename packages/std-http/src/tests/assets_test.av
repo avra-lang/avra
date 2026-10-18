@@ -1,0 +1,82 @@
+// Content-named bytes served: a hit with its validators and an immutable year,
+// a conditional hit that is a 304 with no body, and every other name a 404.
+use @std.http.http.{Request, Unrouted, Response}
+use @std.http.route.{compiled, dispatch}
+use @std.http.assets.{Served, assets}
+
+fn table() -> List<Served> {
+    [
+        Served {
+            name: "0123456789abcdef0123456789abcdef.png",
+            media: "image/png",
+            octets: [137, 80, 78, 71].bytes()!,
+        },
+        Served {
+            name: "fedcba9876543210fedcba9876543210.svg",
+            media: "image/svg+xml",
+            octets: "<svg/>".bytes(),
+        },
+    ]
+}
+
+fn served_by(line: string, fields: string) -> Response {
+    let q = framed_from("${line}\r\nHost: h\r\n${fields}\r\n".bytes())!
+    dispatch(compiled(assets("/assets", table())), q)
+}
+
+fn got(target: string) -> Response { served_by("GET ${target} HTTP/1.1", "") }
+
+fn field_of(r: Response, name: string) -> string { r.headers.find(it.name == name)?.value ?? "-" }
+
+spec "std/http — served assets" {
+    given "a name the table holds" {
+        then "its octets, whole" { got("/assets/0123456789abcdef0123456789abcdef.png").body.length == 4 }
+        then "its media type, from the table and never the extension" {
+            field_of(got("/assets/fedcba9876543210fedcba9876543210.svg"), "content-type") == "image/svg+xml"
+        }
+        then "a strong tag that is its name" {
+            field_of(got("/assets/0123456789abcdef0123456789abcdef.png"), "etag") == "\"0123456789abcdef0123456789abcdef.png\""
+        }
+        then "a year, immutable" {
+            field_of(got("/assets/0123456789abcdef0123456789abcdef.png"), "cache-control") == "public, max-age=31536000, immutable"
+        }
+        then "nosniff" { field_of(got("/assets/0123456789abcdef0123456789abcdef.png"), "x-content-type-options") == "nosniff" }
+    }
+    given "a conditional request" {
+        then "the tag it holds is a 304 with no body" {
+            let r = served_by(
+                "GET /assets/0123456789abcdef0123456789abcdef.png HTTP/1.1",
+                "If-None-Match: \"0123456789abcdef0123456789abcdef.png\"\r\n",
+            )
+            r.status == 304 && r.body.length == 0 && field_of(r, "etag") != "-"
+        }
+        then "another tag is the whole answer" {
+            served_by(
+                "GET /assets/0123456789abcdef0123456789abcdef.png HTTP/1.1",
+                "If-None-Match: \"other\"\r\n",
+            )
+                .status == 200
+        }
+        then "a star is a 304" {
+            served_by(
+                "GET /assets/0123456789abcdef0123456789abcdef.png HTTP/1.1",
+                "If-None-Match: *\r\n",
+            )
+                .status == 304
+        }
+    }
+    given "a name the table does not hold" {
+        then "unknown" { got("/assets/nope.png").status == 404 }
+        then "the prefix itself" { got("/assets/").status == 404 }
+        then "a parent segment" { got("/assets/../0123456789abcdef0123456789abcdef.png").status == 404 }
+        then "an encoded dot-dot" { got("/assets/%2e%2e/x").status == 404 }
+        then "a name with its extension changed" { got("/assets/0123456789abcdef0123456789abcdef.jpg").status == 404 }
+        then "a sibling of the prefix" { got("/assetsx/0123456789abcdef0123456789abcdef.png").status == 404 }
+    }
+    given "a HEAD" {
+        then "answers the same fields" {
+            let r = served_by("HEAD /assets/0123456789abcdef0123456789abcdef.png HTTP/1.1", "")
+            r.status == 200 && field_of(r, "etag") != "-"
+        }
+    }
+}

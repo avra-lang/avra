@@ -1,0 +1,52 @@
+//! SERVED ASSETS — bytes a program holds, answered under a prefix by
+//! their content-hashed names. A response is IMMUTABLE: the name is the
+//! content's, so it carries its `ETag` and a year's `Cache-Control:
+//! immutable`, and a request whose `If-None-Match` names the tag is a
+//! 304 with no body. A name the table does not hold is a 404 and the
+//! disk is never touched — nothing undeclared is ever served. The bodies
+//! are the table's own `Bytes`, which for a settled const are the
+//! binary's static data: serving copies nothing.
+use @std.http_message.message.{Header, Method}
+use route.{Route, Reach}
+use validators.{tag_listed}
+
+/// One thing to serve: the name it is asked for by, its media type and
+/// its octets.
+export type Served = { name: string, media: string, octets: Bytes }
+
+/// The routes answering `table` under `prefix` (`/assets`): a GET and a
+/// HEAD of each name in it.
+export fn assets(prefix: string, table: List<Served>) -> List<Route> {
+    let base = if prefix.ends_with("/") { prefix.substring(0, prefix.length - 1) } else { prefix }
+    [asset_route(Method.Get, base, table), asset_route(Method.Head, base, table)]
+}
+
+fn asset_route(method: Method, base: string, table: List<Served>) -> Route {
+    let under = base.bytes()
+    Route {
+        method: method,
+        pattern: "${base}/{path...}",
+        reach: Reach.Rest,
+        serve: (q: Request<Unrouted>, t: Bytes) -> if falls_under(t, under) { answer(q, table, below(t, under.length)) } else { null },
+    }
+}
+
+/// The path past the prefix and its separator.
+fn below(t: Bytes, n: int) -> Bytes {
+    if t.length <= n + 1 { "".bytes() } else { t.slice(n + 1, t.length) }
+}
+
+/// The response for the name `rel` asks, exactly as the table spells it.
+fn answer(q: Request<Unrouted>, table: List<Served>, rel: Bytes) -> Response {
+    let name? = rel.text() else { return status(404) }
+    let held? = table.find(it.name == name) else { return status(404) }
+    let tag = "\"${held.name}\""
+    let fields = [
+        header_pair("content-type", held.media),
+        header_pair("etag", tag),
+        header_pair("cache-control", "public, max-age=31536000, immutable"),
+        header_pair("x-content-type-options", "nosniff"),
+    ]
+    if tag_listed(q.header("if-none-match"), tag) { return Response { status: 304, headers: fields } }
+    Response { headers: fields, body: held.octets }
+}
