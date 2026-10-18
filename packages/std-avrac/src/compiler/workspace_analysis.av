@@ -585,10 +585,19 @@ impl Workspace {
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
     fn settled(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
-        // a run that reads this const reads its file, and what its settlement read
-        let reader: string? = self.hold.settling.get().last()
         let unit = self.hold.lowering.get().last()
         if unit != null { self.unit_asked(unit!, ConstAsk { file: f, root: root, seats: seats }) }
+        self.settled_replay(f, root, seats)
+    }
+
+    /// `settled` without filing the ask on the lowering unit: a replay of an ask
+    /// already filed is a read, never a new ask.
+    fn settled_replay(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<
+        Settled,
+        Unsettled,
+    > {
+        // a run that reads this const reads its file, and what its settlement read
+        let reader: string? = self.hold.settling.get().last()
         if reader != null { self.read_by(reader!, [self.const_read(f, root)]) }
         let id = self.settle_id(f, root, seats)
         let r = self.settled_at(id)
@@ -621,9 +630,18 @@ impl Workspace {
     /// A const a unit's lowering asked for, noted on the UNIT: a unit is
     /// lowered once and reused by every run that reaches it, so its reads
     /// belong to each of them, never to the run that happened to lower it.
+    /// A unit's asks are a set, held once each in the order first asked.
     fn unit_asked(unit: int, ask: ConstAsk) {
         let key = "${unit}"
-        self.hold.unit_asks.put(key, (self.hold.unit_asks.get().get(key) ?? []).concat([ask]))
+        let asks = self.hold.unit_asks.get().get(key) ?? self.unit_asks_opened(key)
+        let id = "${self.settle_id(ask.file, ask.root, ask.seats)}"
+        if !asks.get().has(id) { asks.put(id, ask) }
+    }
+
+    /// The consts unit `id`'s lowering asked for, each once, in the order first asked.
+    fn asks_of(id: int) -> List<ConstAsk> {
+        let asks? = self.hold.unit_asks.get().get("${id}") else { return [] }
+        asks.get().values()
     }
 
     /// `reads` joined to what `reader`'s compile-time runs read.
