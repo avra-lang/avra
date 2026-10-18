@@ -1740,7 +1740,7 @@ Syntax the grammar lacks:
   is `_q` — a leading underscore is a name, it compiles, and the idiom
   bar has always read that prefix as "unread by contract" (style.dead_parameter).
 - A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
-  keys are strings, not `int`", help "other key types are recorded".
+  keys are strings, not `int`", help "key by text — `Map<string, …>`".
   It kills the obvious trie-node shape; key by the text.
 - `++` IS NOT A LIST OPERATOR: `xs ++ ys` is F0100 "expected BREAK
   while parsing `stmt`" AT the `++`, and that is the WHOLE refusal —
