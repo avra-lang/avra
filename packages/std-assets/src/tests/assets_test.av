@@ -10,7 +10,7 @@ use @std.assets.{
     picture_of,
     blob_of,
     is_picture,
-    id_of,
+    served_name,
     Picture,
 }
 
@@ -108,20 +108,36 @@ spec "std/assets" {
         then "text without an svg tag is not one" { svg_size("hello".bytes()) == null }
     }
     given "the kinds" {
-        then "a PNG is a picture and carries its path's id" {
-            let p? = picture_of("art/logo.png", png(2, 3)) else { return false }
+        then "a PNG is a picture named by its content, with its media type and its octets" {
+            let p? = picture_of(png(2, 3)) else { return false }
             match p {
-                .Bundled(id, w, h, _) -> id == id_of("art/logo.png") && w == 2 && h == 3,
+                .Bundled(name, w, h, _, media, octets) -> name.ends_with(".png") &&
+                    name.length == 36 &&
+                    w == 2 &&
+                    h == 3 &&
+                    media == "image/png" &&
+                    octets.length == 24,
                 .Remote(_, _, _) -> false,
             }
+        }
+        then "a JPEG and an SVG name their own media types" {
+            let j? = picture_of(jpeg(4, 5)) else { return false }
+            let v? = picture_of("<svg viewBox=\"0 0 16 8\"></svg>".bytes()) else { return false }
+            served_name(j).ends_with(".jpg") && served_name(v).ends_with(".svg")
         }
         then "arbitrary octets are no picture but are a blob" {
             let junk = [1, 2, 3].bytes()!
             !is_picture(junk) &&
-                picture_of("a.bin", junk) == null &&
-                blob_of("a.bin", junk).length == 3
+                picture_of(junk) == null &&
+                blob_of(junk).octets.length == 3 &&
+                blob_of(junk).media == "application/octet-stream"
         }
-        then "two paths have two ids" { id_of("a.png") != id_of("b.png") }
+        then "a name is the content's: same octets one name, other octets another" {
+            let a? = picture_of(png(2, 3)) else { return false }
+            let b? = picture_of(png(2, 3)) else { return false }
+            let c? = picture_of(png(3, 3)) else { return false }
+            served_name(a) == served_name(b) && served_name(a) != served_name(c)
+        }
     }
 }
 
@@ -129,7 +145,7 @@ spec "std/assets — providers" {
     given "a file's octets" {
         then "Picture provides a PNG" { Picture.provide("a.png", png(2, 3)) != null }
         then "Picture does not provide junk" { Picture.provide("a.bin", [1, 2, 3].bytes()!) == null }
-        then "Blob provides anything" { Blob.provide("a.bin", [1, 2, 3].bytes()!)!.length == 3 }
+        then "Blob provides anything" { Blob.provide("a.bin", [1, 2, 3].bytes()!)!.octets.length == 3 }
     }
 }
 
