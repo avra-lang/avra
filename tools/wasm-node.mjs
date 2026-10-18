@@ -51,6 +51,8 @@ async function entered(wasi, instance, tasks) {
     if (!done) return code;
     try {
         await done;
+        await new Promise((resolve) => setImmediate(resolve));
+        if (tasks.stranded() > 0) console.error(`wasm-node: ${tasks.stranded()} task stack(s) never ended`);
     } catch (e) {
         // a trap or an exit after the first handover surfaces here, not in start()
         console.error(String(e && e.message ? e.message : e));
