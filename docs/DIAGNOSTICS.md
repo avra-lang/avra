@@ -3657,6 +3657,45 @@ error[type.param_default]: `b` has no default and follows `a`, which has one —
 help: move the defaulted seats last, or give `b` a default too
 ```
 
+## type.variadic
+
+a `..` seat is the last, a plain list, and takes the arguments a call leaves, by position
+
+```avra
+fn h(..r: List<int>, a: int) -> int { a }
+1
+```
+
+```
+error[type.variadic]: `..r` takes the rest of `h`'s arguments, so it is the one seat that stands last
+  ╭─[witness.av:1:1]
+1 │ fn h(..r: List<int>, a: int) -> int { a }
+  · ┬
+  · ╰── this seat
+──╯
+help: move it to the end, and keep one
+```
+
+## type.spread_seat
+
+a `..` argument fills a seat that takes the rest of the arguments
+
+```avra
+fn g(a: int, b: int) -> int { a }
+let c = g(1, ..[2])
+c
+```
+
+```
+error[type.spread_seat]: `..` spreads into a seat that takes the rest of the arguments, and `g` declares none
+  ╭─[witness.av:2:14]
+2 │ let c = g(1, ..[2])
+  ·              ┬
+  ·              ╰── spread here
+──╯
+help: declare `..rest: List<T>` on `g`, or pass each element — a list's length is known at run time, a seat's at compile time
+```
+
 ## type.isolated
 
 an `isolated` seat takes a fn that shares nothing with its caller — a lambda capturing no identity, a declared fn, or an `isolated` parameter
