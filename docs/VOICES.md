@@ -14,19 +14,19 @@ which only shrinks.
 | parse | 2 | 1 | 1 | 0 |
 | build | 1 | 0 | 0 | 0 |
 | language | 1 | 0 | 0 | 0 |
-| block | 1 | 0 | 0 | 0 |
-| resolve | 33 | 26 | 26 | 2 |
+| block | 1 | 1 | 1 | 0 |
+| resolve | 33 | 32 | 32 | 2 |
 | lower | 8 | 7 | 7 | 0 |
-| type | 120 | 63 | 63 | 6 |
-| flow | 17 | 7 | 7 | 0 |
+| type | 119 | 71 | 71 | 6 |
+| flow | 16 | 7 | 7 | 0 |
 | annotation | 17 | 8 | 8 | 0 |
-| manifest | 30 | 15 | 15 | 0 |
+| manifest | 30 | 17 | 17 | 0 |
 | collect | 14 | 0 | 0 | 0 |
 | collect_enum | 7 | 2 | 2 | 0 |
 | const | 6 | 1 | 1 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 261 | 133 | 133 | 8 |
+| **all** | 259 | 150 | 150 | 8 |
 
 ## Rules
 

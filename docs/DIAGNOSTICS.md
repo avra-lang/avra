@@ -908,7 +908,7 @@ error[type.component_format]: a `Format` head is `@std.meta`'s pattern type, and
   ·        ┬
   ·        ╰── this component
 ──╯
-help: `use @std.meta.{Format}`, or rename the other type
+help: import `Format` from `@std.meta`, or rename the other type
 ```
 
 ## type.component_event
@@ -3256,19 +3256,27 @@ a named grammar's action names a fn of its own module, with its arity
 
 ```avra
 grammar sql {
-    where = = c:NAME
+    select = "SELECT" w:where
 }
 1
 ```
 
 ```
-error[type.syntax_action]: `grammar sql` does not parse: expected NAME, `not`, STRING or `(` while parsing `labeled`
+error[type.syntax_action]: references undefined rule `where`
   ╭─[witness.av:1:1]
 1 │ grammar sql {
   · ┬
-  · ╰── this grammar
+  · ╰── in this grammar
 ──╯
-help: the notation is the grammar DSL's — rules, `|` alternatives, `x:ITEM` captures, `-> action(x)`
+help: write the shape the grammar names — the block is parsed by the grammar its word declares
+
+error[type.syntax_action]: a branch without a build must have exactly one item to pass through
+  ╭─[witness.av:1:1]
+1 │ grammar sql {
+  · ┬
+  · ╰── in this grammar
+──╯
+help: write the shape the grammar names — the block is parsed by the grammar its word declares
 ```
 
 ## resolve.block_word
