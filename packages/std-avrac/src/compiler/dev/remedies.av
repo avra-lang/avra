@@ -140,6 +140,27 @@ export fn rows() -> List<RemedyRow> {
             becomes: Then.Clean,
         },
         RemedyRow {
+            kind: "type.spread_value",
+            says: "`..` spreads `int`, which has no fields",
+            refused: "type P = { x: int }\nlet p = P { ..5, x: 1 }\n2",
+            applied: "type P = { x: int }\nlet q = P { x: 0 }\nlet p = P { ..q, x: 1 }\n2",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.spread_nullable",
+            says: "which may be null",
+            refused: "type P = { x: int }\nlet a: P? = null\nlet p = P { ..a, x: 1 }\n2",
+            applied: "type P = { x: int }\nlet a: P? = null\nlet p = P { ..(a ?? P { x: 0 }), x: 1 }\n2",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.spread_generic",
+            says: "takes type parameters",
+            refused: "type G<T> = { v: T }\nlet g = G { v: 1 }\nlet h = G { ..g }\n2",
+            applied: "type G<T> = { v: T }\nlet g = G { v: 1 }\nlet h = g with { v: 2 }\n2",
+            becomes: Then.Clean,
+        },
+        RemedyRow {
             kind: "type.member_pattern",
             says: "`as` takes a gathered variant whole",
             refused: "enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a as x -> 1\n}",
