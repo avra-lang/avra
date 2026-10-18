@@ -288,11 +288,17 @@ spec "a key acts on the control that holds the focus" {
             on.feed("${from_codepoint(27)}[I${from_codepoint(27)}[?1u")
             out && on.active.get() && on.keyboard.get() == 1
         }
-        then "Ctrl-C ends the input as Ctrl-D does" {
+        then "Ctrl-C does not end the input: in cbreak mode it is a signal before it is a key, and as a key it is a chord" {
             let hits: Cell<int> = Cell.new(0)
             let on = counting(hits)
             on.feed("\t\n${from_codepoint(3)}\n")
-            hits.get() == 1 && on.ended.get()
+            hits.get() == 2 && !on.ended.get()
+        }
+        then "a paste past the terminal's limit changes nothing and is told, by its size" {
+            let b = Board {}
+            let on = terminal(() -> board(b), width: 40, paste_limit: 8)
+            on.feed("${from_codepoint(27)}[200~0123456789${from_codepoint(27)}[201~")
+            b.draft.get() == "" && on.lost_paste.get() == 10
         }
         then "an Escape and a chord are heard and do nothing" {
             let hits: Cell<int> = Cell.new(0)
