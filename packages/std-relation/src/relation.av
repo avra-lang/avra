@@ -398,16 +398,18 @@ fn decodable(k: Kind) -> bool {
 }
 
 /// WHO OWNS THE HELPERS a codec's generated code calls, and whether every record is a helper of
-/// its own: a relation's row inlines a record that reaches no payload enum and no cycle, a
-/// stored type writes and reads every record by a helper, so a lambda can read one back.
+/// its own: a row with no record and no payload enum column inlines everything, any other row
+/// and every stored type writes and reads each record by a helper, so a lambda can read one back.
 type Owner = { name: string, all: bool }
 
-fn row_owner(t: Type) -> Owner { Owner { name: t.name, all: false } }
+fn row_owner(t: Type) -> Owner {
+    Owner { name: t.name, all: stable(t).any((f: Field) -> kind_needs(f.kind, [], true)) }
+}
 
 /// Whether a relation's stable columns reach a payload-carrying enum or a
 /// record that reaches itself — the types whose codec is emitted as a
 /// named helper rather than inlined.
-fn uses_helpers(t: Type) -> bool { stable(t).any((f: Field) -> kind_needs(f.kind, [], false)) }
+fn uses_helpers(t: Type) -> bool { row_owner(t).all }
 
 /// Whether a kind's subtree needs a generated helper: it reaches a payload
 /// enum, or a record reachable from itself.
@@ -1449,18 +1451,24 @@ fn stored_generated(t: Type) -> Decls {
     }
 }
 
-/// The statements that write `self`: an enum through its own helper, a record column by column.
+/// The statements that write `self`: a payload enum through its own helper, a payload-free
+/// one as the tag a column of its kind is, a record column by column.
 fn stored_write(t: Type) -> List<Code> {
-    if !t.variants.is_empty() { return [quote { ${name(t.name)}.write_${helper_id(t.name)}(${name("w")}, self) }] }
+    if carries_payload(t) { return [quote { ${name(t.name)}.write_${helper_id(t.name)}(${name("w")}, self) }] }
+    if !t.variants.is_empty() { return [written(name("w"), quote { self }, Kind.Named(t.name, []), stored_owner(t))] }
     [written(name("w"), quote { self.${f.name} }, f.kind, stored_owner(t)) for f in stored_wire(t)]
 }
 
 /// The expression that reads one back.
 fn stored_read(t: Type) -> Code {
-    if !t.variants.is_empty() { return quote { ${name(t.name)}.read_${helper_id(t.name)}(rd)? } }
+    if carries_payload(t) { return quote { ${name(t.name)}.read_${helper_id(t.name)}(rd)? } }
+    if !t.variants.is_empty() { return read_value(Kind.Named(t.name, []), stored_owner(t)) }
     let inits = [quote { W { ${f.name}: ${stored_value(t, f)} } } for f in t.fields]
     quote { ${t} { ..${inits} } }
 }
+
+/// Whether an enum has a variant that carries a payload, so its codec is a helper.
+fn carries_payload(t: Type) -> bool { t.variants.any((v: Variant) -> !v.fields.is_empty()) }
 
 /// A field's value in a decoded record: read from the wire, or the default a `@local` one declares.
 fn stored_value(t: Type, f: Field) -> Code {
