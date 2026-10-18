@@ -2,7 +2,7 @@
 //! walk needs to reach its neighbours — read from the record's lines once, kept as one
 //! small row beside the record, and read back in place so a names-only walk decodes no
 //! record line (docs/2026_10_06_COMPILER_DB.md, "load: the rest": records read in place).
-use core.{distinct, flatten, joined, digest_of, sorted_texts, ModulePath}
+use core.{distinct, flatten, joined, digest_of, sorted_texts, DeclKind, ModulePath}
 use core.debug.{db_verified_producers}
 use features.{ExternNote, DeclFacts, implements_kind}
 use compiler.store.{Store, Stored, node_key}
@@ -109,7 +109,7 @@ fn forms_text_of(fields: List<List<string>>) -> string {
     joined(
         sorted_texts(
             flatten(
-                [[joined([path, fields[j][5], digest_of(placed_form(joined(fields[j], "\t")))], "\t") for j in p.lo..p.hi if j < fields.length && plain_fn(fields[j])] for path, p in places],
+                [[joined([path, fields[j][5], digest_of(placed_form(joined(fields[j], "\t")))], "\t") for j in p.lo..p.hi if j < fields.length && named_alone(fields[j])] for path, p in places],
             ),
         ),
         "\n",
@@ -171,13 +171,22 @@ export fn head_of(bound: List<string>, generated: bool) -> string {
     )
 }
 
+/// Whether a declaration of this kind is reached by its name and nothing else, when nothing
+/// generated or annotated it: a free fn or a const.
+export fn reached_by_name(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Const -> true,
+        .Default or .Method or .Impl or .Case or .Main or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Builtin or .State -> false,
+    }
+}
+
 /// The name a declaration binds, marked `*` when it is a free fn nothing generated or annotated;
 /// null for a declaration whose name the namespace does not bind.
 fn bound_name(row: Row, made: bool) -> string? {
     let kind? = declared_kind(row.shape, row.kind) else { return null }
     if !binds_name(kind) { return null }
     let facts = facts_unblocked(row.facts)!
-    let plain = kind is .Fn &&
+    let plain = reached_by_name(kind) &&
         row.owner.is_empty() &&
         row.enclosing.is_empty() &&
         !made &&

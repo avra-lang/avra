@@ -1282,14 +1282,14 @@ type FnForm = { name: string, form: string }
 /// module seen, and the plain free fns by name. `whole` when a file of the view carries no digest.
 export type NarrowIndex = { whole: bool, globals: List<string>, alone: List<string>, named: Map<string, List<NamedForm>> }
 
-/// WHETHER A RECORD LINE IS A PLAIN FREE FN: reached by its name and by nothing else — not a
+/// WHETHER A RECORD LINE IS A PLAIN FREE FN OR CONST: reached by its name and by nothing else — not a
 /// method, a nested or generated declaration, an annotated one a collect gathers, a component
 /// or an instance, a host or external one, a static one.
 // LICENSED compiler.free_state_verb: a pure PROJECTION — a record line's fields in, whether a name alone reaches it.
-fn plain_fn(p: List<string>) -> bool {
+fn named_alone(p: List<string>) -> bool {
     if p.length < 13 ||
-        p[0] != "fn" ||
-        p[6] != "fn" ||
+        (p[0] != "fn" && p[0] != "const") ||
+        p[6] != p[0] ||
         !p[7].is_empty() ||
         p[8] != "-1" ||
         p[11] != "1" {
@@ -1313,7 +1313,7 @@ fn plain_fn(p: List<string>) -> bool {
 fn global_digest(lines: List<string>) -> string {
     digest_of(
         joined(
-            sorted_texts([placed_form(unordered(l)) for l in lines if !plain_fn(l.split("\t"))]),
+            sorted_texts([placed_form(unordered(l)) for l in lines if !named_alone(l.split("\t"))]),
             "\n",
         ),
     )

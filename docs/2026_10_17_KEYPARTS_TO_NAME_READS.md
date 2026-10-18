@@ -1,6 +1,6 @@
 # KeyParts to name reads — the plan, in steps that each land
 
-Status: PROPOSED. Owner: db-gather. Design source: `2026_10_06_COMPILER_DB.md` §2 laws,
+Status: K1-K5a DONE, K5b closed. Owner: db-gather. Design source: `2026_10_06_COMPILER_DB.md` §2 laws,
 §6.2 steps 2–5, A2 (the nine validity formats), A11 (rows and reads), A16 (the deletion
 ledger: `KeyParts` is deleted at DB 07).
 
@@ -79,24 +79,16 @@ one the record route computed. `narrow_index` still reads records (24-47 ms an e
 Receipt: reach of two views 346 ms -> producer-row walks; interface-edit `keep` ~690 -> ~515 ms and
 `load` ~1.3 -> ~1.1 s.
 
-K5b - delete KeyParts. An object's key stops carrying the view: key = (compiler, module, path, text,
-runs, gathered), and the row it names carries its reads, judged by `file_judged` exactly as the
-file rows are today (frame stamp, forms diff by name, text, runs, gathered). The view machinery
-(`view_parts`, `reach`, `narrow_index`, `seen_by_name`, `NarrowIndex`, `Reach`, `parts_wire`/`parts_of`
-and `key_parts_exemplars`) is deleted; `keep_interfaces`' blanket cache clear goes with it. Two
-things must exist first and are the reason K5b is its own flag day:
- 1. a file's reads at keep time must come from what its analysis READ, not from `seen_by_name`
-    (today `reads_of_parts(k)` names the modules in `k.seen`; without KeyParts the seen set is the
-    modules the typer asked, taken from the engine's recorded reads);
- 2. an object row under a text-only key is overwritten by the next build that reads different
-    names, so two contexts no longer coexist under one store — the attacks that count rows
-    (`store-clean`, `cache-attacks-b`'s size cases) are re-baselined in the same commit.
-Witness: a body or interface edit builds no `KeyParts`; `judge_fallbacks` stays at 0/4; cold
-`check` of the compiler's own tree writes no more rows than today.
+K5b - CLOSED, not built. THE LAW: a content-addressed key must name its inputs. An object lives at
+`obj/<okey>.o` and the link key folds the okeys, so one key may never hold two byte strings; the
+narrowed view digest in `KeyParts` IS that record of what the object was made from. After K1-K5a
+`KeyParts` is exactly that and nothing else: the judge no longer builds it, and deriving it reads
+producer rows (~150 ms an edit, down from ~450). Deleting it would mean per-path overwritten object
+rows and a link key over content, a different store, for no further saving; what remains of the
+cost is not the key but the reads the key stands on (see the const outline fix, then DB 07).
 
-The (file, name) relation in `@std/relation` (an index by name over a file's spelled names) is
-the one source that replaces `tokens_of`'s row and `spelling`'s per-file map; it lands with K5b,
-since K5b is what deletes `narrow_index`, the last reader that wants names by file.
+The (file, name) relation in `@std/relation` (an index by name over a file's spelled names) stays the
+replacement for `spelling`'s per-file map; it lands with the per-declaration answers (DB 07).
 
 ## What each step must keep true
 
