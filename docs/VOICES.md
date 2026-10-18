@@ -26,7 +26,7 @@ which only shrinks.
 | const | 6 | 1 | 1 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 261 | 111 | 111 | 8 |
+| **all** | 261 | 120 | 120 | 8 |
 
 ## Rules
 
