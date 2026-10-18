@@ -143,7 +143,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Map<string, int>>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -155,7 +155,7 @@ fn new_keys() -> Keys {
     let no_object: Map<string, string> = {}
     let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
-    let no_tokens: Map<string, Map<string, int>> = {}
+    let no_tokens: Map<string, Spelling> = {}
     let no_views: Map<string, SeenView> = {}
     let no_named: Map<string, int> = {}
     let no_seen: Map<string, int> = {}
@@ -273,6 +273,12 @@ type Hold = {
     refs_by_target: Cell<Map<string, List<string>>>,
     /// The references held files make into a held file, restored once per target.
     held_refs: Cell<Map<string, List<Ref>>>,
+    /// The files held because their kept rows stand: their object keys are the rows', never re-derived.
+    standing: Cell<Map<string, bool>>,
+    /// The plain free fn names a module's forms moved by, from the forms a row stood on: per `module<TAB>digest`.
+    forms_moved: Cell<Map<string, Map<string, bool>>>,
+    /// Each judged file's run tokens off its module's row, decoded once per build.
+    lite_runs: Cell<Map<string, List<string>>>,
     linked_by: Cell<List<string>>,
     held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
@@ -359,6 +365,9 @@ fn new_hold() -> Hold {
         typed_by: list_cell(),
         refs_by_target: Cell.new(no_producers),
         held_refs: map_cell(),
+        standing: map_cell(),
+        forms_moved: map_cell(),
+        lite_runs: map_cell(),
         linked_by: list_cell(),
         held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
@@ -399,6 +408,8 @@ type Records = {
     /// A MODULE'S PRODUCERS, keyed by record key: what the load walk and the bucket
     /// readers read of its record, decoded once per build however many importers reach it.
     record_producers: Cell<Map<string, Producers>>,
+    /// What each module stands as to a reader, whole — asked once per build, restated when its record is.
+    record_stamps: Cell<Map<string, string>>,
     /// A FILE'S OWN ANSWER, keyed by path: whether it lexes to a
     /// `grammar` token at all — `module_names_syntax`'s cold-path
     /// pre-filter, asked once per file per build no matter how many
@@ -436,6 +447,7 @@ fn new_records() -> Records {
         record_fields: Cell.new(no_fields),
         record_places: Cell.new(no_places),
         record_producers: Cell.new(no_producers_of),
+        record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
