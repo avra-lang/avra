@@ -3649,7 +3649,7 @@ int64_t avra_fd_write(int64_t fd, const char* bytes, int64_t from) {
 
 #if defined(__wasm32__)
 int64_t avra_fd_tty_size(int64_t fd) { (void)fd; return 0; }
-int64_t avra_fd_tty_raw(int64_t fd, int64_t on) { (void)fd; (void)on; return 0; }
+int64_t avra_fd_tty_raw(int64_t fd, int64_t mode) { (void)fd; (void)mode; return 0; }
 void avra_fd_exit_writes(int64_t fd, const char* bytes) { (void)fd; (void)bytes; }
 #else
 #include <sys/ioctl.h>
@@ -3720,10 +3720,10 @@ static void leave_arm(void) {
     }
 }
 
-int64_t avra_fd_tty_raw(int64_t fd, int64_t on) {
+int64_t avra_fd_tty_raw(int64_t fd, int64_t mode) {
     if (!isatty((int)fd)) return 0;
     leave_arm();
-    if (!on) {
+    if (mode == 0) {
         if (!g_tty_saved) return 0;
         tcsetattr(g_tty_fd, TCSANOW, &g_tty_was);
         g_tty_saved = 0;
@@ -3734,7 +3734,14 @@ int64_t avra_fd_tty_raw(int64_t fd, int64_t on) {
     if (tcgetattr((int)fd, &raw) != 0) return 0;
     g_tty_was = raw;
     g_tty_fd = (int)fd;
-    cfmakeraw(&raw);
+    if (mode == 2) {
+        cfmakeraw(&raw);
+    } else {
+        raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+        raw.c_iflag &= ~(tcflag_t)(IXON | ICRNL);
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+    }
     raw.c_oflag |= OPOST | ONLCR;
     if (tcsetattr((int)fd, TCSANOW, &raw) != 0) return 0;
     g_tty_saved = 1;
