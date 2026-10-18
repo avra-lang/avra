@@ -19,6 +19,7 @@ use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
 use compiler.{avra, new_workspace, one_shot_let_go}
 use compiler.host.{memory_host}
+use testing.{vendored_meta, vendored_meta_as, real_meta_source}
 
 /// How a code is witnessed. ABSENCE HAS TWO CAUSES and they are named
 /// apart: a code nobody has written a witness for is a DEBT, and one
@@ -30,6 +31,9 @@ export enum Witness {
     /// A program at `/w`, file by file — what a manifest or a module
     /// path refuses is a property of a package, not of a lone source.
     Package(files: Map<string, string>)
+    /// A package built as far as lowering and linking say: what only a
+    /// whole program refuses (a statement in a module, a host fn's symbol).
+    Built(files: Map<string, string>)
     Beyond(why: string)
 }
 
@@ -39,18 +43,37 @@ impl Witness {
     /// one variant of a registry enum falls through for every variant
     /// added after it, which is a hole in different clothes.
     fn runs() -> bool {
-        match self { .Source(_) or .Package(_) -> true, .Absent or .Beyond(_) -> false }
+        match self {
+            .Source(_) or .Package(_) or .Built(_) -> true,
+            .Absent or .Beyond(_) -> false,
+        }
     }
 
     /// Whether this code is still owed a witness — a debt, where an
     /// unreachable one is a fact.
     fn owed() -> bool {
-        match self { .Absent -> true, .Source(_) or .Package(_) or .Beyond(_) -> false }
+        match self {
+            .Absent -> true,
+            .Source(_) or .Package(_) or .Built(_) or .Beyond(_) -> false,
+        }
     }
 }
 
 /// One code's witness, as the registry spells it.
 export type CodeWitness = { code: string, witness: Witness }
+
+/// A package witness BUILT: what the program there says, then what
+/// lowering says of it.
+fn built_report(files: Map<string, string>) -> string {
+    one_shot_let_go()
+    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    ws.alone()
+    let p = ws.program("/w/src/main.av")
+    joined(
+        [r for r in [p.report(), p.rendered(p.lowered().diagnostics), p.warnings()] if !r.is_empty()],
+        "\n\n",
+    )
+}
 
 /// One code's witness, run: what the compiler actually said, and
 /// whether the code it claims to show came out.
@@ -62,7 +85,7 @@ impl Shown {
     fn witness_source() -> string {
         match self.witness {
             .Source(text) -> text,
-            .Package(files) -> package_text(files),
+            .Package(files) or .Built(files) -> package_text(files),
             .Absent or .Beyond(_) -> "",
         }
     }
@@ -86,13 +109,20 @@ export fn rendered_over(w: Witness) -> string {
     match w {
         .Source(text) -> avra().check(new_source_file("witness.av", text)),
         .Package(files) -> package_report(files),
+        .Built(files) -> built_report(files),
         .Absent or .Beyond(_) -> "",
     }
 }
 
 /// A package witness's files, each under its path.
 fn package_text(files: Map<string, string>) -> string {
-    joined(["// ${path}\n${text}" for path, text in files], "\n")
+    joined(["// ${path}\n${text}" for path, text in files if !vendored_meta_path(path)], "\n")
+}
+
+/// Whether a file is `@std/meta` (or its dependency) carried in beside the
+/// witness — the toolchain's own text, never the witness's.
+fn vendored_meta_path(path: string) -> bool {
+    path.starts_with("/w/vendor/meta/") || path.starts_with("/w/vendor/errors/")
 }
 
 /// A package witness compiled: its files laid out in memory at `/w`,
@@ -176,7 +206,7 @@ fn entry(s: Shown) -> string {
 fn body(s: Shown) -> List<string> {
     match s.witness {
         .Source(text) -> ["```avra", text, "```", "", "```", s.rendered, "```"],
-        .Package(files) -> ["```", package_text(files), "```", "", "```", s.rendered, "```"],
+        .Package(files) or .Built(files) -> ["```", package_text(files), "```", "", "```", s.rendered, "```"],
         .Beyond(why) -> ["No witness here: ${why}."],
         .Absent -> ["No witness yet."],
     }
@@ -705,12 +735,149 @@ fn witnesses() -> List<CodeWitness> {
             code: "resolve.package_form",
             witness: program({"/w/src/main.av": "use @solo.{z}\n1\n"}),
         },
+        CodeWitness {
+            code: "lower.entry_only",
+            witness: entry_program(
+                "use lib.{f}\nf()\n",
+                {"/w/src/lib.av": "export fn f() -> int {\n    1\n}\nlet stray = 1\n"},
+            ),
+        },
+        CodeWitness { code: "lower.code_hash_const", witness: Witness.Beyond(code_hash_golden) },
+        CodeWitness {
+            code: "lower.host_fn_twice",
+            witness: entry_program(
+                "use near.{used}\nextern fn far_event(n: int) -> int {\n    n\n}\nused(1)\n",
+                {
+                    "/w/src/near.av": "use far.{helper}\nexport fn used(n: int) -> int {\n    helper(n)\n}\n",
+                    "/w/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\nextern fn far_event(n: int) -> int {\n    n + 40\n}\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "lower.host_fn_shadows",
+            witness: entry_program(
+                "extern fn avra_ptr_at(address: int) -> ptr?\nextern fn malloc(n: int) -> ptr {\n    avra_ptr_at(n)!\n}\n1",
+                {},
+            ),
+        },
+        CodeWitness {
+            code: "lower.host_fn_unasked",
+            witness: near_far_program(
+                "use @x.near.{used}\nextern fn page_row(n: int) -> int {\n    n\n}\n\"\${used(1)}\"",
+                "extern fn far_event(n: int) -> int {\n    n\n}\n",
+            ),
+        },
+        CodeWitness {
+            code: "lower.host_fn_answers",
+            witness: near_far_program(
+                "use @x.near.{used}\nuse @x.far.{helper}\n\"\${used(helper(1))}\"",
+                "extern fn page_row(n: int) -> int {\n    0\n}\n",
+            ),
+        },
+        CodeWitness {
+            code: "lower.component_checked",
+            witness: provided_program(
+                "use @x.c.{port}\nlet p = port 70000\np.n",
+                "use @std.meta.{Diagnostic, refuse}\n\nexport component port(n: int) {\n    fn check() -> List<Diagnostic> {\n        if self.n > 0 && self.n < 65536 { return [] }\n        [refuse(\"a port is 1 to 65535, this is \${self.n}\")]\n    }\n}\n",
+            ),
+        },
+        CodeWitness { code: "annotation.said", witness: provided_program(plain_main, annotators) },
+        CodeWitness {
+            code: "annotation.kind",
+            witness: provided_program("use @x.c.{badkind}\n@badkind\nfn f() -> int { 1 }\nf()", annotators),
+        },
+        CodeWitness {
+            code: "annotation.unsettled",
+            witness: provided_program(
+                "use @std.meta.{derive}\nuse @x.c.{Traps}\n@derive(Traps)\ntype T = { x: int }\n0",
+                annotators,
+            ),
+        },
+        CodeWitness { code: "annotation.wrap_kind", witness: Witness.Beyond(wrap_kind_golden) },
+        CodeWitness { code: "annotation.meta", witness: moved_meta_program(plain_main) },
+        CodeWitness {
+            code: "annotation.warning",
+            witness: meta_program(
+                "use @std.meta.{deprecated}\n@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.unplaceable",
+            witness: provided_program(
+                "use @std.meta.{derive}\nuse @x.c.{Fields}\n@derive(Fields)\ntype T = { x: int }\n0",
+                annotators,
+            ),
+        },
     ]
     rows
 }
 
 /// The one module body a module witness imports from.
 const util_fn: string = "export fn f() -> int { 1 }\n"
+
+/// A program with `@std/meta` beside it, built.
+fn meta_program(main: string) -> Witness {
+    Witness
+        .Built(
+            vendored_meta(
+                {
+                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+                    "/w/src/main.av": main,
+                },
+            ),
+        )
+}
+
+/// A program over one provider package `@x/c` (which sees `@std/meta`), built.
+fn provided_program(main: string, provider: string) -> Witness {
+    Witness.Built(provided_files(main, provider, real_meta_source()))
+}
+
+fn provided_files(main: string, provider: string, meta: string) -> Map<string, string> {
+    vendored_meta_as(
+        {
+            "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n",
+            "/w/src/main.av": main,
+            "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+            "/w/vendor/c/src/c.av": provider,
+        },
+        meta,
+    )
+}
+
+/// The annotation fns the annotation witnesses stand on.
+const annotators: string = "use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}\nexport fn plain(f: Fn) -> List<Diagnostic> {\n    [refuse(\"`\${f.name}` is plain\")]\n}\nexport fn badkind(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"not a word\", \"a refusal under a bad kind\")]\n}\nexport trait Traps {\n    static fn derive(t: Type) -> Declared {\n        let none: List<Directive> = []\n        Declared { made: [none[3]] }\n    }\n}\nexport trait Fields {\n    static fn derive(t: Type) -> List<Directive> {\n        let rows: List<Decls> = [quote { enum E { A } }]\n        [Directive { twin: \"\", name: \"gen\", at: t.at, source: quote { fn gen(..\${rows}) {} } }]\n    }\n}\n"
+
+/// A program over the same provider whose `@std/meta` has a moved shape.
+fn moved_meta_program(main: string) -> Witness {
+    Witness.Built(provided_files(main, annotators, real_meta_source().replace("message", "msg")))
+}
+
+/// A program `app` over two packages: `@x/near`, which names an extern bodiless
+/// and imports `@x/far`; and `@x/far`, which declares `far_src` — built.
+fn near_far_program(main: string, far_src: string) -> Witness {
+    Witness
+        .Built(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/near\" = { path = \"vendor/near\" }\n\"@x/far\" = { path = \"vendor/far\" }\n",
+                "/w/src/main.av": main,
+                "/w/vendor/near/avra.toml": "[package]\nname = \"@x/near\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/far\" = { path = \"../far\" }\n",
+                "/w/vendor/near/src/near.av": "use @x.far.{helper}\nextern fn page_row(n: int) -> int\nexport fn used(n: int) -> int {\n    page_row(helper(n))\n}\n",
+                "/w/vendor/far/avra.toml": "[package]\nname = \"@x/far\"\nversion = \"0.1.0\"\n",
+                "/w/vendor/far/src/far.av": "export fn helper(n: int) -> int {\n    n * 2\n}\n" + far_src,
+            },
+        )
+}
+
+/// An annotated fn the `plain` annotation refuses.
+const plain_main: string = "use @x.c.{plain}\n@plain\nfn f() -> int { 1 }\nf()"
+
+/// A program of one entry and the files beside it, built.
+fn entry_program(main: string, others: Map<string, string>) -> Witness {
+    mut files = {"/w/avra.toml": app_manifest, "/w/src/main.av": main}
+    for path, text in others { files.set(path, text) }
+    Witness.Built(files)
+}
 
 /// A lawful manifest, for a witness to add one wrong line to.
 const app_manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
@@ -742,5 +909,14 @@ const unbroken_golden: string = "`@unbroken` resolves to `@std/meta`'s own decla
 
 const never_ends_golden: string = "a `channel` needs `@std/task`'s carrier, which a lone source cannot import — the golden is features/tasks/tests/channel_test.av"
 const lacks_golden: string = "`@lacks` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is features/structs/tests/lacks_test.av"
+
+/// Where the code-hash law is witnessed: a const's settlement speaks it, and the
+/// user reads it carried in `const.trap`'s words.
+const code_hash_golden: string = "the refusal is spoken inside a const's settlement and reaches a program as `const.trap` carrying its words — the golden is compiler/tests/code_hash_test.av"
+
+/// Why the wrap-kind guard has no witness: it speaks for a declaration that
+/// carries a body root yet is no fn or method (a seat default, a spec case),
+/// and no annotation stands on either.
+const wrap_kind_golden: string = "a declaration with a body root that is no fn or method is a seat default or a spec case, and no annotation can stand on either — `@a` before `then` is a parse error"
 
 const quiet_never_golden: string = "a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av"
