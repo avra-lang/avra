@@ -117,6 +117,14 @@ fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
 
 /// `within ms(5) { … }` / `text "hi" { … }` — an instance with its
 /// head value.
+/// What a sited instance adds to its literal, and the nodes it minted.
+type Again = { fields: List<Field>, minted: List<ExprId> }
+
+/// The sentence that says what the extra field means.
+fn said_again_note(word: string) -> string {
+    "`${word}` says its words again as a closure, so a write to a place they read can be answered by those words alone"
+}
+
 fn build_component_value(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
     let targs = b.type_refs(1)?
@@ -440,6 +448,7 @@ impl Builder {
         let settings = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
         let children = [s for s in stmts if self.store.setting_parts(s) == null]
         let places = self.placed(word, r, settings, children)?
+        let again = self.said_again(r, heads)
         let named = if name != null && r.named && !settings.any(it.name == "name") { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
         let placed_in = [pl.slot for pl in places]
         let set = flatten(
@@ -447,6 +456,7 @@ impl Builder {
         )
         let filled = [Field { name: f, value: heads[j] } for j, f in r.head]
             .concat(fn_filled)
+            .concat(again.fields)
             .concat(set)
             .concat(named)
             .concat([self.collected(pl, settings) for pl in places])
@@ -459,11 +469,34 @@ impl Builder {
             )
         self.store.mark_struct_targs(literal, targs)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
-        .Ok(
-            self
-                .store
-                .alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span),
-        )
+        let component = self
+            .store
+            .alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span)
+        if !again.minted.is_empty() { self.store.mint_for(component, again.minted, said_again_note(word)) }
+        .Ok(component)
+    }
+
+    /// A SITED component's head text, said again: the field it marks holds
+    /// a closure over a COPY of the head's expression, minted beside the
+    /// instance before names resolve, so the closure's captures are found
+    /// as any written lambda's are. A head with no hole in it says nothing
+    /// again: its text never changes.
+    fn said_again(r: Record, heads: List<ExprId>) -> Again {
+        let field? = r.sited else { return Again { fields: [], minted: [] } }
+        let head? = heads.first() else { return Again { fields: [], minted: [] } }
+        if !self.holey(head) { return Again { fields: [], minted: [] } }
+        mut copying = copier(self.store, self.store, [], [], self.words.door)
+        let copy = copying.expr(head)
+        let lambda = self.store.alloc_expr(Expr.Lambda([], copy), self.store.expr_span(head))
+        Again {
+            fields: [Field { name: field, value: lambda }],
+            minted: copying.made_exprs.concat([lambda]),
+        }
+    }
+
+    /// Whether an expression is a text with a hole in it.
+    fn holey(e: ExprId) -> bool {
+        match self.store.expr(e) { .Body(_, _, holes, _) -> !holes.is_empty(), rest -> false }
     }
 
     /// The field a setting fills. A handler its component cannot hear
