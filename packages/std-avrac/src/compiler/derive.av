@@ -361,18 +361,27 @@ impl Workspace {
     /// refusal is never kept.
     fn checked(entry: string?) -> Result<Checked, string> {
         if self.nothing_to_check() { fail self.rendered_shape([no_source(self.root)]) }
+        let opening = self.clock()
         let store = self.opened_store()
+        self.timed("open", opening)
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
+        let judging = self.clock()
         let key0 = self.confirmed_key(store, under)
+        self.timed("judge", judging)
+        let loading = self.clock()
         let kept: string? = self.db.warn(store, key0)
         let found: string? = self.db.findings(store, key0)
         let licensed: string? = self.db.licenses(store, key0)
+        self.timed("load", loading)
         // A missing row is UNKNOWN, never EMPTY: no hit.
         if kept != null && found != null && licensed != null {
             return Checked {
                 warnings: kept!,
                 reused: true,
-                timed: "",
+                timed: joined(
+                    ["${ph.name} ${ph.ns / 1000}us" for ph in grouped_phases(self.phases.get())],
+                    ", ",
+                ),
                 licenses: licensed!,
                 findings: findings_read(found!),
             }
@@ -701,6 +710,7 @@ impl Workspace {
                 if self.hold.read_files.get().any(it.path == fi.path) { continue }
                 if self.hold.forced.get().get(fi.path) != null { continue }
                 self.hold_only(fi.path)
+                self.hold.standing.put(fi.path, true)
             }
             self.timed("interfaces", interfaces)
             // a home whose text moved moves what lowers from it: the homes are read from the start
@@ -1282,6 +1292,7 @@ impl Workspace {
         let rules = told.rules
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
         let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
+        self.keep_file_row(store, path, Stored.Unit, self.okey_row(path), okey)
         self.keep_file_row(store, path, Stored.Warn, said_row(path), said_wire(told.said))
         self.keep_file_row(store, path, Stored.Warn, rules_row(path), rules.rendered)
         self.keep_file_row(store, path, Stored.Warn, findings_row(path), findings_text(rules.rows))

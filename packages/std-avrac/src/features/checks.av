@@ -16,12 +16,12 @@ use core.{
     DeclId,
     Binding,
     SeatMark,
+    SeatFill,
     mut_mark,
     state_mark,
     settled_mark,
     isolated_mark,
     is_literal,
-    literal_form,
     hears_want,
     some_list,
     closest,
@@ -73,6 +73,12 @@ impl TypeCx {
         // LICENSED compiler.emit_then_error: this IS `spoken` — the pair's one home
         self.emit(d)
         self.error_type
+    }
+
+    /// A sugar types as what it means.
+    mut fn meant_type(e: ExprId) -> TypeId {
+        let meant? = self.view.store.meant(e) else { return self.error_type }
+        self.type_at(meant)
     }
 
     /// A use of a declaration speaks the declaration's warnings —
@@ -446,7 +452,7 @@ impl TypeCx {
     /// and `Name(v)` is how it crosses.
     mut fn named_accepts(e: ExprId, want: TypeId) -> bool {
         let of: TypeId? = self.view.types.stands_for(want)
-        if of == null || !literal_form(self.view.store.expr(e)) { return false }
+        if of == null || !self.view.store.expr(e).literal_form() { return false }
         if self.seals(self.loc_of(e), want, "a literal fills it here") {
             // spoken: the literal absorbs every later ask of it
             self.facts.set_type(e, self.error_type)
@@ -842,6 +848,10 @@ impl TypeCx {
     /// cannot take passes through for the seat law's own words.
     mut fn placed(e: ExprId, callee: string, d: DeclId?, args: List<ExprId>, wants: List<TypeId>) -> Placed? {
         let declared? = d else { return self.unplaced(callee, args, wants) }
+        let variadic: int? = self.view.decls.variadic_of(declared)
+        if variadic != null { return self.variadic_placed(e, callee, variadic!, args, wants) }
+        let spread: ExprId? = args.find((a) -> self.view.store.spread_operand(a) != null)
+        if spread != null { return self.spread_placed(e, callee, declared, args, wants) }
         let seats: List<string> = self.view.decls.facts_of(declared)?.seats ?? []
         let defaults = self.view.decls.seat_defaults(declared)
         if args.all((a) -> self.view.store.arg_label(a) == null) { return self.by_position(e, callee, defaults, args, wants) }
@@ -876,6 +886,8 @@ impl TypeCx {
     /// method, a contract's member, an extern — takes positional
     /// arguments alone.
     mut fn unplaced(callee: string, args: List<ExprId>, wants: List<TypeId>) -> Placed? {
+        let spread: ExprId? = args.find((a) -> self.view.store.spread_operand(a) != null)
+        if spread != null { return self.spread_into_fixed(spread!, callee) }
         let named? = args.find((a) -> self.view.store.arg_label(a) != null) else { return as_written(args, wants) }
         self.seats_unnamed(named, callee)
     }
@@ -1103,6 +1115,257 @@ impl TypeCx {
             )
     }
 
+    /// A variadic callee: its last seat takes every argument past the
+    /// seats before it — each plain one an element, a `..` one the list
+    /// itself — so the arguments judge as that many seats, each with the
+    /// want its place gives.
+    mut fn variadic_placed(
+        e: ExprId,
+        callee: string,
+        k: int,
+        args: List<ExprId>,
+        wants: List<TypeId>,
+    ) -> Placed? {
+        if wants.length <= k { return as_written(args, wants) }
+        let named: ExprId? = args.find((a) -> self.view.store.arg_label(a) != null)
+        if named != null { return self.variadic_named(named!, callee) }
+        if args.length < k { return self.variadic_short(e, callee, k, args.length) }
+        let elem? = self.view.types.element(self.view.types.seen_through(wants[k])) else { return as_written(args, wants) }
+        let tail = [if self.view.store.spread_operand(a) != null { wants[k] } else { elem } for a in args.slice(k, args.length)]
+        Placed { args: args, wants: wants.slice(0, k).concat(tail) }
+    }
+
+    mut fn variadic_named(a: ExprId, callee: string) -> Placed? {
+        self
+            .emit(
+                refusal(
+                    "type.variadic",
+                    self.loc_of(a),
+                    "`${callee}` takes the rest of its arguments in a `..` seat, which a call writes by position — `${self.view.store.arg_label(a) ?? ""}:` names a seat",
+                    "named here",
+                    "write the arguments in order",
+                ),
+            )
+        null
+    }
+
+    mut fn variadic_short(e: ExprId, callee: string, k: int, found: int) -> Placed? {
+        self
+            .emit(
+                refusal(
+                    "type.variadic",
+                    self.loc_of(e),
+                    "`${callee}` needs ${k} before its `..` seat, found ${found} arguments",
+                    "this call",
+                    "pass the ${k}, then any number more",
+                ),
+            )
+        null
+    }
+
+    /// A call with `..` arguments to a callee that has no variadic seat: a
+    /// RECORD's fields fill the seats of their names; any other source has
+    /// no seat to fill.
+    mut fn spread_placed(
+        e: ExprId,
+        callee: string,
+        d: DeclId,
+        args: List<ExprId>,
+        wants: List<TypeId>,
+    ) -> Placed? {
+        let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
+        let spreads = [a for a in args if self.view.store.spread_operand(a) != null]
+        let bad: ExprId? = spreads.find((a) -> self.fields_of(self.type_at(a)) == null)
+        if bad != null { return self.spread_unreadable(bad!, callee) }
+        if seats.length != wants.length { return self.spread_into_fixed(spreads[0], callee) }
+        let fields = [self.spread_names(a) for a in args]
+        let plain = [a for a in args if self.view.store.spread_operand(a) == null]
+        if !self.labels_lawful(e, callee, plain, seats) { return null }
+        if !self.fields_lawful(d, callee, args, seats, wants, fields) { return null }
+        let fills = self.view.store.seat_fills(args, seats, fields)
+        let defaults = self.view.decls.seat_defaults(d)
+        let unwritten: string? = [seats[j] for j, f in fills if f == null && defaults[j] == null]
+            .first()
+        if unwritten != null { return self.seat_unwritten(e, callee, unwritten!) }
+        self.overwritten_args(args, seats, fills)
+        let whole = [j for j, f in fills if f != null && f!.field < 0]
+        let pins = [self.field_pin(args, fills, j, wants[j]) for j, f in fills if f != null && f!.field >= 0 && self.view.types.open(wants[j])]
+        Placed {
+            args: [args[fills[j]!.arg] for j in whole],
+            wants: [wants[j] for j in whole],
+            pins: pins,
+        }
+    }
+
+    /// The pin a field puts on the type parameter its seat is typed by.
+    fn field_pin(args: List<ExprId>, fills: List<SeatFill?>, j: int, want: TypeId) -> FieldPin {
+        let fill = fills[j]!
+        let at = args[fill.arg]
+        let sig = self.fields_of(self.type_at(at))!
+        FieldPin { have: sig.types[fill.field], want: want, name: sig.names[fill.field], at: at }
+    }
+
+    /// The field names argument `a` spreads, none for a plain argument.
+    fn spread_names(a: ExprId) -> List<string> {
+        if self.view.store.spread_operand(a) == null { return [] }
+        self.fields_of(self.type_at(a))?.names ?? []
+    }
+
+    /// Every spread field fills a seat of its name, a plain one, at its
+    /// own type.
+    mut fn fields_lawful(
+        d: DeclId,
+        callee: string,
+        args: List<ExprId>,
+        seats: List<string>,
+        wants: List<TypeId>,
+        fields: List<List<string>>,
+    ) -> bool {
+        mut lawful = true
+        for j, a in args {
+            for i, n in fields[j] {
+                if !self.field_lawful(d, callee, a, n, i, seats, wants) { lawful = false }
+            }
+        }
+        lawful
+    }
+
+    mut fn field_lawful(
+        d: DeclId,
+        callee: string,
+        a: ExprId,
+        name: string,
+        i: int,
+        seats: List<string>,
+        wants: List<TypeId>,
+    ) -> bool {
+        let s = seats.index_of(name)
+        if s < 0 { return self.spread_no_seat(a, callee, name) }
+        let m = self.view.decls.seat_mark(d, s)
+        if m.mutable || m.state || m.settled || m.unshared { return self.spread_place_seat(a, callee, name) }
+        if self.view.types.open(wants[s]) { return true }
+        let sig? = self.fields_of(self.type_at(a)) else { return true }
+        if sig.types[i] != wants[s] { return self.spread_field_type(a, callee, name, sig.types[i], wants[s]) }
+        true
+    }
+
+    /// A plain argument a later spread's field writes over: its seat takes
+    /// the field, and the argument is a dead write.
+    mut fn overwritten_args(args: List<ExprId>, seats: List<string>, fills: List<SeatFill?>) {
+        mut place = 0
+        for j, a in args {
+            if self.view.store.spread_operand(a) == null {
+                let label: string? = self.view.store.arg_label(a)
+                let seat = if label == null { place } else { seats.index_of(label!) }
+                if label == null { place = place + 1 }
+                if seat >= 0 && seat < seats.length && fills[seat] != null && fills[seat]!.arg != j {
+                    self.dead_argument(a, seats[seat])
+                }
+            }
+        }
+    }
+
+    /// A `..` source that is no record: a nullable one, a list (which has
+    /// no seat to fill here), or any other value.
+    mut fn spread_unreadable(a: ExprId, callee: string) -> Placed? {
+        let n = self.name_at(a)
+        if self.shape_at(a) is .Opt {
+            self
+                .emit(
+                    refusal(
+                        "type.spread_nullable",
+                        self.loc_of(a),
+                        "`..` spreads `${n}`, which may be null",
+                        "spread here",
+                        "unwrap it first — `..(opts ?? defaults)`",
+                    ),
+                )
+            return null
+        }
+        if self.view.types.element(self.view.types.seen_through(self.type_at(a))) != null { return self.spread_into_fixed(a, callee) }
+        self
+            .emit(
+                refusal(
+                    "type.spread_value",
+                    self.loc_of(a),
+                    "`..` spreads `${n}`, which has no fields",
+                    "spread here",
+                    "a call spreads a record into the seats of its fields' names — `f(..opts)`",
+                ),
+            )
+        null
+    }
+
+    mut fn spread_no_seat(a: ExprId, callee: string, name: string) -> bool {
+        self
+            .emit(
+                refusal(
+                    "type.spread_field",
+                    self.loc_of(a),
+                    "this spread carries `${name}`, and `${callee}` has no seat of that name",
+                    "spread here",
+                    "spread a record of `${callee}`'s seats, or write the arguments",
+                ),
+            )
+        false
+    }
+
+    mut fn spread_place_seat(a: ExprId, callee: string, name: string) -> bool {
+        self
+            .emit(
+                refusal(
+                    "type.spread_seat",
+                    self.loc_of(a),
+                    "`${callee}`'s seat `${name}` takes a place or a settled value, and a spread's field is neither",
+                    "spread here",
+                    "write `${name}` beside the spread",
+                ),
+            )
+        false
+    }
+
+    mut fn spread_field_type(a: ExprId, callee: string, name: string, have: TypeId, want: TypeId) -> bool {
+        self
+            .emit(
+                refusal(
+                    "type.spread_field",
+                    self.loc_of(a),
+                    "this spread's field `${name}` is `${self.view.types.name_of(have)}`, and `${callee}`'s seat of that name wants `${self.view.types.name_of(want)}`",
+                    "spread here",
+                    "spread a record whose `${name}` is `${self.view.types.name_of(want)}`, or write `${name}: …` after the spread",
+                ),
+            )
+        false
+    }
+
+    mut fn dead_argument(a: ExprId, name: string) {
+        self
+            .emit(
+                warning(
+                    "type.spread_dead",
+                    self.loc_of(a),
+                    "the argument for seat `${name}` is overwritten by a spread after it",
+                    "overwritten",
+                    "write it after the spread to keep it",
+                ),
+            )
+    }
+
+    /// `..xs` where the callee has no seat that takes the rest.
+    mut fn spread_into_fixed(a: ExprId, callee: string) -> Placed? {
+        self
+            .emit(
+                refusal(
+                    "type.spread_seat",
+                    self.loc_of(a),
+                    "`..` spreads into a seat that takes the rest of the arguments, and `${callee}` declares none",
+                    "spread here",
+                    "declare `..rest: List<T>` on `${callee}`, or pass each element — a list's length is known at run time, a seat's at compile time",
+                ),
+            )
+        null
+    }
+
     mut fn seats_unnamed(a: ExprId, callee: string) -> Placed? {
         self
             .emit(
@@ -1174,7 +1437,7 @@ impl TypeCx {
     /// Where a call's written arguments stand, as its refusal says it
     /// — a piped call's first one stands left of the `|>`.
     fn arguments_from(e: ExprId) -> string {
-        if self.view.store.is_piped(e) { "the pipe and the parentheses give" } else { "the parentheses give" }
+        if self.view.store.minted_for(e) != null { "the pipe and the parentheses give" } else { "the parentheses give" }
     }
 
     /// A trailing block with no seat left for it — the arity refusal in
@@ -1635,8 +1898,7 @@ impl TypeCx {
     /// subject, a `??`'s sides, and every branch heir wearing the
     /// value's own type — a comprehension's element is no heir of that.
     fn value_sides(v: ExprId) -> List<ExprId> {
-        let node = self.view.store.expr(v)
-        let heirs = [h for h in node.heirs() if !self.types_disagree(self.type_at(h), self.type_at(v))]
+        let heirs = [h for h in self.view.store.heired(v) if !self.types_disagree(self.type_at(h), self.type_at(v))]
         some_list(self.view.store.forced(v)).concat(self.view.store.coalesced(v)).concat(heirs)
     }
 
@@ -2142,7 +2404,12 @@ fn block_word(n: int) -> string {
 }
 
 /// A call's arguments in seat order, and the seats they fill.
-export type Placed = { args: List<ExprId>, wants: List<TypeId> }
+export type Placed = { args: List<ExprId>, wants: List<TypeId>, pins: List<FieldPin> = [] }
+
+/// A spread field that fills a seat typed by a type parameter: the field's
+/// type pins the parameter as a written argument's would, and `at` is the
+/// spread it came from.
+export type FieldPin = { have: TypeId, want: TypeId, name: string, at: ExprId }
 
 /// Arguments that fill their seats as written.
 fn as_written(args: List<ExprId>, wants: List<TypeId>) -> Placed { Placed { args: args, wants: wants } }

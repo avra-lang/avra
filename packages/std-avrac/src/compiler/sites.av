@@ -1,0 +1,74 @@
+//! `avra explain --sites` — the mechanism the compiler chose for each site
+//! of a view, and why (P7). The plan is `features/read_set.av`'s; this file
+//! only says it, one line a site.
+use core.{DeclId, DeclKind, ExprId, joined, flatten}
+use features.{SitePlan, SiteWhy, StatePlace}
+
+/// The widest an expression's own text is shown.
+const shown_width = 48
+
+impl Workspace {
+    /// What `explain --sites` says of every fn named `name`: each site of its
+    /// body, the mechanism it earned and the places it depends on.
+    fn site_lines(name: string) -> List<string> {
+        flatten([self.sites_said(x.id) for x in self.decls.named(name) if bodied(x.kind)])
+    }
+
+    fn sites_said(d: DeclId) -> List<string> {
+        let x = self.decls.decl(d)
+        let root? = x.root else { return [no_body(x.name)] }
+        let a = self.analysis(x.file)
+        ["sites of `${x.name}`:"].concat([site_line(a, s) for s in a.lowering_plan(root)])
+    }
+}
+
+/// A declaration kind with a body a site stands in. Every kind spelled.
+fn bodied(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Method or .Default or .Main or .Case -> true,
+        .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .State or .Builtin -> false,
+    }
+}
+
+/// One site: its mechanism, its text, and why.
+fn site_line(a: Analysis, s: SitePlan) -> string {
+    "  ${word_of(s.why)} ${a.text_of(s.expr, shown_width)} — ${reason_of(a, s.why)}"
+}
+
+/// The mechanism a reason earns, padded to one column. Every reason spelled.
+fn word_of(why: SiteWhy) -> string {
+    match why {
+        .Constant -> "hoist ",
+        .OneRead(_) -> "direct",
+        .Keyed(_) -> "keyed ",
+        .OpenInput or .Opaque or .Several(_) -> "tree  ",
+    }
+}
+
+/// What the reason says, in words. Every reason spelled.
+fn reason_of(a: Analysis, why: SiteWhy) -> string {
+    match why {
+        .Constant -> constant(),
+        .OpenInput -> open_input(),
+        .Opaque -> opaque(),
+        .OneRead(p) -> one_read(a.place_name(p)),
+        .Several(n) -> several(n),
+        .Keyed(_) -> keyed(),
+    }
+}
+
+// ── voices ──
+
+fn no_body(name: string) -> string { "`${name}` has no body this compile can read" }
+
+fn constant() -> string { "reads no state and no open input: constant, hoisted into the binary" }
+
+fn open_input() -> string { "reads an input it does not bind (a parameter, a receiver, an outer binding): the tree path" }
+
+fn opaque() -> string { "reaches a place it cannot name (an applied fn value, a dispatched method, an extern, a callee's own state): the tree path" }
+
+fn one_read(place: string) -> string { "reads exactly one place, ${place}: a direct write to its node" }
+
+fn several(n: int) -> string { "reads ${n} places: the tree path" }
+
+fn keyed() -> string { "a list that states its key: reconciled by the key" }

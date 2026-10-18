@@ -57,13 +57,12 @@ impl Workspace {
     /// row keeps. Absent for a unit that read one a row cannot name again: an expression
     /// root, or a const settled at seats.
     fn consts_read(w: Wanted) -> string? {
-        let asks = self.hold.unit_asks.get().get("${self.spec_id(w)}") ?? []
         mut words: List<string> = []
-        for ask in asks {
+        for ask in self.asks_of(self.spec_id(w)) {
             let s = match ask.root { .Const(s) -> s, .Expr(_) -> { return null } }
             if !ask.seats.is_empty() { return null }
             let d? = self.decls.decl_of(ask.file, s) else { return null }
-            let got = match self.settled(ask.file, ask.root, ask.seats) {
+            let got = match self.settled_replay(ask.file, ask.root, ask.seats) {
                 .Ok(v) -> v,
                 .Err(_) -> { return null },
             }

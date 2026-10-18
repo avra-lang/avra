@@ -5,6 +5,8 @@
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
 use core.{
+    void_ref,
+    Means,
     Expr,
     Stmt,
     Pat,
@@ -40,7 +42,6 @@ use features.{
     Record,
     ChildSlot,
     Event,
-    marked_seats,
     marks_at,
     params_at,
     pat_id_at,
@@ -48,7 +49,6 @@ use features.{
     arms_at,
     record_spreads,
     three_dots,
-    void_ref,
 }
 use grammar.{Token}
 use @std.path.{stem_of}
@@ -165,9 +165,9 @@ fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
 /// statement.
 fn keyed_loop_body(store: SyntaxArena, body: ExprId, key: ExprId, at: Span?) -> List<StmtId> {
     match store.expr(body) {
-        .Block(stmts, held) -> {
-            if held == null { return stmts }
-            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held!, key)), at)])
+        .Block(stmts, _) -> {
+            let held? = store.tail_of(body) else { return stmts }
+            stmts.concat([store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, held, key)), at)])
         },
         rest -> [store.alloc_stmt(Stmt.ExprStmt(keyed_child(store, body, key)), at)],
     }
@@ -251,16 +251,11 @@ fn build_component_named_bare(b: Builder) -> Result<LangNode, string> {
 /// block the printer spells — or, under a `req ->` head, a fn over
 /// what the component offers.
 fn build_instance_body(b: Builder) -> Result<LangNode, string> {
-    let ps = b.tokens(0)?
+    let ps = params_at(b.args, 0)
     let stmts = b.stmts(1)?
     if ps.is_empty() { return b.make_expr(Expr.Block(stmts, null)) }
     if stmts.any((s) -> b.store.setting_parts(s) != null) { return .Err(fn_body_setting()) }
-    let unwritten: List<TypeRef?> = [null for p in ps]
-    b
-        .make_expr(
-            Expr
-                .Lambda(marked_seats(b.store, ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)),
-        )
+    b.make_expr(Expr.Lambda(ps, b.block_of(stmts)))
 }
 
 /// A ONE-SEAT FN FIELD'S BODY WRITTEN AS ARMS: `Name inst { pattern
@@ -298,14 +293,8 @@ fn build_instance_arms_body(b: Builder) -> Result<LangNode, string> {
 /// follows it — never a reserved word.
 fn build_on_handler(b: Builder) -> Result<LangNode, string> {
     let event = (b.token(1)?).text
-    let ps = b.tokens(2)?
     let stmts = b.stmts(3)?
-    let unwritten: List<TypeRef?> = [null for p in ps]
-    let lam = b
-        .expr_node(
-            Expr
-                .Lambda(marked_seats(b.store, ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)),
-        )
+    let lam = b.expr_node(Expr.Lambda(params_at(b.args, 2), b.block_of(stmts)))
     b.store.mark_on_handler(lam, event)
     b.make_stmt(Stmt.Setting(Plain(event), lam))
 }
@@ -419,7 +408,7 @@ impl Builder {
         if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word, self.store.ident_name(heads[0]))) }
         let block = self.filled_body(body!, stmts)
         let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
-        let expansion = self.store.instantiated(t, word, heads, block, minted)
+        let expansion = self.store.instantiated(t, word, heads, block, minted, self.words.door)
         .Ok(
             self
                 .store
@@ -591,9 +580,7 @@ impl Builder {
     /// A slot filled by `collect { … }` over the children placed in it —
     /// after what a setting of the same name already lists.
     fn collected(pl: Placed, settings: List<SettingParts>) -> Field {
-        let gathered = self
-            .store
-            .alloc_expr(Expr.Collect(self.store.alloc_expr(Expr.Block(pl.stmts, null), self.span)), self.span)
+        let gathered = self.store.alloc_expr(Expr.Collect(pl.stmts), self.span)
         let first? = settings.find(it.name == pl.slot) else { return Field { name: pl.slot, value: gathered } }
         Field {
             name: pl.slot,
@@ -674,6 +661,7 @@ impl SyntaxArena {
         heads: List<ExprId>,
         block: ExprId,
         minted: List<Minted?>,
+        door: Means,
     ) -> ExprId {
         let since = self.marks()
         let fills = [field_fill(template, read, heads, block, minted) for read in template.reads]
@@ -684,6 +672,7 @@ impl SyntaxArena {
             self,
             [(kind: HoleKind) -> self.filled(kind, f) for f in fills],
             [false for f in fills],
+            door,
         )
         let root = self.template_value(rb.stmts(template.stmts))
         self.note_copied(since, word.origin)

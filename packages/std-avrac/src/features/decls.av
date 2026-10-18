@@ -299,6 +299,10 @@ export type DeclFacts = {
     /// so a held file must say which of its externs a caller links to
     /// and which the target answers.
     hosted: bool = false,
+    /// THE SEAT THAT TAKES THE REST OF A CALL'S ARGUMENTS (`..rest: List<T>`),
+    /// by position, absent for a fn with none — a caller in another file packs
+    /// its extra arguments into that seat's list without the parse the hold skips.
+    variadic: int? = null,
 }
 
 impl DeclFacts {
@@ -367,12 +371,17 @@ fn capture_facts(store: SyntaxArena, x: Decl) -> DeclFacts {
         annotated: owns && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
-        word: if x.kind is .Const { store.instance_of(x.stmt) } else if x.kind is .CollectEnum { collect_enum_word } else { null },
+        word: when {
+            x.kind is .Const -> store.instance_of(x.stmt)
+            x.kind is .CollectEnum -> collect_enum_word
+            _ -> null
+        },
         doc: if owns { store.doc_comment(x.stmt) } else { null },
         annotations: if owns { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
         mut_seats: if readable && x.kind is .Fn { mut_seat_names(store, x.stmt) } else { [] },
         trait_args: if readable && x.kind is .Impl { [spelled(a) for a in store.trait_args_of(x.stmt)] } else { [] },
         hosted: readable && x.kind is .Fn && store.is_host_fn(x.stmt),
+        variadic: if owns { [j for j, p in store.fn_parts(x.stmt)?.params ?? [] if p.variadic].first() } else { null },
     }
 }
 
@@ -2941,6 +2950,10 @@ impl Decls {
 
     /// Each written seat's default body, in seat order — null where
     /// the seat has none.
+    /// The seat that takes the rest of a call's arguments, when the fn
+    /// declares one — always its last.
+    fn variadic_of(d: DeclId) -> int? { self.facts_of(d)?.variadic }
+
     fn seat_defaults(d: DeclId) -> List<DeclId?> {
         [self.default_named(d, n) for n in self.facts_of(d)?.seats ?? []]
     }

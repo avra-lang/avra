@@ -1,0 +1,59 @@
+// A unit's const asks are a set: filing one twice, or replaying it, leaves
+// the unit holding it once.
+use @std.avrac.testing.{test_workspace}
+use compiler.{ConstAsk, Workspace}
+use compiler.host.{memory_host}
+use features.{SettleRoot}
+
+const UNIT_ASKS_UNIT: int = 9
+
+fn unit_asks_workspace() -> Workspace {
+    let ws = test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                "/w/src/main.av": "const A: int = 1\nconst B: int = 2\nconst C: int = 3\n\nA + B + C\n",
+            },
+            ["/w/avra.toml", "/w/src/main.av"],
+        ),
+        "/w",
+    )
+    let _ = ws.analyze_file("/w/src/main.av")
+    ws
+}
+
+/// The ask of const `name` in the workspace's one file.
+fn ask_of(ws: Workspace, name: string) -> ConstAsk {
+    let f = ws.file_id("/w/src/main.av")
+    let d = ws.decls.decls_of_file(f).find((x) -> ws.decls.decl(x).name == name)!
+    ConstAsk { file: f, root: SettleRoot.Const(ws.decls.decl(d).stmt), seats: [] }
+}
+
+fn held(ws: Workspace) -> int { ws.asks_of(UNIT_ASKS_UNIT).length }
+
+spec "compiler/unit asks are a set" {
+    then "an ask filed five times is held once" {
+        let ws = unit_asks_workspace()
+        for _i in 0..5 { ws.unit_asked(UNIT_ASKS_UNIT, ask_of(ws, "A")) }
+        held(ws) == 1
+    }
+    then "three consts each asked four times are held three times, in first-asked order" {
+        let ws = unit_asks_workspace()
+        for _i in 0..4 {
+            for n in ["B", "A", "C"] { ws.unit_asked(UNIT_ASKS_UNIT, ask_of(ws, n)) }
+        }
+        let first = ws.asks_of(UNIT_ASKS_UNIT)[0]
+        let b = ask_of(ws, "B")
+        held(ws) == 3 &&
+            ws.settle_id(first.file, first.root, first.seats) == ws.settle_id(b.file, b.root, b.seats)
+    }
+    then "a replay of a held ask files nothing, however often it runs" {
+        let ws = unit_asks_workspace()
+        for n in ["A", "B", "C"] { ws.unit_asked(UNIT_ASKS_UNIT, ask_of(ws, n)) }
+        ws.hold.lowering.push(UNIT_ASKS_UNIT)
+        for _i in 0..5 {
+            for a in ws.asks_of(UNIT_ASKS_UNIT) { let _ = ws.settled_replay(a.file, a.root, a.seats) }
+        }
+        held(ws) == 3
+    }
+}
