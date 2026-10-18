@@ -2,7 +2,7 @@
 //! under the number it was given, the sheet it wears and the handlers it
 //! heard — kept so the next paint says only what changed and a host's
 //! echo finds the handler it names.
-use tree.identity.{NodeId}
+use tree.identity.{NodeId, Owner}
 use tree.node.{Node, Action, EventKind, Said}
 use realize.html.element.{Element, lowered}
 use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars}
@@ -12,7 +12,7 @@ use realize.dom.wire.{frame}
 use style.theme.{Theme}
 
 /// An element that hears an event, and what it does then.
-type Bound = { id: NodeId, action: Action }
+type Bound = { id: NodeId, action: Action, ordered: bool }
 
 /// A page as last painted: its elements, the next number it will give
 /// one, every rule a paint has named so far and the theme's variables
@@ -44,7 +44,7 @@ fn rules_of_notice(notice: Node?) -> List<CssRule> {
 /// Every handler an element and what it holds bound, by who hears it.
 fn bound_in(e: Element) -> List<Bound> {
     let el? = e.tagged() else { return [] }
-    [Bound { id: el.id, action: a } for a in el.hears]
+    [Bound { id: el.id, action: a, ordered: el.crowded } for a in el.hears]
         .concat([b for k in el.kids for b in bound_in(k)])
 }
 
@@ -80,7 +80,7 @@ impl Live {
 
     /// The owner keys of the elements that hear something: a node's
     /// number, the identity a page gives it while it stays.
-    fn owners() -> List<string> { ["${b.id.n}" for b in self.bound.get()] }
+    fn owners() -> List<Owner> { [Owner { key: "${b.id.n}", ordered: b.ordered } for b in self.bound.get()] }
 
     /// The sheet, when it must be sent again: the page has never worn one
     /// of the tree's classes, or the theme's variables moved. The sheet's
