@@ -20,6 +20,8 @@ export type Dispatch = {
     formatpats: dyn PatSemantics,
     narrowpats: dyn PatSemantics,
     quotepats: dyn PatSemantics,
+    listpats: dyn PatSemantics,
+    fieldpats: dyn PatSemantics,
 }
 
 /// The semantics of each PATTERN kind — the pattern ladder's twin
@@ -33,6 +35,8 @@ export fn pat_semantics_of(d: Dispatch, p: Pat) -> dyn PatSemantics {
         .Format(_, _) -> d.formatpats,
         .Typed(_, _) -> d.narrowpats,
         .Quote(_) -> d.quotepats,
+        .Seq(_, _, _) -> d.listpats,
+        .Fields(_, _, _, _) -> d.fieldpats,
     }
 }
 
@@ -41,8 +45,7 @@ export fn pat_semantics_of(d: Dispatch, p: Pat) -> dyn PatSemantics {
 /// speaks. Which nodes are a node's children is each feature's
 /// answer, reached through the dispatch.
 export fn post_order(d: Dispatch, store: SyntaxArena, root: ExprId) -> List<ExprId> {
-    let node = store.expr(root)
-    flatten([post_order(d, store, k) for k in node.kids()]).concat([root])
+    flatten([post_order(d, store, k) for k in store.walked(root)]).concat([root])
 }
 
 impl Kids for Body {

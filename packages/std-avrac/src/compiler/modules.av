@@ -344,13 +344,16 @@ impl Workspace {
     /// declaration order. A NAME IS READ THROUGH ITS BUCKET: the asker depends on the
     /// declarations of that name, never on the module's whole surface, so a declaration
     /// of another name moves nothing it read.
-    fn written_export(m: ModulePath, name: string) -> DeclId? {
+    fn written_export(m: ModulePath, name: string) -> DeclId? { self.written_exports(m, name).last() }
+
+    /// Every WRITTEN export of a name in a module, in file then declaration order.
+    fn written_exports(m: ModulePath, name: string) -> List<DeclId> {
         let files = self.module_file_ids(m)
         for f in files { self.admission(f) }
         let here = [self.decls.file(f).path for f in files]
         self.minted_files([p for p in self.hold.named_by.get().get(name) ?? [] if here.contains(p)])
         let named = self.decls.named_filed(name)
-        [x.id for f in files for x in named if self.written_export_in(x, f)].last()
+        [x.id for f in files for x in named if self.written_export_in(x, f)]
     }
 
     /// Whether a row is one of `f`'s own written top-level exports.
@@ -485,7 +488,7 @@ impl Workspace {
             } else if shared && self.closes_cycle(from, m) {
                 diags.push(reexport_cycle(at, from.key, m.package() ?? ""))
             } else if claimed != null && !same_decl(claimed!, id!) {
-                diags.push(reexport_twice(at, u.bound_as(j)))
+                if !self.declared_twice_here(p, u.bound_as(j)) { diags.push(reexport_twice(at, u.bound_as(j))) }
             } else {
                 imports.push(Import { decl: id!, at: at, renamed: u.bound_as(j), shared: shared })
             }
@@ -501,6 +504,16 @@ impl Workspace {
             [self.parsed(self.file_id(path)).voices.list.filter(is_error(it)) for path in self.module_files(m)],
         )
             .first()
+    }
+
+    /// Whether the module of `p`'s file declares `name` twice — a surface
+    /// already refused as contradictory, so a re-export of the name that
+    /// meets it adds no finding.
+    fn declared_twice_here(p: Parsed, name: string) -> bool {
+        self
+            .namespace(self.decls.file(self.file_id(p.source.file)).module_id)
+            .clashes
+            .any(it.name == name)
     }
 
     /// A TEST READS ITS MODULE'S PRIVATE NAMES. Whether `asker` is a file

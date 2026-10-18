@@ -7,6 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{
+    void_ref,
     ExprId,
     StmtId,
     TypeId,
@@ -37,7 +38,6 @@ use features.{
     tparams_refused,
     unpinned_of,
     type_name_decl,
-    void_ref,
 }
 use diagnostics.{refusal}
 
@@ -45,6 +45,7 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, fparams, fret, body) -> {
             defaults_law(cx, s, fname.of, fparams)
+            variadic_law(cx, s, fname.of, fparams)
             if cx.view.store.is_host_fn(s) { host_fn_law(cx, s, fname.of, fparams) }
             checked_fn(cx, s, fname.of, fret ?? void_ref, body)
         },
@@ -344,6 +345,42 @@ fn defaults_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
     required_after_default(cx, unfilled, params[first])
 }
 
+/// THE VARIADIC LAW at the declaration: a `..rest: List<T>` seat is the
+/// last, the only one, and a list — it takes whatever the call leaves.
+fn variadic_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
+    let at? = params.find_index(it.variadic) else { return }
+    let p = params[at]
+    if at != params.length - 1 || params.filter(it.variadic).length > 1 { return variadic_misplaced(cx, s, p, fname) }
+    let listed = (cx.stmt_sig(s)?.params ?? []).last()
+    if listed == null || cx.view.types.element(cx.view.types.seen_through(listed!)) == null { variadic_unlisted(cx, s, p, fname) }
+}
+
+fn variadic_misplaced(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
+    cx
+        .emit(
+            refusal(
+                "type.variadic",
+                cx.stmt_loc(s),
+                "`..${p.name.of}` takes the rest of `${fname}`'s arguments, so it is the one seat that stands last",
+                "this seat",
+                "move it to the end, and keep one",
+            ),
+        )
+}
+
+fn variadic_unlisted(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
+    cx
+        .emit(
+            refusal(
+                "type.variadic",
+                cx.stmt_loc(s),
+                "`..${p.name.of}` of `${fname}` collects its arguments into a list",
+                "this seat",
+                "declare it a list — `..${p.name.of}: List<T>`",
+            ),
+        )
+}
+
 /// Whether a seat's default answers a type naming a type parameter.
 fn default_opens(cx: TypeCx, s: StmtId, p: Param) -> bool {
     if p.default == null { return false }
@@ -466,6 +503,12 @@ fn generic_call(
     mut spoke = false
     for j, a in args {
         if !generic_argument(cx, callee, j, placed.wants[j], a, decl, bound) { spoke = true }
+    }
+    for pin in placed.pins {
+        if !cx.unify(pin.want, pin.have, decl, bound) {
+            let _ = cx.spread_field_type(pin.at, callee, pin.name, pin.have, pin.want)
+            spoke = true
+        }
     }
     if spoke { return cx.error_type }
     if unpinned_of(tp, bound) != null { pinned_by_answer(cx, e, s.ret, decl, bound) }

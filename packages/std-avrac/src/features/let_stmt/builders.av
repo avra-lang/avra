@@ -1,18 +1,6 @@
 //! Parse-time lowering: captures -> the Let statement.
-use core.{Stmt, some_list, Scoped}
-use features.{LangNode, Builder, expr_id_at}
-/// `state n: T = v` — a PLACE: the binding holds a Cell the body owns, a
-/// read answers the `T` it holds, and a write assigns it. The builder
-/// spells the LET and MARKS it; typing gives the binding its Cell and
-/// lowering mints it, so reads and writes go through the one place.
-fn build_state(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let t = b.type_refs(1)?
-    let v = b.expr(2)?
-    let s = b.store.alloc_stmt(Stmt.MutLet(Scoped(n.text), t.first(), v), b.span)
-    b.store.mark_state(s)
-    .Ok(LangNode.NStmt(s))
-}
+use core.{Stmt, Expr, ExprId, some_list, Scoped}
+use features.{LangNode, Builder, expr_id_at, pat_ids_at}
 /// `let b? = s else { ... }` — this feature owns the PARSE (the
 /// branch must try before the recovering plain-let); nullability
 /// gives the node meaning.
@@ -23,4 +11,24 @@ fn build_let_else(b: Builder) -> Result<LangNode, string> {
     let s = b.trailed(b.expr(1)?, some_list(expr_id_at(b.args, 2)))?
     let e = b.stmts(3)?
     b.make_stmt(Stmt.LetElse(Scoped(n.text), s, e))
+}
+
+/// `let pattern = subject [else { … }]` — a node still waiting for its
+/// block, wrapped in the statement that evaluates the subject; the block
+/// this statement ends up in folds the statements after it into the node
+/// (`Builder.folded_lets`).
+fn build_let_pattern(b: Builder) -> Result<LangNode, string> {
+    let pats = pat_ids_at(b.args, 0)
+    let subject = b.expr(1)?
+    let else_stmts = b.stmts(2)?
+    let otherwise: ExprId? = if else_stmts.is_empty() { null } else { b.block_at(else_stmts, b.extent_of(else_stmts)) }
+    b
+        .wrap_stmt(
+            b
+                .store
+                .alloc_stmt(
+                    Stmt.ExprStmt(b.expr_node(Expr.LetPattern(pats[0], subject, otherwise, null))),
+                    b.span,
+                ),
+        )
 }
