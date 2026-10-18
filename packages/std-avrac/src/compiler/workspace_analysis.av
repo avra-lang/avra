@@ -35,7 +35,9 @@ use features.{
     Lifted,
     bound_decl_of,
     read_set_of,
-    calls_read_state,
+    call_places_of,
+    place_key,
+    StatePlace,
     SeatValue,
     settled_symbol,
     quote_meta,
@@ -231,43 +233,36 @@ impl Workspace {
         let solved = self
             .read_fixpoint
             .solve([d.index for d in fns], (arg: int) -> self.read_contribution(DeclId { index: arg }))
-        self
-            .db
-            .settle(
-                k,
-                fp(
-                    2,
-                    [
-                        fp_list(
-                            [if self.read_fixpoint.value_at(d.index) { 1 } else { 0 } for d in fns],
-                        ),
-                    ],
-                ),
-            )
+        self.db.settle(k, reach_fp([self.read_fixpoint.value_at(d.index) for d in fns]))
         let refusal? = refusal_of(solved) else { return fns.length }
         self.defect("defect: ${fixpoint_spoken(refusal)}")
         fns.length
     }
 
     /// Whether a declaration's evaluation reads `state` — directly, or
-    /// through any call its body makes. A call site in another body or
-    /// another package asks THIS, never the pass facts of the body it
-    /// stands in.
-    fn decl_reads_state(d: DeclId) -> bool {
+    /// through any call its body makes: the places it reaches are not none.
+    fn decl_reads_state(d: DeclId) -> bool { !self.decl_places(d).is_empty() }
+
+    /// The `state` places a declaration's evaluation reaches — directly, or
+    /// through any call its body makes — as sorted `place_key`s. A call site
+    /// in another body or another package asks THIS, never the pass facts of
+    /// the body it stands in. A body this compile cannot see answers
+    /// `Unknown`, which a site never hoists nor writes directly.
+    fn decl_places(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
-        if x.external || self.is_held(x.file) { return true }
+        if x.external || self.is_held(x.file) { return [unknown_key()] }
         match x.kind {
-            .State -> true,
+            .State -> [place_key(StatePlace.Global(d))],
             .Fn or .Method or .Default or .Main or .Case -> {
-                if x.root == null { return true }
+                if x.root == null { return [unknown_key()] }
                 let _ = self.read_reach()
                 // A pass that could not run (asked mid-resolve) has no
                 // settled cell, and an unsettled member reads as
                 // `bottom` — pure. Answer conservatively instead.
-                if self.db.value_hash_of(key(Family.ReadReach, 0)) == null { return true }
+                if self.db.value_hash_of(key(Family.ReadReach, 0)) == null { return [unknown_key()] }
                 self.read_fixpoint.value_at(d.index)
             },
-            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> false,
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Impl or .Const or .Builtin -> [],
         }
     }
 
@@ -277,26 +272,35 @@ impl Workspace {
         match kind { .Fn or .Method or .Default or .Main or .Case -> true, rest -> false }
     }
 
-    /// One declaration's raw contribution to the fixpoint: its own
-    /// direct state read, or any call that reaches state — a resolved
-    /// callee through the fixpoint, an unnameable one (a fn value, a
-    /// method, an `extern` row) conservatively.
-    fn read_contribution(d: DeclId) -> bool {
+    /// One declaration's raw contribution to the fixpoint: the places its
+    /// own body reads and those its calls reach — a resolved callee through
+    /// the fixpoint, an unnameable one (a fn value, a method, an `extern`
+    /// row) as `Unknown`. A `state` statement of the body is the body's own
+    /// and reaches no other, so to a caller it is `Unknown`.
+    fn read_contribution(d: DeclId) -> List<int> {
         let x = self.decls.decl(d)
-        let root? = x.root else { return true }
+        let root? = x.root else { return [unknown_key()] }
         let names = self.names_of(d)
         let view = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
-        !read_set_of(view, names, root).is_empty() ||
-            calls_read_state(view, names, root, (g) -> self.callee_reads(g))
+        sorted_places(
+            [shared_key(p) for p in read_set_of(view, names, root)]
+                .concat(
+                    [place_key(p) for p in call_places_of(view, names, root, (g) -> self.callee_places(g))],
+                ),
+        )
     }
 
     /// What a callee answers the read-reach walk: a body this compile
-    /// cannot see MAY read state, as does a `state` declaration read
-    /// directly; every other declaration answers through the fixpoint.
-    fn callee_reads(g: DeclId) -> bool {
+    /// cannot see MAY read any state, a `state` declaration read directly is
+    /// itself the place, and every other declaration answers through the
+    /// fixpoint.
+    fn callee_places(g: DeclId) -> List<int> {
         let x = self.decls.decl(g)
-        if x.external || self.is_held(x.file) { return true }
-        match x.kind { .State -> true, rest -> self.read_fixpoint.value_at(g.index) }
+        if x.external || self.is_held(x.file) { return [unknown_key()] }
+        match x.kind {
+            .State -> [place_key(StatePlace.Global(g))],
+            rest -> self.read_fixpoint.value_at(g.index),
+        }
     }
 
     /// The record itself: every pass's facts for the file, and the way
@@ -311,6 +315,7 @@ impl Workspace {
             names: names,
             facts: facts,
             decl_reads: (d: DeclId) -> self.decl_reads_state(d),
+            decl_places: (d: DeclId) -> self.decl_places(d),
             lang: self.lang,
             diagnostics: flatten(
                 [
@@ -345,6 +350,7 @@ impl Workspace {
             names: names,
             facts: facts,
             decl_reads: (x: DeclId) -> self.decl_reads_state(x),
+            decl_places: (x: DeclId) -> self.decl_places(x),
             lang: self.lang,
             diagnostics: flatten([p.voices.list, names.voices.list, facts.voices.list]),
             program: () -> self.program(path),
@@ -1101,8 +1107,32 @@ impl Workspace {
 
 // ── The read-reach lattice ──
 
-/// `Fixpoint`'s join for read-reach: a declaration reads state when
-/// ANY of its sites does, so the lattice grows by disjunction.
-fn read_reach_join(a: bool, b: bool) -> bool { a || b }
+/// The key of the place nothing names.
+fn unknown_key() -> int { place_key(StatePlace.Unknown) }
 
-fn read_reach_fp(v: bool) -> int { if v { 1 } else { 0 } }
+/// A place as a caller sees it through a callee: a global `state` is the
+/// place itself, anything the callee's body owns is `Unknown`.
+fn shared_key(p: StatePlace) -> int {
+    match p { .Global(_) -> place_key(p), .Local(_, _) or .Unknown -> unknown_key() }
+}
+
+/// A set of place keys, sorted and each once — the lattice's one shape.
+fn sorted_places(keys: List<int>) -> List<int> {
+    mut out: List<int> = []
+    for k in keys {
+        if !out.contains(k) { out = [y for y in out if y < k].concat([k]).concat([y for y in out if y > k]) }
+    }
+    out
+}
+
+/// `Fixpoint`'s join for read-reach: a declaration reaches a place when ANY
+/// of its sites does, so the lattice grows by union.
+fn places_join(a: List<int>, b: List<int>) -> List<int> { sorted_places(a.concat(b)) }
+
+fn places_fp(v: List<int>) -> int { fp_list(v) }
+
+/// The read-reach pass's one settled hash: every member's set folded to ONE
+/// value, then those folded together, so where a set ends is part of what is
+/// hashed — `[1, 2] | [3]` and `[1] | [2, 3]` hold the same ints and are two
+/// answers.
+export fn reach_fp(sets: List<List<int>>) -> int { fp(3, [fp_list([fp_list(s) for s in sets])]) }
