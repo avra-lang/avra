@@ -1,0 +1,74 @@
+//! `NodeFacts` — what a node answers about itself, so a pass asks the
+//! node and never matches its kind. Every fact has a default, and a
+//! `collect enum Expr: NodeFacts` derives the empty impl for a member
+//! with none of its own: a node that answers differently writes the
+//! override beside its meaning, and a NEW node (a sugar, whose meaning
+//! is its rewrite) answers what the defaults say until it says more.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{Type as MetaType, Directive, Rewrite}
+
+export trait NodeFacts {
+    /// How the node stands at its seat (`Form`); its three facts below
+    /// read it unless a node answers one of them itself.
+    fn form() -> Form { form_compound }
+
+    /// A form the source spells as a value: a scalar, text, a list, a
+    /// variant, a lambda.
+    fn literal_form() -> bool { self.form().literal }
+
+    /// Needs no parentheses wherever it lands.
+    fn atomic() -> bool { self.form().atomic }
+
+    /// Whether the node's own kind ever admits purity — the fold over
+    /// its kids has the final word where it does.
+    fn purity() -> Purity { self.form().purity }
+
+    /// How the node may wait, before its names and types are read.
+    fn wait_probe() -> WaitProbe { WaitProbe.None }
+
+    /// The declaration the node's own use names, before its names and
+    /// types are read.
+    fn use_shape() -> UseShape { UseShape.Read }
+
+    /// What this node means, written once as the template it expands to —
+    /// read where it is written and never run on a program's values; null
+    /// for a node that is no sugar.
+    fn means() -> Rewrite? { null }
+
+    /// What this node means where its meaning is computed from what stands
+    /// around it, minted into `store` at `span`: its nodes in allocation
+    /// order, the last the root. Empty for a node that is no computed sugar,
+    /// and for one whose shape has no meaning (a pipe into a non-call).
+    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> { [] }
+
+    /// A call's arguments start past this many kids: `a.m(x)`'s subject
+    /// is the first; null for a node that is no call.
+    fn args_after() -> int? { null }
+
+    /// This call with `blocks` appended to its arguments; null for a
+    /// node that is no call (a trailing block's door).
+    fn called_with(blocks: List<ExprId>) -> Expr? { null }
+
+    /// This node as a pipe's stage taking `value` first; null for a
+    /// node no pipe can apply.
+    fn called_on(store: SyntaxArena, stage: ExprId, value: ExprId) -> Expr? { null }
+
+    /// This node as a place's last step; null for a value.
+    fn place_step() -> PlaceStep? { null }
+
+    /// What this node's leftmost word is: its own record literal's name,
+    /// or the operand it begins with.
+    fn leftmost() -> Leftmost { Leftmost.Nothing }
+
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl NodeFacts for ${t} {} },
+            },
+        ]
+    }
+}

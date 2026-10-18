@@ -3,8 +3,25 @@
 // both engines
 use @std.task.{Source}
 
-let a: Source<int> = produce<int>(4) { yield 7 }
-let b: Source<int> = produce<int>(4) { yield 8 }
+extern fn avra_task_pending() -> ptr
+extern fn avra_task_answer(t: ptr, v: ptr)
+extern fn avra_task_join(t: ptr) -> ptr
+extern fn avra_array_sized(n: int) -> ptr
+
+/// A source that has yielded `v`, with the gate it opens once it has.
+fn yielded(v: int, opened: ptr) -> Source<int> {
+    produce<int>(4) {
+        yield v
+        avra_task_answer(opened, avra_array_sized(1))
+    }
+}
+
+let opened_a = avra_task_pending()
+let opened_b = avra_task_pending()
+let a: Source<int> = yielded(7, opened_a)
+let b: Source<int> = yielded(8, opened_b)
+let _ = avra_task_join(opened_a)
+let _ = avra_task_join(opened_b)
 
 mut ran_a = false
 mut ran_b = false

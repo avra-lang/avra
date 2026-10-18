@@ -77,6 +77,7 @@ MUTATIONS = [
     ("the program's own run forgets who asked", "    if (f == &g_main) avra_main_asker = f->cancel_by;\n", ""),
     ("a cancelled virtual task reads as unasked", "int64_t avra_vtask_asked(int64_t t) { return virtual_at(t)->cancel_by != 0; }", "int64_t avra_vtask_asked(int64_t t) { (void)t; return 0; }"),
     ("an unasked virtual task reads as cancelled", "int64_t avra_vtask_asked(int64_t t) { return virtual_at(t)->cancel_by != 0; }", "int64_t avra_vtask_asked(int64_t t) { (void)t; return 1; }"),
+    ("a park on a finished peer's descriptor waits for an edge that never comes", "    else if (!writable && (g_fds[fd].ready & READ_CLOSED)) waiter_claims(w, BY_POLLER);\n", ""),
     ("an evaluated yield meets no cancel", "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}", "    (void)f;\n}"),
     ("an evaluated yield is cut under a shield", "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}", "    if (f->cancel_by != 0) f->unwinding = 1;\n}"),
     ("an evaluated yield is cut with no cancel", "    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;\n}", "    if (!f->shield_depth) f->unwinding = 1;\n}"),

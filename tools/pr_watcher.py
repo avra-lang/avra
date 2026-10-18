@@ -56,7 +56,12 @@ watcher closes the gap between "green" and "landed", deterministically:
   (i) A HELD RUN — a `checks` run the Actions bot's push left in
       `action_required` (a bot-pushed head fires a run that waits for an
       approver) on an open, same-repository PR's CURRENT head: approve it,
-      once per run id. A fork's run is never approved here.
+      once per run id. A fork's run is never approved here;
+  (o) ONLY THE ORDER'S OWNER MAY MERGE: any other armed PR that could land
+      (its gate under way, or green and up to date) is disarmed once per
+      head, so a PR somebody refreshed by hand never merges ahead of the
+      owner and puts it behind again. `priority` outranks a gate under
+      way; otherwise a PR already landing outranks one merely ready.
 
 EVERY open PR gets an action or a loud name: a state the watcher cannot
 move is still a state it says out loud, never one it skips. Every comment
@@ -190,15 +195,27 @@ def _landing(p):
     return _running(p)
 
 
-def next_in_order(prs):
-    """The one PR to arm and refresh now, or None: nobody while one is landing, else the
-    `priority` PRs first, then the oldest, among the green, mergeable, un-held."""
-    if any(_landing(p) for p in prs):
-        return None
+def _order_key(p):
+    """A PR's place in the order: `priority` first, then one already landing (a gate under
+    way, or clean and about to merge) before one that is only ready, then the oldest."""
+    return (0 if PRIORITY_LABEL in _labels(p) else 1, 0 if _landing(p) else 1, p["number"])
+
+
+def owner_of_order(prs):
+    """The one PR that owns the order now: the first among those landing and those ready
+    (green, mergeable, un-held), or None. Every other armed PR that could merge is kept
+    from it (`plan`), so a PR somebody refreshed by hand cannot land ahead of it."""
     ready = [p for p in prs if p["state"] == "OPEN" and not p.get("isDraft") and not _held(p)
-             and _is_green(p) and p.get("mergeable") == "MERGEABLE"]
-    ready.sort(key=lambda p: (0 if PRIORITY_LABEL in _labels(p) else 1, p["number"]))
+             and ((_is_green(p) and p.get("mergeable") == "MERGEABLE") or _landing(p))]
+    ready.sort(key=_order_key)
     return ready[0] if ready else None
+
+
+def next_in_order(prs):
+    """The one PR to arm and refresh now, or None: nobody while the owner of the order is
+    already landing, else the owner (`priority` first, then the oldest)."""
+    owner = owner_of_order(prs)
+    return None if owner is None or _landing(owner) else owner
 
 
 def _ahead(prs, front):
@@ -249,6 +266,7 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
                              f"{branch} — its PR is no longer open"})
 
     front = next_in_order(prs)
+    owner = owner_of_order(prs)
     # THE BACK OF THE QUEUE: nothing landing and no green PR waiting for its turn.
     queue_idle = front is None and not any(_landing(p) for p in prs)
     red_refreshed = False
@@ -346,6 +364,19 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         # A failed, conflicting or draft PR is fully named above and cannot
         # merge yet.
         if failed or conflicted or draft:
+            continue
+
+        # (o) ONLY THE ORDER'S OWNER MAY MERGE: an armed PR that could land (its gate under way,
+        # or green and up to date) while another owns the order is disarmed, once per head —
+        # a PR refreshed by hand would otherwise merge ahead of the owner and put it behind
+        # again. A PR behind main cannot merge and is left armed; it is armed again on its turn.
+        if owner is not None and owner["number"] != n and p["autoMerge"] and _landing(p):
+            key = f"unarm:{n}:{head}"
+            if key not in told:
+                acts.append({"do": "disarm", "pr": n, "key": key, "mark": ("told", key),
+                             "text": f"#{n} is disarmed — #{owner['number']} owns the order"})
+            else:
+                acts.append({"do": "note", "pr": n, "text": f"#{n} waits behind #{owner['number']} (disarmed)"})
             continue
 
         # (b)+(c) a green, mergeable PR is armed; once armed, one that is
@@ -602,7 +633,7 @@ def collect(repo, state):
     # the lazily computed field.
     for p in prs:
         if (p["state"] == "OPEN" and not p.get("isDraft") and p.get("mergeable") != "CONFLICTING"
-                and p.get("test") and p["test"]["conclusion"] == "SUCCESS"):
+                and ((p.get("test") and p["test"]["conclusion"] == "SUCCESS") or p["autoMerge"])):
             p["behind_by"] = behind_by(repo, "main", p["headRefOid"])
             p["mergeStateStatus"] = merge_state(p.get("mergeStateStatus"), p["behind_by"])
     # Enrich only a failing PR that will be acted on (untold, or attempt 1).
@@ -815,6 +846,31 @@ SELFTEST = [
      dict(prs=[_pr(2, "SUCCESS", autoMerge=True, labels=["hold"])],
           runs=[], state=_empty_state()),
      [("note", 2), ("disarm", 2)]),
+    # (o) a PR refreshed by hand, green and armed, lands ahead of a priority front that is only
+    # behind: it is disarmed, and the front is armed and refreshed.
+    ("order-leak-disarmed-front-refreshed",
+     dict(prs=[_pr(9, "SUCCESS", autoMerge=True),
+               _pr(7, "SUCCESS", autoMerge=True, mergeStateStatus="BEHIND", labels=["priority"])],
+          runs=[], state=_empty_state()),
+     [("disarm", 9), ("refresh", 7)]),
+    # a non-priority PR already landing keeps the order against an older one that is only ready.
+    ("order-landing-outranks-older-ready",
+     dict(prs=[_pr(3, "SUCCESS", mergeStateStatus="BEHIND", autoMerge=True),
+               _pr(5, "", autoMerge=True, mergeStateStatus="BLOCKED")],
+          runs=[], state=_empty_state()),
+     [("note", 3), ("comment", 5)]),
+    # a priority PR outranks one whose gate is under way: that one is disarmed.
+    ("order-priority-outranks-inflight",
+     dict(prs=[_pr(5, "", autoMerge=True, mergeStateStatus="BLOCKED"),
+               _pr(7, "SUCCESS", autoMerge=True, mergeStateStatus="BEHIND", labels=["priority"])],
+          runs=[], state=_empty_state()),
+     [("disarm", 5), ("refresh", 7)]),
+    # a PR behind main cannot merge: it stays armed, and only the owner moves.
+    ("order-behind-armed-left-armed",
+     dict(prs=[_pr(2, "SUCCESS", autoMerge=True),
+               _pr(3, "SUCCESS", autoMerge=True, mergeStateStatus="BEHIND")],
+          runs=[], state=_empty_state()),
+     [("note", 2), ("note", 3)]),
     # a PR armed and awaiting its run is the one in flight: nobody else is armed or refreshed.
     ("order-inflight-blocks-others",
      dict(prs=[_pr(2, "", autoMerge=True, mergeStateStatus="BLOCKED"),
