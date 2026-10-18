@@ -6,6 +6,8 @@
 use core.{
     ExprId,
     Expr,
+    Nominal,
+    Plain,
     Span,
     NodeFacts,
     Form,
@@ -160,6 +162,23 @@ impl NodeFacts for Coalesce {
 impl NodeFacts for Not {
     fn form() -> Form { form_operator }
 }
+impl NodeFacts for Table {
+    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> {
+        let lits = [row_literal(store, self.row, self.header, r) for r in self.rows]
+        lits.concat([store.alloc_expr(Expr.ListLit(lits), span)])
+    }
+}
+
+/// One row as `Row { header: cell, … }`, spanned as the row was.
+fn row_literal(store: SyntaxArena, row: string, header: List<string>, cells: ExprId) -> ExprId {
+    let made = Expr.StructLit(Nominal(row), [Plain(h) for h in header], cells_of(store, cells))
+    store.alloc_expr(made, store.expr_span(cells))
+}
+
+/// A row's cells, as the list node they were written in.
+fn cells_of(store: SyntaxArena, row: ExprId) -> List<ExprId> {
+    match store.expr(row) { .ListLit(cells) -> cells, rest -> [] }
+}
 impl NodeFacts for Bitnot {
     fn form() -> Form { form_operator }
     fn means() -> Rewrite? {
@@ -177,6 +196,13 @@ impl NodeFacts for Chain {
 impl NodeFacts for Is {
     fn form() -> Form { form_operator }
     fn leftmost() -> Leftmost { Leftmost.Operand(self.left) }
+}
+impl NodeFacts for ArmsMatch {
+    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> { store.arms_match_nodes(self.arms, span) }
+}
+impl NodeFacts for TypeLit {
+    fn leftmost() -> Leftmost { Leftmost.Operand(self.subject) }
+    fn minted(store: SyntaxArena, span: Span?) -> List<ExprId> { store.type_lit_nodes(self.subject, self.ty, span) }
 }
 impl NodeFacts for Pipe {
     fn leftmost() -> Leftmost { Leftmost.Operand(self.value) }

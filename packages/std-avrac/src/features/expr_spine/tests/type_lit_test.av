@@ -12,9 +12,9 @@ fn names() -> string {
 
 spec "features/expr_spine (type literal)" {
     given "the expansion" {
-        then "`r.type(int?)` is ONE method call, `interned`, over a bare variant tree" {
+        then "`r.type(int?)` keeps its node and means ONE method call, `interned`, over a bare variant tree" {
             let p = parse_expr("r.type(int?)")
-            let shape = match p.store.expr(p.root!) {
+            let shape = match p.store.expr(p.store.meant(p.root!)!) {
                 .MethodCall(subject, name, args) -> {
                     let inner = match p.store.expr(args[0]) {
                         .VariantLit(v, vargs) -> v == "Opt" &&
@@ -32,12 +32,12 @@ spec "features/expr_spine (type literal)" {
                 },
                 _ -> false,
             }
-            p.diagnostics == 0 && shape
+            p.diagnostics == 0 && p.store.expr(p.root!) is .TypeLit && shape
         }
-        then "the call carries the literal's mark; a written `r.interned(.Int)` does not" {
+        then "the call it means answers for the literal; a written `r.interned(.Int)` does not" {
             let p = parse_expr("r.type(int)")
             let q = parse_expr("r.interned(.Int)")
-            p.store.is_type_lit(p.root!) && !q.store.is_type_lit(q.root!)
+            p.store.is_type_lit(p.store.meant(p.root!)!) && !q.store.is_type_lit(q.root!)
         }
         then "the two spellings fingerprint APART — the mark is part of the node" {
             let p = parse_expr("r.type(int)")
@@ -46,7 +46,7 @@ spec "features/expr_spine (type literal)" {
         }
         then "a name that spells no shape is a HOLE — an identifier read in scope" {
             let p = parse_expr("r.type(List<held>)")
-            let hole = match p.store.expr(p.root!) {
+            let hole = match p.store.expr(p.store.meant(p.root!)!) {
                 .MethodCall(_, _, args) -> match p.store.expr(args[0]) {
                     .VariantLit(_, vargs) -> match p.store.expr(vargs[0]) {
                         .VariantLit(v, wargs) -> v == "Id" &&

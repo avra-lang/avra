@@ -29,7 +29,6 @@ use core.{
     sorted_by,
     same_stmt,
     plain_mark,
-    pronoun_param,
     copier,
     flatten,
     some_list,
@@ -149,11 +148,13 @@ fn build_component_keyed(b: Builder) -> Result<LangNode, string> {
     let loop_block = b.store.alloc_expr(Expr.Block([loop_stmt], null), b.span)
     let built = b.instance(word, [], [], loop_block, null)?
     match b.store.expr(built) {
-        .Component(_, _, _, .Expanded(lit), check) -> {
+        .Component(_, _, _, .Expanded(lit), check, _) -> {
             let inst = b
                 .store
-                .alloc_expr(Expr.Component(word.word, [source], body, BodyView.Expanded(lit), check), b.span)
-            b.store.mark_keyed_list(inst, key)
+                .alloc_expr(
+                    Expr.Component(word.word, [source], body, BodyView.Expanded(lit), check, key),
+                    b.span,
+                )
             b.wrap_expr(inst)
         },
         rest -> b.wrap_expr(built),
@@ -178,7 +179,7 @@ fn keyed_loop_body(store: SyntaxArena, body: ExprId, key: ExprId, at: Span?) -> 
 /// the marker alone — the renderer's key is that component's own field.
 fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
     match store.expr(value) {
-        .Component(w, heads, block, .Expanded(lit), check) -> {
+        .Component(w, heads, block, .Expanded(lit), check, _) -> {
             match store.expr(lit) {
                 .StructLit(name, fields, values) -> {
                     let grown = store
@@ -189,7 +190,7 @@ fn keyed_child(store: SyntaxArena, value: ExprId, key: ExprId) -> ExprId {
                         )
                     store
                         .alloc_expr(
-                            Expr.Component(w, heads, block, BodyView.Expanded(grown), check),
+                            Expr.Component(w, heads, block, BodyView.Expanded(grown), check, null),
                             store.expr_span(value),
                         )
                 },
@@ -279,10 +280,7 @@ fn build_instance_arms_body(b: Builder) -> Result<LangNode, string> {
     let hv = b.expr(2)?
     let rest = arms_at(b.args, 3)
     let arms = [Arm { pats: [hp], guard: hg, value: hv }].concat(rest)
-    let subject = b.expr_node(Expr.Ident(Scoped("it")))
-    let matched = b.expr_node(Expr.Match(subject, arms))
-    b.store.mark_sugar_match(matched)
-    b.make_expr(Expr.Lambda([pronoun_param], matched))
+    b.arms_fn(arms)
 }
 
 /// `on <event> { … }` — a handler written where the control is: the
@@ -413,7 +411,8 @@ impl Builder {
             self
                 .store
                 .alloc_expr(
-                    Expr.Component(word.word, heads, block, BodyView.Expanded(expansion), null),
+                    Expr
+                        .Component(word.word, heads, block, BodyView.Expanded(expansion), null, null),
                     self.span,
                 ),
         )
@@ -462,7 +461,10 @@ impl Builder {
         .Ok(
             self
                 .store
-                .alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span),
+                .alloc_expr(
+                    Expr.Component(word, heads, body, BodyView.Expanded(literal), check, null),
+                    self.span,
+                ),
         )
     }
 
@@ -533,18 +535,20 @@ impl Builder {
         if !optional { return fn_val }
         let parts? = self.store.lambda_parts(fn_val) else { return fn_val }
         match self.store.expr(parts.body) {
-            .Match(subject, arms) if self.store.is_sugar_match(parts.body) -> self.null_tailed(parts, subject, arms),
+            .ArmsMatch(arms) -> self.null_tailed(parts, arms),
             rest -> fn_val,
         }
     }
 
-    fn null_tailed(parts: LambdaParts, subject: ExprId, arms: List<Arm>) -> ExprId {
+    fn null_tailed(parts: LambdaParts, arms: List<Arm>) -> ExprId {
         let wild = self.store.alloc_pat(Pat.Wild, self.span)
         let miss = self.store.alloc_expr(Expr.NullLit, self.span)
         let tail = Arm { pats: [wild], guard: null, value: miss }
-        let matched = self.store.alloc_expr(Expr.Match(subject, arms.concat([tail])), self.span)
-        self.store.mark_sugar_match(matched)
-        self.store.alloc_expr(Expr.Lambda(parts.params, matched), self.span)
+        let sugar = self.store.alloc_expr(Expr.ArmsMatch(arms.concat([tail])), self.span)
+        let _ = self
+            .store
+            .mean(sugar, "an arms body with an implicit `_ -> null` tail", self.words.door)
+        self.store.alloc_expr(Expr.Lambda(parts.params, sugar), self.span)
     }
 
     /// A pattern head's record: its string literal's format minted as a

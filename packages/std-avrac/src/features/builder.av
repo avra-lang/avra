@@ -1,6 +1,7 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
 use core.{
+    pronoun_param,
     SyntaxArena,
     void_ref,
     Means,
@@ -196,13 +197,12 @@ impl Slots for Builder {
         .Ok(op)
     }
 
-    /// The truth the payload `n` states. The assembly already refused
-    /// any other word for a `bool` payload, so this is the belt.
+    /// The truth the payload `label` holds: stated `true` or `false`, or
+    /// whether the terminal captured under it was there at all. The
+    /// assembly refuses any other filling of a `bool` payload.
     fn flag_of(label: string) -> Result<bool, string> {
-        let word = self.text_of(label)?
-        if word == "true" { return .Ok(true) }
-        if word == "false" { return .Ok(false) }
-        .Err("`${word}` states no truth — a `bool` payload is `true` or `false`")
+        if !self.present_of(label)? { return .Ok(false) }
+        .Ok(self.text_of(label)? != "false")
     }
 }
 
@@ -308,8 +308,8 @@ impl Builder {
     /// field has no pattern side table, so it is refused here rather
     /// than silently dropped.
     fn make_pat(p: Pat) -> Result<LangNode, string> {
-        self.no_facets_here()?
-        .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span)))
+        let f? = self.payloads.find(facet_table(it) != null) else { return .Ok(LangNode.NPat(self.store.alloc_pat(p, self.span))) }
+        .Err(facet_not_a_pattern(f.name))
     }
 
     /// One match arm, as data — `guard` null for an unguarded one.
@@ -320,21 +320,6 @@ impl Builder {
     /// One comprehension clause, as data.
     fn make_comp_clause(c: CompClause) -> Result<LangNode, string> {
         .Ok(LangNode.NCompClause(c))
-    }
-
-    /// A new expression node, spanning the matched branch. A `@facet`
-    /// field has no expression side table, so it is refused here
-    /// rather than silently dropped.
-    fn make_expr(e: Expr) -> Result<LangNode, string> {
-        self.no_facets_here()?
-        .Ok(LangNode.NExpr(self.store.alloc_expr(e, self.span)))
-    }
-
-    /// Refuse a `@facet` field where the arena has no side table for it
-    /// — only a statement's facets have a writer.
-    fn no_facets_here() -> Result<bool, string> {
-        let f? = self.payloads.find(facet_table(it) != null) else { return .Ok(true) }
-        .Err(facet_not_a_stmt(f.name))
     }
 
     /// A new statement node, spanning the matched branch. A `@facet`
@@ -351,17 +336,43 @@ impl Builder {
     fn faceted_stmt(id: StmtId) -> Result<LangNode, string> {
         for f in self.payloads {
             let side? = facet_table(f) else { continue }
-            if !self.present_of(f.name)? { continue }
+            if !self.flag_of(f.name)? { continue }
             let row? = facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
             (row.mark)(self.store, id)
         }
         .Ok(LangNode.NStmt(id))
     }
 
+    /// A new expression node, spanning the matched branch, its facet
+    /// fields written to their side tables like a statement's.
+    fn make_expr(e: Expr) -> Result<LangNode, string> {
+        let id = self.store.alloc_expr(e, self.span)
+        for f in self.payloads {
+            let side? = facet_table(f) else { continue }
+            if !self.flag_of(f.name)? { continue }
+            let row? = expr_facet_rows().find(it.side == side) else { return .Err(facet_table_unknown(f.name, side)) }
+            (row.mark)(self.store, id)
+        }
+        .Ok(LangNode.NExpr(id))
+    }
+
     /// A new expression node spanning the matched branch, as its id
     /// — for a builder that nests one node inside another.
     fn expr_node(e: Expr) -> ExprId {
         self.store.alloc_expr(e, self.span)
+    }
+
+    /// An arms body: the sugar node, with the match it means minted
+    /// beside it.
+    fn arms_body(arms: List<Arm>) -> ExprId {
+        let sugar = self.expr_node(Expr.ArmsMatch(arms))
+        let _ = self.store.mean(sugar, arms_means(self.source_of(sugar)), self.words.door)
+        sugar
+    }
+
+    /// A one-seat fn over the pronoun whose body is the arms.
+    fn arms_fn(arms: List<Arm>) -> Result<LangNode, string> {
+        self.make_expr(Expr.Lambda([pronoun_param], self.arms_body(arms)))
     }
 
     /// A written type as this build's result — no arena, no id.
@@ -631,19 +642,33 @@ export fn between(at: int, after: int, before: int) -> bool {
     at > after && at < before
 }
 
-/// A side table a `@facet` may name: the word, and the store mark it
-/// writes, keyed by the node the maker just made.
+/// A side table a statement's `@facet` may name: the word, and the store
+/// mark it writes, keyed by the node the maker just made.
 type FacetRow = { side: string, mark: fn(SyntaxArena, StmtId) -> void }
+
+/// The same for an expression's `@facet`.
+type ExprFacetRow = { side: string, mark: fn(SyntaxArena, ExprId) -> void }
 
 /// THE ONE REGISTRY of facet side tables. A table no row names is a
 /// defect spoken at the mark, never a silent drop.
 fn facet_rows() -> List<FacetRow> {
     [
         FacetRow { side: "once", mark: (st, id) -> st.mark_once(id) },
+        FacetRow { side: "exported", mark: (st, id) -> st.mark_exported(id) },
         FacetRow { side: "state", mark: (st, id) -> st.mark_state(id) },
         FacetRow { side: "host", mark: (st, id) -> st.mark_host(id) },
         FacetRow { side: "mutating", mark: (st, id) -> st.mark_mutating(id) },
         FacetRow { side: "static", mark: (st, id) -> st.mark_static(id) },
+    ]
+}
+
+/// THE ONE REGISTRY of an expression's facet side tables.
+fn expr_facet_rows() -> List<ExprFacetRow> {
+    [
+        ExprFacetRow { side: "raw", mark: (st, id) -> st.mark_raw_string(id) },
+        ExprFacetRow { side: "hole", mark: (st, id) -> st.mark_hole(id) },
+        ExprFacetRow { side: "run_hole", mark: (st, id) -> st.mark_run_hole(id) },
+        ExprFacetRow { side: "trailing", mark: (st, id) -> st.mark_trailing(id) },
     ]
 }
 
@@ -652,9 +677,9 @@ fn facet_table_unknown(field: string, side: string) -> string {
     "`${field}` is `@facet(${side})`, and no side table is named `${side}`"
 }
 
-/// A `@facet` field on a node whose arena has no side table to write.
-fn facet_not_a_stmt(field: string) -> string {
-    "`${field}` is `@facet`, and only a statement's payload has a side table to write — an expression's or a pattern's does not"
+/// A `@facet` field on a pattern, whose arena has no side table to write.
+fn facet_not_a_pattern(field: string) -> string {
+    "`${field}` is `@facet`, and a pattern has no side table to write — only a statement's or an expression's does"
 }
 
 /// A build asked for a payload its variant does not declare.
@@ -666,4 +691,8 @@ fn unknown_payload(ps: List<Field>, n: string) -> string {
 /// What a destructuring `let` means, in words.
 fn let_means(written: string) -> string {
     "`${written}` takes the value apart by its pattern, and the rest of the block is the arm the pattern's names scope over"
+}
+
+fn arms_means(written: string) -> string {
+    "`${written}` matches the pronoun against the arms"
 }

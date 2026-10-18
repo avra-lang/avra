@@ -710,7 +710,7 @@ fn built<T, N>(
             cx
                 .build(
                     node_builder_name(owner, variant),
-                    [slot_value<T, N>(cx, bindings, sl, branch) for sl in slots!],
+                    [slot_value<T, N>(cx, bindings, sl, branch)? for sl in slots!],
                     branch,
                 )
         },
@@ -718,16 +718,29 @@ fn built<T, N>(
 }
 
 /// One payload as the builder receives it: the capture its label
-/// bound, the value the rule stated, or nothing.
-fn slot_value<T, N>(cx: MatchContext<T, N>, bindings: List<Binding<T, N>>, sl: Slot, branch: Loc?) -> Captured<
-    T,
-    N,
+/// bound, the value the rule stated, a node built in place, a list of
+/// those, or nothing. A nested build's own refusal is carried whole.
+fn slot_value<T, N>(cx: MatchContext<T, N>, bindings: List<Binding<T, N>>, sl: Slot, branch: Loc?) -> Result<
+    Captured<T, N>,
+    string,
 > {
     match sl {
-        .Label(name) -> binding_for<T, N>(bindings, name) ?? cx.absent,
-        .Fixed(text) -> captured_terminal<T, N>(cx.lex.stated(text, branch)),
-        .Empty -> cx.absent,
+        .Label(name) -> .Ok(binding_for<T, N>(bindings, name) ?? cx.absent),
+        .Fixed(text) -> .Ok(captured_terminal<T, N>(cx.lex.stated(text, branch))),
+        .Nested(inner) -> built<T, N>(cx, inner, bindings, [], branch),
+        .Items(items) -> .Ok(spliced<T, N>([slot_value<T, N>(cx, bindings, i, branch)? for i in items])),
+        .Empty -> .Ok(cx.absent),
     }
+}
+
+/// A list's items as one capture: a listed capture among them splices in
+/// and an absent one adds nothing, so `[a, rest]` reads as one run.
+fn spliced<T, N>(vs: List<Captured<T, N>>) -> Captured<T, N> {
+    Captured.Many(flatten([run_of<T, N>(v) for v in vs]))
+}
+
+fn run_of<T, N>(v: Captured<T, N>) -> List<Captured<T, N>> {
+    match v { .Many(items) -> items, .Absent -> [], .Terminal(_) or .Node(_) -> [v] }
 }
 
 /// A node build reaching the engine is a DEFECT of the assembly, not
