@@ -14,7 +14,7 @@ use diagnostics.{new_source_file, spliced, Diag}
 use @std.errors.{Suggestion}
 use compiler.{avra}
 
-/// What an applied remedy must come to.
+/// What an applied remedy must come to — `becomes`.
 export enum Then {
     Clean
     Draws(kind: string)
@@ -22,7 +22,7 @@ export enum Then {
 
 /// One help's claim, run: `refused` draws the voice (its words hold
 /// `says`), and `applied` is `refused` with the help's form written in.
-export type RemedyRow = { kind: string, says: string, refused: string, applied: string, then: Then }
+export type RemedyRow = { kind: string, says: string, refused: string, applied: string, becomes: Then }
 
 /// The refusals the rows are held to, in registry order.
 fn rows() -> List<RemedyRow> {
@@ -32,7 +32,7 @@ fn rows() -> List<RemedyRow> {
             says: "a generic fn is not a value",
             refused: "fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = ident\nf(1)",
             applied: "fn ident<T>(x: T) -> T { x }\nlet f: fn(int) -> int = (x0) -> ident(x0)\nf(1)",
-            then: Then.Clean,
+            becomes: Then.Clean,
         },
     ]
 }
@@ -52,7 +52,7 @@ fn fails(r: RemedyRow) -> bool {
     if !drawn.contains("[${r.kind}]") || !drawn.contains(r.says) { return true }
     let out = avra().check(new_source_file("witness.av", r.applied))
     if unreadable(out) || out.contains(r.says) { return true }
-    match r.then {
+    match r.becomes {
         .Clean -> out.contains("error["),
         .Draws(k) -> !out.contains("error[${k}]"),
     }
