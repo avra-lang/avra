@@ -288,15 +288,25 @@ export fn rows() -> List<RemedyRow> {
         RemedyRow {
             kind: "flow.end_arm",
             says: "can end and this `select` does not say what then",
-            refused: with_task("use @std.task.{Source}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n    }\n}\n0"),
-            applied: with_task("use @std.task.{Source}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n        src.ended -> 0\n    }\n}\n0"),
+            refused: with_task(
+                "use @std.task.{Source}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n    }\n}\n0",
+            ),
+            applied: with_task(
+                "use @std.task.{Source}\nfn pick(src: Source<int>) -> int {\n    select {\n        x in src -> x\n        src.ended -> 0\n    }\n}\n0",
+            ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "flow.no_fate",
             says: "a handler that can fail must name a fate",
-            refused: with_provider("use @x.c.{work, ok}\nlet w = work {\n    each: ok\n}\n0\n", "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n"),
-            applied: with_provider("use @x.c.{work, ok}\nlet w = work {\n    each: ok\n    dead: \"letter\"\n}\n0\n", "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n"),
+            refused: with_provider(
+                "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n}\n0\n",
+                "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n",
+            ),
+            applied: with_provider(
+                "use @x.c.{work, ok}\nlet w = work {\n    each: ok\n    dead: \"letter\"\n}\n0\n",
+                "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n",
+            ),
             becomes: Then.Clean,
         },
         RemedyRow {
@@ -323,15 +333,27 @@ export fn rows() -> List<RemedyRow> {
         RemedyRow {
             kind: "collect.not_a_list",
             says: "must declare a `List<T>`",
-            refused: Witness.Source("type Entry = { name: string }\ncollect xs: int = @tag in self as Entry { name: it.name } by it.name\n1"),
-            applied: Witness.Source("type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1"),
+            refused: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: int = @tag in self as Entry { name: it.name } by it.name\n1",
+                ),
+            applied: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "collect.proj_type",
             says: "disagrees with the declared element",
-            refused: Witness.Source("type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name\n1"),
-            applied: Witness.Source("type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1"),
+            refused: Witness
+                .Source(
+                    "type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = @tag in self as Other { name: it.name } by it.name\n1",
+                ),
+            applied: Witness
+                .Source(
+                    "type Entry = { name: string }\ncollect xs: List<Entry> = @tag in self as Entry { name: it.name } by it.name\n1",
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
