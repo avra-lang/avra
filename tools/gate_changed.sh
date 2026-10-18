@@ -75,6 +75,7 @@ if [ "$pr_minimum" = 0 ] && command -v clang >/dev/null 2>&1 && clang --print-ta
     sh tools/wasm-check.sh || { echo "gate_changed: wasm-check refused" >&2; exit 1; }
     sh tools/wasm-seam-check.sh || { echo "gate_changed: wasm-seam refused" >&2; exit 1; }
     sh tools/wasm-refuses.sh || { echo "gate_changed: wasm-refuses refused" >&2; exit 1; }
+    sh tools/wasm-tasks-mutations.sh || { echo "gate_changed: wasm-tasks-mutations refused" >&2; exit 1; }
     sh tools/wasm-cache-attacks.sh || { echo "gate_changed: wasm-cache refused" >&2; exit 1; }
 fi
 echo "gate_changed: clean — changed .av and affected idioms hold"

@@ -16,6 +16,7 @@ export function jspiAvailable() {
 export function hostedTasks(exports) {
   const slots = new Map();
   let wake = null;
+  let live = 0;
 
   const slot = (id) => {
     let s = slots.get(id);
@@ -37,12 +38,18 @@ export function hostedTasks(exports) {
 
   const imports = {
     switch: new WebAssembly.Suspending((from, to, ends) => {
+      // a task that ends leaves no slot: the scheduler reuses its record's
+      // address for the next task, which must start rather than resume
       const waiting = ends ? undefined : parked(from);
-      slot(from).running = true;
+      if (ends) slots.delete(from);
+      else slot(from).running = true;
       const next = slot(to);
       if (!next.running) {
         next.running = true;
-        entry()();
+        live += 1;
+        entry()().finally(() => {
+          live -= 1;
+        });
       } else {
         next.resume();
       }
@@ -63,6 +70,8 @@ export function hostedTasks(exports) {
 
   return {
     imports,
+    // How many started tasks have not ended: a stack that outlives its body.
+    stranded: () => live,
     // Runs the program's own entry on the first stack; resolves when it ends.
     start: (name = "_start") => WebAssembly.promising(exports()[name])(),
   };
