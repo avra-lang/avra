@@ -3201,7 +3201,7 @@ error[type.sealed]: `Url` is sealed — only `urls`, the module that declares it
   ·              ┬
   ·              ╰── a literal fills it here
 ──╯
-help: ask `urls` for one through a fn it exports; reading it — a field, `==`, a pattern — is open everywhere
+help: ask `urls` for one through a fn it exports; reading it — a field, equality, a pattern — is open everywhere
 ```
 
 ## type.coalesce
