@@ -1075,10 +1075,15 @@ int64_t avra_sig_number(int64_t kind) {
         case 6: return SIGPIPE;
         case 7: return SIGALRM;
         case 8: return SIGCHLD;
+        case 9: return SIGWINCH;
         default: avra_trap("a signal kind the runtime does not know");
     }
     return 0;
 }
+
+// A signal raised on this process: the platform's number for the kind, as
+// a signal from outside would arrive.
+void avra_sig_raise(int64_t kind) { raise((int)avra_sig_number(kind)); }
 
 // The wait over `sig` is done: the poller's registration goes, and the
 // disposition Avra spent is given back, so the signal is the process's
@@ -1999,6 +2004,9 @@ static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_
     // A descriptor the poller refuses is ready now: the read or write
     // the caller retries reports its own error.
     if (!fd_arm((int)fd)) waiter_claims(w, BY_POLLER);
+    // A FINISHED PEER'S READ IS READY, AND NO EDGE WILL SAY SO AGAIN: the
+    // close came once, before a short read drained the bytes ahead of it.
+    else if (!writable && (g_fds[fd].ready & READ_CLOSED)) waiter_claims(w, BY_POLLER);
     else if (TRACING) traced_waiter(f, w);
 }
 

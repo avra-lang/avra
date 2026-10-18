@@ -48,6 +48,7 @@ export enum GrammarNode {
     /// One operator: its tokens, adjacent.
     NWord(w: List<string>)
     NTier(l: Tier)
+    NSuffix(x: Suffix)
 }
 
 /// A parsed-but-unattached annotation. Exists only between a branch's
@@ -103,6 +104,7 @@ impl GrammarNode {
     fn as_assoc() -> Assoc? { match self { .NAssoc(a) -> a, _ -> null } }
     fn as_word() -> List<string>? { match self { .NWord(w) -> w, _ -> null } }
     fn as_tier() -> Tier? { match self { .NTier(l) -> l, _ -> null } }
+    fn as_suffix() -> Suffix? { match self { .NSuffix(x) -> x, _ -> null } }
 }
 
 /// List delivery for a repeated capture. A label repeated across a
@@ -147,8 +149,8 @@ fn token_texts<T>(lex: Lexeme<T>, v: Captured<T, GrammarNode>) -> Result<List<st
     .Ok([lex.text(want(tok_of(x), "a quoted operator")?) for x in as_list(v)?])
 }
 
-fn suffixes_of(words: List<string>, rules: List<string>) -> List<Suffix> {
-    [Suffix { word: words[i], rule: rules[i] } for i in 0..words.length]
+fn as_suffixes<T>(v: Captured<T, GrammarNode>) -> Result<List<Suffix>, string> {
+    .Ok([want(node_of(x)?.as_suffix(), "a suffix")? for x in as_list(v)?])
 }
 
 /// A tier's own build, when it writes one.
@@ -442,13 +444,29 @@ export fn grammar_build<T>(
         "build_operators" -> ok<T>(GrammarNode.NAnnot(PendingAnnot.AOperators(as_tiers(args[0])?))),
         "build_tier" -> {
             let a = want(node_of(args[0])?.as_assoc(), "an associativity")?
-            let sufs = suffixes_of(token_texts(lex, args[2])?, token_texts(lex, args[3])?)
-            let b = tier_build(args[4])?
+            let b = tier_build(args[2])?
             ok<T>(
                 GrammarNode
-                    .NTier(Tier { assoc: a, words: as_words(args[1])?, suffixes: sufs, build: b }),
+                    .NTier(
+                        Tier {
+                            assoc: a,
+                            words: as_words(args[1])?,
+                            suffixes: as_suffixes(args[3])?,
+                            build: b,
+                        },
+                    ),
             )
         },
+        "build_suffix" -> ok<T>(
+            GrammarNode
+                .NSuffix(
+                    Suffix {
+                        word: tok_text(lex, args[0], "a suffix operator")?,
+                        rule: tok_text(lex, args[1], "a suffix rule")?,
+                        build: tier_build(args[2])?,
+                    },
+                ),
+        ),
         "build_assoc_left" -> ok<T>(GrammarNode.NAssoc(Assoc.Left)),
         "build_assoc_single" -> ok<T>(GrammarNode.NAssoc(Assoc.Single)),
         "build_assoc_unmixed" -> ok<T>(GrammarNode.NAssoc(Assoc.Unmixed(tok_text(lex, args[0], "a refusal builder")?))),

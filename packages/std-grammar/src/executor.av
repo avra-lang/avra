@@ -581,12 +581,19 @@ fn match_seq<T, N>(
     // delimiter the sequence consumes opens the rest of it
     mut open = !capped
     for member in s.items {
-        let r = if member.trailer && !open {
-            missed<T, N>(cx, cursor, bindings, cx.silence, null)
-        } else if s.fold != null && member.rep == Rep.Star {
-            match_fold<T, N>(cx, rule_name, s.fold!, entry, member, cursor, bindings, !open)
-        } else {
-            match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open)
+        let r = when {
+            member.trailer && !open -> missed<T, N>(cx, cursor, bindings, cx.silence, null)
+            s.fold != null && member.rep == Rep.Star -> match_fold<T, N>(
+                cx,
+                rule_name,
+                s.fold!,
+                entry,
+                member,
+                cursor,
+                bindings,
+                !open,
+            )
+            _ -> match_item<T, N>(cx, rule_name, member, cursor, bindings, acc, !open)
         }
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit {
@@ -1221,6 +1228,7 @@ type Taken<T, N> = {
     status: MatchStatus,
     tier: int,
     suffixed: bool,
+    suffix_at: int,
     op_at: int,
     op_words: int,
     rhs: Captured<T, N>,
@@ -1237,6 +1245,7 @@ fn untaken<T, N>(cx: MatchContext<T, N>, status: MatchStatus, farthest: Farthest
         status: status,
         tier: 0,
         suffixed: false,
+        suffix_at: 0 - 1,
         op_at: 0,
         op_words: 0,
         rhs: cx.absent,
@@ -1399,6 +1408,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
             status: MatchStatus.Hit,
             tier: e.tier,
             suffixed: true,
+            suffix_at: e.at,
             op_at: cursor,
             op_words: e.words.length,
             rhs: right.value,
@@ -1421,6 +1431,7 @@ fn take_operator<T, N>(mut cx: MatchContext<T, N>, k: Climbing, e: OpEntry, curs
         status: tighter.status,
         tier: e.tier,
         suffixed: false,
+        suffix_at: 0 - 1,
         op_at: cursor,
         op_words: e.words.length,
         rhs: tighter.value,
@@ -1446,7 +1457,7 @@ fn pair<T, N>(
         Binding { label: "op", value: op },
         Binding { label: "right", value: t.rhs },
     ]
-    built<T, N>(cx, tier.build ?? k.directive, seen, [left, op, t.rhs], branch)
+    built<T, N>(cx, tier.build_at(t.suffix_at) ?? k.directive, seen, [left, op, t.rhs], branch)
 }
 
 /// The operator a pair's builds read as `op`: its one token, or — for a

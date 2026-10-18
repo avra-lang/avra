@@ -14,7 +14,11 @@ impl Runnable for RulesCmd {
         let doc = args.option("check-markdown")
         if doc != "" { return markdown_said(doc, rule_table) }
         println(
-            if args.has_flag("json") { to_text(Json.Arr([rule_json(r) for r in rule_table])) } else if args.has_flag("markdown") { rules_markdown(rule_table) } else { rules_listing(rule_table) },
+            when {
+                args.has_flag("json") -> to_text(Json.Arr([rule_json(r) for r in rule_table]))
+                args.has_flag("markdown") -> rules_markdown(rule_table)
+                _ -> rules_listing(rule_table)
+            },
         )
         0
     }
@@ -29,6 +33,7 @@ fn rule_json(r: RuleEntry) -> Json {
                 field("name", Json.Str(r.name)),
                 field("doc", Json.Str(r.doc)),
                 field("law", law_json(declared_law(r))),
+                field("says", law_json(r.says.first())),
             ],
         )
 }
@@ -128,7 +133,7 @@ fn markdown_said(path: string, entries: List<RuleEntry>) -> int {
 
 export command rules {
     description: "Every rule the compiler carries, by identity — the ground truth a native idiom finding's kind is checked against"
-    flag json { description: "one JSON array of {id, module, name, doc, law}" }
+    flag json { description: "one JSON array of {id, module, name, doc, law, says}" }
     flag markdown { description: "DOGFOODING.md's generated registry block: one bullet per documented rule" }
     option {
         name: "check-markdown"
