@@ -1,7 +1,7 @@
 //! A list lowers as the runtime aggregate: one `avra_array_new`,
 //! then a push per element — the CallRt escape hatch carrying the
 //! whole feature, zero new instructions.
-use core.{ExprId, StmtId, Reg, CompClause, Type}
+use core.{ExprId, StmtId, Reg, CompClause, Type, BinOp}
 use features.{LowerCx, Pipeline, Clause, Source, Lookup}
 
 fn list_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>) -> Reg {
@@ -17,27 +17,20 @@ fn spread_reg(mut cx: LowerCx, e: ExprId, elems: List<ExprId>, regs: List<Reg>) 
 }
 
 /// A list from values in written order, `spreads[j]` saying value `j` is
-/// a list whose elements join in: each run of plain values is a box of
-/// its own, each spread is the list itself, and the parts join in order
-/// by `concat`. A lone spread is a copy.
+/// a list whose elements join in: ONE box, sized for every plain value
+/// and every spread's length, then each plain value pushed and each
+/// spread's slots appended in order.
 export fn listed(mut cx: LowerCx, sh: Type, regs: List<Reg>, spreads: List<bool>) -> Reg {
     if !spreads.any(it) { return cx.grown_box(sh, cx.box_size(regs.length), regs) }
-    mut parts: List<Reg> = []
-    mut run: List<Reg> = []
+    mut size = cx.const_int([s for s in spreads if !s].length)
     for j, r in regs {
-        if !spreads[j] {
-            run.push(r)
-        } else {
-            if !run.is_empty() { parts.push(cx.grown_box(sh, cx.box_size(run.length), run)) }
-            run = []
-            parts.push(r)
-        }
+        if spreads[j] { size = cx.bin(Type.Int, BinOp.Add, size, cx.array_len(Type.Int, r)) }
     }
-    if !run.is_empty() { parts.push(cx.grown_box(sh, cx.box_size(run.length), run)) }
-    if parts.length == 1 { return cx.array_slice(sh, parts[0], cx.const_int(0), cx.array_len(Type.Int, parts[0])) }
-    mut joined = parts[0]
-    for p in parts.drop(1) { joined = cx.array_concat(sh, joined, p) }
-    joined
+    let dst = cx.array_sized(sh, size)
+    for j, r in regs {
+        if spreads[j] { cx.array_extend(dst, r) } else { cx.push_slot(dst, r) }
+    }
+    dst
 }
 
 /// THE COMPREHENSION LOWERED: a fresh box, and the comprehension run
