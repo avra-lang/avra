@@ -8,6 +8,8 @@ use native.net.{unwired}
 use native.sources.{opened, served, unshown}
 use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration, ms, sleep}
+use tree.bindings.{live, meeting}
+use tree.chord.{parsed}
 use tree.controls.{Control}
 use tree.node.{EventKind, Said}
 use tree.view.{View}
@@ -161,4 +163,38 @@ impl Screen {
     /// The screen as a reader finds it: one line a node, its words and
     /// what its attributes say, what it holds indented under it.
     fn text() -> string { self.shown.text() }
+
+    /// The chord `text` writes is pressed with the focus on the `nth` control
+    /// named `name`: the nearest live key naming it runs as a turn. False
+    /// when the chord is none, no such control stands, or no key meets it.
+    fn key_in(name: string, chord_text: string, nth: int = 0) -> bool {
+        let c? = self.control(name, nth) else { return false }
+        self.pressed_key(chord_text, c.seat)
+    }
+
+    /// The same with the focus nowhere: only the root's keys are live.
+    fn key(chord_text: string) -> bool { self.pressed_key(chord_text, null) }
+
+    fn pressed_key(chord_text: string, seat: int?) -> bool {
+        let root? = self.shown.tree.get() else { return false }
+        let pressed? = parsed(chord_text) else { return false }
+        let found? = meeting(root, seat, pressed) else { return false }
+        self
+            .shown
+            .app
+            .turn(
+                () -> {
+                    (found.handler)()
+                    true
+                },
+            )
+    }
+
+    /// The chords live while the focus is on the `nth` control named `name`,
+    /// nearest first, as they are written.
+    fn bindings_in(name: string, nth: int = 0) -> List<string> {
+        let root? = self.shown.tree.get() else { return [] }
+        let c? = self.control(name, nth) else { return [] }
+        [b.chord.text() for b in live(root, c.seat)]
+    }
 }
