@@ -446,12 +446,15 @@ impl Vocabulary {
     }
 
     /// What an event's `@host(web: .Click, terminal: .Enter)` gets wrong: a
-    /// second `@host`, a setting no platform has, a variant the platform's
+    /// missing `@host` (a primitive's event is delivered by a platform, and
+    /// with none named it can never fire), a second `@host`, a setting no platform has, a variant the platform's
     /// own enum lacks. Each setting is checked against the enum it names.
     fn hosted(f: Field) -> List<Diagnostic> {
         let marks = marks_of(f, host_mark)
+        let unheard = if marks.is_empty() { [host_unheard(f)] } else { [] }
         let twice = if marks.length > 1 { [host_twice(f)] } else { [] }
-        twice
+        unheard
+            .concat(twice)
             .concat(
                 flatten([self.host_setting(m, a) for m in marks for a in m.named])
                     .concat([host_unnamed(m, w) for m in marks for w in m.args]),
@@ -640,6 +643,15 @@ fn says_twice(f: Field) -> Diagnostic {
         f.at,
         "a member projects to one thing, and `${f.name}` says more than one",
         "keep one of `@attr`, `@children` and `@style`",
+    )
+}
+
+fn host_unheard(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "host",
+        f.at,
+        "`${f.name}` is an event no platform delivers, and a primitive's event can fire only from one",
+        "name what fires it — `@host(web: .Click, terminal: .Enter) on ${f.name}`",
     )
 }
 
