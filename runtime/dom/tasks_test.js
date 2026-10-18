@@ -56,6 +56,10 @@ check(refused && faultWords(refused) === PARKED_UNDER_HOST, "and the host speaks
 check((await tasks.enter("avra_probe_wait", 1)) === 2, "an entered callback parks and answers");
 check((await tasks.enter("avra_probe_wait", 41)) === 42, "and the next entry does too");
 check(tasks.stranded() === 0, "no stack is left behind by the entries");
+// entries that arrive together are turns, and turns are serial: the second waits for the first
+const together = await Promise.all([tasks.enter("avra_probe_wait", 1), tasks.enter("avra_probe_wait", 5), tasks.enter("avra_probe_wait", 9)]);
+check(together.join(",") === "2,6,10", "entries that arrive together each answer");
+check(tasks.deepest() === 1, "and never stand inside the program at once");
 
 // 11. the artifact a page fetches follows what the host can suspend
 check(chooseArtifact("app.wasm", true) === "app.wasm", "a host that suspends fetches the clean module");

@@ -36,6 +36,9 @@ export function hostedTasks(exports, fault = (e) => { throw e; }) {
   const slots = new Map();
   let wake = null;
   let live = 0;
+  let line = Promise.resolve();
+  let inside = 0;
+  let peak = 0;
 
   const slot = (id) => {
     let s = slots.get(id);
@@ -102,6 +105,22 @@ export function hostedTasks(exports, fault = (e) => { throw e; }) {
     // A host callback (an echo, a timer, a fetch's reply) enters the program
     // on a stack of its own, so whatever it runs may park. A plain call of
     // the export has no stack to suspend and is refused at the first park.
-    enter: (name, ...args) => WebAssembly.promising(exports()[name])(...args),
+    // ENTRIES ARE SERIAL, as the turns they are: an entry that comes while
+    // another is parked waits its turn, so two never stand in for the
+    // program's one main stack at once.
+    enter: (name, ...args) => {
+      const run = line.then(() => {
+        inside += 1;
+        peak = Math.max(peak, inside);
+        return WebAssembly.promising(exports()[name])(...args);
+      });
+      const done = () => {
+        inside -= 1;
+      };
+      line = run.then(done, done);
+      return run;
+    },
+    // The most entries that were ever inside the program at once.
+    deepest: () => peak,
   };
 }
