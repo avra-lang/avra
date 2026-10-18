@@ -192,6 +192,37 @@ static void parked_counts(void) {
     CHECK(read(g_pipe[0], &c, 1) == 1, "the byte is drained");
 }
 
+static void* parks_as_member(void* self) {
+    avra_wait_gate(g_gate, 0, cap(self));
+    return answer(avra_wait_park());
+}
+
+// Yields until `n` fibers are parked on `gate`: the signal, never a time.
+static int parked_by_yielding(void* gate, int64_t n) {
+    for (int turns = 0; turns < 1000 && avra_parked_on(gate) < n; turns++) avra_fiber_yield();
+    return avra_parked_on(gate) == n;
+}
+
+// WAITERS ON ONE GATE ARE CLAIMED IN THE ORDER THEY PARKED: each claim
+// answers the oldest waiter's member, so the queue is first in, first out.
+// A claim of several at once (an open gate) wakes them all; which runs
+// first is the schedule's, and nothing here asserts it.
+static void gate_claims_in_parking_order(void) {
+    g_gate = avra_gate_new();
+    void* t[4];
+    for (int i = 0; i < 4; i++) {
+        t[i] = spawn1(parks_as_member, (int64_t)(i + 1));
+        CHECK(parked_by_yielding(g_gate, i + 1), "each waiter parks before the next is spawned");
+    }
+    for (int i = 0; i < 4; i++) {
+        int64_t claimed = avra_gate_claim(g_gate);
+        CHECK(claimed == i + 1, "a claim answers the oldest parked waiter's member");
+    }
+    CHECK(avra_gate_claim(g_gate) == -1, "no waiter is left to claim");
+    for (int i = 0; i < 4; i++) joined(t[i]);
+    avra_rc_release(g_gate);
+}
+
 // A DESCRIPTOR THAT STAYS WRITABLE CLAIMS EVERY WAIT, NOT ONLY THE
 // FIRST: the poller's watch is edge-triggered, so a second wait on a
 // descriptor the first consumed the edge for must restore the
@@ -3623,6 +3654,7 @@ int main(int argc, char** argv) {
     int64_t live = avra_mem_live();
     three_sources_as_fibers();
     parked_counts();
+    gate_claims_in_parking_order();
     writable_fd_waits_twice();
     claim_then_cancel();
     // ON THE VIRTUAL CLOCK, each in a child: a clock that never moves is

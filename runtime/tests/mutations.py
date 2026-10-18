@@ -300,6 +300,7 @@ MUTATIONS = [
     ("a cancelled end names itself", "    cells[TASK_BY] = avra_unwinding ? asker_of(self) : id_of(self);\n", "    cells[TASK_BY] = id_of(self);\n"),
     ("a task's end records no asker", "    cells[TASK_END] = how;\n    cells[TASK_BY] = by;\n", "    cells[TASK_END] = how;\n"),
     ("the ended-by row answers the end, not the asker", "    return task_cells(task)[TASK_BY];\n}", "    return task_cells(task)[TASK_END];\n}"),
+    ("a gate's waiters are filed at the head", "    w->prev = *tail;\n    if (*tail) (*tail)->next = w; else *head = w;\n    *tail = w;", "    w->prev = NULL;\n    w->next = *head;\n    if (*head) (*head)->prev = w; else *tail = w;\n    *head = w;"),
     ("the parked-on row counts no waiter", "    for (const Waiter* w = (const Waiter*)(uintptr_t)task_cells(on)[GATE_HEAD]; w; w = w->next) n++;", "    (void)on;"),
     ("the fd-parked row counts the wrong side", "    for (const Waiter* w = g_fds[fd].head[dir]; w; w = w->next) n++;", "    for (const Waiter* w = g_fds[fd].head[1 - dir]; w; w = w->next) n++;"),
     ("the fd-parked row takes any direction", "    if (dir != 0 && dir != 1) fd_parked_bad_direction();\n", ""),
