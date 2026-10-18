@@ -330,6 +330,10 @@ it red, so none is green by accident.
 - Cancel and `within` across an unwind: the cancel flag must be observed
   at the resume point, and a deadline task must be able to cut a parked
   stack. Scheduler-side; witnessed by tests 1-7.
+- ENTRIES ARE SERIAL (decided): an event that arrives while an entry is parked
+  waits its turn (`tasks.enter` chains them), because turns are serial and two
+  entries would otherwise both stand in for the program's one main stack.
+  Witnessed by `tasks_test.js` (three together answer, never more than one inside).
 - JSPI traps if JS is on the stack between the park and the promising
   entry; the host must never call a task entry from a JS callback that the
   task itself called into. UI echoes are fine (they start fresh turns).
