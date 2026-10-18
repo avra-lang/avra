@@ -16,6 +16,8 @@ import argparse
 import os
 import re
 import subprocess
+import threading
+import time
 import sys
 import tempfile
 
@@ -91,10 +93,17 @@ def mutants(name, text):
     return out
 
 
+# One watchdog holds the whole keeper, so each compile skips the shim's
+# per-run lock (`AVRA_WATCH_HELD`) and the cases run side by side.
+WORKERS = int(os.environ.get("AVRA_DEFECT_WORKERS", "4"))
+ENV = dict(os.environ, AVRA_WATCH_HELD="1")
+
+
 def run(avra, verb, package):
     try:
         p = subprocess.run(
             [avra, verb, package],
+            env=ENV,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=TIMEOUT,
@@ -104,11 +113,15 @@ def run(avra, verb, package):
     return p.returncode, p.stdout.decode("utf-8", "replace")
 
 
+# The compile limiter's own queue notice is no voice of the compiler.
+WAITING = re.compile(r"^avra: waiting for a compile slot.*$", re.M)
+
+
 def verdict(code, out):
     """The reason a run is refused, or None."""
     if code > 1:
         return "exit %d" % code
-    hit = BAD.search(out)
+    hit = BAD.search(WAITING.sub("", out))
     return "voice %r" % hit.group(0).strip() if hit else None
 
 
@@ -136,11 +149,20 @@ def main():
         print("defects: examined nothing")
         return 1
     bad = []
-    with tempfile.TemporaryDirectory(prefix="avra-defects-") as d:
+    started = time.time()
+    jobs = max(1, min(WORKERS, len(work)))
+    out_lock = threading.Lock()
+    queue = list(reversed(work))
+
+    def attack(d):
         os.makedirs(os.path.join(d, "src"))
         with open(os.path.join(d, "avra.toml"), "w", encoding="utf-8") as f:
             f.write(MANIFEST)
-        for n, verbs, body in work:
+        while True:
+            with out_lock:
+                if not queue:
+                    return
+                n, verbs, body = queue.pop()
             with open(os.path.join(d, "src", "main.av"), "w", encoding="utf-8") as f:
                 f.write(body)
             clean = False
@@ -150,12 +172,22 @@ def main():
                 code, out = run(a.avra, verb, d)
                 clean = clean or (verb == "check" and code == 0)
                 why = verdict(code, out)
-                if a.show:
-                    print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
-                if why:
-                    bad.append((n, why))
-                    print("defects: %s (%s) — %s" % (n, verb, why))
-                    print("    " + "\n    ".join(out.strip().split("\n")[:6]))
+                with out_lock:
+                    if a.show:
+                        print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
+                    if why:
+                        bad.append((n, why))
+                        print("defects: %s (%s) — %s" % (n, verb, why))
+                        print("    " + "\n    ".join(out.strip().split("\n")[:6]))
+
+    with tempfile.TemporaryDirectory(prefix="avra-defects-") as root:
+        dirs = [os.path.join(root, str(i)) for i in range(jobs)]
+        threads = [threading.Thread(target=attack, args=(d,)) for d in dirs]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    print("defects: %d worker(s), %.0fs" % (jobs, time.time() - started))
     print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len({n for n, _ in bad})))
     return 1 if bad else 0
 

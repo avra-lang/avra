@@ -920,7 +920,7 @@ attack:
 # in tools/defects/corpus.txt, and every mutation of its bases, is checked
 # and run, and one answered with a defect voice or a trap refuses.
 defects:
-	@python3 tools/defects.py
+	@sh tools/watch.sh 6000 python3 tools/defects.py
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.
