@@ -1,0 +1,98 @@
+//! `emit.av` — a program as Avra source: module-level `state`, the fns, `view`,
+//! and `step`, the one fn a driver calls to write.
+use @std.text.{repeat}
+
+/// The source text of a program.
+export fn source_of(p: Program) -> string {
+    [
+        "use @std.ui.components.{column, row, text, button}",
+        "",
+        [state_line(i) for i in 0..p.states].join("\n"),
+        "",
+        opaque_fn(p),
+        [fn_text(i, f) for i, f in p.fns].join("\n"),
+        step_fn(p),
+        "fn view() -> column {",
+        "    column {",
+        node_lines(p.view, 2).join("\n"),
+        "    }",
+        "}",
+        "",
+    ]
+        .join("\n")
+}
+
+fn state_line(i: int) -> string { "state s${i}: int = ${i}" }
+
+/// The fn an opaque term calls, written only when some term does.
+fn opaque_fn(p: Program) -> string {
+    if opaque_used(p) { "fn opaque() -> int {\n    let h = (x: int) -> x + 1\n    h(1)\n}\n" } else { "" }
+}
+
+fn opaque_used(p: Program) -> bool {
+    p.fns.any(mentions_opaque(it.body)) ||
+        p.steps.any(mentions_opaque(it.to)) ||
+        node_opaque(p.view)
+}
+
+fn node_opaque(n: Node) -> bool {
+    match n {
+        .Text(pieces) -> pieces.any(piece_opaque(it)),
+        .Row(kids) or .Column(kids) -> kids.any(node_opaque(it)),
+        .Button(_, _) -> false,
+    }
+}
+
+fn piece_opaque(p: Piece) -> bool {
+    match p { .Words(_) -> false, .Value(t) -> mentions_opaque(t) }
+}
+
+fn mentions_opaque(t: Term) -> bool {
+    match t {
+        .Opaque -> true,
+        .Sum(parts) -> parts.any(mentions_opaque(it)),
+        .Num(_) or .Read(_) or .Call(_) -> false,
+    }
+}
+
+fn fn_text(i: int, f: Fn) -> string { "fn f${i}() -> int { ${term_text(f.body)} }" }
+
+/// The write fn: `step(k)` runs the k-th declared write.
+fn step_fn(p: Program) -> string {
+    ["fn step(k: int) {"]
+        .concat(["    if k == ${i} { s${s.place} = ${term_text(s.to)} }" for i, s in p.steps])
+        .concat(["}"])
+        .join("\n")
+}
+
+/// A term as an expression.
+export fn term_text(t: Term) -> string {
+    match t {
+        .Num(n) -> "${n}",
+        .Read(p) -> "s${p}",
+        .Sum(parts) -> if parts.is_empty() { "0" } else { "(${[term_text(x) for x in parts].join(" + ")})" },
+        .Call(c) -> "f${c}()",
+        .Opaque -> "opaque()",
+    }
+}
+
+fn piece_text(p: Piece) -> string {
+    match p { .Words(w) -> w, .Value(t) -> "\${${term_text(t)}}" }
+}
+
+/// A node as indented lines of the view body.
+fn node_lines(n: Node, depth: int) -> List<string> {
+    let pad = repeat("    ", depth)
+    match n {
+        .Text(pieces) -> ["${pad}text \"${[piece_text(x) for x in pieces].join("")}\""],
+        .Button(label, step) -> ["${pad}button \"${label}\" { on press { step(${step}) } }"],
+        .Row(kids) -> container("row", kids, pad, depth),
+        .Column(kids) -> container("column", kids, pad, depth),
+    }
+}
+
+fn container(word: string, kids: List<Node>, pad: string, depth: int) -> List<string> {
+    ["${pad}${word} {"]
+        .concat([line for k in kids for line in node_lines(k, depth + 1)])
+        .concat(["${pad}}"])
+}

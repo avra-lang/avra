@@ -1,0 +1,30 @@
+// The generator: a seed names one program, programs differ across seeds, and
+// everything it makes is well formed.
+use @ui.exact_patches.{generated, source_of, rng, valid}
+
+fn clean(seed: int) -> bool { valid(generated(seed)) }
+
+spec "exact-patches — the generator" {
+    given "a seed" {
+        then "names the same program every time" {
+            source_of(generated(7)) == source_of(generated(7)) &&
+                generated(7).turns.length == generated(7).turns.length
+        }
+        then "any seed names a program, zero and negative included" {
+            source_of(generated(0)).length > 0 && source_of(generated(-5)).length > 0
+        }
+        then "seeds name different programs" {
+            [source_of(generated(s)) for s in 1..21].map(it.length).max()! > [source_of(generated(s)) for s in 1..21].map(it.length).min()!
+        }
+    }
+    given "two hundred seeds" {
+        then "are well formed: every place, callee, step and turn they name exists" { (1..201).all(clean(it)) }
+    }
+    given "the stream" {
+        then "stays in range and moves" {
+            let r = rng(3)
+            let xs = [r.between(2, 5) for _i in 0..200]
+            xs.all(it >= 2 && it <= 5) && xs.any(it == 2) && xs.any(it == 5)
+        }
+    }
+}

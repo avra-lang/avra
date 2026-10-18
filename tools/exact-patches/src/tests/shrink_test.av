@@ -1,0 +1,32 @@
+// The shrinker: every reduction is strictly smaller and still well formed, and a program with nothing left to take reduces to none.
+use @ui.exact_patches.{generated, reductions, weight, valid, Program, Node, Fn, Term}
+
+fn smaller_and_valid(seed: int) -> bool {
+    let p = generated(seed)
+    reductions(p).all(weight(it) < weight(p) && valid(it))
+}
+
+spec "exact-patches — the shrinker" {
+    given "a generated program" {
+        then "has reductions" { reductions(generated(4)).length > 3 }
+        then "each is smaller and still well formed" { (1..41).all(smaller_and_valid(it)) }
+    }
+    given "the smallest program" {
+        then "reduces to nothing" {
+            let tiny = Program { states: 1, fns: [], view: Node.Column([]), steps: [], turns: [] }
+            reductions(tiny).is_empty()
+        }
+    }
+    given "a term" {
+        then "a sum loses a part or becomes one" {
+            let p = Program {
+                states: 1,
+                fns: [Fn { body: Term.Sum([Term.Read(0), Term.Num(1)]) }],
+                view: Node.Column([]),
+                steps: [],
+                turns: [],
+            }
+            reductions(p).length == 5 && reductions(p).all(weight(it) < weight(p))
+        }
+    }
+}

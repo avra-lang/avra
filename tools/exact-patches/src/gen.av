@@ -1,0 +1,57 @@
+//! `gen.av` — a program a seed names. The same seed is the same program on
+//! every machine, so a failure is its seed and nothing else.
+
+/// The program seed `seed` names.
+export fn generated(seed: int) -> Program {
+    let r = rng(seed)
+    let states = r.between(1, 4)
+    let fns = fns_of(r, states, r.between(0, 4))
+    let steps = [step_of(r, states, fns.length) for _i in 0..r.between(2, 5)]
+    Program {
+        states: states,
+        fns: fns,
+        view: Node.Column([node_of(r, states, fns.length, steps.length, 3) for _i in 0..r.between(2, 5)]),
+        steps: steps,
+        turns: [[r.below(steps.length) for _j in 0..r.between(1, 3)] for _i in 0..r.between(8, 30)],
+    }
+}
+
+/// Fns whose bodies reach states and the fns before them.
+fn fns_of(r: Rng, states: int, count: int) -> List<Fn> {
+    [Fn { body: term_of(r, states, i, 2) } for i in 0..count]
+}
+
+fn step_of(r: Rng, states: int, fns: int) -> Step {
+    let place = r.below(states)
+    let to = if r.chance(1, 2) { Term.Sum([Term.Read(place), Term.Num(1)]) } else { term_of(r, states, fns, 1) }
+    Step { place: place, to: to }
+}
+
+/// A term of depth at most `depth`, calling only fns below `fns`.
+fn term_of(r: Rng, states: int, fns: int, depth: int) -> Term {
+    let k = r.below(if depth <= 0 { 3 } else { 6 })
+    when {
+        k == 0 -> Term.Num(r.between(0, 9))
+        k == 1 || k == 2 -> Term.Read(r.below(states))
+        k == 3 -> Term.Sum([term_of(r, states, fns, depth - 1) for _i in 0..r.between(2, 3)])
+        k == 4 && fns > 0 -> Term.Call(r.below(fns))
+        _ -> if r.chance(1, 5) { Term.Opaque } else { Term.Read(r.below(states)) }
+    }
+}
+
+/// A node of depth at most `depth`.
+fn node_of(r: Rng, states: int, fns: int, steps: int, depth: int) -> Node {
+    let k = r.below(if depth <= 0 { 2 } else { 4 })
+    when {
+        k == 0 -> Node.Text(pieces_of(r, states, fns))
+        k == 1 -> Node.Button("b${r.below(100)}", r.below(steps))
+        k == 2 -> Node.Row([node_of(r, states, fns, steps, depth - 1) for _i in 0..r.between(1, 3)])
+        _ -> Node.Column([node_of(r, states, fns, steps, depth - 1) for _i in 0..r.between(1, 3)])
+    }
+}
+
+/// The pieces of one text: words and values, alternating, then the end.
+fn pieces_of(r: Rng, states: int, fns: int) -> List<Piece> {
+    let values = [[Piece.Words("w${i} "), Piece.Value(term_of(r, states, fns, 1))] for i in 0..r.between(0, 3)]
+    [piece for pair in values for piece in pair].concat([Piece.Words("end")])
+}

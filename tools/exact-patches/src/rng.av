@@ -1,0 +1,24 @@
+//! `rng.av` — a seeded stream of numbers, the same on every machine. Park and
+//! Miller's minimal generator: the product of its state and its multiplier
+//! stays inside an `int`, so no wrap ever enters the stream.
+
+/// A stream; every draw advances it.
+export type Rng = { state: Cell<int> }
+
+/// The stream a seed names (any seed, zero included).
+export fn rng(seed: int) -> Rng { Rng { state: Cell.new(1 + if seed < 0 { 0 - seed } else { seed } % 2147483646) } }
+
+impl Rng {
+    /// The next number below `n` (one for `n` below two).
+    fn below(n: int) -> int {
+        let next = self.state.get() * 48271 % 2147483647
+        self.state.set(next)
+        if n < 2 { 0 } else { next % n }
+    }
+
+    /// Whether a draw lands in `part` of `whole`.
+    fn chance(part: int, whole: int) -> bool { self.below(whole) < part }
+
+    /// A number from `lo` to `hi`, both included.
+    fn between(lo: int, hi: int) -> int { lo + self.below(hi - lo + 1) }
+}

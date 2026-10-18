@@ -1,0 +1,101 @@
+//! `shrink.av` — the programs one step smaller than a program: a turn, a
+//! write, a node, a piece, a term dropped or made simpler. A failing seed is
+//! shrunk by taking any reduction that still fails until none does.
+
+/// How much program there is: nodes, pieces, terms, fns, steps and writes.
+export fn weight(p: Program) -> int {
+    node_weight(p.view) +
+        [term_weight(f.body) for f in p.fns].sum() +
+        [1 + term_weight(s.to) for s in p.steps].sum() +
+        p.turns.length +
+        [t.length for t in p.turns].sum()
+}
+
+fn node_weight(n: Node) -> int {
+    match n {
+        .Text(pieces) -> 1 + [piece_weight(x) for x in pieces].sum(),
+        .Row(kids) or .Column(kids) -> 1 + [node_weight(k) for k in kids].sum(),
+        .Button(_, _) -> 1,
+    }
+}
+
+fn piece_weight(p: Piece) -> int {
+    match p { .Words(_) -> 1, .Value(t) -> 1 + term_weight(t) }
+}
+
+fn term_weight(t: Term) -> int {
+    match t {
+        .Sum(parts) -> 1 + [term_weight(x) for x in parts].sum(),
+        .Num(_) -> 1,
+        .Read(_) or .Call(_) or .Opaque -> 2,
+    }
+}
+
+/// Every program one step smaller.
+export fn reductions(p: Program) -> List<Program> {
+    [p with { view: v } for v in node_reductions(p.view)]
+        .concat(
+            [p with { fns: replaced(p.fns, i, Fn { body: t }) } for i, f in p.fns for t in term_reductions(f.body)],
+        )
+        .concat(
+            [p with { steps: replaced(p.steps, i, s with { to: t }) } for i, s in p.steps for t in term_reductions(s.to)],
+        )
+        .concat([p with { turns: without(p.turns, i) } for i in 0..p.turns.length])
+        .concat(
+            [p with { turns: replaced(p.turns, i, without(t, j)) } for i, t in p.turns if t.length > 1 for j in 0..t.length],
+        )
+}
+
+/// The list with the element at `at` replaced.
+fn replaced<T>(xs: List<T>, at: int, x: T) -> List<T> { [if i == at { x } else { y } for i, y in xs] }
+
+/// The list without the element at `at`.
+fn without<T>(xs: List<T>, at: int) -> List<T> { [y for i, y in xs if i != at] }
+
+fn node_reductions(n: Node) -> List<Node> {
+    match n {
+        .Text(pieces) -> [Node.Text(ps) for ps in piece_lists(pieces)],
+        .Row(kids) -> [Node.Row(ks) for ks in kid_lists(kids)].concat(kids),
+        .Column(kids) -> [Node.Column(ks) for ks in kid_lists(kids)].concat(kids),
+        .Button(_, _) -> [],
+    }
+}
+
+/// A container's kids one step smaller: one dropped, or one reduced.
+fn kid_lists(kids: List<Node>) -> List<List<Node>> {
+    [without(kids, i) for i in 0..kids.length]
+        .concat([replaced(kids, i, smaller) for i, k in kids for smaller in node_reductions(k)])
+}
+
+/// A text's pieces one step smaller: one dropped (never the last), a value
+/// made words, or a value's term made simpler.
+fn piece_lists(ps: List<Piece>) -> List<List<Piece>> {
+    [without(ps, i) for i in 0..ps.length if ps.length > 1]
+        .concat([replaced(ps, i, Piece.Words("x")) for i, p in ps if is_value(p)])
+        .concat([replaced(ps, i, smaller) for i, p in ps for smaller in value_reductions(p)])
+}
+
+fn is_value(p: Piece) -> bool {
+    match p { .Value(_) -> true, .Words(_) -> false }
+}
+
+fn value_reductions(p: Piece) -> List<Piece> {
+    match p {
+        .Value(t) -> [Piece.Value(smaller) for smaller in term_reductions(t)],
+        .Words(_) -> [],
+    }
+}
+
+/// A term one step smaller: a read, call or opaque call made a literal, a sum
+/// made one of its parts or lacking one, or a part made smaller.
+fn term_reductions(t: Term) -> List<Term> {
+    match t {
+        .Num(_) -> [],
+        .Read(_) or .Call(_) or .Opaque -> [Term.Num(0)],
+        .Sum(parts) -> [Term.Sum(without(parts, i)) for i in 0..parts.length]
+            .concat(parts)
+            .concat(
+                [Term.Sum(replaced(parts, i, smaller)) for i, x in parts for smaller in term_reductions(x)],
+            ),
+    }
+}

@@ -1,0 +1,80 @@
+//! `spec.av` — a view program as data: states, fns that read them, a view
+//! whose sites read them, and the turns of writes a driver replays. The
+//! shape is small on purpose: every site mechanism the compiler can pick
+//! (constant, one place, several, a call through a callee, an opaque call)
+//! and nothing else, so a failure shrinks to something a reader holds.
+
+/// An int-valued term.
+export enum Term {
+    /// a literal
+    Num(n: int)
+    /// the global `state` at this index
+    Read(place: int)
+    /// the sum of its parts (none is zero)
+    Sum(parts: List<Term>)
+    /// a call to the fn at this index, which reads what its body says
+    Call(callee: int)
+    /// a call whose callee is a fn VALUE: a body the analysis cannot name
+    Opaque
+}
+
+/// A piece of a text site: words, or a term's value.
+export enum Piece {
+    Words(text: string)
+    Value(term: Term)
+}
+
+/// One node of the view.
+export enum Node {
+    /// a text whose pieces are joined
+    Text(pieces: List<Piece>)
+    Row(kids: List<Node>)
+    Column(kids: List<Node>)
+    /// a button, whose press runs the write step at this index
+    Button(label: string, step: int)
+}
+
+/// `fn f<i>() -> int { body }`: callees only reach lower indices.
+export type Fn = { body: Term }
+
+/// One write: `s<place> = to`.
+export type Step = { place: int, to: Term }
+
+/// A whole program: `states` globals, its fns, its view, the write steps it
+/// declares, and the turns a driver replays (each a list of step indices run
+/// before one paint).
+export type Program = { states: int, fns: List<Fn>, view: Node, steps: List<Step>, turns: List<List<int>> }
+
+/// Whether a program is well formed: every place, callee, step and turn it
+/// names exists, and a fn reaches only the fns before it.
+export fn valid(p: Program) -> bool {
+    p.states >= 1 &&
+        [term_valid(f.body, p.states, i) for i, f in p.fns].all(it) &&
+        p
+            .steps
+            .all(it.place >= 0 && it.place < p.states && term_valid(it.to, p.states, p.fns.length)) &&
+        node_valid(p.view, p) &&
+        p.turns.all((t: List<int>) -> t.all((k: int) -> k >= 0 && k < p.steps.length))
+}
+
+/// Whether a term names only states below `states` and fns below `fns`.
+fn term_valid(t: Term, states: int, fns: int) -> bool {
+    match t {
+        .Num(_) or .Opaque -> true,
+        .Read(p) -> p >= 0 && p < states,
+        .Call(c) -> c >= 0 && c < fns,
+        .Sum(parts) -> parts.all(term_valid(it, states, fns)),
+    }
+}
+
+fn node_valid(n: Node, p: Program) -> bool {
+    match n {
+        .Text(pieces) -> pieces.all(piece_valid(it, p)),
+        .Row(kids) or .Column(kids) -> kids.all(node_valid(it, p)),
+        .Button(_, step) -> step >= 0 && step < p.steps.length,
+    }
+}
+
+fn piece_valid(piece: Piece, p: Program) -> bool {
+    match piece { .Words(_) -> true, .Value(t) -> term_valid(t, p.states, p.fns.length) }
+}
