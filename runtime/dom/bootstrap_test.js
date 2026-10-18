@@ -4,6 +4,8 @@
 // wire the program changed is the wire this test speaks.
 import { createApplier, createFetches, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
+import v8 from "node:v8";
+import vm from "node:vm";
 import { dispatch, stubDocument, stubElement, textOf } from "./stub_dom.js";
 
 // A fixture encoder — the CONSUMING side is what is under test; the
@@ -209,6 +211,21 @@ try { parseFrame(Uint8Array.from([WIRE_VERSION, 200])); } catch (e) { unknown = 
 check("an op the table does not hold refuses", unknown, "unknown patch op 200");
 check("an id past 32 bits reads whole", parseFrame(frame(create(5000000000, "div")))[0].id, 5000000000);
 check("no id reads as no id", parseFrame(frame(place(1, NO_ID, NO_ID)))[0].after, NO_ID);
+// ── a removed element is let go ──
+const churn = page();
+const rows = 10000;
+churn.apply(frame(create(0, "ul"), place(0, NO_ID, NO_ID), ...Array.from({ length: rows }, (_, k) => [create(k + 1, "li"), placeAtEnd(k + 1, 0), listen(k + 1, 1, "click", SAYS.nothing, "", false)]).flat()));
+check("the page holds the list and its rows, each hearing", churn.apply.held(), { nodes: rows + 1, hears: rows });
+const watched = new WeakRef(churn.mount.childNodes[0].childNodes[7]);
+churn.apply(frame(remove(0)));
+check("removing the list lets go of every row's slot and hearing", churn.apply.held(), { nodes: 0, hears: 0 });
+check("and a removed element's id names nothing", (() => { try { churn.apply(frame(setAttr(5, "class", "x"))); return "applied"; } catch (e) { return e.message; } })(), "a patch names element 5, which is not on the page");
+v8.setFlagsFromString("--expose-gc");
+const collect = vm.runInNewContext("gc");
+await new Promise((resolve) => setTimeout(resolve, 0));
+collect();
+check("a row taken off the page is collected, not kept by the host", watched.deref(), undefined);
+
 const edges = [0, 127, 128, 16383, 16384, 2097151, 2097152, 2 ** 40];
 check("ids at the seven-bit edges read whole, in the bytes of one more than the id", [parseFrame(frame(...edges.map((n) => remove(n)))).map((p) => p.id), edges.map((n) => idBytes(n).length)], [edges, [1, 2, 2, 3, 3, 4, 4, 6]]);
 const ended = page();
