@@ -44,10 +44,35 @@ typedef struct {
     uint32_t len;
 } Header;
 
-// The kind is the low byte of its word: every reader asks for exactly that
-// byte, whatever the word's other bytes hold. The kind is -8..4.
+// THE KIND WORD holds three fields in its four bytes, low byte first: the
+// kind (-8..4, signed), the flags, and a 16-bit STAMP. Every reader asks for
+// exactly its field. A box a site has read is OBSERVED (flag bit 0): the
+// first write to it in a turn stamps it with the turn's number and logs it
+// once, and later writes that turn only compare. A static box carries
+// 0xFF in its flags byte, which is not the observed value, so it never logs.
 static inline int32_t avra_kind(const Header* h) { return (int8_t)h->kind_word; }
-static inline void avra_set_kind(Header* h, int32_t kind) { h->kind_word = kind; }
+static inline void avra_set_kind(Header* h, int32_t kind) {
+    h->kind_word = (int32_t)(((uint32_t)h->kind_word & 0xFFFFFF00u) | ((uint32_t)kind & 0xFFu));
+}
+
+#define AVRA_FLAGS_MASK     0x0000FF00u
+#define AVRA_OBSERVED       0x00000100u
+#define AVRA_STAMP_MASK     0xFFFF0000u
+#define AVRA_STAMP_ONE      0x00010000u
+
+// The current turn's stamp, already in place (the stamp field's bits).
+extern uint32_t avra_turn_word;
+// Out of line: stamp the box and file it in the turn's change log.
+void avra_box_changed(void* payload);
+
+// A write to a box: one load, one compare, nothing more for a box no site
+// has read.
+static inline void avra_box_touch(void* payload) {
+    uint32_t w = (uint32_t)((Header*)payload - 1)->kind_word;
+    if (__builtin_expect((w & AVRA_FLAGS_MASK) == AVRA_OBSERVED, 0) && (w & AVRA_STAMP_MASK) != avra_turn_word) {
+        avra_box_changed(payload);
+    }
+}
 
 // A slot array: `cap` cells at `data`, `len` of them written, and
 // one MARK byte per cell after the cells: `MARK_OWNED` when the cell
