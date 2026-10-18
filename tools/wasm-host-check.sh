@@ -22,6 +22,7 @@ command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
 "$node" --experimental-wasm-jspi -e 0 >/dev/null 2>&1 || skip "this Node has no JSPI"
 [ -f "$tree/build/wasm32/libavra_runtime.a" ] || ( cd "$tree" && make -s wasm-runtime ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
 
+"$node" --no-warnings --experimental-wasm-jspi "$tree/runtime/dom/tasks_unit_test.js"
 cp -R "$here/wasm-host" "$work/pkg"
 "$avra" build --target wasm32 --wasm_reactor "$work/pkg" >"$work/build.out" 2>"$work/build.err" || { say "the reactor did not build"; cat "$work/build.err" >&2; exit 1; }
 wasm=$(tail -1 "$work/build.out")
