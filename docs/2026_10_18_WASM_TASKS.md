@@ -249,6 +249,21 @@ native-only. The tangles that make this a review and not a mechanical move:
   scheduler object disassembles identically to main (arm64 and x86_64), so
   the hot path gained no call. The file split can follow the same seam.
 
+## The shadow-stack guard: measured, and not shipped as a per-call check
+
+A check at every fn's entry (read the stack pointer, compare with the running
+task's floor, call the overflow) was built through the backend and measured
+at +72% on fib 40 (231 to 397 ms, wasm32 -O2 via binaryen 133). Its case
+cannot occur from Avra source: a call's depth is bounded first by the
+engine's own stack (a `RangeError` the host speaks as the overflow), and the
+only frames that sit in linear memory are a few spills no Avra recursion
+accumulates. So it was removed, and the guard is the cheap form native also
+uses beyond its guarded stacks: a CANARY at the foot of each task's block,
+checked at every handover, so an overrun is caught at the task's next
+switch. Building it found a real defect on the way: the thread's first stack
+was never marked as started, so a handover back to it started it as a fresh
+task and gave it a stack of its own.
+
 ## Witness plan for the open items
 
 Every test below is a program test run four ways: evaluator, native,
@@ -293,10 +308,15 @@ it red, so none is green by accident.
 
 **Stack size:**
 
-10. `task_recursion_depth`: recursion 10,000 deep inside a task succeeds
-    under all four. Recursion past the shared budget traps with the SAME
-    voice under all four (not a bare `RangeError`). The first run records
-    each engine's actual limit in this doc, replacing a guess.
+10. `task_recursion_depth` (landed as the `stack` and `stack_overflow` fixtures):
+    recursion 5,000 deep inside a task succeeds under all three engines
+    (10,000 does not: the native task stack of 256 KiB overflows first, so
+    the claim is made at what every engine can run). Recursion past any
+    stack ends native and wasm with status 2 and the words `a task's stack
+    overflowed`; the evaluator refuses in its own words (its 100,000-call
+    limit). On wasm the limit that bites first is the ENGINE's call stack,
+    a bare `RangeError`, so the host speaks it as the same overflow
+    (`faultWords`); a break that drops that mapping turns the fixture red.
 
 **Artifact choice (the load path):**
 
