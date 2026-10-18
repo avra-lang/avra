@@ -314,14 +314,14 @@ spec "std/ui html — primitives" {
 
 spec "std/ui html — no value reaches a class name" {
     given "fixed sizes, a growth and an order" {
-        then "a node names the classes that read them, and writes no style attribute" {
+        then "a node names the classes that read them and the place of its rule in the sheet" {
             fragment(
                 boxed(
                     .Column,
                     Layout { width: .Fixed(8), height: .Fixed(3), grow: 2, order: -2 },
                     [],
                 ),
-            ) == "<div class=\"dir-col w-fixed h-fixed grow order\"></div>"
+            ) == "<div class=\"dir-col w-fixed h-fixed grow order\" data-v=\"0\"></div>"
         }
         then "two nodes of different sizes are the same markup" {
             fragment(boxed(.Row, Layout { width: .Fixed(8) }, [])) == fragment(boxed(.Row, Layout { width: .Fixed(99) }, []))
@@ -357,6 +357,44 @@ spec "std/ui html — no value reaches a class name" {
         }
         then "no class name carries a number" {
             !all_rules().any((r) -> codepoints(r.name).any((c) -> c >= 48 && c <= 57))
+        }
+    }
+}
+
+/// A column of fixed size over two rows, one fixed and one filling.
+fn tall() -> Node {
+    boxed(
+        .Column,
+        Layout { width: .Fixed(8), height: .Fixed(3), grow: 2, order: -2 },
+        [boxed(.Row, Layout { width: .Fixed(5) }, []), boxed(.Row, Layout { width: .Fill }, [])],
+    )
+}
+
+fn small() -> Node { boxed(.Row, Layout { width: .Fixed(8) }, []) }
+
+spec "std/ui html — the sheet carries the values" {
+    given "a page of nodes that state sizes" {
+        then "each element that states any has a rule, numbered in document order" {
+            let html = page(Page { title: "t" }, tall())
+            html.contains("<div class=\"dir-col w-fixed h-fixed grow order\" data-v=\"0\">") &&
+                html.contains("<div class=\"dir-row gap-s w-fixed\" data-v=\"1\">") &&
+                html.contains("\n[data-v=\"0\"]{--w:8px;--h:3px;--grow:2;--order:-2}") &&
+                html.contains("\n[data-v=\"1\"]{--w:5px}")
+        }
+        then "an element that states none has no rule and no number" {
+            page(Page { title: "t" }, tall()).contains("<div class=\"dir-row gap-s w-fill\">")
+        }
+        then "no element carries a style attribute" { !page(Page { title: "t" }, tall()).contains("style=\"") }
+    }
+    given "a page under a policy that allows styles by nonce" {
+        then "its one style element carries the nonce" {
+            page(Page { title: "t", nonce: "n1" }, small()).contains("<style nonce=\"n1\">")
+        }
+        then "a nonce is escaped where it lands" {
+            page(Page { title: "t", nonce: "a\"b" }, small()).contains("<style nonce=\"a&quot;b\">")
+        }
+        then "a page with no nonce writes a bare style element" {
+            page(Page { title: "t" }, small()).contains("<style>")
         }
     }
 }

@@ -13,7 +13,7 @@
 use tree.identity.{NodeId, Step, root as root_step, steps, unplaced, under}
 use tree.node.{Node, Attribute, Prim, Action, EventKind, submits_among}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
-use realize.html.css.{class_names}
+use realize.html.css.{class_names, box_vars, CssVar}
 
 /// One piece of a page: an element, or a run of text.
 export enum Element {
@@ -27,7 +27,7 @@ export type Worded = { id: NodeId = unplaced, seat: string, reads: string, conte
 
 /// An element: where it stands among its siblings (`seat`, its step as
 /// matched; `reads`, the same step as a reader is shown it), its tag,
-/// its attributes in written order, what it hears, and what it holds. `id` is the number a page gave it — none until a
+/// its attributes in written order, the custom properties its classes read (`vars`), what it hears, and what it holds. `id` is the number a page gave it — none until a
 /// page places it. `rests` names what its node draws AT REST: a box
 /// drawn unticked holds no attribute, and is drawn all the same.
 export type Tagged = {
@@ -36,6 +36,7 @@ export type Tagged = {
     reads: string,
     tag: HtmlTag,
     attrs: List<HtmlAttr> = [],
+    vars: List<CssVar> = [],
     rests: List<HtmlAttrName> = [],
     hears: List<Action> = [],
     kids: List<Element> = [],
@@ -217,6 +218,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 reads: at.shown,
                 tag: .Label,
                 attrs: node_attrs(n),
+                vars: box_vars(n.box),
                 kids: if words_lead(n.prim) { [words, control] } else { [control, words] }.concat(kids),
             },
         )
@@ -253,6 +255,7 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
                 reads: at.shown,
                 tag: tag_of(n),
                 attrs: element_attrs(n.prim, n.attrs).concat(node_attrs(n)),
+                vars: box_vars(n.box),
                 rests: rests_of(n.attrs),
                 hears: heard(n),
                 kids: kids,
