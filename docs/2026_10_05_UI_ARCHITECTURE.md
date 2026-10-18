@@ -229,10 +229,8 @@ layout-oracle` demands every box agree, so neither can drift unseen.
 A size is one of three things, on the axis its parent lays along:
 
 - `Fixed(n)` holds `n`: it does not shrink when a sibling asks for room.
-- `Hug` (nothing written) asks its content, and gives way down to one cell of
-  it: a word wider than its line is cut where it must (the page writes
-  `overflow-wrap:anywhere`), so a row of buttons shrinks and breaks their words
-  before it overflows.
+- `Hug` (nothing written) asks its content, and gives way no further than its
+  narrowest (its longest word, one unbreakable control).
 - `Fill` takes the room that is left (a `grow` given is its share), and across
   the axis stretches to the line.
 

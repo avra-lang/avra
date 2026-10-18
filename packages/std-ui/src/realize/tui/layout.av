@@ -9,7 +9,7 @@
 //! down a column, and None 0, Xs and S 1, M 2, L 3, Xl 4 cells along a
 //! row; a pad is None 0, Xs 1, S 2, M 4, L 6, Xl 8 cells across and a
 //! gap's lines down. A list keeps two cells for its bullet.
-use @std.text.{repeat, codepoints, from_codepoints, cells, graphemes}
+use @std.text.{repeat, codepoints, from_codepoints, cells}
 use tree.node.{Node, Prim}
 use realize.tui.wrap.{wrap, cut, at_least_one, shown}
 use realize.tui.said.{Reads, said_of}
@@ -51,11 +51,20 @@ fn kept(p: Prim) -> int {
 /// a node that only holds.
 export fn own_lines(n: Node, w: int) -> List<string> { body(n, at_least_one(w)) }
 
-/// The cells of the widest piece of a node's own content that cannot be
-/// broken across lines: one cluster, since a line breaks where it must.
+/// The cells of the longest run of a node's own content that cannot be
+/// broken across lines: a word of its text, or the whole of anything drawn
+/// as one piece. A word wider than the room it is given is cut where it must,
+/// but only then: asking for room never asks for less than the word.
 export fn unbreakable_cells(n: Node) -> int {
-    [cells(g) for line in own_lines(n, 1000000) for g in graphemes(line)].max() ?? 0
+    let said = said_of(n.attrs)
+    match n.prim {
+        .Text or .Alert or .Spinner or .Heading -> longest_word(n.words()),
+        .Card or .Dialog -> longest_word(said.title),
+        .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Progress or .Form or .Switch or .Slider -> [cells(l) for l in own_lines(n, 1000000)].max() ?? 0,
+    }
 }
+
+fn longest_word(s: string) -> int { [cells(w) for p in s.split("\n") for w in p.split(" ")].max() ?? 0 }
 
 /// The cells beside the node the keys go to, which hold its `> ` mark.
 export const pointer_cells = 2
