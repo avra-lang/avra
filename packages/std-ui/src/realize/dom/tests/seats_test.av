@@ -2,7 +2,6 @@
 //! hand tables it replaces: every event seat's `@host` says what the page's
 //! own tables said of its kind.
 use @std.ui.components.{button, checkbox, dialog, field, form, link, slider, switch}
-use @std.ui.realize.dom.{event_word, prevented}
 use @std.ui.tree.node.{Prim}
 use @std.ui.tree.seats.{SeatRow, seat_rows, ties}
 
@@ -14,8 +13,8 @@ spec "the seat table" {
             [r.owner + "." + r.event for r in rows()].join(" ") == "button.press checkbox.change dialog.dismiss field.input form.submit link.press slider.change switch.change"
         }
         then "names each seat once" { ties(rows()).is_empty() }
-        then "calls each seat what the page's own table calls its kind" {
-            rows().all(it.web != null && it.web!.word() == event_word(it.kind))
+        then "calls each seat what the web calls it" {
+            [r.owner + "." + r.event + "=" + r.web!.word() for r in rows()].join(" ") == "button.press=click checkbox.change=change dialog.dismiss=cancel field.input=input form.submit=submit link.press=click slider.change=change switch.change=change"
         }
         then "marks the seats the page always listens for, handler or none: a form's submit and a dialog's dismissal" {
             [r.owner + "." + r.event for r in rows() if r.always].join(" ") == "dialog.dismiss form.submit"
@@ -25,8 +24,8 @@ spec "the seat table" {
                 rows().find(it.owner == "dialog")?.prim == Prim.Dialog &&
                 rows().find(it.owner == "slider")?.prim == Prim.Slider
         }
-        then "prevents the page's own answer exactly where the page's table does" {
-            rows().all(it.prevent == prevented(it.kind))
+        then "prevents the page's own answer only where it would leave the page" {
+            [r.owner for r in rows() if r.prevent].join(" ") == "form"
         }
     }
     given "two seats of one name" {
