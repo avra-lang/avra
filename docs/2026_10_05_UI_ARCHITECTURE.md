@@ -47,7 +47,8 @@ Five attempts to lift a handler into a generated message failed.
    run still in order stands still and only the rest are placed, so a
    reorder says the fewest moves. A host holds no reconciler and no table of
    the library's facts: the event's own word, what it says, the
-   property to read and whether to stop it ride the `listen` patch.
+   property to read and whether to stop it arrive once per seat in a
+   `define` record (see "The wire"), and every `listen` names the seat.
    A property is held on the page as text or a flag — a number control's
    value is the text that spells it — so what was drawn and what was
    heard compare in one currency.
@@ -127,9 +128,8 @@ Five attempts to lift a handler into a generated message failed.
    headless Firefox with the browser's own pointer and keys
    (`tools/ui-board/browser.mjs`): what only an engine can show — the
    sheet styling the page, a caret kept while typing, the keyboard's
-   reach, the focus kept on a row that is carried. Event kinds need no
-   host copy:
-   the host echoes a kind it never reads.
+   reach, the focus kept on a row that is carried. An event's seat needs no
+   host copy: the host echoes the number it was given and reads none.
 7. **`mount(view)` is the app.** No app writes the host seam: the
    page's exports and its one import are the web module's own
    (`web/web.av`), and the program's statements are its start. THE LOOP
@@ -186,6 +186,53 @@ Five attempts to lift a handler into a generated message failed.
     `Font`) are `style/tokens.av`'s; a value that shows itself where it
     is listed is `tree/shows.av`'s `Shows`. The old node's `spoken`
     is `tree/outline.av`'s `outline`.
+
+## The wire (version 12)
+
+A frame is the version byte, then one record per patch (`realize/dom/wire.av`
+is the one definition; `runtime/dom/wire.gen.js` is written from it). A
+number is four little-endian bytes unless it says *varint*: seven-bit groups,
+low first, the high bit of each byte saying another follows (one byte under
+128, two under 16,384, three under 2,097,152). An id is the varint of *one more
+than its number*, so zero is "none". A text is its byte length, then its bytes.
+
+| record | fields |
+|---|---|
+| `create` | id, tag (varint: its place in `TAGS`, written from `HtmlTag`) |
+| `create_text`, `set_text` | id, text |
+| `place` | id, parent (zero: the page), after (varint: 0 first place, 1 the end of the parent's run, n+2 the sibling n) |
+| `remove` | id |
+| `set_attr`, `drop_attr`, `set_prop` | id, name, (value, or says + value) |
+| `define` | seat, says, event word, property read (empty: none), prevents |
+| `listen` | id, seat, says |
+| `unlisten` | id, seat |
+| `style`, `call` | css; id, verb |
+
+**Said once.** What a seat's event is — its word, the property its answer
+is read from, whether the page's own answer is stopped — is the same for every
+element that hears it, so a `define` goes out before the first `listen` that
+needs it and each `listen` is an element and two numbers. A page's `Live`
+remembers what it defined (`told`); a frame given no memory defines what it
+needs and is self-contained. The host refuses a `listen` no `define` named.
+**The end of a run** is said only for a parent made in the same frame: the
+frame itself built that run, so the last child placed is its end; a child that
+moves or leaves makes the parent unknown again and later places name their
+sibling. Parents from earlier frames and the page's top level stay explicit.
+
+**Reconnecting.** A new connection to the same app starts from an empty page,
+so `Live.reconnected()` forgets the page, the sheet, the bindings and the
+definitions together; the next paint says all of it again. Nothing in
+production reconnects yet (a page's `Live` lives in its own wasm instance);
+the verb is the one door a server-side page must go through, and
+`page_test` holds it. **Listening** is one capturing listener per event word on
+the mount: the host keeps who hears what as data (element, seat → what it
+says) and finds the hearers on the way up from the target. A version
+mismatch is the existing refusal; a cached page of another version is told,
+never misapplied.
+
+Measured on 100,000 buttons under one container (`tools/ui-board/listen_bench`,
+Firefox): wire 10 spent 78 bytes a button (7.80 MB), wire 11 61 (6.10 MB), wire 12
+23 (2.25 MB); listeners 100,000 → 1.
 
 ## Failure is contained to its turn
 
