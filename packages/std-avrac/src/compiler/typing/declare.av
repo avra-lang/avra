@@ -31,7 +31,6 @@ use core.{
 }
 use diagnostics.{refusal, Diag, unread_behind}
 use features.{
-    words_mark,
     TypeCx,
     slot_help,
     WrittenIn,
@@ -231,7 +230,6 @@ impl TypeCx {
             defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
             lacking: lacking,
             states: [f.state for f in fields],
-            roles: [role_of(f) for f in fields],
         }
         let written = if spreads.is_empty() { own } else { self.spread_into(s, owner, own, spreads) }
         let sig = self.with_carried(s, written)
@@ -1344,7 +1342,6 @@ fn one_field(sig: StructSig, j: int) -> StructSig {
         types: [sig.types[j]],
         defaults: [sig.defaults[j]],
         states: [sig.state_at(j)],
-        roles: [sig.role_at(j)],
     }
 }
 
@@ -1355,17 +1352,10 @@ fn joined_tables(ts: List<StructSig>) -> StructSig {
         types: [x for t in ts for x in t.types],
         defaults: [d for t in ts for d in t.defaults],
         states: [s for t in ts for s in t.states],
-        roles: [t.role_at(j) for t in ts for j in 0..t.names.length],
     }
 }
 
-fn no_fields() -> StructSig { StructSig { names: [], types: [], defaults: [], states: [], roles: [] } }
-
-/// The role a field's `@words(<role>)` mark names, none when it wears no such mark.
-fn role_of(f: Param) -> string {
-    let m? = f.marks.find((x) -> x.name == words_mark) else { return "" }
-    m.args.first() ?? ""
-}
+fn no_fields() -> StructSig { StructSig { names: [], types: [], defaults: [], states: [] } }
 
 // ── The bound voices ──
 

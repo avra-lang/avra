@@ -25,7 +25,7 @@ use features.{
     Instanced,
     Event,
     words_mark,
-    role_said,
+    words_role,
 }
 use grammar.{Token, TokenKind, lex_source, after_type_args}
 
@@ -136,8 +136,17 @@ fn record_of(store: SyntaxArena, c: ComponentParts) -> Record {
     }
 }
 
-/// Whether a field is declared (`@words(said)`) to hold its component's words again.
-fn says_words(p: Param) -> bool { p.marks.any(it.name == words_mark && it.args.first() == role_said) }
+/// Whether a field is declared (`@words(.Said)`) to hold its component's words again.
+fn says_words(p: Param) -> bool { p.marks.any((m) -> m.name == words_mark && is_said(m)) }
+
+/// Whether a mark names the role that says a component's words again.
+fn is_said(m: Mark) -> bool {
+    match words_role(m.args.first() ?? "") {
+        .Said -> true,
+        .Cells or .Structural or .Opaque -> false,
+        null -> false,
+    }
+}
 
 /// A written fn type's own answer — its LAST seat — reads as
 /// nullable: the `?` an arms body's implicit `_ -> null` tail

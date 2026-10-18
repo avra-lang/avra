@@ -135,7 +135,7 @@ export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [
 /// IS the runtime slot; a default is the declaration whose body
 /// fills it. `lacking` names what it leaves out ON PURPOSE (`@lacks`).
 @derive(Fingerprint)
-export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [], states: List<bool> = [], roles: List<string> = [] }
+export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?>, lacking: List<Lacked> = [], states: List<bool> = [] }
 
 /// A field a record leaves out on purpose, and the reason a read hears.
 @derive(Fingerprint)
@@ -158,21 +158,32 @@ fn named_list(names: List<string>) -> string {
 }
 
 /// THE MARK A FIELD WEARS TO SAY WHAT IT HOLDS OF ITS COMPONENT'S TEXT, and
-/// the roles its argument names: the closure that says the words again, the
+/// the role its argument names: the closure that says the words again, the
 /// cells that closure reads, the cells the paint reads that no closure
 /// answers for, and whether the subtree can be placed at all.
 export const words_mark = "words"
-export const role_said = "said"
-export const role_cells = "cells"
-export const role_structural = "structural"
-export const role_opaque = "opaque"
+
+@derive(Fingerprint)
+export enum WordsRole {
+    Said
+    Cells
+    Structural
+    Opaque
+}
+
+/// The role a mark argument names; none for a word that is no role. THE ONE
+/// place a written word becomes a role: everything after matches the enum.
+export fn words_role(arg: string) -> WordsRole? {
+    match arg {
+        "Said" -> WordsRole.Said,
+        "Cells" -> WordsRole.Cells,
+        "Structural" -> WordsRole.Structural,
+        "Opaque" -> WordsRole.Opaque,
+        rest -> null,
+    }
+}
 
 impl StructSig {
-    /// The role slot `j` wears (`@words(<role>)`), none for a field without one.
-    fn role_at(j: int) -> string {
-        if j < self.roles.length { self.roles[j] } else { "" }
-    }
-
     /// A named field's slot, when declared — THE lookup every
     /// consumer shares.
     fn slot_of(name: string) -> int? {
