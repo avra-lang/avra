@@ -1423,7 +1423,7 @@ fn collect_field_reg(
 ) -> Reg {
     match field_plan(a.view.decls, entry_ty, name, path, kind) {
         .Crossed -> decl_crossed_reg(lo, field_seat(a.view.decls, entry_ty, name), d.id),
-        .Value -> collect_fn_reg(lo, d.id, field_seat(a.view.decls, entry_ty, name)),
+        .Value -> member_value_reg(lo, d, field_seat(a.view.decls, entry_ty, name)),
         .RootKind -> int_list_box(lo, component_root_kind(a.view.decls, d)),
         .NodeKinds -> int_list_box(lo, component_node_kinds(a.view.decls, d)),
         .Mark -> mark_field_reg(lo, field_seat(a.view.decls, entry_ty, name), kind, d),
@@ -1556,6 +1556,23 @@ fn component_field_reg(mut lo: LowerCx, a: Analysis, field_ty: TypeId, word: str
     if lo.unseen(unit.name) { lo.jobs.pending.push(unit) }
     let inst = lo.call_decl(inst_ty, unit.name, [])
     lo.field_named(inst, inst_ty, word, field_ty)
+}
+
+/// A bare `it` of a member: a const IS its settled value, any other
+/// declaration its callable fn value.
+fn member_value_reg(mut lo: LowerCx, d: Decl, seat: TypeId) -> Reg {
+    if !holds_a_value(d.kind) { return collect_fn_reg(lo, d.id, seat) }
+    lo.settled_value_reg(d.file, d.stmt, seat, [], lo.view.decls.const_symbol(d.file, d.stmt)) ?? lo
+        .zero_of(seat)
+}
+
+/// Whether a declaration of this kind is a settled value rather than code.
+/// A registry: every kind answers.
+fn holds_a_value(kind: DeclKind) -> bool {
+    match kind {
+        .Const -> true,
+        .Builtin or .Fn or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Collect or .CollectEnum or .State -> false,
+    }
 }
 
 /// A NAMED fn as a value, at the reference's own site — `fn_value_reg`'s
