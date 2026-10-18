@@ -644,7 +644,13 @@ absent. A failure that reads as a MISSING DECLARATION with no voice is this
 shape until proven otherwise: run the failing group with `AVRA_DEBUG=1` and
 read the `settle:` lines — a step count lower than the same run's usual, with
 bytes just over 5242880, is the cut. The run is billed only for what it
-makes (`Machine.named_unbilled`); `compiler/tests/settle_bill_test.av` pins it.
+makes (`Machine.named_unbilled`: `type_named` and `embed` are the run's only
+doors into the compiler, and the first is the only one that builds kept
+state); `compiler/tests/settle_bill_test.av` pins it. A cut derive now SPEAKS
+on every expansion, not only its first (`Workspace.lift_refusal`): a refused
+lift answers `Spoken` on reuse, and an expansion's voices are wiped when it
+runs again, so the second expansion used to say nothing
+(`compiler/tests/silent_cut_test.av`).
 To reproduce a PR-route failure, download the run's `avra-compiler` and
 `avra-build` artifacts, unpack them over a copy of the PR's tree on a Sprite,
 and run the failing job's groups IN ITS ORDER: the compiler group alone
