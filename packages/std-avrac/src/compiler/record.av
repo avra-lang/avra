@@ -1206,17 +1206,13 @@ export fn module_bytes(ws: Workspace, m: ModulePath) -> string {
 /// A record that places a file the host no longer has is a previous tree's, and
 /// keys on the module's bytes like no record at all.
 export fn bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string {
-    if !record_stands(ws, store, m) { return module_bytes(ws, m) }
+    let row = ws.producers_in(store, m)
+    if !row.placed.all((path) -> ws.there(path)) { return module_bytes(ws, m) }
+    if !row.files.is_empty() && row.files.all(it.length > 4) { return ifaces_digest([l[4] for l in row.files]) }
     iface_of(record_cached(ws, store, m)) ?? sub_module_bytes_key(ws, store, m) ?? module_bytes(
         ws,
         m,
     )
-}
-
-/// Whether every file a module's record places is one the host still has.
-// LICENSED compiler.free_state_verb: a KEY DERIVATION's guard — a workspace, a store and a module in.
-fn record_stands(ws: Workspace, store: Store, m: ModulePath) -> bool {
-    record_fields(ws, store, m).all((p) -> !places_file(p) || ws.there(p[1]))
 }
 
 /// Whether a record line is a `file` line naming a path.
@@ -1245,10 +1241,10 @@ fn sub_module_bytes_key(ws: Workspace, store: Store, m: ModulePath) -> string? {
 // LICENSED compiler.free_state_verb: a KEY DERIVATION — a workspace, a module and its files in, their interface digest out.
 fn files_iface(ws: Workspace, store: Store, m: ModulePath, paths: List<string>) -> string? {
     if paths.is_empty() || paths.any((f) -> !ws.there(f)) { return null }
-    let places = record_places(ws, store, m)
-    let ats = [places.get(f) for f in paths]
-    if ats.any((at: Placed?) -> at == null || at!.file.length <= 4) { return null }
-    ifaces_digest([at!.file[4] for at in ats])
+    let columns = ws.file_columns(store, m)
+    let ats = [columns.get(f) for f in paths]
+    if ats.any((at: List<string>?) -> at == null || at!.length <= 4) { return null }
+    ifaces_digest([at![4] for at in ats])
 }
 
 /// Files' interface digests as one — in name order, so the order they were asked in is no part of it.
