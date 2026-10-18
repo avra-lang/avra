@@ -1501,8 +1501,12 @@ impl Decls {
 
     /// A declaration's module fully qualified, as `use` spells it from
     /// outside the package: a root module gains the root's own name.
-    fn qualified_module(d: DeclId) -> string {
-        let m = self.module_of(d)
+    fn qualified_module(d: DeclId) -> string { self.qualified_module_named(self.module_of(d)) }
+
+    /// A module's name fully qualified: a root module gains the root's own
+    /// name, so one file reads the same as the root being built and as a
+    /// dependency of the program that carries it.
+    fn qualified_module_named(m: string) -> string {
         if !package_of_module(m).is_empty() { return m }
         let root = self.root_name.get()
         when {
@@ -3122,16 +3126,18 @@ impl Decls {
         "${dirs.concat([stem_of(info.path)]).join("/")}.av"
     }
 
-    /// A literal's SITE: its file — module and stem — its own content,
-    /// and its turn among the literals written alike in that file,
-    /// folded. Content-addressed, so a line added above a literal moves
-    /// nothing; two literals written alike are told apart by their turn.
+    /// A literal's SITE: its file — package-qualified module and stem —
+    /// its own content, and its turn among the literals written alike in
+    /// that file, folded. Content-addressed, so a line added above a
+    /// literal moves nothing; two literals written alike are told apart by
+    /// their turn. The module is read by `qualified_module_named`, so a
+    /// package's file wears one site as the root and as a dependency.
     fn site_of(f: FileId, content: int, turn: int) -> int {
         let info = self.file(f)
         mix_final(
             fp_list(
                 [
-                    fp_str(self.module_name(info.module_id)),
+                    fp_str(self.qualified_module_named(self.module_name(info.module_id))),
                     fp_str(stem_of(info.path)),
                     content,
                     turn,
