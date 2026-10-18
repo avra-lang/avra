@@ -19,6 +19,10 @@ export enum Key {
     Erase
     Char(text: string)
     End
+    PageUp
+    PageDown
+    Top
+    Bottom
 }
 
 /// What a run of input spells: its keys, and the octets of an unfinished
@@ -40,10 +44,14 @@ const bracket = 91
 /// `O`, which opens a single-shift sequence after an escape.
 const shift_three = 79
 
-/// The finals that move the focus: `A` (up), `B` (down), `Z` (back-tab).
+/// The finals that move the focus: `A` (up), `B` (down), `Z` (back-tab); and
+/// `H` (home), `F` (end), and `~` closing a numbered key.
 const up = 65
 const down = 66
 const back_tab = 90
+const home = 72
+const finish = 70
+const numbered = 126
 
 /// The most octets an unfinished sequence is held for; past it, it is
 /// dropped as read.
@@ -62,12 +70,26 @@ fn dropped(to: int) -> Read { Read { keys: [], next: to } }
 /// What begins at `at` is unfinished: nothing is read past it.
 fn waiting(at: int) -> Read { Read { keys: [], next: at, waits: true } }
 
-/// The key a sequence's final names.
-fn moved(last: int) -> List<Key> {
+/// The key a sequence's final names; a numbered key (`ESC [ 5 ~`) names it by
+/// its number: 5 and 6 page, 1 and 7 go home, 4 and 8 go to the end.
+fn moved(last: int, number: string) -> List<Key> {
     when {
         last == up || last == back_tab -> [Key.Back]
         last == down -> [Key.Next]
+        last == home -> [Key.Top]
+        last == finish -> [Key.Bottom]
+        last == numbered -> numbered_key(number)
         _ -> []
+    }
+}
+
+fn numbered_key(number: string) -> List<Key> {
+    match number {
+        "5" -> [Key.PageUp],
+        "6" -> [Key.PageDown],
+        "1" or "7" -> [Key.Top],
+        "4" or "8" -> [Key.Bottom],
+        _ -> [],
     }
 }
 
@@ -81,7 +103,11 @@ fn sequence(b: Bytes, opened: int, at: int) -> Read {
         return if end - opened > longest_sequence { dropped(end) } else { waiting(opened) }
     }
     let last = b.at(end)
-    if last >= 64 && last <= 126 { Read { keys: moved(last), next: end + 1 } } else { dropped(end) }
+    if last >= 64 && last <= 126 {
+        Read { keys: moved(last, b.slice(at, end).text() ?? ""), next: end + 1 }
+    } else {
+        dropped(end)
+    }
 }
 
 /// The escape at `at`, read with what it opens.
@@ -91,7 +117,7 @@ fn escaped(b: Bytes, at: int) -> Read {
     if opener == bracket { return sequence(b, at, at + 2) }
     if opener != shift_three { return dropped(at + 2) }
     if at + 2 >= b.length { return waiting(at) }
-    Read { keys: moved(b.at(at + 2)), next: at + 3 }
+    Read { keys: moved(b.at(at + 2), ""), next: at + 3 }
 }
 
 /// How many octets the character a lead octet opens takes — none for an

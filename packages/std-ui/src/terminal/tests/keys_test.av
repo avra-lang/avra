@@ -10,6 +10,10 @@ fn word(k: Key) -> string {
         .Erase -> "erase",
         .Char(ch) -> "'${ch}'",
         .End -> "end",
+        .PageUp -> "pageup",
+        .PageDown -> "pagedown",
+        .Top -> "top",
+        .Bottom -> "bottom",
     }
 }
 
@@ -46,6 +50,13 @@ spec "a terminal's input is read as keys" {
     given "a control sequence" {
         then "Shift-Tab and the up arrow move back" { spelled("${esc()}[Z${esc()}[A") == "back back" }
         then "the down arrow moves on" { spelled("${esc()}[B") == "next" }
+        then "page, home and end keys, by letter or number" {
+            spelled(
+                "${esc()}[5~${esc()}[6~${esc()}[H${esc()}[F${esc()}[1~${esc()}[4~${esc()}[7~${esc()}[8~",
+            ) == "pageup pagedown top bottom top bottom top bottom"
+        }
+        then "home and end as single-shift sequences" { spelled("${esc()}OH${esc()}OF") == "top bottom" }
+        then "a numbered key the loop has no key for is dropped whole" { spelled("${esc()}[3~x") == "'x'" }
         then "one the loop has no key for is dropped whole, never typed" {
             spelled("a${esc()}[1;5Cb${esc()}[3~c") == "'a' 'b' 'c'"
         }
