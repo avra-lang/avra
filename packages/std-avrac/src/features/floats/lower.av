@@ -5,6 +5,7 @@
 use core.{Reg, Rounding, BinOp, ExprId, Type}
 use features.{LowerCx, MethodCall}
 
+const no_result = "a float method without its Result survived typing"
 const TWO_63 = 4890909195324358656
 const MINUS_TWO_63 = -4332462841530417152
 
@@ -37,7 +38,7 @@ fn too_small_reg(mut cx: LowerCx, e: ExprId, mode: Rounding, x: Reg) -> Reg {
 /// The in-range answer: the converted int in the method's `Ok`.
 fn accepted_reg(mut cx: LowerCx, e: ExprId, mode: Rounding, x: Reg) -> Reg {
     let answer = cx.float_int(mode, x)
-    let sig? = cx.variants_at(e) else { return cx.lower_defect(e, "a float method without its Result survived typing") }
+    let sig? = cx.variants_at(e) else { return cx.lower_defect(e, no_result) }
     let ok? = sig.tag_of("Ok") else { return cx.lower_defect(e, "a Result without Ok survived typing") }
     cx.tagged_value(cx.shape_at(e), ok, [answer])
 }
@@ -46,11 +47,11 @@ fn accepted_reg(mut cx: LowerCx, e: ExprId, mode: Rounding, x: Reg) -> Reg {
 /// the method's own `Result`. Both are built by the enum verbs ordinary
 /// variant literals lower through.
 fn refused_reg(mut cx: LowerCx, e: ExprId, which: string, carried: List<Reg>) -> Reg {
-    let sides? = cx.view.types.res_parts(cx.type_at(e)) else { return cx.lower_defect(e, "a float method without its Result survived typing") }
+    let sides? = cx.view.types.res_parts(cx.type_at(e)) else { return cx.lower_defect(e, no_result) }
     let to_int? = cx.variants_of(sides.err) else { return cx.lower_defect(e, "ToInt without its variants survived typing") }
     let tag? = to_int.tag_of(which) else { return cx.lower_defect(e, "a ToInt variant without its tag survived typing") }
     let inner = cx.tagged_value(cx.view.types.shape_of(sides.err), tag, carried)
-    let sig? = cx.variants_at(e) else { return cx.lower_defect(e, "a float method without its Result survived typing") }
+    let sig? = cx.variants_at(e) else { return cx.lower_defect(e, no_result) }
     let err? = sig.tag_of("Err") else { return cx.lower_defect(e, "a Result without Err survived typing") }
     cx.tagged_value(cx.shape_at(e), err, [inner])
 }
