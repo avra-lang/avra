@@ -172,11 +172,6 @@ export type SyntaxArena = {
     body_starts: Cell<Map<string, int>>,
     block_voices: Cell<List<BlockVoice>>,
     foreign: Cell<List<ForeignRange>>,
-    // a keyed list's reconciliation key, by the component instance
-    // that carries it — the `by it.<field>` accessor read on each
-    // element, the one fact that makes a list reconcile by identity
-    // rather than by position
-    keyed_lists: Cell<List<ExprId?>>,
     // an `on <kind> { … }` handler's KIND, by the nullary lambda the
     // instance-body sugar built — the word the handler was written
     // with, so the printer spells the sugar back rather than the
@@ -231,7 +226,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         body_starts: map_cell(),
         block_voices: list_cell(),
         foreign: list_cell(),
-        keyed_lists: list_cell(),
         on_handlers: list_cell(),
     }
 }
@@ -300,7 +294,6 @@ impl SyntaxArena {
         self.grammar_lits.push(null)
         self.struct_targs.push([])
         self.written_close.push(null)
-        self.keyed_lists.push(null)
         self.on_handlers.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
@@ -600,13 +593,6 @@ impl SyntaxArena {
         self.instance_owners.get()[e.index]
     }
 
-    /// A keyed list's reconciliation key, by its component instance —
-    /// the element accessor the `by it.<field>` clause names. Absent
-    /// on every list that states no key, so `Tree` stays its lowering.
-    fn mark_keyed_list(e: ExprId, key: ExprId) {
-        self.keyed_lists.set_at(e.index, key)
-    }
-
     /// The type arguments a literal writes after its name — part of
     /// the expression's identity: `Box<int> { … }` and `Box<string> {
     /// … }` are different literals even where their fields read alike.
@@ -635,8 +621,11 @@ impl SyntaxArena {
         self.struct_targs_of(x)
     }
 
+    /// A keyed list's reconciliation key — the element accessor its
+    /// `by it.<field>` clause names; absent on every list that states
+    /// none, so `Tree` stays its lowering.
     fn keyed_list_key(e: ExprId) -> ExprId? {
-        self.keyed_lists.get()[e.index]
+        match self.expr(e) { .Component(_, _, _, _, _, key) -> key, _ -> null }
     }
 
     /// The event an `on <event> { … }` handler was written for, by the
@@ -741,7 +730,7 @@ impl SyntaxArena {
 
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Body(_, _, _, view) or .Component(_, _, _, view, _) -> view.expansion(),
+            .Body(_, _, _, view) or .Component(_, _, _, view, _, _) -> view.expansion(),
             _ -> null,
         }
     }
