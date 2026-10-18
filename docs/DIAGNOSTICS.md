@@ -2379,6 +2379,25 @@ an empty list has no element type to infer
 
 No witness yet.
 
+## type.spread_list
+
+a list literal spreads lists
+
+```avra
+let a = [..5]
+2
+```
+
+```
+error[type.spread_list]: `..` in a list spreads a list, found `int`
+  ╭─[witness.av:1:12]
+1 │ let a = [..5]
+  ·            ┬
+  ·            ╰── spread here
+──╯
+help: a list literal spreads lists — `[..xs, y]`; write any other value as an element
+```
+
 ## type.list_element
 
 a list's elements share one type
@@ -3681,6 +3700,25 @@ error[type.map_key]: a map's keys are strings, this is `int`
   ·          ╰── this is `int`
 ──╯
 help: other key types are recorded — spell the key as text
+```
+
+## type.spread_map
+
+a map literal spreads maps
+
+```avra
+let m = { ..5 }
+2
+```
+
+```
+error[type.spread_map]: `..` in a map spreads a map, found `int`
+  ╭─[witness.av:1:13]
+1 │ let m = { ..5 }
+  ·             ┬
+  ·             ╰── spread here
+──╯
+help: a map literal spreads maps — `{ ..m, "k": v }`; write any other value under a key
 ```
 
 ## type.map_value
