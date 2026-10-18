@@ -10,6 +10,7 @@
 #include "../avra_runtime.h"
 
 int64_t avra_box_observe(void* p);
+int64_t avra_box_key(void* p);
 int64_t avra_box_unobserve(void* p);
 int64_t avra_turn_next(void);
 void* avra_changes_take(void);
@@ -97,8 +98,28 @@ int main(void) {
     }
     CHECK(wraps == 1, "the stamp wraps once in 70000 turns and says so");
 
+    // THE OBSERVER HOLDS WHAT IT OBSERVES: the owner lets go while a site still
+    // names the box, and the box stands until the site does.
+    int64_t before = avra_mem_live();
+    void* kept = cell(1);
+    avra_box_observe(kept);
+    avra_box_observe(kept);
+    int64_t key = avra_box_key(kept);
+    avra_rc_release(kept);
+    CHECK(avra_mem_live() > before, "an observed box outlives its owner's release");
+    avra_turn_next();
+    avra_slot_set(kept, 0, 5);
+    void* log = avra_changes_take();
+    CHECK(avra_array_len(log) == 1 && avra_array_get(log, 0) == key, "a write after the owner let go still files the box's key");
+    avra_rc_release(log);
+    CHECK(avra_box_unobserve(kept) == 1, "the site lets the box go");
+    CHECK(avra_mem_live() == before, "observing twice held it once, and the last unobserve frees it");
+    CHECK(avra_box_unobserve(seen) == 1 && avra_box_unobserve(seen) == 0, "unobserving a box not observed leaves it alone");
+    CHECK(avra_box_key((void*)16) == 0 && avra_box_key(seen) != 0, "a key names a box and nothing else");
+
     CHECK(avra_box_observe((void*)16) == 0 && avra_box_observe(NULL) == 0, "a pointer that is not a box is not observed");
 
+    avra_box_unobserve(quiet);
     avra_rc_release(seen);
     avra_rc_release(quiet);
     avra_rc_release(inner);
