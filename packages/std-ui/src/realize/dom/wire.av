@@ -26,7 +26,8 @@
 use @std.meta.{derive}
 use tree.identity.{NodeId}
 use @std.http_message.message.{Request}
-use tree.node.{EventKind, Said}
+use tree.node.{Said}
+use tree.seats.{Seat, seat_numbered}
 use realize.dom.buf.{Buf, buf}
 use tree.codes.{Codes, Coded}
 use realize.dom.patch.{Patch, Listening, Says, Held, held_says}
@@ -78,26 +79,26 @@ fn held_text(value: Held) -> string {
     match value { .Text(t) -> t, .Flag(on) -> if on { "1" } else { "" } }
 }
 
-/// A host's echo, read: who spoke, what kind of event, and what it said
+/// A host's echo, read: who spoke, which seat, and what it said
 /// — absent for an event that says nothing.
-export type Echo = { id: NodeId, kind: EventKind, said: Said? }
+export type Echo = { id: NodeId, seat: Seat, said: Said? }
 
-/// The echo a host sent: element `who` spoke the kind numbered `what`,
+/// The echo a host sent: element `who` spoke the seat numbered `what`,
 /// saying what `tag` names — a number or a flag in `num`, text in `text`.
 /// An echo this wire cannot read is ABSENT and answers nothing: a kind or
 /// a tag no variant wears, or text the host could not hand over. That is
 /// never "said nothing", which is a tag of its own.
 export fn echo(who: int, what: int, tag: int, num: int, text: string?) -> Echo? {
-    let kind? = EventKind.coded_as(what) else { return null }
+    let seat? = seat_numbered(what) else { return null }
     let says? = Says.coded_as(tag) else { return null }
     let id = NodeId { n: who }
     match says {
-        .Nothing -> Echo { id: id, kind: kind, said: null },
-        .Number -> Echo { id: id, kind: kind, said: Said.Number(num) },
-        .Flag -> Echo { id: id, kind: kind, said: Said.Flag(num != 0) },
+        .Nothing -> Echo { id: id, seat: seat, said: null },
+        .Number -> Echo { id: id, seat: seat, said: Said.Number(num) },
+        .Flag -> Echo { id: id, seat: seat, said: Said.Flag(num != 0) },
         .Text -> {
             let body? = text else { return null }
-            Echo { id: id, kind: kind, said: Said.Text(body) }
+            Echo { id: id, seat: seat, said: Said.Text(body) }
         },
     }
 }
@@ -114,7 +115,7 @@ impl Buf {
     }
 
     fn push_listening(to: Listening) {
-        self.push_int(to.action.kind.code())
+        self.push_int(to.action.seat.number())
         self.push_str(to.event)
         self.push_int(to.says.code())
         self.push_str(to.reads?.word() ?? "")
@@ -158,9 +159,9 @@ impl Buf {
                 self.push_id(id)
                 self.push_listening(to)
             },
-            .Unlisten(id, kind) -> {
+            .Unlisten(id, seat) -> {
                 self.push_id(id)
-                self.push_int(kind.code())
+                self.push_int(seat.number())
             },
             .Style(css) -> self.push_str(css),
             .Call(id, verb) -> {

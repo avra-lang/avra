@@ -11,6 +11,7 @@ use style.words.{Words}
 use tree.codes.{Codes, Coded}
 use tree.facets.{Facets, Facet}
 use tree.url.{Url}
+use tree.seats.{Seat}
 
 /// The interaction contract a component IS. Every target answers every
 /// one, or the build names the target.
@@ -77,7 +78,7 @@ export enum Handler {
 /// What a node does when it speaks: the KIND of event and the handler the
 /// component bound to it. The handler stays in the program — a target
 /// subscribes to the kind and echoes WHICH node spoke, never the code.
-export type Action = { kind: EventKind, handler: Handler }
+export type Action = { seat: Seat, handler: Handler }
 
 impl Said {
     /// The text said, when text is what was said.
@@ -91,6 +92,20 @@ impl Said {
 
     fn number() -> int? {
         match self { .Number(n) -> n, .Text(_) or .Flag(_) -> null }
+    }
+}
+
+impl Handler {
+    /// Whether this handler hears what was said: a handler that wants a value
+    /// hears only a value of its shape, and one that wants none hears nothing
+    /// said. Every shape spelled.
+    fn hears(said: Said?) -> bool {
+        match self {
+            .Nothing(_) -> said == null,
+            .Text(_) -> said?.text() != null,
+            .Flag(_) -> said?.flag() != null,
+            .Number(_) -> said?.number() != null,
+        }
     }
 }
 

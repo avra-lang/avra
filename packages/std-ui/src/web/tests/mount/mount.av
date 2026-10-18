@@ -5,9 +5,13 @@
 use @std.ui.app.{Async, Fetch, after_ms, every_ms, fetch, fetched}
 use @std.http_message.message.{Reply, Request}
 use @std.ui.components.{button, column, item, text}
+use @std.ui.tree.seats.{seat_named}
 use @std.ui.web.{mount}
 
 state presses: int = 0
+
+/// The seat the page echoes for a press of a button.
+let press = seat_named("button", "press").number()
 
 /// The page's row, answered here: what a frame would have carried.
 extern fn avra_dom_frame(frame: Bytes) {
@@ -99,7 +103,7 @@ avra_ui_fired(-1)
 avra_ui_fired(9999999)
 mount(timed)
 println("── a press asks for two timers")
-avra_ui_event(7, 1, 0, 0, 0)
+avra_ui_event(7, press, 0, 0, 0)
 println("── the period fires twice, the wait once")
 avra_ui_fired(2)
 avra_ui_fired(2)
@@ -109,7 +113,7 @@ println("── a late fire of the wait is ignored")
 avra_ui_fired(1)
 println("── ${waited} waited, ${ticks} ticks")
 println("── a press asks again, and the control leaves: both timers are disarmed")
-avra_ui_event(7, 1, 0, 0, 0)
+avra_ui_event(7, press, 0, 0, 0)
 mount(leaves)
 println("── then a late fire is ignored")
 avra_ui_fired(4)
@@ -119,7 +123,7 @@ println(
     "── a control that hides itself in the press that asks: both timers are disarmed at once",
 )
 mount(vanish)
-for who in 8..40 { avra_ui_event(who, 1, 0, 0, 0) }
+for who in 8..40 { avra_ui_event(who, press, 0, 0, 0) }
 println("── then a fire of either is ignored")
 avra_ui_fired(4)
 avra_ui_fired(5)
@@ -159,7 +163,7 @@ fn gone() -> column {
 
 mount(requesting)
 println("── a press asks for a request: the host is given one frame")
-for who in 0..160 { avra_ui_event(who, 1, 0, 0, 0) }
+for who in 0..160 { avra_ui_event(who, press, 0, 0, 0) }
 println("── loading: ${words(profile.state())}")
 println("── the host answers 200, an empty body")
 avra_ui_answered(7, 200, 0)
@@ -168,14 +172,14 @@ println("── a second answer for the same request is ignored")
 avra_ui_answered(7, 500, 0)
 println("── ${words(profile.state())}")
 println("── an older ask answering after a newer one is dropped")
-for who in 0..160 { avra_ui_event(who, 1, 0, 0, 0) }
-for who in 0..160 { avra_ui_event(who, 1, 0, 0, 0) }
+for who in 0..160 { avra_ui_event(who, press, 0, 0, 0) }
+for who in 0..160 { avra_ui_event(who, press, 0, 0, 0) }
 avra_ui_answered(8, 200, 0)
 println("── older answer: ${words(profile.state())}")
 avra_ui_answered(9, -1, 0)
 println("── newer answer: ${words(profile.state())}")
 println("── a request in flight when its control leaves is aborted")
-for who in 0..160 { avra_ui_event(who, 1, 0, 0, 0) }
+for who in 0..160 { avra_ui_event(who, press, 0, 0, 0) }
 mount(gone)
 avra_ui_answered(10, 200, 0)
 println("── then its late answer is ignored: ${words(profile.state())}")
