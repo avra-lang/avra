@@ -1,8 +1,9 @@
 //! The let's typing law: an ANNOTATED binding holds what it
 //! declares — the shared declared-binding law, aimed by name. An
 //! unannotated let keeps inferring from its value.
-use core.{StmtId, ExprId}
+use core.{StmtId, ExprId, TypeId}
 use features.{TypeCx}
+use diagnostics.{refusal}
 
 /// BEFORE the value walks: the declaration records, and the want
 /// plants — a lambda or literal underneath hears its slot.
@@ -19,4 +20,19 @@ export fn check_let(mut cx: TypeCx, s: StmtId) {
     if cx.refuses_void_value(v) { return }
     if cx.view.store.binding_ty(s) == null { return }
     cx.declared_binding(v, cx.view.store.let_name(s) ?? "this binding", cx.def_type(s))
+}
+
+/// A destructuring `let` the block never folded: it stands where no
+/// block holds the rest — a file's top level.
+export fn unfolded_let(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.let_pattern",
+                cx.loc_of(e),
+                "a destructuring `let` takes the rest of a block as its scope, and a file's top level is no block",
+                "this `let`",
+                "destructure inside a fn body, or `match` the value",
+            ),
+        )
 }
