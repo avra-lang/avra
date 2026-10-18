@@ -6,9 +6,11 @@
 #include <time.h>
 #include "../../runtime/avra_runtime.h"
 
+#ifdef WITH_OBS
 int64_t avra_box_observe(void* p);
 int64_t avra_turn_next(void);
 void* avra_changes_take(void);
+#endif
 void* avra_array_new(void);
 void avra_array_push(void* arr, int64_t v);
 void avra_slot_set(void* arr, int64_t i, int64_t v);
@@ -23,6 +25,7 @@ int main(void) {
     for (int64_t i = 0; i < N; i++) avra_slot_set(c, 0, i);
     double t1 = now();
     printf("unobserved        %.2f ns/write\n", (t1 - t0) / N * 1e9);
+#ifdef WITH_OBS
     avra_box_observe(c);
     avra_turn_next();
     avra_slot_set(c, 0, 0);
@@ -36,5 +39,6 @@ int main(void) {
     for (int64_t i = 0; i < M; i++) { avra_turn_next(); avra_slot_set(c, 0, i); if ((i & 1023) == 1023) avra_rc_release(avra_changes_take()); }
     t1 = now();
     printf("observed, first   %.2f ns/write (with the turn)\n", (t1 - t0) / M * 1e9);
+#endif
     return 0;
 }

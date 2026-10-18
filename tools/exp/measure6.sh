@@ -11,3 +11,11 @@ for i in 1 2 3; do
     echo "$which $(grep -a instructions build/perf-$which-$i.txt | cut -d, -f1) $(grep -a ',branches' build/perf-$which-$i.txt | cut -d, -f1) $(grep -a branch-misses build/perf-$which-$i.txt | cut -d, -f1)"
   done
 done
+# The write leaf in C: rung A's runtime (no touch) against B's, three runs each.
+rm -rf build/Arun
+mkdir -p build/Arun
+git archive 61ea90bd runtime | tar -x -C build/Arun
+(cd build/Arun/runtime && for f in avra_runtime avra_hot avra_fiber avra_cores; do cc -c -O2 -fPIC -fstack-clash-protection -ffunction-sections -fdata-sections -o $f.o $f.c; done)
+cc -O2 -o build/bench_A tools/exp/bench_touch.c build/Arun/runtime/*.o -lm -lpthread -ldl
+cc -O2 -DWITH_OBS -o build/bench_B tools/exp/bench_touch.c build/libavra_runtime.a -lm -lpthread -ldl
+for i in 1 2 3; do echo "A:"; build/bench_A; echo "B:"; build/bench_B; done
