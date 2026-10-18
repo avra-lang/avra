@@ -37,6 +37,8 @@ void* avra_task_spawn(void* body);
 void avra_task_settle(void* task);
 // The same for every task in a list.
 void avra_task_settle_all(void* list);
+void avra_task_release(void* task);
+void avra_tasks_release(void* list);
 
 // `task` joins the `Tasks` owner, which keeps its own reference; a full
 // owner first sheds the tasks that have finished.
