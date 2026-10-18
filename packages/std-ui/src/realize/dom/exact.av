@@ -1,56 +1,52 @@
 //! `realize/dom/exact.av` — EXACT PATCHES: a state write updates only the
-//! text that reads it. A SITE is one text node whose words hold a value
-//! computed from state. The page watches the CELLS its sites read: at mount
-//! each site observes its cells and the page files the cells' keys under the
-//! site; a turn asks which observed cells were written, recomputes only the
-//! sites under them, and says `SetText` where the words changed. A site the
-//! compiler cannot place (an opaque call, a structure change) is not here at
-//! all and the full paint speaks for it.
+//! text that reads it. The page watches the cells its sites read: at mount
+//! each site's cells are observed and filed under the site by key; a turn asks
+//! which observed cells were written, recomputes only the sites under them,
+//! and says `SetText` where the words changed. A text the compiler could not
+//! place carries no site and the full paint speaks for it.
 //!
-//! A SITE HOLDS NO CELL. The compiler writes each site's `observe` as a
-//! closure over the typed cells it reads, so a cell is handed to the runtime
-//! at a pointer seat by the code that owns it, and what comes back is a KEY: a
-//! number that names a box and opens nothing. The page indexes keys; it never
-//! turns a number into a pointer.
+//! THE RUNTIME HOLDS WHAT IT OBSERVES: observing takes a reference to the
+//! cell and unobserving gives it back, so a cell cannot die under a site and
+//! releasing never writes a freed header. A KEY names a cell by its address
+//! and opens nothing; the page indexes keys and never turns a number back
+//! into a pointer.
 //!
 //! THE TURN'S ORDER IS THE LAW: the stamp moves on FIRST, then the log is
 //! taken. A write after the stamp moved stores a stamp the observer has not
 //! seen; read the log first and a write between the two is filed under the
 //! stamp that is already spent.
 use tree.identity.{NodeId}
+use tree.sites.{Site}
 use realize.dom.patch.{Patch}
 
+extern fn avra_box_observe(cell: ptr) -> int
+extern fn avra_box_unobserve(cell: ptr) -> int
+extern fn avra_box_key(cell: ptr) -> int
 extern fn avra_turn_next() -> int
 extern fn avra_changes_take() -> List<int>
 
-/// A text the page holds whose words read state. `words` recomputes the whole
-/// text from the state as it stands; `observe` observes each cell the text
-/// reads and answers their keys; `release` lets them go; `shown` is what the
-/// page was last told.
-export type Site = {
-    node: NodeId,
-    words: fn() -> string,
-    observe: fn() -> List<int>,
-    release: fn() -> void,
-    shown: Cell<string>,
-}
+/// A site the page has placed: the page's number for its node, the site, and
+/// the words the page was last told.
+export type Placed = { node: NodeId, site: Site, shown: Cell<string> }
 
-/// The sites a page watches, and the keys filed under them: a key as text maps
-/// to the positions of the sites that read that cell.
-export type Watch = { sites: List<Site>, under: Map<string, List<int>> }
+/// The placed sites a page watches, and the keys filed under them: a cell's
+/// key as text maps to the positions of the sites that read that cell.
+export type Watch = { placed: List<Placed>, under: Map<string, List<int>> }
 
-fn key_of(key: int) -> string { "${key}" }
+fn key_of(cell: ptr) -> string { "${avra_box_key(cell)}" }
 
-/// `sites` under watch: each observes its cells, and each key is filed under
-/// the sites that gave it.
-export fn watching(sites: List<Site>) -> Watch {
+/// `placed` under watch: each site's cells observed, each cell's key filed
+/// under the sites that read it.
+export fn watching(placed: List<Placed>) -> Watch {
     mut index: Map<string, List<int>> = {}
-    for at, site in sites {
-        for key in site.observe() {
-            index.set(key_of(key), (index.get(key_of(key)) ?? []).concat([at]))
+    for at, p in placed {
+        for cell in p.site.cells {
+            let _ = avra_box_observe(cell)
+            let key = key_of(cell)
+            index.set(key, (index.get(key) ?? []).concat([at]))
         }
     }
-    Watch { sites: sites, under: index }
+    Watch { placed: placed, under: index }
 }
 
 impl Watch {
@@ -58,7 +54,7 @@ impl Watch {
     fn affected(changed: List<int>) -> List<int> {
         changed
             .fold([]) { seen, key ->
-                let under = self.under.get(key_of(key)) ?? []
+                let under = self.under.get("${key}") ?? []
                 seen.concat([i for i in under if !seen.contains(i)])
             }
     }
@@ -66,18 +62,18 @@ impl Watch {
     /// One site brought up to date: the patch that says its new words, or none
     /// when they came out as they were (the cutoff).
     fn refreshed(at: int) -> List<Patch> {
-        let site = self.sites[at]
-        let now = (site.words)()
-        if now == site.shown.get() { return [] }
-        site.shown.set(now)
-        [Patch.SetText(site.node, now)]
+        let p = self.placed[at]
+        let now = (p.site.words)()
+        if now == p.shown.get() { return [] }
+        p.shown.set(now)
+        [Patch.SetText(p.node, now)]
     }
 
-    /// The cells observed again after the stamp wrapped: a box stamped a full
-    /// cycle ago would read as already written this turn.
+    /// Every cell observed again after the stamp wrapped: a cell stamped a
+    /// full cycle ago would read as already written this turn.
     fn observed_again() {
-        for site in self.sites {
-            let _ = site.observe()
+        for p in self.placed {
+            for cell in p.site.cells { let _ = avra_box_observe(cell) }
         }
     }
 
@@ -88,8 +84,14 @@ impl Watch {
         [p for at in self.affected(avra_changes_take()) for p in self.refreshed(at)]
     }
 
-    /// The page stops watching: every cell its sites observed is let go.
+    /// The page stops watching: every cell its sites observed is let go. A
+    /// cell two sites read was observed once and is let go once.
     fn released() {
-        for site in self.sites { (site.release)() }
+        for key in self.under.keys() {
+            let at = (self.under.get(key) ?? [])[0]
+            for cell in self.placed[at].site.cells {
+                if key_of(cell) == key { let _ = avra_box_unobserve(cell) }
+            }
+        }
     }
 }
