@@ -377,7 +377,11 @@ That is the "a green check that never failed" law.
 
 ---
 
-# Decisions for the owner
+# Decisions
+
+**DECIDED 2026-10-18 (owner):** 1 yes (one `Expands` trait) · 2 yes, block form: `picture logo { source: "…" }` is THE single-file spelling, the `asset` keyword retires by the M1–M5 script rewrite · 3 yes (a generated real module). 4 and 5 recommended, awaiting the owner.
+
+## Table
 
 | # | decision | recommendation |
 |---|---|---|
