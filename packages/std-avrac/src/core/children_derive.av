@@ -2,9 +2,12 @@
 //! every expression a node holds, named by its payload TYPES. An
 //! `ExprId` is a child, a `List<ExprId>` is children, an `ExprId?` is
 //! a child when present, a `List<StmtId>` reaches through its
-//! statements and a `List<Arm>` through each arm's guard (when it
-//! has one) and its value. Everything else carries no expression and
-//! contributes none.
+//! statements. A RECORD or ENUM payload (`Arm`, `CompClause`) is read
+//! off its own declaration, field by field in declaration order, through
+//! the same rows — so a payload type needs no row of its own. Everything
+//! that cannot reach an expression contributes none. A variant wearing
+//! `@apart` reaches nothing through such payloads: they are walked from
+//! their own root (a seat's default, a spec case's body).
 //!
 //! IT IS NOT `kids`, AND THE DIFFERENCE IS THE POINT. A feature's
 //! `kids` answers WHICH CHILDREN THAT FEATURE TYPES and hides some
@@ -44,6 +47,10 @@ use @std.meta.{
     Diagnostic,
     Code,
     Arms,
+    Kind,
+    Held,
+    payload_of,
+    holds,
     name,
     refuse_as_at,
 }
@@ -74,7 +81,7 @@ export trait Children {
                     source: quote {
             impl SyntaxArena {
                 fn ${walk_of(t.name)}(id: ${holder_of(t.name)}) -> List<ExprId> {
-                    match self.${reader_of(t.name)}(id) { ${[child_arm(v) for v in t.variants]} }
+                    match self.${reader_of(t.name)}(id) { ${[child_arm(t, v) for v in t.variants]} }
                 }
             }
         },
@@ -117,9 +124,9 @@ fn shape_problems(t: MetaType, v: MetaVariant) -> List<Diagnostic> {
 
 /// One variant's arm: its payloads bound, the expression-bearing ones
 /// concatenated in declaration order.
-fn child_arm(v: MetaVariant) -> Arms {
+fn child_arm(t: MetaType, v: MetaVariant) -> Arms {
     if v.fields.is_empty() { return quote { .${v} -> [] } }
-    quote { .${v}(${binders(v)}) -> ${reach_of(v)} }
+    quote { .${v}(${binders(v)}) -> ${reach_of(t, v)} }
 }
 
 /// What a variant reaches. A DECLARING statement reaches nothing —
@@ -127,16 +134,16 @@ fn child_arm(v: MetaVariant) -> Arms {
 /// through its own payload row (`body_view_children`), so a parsed
 /// quote's statements and a sublanguage's expansion are reached and
 /// its holes are not walked beside them.
-fn reach_of(v: MetaVariant) -> Code {
+fn reach_of(t: MetaType, v: MetaVariant) -> Code {
     if marked(v, "declares") != null { return quote { [] } }
-    if marked(v, "expands") != null { return concatenated(view_parts(v)) }
-    concatenated(parts_of(v))
+    if marked(v, "expands") != null { return concatenated(view_parts(t, v)) }
+    concatenated(parts_of(t, v))
 }
 
 /// An EXPANDING node's written payloads are nodes its view already
 /// holds, so the view alone is walked — each node reached once.
-fn view_parts(v: MetaVariant) -> List<Code> {
-    [r! for r in [reach(f) for f in v.fields if reached(f) && f.ty == "BodyView"] if r != null]
+fn view_parts(t: MetaType, v: MetaVariant) -> List<Code> {
+    [r! for r in [reach(t, v, f) for f in v.fields if reached(f) && f.ty == "BodyView"] if r != null]
 }
 
 /// The mark of this name the variant carries, or absence.
@@ -149,8 +156,8 @@ fn marked(v: MetaVariant, word: string) -> MetaMark? {
 /// answers, so the question "does this type carry any" and the answer
 /// "here is how to reach them" cannot drift into two lists that
 /// disagree.
-fn parts_of(v: MetaVariant) -> List<Code> {
-    let held = [reach(f) for f in v.fields if reached(f)]
+fn parts_of(t: MetaType, v: MetaVariant) -> List<Code> {
+    let held = [reach(t, v, f) for f in v.fields if reached(f)]
     [r! for r in held if r != null]
 }
 
@@ -166,18 +173,70 @@ fn parts_of(v: MetaVariant) -> List<Code> {
 /// an unrowed one at the generated code, so a type added to the model
 /// without a row here breaks that build before it can quietly shrink
 /// this walk.
-fn reach(f: Field) -> Code? {
-    let b = name(f.name)
-    match f.ty {
+fn reach(t: MetaType, v: MetaVariant, f: Field) -> Code? {
+    reach_through(t, f.kind, name(f.name), marked(v, "apart") != null)
+}
+
+/// The rows: the payload types a walk of children reaches by name.
+fn reach_row(ty: string, b: Code) -> Code? {
+    match ty {
         "ExprId" -> quote { [${b}] },
         "ExprId?" -> quote { some_list(${b}) },
         "List<ExprId>" -> b,
         "List<StmtId>" -> quote { self.stmts_exprs(${b}) },
-        "List<Arm>" -> quote { flatten([some_list(a.guard).concat([a.value]) for a in ${b}]) },
-        "List<CompClause>" -> quote { flatten([comp_clause_reach(c) for c in ${b}]) },
         "BodyView" -> quote { self.body_view_children(${b}) },
         _ -> null,
     }
+}
+
+/// A payload's reach through its TYPE: a row when it has one, else —
+/// unless its holder walks it apart — its own declaration, entered only
+/// when it can hold an expression or a statement list.
+fn reach_through(t: MetaType, k: Kind, e: Code, apart: bool) -> Code? {
+    let row = reach_row(k.spelled(), e)
+    if row != null { return row }
+    if apart || !holds(t, k, carries_nodes) { return null }
+    match k {
+        .List(inner) -> {
+            let each? = reach_through(t, inner, quote { each }, apart) else { return null }
+            quote { flatten([${each} for each in ${e}]) }
+        },
+        .Opt(inner) -> {
+            let each? = reach_through(t, inner, quote { each }, apart) else { return null }
+            quote { flatten([${each} for each in some_list(${e})]) }
+        },
+        .Named(n, _) -> declared_reach(t, n, e, apart),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
+
+/// The types a walk of children stops at.
+fn carries_nodes(n: string) -> bool { n == "ExprId" || n == "StmtId" }
+
+/// A declared record's fields, or an enum's variants, read in order.
+fn declared_reach(t: MetaType, n: string, e: Code, apart: bool) -> Code? {
+    let held? = payload_of(t, n) else { return null }
+    match held {
+        .Record(fields) -> {
+            let parts = [r! for r in [reach_through(t, f.kind, quote { ${e}.${f.name} }, apart) for f in fields if reached(f)] if r != null]
+            if parts.is_empty() { return null }
+            concatenated(parts)
+        },
+        .Enum(variants) -> {
+            let arms = [variant_reach(t, v, apart) for v in variants]
+            quote { (match ${e} { ${arms} }) }
+        },
+    }
+}
+
+/// One variant of a declared enum: its payloads bound under names of
+/// their own, the ones that reach concatenated.
+fn variant_reach(t: MetaType, v: MetaVariant, apart: bool) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> [] } }
+    let bound = ["${f.name}_held" for f in v.fields if carried(f)]
+    let parts = [r! for r in [reach_through(t, f.kind, name("${f.name}_held"), apart) for f in v.fields if carried(f)] if r != null]
+    if parts.is_empty() { return quote { .${v}(${bound}) -> [] } }
+    quote { .${v}(${bound}) -> ${concatenated(parts)} }
 }
 
 // ── voices ──
