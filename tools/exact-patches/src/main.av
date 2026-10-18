@@ -1,5 +1,25 @@
 //! `exact-patches [seed]` — the program a seed names, as Avra source.
+//! `exact-patches package <seed> <dir>` — the same program as a package at `dir`.
 use @std.cli.{argv}
+use @std.errors.{Error}
+use @std.io.{IoError, make_dirs, write_text}
 use @std.text.{parse_int}
 
-println(source_of(generated(parse_int(argv().first() ?? "1") ?? 1)))
+fn seed_at(args: List<string>, i: int) -> int { parse_int(args.drop(i).first() ?? "1") ?? 1 }
+
+fn write_package(seed: int, dir: string) -> Result<string, IoError> {
+    let p = generated(seed)
+    make_dirs("${dir}/src")?
+    write_text("${dir}/avra.toml", manifest_of("gen${seed}"))?
+    write_text("${dir}/src/main.av", main_of(p))
+}
+
+let args = argv()
+if args.first() == "package" {
+    match write_package(seed_at(args, 1), args.drop(2).first() ?? "gen") {
+        .Ok(dir) -> println(dir),
+        .Err(why) -> eprintln(why.describe().message),
+    }
+} else {
+    println(source_of(generated(seed_at(args, 0))))
+}
