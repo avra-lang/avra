@@ -117,6 +117,14 @@ fn holds_a_member(store: SyntaxArena, s: StmtId) -> bool {
 
 /// `within ms(5) { … }` / `text "hi" { … }` — an instance with its
 /// head value.
+/// The closure an instance is extended by, and every node its copy made.
+type Again = { root: ExprId, minted: List<ExprId> }
+
+/// The sentence that says what the extension means.
+fn said_again_note(word: string) -> string {
+    "`${word}` says its words again as a closure, so a write to a place they read can be answered by those words alone"
+}
+
 fn build_component_value(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
     let targs = b.type_refs(1)?
@@ -445,6 +453,7 @@ impl Builder {
         let settings = written.concat(self.defaulted(word, r, loose, written)?)
         let children = if r.events.any(it.default) { [] } else { loose }
         let places = self.placed(word, r, settings, children)?
+        let again = self.said_again(r, heads)
         let named = if name != null && r.named && !settings.any(it.name == "name") { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
         let placed_in = [pl.slot for pl in places]
         let set = flatten(
@@ -464,6 +473,7 @@ impl Builder {
             )
         self.store.mark_struct_targs(literal, targs)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
+        if again != null { self.store.extend(literal, said_again_note(word), [again!.root], again!.minted) }
         .Ok(
             self
                 .store
@@ -472,6 +482,26 @@ impl Builder {
                     self.span,
                 ),
         )
+    }
+
+    /// A SITED component's head text, said again: a closure over a COPY of the
+    /// head's expression, minted beside the literal before names resolve, so its
+    /// captures are found as any written lambda's are. A component that takes no
+    /// closure of the kind, and a head with no hole in it, mint nothing; the
+    /// lowering uses the closure only for a slot of `@std/meta`'s `Words`.
+    fn said_again(r: Record, heads: List<ExprId>) -> Again? {
+        if !r.words { return null }
+        let head? = heads.first() else { return null }
+        if !self.holey(head) { return null }
+        mut copying = copier(self.store, self.store, [], [], self.words.door)
+        let copy = copying.expr(head)
+        let lambda = self.store.alloc_expr(Expr.Lambda([], copy), self.store.expr_span(head))
+        Again { root: lambda, minted: copying.made_exprs.concat([lambda]) }
+    }
+
+    /// Whether an expression is a text with a hole in it.
+    fn holey(e: ExprId) -> bool {
+        match self.store.expr(e) { .Body(_, _, holes, _) -> !holes.is_empty(), rest -> false }
     }
 
     /// The statements an instance writes bare, taken as the handler of the

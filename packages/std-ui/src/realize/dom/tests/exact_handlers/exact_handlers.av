@@ -1,0 +1,72 @@
+// proves: after a paint, the page's button hears what the view just built
+// would, in every mode. A local a handler captured by copy that came from a
+// state read, or from a call the analysis cannot see into (`now_ns` here),
+// takes the full paint rather than an exact turn, so no handler is left
+// holding a stale value.
+use @std.ui.components.{button, column, text}
+use @std.ui.realize.dom.live.{live}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.realize.html.element.{Element}
+use @std.ui.realize.dom.live.{Live}
+use @std.ui.realize.tests.support.{seat_for}
+use @std.ui.tree.seats.{Seat}
+use @std.ui.tree.identity.{NodeId}
+use @std.ui.tree.node.{Node}
+use @std.ui.tree.view.{tree_of}
+use @std.time.{now_ns}
+
+state n: int = 1
+state m: int = 10
+state out: int = 0
+
+fn view() -> column {
+    let seen = n
+    let stamp = now_ns()
+    column {
+        text "m=${m}"
+        button "go" { on press { out = seen + m + stamp } }
+    }
+}
+
+/// The seat a std button declares for a press.
+fn press() -> Seat { seat_for(.Press) }
+
+fn presses(es: List<Element>) -> List<NodeId> { [i for e in es for i in presses_of(e)] }
+
+fn presses_of(e: Element) -> List<NodeId> {
+    match e {
+        .Text(_) -> [],
+        .Tag(t) -> if t.hears.any(it.seat == press()) { [t.id] } else { [] }.concat(presses(t.kids)),
+    }
+}
+
+/// What a click on the page's button leaves in `out`.
+fn clicked(page: Live) -> int {
+    out = 0
+    let _ = page.fire(presses(page.page.get())[0], press(), null)
+    out
+}
+
+/// What the button of the view just built would leave: the value the page's
+/// handler must hear.
+fn built(tree: Node) -> int {
+    out = 0
+    tree.children[1].events[0].fire(null)
+    out
+}
+
+/// Whether a paint of `tree` leaves the page's button hearing what `tree`'s own does.
+fn hears_fresh(page: Live, tree: Node) -> bool {
+    let _ = page.paint(tree, default_theme)
+    clicked(page) == built(tree)
+}
+
+let page = live()
+let _ = page.paint(tree_of(view()), default_theme)
+n = 2
+let after_n = hears_fresh(page, tree_of(view()))
+m = 11
+let after_m = hears_fresh(page, tree_of(view()))
+let again = hears_fresh(page, tree_of(view()))
+println("${after_n} ${after_m} ${again}")
+println(page.exact_counts())
