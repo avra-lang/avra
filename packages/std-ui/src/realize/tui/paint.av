@@ -1,0 +1,81 @@
+//! `realize/tui/paint.av` — a placed tree drawn on a grid of cells. Every
+//! node writes its own lines at its box, in tree order, so a child covers
+//! what its parent drew under it; a list draws a bullet beside each child,
+//! and the node the keys go to draws `> ` in the gutter it keeps. A glyph
+//! takes the cells it is wide, and what passes the grid's width is cut off.
+use @std.text.{graphemes, cells}
+use tree.node.{Node}
+use place.solve.{Placed}
+use realize.tui.layout.{
+    own_lines,
+    kept_cells,
+    pad_cols,
+    gap_rows,
+    closed_node,
+    holds_children,
+    pointer_cells,
+}
+
+/// The grid: one cell of text a column, a row at a time, each as long as
+/// what is written in it. A cell holds the glyph that starts in it; the cell
+/// a wide glyph spills into holds nothing.
+type Grid = { width: int, rows: List<Cell<List<string>>> }
+
+fn blank_row() -> Cell<List<string>> { Cell.new([]) }
+
+/// A row blank out to column `to`: rows grow as far as something is written,
+/// never as far as the width allows.
+fn reached(row: Cell<List<string>>, to: int) {
+    while row.get().length < to { row.push(" ") }
+}
+
+/// The text of the tree `root` placed as `placed`, in `width` cells, one
+/// `\n` between rows and none after the last; `focus` is the path of the
+/// node the keys go to.
+export fn painted(root: Node, placed: Placed, width: int, focus: string) -> string {
+    let grid = Grid { width: width, rows: [blank_row() for _y in 0..placed.rect.h] }
+    paint(grid, root, placed, "0", focus)
+    [trimmed(row.get()) for row in grid.rows].join("\n")
+}
+
+/// A row as text, its trailing blanks dropped.
+fn trimmed(cells_of: List<string>) -> string {
+    let last = [i for i, c in cells_of if c != " "].last() ?? -1
+    cells_of.slice(0, last + 1).join("")
+}
+
+/// `line` written at column `x` of row `y`; a glyph that does not wholly fit
+/// the grid is not drawn, nor any after it.
+fn put(grid: Grid, x: int, y: int, line: string) {
+    if y < 0 || y >= grid.rows.length { return }
+    mut at = x
+    for g in graphemes(line) {
+        let n = cells(g)
+        if at + n > grid.width { return }
+        if at >= 0 && n > 0 {
+            reached(grid.rows[y], at + n)
+            grid.rows[y].set_at(at, g)
+            for k in 1..n { grid.rows[y].set_at(at + k, "") }
+        }
+        at = at + n
+    }
+}
+
+/// A node's own lines at its box, then each child's box over them; a list
+/// draws its bullet in the gutter it keeps beside each child.
+fn paint(grid: Grid, n: Node, p: Placed, path: string, focus: string) {
+    if closed_node(n) { return }
+    let r = p.rect
+    let pad = n.box.layout.pad
+    let left = r.x + pad_cols(pad?.start ?? .None)
+    let top = r.y + gap_rows(pad?.top ?? .None)
+    let gutter = if path == focus { pointer_cells } else { 0 }
+    if gutter > 0 { put(grid, left, top, "> ") }
+    let inner = r.w - (left - r.x) - pad_cols(pad?.end ?? .None) - gutter - kept_cells(n)
+    for i, line in own_lines(n, inner) { put(grid, left + gutter + kept_cells(n), top + i, line) }
+    let held = if holds_children(n) { n.children } else { [] }
+    for i, c in held {
+        if n.prim is .List && !closed_node(c) { put(grid, p.kids[i].rect.x - kept_cells(n), p.kids[i].rect.y, "• ") }
+        paint(grid, c, p.kids[i], "${path}.${i}", focus)
+    }
+}
