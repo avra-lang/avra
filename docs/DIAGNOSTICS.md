@@ -295,7 +295,7 @@ f()
 ```
 
 ```
-error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn body sees declarations, not the values around it
+error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn sees declarations only
   ╭─[witness.av:2:17]
 2 │ fn f() -> int { x }
   ·                 ┬
@@ -880,7 +880,7 @@ error[resolve.unpackaged]: this file is not in a package — `use` needs a root
   · ┬
   · ╰── this use
 ──╯
-help: put an `avra.toml` at the package root, with this file under its `src/` — modules are named from there
+help: put an `avra.toml` at the package root, this file under its `src/`
 ```
 
 ## resolve.module_ambiguous
@@ -944,7 +944,7 @@ error[resolve.duplicate_in_module]: `f` is declared twice in this module — her
   ·        ┬
   ·        ╰── declared here
 ──╯
-help: an exported name is its module's one declaration — rename one, or drop the `export` so each file keeps its own
+help: an exported name is its module's one declaration — rename one, or drop an `export`
 ```
 
 ## resolve.kept_apart
@@ -2105,7 +2105,7 @@ warning[type.alias_copy]: `q` is a copy of `p` — a write through it will not r
   ·     ┬
   ·     ╰── a copy
 ──╯
-help: write through `p` directly if the write should reach it, or `Cell<T>` it if the copy must still share
+help: write through `p` to reach it, or `Cell<T>` it to share the copy
 ```
 
 ## type.seat
@@ -2205,7 +2205,7 @@ impl E {
 ```
 
 ```
-error[type.static_name]: `E.a` is already a variant — a `static fn` of that name could never be called
+error[type.static_name]: `E.a` is already a variant — a `static fn` of that name is uncallable
   ╭─[witness.av:5:5]
 5 │     static fn a() -> int { 1 }
   ·     ┬
@@ -2311,7 +2311,7 @@ for x in [1] {
 ```
 
 ```
-error[loop.label]: `break` names a loop by what its `for` binds, and `y` is no enclosing `for`'s name here
+error[loop.label]: `break` names a loop by its `for` binder, and `y` is no enclosing `for`'s name here
   ╭─[witness.av:3:11]
 3 │     break y
   ·           ┬
@@ -2468,7 +2468,7 @@ let xs = [null, null]
 ```
 
 ```
-error[type.list_scalar]: a list element takes its type from its value, and `null` has none of its own
+error[type.list_scalar]: a list element takes its type from its value, and `null` has none
   ╭─[witness.av:1:11]
 1 │ let xs = [null, null]
   ·           ┬
@@ -2811,7 +2811,7 @@ error[type.with_struct]: `with` copies a struct, found `int`
   ·         ┬
   ·         ╰── this is `int`
 ──╯
-help: `with` copies a struct and replaces some fields — `p with { x: 1 }`; for other values, build the new one directly
+help: `with` copies a struct — `p with { x: 1 }`; build any other value directly
 ```
 
 ## type.named
@@ -2830,7 +2830,7 @@ error[type.named]: `X` stands over itself
   · ┬
   · ╰── declared here
 ──╯
-help: a named type stands over a shape it does not name — following the names from here comes back to `X`
+help: a named type stands over a shape it does not name — its names loop back to `X`
 ```
 
 ## type.alias
@@ -3257,7 +3257,7 @@ warning[type.unreachable_arm]: this arm is never reached — `gone` above binds,
   ·         ┬
   ·         ╰── never reached
 ──╯
-help: a bare name compares only where a `const` of that name is in scope — declare it, or move this arm above
+help: a bare name compares only where a `const` of that name is in scope — declare it, or move this arm up
 ```
 
 ## type.registry_hole
@@ -3285,7 +3285,7 @@ warning[type.registry_hole]: arms answer for several variants and this hole take
    ·     ┬
    ·     ╰── matches them all
 ───╯
-help: spell each arm, so the next variant lands here visibly — or write `rest ->` to say the remainder is deliberate
+help: spell each arm so the next variant lands visibly, or write `rest ->` for a deliberate remainder
 ```
 
 ## type.variant_lit
@@ -3563,7 +3563,7 @@ f("corpus")
 ```
 
 ```
-error[type.extern_value]: an extern fn is not a value — it names a C symbol, not a callable Avra fn
+error[type.extern_value]: an extern fn is not a value — it names a C symbol, not an Avra fn
   ╭─[witness.av:2:9]
 2 │ let f = avra_host_is_dir
   ·         ┬
@@ -3853,7 +3853,7 @@ help: make the value `int`, or change the declaration that wants it
 
 ## type.map_entry
 
-a map's entries wear the prelude's `Entry`
+a map's entries are the prelude's `Entry`
 
 ```avra
 let m = {"a": 1}
@@ -3861,7 +3861,7 @@ m.entries().length
 ```
 
 ```
-error[type.map_entry]: a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`
+error[type.map_entry]: a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`
   ╭─[witness.av:2:1]
 2 │ m.entries().length
   · ┬
