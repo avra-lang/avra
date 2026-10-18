@@ -29,13 +29,14 @@ use features.{
     void_answer,
 }
 use features.lists.{last_index, bool_comprehension_list, bool_comprehension_range}
-use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+// LICENSED modules.unused_import: `Fixed` and `Term` are named by GENERATED code, not by this file —
+// the `grammar { }` expansion writes the literals of a stated payload here
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn lists() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name                | build
-        "comp"              | build_comp
         "comp_head"         | build_comp_head
         "comp_filter"       | build_comp_filter
         "collect"           | build_collect
@@ -103,7 +104,7 @@ export fn lists() -> LanguageFeature {
     }
     LanguageFeature lists {
         gram: grammar {
-            primary = "[" v:expression h:comp_head ( c:comp_head | c:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, h, c) | "[" BREAK? ( elems:expression ( "," BREAK? elems:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> Expr.ListLit | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
+            primary = "[" v:expression h:comp_head ( c:comp_head | c:comp_filter )* "]" @expect("]", "expected `]` to close the comprehension") -> Expr.Comp(elem = v, clauses = [h, c]) | "[" BREAK? ( elems:expression ( "," BREAK? elems:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> Expr.ListLit | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
             comp_head = "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? -> comp_head(ix, en, src, hi)
             comp_filter = "if" c:expression -> comp_filter(c)
         }

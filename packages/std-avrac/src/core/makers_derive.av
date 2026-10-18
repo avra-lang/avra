@@ -35,7 +35,7 @@ export trait Makes {
 /// A variant is made when every payload is one a `Slots` accessor reads
 /// and every default it declares crossed.
 fn makeable(v: MetaVariant) -> bool {
-    v.fields.all(known(it) && crossed(it))
+    v.fields.all(crossed(it) && (known(it) || it.defaulted))
 }
 
 /// A declared default is readable when it crossed as code.
@@ -53,8 +53,10 @@ fn known(f: Field) -> bool {
         "List<PatId>",
         "List<Param>",
         "List<Arm>",
+        "List<CompClause>",
         "List<Case>",
         "List<Plain>",
+        "List<string>",
         "List<TypeRef>",
         "TypeRef",
         "TypeRef?",
@@ -105,6 +107,7 @@ fn construction(v: MetaVariant) -> Code {
 /// writes nothing under the label.
 fn slot(f: Field) -> Code {
     let fallback? = f.default else { return read(f) }
+    if !known(f) { return fallback }
     quote { if s.present_of(${literal(f.name)})? { ${read(f)} } else { ${fallback} } }
 }
 
@@ -117,8 +120,10 @@ fn read(f: Field) -> Code {
         "List<StmtId>" -> quote { s.stmts_of(${literal(f.name)})? },
         "List<Param>" -> quote { s.params_of(${literal(f.name)})? },
         "List<Arm>" -> quote { s.arms_of(${literal(f.name)})? },
+        "List<CompClause>" -> quote { s.comp_clauses_of(${literal(f.name)})? },
         "List<Case>" -> quote { s.cases_of(${literal(f.name)})? },
         "List<Plain>" -> quote { [Plain(t) for t in s.texts_of(${literal(f.name)})?] },
+        "List<string>" -> quote { s.texts_of(${literal(f.name)})? },
         "Scoped?" -> quote { s.scoped_opt_of(${literal(f.name)})? },
         "List<PatId>" -> quote { s.pats_of(${literal(f.name)})? },
         "List<TypeRef>" -> quote { s.types_of(${literal(f.name)})? },
