@@ -2,7 +2,7 @@
 // credentials, preflights answered here, and the security headers a
 // response did not set itself.
 use @std.http.http.{Request, Unrouted, Response, Handler, text}
-use @std.http.guard.{Cors, Hardening, cors, hardened, hardening}
+use @std.http.guard.{Cors, Hardening, cors, hardened, hardening, nonced_csp}
 
 fn app() -> Cors {
     Cors {
@@ -229,6 +229,23 @@ spec "std/http — security headers" {
             )
             field_said(r, "content-security-policy") == "default-src *" &&
                 r.headers.filter(it.named("content-security-policy")).length == 1
+        }
+    }
+    given "a policy that allows the page's style element by nonce" {
+        then "the strict policy names the nonce under style-src, after default-src" {
+            nonced_csp("aB3-_+/=") == "default-src 'self'; style-src 'self' 'nonce-aB3-_+/='; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+        }
+        then "a nonce that could end the directive is refused" {
+            nonced_csp("a'; script-src *") == null &&
+                nonced_csp("a b") == null &&
+                nonced_csp("") == null
+        }
+        then "the handler's policy with a nonce stands" {
+            let r = hardened(
+                framed_from("GET / HTTP/1.1\r\nHost: h\r\n\r\n".bytes())!,
+                (_q) -> text(200, "ok").with_header("Content-Security-Policy", nonced_csp("n1")!),
+            )
+            field_said(r, "content-security-policy") == "default-src 'self'; style-src 'self' 'nonce-n1'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
         }
     }
     given "loosened by saying so" {
