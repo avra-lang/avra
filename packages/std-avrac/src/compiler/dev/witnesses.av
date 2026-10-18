@@ -83,7 +83,7 @@ fn shown(c: DiagCode) -> Shown {
 
 /// The compiler's own words over a witness; nothing where no source
 /// reaches the code.
-fn rendered_over(w: Witness) -> string {
+export fn rendered_over(w: Witness) -> string {
     match w {
         .Source(text) -> avra().check(new_source_file("witness.av", text)),
         .Package(files) -> package_report(files),
@@ -884,9 +884,70 @@ fn witnesses() -> List<CodeWitness> {
                 "export fn ok(n: int) -> Result<int, string> { .Ok(n) }\n\nexport component work {\n    each: fn(int) -> Result<int, string>\n    dead: string? = null\n}\n",
             ),
         },
+        CodeWitness {
+            code: "resolve.no_module",
+            witness: program({"/w/src/main.av": "use nope.{x}\n1\n"}),
+        },
+        CodeWitness {
+            code: "resolve.not_exported",
+            witness: program(
+                {
+                    "/w/src/main.av": "use util.{hidden}\n1\n",
+                    "/w/src/util.av": "fn hidden() -> int { 1 }\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.not_a_dependency",
+            witness: program({"/w/src/main.av": "use @x.y.{z}\n1\n"}),
+        },
+        CodeWitness {
+            code: "resolve.export_kind",
+            witness: program({"/w/src/main.av": "export let a = 1\n1\n"}),
+        },
+        CodeWitness {
+            code: "resolve.module_ambiguous",
+            witness: program(
+                {
+                    "/w/src/main.av": "use util.{f}\n1\n",
+                    "/w/src/util.av": util_fn,
+                    "/w/src/util/mod.av": "export fn g() -> int { 1 }\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.duplicate_in_module",
+            witness: program(
+                {
+                    "/w/src/main.av": "use util.{f}\nf()\n",
+                    "/w/src/util/a.av": util_fn,
+                    "/w/src/util/b.av": "export fn f() -> int { 2 }\n",
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.import_clash",
+            witness: program({"/w/src/main.av": "use util.{f, f}\nf()\n", "/w/src/util.av": util_fn}),
+        },
+        CodeWitness {
+            code: "resolve.nested_use",
+            witness: program(
+                {
+                    "/w/src/main.av": "fn g() -> int {\n    use util.{f}\n    f()\n}\ng()\n",
+                    "/w/src/util.av": util_fn,
+                },
+            ),
+        },
+        CodeWitness {
+            code: "resolve.package_form",
+            witness: program({"/w/src/main.av": "use @solo.{z}\n1\n"}),
+        },
     ]
     rows
 }
+
+/// The one module body a module witness imports from.
+const util_fn: string = "export fn f() -> int { 1 }\n"
 
 /// A lawful manifest, for a witness to add one wrong line to.
 const app_manifest: string = "[package]\nname = \"app\"\nversion = \"0.1.0\"\n"
@@ -943,6 +1004,14 @@ fn borrowed_raw() -> Witness {
                 "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int { n }\n",
             },
         )
+}
+
+/// A package witness over files laid out as the program at `/w`, beside a
+/// lawful manifest.
+fn program(files: Map<string, string>) -> Witness {
+    mut all = files
+    all.set("/w/avra.toml", app_manifest)
+    Witness.Package(all)
 }
 
 /// A package witness over one manifest and the one-line program beside it.

@@ -616,7 +616,7 @@ impl Workspace {
         mut recomputed = 0
         mut spoke = 0
         mut mismatched = 0
-        for id in 0..self.asks.get().length {
+        for id, ask in self.asks.get() {
             let reads = self.db.kernel.deps_of(key_at(Family.Lowered.ordinal, id))
             if reads.is_empty() { continue }
             settled = settled + 1
@@ -626,10 +626,7 @@ impl Workspace {
                 spoke = spoke + 1
                 continue
             }
-            let row = node_key(
-                Stored.Unit,
-                ["loweredsaid", self.wanted_list_wire([self.asks.get()[id]])],
-            )
+            let row = node_key(Stored.Unit, ["loweredsaid", self.wanted_list_wire([ask])])
             let kept = store.get_valid(Stored.Unit, row, (n) -> rdb.leaf_digest(n))
             if kept == null {
                 recomputed = recomputed + 1
@@ -639,7 +636,7 @@ impl Workspace {
                 valid = valid + 1
                 if kept != says {
                     mismatched = mismatched + 1
-                    eprintln("Q loweredsaid mismatch ${self.asks.get()[id].name}")
+                    eprintln("Q loweredsaid mismatch ${ask.name}")
                 }
             }
             let _ = store.keep_reading(Stored.Unit, row, says, saved_reads(leaves))

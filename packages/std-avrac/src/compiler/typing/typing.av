@@ -327,12 +327,12 @@ impl TypeCx {
         ty
     }
 
-    /// A `collect`'s body walked under its own frame: the values its
-    /// statements discard, in the order they ran.
-    mut fn gathered(body: ExprId) -> List<ExprId> {
+    /// A `collect`'s statements typed under their own frame: the values
+    /// they discard, in the order they ran.
+    mut fn gathered(stmts: List<StmtId>) -> List<ExprId> {
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self.gathers.push(Gathering { bars: self.lam_bar.length, values: [] })
-        let _ = self.walk_type(body)
+        let _ = self.block_type(stmts, null)
         self.gathers.pop().values
     }
 
@@ -452,7 +452,7 @@ impl TypeCx {
         self.rewriting = self.view.store.minted_for(e)
         self.facts.set_type(e, node.type_of(self, e))
         self.rewriting = null
-        if self.any_hungry(node.kids().concat(node.heirs())) { self.facts.go_hungry(e) }
+        if self.any_hungry(self.view.store.walked(e).concat(self.view.store.heired(e))) { self.facts.go_hungry(e) }
         if self.facts.hungry_at(e) { self.facts.remember_scope(e, self.scope) }
     }
 
@@ -466,8 +466,8 @@ impl TypeCx {
     /// Every node beneath `e` — through kids AND heirs, the arms a
     /// control node hides from the walk — in post-order, `e` last.
     fn beneath(e: ExprId) -> List<ExprId> {
-        let node = self.view.store.expr(e)
-        flatten([self.beneath(k) for k in node.kids().concat(node.heirs())]).concat([e])
+        let store = self.view.store
+        flatten([self.beneath(k) for k in store.walked(e).concat(store.heired(e))]).concat([e])
     }
 
     /// Every expression still hungry when typing ends never met the
@@ -567,8 +567,7 @@ impl TypeCx {
     /// values), so a lambda three arms deep still hears it.
     mut fn plant_want(e: ExprId, ty: TypeId) {
         self.facts.set_want(e, ty)
-        let node = self.view.store.expr(e)
-        for h in node.heirs() {
+        for h in self.view.store.heired(e) {
             self.plant_want(h, ty)
         }
     }

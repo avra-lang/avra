@@ -2,7 +2,7 @@
 //! ride a slot (the SAME law every aggregate slot obeys — R0's
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
-use core.{ExprId, Type, TypeId, CompClause, flatten, some_list, same_type}
+use core.{ExprId, StmtId, Type, TypeId, CompClause, flatten, some_list, same_type}
 use features.{TypeCx, this_is, slot_worthy}
 use diagnostics.{refusal, warning, Diag}
 use @std.errors.{Loc}
@@ -46,8 +46,8 @@ fn heard_list(mut cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> T
 /// literal's own law, as though each were written as an element. A
 /// kept LIST spreads, its elements joining one by one — unless the
 /// collect holds lists, where a list is one element.
-fn collect_type(mut cx: TypeCx, e: ExprId, body: ExprId) -> TypeId {
-    let values = collection(cx, e, body)
+fn collect_type(mut cx: TypeCx, e: ExprId, stmts: List<StmtId>) -> TypeId {
+    let values = collection(cx, e, stmts)
     for v in values { cx.facts.spread(v, spreads(cx, e, v)) }
     let lists = [v for v in values if cx.facts.spreads_at(v)]
     if lists.is_empty() { return list_type(cx, e, values) }
@@ -93,10 +93,10 @@ fn spread_elem(cx: TypeCx, e: ExprId, singles: List<ExprId>, lists: List<ExprId>
 /// A `collect`'s kept values: its body walked once, and remembered —
 /// a collect re-typed under a want it waited for judges the same
 /// values again.
-fn collection(mut cx: TypeCx, e: ExprId, body: ExprId) -> List<ExprId> {
+fn collection(mut cx: TypeCx, e: ExprId, stmts: List<StmtId>) -> List<ExprId> {
     let kept: List<ExprId>? = cx.facts.collection(e)
     if kept != null { return kept! }
-    let values = cx.gathered(body)
+    let values = cx.gathered(stmts)
     cx.facts.collected(e, values)
     values
 }
