@@ -205,6 +205,8 @@ extern const char avra_rt_held_avra_task_join __asm__(AVRA_RT_LABEL(avra_task_jo
 extern const char avra_rt_held_avra_task_join_caught __asm__(AVRA_RT_LABEL(avra_task_join_caught));
 extern const char avra_rt_held_avra_task_done __asm__(AVRA_RT_LABEL(avra_task_done));
 extern const char avra_rt_held_avra_task_ended __asm__(AVRA_RT_LABEL(avra_task_ended));
+extern const char avra_rt_held_avra_parked_on __asm__(AVRA_RT_LABEL(avra_parked_on));
+extern const char avra_rt_held_avra_fd_parked __asm__(AVRA_RT_LABEL(avra_fd_parked));
 extern const char avra_rt_held_avra_fiber_yield __asm__(AVRA_RT_LABEL(avra_fiber_yield));
 extern const char avra_rt_held_avra_tick_cold __asm__(AVRA_RT_LABEL(avra_tick_cold));
 extern const char avra_rt_held_avra_fiber_sleep __asm__(AVRA_RT_LABEL(avra_fiber_sleep));
@@ -421,6 +423,8 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_task_join_caught,
     &avra_rt_held_avra_task_done,
     &avra_rt_held_avra_task_ended,
+    &avra_rt_held_avra_parked_on,
+    &avra_rt_held_avra_fd_parked,
     &avra_rt_held_avra_fiber_yield,
     &avra_rt_held_avra_tick_cold,
     &avra_rt_held_avra_fiber_sleep,
@@ -781,6 +785,10 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_done(AVRA_RT_PT
     "avra_task_done: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_ended(AVRA_RT_PTR)), int64_t),
     "avra_task_ended: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_parked_on(AVRA_RT_PTR)), int64_t),
+    "avra_parked_on: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_fd_parked(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_fd_parked: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_yield()), void),
     "avra_fiber_yield: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_tick_cold()), void),

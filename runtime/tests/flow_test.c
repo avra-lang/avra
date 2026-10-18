@@ -147,6 +147,51 @@ static void three_sources_as_fibers(void) {
     avra_rc_release(g_gate);
 }
 
+static void* parks_on_gate(void* self) {
+    (void)self;
+    avra_wait_gate(g_gate, 0, 0);
+    int64_t claim = avra_wait_park();
+    return answer(claim);
+}
+
+static void* waits_on_pipe(void* self) {
+    (void)self;
+    avra_wait_fd(g_pipe[0], 0, 0, 10);
+    int64_t claim = avra_wait_park();
+    return answer(claim);
+}
+
+static void bad_direction(void) { (void)avra_fd_parked(g_pipe[0], 2); }
+
+// A PARKED COUNT IS THE LIST'S: fibers filed on a gate, or on one
+// direction of a descriptor, and none that left.
+static void parked_counts(void) {
+    g_gate = avra_gate_new();
+    void* a = spawn1(parks_on_gate, 0);
+    void* b = spawn1(parks_on_gate, 0);
+    CHECK(avra_parked_on(g_gate) == 0, "nothing is parked on a gate before its waiters run");
+    avra_fiber_sleep(2);
+    CHECK(avra_parked_on(g_gate) == 2, "two fibers are parked on the gate once they run");
+    CHECK(avra_gate_claim(g_gate) >= 0, "a claim wakes one");
+    CHECK(avra_parked_on(g_gate) == 1, "the claimant leaves the count");
+    CHECK(avra_gate_claim(g_gate) >= 0, "a claim wakes the other");
+    CHECK(avra_parked_on(g_gate) == 0, "no fiber is left parked");
+    joined(a);
+    joined(b);
+    avra_rc_release(g_gate);
+    void* r = spawn1(waits_on_pipe, 0);
+    avra_fiber_sleep(2);
+    CHECK(avra_fd_parked(g_pipe[0], 0) == 1, "the reader is parked on its descriptor's read side");
+    CHECK(avra_fd_parked(g_pipe[0], 1) == 0, "and no one on its write side");
+    CHECK(avra_fd_parked(-1, 0) == 0, "a descriptor that is no fd has no waiters");
+    CHECK(write(g_pipe[1], "x", 1) == 1, "the pipe takes a byte");
+    avra_fiber_sleep(2);
+    joined(r);
+    CHECK(avra_fd_parked(g_pipe[0], 0) == 0, "the woken reader leaves the descriptor");
+    char c;
+    CHECK(read(g_pipe[0], &c, 1) == 1, "the byte is drained");
+}
+
 // A DESCRIPTOR THAT STAYS WRITABLE CLAIMS EVERY WAIT, NOT ONLY THE
 // FIRST: the poller's watch is edge-triggered, so a second wait on a
 // descriptor the first consumed the edge for must restore the
@@ -3571,11 +3616,13 @@ int main(int argc, char** argv) {
     trapped("a sleep inside a set", sleep_in_set, "a task waited inside a wait it had not parked");
     trapped("a join inside a set", join_in_set, "a task waited inside a wait it had not parked");
     trapped("a descriptor park inside a set", park_in_set, "a task waited inside a wait it had not parked");
+    trapped("a descriptor direction past write", bad_direction, "a descriptor's waiters are read (0) or write (1)");
     trapped("a sleep after a wait an open gate claimed", sleep_in_claimed_set, "a task waited inside a wait it had not parked");
     stacks();
 
     int64_t live = avra_mem_live();
     three_sources_as_fibers();
+    parked_counts();
     writable_fd_waits_twice();
     claim_then_cancel();
     // ON THE VIRTUAL CLOCK, each in a child: a clock that never moves is

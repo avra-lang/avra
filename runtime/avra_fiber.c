@@ -2532,6 +2532,29 @@ int64_t avra_task_ended(void* task) {
     return task_cells(task)[TASK_END];
 }
 
+// How many fibers are parked on a task or a gate: the waiters filed on its
+// record. A fiber waiting on several sources counts once for each.
+int64_t avra_parked_on(void* on) {
+    int64_t n = 0;
+    for (const Waiter* w = (const Waiter*)(uintptr_t)task_cells(on)[GATE_HEAD]; w; w = w->next) n++;
+    return n;
+}
+
+__attribute__((noinline, cold, noreturn))
+static void fd_parked_bad_direction(void) {
+    avra_trap("a descriptor's waiters are read (0) or write (1)");
+}
+
+// How many fibers are parked on one direction of a descriptor: 0 reads,
+// 1 writes.
+int64_t avra_fd_parked(int64_t fd, int64_t dir) {
+    if (dir != 0 && dir != 1) fd_parked_bad_direction();
+    if (fd < 0 || (size_t)fd >= g_fds_cap) return 0;
+    int64_t n = 0;
+    for (const Waiter* w = g_fds[fd].head[dir]; w; w = w->next) n++;
+    return n;
+}
+
 // Who asked the cancel that ended the task, or the task's own id for an
 // answer. A scope's request reads as its id; a task cancel as that
 // task's.
