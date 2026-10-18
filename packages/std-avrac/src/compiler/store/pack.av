@@ -10,7 +10,7 @@
 //! unread rather than half read, and a torn frame ends that segment's
 //! read. Nothing past a torn frame is trusted.
 //!
-//! `body-<rev>.pack`/`.idx` are the SEALED half (`store/body.av`), folded
+//! `body-<rev>.pack` is the SEALED half (`store/body.av`), folded
 //! by compaction under the flock at open: the process that takes the lock
 //! seals what it read into one body and retires the dead segments it
 //! folded; a process that cannot take the lock says it skipped.
@@ -138,10 +138,12 @@ export type Pack = {
     content: Cell<Map<string, string>>,
     /// Values the newest sealed body holds, read from its `.val` on demand.
     slots: Cell<Map<string, ValueSlot>>,
-    /// The newest body's name and set tables as written, and the tables decoded from them.
-    table_names: Cell<Bytes>,
-    table_sets: Cell<Bytes>,
+    /// The newest sealed body, open and lazy (none or one), whose rows a lookup decodes on
+    /// demand, and the tables decoded from its names and sets.
+    sealed: Cell<List<Sealed>>,
     tables: Cell<List<Tables>>,
+    /// Whether every sealed row has been lifted into `records`, as a seal needs.
+    whole: Cell<bool>,
     opened: Cell<bool>,
     /// Whether a WRITER has taken the compaction lock and sealed. An
     /// inspection opens the index and never sets this, so the same pack can
@@ -162,10 +164,6 @@ export type Pack = {
     /// older view would drop the rows of whoever sealed since.
     seen_rev: Cell<int>,
     lock_fd: Cell<int>,
-    /// Input name -> the rows that read it, built on first ask and dropped by a write.
-    /// The newest body's reverse section as written, and its rows' record keys in body order.
-    table_reverse: Cell<Bytes>,
-    order: Cell<List<string>>,
     /// The value file, open once for the revision it was opened at (none or one handle).
     val_open: Cell<List<Opened>>,
     val_open_rev: Cell<int>,
@@ -177,7 +175,7 @@ export type Pack = {
 
 /// What a process asked of a pack: lookups that found a row and that did not, values read out
 /// of the sealed body, and the bytes those reads covered.
-export type Traffic = { hits: int, misses: int, values: int, bytes: int }
+export type Traffic = { hits: int, misses: int, values: int, bytes: int, rows: int = 0 }
 
 /// THE STORE DIRECTORY a cache root names — ONE projection, so the pack and
 /// every tool that measures it (`avra cache log`) agree where it stands.
@@ -193,9 +191,9 @@ export fn pack_at(root: string, print: string) -> Pack {
         withdrawn: map_cell(),
         content: map_cell(),
         slots: map_cell(),
-        table_names: Cell.new("".bytes()),
-        table_sets: Cell.new("".bytes()),
+        sealed: list_cell(),
         tables: list_cell(),
+        whole: Cell.new(false),
         opened: Cell.new(false),
         admitted: Cell.new(false),
         torn: Cell.new(false),
@@ -208,8 +206,6 @@ export fn pack_at(root: string, print: string) -> Pack {
         val_rev: Cell.new(0),
         seen_rev: Cell.new(0),
         lock_fd: Cell.new(0 - 1),
-        table_reverse: Cell.new("".bytes()),
-        order: list_cell(),
         val_open: list_cell(),
         val_open_rev: Cell.new(0 - 1),
         seg_open: list_cell(),
@@ -503,7 +499,7 @@ fn emptied(pack: Pack) {
 /// size. A process that appended nothing never reaches here, so it takes no lock
 /// and writes no store file.
 fn settled(pack: Pack) {
-    let half = pack.records.get().length / 2
+    let half = (pack.records.get().length + sealed_count(pack)) / 2
     let due = hooked_frames() ?? if half > SEAL_FRAMES { half } else { SEAL_FRAMES }
     if pack.frames.get() >= due { admit(pack) }
 }
@@ -735,7 +731,7 @@ fn pack_found(pack: Pack, family: string, key: string, read_only: bool) -> strin
     opened_at(pack, read_only)
     let at = record_key(family, key)
     if withdrawn(pack, at) { return null }
-    let held? = pack.records.get().get(at) else { return null }
+    let held? = record_of(pack, at) else { return null }
     content_of(pack, held.digest)
 }
 
@@ -745,7 +741,7 @@ export fn pack_reads(pack: Pack, family: string, key: string, inspect: bool) -> 
     opened_at(pack, inspect)
     let at = record_key(family, key)
     if withdrawn(pack, at) { return null }
-    let held? = pack.records.get().get(at) else { return null }
+    let held? = record_of(pack, at) else { return null }
     reads_known(pack, held)
 }
 
@@ -763,8 +759,7 @@ export fn pack_get_rev(pack: Pack, rev: int, family: string, key: string) -> str
 export fn pack_rows_rev(pack: Pack, rev: int) -> List<Held> {
     if !body_scan_rev(pack, rev) { return [] }
     pack.opened.set(true)
-    let by = pack.records.get()
-    [by.get(k)! for k in pack.order.get() if by.get(k) != null]
+    sealed_rows(pack)
 }
 
 /// A value by its digest without keeping it: held in memory, else read from the
@@ -788,7 +783,7 @@ fn content_of(pack: Pack, digest: string) -> string? {
 /// A sealed value: `get` seeks its slot in the newest body's `.val` and checks
 /// the bytes against the digest, so a missing or damaged value answers absent.
 fn spilled(pack: Pack, digest: string) -> string? {
-    let slot? = pack.slots.get().get(digest) else { return null }
+    let slot? = pack.slots.get().get(digest) ?? sealed_slot(pack, digest) else { return null }
     if traced() { qtrace("Q\tstore\tvalue\t${pack.rev.get()}\t${digest}\n") }
     let o? = value_file(pack) else { return null }
     let raw = match o.span(slot.at, slot.len) { .Ok(b) -> b, .Err(_) -> "".bytes() }
