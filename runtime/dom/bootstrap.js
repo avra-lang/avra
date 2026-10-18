@@ -80,41 +80,55 @@ function caretOf(el) {
   } catch { return null; }
 }
 
+// What an element hears once it hears `def` too: a seat it already heard is
+// replaced, a lone seat stays the definition itself, and only a second seat
+// makes a list.
+function with_seat(mine, def) {
+  if (mine === undefined) return def;
+  const rest = (Array.isArray(mine) ? mine : [mine]).filter((d) => d.kind !== def.kind);
+  return rest.length === 0 ? def : [...rest, def];
+}
+
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
-  const byId = new Map();
-  // WHO HEARS WHAT IS DATA HERE, NEVER A LISTENER ON EACH ELEMENT: an element's
-  // seats (id -> seat -> what it says), and one capturing listener per event
-  // word on the mount that finds the hearers on the way up from the target.
-  const ears = new Map();
-  const armed = new Set();
+  // THE PAGE'S TABLES ARE KEYED BY ID, AND IDS ARE DENSE: `nodes[id]` is the
+  // element, `hears[id]` what it hears — the shared definition of its one
+  // seat, or a list of them for a second — so an element costs no object here.
+  const nodes = [];
+  const hears = [];
   const defined = new Map();
+  const armed = new Set();
+  // WHO HEARS WHAT IS DATA HERE, NEVER A LISTENER ON EACH ELEMENT: one
+  // capturing listener per event word on the mount finds the hearers on the
+  // way up from the target.
+  const fire = (el, ev, def) => {
+    if (def.event !== ev.type) return;
+    if (def.prevents && ev.preventDefault) ev.preventDefault();
+    send(el.__avra_id, def.kind, saidBy(el, def.says, def.reads));
+  };
   const heard = (ev) => {
     for (let el = ev.target; el && el !== mount; el = el.parentNode) {
-      const mine = ears.get(el.__avra_id);
-      if (mine) {
-        for (const [seat, ear] of mine) {
-          if (ear.event !== ev.type) continue;
-          if (ear.prevents && ev.preventDefault) ev.preventDefault();
-          send(el.__avra_id, seat, saidBy(el, ear.says, ear.reads));
-        }
+      const mine = hears[el.__avra_id];
+      if (mine !== undefined) {
+        if (Array.isArray(mine)) for (const def of mine) fire(el, ev, def); else fire(el, ev, mine);
       }
       if (!ev.bubbles) break;
     }
   };
+  const listed = (id) => { const mine = hears[id]; return mine === undefined ? [] : Array.isArray(mine) ? mine : [mine]; };
   const need = (id) => {
-    const el = byId.get(id);
+    const el = nodes[id];
     if (!el) throw new Error(`a patch names element ${id}, which is not on the page`);
     return el;
   };
   // An element that leaves takes everything under it.
   const forget = (el) => {
-    byId.delete(el.__avra_id);
-    ears.delete(el.__avra_id);
+    nodes[el.__avra_id] = undefined;
+    hears[el.__avra_id] = undefined;
     for (const child of el.childNodes || []) forget(child);
   };
-  const keep = (id, el) => { el.__avra_id = id; byId.set(id, el); };
+  const keep = (id, el) => { el.__avra_id = id; nodes[id] = el; };
   // WHAT THE PAGE KEEPS ON AN ELEMENT IS NEVER THIS HOST'S TO LOSE: the
   // focus, a caret, how far it is scrolled, a video playing, an animation
   // under way. A page that can carry an element standing on it
@@ -166,23 +180,20 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     [OP.set_text]: (p) => { need(p.id).textContent = p.content; },
     // WHAT A SEAT'S EVENT IS arrives once (`define`), and each `listen` of it
     // is an element and two numbers.
-    [OP.define]: (p) => { defined.set(`${p.kind}:${p.says}`, p); },
+    [OP.define]: (p) => { defined.set(p.kind * 4 + p.says, p); },
     [OP.listen]: (p) => {
       need(p.id);
-      const def = defined.get(`${p.kind}:${p.says}`);
+      const def = defined.get(p.kind * 4 + p.says);
       if (!def) throw new Error(`a patch listens to seat ${p.kind} saying ${p.says}, which no definition told`);
-      const mine = ears.get(p.id) || ears.set(p.id, new Map()).get(p.id);
-      mine.set(p.kind, { event: def.event, says: def.says, reads: def.reads, prevents: def.prevents });
+      hears[p.id] = with_seat(hears[p.id], def);
       if (!armed.has(def.event)) {
         armed.add(def.event);
         mount.addEventListener(def.event, heard, true);
       }
     },
     [OP.unlisten]: (p) => {
-      const mine = ears.get(p.id);
-      if (!mine) return;
-      mine.delete(p.kind);
-      if (mine.size === 0) ears.delete(p.id);
+      const rest = listed(p.id).filter((def) => def.kind !== p.kind);
+      hears[p.id] = rest.length === 0 ? undefined : rest.length === 1 ? rest[0] : rest;
     },
     [OP.style]: (p) => { if (styleEl) styleEl.textContent = p.css; },
     // A VERB OF THE ELEMENT'S OWN, asked for by name: the program says
@@ -198,7 +209,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     for (const p of parseFrame(bytes)) apply[p.op](p);
   };
   // What each element hears, for a reader of the page to inspect.
-  applyFrame.ears = ears;
+  applyFrame.ears = (id) => listed(id).map((def) => [def.kind, def]);
   return applyFrame;
 }
 
