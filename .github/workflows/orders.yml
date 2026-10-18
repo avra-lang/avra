@@ -107,3 +107,26 @@ jobs:
             echo "$p $(( $(date +%s) - t ))s"
           done
           exit $fail
+
+  # THE LAYOUT SOLVER'S WIDE SWEEP: nine seeds of 300 random trees against
+  # Firefox running the real html target (tools/layout_oracle.sh). A PR runs
+  # one seed when it touches what the oracle reads; the night runs the rest.
+  layout-sweep:
+    needs: [prepare]
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: orders-build }
+      - name: built
+        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: nine seeds
+        env:
+          LAYOUT_ORACLE_SEEDS: "1 2 3 4 5 6 7 8 9"
+          LAYOUT_ORACLE_CASES: "300"
+          CI: "true"
+        run: sh tools/layout_oracle.sh
