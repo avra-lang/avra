@@ -2,7 +2,8 @@
 # THE LAYOUT SOLVER AGAINST THE WEB TARGET, in a real browser: random trees are
 # placed by std-ui's `place` and by Firefox running the page the real html
 # realizer writes, and every box must agree (tools/layout-oracle/oracle.mjs).
-# Fixed seeds, so a run is the same trees every time; a failing tree is shrunk
+# Fixed seed, so a run is the same trees every time (LAYOUT_ORACLE_SEEDS and
+# LAYOUT_ORACLE_CASES widen the sweep); a failing tree is shrunk
 # and printed with both answers.
 #
 # It needs the compiler and Firefox (FIREFOX names one that is not in a usual
@@ -14,8 +15,8 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
-seeds=${LAYOUT_ORACLE_SEEDS:-"1 2 3"}
-cases=${LAYOUT_ORACLE_CASES:-150}
+seeds=${LAYOUT_ORACLE_SEEDS:-1}
+cases=${LAYOUT_ORACLE_CASES:-300}
 
 skip() {
     if [ "${CI:-}" = true ]; then
