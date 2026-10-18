@@ -154,7 +154,7 @@ P { x: 1 }
 ```
 
 ```
-error[lower.no_projection]: the program's answer is a `P`, which has no text projection yet
+error[lower.no_projection]: a `P` has no text projection, so it cannot be the program's answer
   ╭─[witness.av:2:1]
 2 │ P { x: 1 }
   · ┬
@@ -281,7 +281,7 @@ error[resolve.paired]: `i` names both the index and the element
   · ┬
   · ╰── bound here
 ──╯
-help: give the index its own name — `for i, i in …`
+help: rename the index — `for index, i in …`
 ```
 
 ## resolve.runtime_binding
@@ -415,7 +415,7 @@ let job = spawn one()
 ```
 
 ```
-error[flow.select]: `select` is typed and not yet lowered
+error[flow.select]: `select` type-checks but lowers to nothing
   ╭─[witness.av:7:1]
 7 │ @fair select {
   · ┬
@@ -622,7 +622,7 @@ error[type.applied]: a map's keys are strings, not `int`
   · ┬
   · ╰── this type
 ──╯
-help: other key types are recorded — `Map<string, …>`
+help: key by text — `Map<string, …>`
 ```
 
 ## annotation.callee
@@ -1109,7 +1109,7 @@ error[manifest.no_name]: `[package]` needs a name — `name = "@scope/name"`
   · ┬
   · ╰── here
 ──╯
-help: add it under `[package]` — the line above shows its form
+help: add it under `[package]`
 ```
 
 ## manifest.no_version
@@ -1133,7 +1133,7 @@ error[manifest.no_version]: `[package]` needs a version — `version = "0.1.0"`
   · ┬
   · ╰── here
 ──╯
-help: add it under `[package]` — the line above shows its form
+help: add it under `[package]`
 ```
 
 ## manifest.bad_version
@@ -1280,7 +1280,7 @@ error[manifest.bad_path]: `@x/y` points at `/w/nowhere`, which holds no `avra.to
   · ┬
   · ╰── this dependency
 ──╯
-help: a path dependency is a package directory
+help: point `path` at a directory holding `avra.toml`
 ```
 
 ## manifest.bad_opt_level
@@ -1364,7 +1364,7 @@ version = "0.1.0"
 ```
 
 ```
-error[manifest.unsupported_dependency]: `@x/y` is not a path dependency — only `{ path = "…" }` resolves; registry and git forms arrive with their transports
+error[manifest.unsupported_dependency]: `@x/y` is not a path dependency — only `{ path = "…" }` resolves
   ╭─[/w/avra.toml:6:1]
 6 │ "@x/y" = "1.0"
   · ┬
@@ -1434,13 +1434,13 @@ search = ["${NOPE_VAR}/lib"]
 ```
 
 ```
-error[manifest.unset_link_variable]: `${NOPE_VAR}/lib` in `search` fills `NOPE_VAR`, which is not set — a hole inside a `[link]` word needs its variable, or the word names another path
+error[manifest.unset_link_variable]: `${NOPE_VAR}/lib` in `search` needs `NOPE_VAR`, which is not set — without it the word names another path
   ╭─[/w/avra.toml:6:1]
 6 │ search = ["${NOPE_VAR}/lib"]
   · ┬
   · ╰── here
 ──╯
-help: set `NOPE_VAR`, or write the word without the hole; a word that is only the hole is dropped while its variable is unset
+help: set `NOPE_VAR`, or write the word without the hole
 ```
 
 ## manifest.bad_budget
@@ -1801,7 +1801,7 @@ error[type.binding]: `x` declares `int`, this is `bool`
   ·              ┬
   ·              ╰── this is `bool`
 ──╯
-help: make the value a `int`, or change the declaration that wants it
+help: make the value `int`, or change the declaration that wants it
 
 error[type.binding]: `y` declares `string`, this is `int`
   ╭─[witness.av:2:17]
@@ -2455,7 +2455,7 @@ error[type.list_element]: a list's elements share one type — the first is `int
   ·     ┬
   ·     ╰── this is `bool`
 ──╯
-help: make the value a `int`, or change the declaration that wants it
+help: make the value `int`, or change the declaration that wants it
 ```
 
 ## type.list_scalar
@@ -2775,7 +2775,7 @@ error[type.struct_fields]: field `x` is `int`, this is `bool`
   ·                ┬
   ·                ╰── this is `bool`
 ──╯
-help: make the value a `int`, or change the declaration that wants it
+help: make the value `int`, or change the declaration that wants it
 
 error[type.struct_fields]: field `y` is `string`, this is `int`
   ╭─[witness.av:2:25]
@@ -2897,7 +2897,7 @@ error[type.force]: `!` insists on a nullable, this is `int`
   · ┬
   · ╰── this is `int`
 ──╯
-help: `int` is a guarantee — it is never absent
+help: `int` is never absent — drop the null check
 ```
 
 ## type.match_opt
@@ -2937,7 +2937,7 @@ error[type.chain]: `?.` reaches into a nullable, this is `int`
   · ┬
   · ╰── this is `int`
 ──╯
-help: `int` is a guarantee — write `.x`
+help: `int` is never absent — write `.x`
 ```
 
 ## type.propagate
@@ -2959,7 +2959,7 @@ error[type.propagate]: `?` propagates a nullable, this is `int`
   ·     ┬
   ·     ╰── this is `int`
 ──╯
-help: `int` is a guarantee — it is never absent
+help: `int` is never absent — drop the null check
 ```
 
 ## type.let_else
@@ -2986,7 +2986,7 @@ error[type.let_else]: `v?` asks a nullable, this is `int`
   ·          ┬
   ·          ╰── this is `int`
 ──╯
-help: `int` is a guarantee — it is never absent
+help: `int` is never absent — drop the null check
 ```
 
 ## type.coalesce_never
@@ -2998,7 +2998,7 @@ help: `int` is a guarantee — it is never absent
 ```
 
 ```
-warning[type.coalesce_never]: `??` never fires — a `int` is never absent
+warning[type.coalesce_never]: `??` never fires — `int` is never absent
   ╭─[witness.av:1:1]
 1 │ 1 ?? 2
   · ┬
@@ -3325,7 +3325,7 @@ f()
 ```
 
 ```
-error[type.fail]: `fail` raises on a `Result`'s failure channel, and this fn promises a `int`
+error[type.fail]: `fail` raises on a `Result`'s failure channel, and this fn promises `int`
   ╭─[witness.av:2:5]
 2 │     fail 1
   ·     ┬
@@ -3350,7 +3350,7 @@ error[type.catch]: `catch` recovers a `Result`, this is `int`
   ·         ┬
   ·         ╰── this is `int`
 ──╯
-help: only a fallible value has a failure to recover from
+help: `int` has no failure — drop the `catch`
 ```
 
 ## type.infer_result
@@ -3374,7 +3374,7 @@ errdefer 1
 ```
 
 ```
-error[type.defer_inert]: `defer` runs its body later, and this one only names a `int` — deferring a value does nothing
+error[type.defer_inert]: `defer` runs its body later, and this one only names `int` — deferring a value does nothing
   ╭─[witness.av:1:1]
 1 │ errdefer 1
   · ┬
@@ -3446,7 +3446,7 @@ error[type.unknown]: `decimal` names no type
   · ┬
   · ╰── in this signature
 ──╯
-help: the types today are `int`, `string`, `bool`, and your declared types
+help: a type is a built-in (`int`, `string`, `bool`, `float`) or one you declared
 ```
 
 ## resolve.duplicate_fn
@@ -3810,7 +3810,7 @@ error[type.map_key]: a map's keys are strings, this is `int`
   ·          ┬
   ·          ╰── this is `int`
 ──╯
-help: other key types are recorded — spell the key as text
+help: key by text
 ```
 
 ## type.spread_map
@@ -3848,7 +3848,7 @@ error[type.map_value]: this map holds `int`, this is `bool`
   ·                       ┬
   ·                       ╰── this is `bool`
 ──╯
-help: make the value a `int`, or change the declaration that wants it
+help: make the value `int`, or change the declaration that wants it
 ```
 
 ## type.map_entry
