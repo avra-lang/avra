@@ -124,3 +124,123 @@ export function hostedTasks(exports, fault = (e) => { throw e; }) {
     deepest: () => peak,
   };
 }
+
+// THE FALLBACK HOST, for an engine that cannot suspend a stack: the same two
+// imports, driven by binaryen's asyncify. The module is the asyncified build
+// (`app.asyncify.wasm`); a task parks by UNWINDING its wasm frames into a
+// buffer of its own and is resumed by REWINDING it, by calling the same
+// top-level export again. One task runs at a time and none ever nests, so
+// the driver is a loop: run a task until it unwinds or ends, then run
+// whichever the scheduler named. `exports().avra_asyncify_buffer(bytes)`
+// is the module's allocator for those buffers.
+const UNWOUND = 1;
+const BUFFER_BYTES = 256 * 1024;
+
+export function asyncifyTasks(exports, fault = (e) => { throw e; }) {
+  const tasks = new Map();
+  let current = null;
+  let pending = null;
+  let live = 0;
+  let line = Promise.resolve();
+  let inside = 0;
+  let peak = 0;
+
+  const buffer = () => {
+    const at = exports().avra_asyncify_buffer(BUFFER_BYTES);
+    const view = new Int32Array(exports().memory.buffer, at, 2);
+    view[0] = at + 8;
+    view[1] = at + BUFFER_BYTES;
+    return at;
+  };
+
+  const imports = {
+    // The scheduler hands the thread to `to`. The caller unwinds, unless it
+    // is done: then it simply returns and its stack ends with it.
+    switch: (from, to, ends) => {
+      if (exports().asyncify_get_state() === 2) {
+        exports().asyncify_stop_rewind();
+        return;
+      }
+      current.id = from;
+      tasks.set(from, current);
+      pending = { kind: "switch", to };
+      if (ends) {
+        tasks.delete(from);
+        return;
+      }
+      current.at ??= buffer();
+      exports().asyncify_start_unwind(current.at);
+    },
+    // The world is waited on: the caller unwinds, the driver waits, and the
+    // same task is rewound.
+    idle: (ns) => {
+      if (exports().asyncify_get_state() === 2) {
+        exports().asyncify_stop_rewind();
+        return;
+      }
+      pending = { kind: "idle", ns };
+      current.at ??= buffer();
+      exports().asyncify_start_unwind(current.at);
+    },
+  };
+
+  // Runs `first` and whatever the scheduler hands the thread to, until the
+  // scheduler hands it to no one.
+  const drive = async (first) => {
+    let task = first;
+    let answer;
+    while (task) {
+      current = task;
+      pending = null;
+      if (task.parked) exports().asyncify_start_rewind(task.at);
+      let got;
+      try {
+        got = task.replay();
+      } catch (e) {
+        fault(e);
+        return answer;
+      }
+      if (exports().asyncify_get_state() === UNWOUND) {
+        exports().asyncify_stop_unwind();
+        task.parked = true;
+      } else {
+        if (task === first) answer = got;
+        if (task !== first) live = Math.max(0, live - 1);
+      }
+      const asked = pending;
+      if (!asked) return answer;
+      if (asked.kind === "idle") {
+        await new Promise((resolve) => setTimeout(resolve, asked.ns < 0n ? 0x7fffffff : Number((asked.ns + 999999n) / 1000000n)));
+        continue;
+      }
+      let next = tasks.get(asked.to);
+      if (!next) {
+        next = { replay: () => exports().avra_task_entry(), parked: false, at: null, id: asked.to };
+        live += 1;
+      }
+      task = next;
+    }
+    return answer;
+  };
+
+  const run = (replay) => drive({ replay, parked: false, at: null, id: null });
+  return {
+    imports,
+    stranded: () => live,
+    start: (name = "_start") => run(() => exports()[name]()),
+    // Entries are serial: a second waits for the first (see `enter` above).
+    enter: (name, ...args) => {
+      const result = line.then(() => {
+        inside += 1;
+        peak = Math.max(peak, inside);
+        return run(() => exports()[name](...args));
+      });
+      const done = () => {
+        inside -= 1;
+      };
+      line = result.then(done, done);
+      return result;
+    },
+    deepest: () => peak,
+  };
+}

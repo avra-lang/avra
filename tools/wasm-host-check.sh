@@ -23,6 +23,10 @@ command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
 [ -f "$tree/build/wasm32/libavra_runtime.a" ] || ( cd "$tree" && make -s wasm-runtime ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
 
 "$node" --no-warnings --experimental-wasm-jspi "$tree/runtime/dom/tasks_unit_test.js"
+# both hosts against one freestanding module: JSPI against the plain build, asyncify against the asyncified one
+clang --target=wasm32 -O2 -nostdlib -Wl,--no-entry -Wl,--allow-undefined -o "$work/proxy.wasm" "$here/wasm-host/proxy.c" || { say "the proxy module did not build"; exit 1; }
+wasm-opt --enable-sign-ext --enable-mutable-globals --enable-bulk-memory --enable-nontrapping-float-to-int -O2 --asyncify --pass-arg=asyncify-imports@avra_host.switch,avra_host.idle "$work/proxy.wasm" -o "$work/proxy.asyncify.wasm" || { say "the proxy did not asyncify"; exit 1; }
+"$node" --no-warnings --experimental-wasm-jspi "$tree/runtime/dom/tasks_proxy_test.js" "$work/proxy.wasm" "$work/proxy.asyncify.wasm"
 cp -R "$here/wasm-host" "$work/pkg"
 "$avra" build --target wasm32 --wasm_reactor "$work/pkg" >"$work/build.out" 2>"$work/build.err" || { say "the reactor did not build"; cat "$work/build.err" >&2; exit 1; }
 wasm=$(tail -1 "$work/build.out")
