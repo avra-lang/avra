@@ -563,10 +563,12 @@ impl Workspace {
     /// its text does not.
     fn has_generated(path: string) -> bool {
         let f? = self.decls.known_file_id(path) else { return false }
-        let held? = self.held_names(path) else { return self
+        let held? = self.held_names(path) else {
+            return self
                 .decls
                 .decls_of_file(f)
-                .any((d: DeclId) -> !self.decls.decl(d).maker.is_empty()) }
+                .any((d: DeclId) -> !self.decls.decl(d).maker.is_empty())
+        }
         held.generated
     }
 
@@ -601,28 +603,31 @@ impl Workspace {
     }
 
     /// Whether a file's text spells a name more than once.
-    fn spelled_twice(path: string, name: string) -> bool { self.token_row(path).contains("\n${name}\t+") }
+    fn spelled_twice(path: string, name: string) -> bool { self.spelling(path).twice.has(name) }
 
     /// Whether a file's text spells a name.
-    fn spells(path: string, name: string) -> bool { self.token_row(path).contains("\n${name}\t") }
+    fn spells(path: string, name: string) -> bool { self.spelling(path).names.has(name) }
 
-    /// A file's tokens as a row, one `name<TAB>` line each (`name<TAB>+` for a name spelled more
-    /// than once): kept under the text's digest, so a text that did not move is never lexed again.
-    fn token_row(path: string) -> string {
+    /// The names a file's text spells, indexed by name: its row is kept under the text's digest,
+    /// so a text that did not move is read and never lexed again.
+    fn spelling(path: string) -> Spelling {
         let at = "${self.octets_word(path)}\t${path}"
-        let known: string? = self.keys.file_tokens.get().get(at)
+        let known: Spelling? = self.keys.file_tokens.get().get(at)
         if known != null { return known! }
         let key = tokens_key(self.text_digest(path))
         let kept: string? = self.store.get()?.get(Stored.Unit, key)
-        let row = kept ?? self.lexed_row(path, key)
-        self.keys.file_tokens.put(at, row)
-        row
+        let made = spelling_of(kept ?? self.lexed_row(path, key))
+        self.keys.file_tokens.put(at, made)
+        made
     }
 
-    /// A file's token row, lexed from its text and kept when a store is open.
+    /// A file's spelled-name row, lexed from its text and kept when a store is open.
     fn lexed_row(path: string, key: string) -> string {
         let counts = token_counts(self.listed_text(path))
-        let row = "\n${joined([joined([n, if counts.get(n) ?? 0 > 1 { "+" } else { "" }], "\t") for n in sorted_texts(counts.keys())], "\n")}\n"
+        let row = joined(
+            [if counts.get(n) ?? 0 > 1 { "+${n}" } else { n } for n in sorted_texts(counts.keys())],
+            "\n",
+        )
         let _ = self.store.get()?.keep(Stored.Unit, key, row, [])
         row
     }
@@ -664,6 +669,20 @@ impl Workspace {
 
 /// What a verdict's units see — module lines, names, file lines — named by the digest of its text.
 type SeenView = { id: string, lines: List<string> }
+
+/// The names a text spells, and those it spells more than once.
+type Spelling = { names: Map<string, bool>, twice: Map<string, bool> }
+
+/// A spelling read back from its row: one name a line, `+` before a name spelled more than once.
+fn spelling_of(row: string) -> Spelling {
+    let names: Cell<Map<string, bool>> = Cell.new({})
+    let twice: Cell<Map<string, bool>> = Cell.new({})
+    for l in row.split("\n") {
+        if l.starts_with("+") { twice.put(l.substring(1, l.length), true) }
+        names.put(if l.starts_with("+") { l.substring(1, l.length) } else { l }, true)
+    }
+    Spelling { names: names.get(), twice: twice.get() }
+}
 
 /// Where a view's lines are kept.
 fn tokens_key(digest: string) -> string { node_key(Stored.Unit, ["tokens", digest]) }
