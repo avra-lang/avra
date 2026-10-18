@@ -5,7 +5,7 @@
 use tree.node.{Node}
 use place.measure.{Cells}
 use place.solve.{place}
-use realize.tui.paint.{painted}
+use realize.tui.paint.{painted, trimmed, gridded, Grid, Painted}
 use realize.tui.wrap.{at_least_one}
 use env.{Env}
 
@@ -19,7 +19,19 @@ export fn render(root: Node, _env: Env, width: int) -> string { focused(root, wi
 /// the keys go to.
 export fn focused(root: Node, width: int, focus: int?) -> string {
     let w = at_least_one(width)
-    let at = path_of(root, focus)
+    [trimmed(row) for row in drawn(root, w, path_of(root, focus)).rows].join("\n")
+}
+
+/// The screen as a value: `width` cells across and `height` down (absent: as
+/// tall as the layout asks), the node at walk seat `focus` marked and the
+/// caret at its content. Rows past the layout are blank, rows past the
+/// height are cut off.
+export fn raster(root: Node, width: int, height: int?, focus: int?) -> Grid {
+    let w = at_least_one(width)
+    gridded(drawn(root, w, path_of(root, focus)), w, height)
+}
+
+fn drawn(root: Node, w: int, at: string) -> Painted {
     painted(root, place(root, Cells { focus: at }, w), w, at)
 }
 
