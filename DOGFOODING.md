@@ -1963,7 +1963,7 @@ test all read them, and no walker reads `meant` itself. `kids()` and
   whatever stage was written — is COMPUTED: the node answers
   `minted(store, span)` instead of `means()`, through the same door.
   `Pipe { value, stage }` keeps `value |> stage` as written, so the
-  printer prints it natively (the `is_piped` mark and its walk are gone,
+  printer prints it natively (no piped mark or walk remains,
   and `x |> f()` stays as written) and the call it means is minted beside
   it. A stage that is no call means nothing and is refused where it is
   written.
