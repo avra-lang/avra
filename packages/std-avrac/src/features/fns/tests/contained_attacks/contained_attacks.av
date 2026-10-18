@@ -1,0 +1,72 @@
+// proves, against the grain: a guard inside a `defer`ing fn, a guard
+// inside a guard (the outer's body keeps going), a guard in a `select`
+// arm, a body that waits while another task opens and trips its own
+// guard, and an empty-answer body — each catches only its own task's
+// trap; both engines
+use @std.meta.{contained}
+use @std.time.{ms, sleep}
+
+fn boom() -> int {
+    let xs = [1]
+    let i = 4
+    xs[i]
+}
+
+fn words(r: Result<int, string>) -> string {
+    match r { .Ok(n) -> "ok ${n}", .Err(w) -> "err ${w}" }
+}
+
+fn note(s: string) { println("deferred ${s}") }
+
+fn deferring() -> string {
+    defer note("ran")
+    words(contained(boom))
+}
+
+fn twice() -> string {
+    let outer = contained(
+        () -> {
+            let inner = contained(boom)
+            match inner { .Err(w) -> 7, .Ok(n) -> n }
+        },
+    )
+    words(outer)
+}
+
+fn jobs() -> int { 3 }
+
+fn selecting() -> string {
+    let job = spawn jobs()
+    select {
+        r in job -> words(contained(boom))
+    }
+}
+
+fn other() -> string {
+    sleep(ms(1))
+    words(contained(boom))
+}
+
+fn waits() -> int {
+    sleep(ms(5))
+    5
+}
+
+println(deferring())
+println(twice())
+println(selecting())
+println(words(contained(() -> 0)))
+let t = spawn other()
+println(words(contained(waits)))
+println(t.await)
+println(
+    words(
+        contained(
+            () -> {
+                sleep(ms(2))
+                boom()
+            },
+        ),
+    ),
+)
+println("end")
