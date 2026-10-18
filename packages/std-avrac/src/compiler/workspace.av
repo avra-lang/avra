@@ -539,8 +539,9 @@ export type Workspace = {
     /// members' in-flight answers; everyone else reads `Raised`.
     raised_fixpoint: Fixpoint<List<TypeId>>,
     /// The whole-program read-reach fixpoint over the declarations' call
-    /// graph — whether each declaration reads `state`, transitively.
-    read_fixpoint: Fixpoint<bool>,
+    /// graph — which `state` places each declaration reads, transitively,
+    /// as sorted `place_key`s (`features/read_set.av`).
+    read_fixpoint: Fixpoint<List<int>>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -827,7 +828,7 @@ fn read_reach_verified(ws: Workspace, arg: int) -> int {
     ws.db.changed_at(key(Family.ReadReach, arg))
 }
 fn decl_reads_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.decl_reads_state(decl_at_arg(arg)))
+    touch(ws.decl_places(decl_at_arg(arg)).length)
     ws.db.changed_at(key(Family.DeclReads, arg))
 }
 fn input_verified(ws: Workspace, arg: int) -> int {
@@ -1031,7 +1032,7 @@ fn built(
         clock: clock,
         phases: list_cell(),
         raised_fixpoint: new_fixpoint<List<TypeId>>(kernel, Family.Raised.ordinal, [], raised_join, raised_fp),
-        read_fixpoint: new_fixpoint<bool>(kernel, Family.DeclReads.ordinal, false, read_reach_join, read_reach_fp),
+        read_fixpoint: new_fixpoint<List<int>>(kernel, Family.DeclReads.ordinal, [], places_join, places_fp),
         input_index: map_cell(),
         input_names: list_cell(),
         manifest_texts: list_cell(),
