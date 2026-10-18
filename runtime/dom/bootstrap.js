@@ -39,7 +39,8 @@ export function parseFrame(bytes) {
     else if (op === OP.set_attr) patches.push({ op, id: id(), name: str(), value: str() });
     else if (op === OP.drop_attr) patches.push({ op, id: id(), name: str() });
     else if (op === OP.set_prop) patches.push({ op, id: id(), name: str(), says: int(), value: str() });
-    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), event: str(), says: int(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.define) patches.push({ op, kind: int(), says: int(), event: str(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), says: int() });
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
     else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
@@ -81,6 +82,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   // word on the mount that finds the hearers on the way up from the target.
   const ears = new Map();
   const armed = new Set();
+  const defined = new Map();
   const heard = (ev) => {
     for (let el = ev.target; el && el !== mount; el = el.parentNode) {
       const mine = ears.get(el.__avra_id);
@@ -155,13 +157,18 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       if (el[p.name] !== value) el[p.name] = value;
     },
     [OP.set_text]: (p) => { need(p.id).textContent = p.content; },
+    // WHAT A SEAT'S EVENT IS arrives once (`define`), and each `listen` of it
+    // is an element and two numbers.
+    [OP.define]: (p) => { defined.set(`${p.kind}:${p.says}`, p); },
     [OP.listen]: (p) => {
       need(p.id);
+      const def = defined.get(`${p.kind}:${p.says}`);
+      if (!def) throw new Error(`a patch listens to seat ${p.kind} saying ${p.says}, which no definition told`);
       const mine = ears.get(p.id) || ears.set(p.id, new Map()).get(p.id);
-      mine.set(p.kind, { event: p.event, says: p.says, reads: p.reads, prevents: p.prevents });
-      if (!armed.has(p.event)) {
-        armed.add(p.event);
-        mount.addEventListener(p.event, heard, true);
+      mine.set(p.kind, { event: def.event, says: def.says, reads: def.reads, prevents: def.prevents });
+      if (!armed.has(def.event)) {
+        armed.add(def.event);
+        mount.addEventListener(def.event, heard, true);
       }
     },
     [OP.unlisten]: (p) => {

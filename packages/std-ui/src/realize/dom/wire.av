@@ -9,10 +9,16 @@
 //!   drop_attr    id, name
 //!   set_prop     id, name, says, value
 //!   set_text     id, content
-//!   listen       id, kind, event, says, reads (empty: none), prevents
-//!   unlisten     id, kind
+//!   define       seat, says, event, reads (empty: none), prevents
+//!   listen       id, seat, says
+//!   unlisten     id, seat
 //!   style        css
 //!   call         id, verb
+//!
+//! A `define` tells a host once what a seat's event is called, what it reads
+//! and whether the page's own answer is stopped; every `listen` of that seat
+//! saying that thing is then the element's id and two numbers. A frame is
+//! self-contained unless it is told what an earlier frame defined.
 //!
 //! A record opens with its op's code (`Op`). An id is a number in eight
 //! little-endian bytes — the same width however deep its node sits — and
@@ -33,7 +39,7 @@ use tree.codes.{Codes, Coded}
 use realize.dom.patch.{Patch, Listening, Says, Held, held_says}
 
 /// The wire's version: a host built for another REFUSES, never misapplies.
-export const wire_version = 10
+export const wire_version = 11
 
 /// What stands where a record names no element: the page itself as a
 /// parent, the first place as a sibling. No id is ever negative.
@@ -54,6 +60,7 @@ export enum Op {
     @code(10) Unlisten
     @code(11) Style
     @code(12) Call
+    @code(13) Define
 }
 
 /// The op a patch is written under. Every patch spelled.
@@ -114,16 +121,28 @@ impl Buf {
         self.push_int(n >> 32)
     }
 
-    fn push_listening(to: Listening) {
+    /// What a host is told once of a seat's event saying `to.says`.
+    fn push_definition(to: Listening) {
+        self.push_byte(Op.Define.code())
         self.push_int(to.action.seat.number())
-        self.push_str(to.event)
         self.push_int(to.says.code())
+        self.push_str(to.event)
         self.push_str(to.reads?.word() ?? "")
         self.push_int(if to.prevents { 1 } else { 0 })
     }
 
-    /// One patch as its record.
-    fn push_patch(p: Patch) {
+    /// The definition a `listen` needs, before it, unless `told` holds it.
+    fn defined(p: Patch, told: Cell<List<int>>) {
+        let to? = listening_in(p) else { return }
+        let key = definition_key(to)
+        if told.get().contains(key) { return }
+        told.push(key)
+        self.push_definition(to)
+    }
+
+    /// One patch as its record, after the definition it needs.
+    fn push_patch(p: Patch, told: Cell<List<int>>) {
+        self.defined(p, told)
         self.push_byte(op_of(p).code())
         match p {
             .Create(id, tag) -> {
@@ -157,7 +176,8 @@ impl Buf {
             },
             .Listen(id, to) -> {
                 self.push_id(id)
-                self.push_listening(to)
+                self.push_int(to.action.seat.number())
+                self.push_int(to.says.code())
             },
             .Unlisten(id, seat) -> {
                 self.push_id(id)
@@ -172,11 +192,20 @@ impl Buf {
     }
 }
 
-/// Patches as one frame.
-export fn frame(patches: List<Patch>) -> Bytes {
+/// The listening a patch asks for, when it asks for one.
+fn listening_in(p: Patch) -> Listening? {
+    match p { .Listen(_, to) -> to, _ -> null }
+}
+
+/// What a definition is for: a seat saying one of the four things.
+fn definition_key(to: Listening) -> int { to.action.seat.number() * 4 + to.says.code() }
+
+/// Patches as one frame. `told` holds the definitions an earlier frame of the
+/// same page sent, and is added to; a frame given none defines what it needs.
+export fn frame(patches: List<Patch>, told: Cell<List<int>> = Cell.new([])) -> Bytes {
     let b = buf()
     b.push_byte(wire_version)
-    for p in patches { b.push_patch(p) }
+    for p in patches { b.push_patch(p, told) }
     b.take()
 }
 
