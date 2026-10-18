@@ -8,7 +8,7 @@
 //! value ever reaches a class name.
 use style.box.{Box}
 use style.style.{Style, StateStyle, Interaction}
-use style.layout.{Axis, Align, Distribute, Sizing, Edge, Layout}
+use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge, Layout}
 use style.theme.{Theme, Mode}
 use tree.lists.{flatten}
 use tree.node.{Node, Prim, own_axis, gap_between}
@@ -16,8 +16,10 @@ use style.tokens.{Size, Tone, Font}
 use realize.html.tags.{HtmlTag}
 
 /// One atomic rule: its class name (already state-prefixed), the state
-/// it applies in, and the declaration it carries.
-export type CssRule = { name: string, state: Interaction?, decl: string }
+/// it applies in, the selector it applies under (the parent axis a size
+/// or a growth speaks for; nothing for a rule that needs no parent), and
+/// the declaration it carries.
+export type CssRule = { name: string, state: Interaction?, under: string, decl: string }
 
 const sizes = [Size.None, .Xs, .S, .M, .L, .Xl]
 const tones = [Tone.Text, .Muted, .Danger, .Surface, .SurfaceRaised, .SurfaceSunk, .SurfaceHover]
@@ -44,7 +46,24 @@ fn prefixed(name: string, state: Interaction?) -> string {
 /// One rule, or nothing when the field was not given.
 fn rule(name: string, state: Interaction?, decl: string) -> List<CssRule> {
     if name == "" { return [] }
-    [CssRule { name: prefixed(name, state), state: state, decl: decl }]
+    [CssRule { name: prefixed(name, state), state: state, under: "", decl: decl }]
+}
+
+/// A rule that applies to a child of a parent laid along `parent`: what a
+/// size or a growth means depends on the axis it sits on.
+fn scoped(parent: Axis, name: string, state: Interaction?, decl: string) -> List<CssRule> {
+    [
+        CssRule {
+            name: prefixed(name, state),
+            state: state,
+            under: ".${axis_word(parent).name}>",
+            decl: decl,
+        },
+    ]
+}
+
+fn across(a: Axis) -> Axis {
+    match a { .Row -> .Column, .Column -> .Row }
 }
 
 // ── layout ──────────────────────────────────────────────────────
@@ -95,16 +114,6 @@ fn face_word(f: Font) -> CssWord {
     CssWord { name: "face-${f.word()}", decl: "font-family:var(--face-${f.word()})" }
 }
 
-/// A sizing token's class and declaration; `Hug`/`Percent` draw none.
-fn size_word_of(prefix: string, prop: string, s: Sizing) -> CssWord {
-    match s {
-        .Hug -> no_word,
-        .Fill -> CssWord { name: "${prefix}-fill", decl: "${prop}:100%" },
-        .Fixed(n) -> CssWord { name: "${prefix}-${n}", decl: "${prop}:${n}px" },
-        .Percent(_) -> no_word,
-    }
-}
-
 /// The wrappers: a token, its state and its word.
 fn axis_rule(a: Axis?, state: Interaction?) -> List<CssRule> { opted(a, state, axis_word) }
 
@@ -122,8 +131,27 @@ fn radius_rule(z: Size?, state: Interaction?) -> List<CssRule> { opted(z, state,
 
 fn face_rule(f: Font?, state: Interaction?) -> List<CssRule> { opted(f, state, face_word) }
 
-fn sizing_rule(prefix: string, prop: string, s: Sizing?, state: Interaction?) -> List<CssRule> {
-    opted(s, state, (v) -> size_word_of(prefix, prop, v))
+/// A size along `along`, the parent axis it is the main one of. A fixed
+/// size holds on it; a fill takes the room that is left there (a growth
+/// given is its share) and stretches across; hug and a fraction write
+/// nothing. The flex basis is a percentage so that a parent whose size
+/// along is not yet known gives it the content's.
+fn sizing_rule(
+    along: Axis,
+    prefix: string,
+    prop: string,
+    least: string,
+    s: Sizing?,
+    state: Interaction?,
+) -> List<CssRule> {
+    let v? = s else { return [] }
+    match v {
+        .Hug or .Percent(_) -> [],
+        .Fill -> scoped(along, "${prefix}-fill", state, "flex:var(--grow) 1 0%;${least}:0")
+            .concat(scoped(across(along), "${prefix}-fill", state, "align-self:stretch")),
+        .Fixed(n) -> rule("${prefix}-${n}", state, "${prop}:${n}px")
+            .concat(scoped(along, "${prefix}-${n}", state, "flex-shrink:0")),
+    }
 }
 
 fn edge_rule(prefix: string, prop: string, z: Size?, state: Interaction?) -> List<CssRule> {
@@ -169,7 +197,32 @@ fn distribute_word(d: Distribute) -> CssWord {
 /// A sizing token's class name, or nothing when it draws no rule.
 
 fn grow_rule(n: int, state: Interaction?) -> List<CssRule> {
-    if n > 0 { rule("grow-${n}", state, "flex-grow:${n}") } else { [] }
+    if n > 0 { rule("grow-${n}", state, "flex-grow:${n};--grow:${n}") } else { [] }
+}
+
+fn order_rule(n: int, state: Interaction?) -> List<CssRule> {
+    if n == 0 { return [] }
+    rule("order-${if n < 0 { "n${0 - n}" } else { "${n}" }}", state, "order:${n}")
+}
+
+fn wrap_word(w: Wrap) -> CssWord {
+    match w {
+        .NoWrap -> CssWord { name: "wrap-no", decl: "flex-wrap:nowrap" },
+        .Wrap -> CssWord { name: "wrap-yes", decl: "flex-wrap:wrap" },
+        .WrapReverse -> CssWord { name: "wrap-rev", decl: "flex-wrap:wrap-reverse" },
+    }
+}
+
+fn wrap_rule(w: Wrap?, state: Interaction?) -> List<CssRule> { opted(w, state, wrap_word) }
+
+fn margin_rules(e: Edge?, state: Interaction?) -> List<CssRule> {
+    match e {
+        v? -> edge_rule("mis", "margin-inline-start", v.start, state)
+            .concat(edge_rule("mie", "margin-inline-end", v.end, state))
+            .concat(edge_rule("mt", "margin-top", v.top, state))
+            .concat(edge_rule("mb", "margin-bottom", v.bottom, state))
+        null -> []
+    }
 }
 
 fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
@@ -180,9 +233,12 @@ fn layout_rules(l: Layout, state: Interaction?) -> List<CssRule> {
             pad_rules(l.pad, state),
             align_rule(l.align, state),
             distribute_rule(l.distribute, state),
-            sizing_rule("w", "width", l.width, state),
-            sizing_rule("h", "height", l.height, state),
+            sizing_rule(.Row, "w", "width", "min-width", l.width, state),
+            sizing_rule(.Column, "h", "height", "min-height", l.height, state),
+            wrap_rule(l.wrap, state),
+            margin_rules(l.margin, state),
             grow_rule(l.grow, state),
+            order_rule(l.order, state),
         ],
     )
 }
@@ -222,7 +278,9 @@ export fn node_rules(prim: Prim, box: Box) -> List<CssRule> {
 }
 
 /// Every class a node names, once, in rule order.
-export fn class_names(n: Node) -> List<string> { [r.name for r in distinct_rules(node_rules(n.prim, n.box))] }
+export fn class_names(n: Node) -> List<string> { names_once([r.name for r in node_rules(n.prim, n.box)]) }
+
+fn names_once(names: List<string>) -> List<string> { [name for i, name in names if !names.slice(0, i).contains(name)] }
 
 /// Rules with each class name kept once, order intact; two nodes that
 /// share a look share the rule.
@@ -230,8 +288,8 @@ export fn distinct_rules(rules: List<CssRule>) -> List<CssRule> {
     mut seen: List<string> = []
     mut out: List<CssRule> = []
     for r in rules {
-        if !seen.contains(r.name) {
-            seen = seen.concat([r.name])
+        if !seen.contains("${r.under}${r.name}") {
+            seen = seen.concat(["${r.under}${r.name}"])
             out = out.concat([r])
         }
     }
@@ -279,7 +337,7 @@ fn pseudo_of(s: Interaction?) -> string {
     }
 }
 
-fn rule_source(r: CssRule) -> string { "${selector(r.name)}${pseudo_of(r.state)}{${r.decl}}" }
+fn rule_source(r: CssRule) -> string { "${r.under}${selector(r.name)}${pseudo_of(r.state)}{${r.decl}}" }
 
 /// These tags as one selector.
 fn tags(of: List<HtmlTag>) -> string { [t.word() for t in of].join(",") }
@@ -299,6 +357,8 @@ fn unflexed() -> string { [":not(.${axis_word(a).name})" for a in [Axis.Row, .Co
 /// drawn whatever its classes say.
 fn base_rules() -> List<string> {
     [
+        "*,*::before,*::after{box-sizing:border-box}",
+        "@property --grow{syntax:\"<number>\";inherits:false;initial-value:1}",
         "body{margin:0;${fill_word(.Surface).decl};${color_word(.Text).decl};${face_word(.Body).decl}}",
         "${tags([.Button, .Input])}{font:inherit;color:inherit}",
         "${tags([.Button])}{background:transparent;border:1px solid var(--tone-${Tone.Muted.word()});padding:var(--space-${Size.Xs.word()}) var(--space-${Size.S.word()})}",
