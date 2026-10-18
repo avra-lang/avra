@@ -34,6 +34,7 @@ use @std.meta.{
     Param,
     Variant,
     Mark,
+    MarkArg,
     Kind,
     Directive,
     Declared,
@@ -429,7 +430,9 @@ impl Vocabulary {
                 kind: EventKind.${kind?.name ?? ""},
                 web: ${self.hosted_as(marks, web_label, "DomEvent")},
                 terminal: ${self.hosted_as(marks, terminal_label, "Key")},
-                prevent: ${if hosted_flag(marks) { quote { true } } else { quote { false } }},
+                prevent: ${flag_code(hosted_flag(marks, prevent_label))},
+                hosted: ${flag_code(hosted_flag(marks, hosted_label))},
+                prim: Prim.${prim_word(t) ?? ""},
             }
         }
         Directive {
@@ -456,21 +459,21 @@ impl Vocabulary {
     fn hosted(f: Field) -> List<Diagnostic> {
         let marks = marks_of(f, host_mark)
         let twice = if marks.length > 1 { [host_twice(f)] } else { [] }
-        twice.concat(flatten([self.host_setting(m, a) for m in marks for a in m.args]))
+        twice
+            .concat(
+                flatten([self.host_setting(m, a) for m in marks for a in m.named])
+                    .concat([host_unnamed(m, w) for m in marks for w in m.args]),
+            )
     }
 
-    /// One setting of a `@host`, written `label:value` by the mark.
-    fn host_setting(m: Mark, written: string) -> List<Diagnostic> {
-        let at = written.index_of(":")
-        if at < 0 { return [host_unnamed(m, written)] }
-        let label = written.substring(0, at)
-        let value = written.substring(at + 1, written.length)
-        match label {
-            web_label -> self.host_variant(m, "DOM event", value, self.web, "DomEvent"),
+    /// One setting of a `@host`: a platform, or `prevent`.
+    fn host_setting(m: Mark, setting: MarkArg) -> List<Diagnostic> {
+        match setting.label {
+            web_label -> self.host_variant(m, "DOM event", setting.value, self.web, "DomEvent"),
             terminal_label -> self
-                .host_variant(m, "terminal key", value, self.keys.filter(it.fields.is_empty()), "Key"),
-            prevent_label -> if value == "true" || value == "false" { [] } else { [host_flag(m, value)] },
-            rest -> [host_platform(m, label)],
+                .host_variant(m, "terminal key", setting.value, self.keys.filter(it.fields.is_empty()), "Key"),
+            prevent_label or hosted_label -> if setting.value == "true" || setting.value == "false" { [] } else { [host_flag(m, setting.label, setting.value)] },
+            rest -> [host_platform(m, setting.label)],
         }
     }
 
@@ -520,11 +523,15 @@ const host_mark = "host"
 const web_label = "web"
 const terminal_label = "terminal"
 const prevent_label = "prevent"
+const hosted_label = "hosted"
 
 /// Whether an event's `@host` says `prevent: true`.
-fn hosted_flag(marks: List<Mark>) -> bool {
-    [a.value for m in marks for a in m.named if a.label == prevent_label].first() == "true"
+fn hosted_flag(marks: List<Mark>, label: string) -> bool {
+    [a.value for m in marks for a in m.named if a.label == label].first() == "true"
 }
+
+/// A flag as the code that spells it.
+fn flag_code(on: bool) -> Code { if on { quote { true } } else { quote { false } } }
 
 /// The mark that says an attribute is its node's own words.
 const facet_mark = "facet"
@@ -663,7 +670,7 @@ fn host_unnamed(m: Mark, written: string) -> Diagnostic {
         "host",
         m.at,
         "`@host` names its platform: `${written}` has none",
-        "write `@host(web: .Click)` — the settings are ${ticked([web_label, terminal_label, prevent_label])}",
+        "write `@host(web: .Click)` — the settings are ${ticked([web_label, terminal_label, prevent_label, hosted_label])}",
     )
 }
 
@@ -672,12 +679,12 @@ fn host_platform(m: Mark, label: string) -> Diagnostic {
         "host",
         m.at,
         "`@host` has no setting `${label}`",
-        "its settings are ${ticked([web_label, terminal_label, prevent_label])}",
+        "its settings are ${ticked([web_label, terminal_label, prevent_label, hosted_label])}",
     )
 }
 
-fn host_flag(m: Mark, value: string) -> Diagnostic {
-    refuse_as_at("host", m.at, "`prevent` is `true` or `false`, not `${value}`", null)
+fn host_flag(m: Mark, label: string, value: string) -> Diagnostic {
+    refuse_as_at("host", m.at, "`${label}` is `true` or `false`, not `${value}`", null)
 }
 
 fn no_host_event(m: Mark, what: string, value: string, enum_name: string, near: string?) -> Diagnostic {
