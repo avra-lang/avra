@@ -59,7 +59,8 @@ export function hostedTasks(exports, fault = (e) => { throw e; }) {
   };
 
   const imports = {
-    switch: new WebAssembly.Suspending((from, to, ends) => {
+    switch: new WebAssembly.Suspending((from, to, ends, entryAt) => {
+      entered ??= entryAt;
       // a task that ends leaves no slot: the scheduler reuses its record's
       // address for the next task, which must start rather than resume
       const waiting = ends ? undefined : parked(from);
@@ -93,8 +94,12 @@ export function hostedTasks(exports, fault = (e) => { throw e; }) {
     }),
   };
 
+  // The module exports no scheduler fn. The entry a fresh task starts at
+  // arrives as a function-table index with each port call, and is reached
+  // through the exported table.
+  let entered = null;
   let promised = null;
-  const entry = () => (promised ??= WebAssembly.promising(exports().avra_task_entry));
+  const entry = () => (promised ??= WebAssembly.promising(reached(exports, entered)));
 
   return {
     imports,
@@ -125,14 +130,22 @@ export function hostedTasks(exports, fault = (e) => { throw e; }) {
   };
 }
 
+// A scheduler fn the module handed over as a function-table index: the fn
+// itself, through the table the module exports.
+function reached(exports, at) {
+  const table = exports().__indirect_function_table;
+  if (!table) throw new Error("avra: the module exports no function table, and its scheduler is reached through one");
+  return table.get(at);
+}
+
 // THE FALLBACK HOST, for an engine that cannot suspend a stack: the same two
 // imports, driven by binaryen's asyncify. The module is the asyncified build
 // (`app.asyncify.wasm`); a task parks by UNWINDING its wasm frames into a
 // buffer of its own and is resumed by REWINDING it, by calling the same
 // top-level export again. One task runs at a time and none ever nests, so
 // the driver is a loop: run a task until it unwinds or ends, then run
-// whichever the scheduler named. `exports().avra_asyncify_buffer(bytes)`
-// is the module's allocator for those buffers.
+// whichever the scheduler named. The module's allocator for those buffers
+// arrives, as the entry does, as a function-table index with each port call.
 const UNWOUND = 1;
 const BUFFER_BYTES = 256 * 1024;
 
@@ -145,8 +158,11 @@ export function asyncifyTasks(exports, fault = (e) => { throw e; }) {
   let inside = 0;
   let peak = 0;
 
+  let entered = null;
+  let allocator = null;
+
   const buffer = () => {
-    const at = exports().avra_asyncify_buffer(BUFFER_BYTES);
+    const at = reached(exports, allocator)(BUFFER_BYTES);
     const view = new Int32Array(exports().memory.buffer, at, 2);
     view[0] = at + 8;
     view[1] = at + BUFFER_BYTES;
@@ -156,7 +172,9 @@ export function asyncifyTasks(exports, fault = (e) => { throw e; }) {
   const imports = {
     // The scheduler hands the thread to `to`. The caller unwinds, unless it
     // is done: then it simply returns and its stack ends with it.
-    switch: (from, to, ends) => {
+    switch: (from, to, ends, entryAt, buffersAt) => {
+      entered ??= entryAt;
+      allocator ??= buffersAt;
       if (exports().asyncify_get_state() === 2) {
         exports().asyncify_stop_rewind();
         return;
@@ -173,7 +191,8 @@ export function asyncifyTasks(exports, fault = (e) => { throw e; }) {
     },
     // The world is waited on: the caller unwinds, the driver waits, and the
     // same task is rewound.
-    idle: (ns) => {
+    idle: (ns, buffersAt) => {
+      allocator ??= buffersAt;
       if (exports().asyncify_get_state() === 2) {
         exports().asyncify_stop_rewind();
         return;
@@ -215,7 +234,7 @@ export function asyncifyTasks(exports, fault = (e) => { throw e; }) {
       }
       let next = tasks.get(asked.to);
       if (!next) {
-        next = { replay: () => exports().avra_task_entry(), parked: false, at: null, id: asked.to };
+        next = { replay: () => reached(exports, entered)(), parked: false, at: null, id: asked.to };
         live += 1;
       }
       task = next;

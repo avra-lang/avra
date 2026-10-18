@@ -82,13 +82,23 @@ void avra_fiber_switch(void** from, void* to);
 // The handover: `to` runs, and `from` stands suspended in the host until
 // something hands the thread back. A fiber that is done is not suspended:
 // its stack ends with its body.
+//
+// THE MODULE EXPORTS NOTHING OF THE SCHEDULER. What the host calls back into
+// — the entry a fresh task starts at and the allocator of an unwind buffer —
+// are handed over as FUNCTION-TABLE INDICES (`entry`, `buffers`) with every
+// port call, and the host reaches them through the exported table. An export
+// is a root the linker keeps whether or not anything reaches it; an address
+// taken here is kept exactly when a reachable fn parks, so a program that
+// never spawns or waits carries no scheduler.
 __attribute__((import_module("avra_host"), import_name("switch")))
-extern void avra_host_switch(void* from, void* to, int32_t ends);
+extern void avra_host_switch(void* from, void* to, int32_t ends, void* entry, void* buffers);
 
 // The world waited on for `timeout_ns` (below zero: for ever): the host
 // suspends the thread until that time passes or something else wakes it.
 __attribute__((import_module("avra_host"), import_name("idle")))
-extern void avra_host_idle(int64_t timeout_ns);
+extern void avra_host_idle(int64_t timeout_ns, void* buffers);
+void avra_task_entry(void);
+void* avra_asyncify_buffer(int bytes);
 static void host_idle(int64_t timeout_ns);
 
 #elif defined(__aarch64__)
@@ -413,7 +423,26 @@ static int64_t now_ns(void);
 static void clock_turned(void);
 static void case_spun(const char* words);
 
-__attribute__((constructor))
+// THE RUNTIME'S SETTINGS ARE READ ONCE: at load on a native target. A hosted
+// target has no load-time hook it can afford — a constructor is a root the
+// linker keeps, and it would carry the whole scheduler into every module that
+// merely links this object — so they are read where the scheduler first runs.
+#if AVRA_HOSTED
+#define SETTLED_AT_LOAD
+static void trace_settle(void);
+static void tick_settle(void);
+static int g_settled;
+static void hosted_settled(void) {
+    if (g_settled) return;
+    g_settled = 1;
+    trace_settle();
+    tick_settle();
+}
+#else
+#define SETTLED_AT_LOAD __attribute__((constructor))
+#endif
+
+SETTLED_AT_LOAD
 static void trace_settle(void) {
     avra_clock_turned_hook = clock_turned;
     avra_clock_spun_hook = case_spun;
@@ -446,7 +475,7 @@ static int64_t whole_above_zero(const char* name, const char* value) {
 // spinning `while` holds its core at most that long. AVRA_TIMER_TURNS
 // bounds a due timer's lateness to that many switches or one tick,
 // whichever is sooner.
-__attribute__((constructor))
+SETTLED_AT_LOAD
 static void tick_settle(void) {
     const char* us = getenv("AVRA_TICK_US");
     if (us && *us) avra_tick_us = whole_above_zero("AVRA_TICK_US", us);
@@ -1739,6 +1768,7 @@ static inline void shadow_set(void* p) { __asm__ volatile("local.get %0\n\tgloba
 
 // `sp` is the top of the task's shadow stack, `base` what the heap gave.
 static void fiber_bound(Fiber* f) {
+    hosted_settled();
     char* low = malloc(HOSTED_STACK);
     if (!low) avra_trap("the scheduler ran out of memory for a task's stack");
     for (int i = 0; i < 4; i++) ((uint32_t*)low)[i] = HOSTED_CANARY;
@@ -1752,7 +1782,10 @@ static inline void canary_held(const Fiber* f) {
     if (__builtin_expect(c[0] != HOSTED_CANARY || c[1] != HOSTED_CANARY || c[2] != HOSTED_CANARY || c[3] != HOSTED_CANARY, 0)) avra_trap("a task's stack overflowed");
 }
 
-static void host_idle(int64_t timeout_ns) { avra_host_idle(timeout_ns); }
+static void host_idle(int64_t timeout_ns) {
+    hosted_settled();
+    avra_host_idle(timeout_ns, (void*)avra_asyncify_buffer);
+}
 
 static inline void fiber_switched(Fiber* self, Fiber* next) {
     void* mine = shadow_get();
@@ -1760,13 +1793,13 @@ static inline void fiber_switched(Fiber* self, Fiber* next) {
     // a handover back to it resumes it, and never starts it as a fresh task
     if (!self->sp) self->sp = mine;
     canary_held(self);
-    avra_host_switch(self, next, self->state == FIBER_DONE);
+    hosted_settled();
+    avra_host_switch(self, next, self->state == FIBER_DONE, (void*)avra_task_entry, (void*)avra_asyncify_buffer);
     shadow_set(mine);
 }
 
 // THE FALLBACK HOST'S BUFFERS: a host that unwinds a task's frames instead of
 // suspending its stack keeps them in memory of the module's own.
-__attribute__((export_name("avra_asyncify_buffer")))
 void* avra_asyncify_buffer(int bytes) {
     void* p = calloc(1, (size_t)bytes);
     if (!p) avra_trap("the scheduler ran out of memory for a task's unwind buffer");
@@ -1775,7 +1808,6 @@ void* avra_asyncify_buffer(int bytes) {
 
 // The host starts a fresh task here, on the stack it made for it; the first
 // thing it does is stand on the task's shadow stack.
-__attribute__((export_name("avra_task_entry")))
 void avra_task_entry(void) {
     shadow_set(g_current->sp);
     fiber_start();
