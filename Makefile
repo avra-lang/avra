@@ -917,9 +917,11 @@ attack:
 
 # NO DEFECT VOICE REACHES A USER PROGRAM: every malformed or edge program
 # in tools/defects/corpus.txt, and every mutation of its bases, is checked
-# and run, and one answered with a defect voice or a trap refuses.
+# and run, and one answered with a defect voice or a trap refuses. A SEEDED
+# SET of mutants of the tree's own program tests rides beside them; more is
+# `python3 tools/defects.py --only gen: --generate 500 --seed <n>`.
 defects:
-	@python3 tools/defects.py
+	@python3 tools/defects.py --generate 40 --seed 0
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.
