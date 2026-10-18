@@ -52,6 +52,10 @@ const ACTION_TAG: int = 2
 /// reclaim by the same rule, so a store is bounded however it is written.
 const REVISIONS_KEPT: int = 10
 const MAX_BYTES_KEPT: int = 2147483648
+
+/// What the kept binaries (`bin/`) may hold: each is a whole program, one per program key, so a
+/// session of edits would otherwise fill a disk. Oldest out first; the newest always stays.
+const BIN_BYTES_KEPT: int = 1073741824
 const MAX_AGE_KEPT_NS: int = 0
 
 /// A store's limits, as `avra cache clean` and the automatic seal read them.
@@ -66,7 +70,7 @@ fn env_int(name: string) -> int? {
 /// The limits in force: the design's revision window by default, overridden by
 /// `AVRA_STORE_REVISIONS`, `AVRA_STORE_MAX_MB` and `AVRA_STORE_MAX_AGE_S`.
 export fn store_limits() -> StoreLimits {
-    let mb = env_int("AVRA_STORE_MAX_MB") ?? 0
+    let mb = env_int("AVRA_STORE_MAX_MB") ?? MAX_BYTES_KEPT / 1048576
     let age = env_int("AVRA_STORE_MAX_AGE_S") ?? 0
     StoreLimits {
         revisions: env_int("AVRA_STORE_REVISIONS") ?? REVISIONS_KEPT,
@@ -595,6 +599,7 @@ export fn pack_clean(pack: Pack, limits: StoreLimits) -> CleanReport {
         }
     }
     let evicted = prune_bodies(pack.dir, limits)
+    let _ = trim_kept_binaries(dir_of(pack.dir), bin_limit())
     CleanReport {
         skipped: false,
         sealed: sealed,
@@ -623,7 +628,54 @@ fn empty_clean() -> CleanReport {
 fn enforce_limits(pack: Pack) {
     let _ = prune_bodies(pack.dir, store_limits())
     drop_unreferenced_values(pack.dir)
+    let _ = trim_kept_binaries(dir_of(pack.dir), bin_limit())
 }
+
+/// The kept binaries' ceiling in bytes: `AVRA_BIN_MAX_BYTES`, else a gigabyte.
+fn bin_limit() -> int { env_int("AVRA_BIN_MAX_BYTES") ?? BIN_BYTES_KEPT }
+
+/// One kept binary: where it stands, its edge beside it, its size and its time.
+type KeptFile = { path: string, bytes: int, at: int }
+
+/// The binaries under `<root>/bin`, oldest first, past what `limit` allows: each is removed
+/// with its edge, so a later ask finds a miss and links again. The newest is never removed.
+export fn trim_kept_binaries(root: string, limit: int) -> int {
+    if limit <= 0 { return 0 }
+    let bin = joined_path(root, "bin")
+    let kept = sorted_by(kept_binaries(bin), (a: KeptFile, b: KeptFile) -> a.at < b.at)
+    mut held = kept.fold(0, (sum, f) -> sum + f.bytes)
+    mut gone = 0
+    for f in kept.slice(0, if kept.is_empty() { 0 } else { kept.length - 1 }) {
+        if held <= limit { break }
+        let _ = remove("${f.path}.deps")
+        let _ = remove(f.path)
+        held = held - f.bytes
+        gone = gone + 1
+    }
+    if traced() && gone > 0 { qtrace("Q\tstore\tbin-trimmed\t${gone}\t${held}\n") }
+    gone
+}
+
+fn kept_binaries(bin: string) -> List<KeptFile> {
+    // LICENSED input.store_io: the store's own kept binaries, listed and measured to bound them
+    let shards = match list_dir(bin) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [f! for shard in shards for name in kept_names(joined_path(bin, shard)) for f in [kept_file(joined_path(joined_path(bin, shard), name))] if f != null]
+}
+
+fn kept_names(shard: string) -> List<string> {
+    let names = match list_dir(shard) { .Ok(ns) -> ns, .Err(_) -> [] }
+    [n for n in names if !n.ends_with(".deps")]
+}
+
+fn kept_file(path: string) -> KeptFile? {
+    // LICENSED input.store_io: a kept binary, measured and dated for the ceiling
+    let o? = match open_beneath(dir_of(path), file_part(path)) { .Ok(o) -> o, .Err(_) -> null } else { return null }
+    let f = KeptFile { path: path, bytes: o.size, at: o.mtime }
+    o.close()
+    f
+}
+
+fn file_part(path: string) -> string { path.substring(dir_of(path).length + 1, path.length) }
 
 /// Evict sealed revisions past the time window, past the age, or to fit the byte
 /// ceiling — oldest first, and NEVER the newest, so a store always answers. A
