@@ -15,6 +15,9 @@ export enum Lack {
     NoHelp
     NoFix
     NoDoc
+    BadFix
+    BadRemedy
+    NoRemedy
 }
 
 /// One gap: a kind or a rule, and what it lacks.
@@ -27,6 +30,9 @@ impl Lack {
             .NoHelp -> "no_help",
             .NoFix -> "no_fix",
             .NoDoc -> "no_doc",
+            .BadFix -> "bad_fix",
+            .BadRemedy -> "bad_remedy",
+            .NoRemedy -> "no_remedy",
         }
     }
 }
@@ -47,6 +53,13 @@ impl Gap {
 /// Every gap in the registry's kinds, in registry order.
 export fn kind_gaps(runs: List<Shown>) -> List<Gap> {
     flatten([kind_lacks(s) for s in runs])
+}
+
+/// The gaps the keeper finds by RUNNING a help's claim: a structured fix
+/// that does not do what it says, and a remedy row that does not hold.
+export fn remedy_gaps(runs: List<Shown>) -> List<Gap> {
+    [Gap { subject: k, lack: Lack.BadFix } for k in unsound_fixes(runs)]
+        .concat([Gap { subject: k, lack: Lack.BadRemedy } for k in remedy_failures()])
 }
 
 /// Every gap in the rule table, in table order.
@@ -74,8 +87,24 @@ fn witnessed_lacks(s: Shown) -> List<Lack> {
         [
             if s.says("help: ") { [] } else { [Lack.NoHelp] },
             if owes_fix && !s.says("fix (") { [Lack.NoFix] } else { [] },
+            if names_a_form(s) && !s.says("fix (") && !remedy_kinds().contains(s.code.kind) { [Lack.NoRemedy] } else { [] },
         ],
     )
+}
+
+/// Whether the witness's help puts a code form in backticks — a claim
+/// about the grammar that only a remedy row (or a structured fix, which
+/// the keeper splices) holds the compiler to.
+fn names_a_form(s: Shown) -> bool {
+    voice_block(s.rendered, s.code.kind).any(is_form_line)
+}
+
+fn is_form_line(l: string) -> bool {
+    l.starts_with("help: ") && [p for i, p in l.split("`") if i % 2 == 1].any(is_form)
+}
+
+fn is_form(span: string) -> bool {
+    ["(", "{", "->", "=", "<"].any(span.contains(it))
 }
 
 fn rule_lacks(r: RuleEntry) -> List<Gap> {
