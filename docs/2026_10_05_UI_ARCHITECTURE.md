@@ -265,6 +265,32 @@ it ran or the failure's words. A test injects a failure there
 (`Screen.guarded`); the mechanism that makes a real trap a failure is the runtime's, and
 the door is the only place it is read.
 
+## Layout is one algorithm on every surface
+
+A `Layout` means the same on a page and in a terminal because both run CSS
+flexbox over it: the web target writes the rules (`realize/html/css.av`), and
+`place` (`std-ui/src/place`) is the same algorithm in whole units a `Measure`
+answers. `tools/layout-oracle` places random trees both ways and `make
+layout-oracle` demands every box agree, so neither can drift unseen.
+
+A size is one of three things, on the axis its parent lays along:
+
+- `Fixed(n)` holds `n`: it does not shrink when a sibling asks for room.
+- `Hug` (nothing written) asks its content, and gives way no further than its
+  narrowest (its longest word, one unbreakable control).
+- `Fill` takes the room that is left (a `grow` given is its share), and across
+  the axis stretches to the line.
+
+Every box is measured by its border, so a fixed size is its own number and a
+box is never narrower than its padding. `wrap`, `margin` and `order` are
+written, not ignored. A row does not wrap unless it is told to.
+
+A `Fixed` box with short content used to shrink on the web (`Fill` was
+`width:100%`, which pressed on its siblings: a fixed 10 came out 8.23); it
+holds now. Lengths travel in sixtieths of a unit and only the boxes handed back
+are snapped, edge by edge, halves up. `aspect` and `inset` are read by neither
+target.
+
 ## What the page keeps (seam 1's law)
 
 **A property is written only when the value the program draws for it —
