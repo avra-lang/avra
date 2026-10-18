@@ -674,6 +674,36 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             boxes: [Box.List],
         },
+        // A BOX'S VERSION: the epoch of its last write, or of its last
+        // opening for writing, in the 24 bits above its kind (runtime/
+        // avra_box.h). An immortal box answers its saturated mark and is
+        // never written. TO OBSERVE, ADVANCE THE EPOCH FIRST
+        // (`avra_epoch_next`), THEN READ: a write after the advance stores a
+        // higher epoch than the one the observer then records, and a read
+        // before it leaves a write in the same epoch indistinguishable.
+        RtSig {
+            name: "avra_box_version",
+            ret: RtKind.I64,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        // THE EPOCH, ADVANCED: the process-wide stamp every write stores, one
+        // step further, answering the new one. An observer advances once per
+        // look and compares versions against the epochs it recorded; the stamp
+        // wraps after 2^24 looks, which a look every turn can never miss.
+        RtSig {
+            name: "avra_epoch_next",
+            ret: RtKind.I64,
+            params: [],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            inert: true,
+        },
         // THE ONCE CACHE: a `once fn`'s answer, asked by the fn's own
         // symbol. The get ANSWERS OWNED (the cache keeps its own
         // reference forever); the set KEEPS what it is handed and so

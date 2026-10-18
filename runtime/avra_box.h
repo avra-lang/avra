@@ -39,10 +39,23 @@ enum { MARK_OWNED = 1, MARK_ABSENT = 2 };
 // and a LENGTH — a string's text length, a record's payload bytes.
 typedef struct {
     uint32_t tag;
-    int32_t kind;
+    int32_t kind : 8;
+    uint32_t ver : 24;
     int32_t rc;
     uint32_t len;
 } Header;
+
+// A box's VERSION: the EPOCH of its last write or opening for writing, in
+// the 24 bits above its kind (`avra_epoch_word` holds the epoch already
+// shifted into place). The epoch moves once per observation, so a change is
+// missed only after 2^24 observations without a look.
+typedef uint32_t __attribute__((may_alias)) AvraWord;
+#define AVRA_VER_ONE 256u
+extern uint32_t avra_epoch_word;
+static inline void avra_box_touch(void* payload) {
+    AvraWord* w = (AvraWord*)((Header*)payload - 1) + 1;
+    *w = (*w & 0xFFu) | avra_epoch_word;
+}
 
 // A slot array: `cap` cells at `data`, `len` of them written, and
 // one MARK byte per cell after the cells: `MARK_OWNED` when the cell

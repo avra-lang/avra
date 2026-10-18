@@ -734,6 +734,7 @@ static void* box_alloc(size_t size, int32_t kind) {
     }
     h->tag = AVRA_TAG;
     h->kind = kind;
+    h->ver = 0;
     h->rc = 1;
     h->len = (uint32_t)bytes;
     acc_box(kind, (int64_t)(sizeof(Header) + bytes));
@@ -2035,7 +2036,10 @@ int64_t avra_enum_word(void* box) {
 }
 
 // The same one level down: the box in a slot, made unique in place.
+uint32_t avra_epoch_word;
+
 void* avra_slot_unique(void* arr, int64_t i) {
+    avra_box_touch(arr);
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);
     if (!is_shared(p)) return p;
     AvraArray* a = (AvraArray*)arr;
@@ -2060,6 +2064,7 @@ void* avra_owned_slot_unique(void* arr, int64_t i) {
 
 // A write into a slot: the old owned content is released.
 void avra_slot_set(void* arr, int64_t i, int64_t v) {
+    avra_box_touch(arr);
     AvraArray* a = (AvraArray*)arr;
     avra_array_get(arr, i);
     if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
@@ -4168,6 +4173,20 @@ const char* avra_embed_octets(const char* path) {
     (void)path;
     avra_trap("`embed_octets` reads a file at compile time, into a const — this program reached it at run time");
     return "";
+}
+
+/* A box's version: the epoch of its last write. A pointer that is not a
+   box answers -1. */
+int64_t avra_box_version(void* p) {
+    Header* h = avra_hdr(p);
+    return h ? (int64_t)h->ver : -1;
+}
+
+/* The epoch, one step on: an observer advances it before it reads
+   versions. */
+int64_t avra_epoch_next(void) {
+    avra_epoch_word += AVRA_VER_ONE;
+    return (int64_t)(avra_epoch_word >> 8);
 }
 
 /* `type_named` is answered by the compiler's own declaration table,

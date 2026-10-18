@@ -136,7 +136,7 @@ ROWS = {
     "avra_fd_read": "read", "avra_ffi_open": "read", "avra_embed": "read", "avra_embed_octets": "read",
     "avra_spawn_in": "spawn", "avra_spawn_status": "spawn", "avra_exec_self": "spawn",
     "avra_self_dir": "tool", "avra_now_ns": "clock",
-    "avra_own_pid": "pid", "avra_pid_alive": "pid",
+    "avra_own_pid": "pid", "avra_pid_alive": "pid", "avra_epoch_next": "effect",
     "avra_sched_runs_wanted": "env", "avra_sched_schedule_at": "env", "avra_case_clock_virtual": "env",
     "avra_cores_online": "env",
     "avra_selfhost_argc": "argv", "avra_selfhost_get_arg_cstr": "argv",
