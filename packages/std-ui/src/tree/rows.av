@@ -19,38 +19,69 @@ use tree.identity.{Stand, Step, steps, shared}
 use tree.lists.{flatten}
 use tree.node.{Node, Prim, Attribute}
 use style.box.{Box}
-use tree.standing.{Standing}
+use tree.standing.{Standing, Window}
 use tree.view.{View}
 
-/// The rows of a list: how many, the key of the one at an index, and the
-/// view of it. Nothing here is built until a window asks.
-export type Rows = { count: int, key_at: fn(int) -> string, at: fn(int) -> dyn View }
+/// An ask to bring a row into view: the row's key, and the ask's number.
+/// Each ask is new — `to` numbers the next — so the same key asked twice
+/// scrolls twice. The first, empty ask is nobody's.
+export type Show = { key: string = "", nth: int = 0 }
 
-/// `xs` as rows: `key` names a row, `build` makes its view.
-export fn windowed<T>(xs: List<T>, key: fn(T) -> string, build: fn(T) -> dyn View) -> dyn View {
-    Rows { count: xs.length, key_at: (i: int) -> key(xs[i]), at: (i: int) -> build(xs[i]) }
+impl Show {
+    /// The ask that follows this one, for the row named `key`.
+    fn to(key: string) -> Show { Show { key: key, nth: self.nth + 1 } }
+}
+
+/// The rows of a list: how many, the key of the one at an index, the view
+/// of it, and the ask to bring a row into view. Nothing here is built until
+/// a window asks.
+export type Rows = {
+    count: int,
+    key_at: fn(int) -> string,
+    at: fn(int) -> dyn View,
+    showing: Show,
+}
+
+/// `xs` as rows: `key` names a row, `build` makes its view. `showing` is the
+/// list's latest ask to bring a row into view: keep it in a `state` and
+/// replace it with `showing.to(key)` to scroll there, as often as wanted.
+export fn windowed<T>(
+    xs: List<T>,
+    key: fn(T) -> string,
+    build: fn(T) -> dyn View,
+    showing: Show = Show {},
+) -> dyn View {
+    Rows {
+        count: xs.length,
+        key_at: (i: int) -> key(xs[i]),
+        at: (i: int) -> build(xs[i]),
+        showing: showing,
+    }
 }
 
 impl View for Rows {
     fn stand() -> Stand { Stand {} }
 
     fn describe(at: Standing) -> List<Node> {
-        let w = at.window_of(self.count)
-        let built = [self.at(i) for i in w.from..w.to]
-        let said = [lent(v.stand(), self.key_at(w.from + j), at) for j, v in built]
+        let w = self.framed(at)
+        let indices = self.built_at(at, w)
+        let built = [self.at(i) for i in indices]
+        let said = [lent(v.stand(), self.key_at(indices[j]), at) for j, v in built]
         let seats = [s.spelled() for s in steps(said)]
         let stands = at
             .children_windowed(
                 seats,
                 shared(said),
-                w.from,
+                indices,
                 (step: string, i: int) -> i < self.count && self.step_at(i) == step,
                 () -> self.present(),
             )
         at.tally(built.length)
-        skipped(at, "before", w.from)
-            .concat(flatten([v.describe(stands[j]) for j, v in built]))
-            .concat(skipped(at, "after", self.count - w.to))
+        let drawn = [self.row(at, indices[j], v.describe(stands[j])) for j, v in built]
+        let gaps = [indices[j] - if j == 0 { -1 } else { indices[j - 1] } - 1 for j in 0..indices.length]
+        let last = if indices.is_empty() { -1 } else { indices[indices.length - 1] }
+        flatten([skipped(at, indices[j], gaps[j]).concat(drawn[j]) for j in 0..indices.length])
+            .concat(skipped(at, self.count, self.count - last - 1))
     }
 }
 
@@ -66,17 +97,55 @@ impl Rows {
         for i in 0..self.count { at.set(self.step_at(i), i) }
         at
     }
+
+    /// Where the row named `key` stands, looking first at `hint`.
+    fn find_key(key: string, hint: int) -> int? {
+        if hint >= 0 && hint < self.count && self.key_at(hint) == key { return hint }
+        (0..self.count).find((k) -> self.key_at(k) == key)
+    }
+
+    /// The window this paint stands with: the one the target told, or — when
+    /// an ask to show a row has not yet been honored — one starting at it.
+    fn framed(at: Standing) -> Window {
+        let w = at.window_of(self.count)
+        if self.showing.nth == at.honored_nth() { return w }
+        at.reveals(self.showing.key, self.showing.nth)
+        let i? = self.find_key(self.showing.key, -1) else { return w }
+        let to = if i + w.to - w.from > self.count { self.count } else { i + w.to - w.from }
+        at.windowed(i, to)
+        Window { from: i, to: to }
+    }
+
+    /// The rows built this paint, in order: the window, and the row the
+    /// target's focus rests on when it stands outside the window.
+    fn built_at(at: Standing, w: Window) -> List<int> {
+        let shown = [i for i in w.from..w.to]
+        let key? = at.pinned_key() else { return shown }
+        let i? = self.find_key(key, at.pin_found()) else { return shown }
+        at.pin_noted(i)
+        let before = if i < w.from { [i] } else { [] }
+        let after = if i >= w.to { [i] } else { [] }
+        before.concat(shown).concat(after)
+    }
+
+    /// The nodes of the row at `i`, each saying where it stands in the list
+    /// and whether the target is to scroll to it.
+    fn row(at: Standing, i: int, nodes: List<Node>) -> List<Node> {
+        if !at.spaces() { return nodes }
+        let reveal = at.revealing() == self.key_at(i)
+        [n with { attrs: n.attrs.concat([Attribute.Placed(i, self.count, reveal)]) } for n in nodes]
+    }
 }
 
-/// The room `rows` unbuilt rows would take where the target keeps room for
-/// them: nothing where none is unbuilt.
-fn skipped(at: Standing, side: string, rows: int) -> List<Node> {
+/// The room `rows` unbuilt rows would take before the row at `next`, where
+/// the target keeps room for them: nothing where none is unbuilt.
+fn skipped(at: Standing, next: int, rows: int) -> List<Node> {
     if rows <= 0 || !at.spaces() { return [] }
     [
         Node {
             prim: Prim.Item,
             attrs: [Attribute.Skipped(at.step.get() ?? "", rows, at.extent_of())],
-            box: Box { key: "~skipped-${side}" },
+            box: Box { key: "~skipped-${next}" },
             children: [],
         },
     ]

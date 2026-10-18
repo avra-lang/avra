@@ -298,10 +298,11 @@ export function sendEvent(mod, who, what, said) {
 }
 
 // The program's `scrolled(len, from, to, extent)` — `HOST.scrolled` — says which
-// rows of the windowed list named by the path (the first `len` octets of the
-// seat) the page shows, and how tall they measure.
-export function sendScrolled(mod, path, from, to, extent) {
-  const bytes = new TextEncoder().encode(path);
+// rows of a windowed list the page shows and how tall they measure. The first
+// `len` octets of the seat are the list's path, a line break, and the key of the
+// row the focus rests on (none after it for none).
+export function sendScrolled(mod, path, from, to, extent, pin = "") {
+  const bytes = new TextEncoder().encode(`${path}\n${pin}`);
   const at = Number(mod[HOST.seat](BigInt(bytes.length)));
   new Uint8Array(mod.memory.buffer, at, bytes.length).set(bytes);
   mod[HOST.scrolled](BigInt(bytes.length), BigInt(from), BigInt(to), BigInt(extent));
@@ -470,7 +471,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
   const frames = createFrames(raf, () => mod[HOST.painted]());
   const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
-  const windows = createWindows(document, mount, (path, from, to, extent) => sendScrolled(mod, path, from, to, extent));
+  const windows = createWindows(document, mount, (path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin));
   const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style, () => mod[HOST.repaired]());
 
   // Start a module. Its rows reach IT, not the module running before it.

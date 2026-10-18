@@ -14,12 +14,13 @@ const page = `<!doctype html><html><head><meta charset="utf-8"><title>bench</tit
 import { run } from "/avra/bootstrap.js";
 import { wasiPreview1 } from "/avra/wasi.js";
 window.__frames = [];
+window.__times = [];
 window.__t0 = performance.now();
 window.__mod = await run("/app.wasm", {
   document,
   mount: document.getElementById("app"),
   style: document.getElementById("avra-style"),
-  sent: (bytes) => window.__frames.push(bytes.length),
+  sent: (bytes) => { window.__frames.push(bytes.length); window.__times.push(performance.now()); },
   wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error("exit " + code); }),
 });
 window.__ready = performance.now() - window.__t0;

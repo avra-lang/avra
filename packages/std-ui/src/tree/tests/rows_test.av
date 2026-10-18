@@ -3,7 +3,7 @@
 //! scrolling away.
 use @std.ui.components.{button, column, list, row, text}
 use @std.ui.headless.{Screen, headless}
-use @std.ui.tree.rows.{windowed}
+use @std.ui.tree.rows.{Show, windowed}
 
 /// A row with a button of its own words and an instance state of its own.
 component tapper(n: int) {
@@ -197,6 +197,76 @@ spec "tree/rows — a list builds only its window" {
             let end = s.scroll_measured(path, 9960, 10000, 24)
             let last = s.text().contains("skipped=9960x24") && s.built() == 40
             none && both && mid && top && first && end && last
+        }
+    }
+    given "rows in a list that keeps room for what it leaves unbuilt" {
+        then "each says where it stands in the whole list" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let moved = s.scroll_measured(path, 100, 140, 24)
+            moved && s.text().contains("row=100/10000") && s.text().contains("row=139/10000")
+        }
+    }
+    given "the focus resting on a row" {
+        then "keeps that row built wherever the window goes, with room between" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let held = s.scroll_pinned(path, 5000, 5040, 24, keyed(3))
+            let shown = s.text()
+            held &&
+                shown.contains("row 3 taps") &&
+                shown.contains("row 5000 taps") &&
+                shown.contains("skipped=3x24") &&
+                shown.contains("skipped=4996x24")
+        }
+        then "lets it go when the focus moves on" {
+            let s = listing(10000)
+            let path = s.windows()[0]
+            let held = s.scroll_pinned(path, 5000, 5040, 24, keyed(3))
+            let freed = s.scroll_pinned(path, 5000, 5040, 24, keyed(4))
+            held && freed && !s.text().contains("row 3 taps") && s.text().contains("row 4 taps")
+        }
+    }
+    given "a list asked to show a row" {
+        then "builds a window that starts there, asks the page to scroll to it, and does so again for the same key asked again" {
+            let want: Cell<Show> = Cell.new(Show {})
+            let s = headless(
+                () -> column {
+                    list {
+                        windowed(
+                            rows_of(10000),
+                            (i: int) -> keyed(i),
+                            (i: int) -> tapper i { key: keyed(i) },
+                            want.get(),
+                        )
+                    }
+                },
+            )
+            let path = s.windows()[0]
+            let measured = s.scroll_measured(path, 0, 40, 24)
+            let asked = s
+                .turn(
+                    () -> {
+                        want.set(want.get().to(keyed(7000)))
+                        true
+                    },
+                )
+            let there = s.text().contains("row 7000 taps") && !s.text().contains("row 0 taps")
+            let marked = s.text().contains("row=7000/10000 reveal")
+            let done = s.scroll_measured(path, 7000, 7040, 24)
+            let cleared = !s.text().contains("reveal")
+            let again = s.scroll_measured(path, 100, 140, 24)
+            let twice = s
+                .turn(
+                    () -> {
+                        want.set(want.get().to(keyed(7000)))
+                        true
+                    },
+                )
+            let thrice = s.text().contains("row 7000 taps") &&
+                s.text().contains("reveal") &&
+                !s.text().contains("row 100 taps")
+            measured && asked && there && marked && done && cleared && again && twice && thrice
         }
     }
     given "a row key that is not the one the list found it by" {

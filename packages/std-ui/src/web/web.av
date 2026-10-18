@@ -247,13 +247,17 @@ extern fn avra_ui_painted() {
     held.app.warn()
 }
 
-/// The host measured the windowed list whose path is the first `len` octets
-/// of the seat: its rows from `from` up to `to` are the ones on screen, each
-/// `extent` tall. The list builds those, and spaces the rest at that height.
+/// The host measured a windowed list: its rows from `from` up to `to` are
+/// the ones on screen, each `extent` tall. The first `len` octets of the
+/// seat are the list's path, then a line break and the key of the row the
+/// focus rests on (nothing after it for none). The list builds the window
+/// and that row, and spaces the rest at that height.
 extern fn avra_ui_scrolled(len: int, from: int, to: int, extent: int) {
     let held? = mounted().get() else { return }
-    let path? = seated_text(len) else { return }
-    let _ = held.app.scrolled(path, from, to, extent)
+    let said? = seated_text(len) else { return }
+    let parts = said.split("\n")
+    let pin = if parts.length > 1 { parts[1] } else { "" }
+    let _ = held.app.scrolled(parts[0], from, to, extent, if pin == "" { null } else { pin })
     held.app.warn()
 }
 

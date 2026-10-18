@@ -49,6 +49,10 @@ export type Standing = {
     placed: Cell<Map<string, int>>,
     extent: Cell<int>,
     geometry: Cell<bool>,
+    pin: Cell<string?>,
+    pin_at: Cell<int>,
+    reveal: Cell<string?>,
+    honored: Cell<int>,
 }
 
 /// The rows of a windowed list a paint builds: `from` up to, not including, `to`.
@@ -84,6 +88,10 @@ fn stands_in(said: Cell<List<string>>, counted: Cell<int>, geometry: Cell<bool>)
         placed: Cell.new(nowhere_placed),
         extent: Cell.new(0),
         geometry: geometry,
+        pin: Cell.new(nowhere),
+        pin_at: Cell.new(-1),
+        reveal: Cell.new(nowhere),
+        honored: Cell.new(0),
     }
 }
 
@@ -136,7 +144,7 @@ impl Standing {
 
     /// `children`, for the rows of a WINDOWED list: `steps` are the rows in
     /// the window, opened as `children` opens them, the first at index
-    /// `from`. A standing that holds an instance and stood at a step outside
+    /// of `at_rows`. A standing that holds an instance and stood at a step outside
     /// the window stays, unopened, while its row is in the source — what a
     /// row's instance holds survives its scrolling away, and goes only when
     /// its key leaves the source. Each kept row remembers the index it was
@@ -146,7 +154,7 @@ impl Standing {
     fn children_windowed(
         steps: List<string>,
         shared: List<bool>,
-        from: int,
+        at_rows: List<int>,
         still: fn(string, int) -> bool,
         find: fn() -> Map<string, int>,
     ) -> List<Standing> {
@@ -159,7 +167,7 @@ impl Standing {
         let carried = [u for u in held if found.has(u.step)]
         self.under.set(self.under.get().concat(carried))
         mut here: Map<string, int> = {}
-        for j, s in steps { here.set(s, from + j) }
+        for j, s in steps { here.set(s, at_rows[j]) }
         for u in carried { here.set(u.step, found.get(u.step) ?? 0) }
         self.placed.set(here)
         opened
@@ -201,6 +209,35 @@ impl Standing {
 
     /// A target tells the list standing here how tall its rows measure.
     fn measured(extent: int) { self.extent.set(extent) }
+
+    /// The row the target's focus rests on, by key, kept built wherever the
+    /// window goes: none when the focus is elsewhere.
+    fn pinned_key() -> string? { self.pin.get() }
+
+    /// Where the pinned row was last found.
+    fn pin_found() -> int { self.pin_at.get() }
+
+    /// The target tells the list its focus rests on the row at `key`.
+    fn pin_to(key: string?) { self.pin.set(key) }
+
+    /// The pinned row was found at `i`.
+    fn pin_noted(i: int) { self.pin_at.set(i) }
+
+    /// The number of the last ask to show a row that the list honored.
+    fn honored_nth() -> int { self.honored.get() }
+
+    /// The list brings `key` into view for ask number `nth`: its window moves
+    /// there, and the row asks the target to scroll to it, once.
+    fn reveals(key: string, nth: int) {
+        self.honored.set(nth)
+        self.reveal.set(key)
+    }
+
+    /// The key a target is asked to scroll to, until it has.
+    fn revealing() -> string? { self.reveal.get() }
+
+    /// The target has scrolled to the revealed row.
+    fn revealed() { self.reveal.set(null) }
 
     /// A target tells the list standing here which rows to build.
     fn windowed(from: int, to: int) { self.window.set(Window { from: from, to: to }) }
