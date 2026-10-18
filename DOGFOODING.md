@@ -790,6 +790,22 @@ reintroducing loops.push_loop's blind spot names the two spellings it lost.
       while runs repeat, and a poller that read nothing is no witness.
       Not ratcheted: no grep tells a path others read from one nobody does.
 
+- http.snapshot_settle_act (unratcheted) A LOOP THAT MAY PARK ACTS ON A
+      SNAPSHOT, AND THE COLLECTION IS WRITTEN BEFORE THE FIRST PARK. A send,
+      an await or a channel op inside the loop lets other tasks run, so a
+      collection filtered or rewritten AFTER the loop by state those tasks
+      can change drops what changed meanwhile. server.av's old
+      `answered_lines` sent each ready reply and then kept the lines
+      whose reply was still null: a reply set while a send parked was
+      filtered out unsent, and its stream hung (h2c_client under
+      AVRA_SCHED_SEED=5, h2_stream_laws under 3). THE SMELL: a loop that
+      parks, followed by a filter of the same collection by a field the
+      parked work may set. THE IDIOM: take the snapshot, write the settled
+      collection, then act on the snapshot. pool.av's `reap` is the
+      exemplar: it reads `stale`, sets `kept` to the survivors, and only
+      then closes each stale carrier. Not ratcheted: no grep tells a park
+      from any other call.
+
 ## A `Tasks` owner is JOINED at its scope's exit, a `List<Task>` is CANCELLED
 
 Two owners settle differently, and the difference is silent until a task
