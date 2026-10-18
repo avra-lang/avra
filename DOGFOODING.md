@@ -1234,6 +1234,15 @@ fn scan_while(src: string, from: int, pred: fn(int) -> bool) -> int
 fn is_single_op(ch: string) -> bool { "=|()*+?:,-".contains(ch) }
 ```
 
+## A per-node fact record stays scalar; payload facts go to slots
+
+`ExprMarks`/`StmtMarks` hold one bool per fact, so the record is flat and
+costs nothing per node. A fact that carries a payload (a literal's written
+type arguments, a `grammar { … }` text) never joins that record: a boxed
+record on every node cost the components suite gigabytes. It gets a dense
+`List<int>` slot per node (`-1` = none) over a row list, and the Rebuilder
+copies every fact through one `wear_facts` call.
+
 ## Map as a built-once index
 
 `.get` returns `T?`; missing keys are honest nulls.
