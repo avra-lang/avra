@@ -24,7 +24,10 @@ extern fn avra_box_observe(cell: ptr) -> int
 extern fn avra_box_unobserve(cell: ptr) -> int
 extern fn avra_box_key(cell: ptr) -> int
 extern fn avra_turn_next() -> int
-extern fn avra_changes_take() -> List<int>
+extern fn avra_changes_take() -> ptr
+extern fn avra_array_len(arr: ptr) -> int
+extern fn avra_array_get(arr: ptr, at: int) -> int
+extern fn avra_rc_release(p: ptr)
 
 /// A reading the page has placed: the number it gave the text's run, the
 /// reading, and the words the page was last told.
@@ -103,7 +106,7 @@ impl Watch {
     /// the readings under the changed cells are recomputed.
     fn turn() -> List<Patch> {
         if avra_turn_next() == 1 { self.observed_again() }
-        [p for at in self.affected(avra_changes_take()) for p in self.refreshed(at)]
+        [p for at in self.affected(taken()) for p in self.refreshed(at)]
     }
 
     /// The page stops watching: every cell its readings observed is let go,
@@ -135,6 +138,14 @@ export fn spelled(p: Patch) -> string {
         .Style(_) -> "Style",
         .Call(id, verb) -> "Call #${id.n} ${verb}",
     }
+}
+
+/// The keys of the cells written this turn, the runtime's log taken and let go.
+fn taken() -> List<int> {
+    let log = avra_changes_take()
+    let keys = [avra_array_get(log, i) for i in 0..avra_array_len(log)]
+    avra_rc_release(log)
+    keys
 }
 
 /// How two answers to one turn differ: null when the exact path said exactly
