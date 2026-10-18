@@ -1,0 +1,83 @@
+// A trailing arms body keeps its own node and answers for its meaning:
+// the match over the pronoun, minted beside it. The implicit tail belongs
+// to that match alone, never to one a program wrote.
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.core.{same_expr}
+use @std.avrac.testing.{shown, refused_with}
+
+fn arms_program() -> string {
+    "enum R {\n    Ok(v: int)\n    Bad\n}\nlet rs = [R.Ok(1), R.Bad]\nlet n = rs.filter() { .Ok(v) -> v > 0, _ -> false }.length\nn\n"
+}
+
+spec "features/closures — an arms body's meaning" {
+    given "`f() { .Ok(v) -> … }`" {
+        then "its body parses to its own node, not to its match" {
+            let p = parse_source(arms_program())
+            p.voices.list.length == 0 && p.store.sugars().length == 1
+        }
+        then "the match it means answers for the node" {
+            let p = parse_source(arms_program())
+            let sugar = p.store.sugars().first()!
+            let meant = p.store.meant(sugar)!
+            same_expr(p.store.minted_for(meant)!, sugar) &&
+                p.store.is_sugar_match(meant) &&
+                p.store.is_sugar_match(sugar)
+        }
+        then "the statement notes what it means" {
+            let p = parse_source(arms_program())
+            p.store.means_in(p.stmts[2]).join("|").contains("matches the pronoun against the arms")
+        }
+    }
+    given "an arms body and a written match" {
+        then "an uncovered variant under a nullable walk answers absence for the sugar" {
+            shown(
+                "enum R {\n    Ok(v: int)\n    Bad\n}\nlet rs = [R.Ok(1), R.Bad]\nrs.filter_map() { .Ok(v) -> v }.length",
+            ) == "1"
+        }
+        then "the same arms written as a lambda keep the exhaustiveness law" {
+            refused_with(
+                "enum R {\n    Ok(v: int)\n    Bad\n}\nlet rs = [R.Ok(1), R.Bad]\nrs.filter_map((r) -> match r { .Ok(v) -> v, .Bad -> null }).length\nrs.map((r) -> match r { .Ok(v) -> v })",
+                "must handle",
+            )
+        }
+    }
+    given "arms bodies under attack" {
+        then "an arms body nested in an arms body answers per level" {
+            shown(
+                rs_prefix() +
+                    "let a = rs.map() { .Ok(v) -> [v].map() { x -> x + 1 }.first() ?? 0, _ -> 0 }\na[2]",
+            ) == "21"
+        }
+        then "a guard reads a capture, which keeps the body out of line" {
+            shown(
+                rs_prefix() +
+                    "let k = 0\nrs.filter() { .Ok(v) if v > k -> true, _ -> false }.length",
+            ) == "2"
+        }
+        then "the pronoun in a nested call binds the nearest call, not the arms body" {
+            shown(
+                rs_prefix() +
+                    "let a = rs.map() { .Ok(v) -> [1].map(it + v).first() ?? 0, _ -> 0 }\na[2]",
+            ) == "21"
+        }
+        then "an arms body's result feeds a pipe stage" {
+            shown(
+                rs_prefix() +
+                    "fn dbl(n: int) -> int { n * 2 }\nrs.filter() { .Ok(_) -> true, _ -> false }.length |> dbl",
+            ) == "6"
+        }
+        then "a guard on the only arm leaves the rest to the implicit tail" {
+            shown(rs_prefix() + "rs.filter_map() { .Ok(v) if v > 10 -> v }.first()!") == "20"
+        }
+        then "the pronoun read inside an arm is the matched value" {
+            shown(rs_prefix() + "rs.filter() { .Ok(_) -> it is .Ok, _ -> false }.length") == "3"
+        }
+        then "a lone bind stays an ordinary lambda" {
+            shown(rs_prefix() + "rs.filter() { r -> r is .Bad }.length") == "1"
+        }
+    }
+}
+
+fn rs_prefix() -> string {
+    "enum R {\n    Ok(v: int)\n    Bad\n}\nlet rs = [R.Ok(1), R.Ok(-1), R.Ok(20), R.Bad]\n"
+}

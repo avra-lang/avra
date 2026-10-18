@@ -1335,6 +1335,7 @@ impl SourceText {
             .Receiver -> grouped("self", atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
+            .ArmsMatch(arms) -> grouped("match it ${self.arms_braced(arms, id, depth, c)}", atom_tier, parent),
             .Pipe(_, _) -> self.pipe_rendered(self.pipe_walk(id, depth), parent, depth, c),
             .Bitnot(value) -> grouped("~${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),
@@ -2350,6 +2351,7 @@ impl SourceText {
     fn arms_sugar_body(params: List<Param>, body: ExprId) -> List<Arm>? {
         if !is_pronoun(params) { return null }
         match self.store.expr(body) {
+            .ArmsMatch(arms) -> arms,
             .Match(subject, arms) if self.store.ident_name(subject) == "it" -> arms,
             rest -> null,
         }
