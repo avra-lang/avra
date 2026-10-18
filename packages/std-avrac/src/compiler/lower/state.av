@@ -542,6 +542,17 @@ impl LowerCx {
         }
     }
 
+    /// The cell a `state` BINDING names in THIS body: a local's, a seat's or
+    /// a capture's env cell; null for any other binding.
+    fn state_cell_of(e: ExprId, b: Binding) -> Reg? {
+        match b {
+            .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(e, s, self.def_ty(s)),
+            .Param(i) if self.state_seat(i) -> self.param_reg(i),
+            .Capture(l, j) if self.state_capture(l, j) != null -> self.state_capture_cell(l, j),
+            rest -> null,
+        }
+    }
+
     /// A `state` binding's seed, boxed into the Cell the binding holds:
     /// the place IS the cell, so every later read and write finds it.
     mut fn state_cell(s: StmtId, v: Reg) -> Reg {
