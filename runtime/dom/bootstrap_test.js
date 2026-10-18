@@ -3,7 +3,7 @@
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
 import { createApplier, createFetches, createFrames, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
-import { NO_ID, OP, SAYS } from "./wire.gen.js";
+import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
 import { dispatch, stubDocument, stubElement, textOf } from "./stub_dom.js";
 
 // A fixture encoder — the CONSUMING side is what is under test; the
@@ -12,10 +12,13 @@ const i32 = (v) => [v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255
 const utf8 = (s) => [...new TextEncoder().encode(s)];
 const str = (s) => [...i32(utf8(s).length), ...utf8(s)];
 // An id is a number; a fixture names elements by small ones.
-const idBytes = (n) => [...i32(n >>> 0), ...i32(n < 0 ? -1 : Math.floor(n / 4294967296))];
-const create = (id, tag) => [OP.create, ...idBytes(id), ...str(tag)];
+const varint = (n) => (n < 128 ? [n] : [(n % 128) + 128, ...varint(Math.floor(n / 128))]);
+const idBytes = (n) => varint(n + 1);
+const afterBytes = (n) => varint(n === NO_ID ? AFTER.first : n + AFTER.sibling);
+const create = (id, tag) => [OP.create, ...idBytes(id), ...varint(TAGS.indexOf(tag))];
 const createText = (id, content) => [OP.create_text, ...idBytes(id), ...str(content)];
-const place = (id, parent, after) => [OP.place, ...idBytes(id), ...idBytes(parent), ...idBytes(after)];
+const place = (id, parent, after) => [OP.place, ...idBytes(id), ...idBytes(parent), ...afterBytes(after)];
+const placeAtEnd = (id, parent) => [OP.place, ...idBytes(id), ...idBytes(parent), ...varint(AFTER.append)];
 const remove = (id) => [OP.remove, ...idBytes(id)];
 const setAttr = (id, name, value) => [OP.set_attr, ...idBytes(id), ...str(name), ...str(value)];
 const dropAttr = (id, name) => [OP.drop_attr, ...idBytes(id), ...str(name)];
@@ -50,12 +53,12 @@ a.apply(frame(create(0, "div"), create(1, "span"), createText(2, "hi"), place(2,
 const div = a.mount.childNodes[0];
 check("create and place build the page", [div.tagName, tags(div), textOf(div)], ["div", ["span"], "hi"]);
 
-a.apply(frame(create(3, "p"), place(3, 0, 1), create(4, "b"), place(4, 0, NO_ID)));
-check("place puts an element after a sibling, or first", tags(div), ["b", "span", "p"]);
+a.apply(frame(create(3, "article"), place(3, 0, 1), create(4, "label"), place(4, 0, NO_ID)));
+check("place puts an element after a sibling, or first", tags(div), ["label", "span", "article"]);
 
 const span = div.childNodes[1];
 a.apply(frame(place(1, 0, 3)));
-check("place moves an element that is already there — the same element", [tags(div), div.childNodes[2] === span], [["b", "p", "span"], true]);
+check("place moves an element that is already there — the same element", [tags(div), div.childNodes[2] === span], [["label", "article", "span"], true]);
 
 // ── set_text ──
 a.apply(frame(setText(2, "bye")));
@@ -69,7 +72,7 @@ check("drop_attr removes one", div.attrs, { class: "gap-m" });
 
 // ── remove ──
 a.apply(frame(remove(1)));
-check("remove takes an element off the page", tags(div), ["b", "p"]);
+check("remove takes an element off the page", tags(div), ["label", "article"]);
 let gone = "";
 try { a.apply(frame(setText(2, "x"))); } catch (e) { gone = e.message; }
 check("and everything under it is forgotten", gone, "a patch names element 2, which is not on the page");
@@ -206,6 +209,11 @@ try { parseFrame(Uint8Array.from([WIRE_VERSION, 200])); } catch (e) { unknown = 
 check("an op the table does not hold refuses", unknown, "unknown patch op 200");
 check("an id past 32 bits reads whole", parseFrame(frame(create(5000000000, "div")))[0].id, 5000000000);
 check("no id reads as no id", parseFrame(frame(place(1, NO_ID, NO_ID)))[0].after, NO_ID);
+const edges = [0, 127, 128, 16383, 16384, 2097151, 2097152, 2 ** 40];
+check("ids at the seven-bit edges read whole, in the bytes of one more than the id", [parseFrame(frame(...edges.map((n) => remove(n)))).map((p) => p.id), edges.map((n) => idBytes(n).length)], [edges, [1, 2, 2, 3, 3, 4, 4, 6]]);
+const ended = page();
+ended.apply(frame(create(0, "div"), place(0, NO_ID, NO_ID), create(1, "span"), placeAtEnd(1, 0), create(2, "a"), placeAtEnd(2, 0), create(3, "li"), place(3, 0, NO_ID)));
+check("a place that says the end of the run goes last, and one that says first goes first", tags(ended.mount.childNodes[0]), ["li", "span", "a"]);
 check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["call", "create", "create_text", "define", "drop_attr", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "style", "unlisten"]);
 
 // ── the echo's seam ──

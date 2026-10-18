@@ -221,3 +221,50 @@ spec "the modelled host — a frame a page can apply" {
         }
     }
 }
+
+/// A frame's records, as lines, from `patches` made into one frame.
+fn lines(patches: List<Patch>) -> string { records(frame(patches)).join("|") }
+
+spec "the wire's numbers" {
+    given "ids at the edges of a seven-bit group" {
+        then "make and place, and are read back whole" {
+            let edges = [0, 126, 127, 16382, 16383, 2097150, 2097151, 1099511627776]
+            let made = [p for n in edges for p in standing(n)]
+            faults(made) == "" && page(made).split("\n").length == edges.length
+        }
+        then "read back as the numbers they were (each placed first, so last made stands first)" {
+            let edges = [0, 126, 127, 16382, 16383, 2097150, 2097151, 1099511627776]
+            let made = [p for n in edges for p in standing(n)]
+            page(made).split("\n").map(it.split(" ")[0]).join(",") == "#1099511627776,#2097151,#2097150,#16383,#16382,#127,#126,#0"
+        }
+    }
+    given "children placed under a parent made in the same frame" {
+        then "say the end of the run and no sibling" {
+            let kids = [
+                Patch.Create(el(0), .Ul),
+                Patch.Create(el(1), .Li),
+                Patch.Create(el(2), .Li),
+                Patch.Place(el(0), null, null),
+                Patch.Place(el(1), el(0), null),
+                Patch.Place(el(2), el(0), el(1)),
+            ]
+            lines(kids).contains("place 1 in 0 after end|place 2 in 0 after end")
+        }
+        then "name the sibling under a parent an earlier frame made" {
+            lines([Patch.Place(el(2), el(0), el(1))]) == "place 2 in 0 after 1"
+        }
+        then "name it again once a child has moved away from the end" {
+            let moved = [
+                Patch.Create(el(0), .Ul),
+                Patch.Create(el(1), .Li),
+                Patch.Create(el(2), .Li),
+                Patch.Place(el(1), el(0), null),
+                Patch.Place(el(2), el(0), el(1)),
+                Patch.Place(el(2), el(0), null),
+                Patch.Place(el(1), el(0), el(2)),
+            ]
+            lines(moved).contains("place 1 in 0 after 2") &&
+                faults(moved.concat([Patch.Place(el(0), null, null)])) == ""
+        }
+    }
+}
