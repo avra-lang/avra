@@ -16,8 +16,10 @@ suspension:
    This is the default now: it ships in all three engines (table below).
    No instrumentation, no size cost, constant cost per park.
 2. **Asyncify, scoped to the may-park slice**, as the fallback for hosts
-   without JSPI (Safari/iOS 26 and older, older Firefox). The same
-   `.wasm` ships; the fallback is a post-link pass and a 40-line JS driver.
+   without JSPI (Safari/iOS 26 and older, older Firefox). It ships as a
+   SECOND ARTIFACT (`app.asyncify.wasm`), fetched only when
+   `WebAssembly.Suspending` is missing; the clean `app.wasm` is what JSPI
+   hosts load. The fallback is a post-link pass and a 40-line JS driver.
 3. **Compiler state machines** are the endgame only if size ever demands
    them. Not on the path: the largest compiler change, and indirect calls
    through closures (everywhere in Avra) force a conservative colouring
@@ -91,8 +93,29 @@ release dates from the same repo's `browsers/*.json` and Mozilla's
 | Safari (macOS, iOS, WebView iOS) | 27 | 2026-09-14 | shipped; older iOS stays without it |
 
 Implication: the fallback is for the tail (iOS < 27 and any pinned
-browser), not the common case. The runtime picks at load time by
-`typeof WebAssembly.Suspending`; the page loads one module either way.
+browser), not the common case. The page picks at load time by
+`typeof WebAssembly.Suspending` and fetches ONE of two artifacts (below).
+
+## One binary or two: two
+
+A single `.wasm` that serves both hosts would be the asyncified one, and a
+JSPI host would then pay for instrumentation it never uses: asyncify's
+checks sit at every call site of every instrumented function and cannot be
+switched off at run time. That is exactly the "asyncified" rows above,
+which were run WITHOUT ever unwinding (the same state a JSPI host would be
+in):
+
+| artifact a JSPI host would load | size | fib path |
+|---|---|---|
+| clean (`app.wasm`) | 31,876 B | 131-134 ms |
+| the single asyncified binary | 44,060 B (+38%) | 251-264 ms (1.9x) |
+
+So: TWO artifacts from one link. The clean one carries `avra_park` as an
+import for `Suspending`; the fallback is the same link plus the asyncify
+pass over the `parks` slice, produced only under `--wasm-fallback` (off by
+default, so a build for a JSPI-only audience pays no extra build time or
+output). The measurement above is the asyncified-vs-clean gap on real Avra
+output; the JSPI-only binary is by construction the clean row.
 
 ## The may-park set
 
@@ -116,18 +139,77 @@ asyncify's conservative indirect-call rule.
    fiber body behind it. Wasm gets a body that calls the host import.
 2. Wasm scheduler object: gates, timers, cancel, join, with no stack
    switch; `spawn` through the host.
-3. JS host: `Suspending` binding, the asyncify driver, feature detection.
+3. JS host: `Suspending` binding, the asyncify driver, feature detection,
+   the two-artifact fetch.
 4. The compiler hands the `parks` set to the wasm link for the fallback.
 5. A task-using program test, run under node JSPI and under asyncify, eval
    == wasm. This is the missing real measurement.
+
+## Witness plan for the open items
+
+Every test below is a program test run four ways: evaluator, native,
+wasm under JSPI (node `--experimental-wasm-jspi` until it is unflagged),
+wasm under asyncify; the four outputs must agree. Each gets a mutation
+(the check removed, in `runtime/tests/mutations.py`'s style) that must turn
+it red, so none is green by accident.
+
+**Cancel and `within` across an unwind (first):**
+
+1. `cancel_parked`: a task parked on a gate is cancelled. Asserts it
+   resumes AT the park with `Cancelled`, its `defer`/`errdefer` ran exactly
+   once, and nothing after the park ran. Mutation: the cancel flag is not
+   read at the resume point.
+2. `cancel_beats_ready`: the gate is woken and the cancel arrives in the
+   same turn, before the resume. Asserts cancelled, not delivered (the
+   native rule of 0e1126a2, "a cancel outranks a task's own ready arm").
+3. `within_cuts_park`: `within(ms(50))` around a park on a gate nobody
+   wakes. Asserts the timeout answer at a virtual 50 ms, and that the
+   task's stack is released (the live-task count reads 0 after).
+4. `within_nested_deep`: two nested `within`s, the inner shorter, parked
+   200 frames deep. Asserts the inner scope times out, the outer
+   continues, defers run inner to outer.
+5. `cancel_deep_stack`: a park 2000 frames deep, then cancel. Asserts the
+   stack unwinds whole and live bytes return to the baseline
+   (`AVRA_MEM_STATS`).
+6. `select_with_cancel`: a `select` over a channel, a timer and a cancel
+   arm; each arm wins in its own run. Asserts the winner and that the
+   losers' parks are released.
+7. `join_after_cancel`: joining a cancelled task answers `Cancelled`, and a
+   second join agrees.
+
+**JS on the stack between a park and its entry:**
+
+8. `host_reentry_refused` (a host test, JS side): a task parks inside a
+   call that the page's JS callback made into the program. Asserts the
+   runtime answers one NAMED voice (the engine's `SuspendError` mapped to
+   it), never a hang and never a bare engine error.
+9. `echo_starts_fresh_turn`: its positive twin. A UI echo handler that
+   spawns and parks works, because each echo enters through a fresh
+   `promising` call.
+
+**Stack size:**
+
+10. `task_recursion_depth`: recursion 10,000 deep inside a task succeeds
+    under all four. Recursion past the shared budget traps with the SAME
+    voice under all four (not a bare `RangeError`). The first run records
+    each engine's actual limit in this doc, replacing a guess.
+
+**Artifact choice (the load path):**
+
+11. `artifact_picks`: the page host test run twice, with and without
+    `WebAssembly.Suspending` defined. Asserts the right artifact was
+    fetched, and the clean artifact exports no `asyncify_*` symbol
+    (a size keeper: a clean build that grew them is red).
 
 ## Open
 
 - Cancel and `within` across an unwind: the cancel flag must be observed
   at the resume point, and a deadline task must be able to cut a parked
-  stack. Both are scheduler-side; neither is designed here.
+  stack. Scheduler-side; witnessed by tests 1-7.
 - JSPI traps if JS is on the stack between the park and the promising
   entry; the host must never call a task entry from a JS callback that the
   task itself called into. UI echoes are fine (they start fresh turns).
+  Tests 8-9.
 - Stack size: a JSPI stack is the engine's; `AVRA_FIBER_STACK` has no
   meaning there. Deep recursion inside a task is the engine's limit.
+  Test 10 turns the guess into numbers.
