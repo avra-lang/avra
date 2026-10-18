@@ -1,0 +1,53 @@
+// A template copy keeps every fact its source statement wore: the
+// keywords a declaration was written with and the forms its values were
+// spelled in survive the splice.
+use @std.avrac.compiler.{parse_source, Parsed}
+use @std.avrac.core.{SyntaxArena, StmtId, ExprId, Stmt, copier, hole_runs, no_door}
+
+/// The statements a `quote { … }` holds, and the program they stand in.
+fn quoted(body: string) -> Parsed {
+    parse_source("quote { ${body} }")
+}
+
+fn held(p: Parsed) -> List<StmtId> {
+    let root = p.store.answer_of(p.stmts[0])!
+    match p.store.expr(root).body_of()!.view { .Verbatim(ss, _) -> ss, rest -> [] }
+}
+
+/// The statements' keyword facts, one word each.
+fn worn(store: SyntaxArena, ss: List<StmtId>) -> string {
+    joined([wear(store, s) for s in ss], " ")
+}
+
+fn wear(store: SyntaxArena, s: StmtId) -> string {
+    [
+        if store.is_exported(s) { "export" } else { "" },
+        if store.is_mutating(s) { "mut" } else { "" },
+        if store.is_once(s) { "once" } else { "" },
+        if store.is_static(s) { "static" } else { "" },
+        if store.is_state_stmt(s) { "state" } else { "" },
+        if store.is_host_fn(s) { "host" } else { "" },
+        if store.is_collect_dense(s) { "dense" } else { "" },
+    ].join(",")
+}
+
+/// Whether the copy of `body` wears what its source wore, and wears something.
+fn survives(body: string) -> bool {
+    let src = quoted(body)
+    let dst = parse_source("let x = 1")
+    let ss = held(src)
+    mut rb = copier(src.store, dst.store, [], hole_runs(src.store, src.store.answer_of(src.stmts[0])!), no_door)
+    let copy = worn(dst.store, rb.stmts(ss))
+    worn(src.store, ss) == copy && copy != ","
+}
+
+spec "features/tests — facts a template copy keeps" {
+    given "keywords a declaration wears" {
+        then "export survives" { survives("export fn a() -> int { 1 }") }
+        then "mut survives" { survives("mut fn a() -> int { 1 }") }
+        then "once survives" { survives("once fn a() -> int { 1 }") }
+        then "static survives" { survives("static fn a() -> int { 1 }") }
+        then "state survives" { survives("state n: int = 1") }
+        then "host survives" { survives("extern fn a() -> int { 1 }") }
+    }
+}
