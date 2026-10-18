@@ -44,6 +44,9 @@ export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
 /// `else`, so the printer can spell an elseless guard back.
 export type PayloadIs = { pat: PatId, has_else: bool }
 
+/// The payload ask of a binding `is` pattern, as the source wrote it: with an `else`.
+fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked, has_else: true } }
+
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
@@ -568,8 +571,8 @@ impl SyntaxArena {
 
     fn binding_ask(asked: PatId) -> PayloadIs? {
         match self.pat(asked) {
-            .Variant(_, args) -> if args.is_empty() { null } else { PayloadIs { pat: asked, has_else: true } },
-            .Typed(_, _) -> PayloadIs { pat: asked, has_else: true },
+            .Variant(_, args) -> if args.is_empty() { null } else { binding_payload(asked) },
+            .Typed(_, _) -> binding_payload(asked),
             .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) or .Member(_, _) -> null,
         }
     }
