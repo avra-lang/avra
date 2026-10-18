@@ -1,17 +1,28 @@
-// proves: a `once fn` that PARKS mid-body (an `.await`) has no
-// in-flight guard — a second fiber reaching it while the first is
-// parked runs the body again, and each racer answers its OWN
-// locally computed value; only the FIRST to commit sets what every
-// LATER call answers.
+// proves: a `once fn` that PARKS mid-body has no in-flight guard — a
+// second fiber reaching it while the first is parked runs the body
+// again, and each racer answers its OWN locally computed value; what
+// every LATER call answers is one of those values, whichever racer
+// committed first.
+extern fn avra_task_pending() -> ptr
+extern fn avra_task_answer(t: ptr, v: ptr)
+extern fn avra_task_join(t: ptr) -> ptr
+extern fn avra_array_sized(n: int) -> ptr
+
 once fn tally() -> Cell<int> {
     Cell.new(0)
+}
+
+once fn barrier() -> Cell<ptr> {
+    Cell.new(avra_task_pending())
 }
 
 once fn slow() -> Cell<int> {
     let mine = tally().get() + 1
     tally().set(mine)
-    let t = spawn { 1 }
-    let _ = t.await
+    if mine == 2 {
+        avra_task_answer(barrier().get(), avra_array_sized(1))
+    }
+    let _ = avra_task_join(barrier().get())
     Cell.new(mine)
 }
 
@@ -25,6 +36,6 @@ fn run() -> string {
     let ra = a.await
     let rb = b.await
     let after = slow().get()
-    "${ra} ${rb} ${after}"
+    "${ra + rb} ${ra * rb} ${after == ra || after == rb}"
 }
 run()

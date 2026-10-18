@@ -15,6 +15,8 @@ use core.{
     fp_str,
     mix_final,
     joined,
+    closest,
+    some_list,
     flatten,
     sorted_texts,
     TypeId,
@@ -167,10 +169,20 @@ fn not_exported(
         at,
         if own_test { "`${m.text()}` declares no `${item}`, exported or private" } else { "`${m.text()}` does not export `${item}`" },
         "in this use",
-        if own_test { "a module's own tests read its private names as well as its exports: ${joined(exports, ", ")}" } else { "its exports: ${joined(exports, ", ")}" },
+        exports_help(item, exports, own_test),
     )
     let root? = unread else { return d }
     unread_behind(d, "`${m.text()}`", root, item)
+}
+
+/// What a module's surface offers in place of the name asked for: the
+/// nearest export, then every export — or, when there is none, how one is made.
+fn exports_help(item: string, exports: List<string>, own_test: bool) -> string {
+    if exports.is_empty() { return "it exports nothing — mark the declaration `export` to share it" }
+    let near = joined(["did you mean `${n.name}`? " for n in some_list(closest(item, exports))], "")
+    let known = joined(exports, ", ")
+    if own_test { return "${near}a module's own tests read its private names as well as its exports: ${known}" }
+    "${near}its exports: ${known}"
 }
 
 fn private_apart(at: Loc?, m: ModulePath, item: string, files: List<string>) -> Diag {
