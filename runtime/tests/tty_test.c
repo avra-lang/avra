@@ -22,6 +22,11 @@ static int g_checks = 0;
 static int g_fails = 0;
 #define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "tty_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
 
+static int signals(int fd) {
+    struct termios t;
+    return tcgetattr(fd, &t) == 0 && (t.c_lflag & ISIG);
+}
+
 static int cooked(int fd) {
     struct termios t;
     return tcgetattr(fd, &t) == 0 && (t.c_lflag & ICANON) && (t.c_lflag & ECHO);
@@ -29,14 +34,14 @@ static int cooked(int fd) {
 
 static const char* bytes_of(const char* s) { return avra_bytes_adopted(s, (int64_t)strlen(s)); }
 
-enum { QUIET, EXIT0, TRAP_EXIT, TERM, FAULT, DISARMED };
+enum { QUIET, EXIT0, TRAP_EXIT, TERM, FAULT, DISARMED, INTERRUPT };
 
 // A child that raises the terminal's mode and arms its parting bytes, then
 // ends the way `how` says. Answers its wait status.
 static int child_ends(int slave, int how) {
     pid_t pid = fork();
     if (pid == 0) {
-        avra_fd_tty_raw(slave, 1);
+        avra_fd_tty_raw(slave, how == INTERRUPT ? 2 : 1);
         avra_fd_exit_writes(slave, bytes_of("<BYE>"));
         if (how == DISARMED) avra_fd_exit_writes(slave, bytes_of(""));
         if (how == TERM) raise(SIGTERM);
@@ -63,6 +68,7 @@ static int master_holds(int master, const char* what) {
 }
 
 int main(void) {
+    signal(SIGINT, SIG_DFL);   // a background shell starts its jobs ignoring it, and an ignored signal is left so
     int master = posix_openpt(O_RDWR | O_NOCTTY);
     if (master < 0 || grantpt(master) != 0 || unlockpt(master) != 0) { perror("pty"); return 1; }
     int slave = open(ptsname(master), O_RDWR | O_NOCTTY);
@@ -82,14 +88,19 @@ int main(void) {
     ioctl(master, TIOCSWINSZ, &ws);
 
     CHECK(cooked(slave), "a fresh terminal is cooked");
-    CHECK(avra_fd_tty_raw(slave, 1) == 1, "raw mode is entered");
+    CHECK(avra_fd_tty_raw(slave, 1) == 1, "cbreak mode is entered");
     struct termios t;
     tcgetattr(slave, &t);
-    CHECK(!(t.c_lflag & (ICANON | ECHO)) && (t.c_oflag & OPOST), "raw: keys unechoed and unbuffered, output processing kept");
-    CHECK(avra_fd_tty_raw(slave, 1) == 1, "raw twice is raw");
-    CHECK(avra_fd_tty_raw(slave, 0) == 1, "raw mode is left");
+    CHECK(!(t.c_lflag & (ICANON | ECHO)) && (t.c_oflag & OPOST), "cbreak: keys unechoed and unbuffered, output processing kept");
+    CHECK(signals(slave), "cbreak keeps Ctrl-C a signal");
+    CHECK(avra_fd_tty_raw(slave, 1) == 1, "cbreak twice is cbreak");
+    CHECK(avra_fd_tty_raw(slave, 0) == 1, "cbreak mode is left");
     CHECK(cooked(slave), "the mode saved is the mode given back");
-    CHECK(avra_fd_tty_raw(slave, 0) == 0, "leaving raw twice changes nothing");
+    CHECK(avra_fd_tty_raw(slave, 0) == 0, "leaving twice changes nothing");
+    CHECK(avra_fd_tty_raw(slave, 2) == 1, "raw mode is entered");
+    tcgetattr(slave, &t);
+    CHECK(!(t.c_lflag & (ICANON | ECHO | ISIG)) && (t.c_oflag & OPOST), "raw: the signal keys arrive as keys, output processing kept");
+    CHECK(avra_fd_tty_raw(slave, 0) == 1 && cooked(slave), "raw is given back too");
 
     // however a process ends, its bytes are on the terminal and its mode is back
     int s = child_ends(slave, EXIT0);
@@ -111,6 +122,24 @@ int main(void) {
     CHECK(WIFSIGNALED(s) && WTERMSIG(s) == SIGSEGV, "a fault still ends the process by it");
     CHECK(master_holds(master, "<BYE>"), "a fault leaves its bytes");
     CHECK(cooked(slave), "a fault gives the mode back");
+
+    // under cbreak SIGINT is still a signal the process dies by, and the bytes
+    // and the mode are still restored
+    {
+        pid_t pid = fork();
+        if (pid == 0) {
+            avra_fd_tty_raw(slave, 1);
+            avra_fd_exit_writes(slave, bytes_of("<BYE>"));
+            for (;;) pause();
+        }
+        usleep(100000);
+        kill(pid, SIGINT);
+        int st = 0;
+        waitpid(pid, &st, 0);
+        CHECK(WIFSIGNALED(st) && WTERMSIG(st) == SIGINT, "SIGINT still ends a cbreak process by it");
+        CHECK(master_holds(master, "<BYE>"), "SIGINT leaves its bytes");
+        CHECK(cooked(slave), "SIGINT gives the mode back");
+    }
 
     s = child_ends(slave, DISARMED);
     CHECK(WIFEXITED(s) && WEXITSTATUS(s) == 0, "a disarmed exit is a normal one");
