@@ -788,27 +788,42 @@ impl Workspace {
 
     /// A link input with its `${NAME}` holes filled from the
     /// environment, each variable an input: a machine's own paths belong
-    /// to the machine, not to a checked-in manifest. A value is data — the
-    /// holes after it are filled, never the value itself.
+    /// to the machine, not to a checked-in manifest. `${NAME:-fallback}` is
+    /// the fallback when the variable is unset or empty, so a platform's
+    /// usual answer needs no variable. A value is data — the holes after it
+    /// are filled, never the value itself.
     fn env_filled(flag: string) -> string {
         let opens = flag.index_of("\${")
         if opens < 0 { return flag }
         let closes = closing_brace(flag, opens)
         if closes < opens { return flag }
         let head = flag.substring(0, opens)
-        let name = flag.substring(opens + 2, closes)
+        let hole = hole_of(flag.substring(opens + 2, closes))
         let tail = flag.substring(closes + 1, flag.length)
-        "${head}${self.env(name) ?? ""}${self.env_filled(tail)}"
+        let value = self.env(hole.name) ?? ""
+        "${head}${if value.is_empty() { hole.fallback ?? "" } else { value }}${self.env_filled(tail)}"
     }
 }
 
-/// The variables a word's `${NAME}` holes name, in order.
+/// A `${NAME}` hole's variable and its `:-` fallback, when it spells one.
+type Hole = { name: string, fallback: string? }
+
+fn hole_of(inner: string) -> Hole {
+    let at = inner.index_of(":-")
+    if at < 0 { return Hole { name: inner, fallback: null } }
+    Hole { name: inner.substring(0, at), fallback: inner.substring(at + 2, inner.length) }
+}
+
+/// The variables a word's `${NAME}` holes name, in order — those with no fallback: a hole
+/// that spells one is never unset.
 fn holes(word: string) -> List<string> {
     let opens = word.index_of("\${")
     if opens < 0 { return [] }
     let closes = closing_brace(word, opens)
     if closes < opens { return [] }
-    [word.substring(opens + 2, closes)].concat(holes(word.substring(closes + 1, word.length)))
+    let hole = hole_of(word.substring(opens + 2, closes))
+    let rest = holes(word.substring(closes + 1, word.length))
+    if hole.fallback == null { [hole.name].concat(rest) } else { rest }
 }
 
 /// Whether a word is one hole and nothing else.

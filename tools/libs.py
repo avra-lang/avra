@@ -281,7 +281,8 @@ def expanded(flag):
             if close < 0:
                 out.append(flag[i:])
                 break
-            out.append(os.environ.get(flag[i + 2:close], ""))
+            name, _, fallback = flag[i + 2:close].partition(":-")
+            out.append(os.environ.get(name, "") or (fallback if ":-" in flag[i + 2:close] else ""))
             i = close + 1
         else:
             out.append(flag[i])
