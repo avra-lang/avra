@@ -210,6 +210,8 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
   };
   // What each element hears, for a reader of the page to inspect.
   applyFrame.ears = (id) => listed(id).map((def) => [def.kind, def]);
+  // How many slots hold an element and a hearing: what the page still keeps.
+  applyFrame.held = () => ({ nodes: nodes.filter((n) => n !== undefined).length, hears: hears.filter((h) => h !== undefined).length });
   return applyFrame;
 }
 
