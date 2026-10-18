@@ -7,7 +7,7 @@ use @std.relation.stable.{indexed_scope, Scope}
 type Todo = { key: string, n: int }
 
 @codec
-type Kinds = { todo: Todo, todos: List<Todo> }
+type Kinds = { tags: Map<string, List<string>>, todo: Todo, todos: List<Todo> }
 
 @codec
 enum Held { Only(t: Todo), Nothing }
@@ -21,12 +21,19 @@ type Board = { id: int, todo: Todo, todos: List<Todo> }
 fn here() -> dyn Scope { indexed_scope() }
 
 fn kinds() -> Kinds {
-    Kinds { todo: Todo { key: "k", n: -4 }, todos: [Todo { key: "j", n: 2 }] }
+    Kinds {
+        tags: {"a": ["x", "y"], "b": []},
+        todo: Todo { key: "k", n: -4 },
+        todos: [Todo { key: "j", n: 2 }],
+    }
 }
 
 fn kinds_back() -> bool {
     match Kinds.decoded_in(here(), kinds().encoded_in(here())) {
-        .Ok(x) -> x.todo.n == -4 && x.todos[0].key == "j",
+        .Ok(x) -> x.tags.keys().join(",") == "a,b" &&
+            x.tags.get("a")?.length == 2 &&
+            x.todo.n == -4 &&
+            x.todos[0].key == "j",
         .Err(_) -> false,
     }
 }

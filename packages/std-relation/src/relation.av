@@ -93,12 +93,14 @@ use stable.{
     hashed_list,
     written_opt,
     written_list,
+    written_map,
     written_all,
     written_tagged,
     writer,
     reader,
     read_opt,
     read_list,
+    read_map,
     StableHasher,
     Writer,
     Reader,
@@ -417,6 +419,7 @@ fn kind_needs(k: Kind, seen: List<string>, all: bool) -> bool {
     match k {
         .Opt(inner) -> kind_needs(inner, seen, all),
         .List(elem) -> kind_needs(elem, seen, all),
+        .Map(_, value) -> kind_needs(value, seen, all),
         .Named(n, args) -> match instance_shape(n, args) {
             .Payload(_) -> true,
             .Record(fs) -> if all || seen.contains(n) {
@@ -1229,6 +1232,7 @@ fn read_value(k: Kind, owner: Owner) -> Code {
         .Str -> quote { rd.text()? },
         .Opt(inner) -> quote { read_opt(rd, ${read_each(inner, owner)})? },
         .List(elem) -> quote { read_list(rd, ${read_each(elem, owner)})? },
+        .Map(_, value) -> quote { read_map(rd, ${read_each(value, owner)})? },
         .Named(n, args) -> if kind_needs(k, [], owner.all) {
             quote { ${name(owner.name)}.read_${helper_id(k.spelled())}(rd)? }
         } else {
@@ -1250,6 +1254,7 @@ fn read_each(k: Kind, owner: Owner) -> Code {
         .Str -> quote { (r: Reader) -> r.text() },
         .Opt(inner) -> quote { (r: Reader) -> read_opt(r, ${read_each(inner, owner)}) },
         .List(elem) -> quote { (r: Reader) -> read_list(r, ${read_each(elem, owner)}) },
+        .Map(_, value) -> quote { (r: Reader) -> read_map(r, ${read_each(value, owner)}) },
         .Named(n, args) -> if kind_needs(k, [], owner.all) {
             quote { (r: Reader) -> ${name(owner.name)}.read_${helper_id(k.spelled())}(r) }
         } else {
@@ -1271,6 +1276,7 @@ fn written(w: Code, e: Code, k: Kind, owner: Owner) -> Code {
         .Str -> quote { ${w}.text(${e}) },
         .Opt(inner) -> quote { written_opt(${w}, ${e}, ${write_each(inner, owner)}) },
         .List(elem) -> quote { written_list(${w}, ${e}, ${write_each(elem, owner)}) },
+        .Map(_, value) -> quote { written_map(${w}, ${e}, ${write_each(value, owner)}) },
         .Named(n, args) -> if kind_needs(k, [], owner.all) {
             quote { ${name(owner.name)}.write_${helper_id(k.spelled())}(${w}, ${e}) }
         } else {
@@ -1302,6 +1308,7 @@ fn write_each(k: Kind, owner: Owner) -> Code {
         .Str -> quote { (w: Writer, v: string) -> w.text(v) },
         .Opt(inner) -> quote { (w: Writer, v: ${k.spelled()}) -> written_opt(w, v, ${write_each(inner, owner)}) },
         .List(elem) -> quote { (w: Writer, v: ${k.spelled()}) -> written_list(w, v, ${write_each(elem, owner)}) },
+        .Map(_, value) -> quote { (w: Writer, v: ${k.spelled()}) -> written_map(w, v, ${write_each(value, owner)}) },
         .Named(n, args) -> if kind_needs(k, [], owner.all) {
             quote { (w: Writer, v: ${k.spelled()}) -> ${name(owner.name)}.write_${helper_id(k.spelled())}(w, v) }
         } else {
@@ -1346,6 +1353,7 @@ fn collect_kinds(k: Kind, acc: List<Kind>) -> List<Kind> {
     match k {
         .Opt(inner) -> collect_kinds(inner, acc),
         .List(elem) -> collect_kinds(elem, acc),
+        .Map(_, value) -> collect_kinds(value, acc),
         .Named(n, args) -> {
             let spelled = k.spelled()
             if acc.any((m: Kind) -> m.spelled() == spelled) { return acc }
@@ -1494,8 +1502,9 @@ fn storable_under(k: Kind, seen: List<string>) -> bool {
         .Int or .Bool or .Str -> true,
         .Opt(inner) -> storable_under(inner, seen),
         .List(elem) -> storable_under(elem, seen),
+        .Map(key, value) -> key.spelled() == "string" && storable_under(value, seen),
         .Named(n, args) -> storable_name(n, args, k.spelled(), seen),
-        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+        .Float or .Ptr or .Void or .Cell(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
 

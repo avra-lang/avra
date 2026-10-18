@@ -213,6 +213,15 @@ export fn written_all<T>(w: Writer, v: T, columns: List<fn(Writer, T) -> void>) 
     for each in columns { each(w, v) }
 }
 
+/// A map written: its count, then every entry's key and value in insertion order.
+export fn written_map<V>(w: Writer, m: Map<string, V>, each: fn(Writer, V) -> void) {
+    w.count(m.length)
+    for e in m.entries() {
+        w.text(e.key)
+        each(w, e.value)
+    }
+}
+
 export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
     w.count(xs.length)
     for x in xs { each(w, x) }
@@ -388,4 +397,18 @@ export fn read_list<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> 
 > {
     let n = r.count()?
     .Ok([each(r)? for i in 0..n])
+}
+
+/// A map read back: its count, then every entry in order.
+export fn read_map<V>(r: Reader, each: fn(Reader) -> Result<V, CodecFault>) -> Result<
+    Map<string, V>,
+    CodecFault,
+> {
+    let n = r.count()?
+    mut m: Map<string, V> = {}
+    for i in 0..n {
+        let k = r.text()?
+        m.set(k, each(r)?)
+    }
+    m
 }
