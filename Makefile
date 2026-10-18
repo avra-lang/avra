@@ -538,7 +538,7 @@ test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites libs
 # it instead of trusting a mtime. AN OBJECT'S FLAGS RIDE ITS STAMP TOO
 # (`CFLAGS_<stem>`), so a census build's -DAVRA_CENSUS object is rebuilt
 # the moment the flag is dropped, and never ships as the runtime.
-SHA_SRC_avra_runtime := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
+SHA_SRC_avra_runtime := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h runtime/avra_random.h
 SHA_SRC_avra_hot := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
 SHA_SRC_avra_fiber := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
 SHA_SRC_avra_tick := runtime/host/avra_tick.c runtime/avra_fiber.h
