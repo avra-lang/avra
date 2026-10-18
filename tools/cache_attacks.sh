@@ -673,7 +673,7 @@ vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, e
   steps=$((steps+1))
   AVRA_QTRACE=1 ./avra check $R/vdc/vd > $R/vd.out 2>&1; st=$?
   got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { if (v != "ran") v = $4 } END { print v }' $R/vd.out)
-  if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"
+  if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"; failed_tail $R/vd.out
   elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the $3 verdict was '$got', wanted '$2'"
   elif [ -n "${5:-}" ] && [ "$(./avra run $R/vdc/vd 2>/dev/null | tail -1)" != "$5" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the program printed '$(./avra run $R/vdc/vd 2>/dev/null | tail -1)', wanted '$5'"
   else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
