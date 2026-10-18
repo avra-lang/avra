@@ -16,10 +16,10 @@ import argparse
 import os
 import re
 import subprocess
+import threading
+import time
 import sys
 import tempfile
-import time
-from concurrent.futures import ThreadPoolExecutor
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "tools", "defects", "corpus.txt")
@@ -148,36 +148,47 @@ def main():
     if not work:
         print("defects: examined nothing")
         return 1
+    bad = []
     started = time.time()
+    jobs = max(1, min(WORKERS, len(work)))
+    out_lock = threading.Lock()
+    queue = list(reversed(work))
 
-    def attack(case):
-        """Every verb's verdict for one program, in its own package."""
-        n, verbs, body = case
-        with tempfile.TemporaryDirectory(prefix="avra-defects-") as d:
-            os.makedirs(os.path.join(d, "src"))
-            for path, text in (("avra.toml", MANIFEST), ("src/main.av", body)):
-                with open(os.path.join(d, path), "w", encoding="utf-8") as f:
-                    f.write(text)
-            runs = []
+    def attack(d):
+        os.makedirs(os.path.join(d, "src"))
+        with open(os.path.join(d, "avra.toml"), "w", encoding="utf-8") as f:
+            f.write(MANIFEST)
+        while True:
+            with out_lock:
+                if not queue:
+                    return
+                n, verbs, body = queue.pop()
+            with open(os.path.join(d, "src", "main.av"), "w", encoding="utf-8") as f:
+                f.write(body)
+            clean = False
             for verb in verbs + ["build"]:
-                if verb == "build" and not (runs and runs[0][1] == 0):
+                if verb == "build" and not clean:
                     continue
                 code, out = run(a.avra, verb, d)
-                runs.append((verb, code, out))
-            return n, runs
+                clean = clean or (verb == "check" and code == 0)
+                why = verdict(code, out)
+                with out_lock:
+                    if a.show:
+                        print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
+                    if why:
+                        bad.append((n, why))
+                        print("defects: %s (%s) — %s" % (n, verb, why))
+                        print("    " + "\n    ".join(out.strip().split("\n")[:6]))
 
-    bad = set()
-    with ThreadPoolExecutor(WORKERS) as pool:
-        for n, runs in pool.map(attack, work):
-            for verb, code, out in runs:
-                if a.show:
-                    print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
-                if why := verdict(code, out):
-                    bad.add(n)
-                    print("defects: %s (%s) — %s" % (n, verb, why))
-                    print("    " + "\n    ".join(out.strip().split("\n")[:6]))
-    print("defects: %d worker(s), %.0fs" % (WORKERS, time.time() - started))
-    print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len(bad)))
+    with tempfile.TemporaryDirectory(prefix="avra-defects-") as root:
+        dirs = [os.path.join(root, str(i)) for i in range(jobs)]
+        threads = [threading.Thread(target=attack, args=(d,)) for d in dirs]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    print("defects: %d worker(s), %.0fs" % (jobs, time.time() - started))
+    print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len({n for n, _ in bad})))
     return 1 if bad else 0
 
 
