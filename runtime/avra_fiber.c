@@ -1999,6 +1999,9 @@ static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_
     // A descriptor the poller refuses is ready now: the read or write
     // the caller retries reports its own error.
     if (!fd_arm((int)fd)) waiter_claims(w, BY_POLLER);
+    // A FINISHED PEER'S READ IS READY, AND NO EDGE WILL SAY SO AGAIN: the
+    // close came once, before a short read drained the bytes ahead of it.
+    else if (!writable && (g_fds[fd].ready & READ_CLOSED)) waiter_claims(w, BY_POLLER);
     else if (TRACING) traced_waiter(f, w);
 }
 
