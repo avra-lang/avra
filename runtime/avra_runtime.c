@@ -2879,6 +2879,14 @@ void* avra_array_concat_reusing(void* a, void* b) {
     return a;
 }
 
+// `src`'s slots appended to `dst`, owned ones retained; `dst` is
+// grown once, for all of them.
+void avra_array_extend(void* dst, void* src) {
+    AvraArray* s = (AvraArray*)src;
+    avra_array_reserve(dst, s->len);
+    array_append(dst, s, 0, s->len);
+}
+
 // ── The string vocabulary ───────────────────────────────────────
 // Byte offsets, ends exclusive, clamped to the text; every answer
 // that is new text is owned.
