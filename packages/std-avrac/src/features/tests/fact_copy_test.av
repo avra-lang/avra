@@ -1,0 +1,139 @@
+// A template copy keeps every fact its source statement wore: the
+// keywords a declaration was written with and the forms its values were
+// spelled in survive the splice.
+use @std.avrac.compiler.{parse_source, Parsed}
+use @std.avrac.core.{SyntaxArena, StmtId, ExprId, Stmt, copier, hole_runs, no_door}
+
+/// The statements a `quote { … }` holds, and the program they stand in.
+fn quoted(body: string) -> Parsed {
+    parse_source("quote { ${body} }")
+}
+
+fn held(p: Parsed) -> List<StmtId> {
+    let root = p.store.answer_of(p.stmts[0])!
+    match p.store.expr(root).body_of()!.view { .Verbatim(ss, _) -> ss, rest -> [] }
+}
+
+/// The statements' keyword facts, one word each.
+fn worn(store: SyntaxArena, ss: List<StmtId>) -> string {
+    [wear(store, s) for s in ss].join(" ")
+}
+
+fn wear(store: SyntaxArena, s: StmtId) -> string {
+    [
+        if store.is_exported(s) { "export" } else { "" },
+        if store.is_mutating(s) { "mut" } else { "" },
+        if store.is_once(s) { "once" } else { "" },
+        if store.is_static(s) { "static" } else { "" },
+        if store.is_state_stmt(s) { "state" } else { "" },
+        if store.is_host_fn(s) { "host" } else { "" },
+        if store.is_collect_dense(s) { "dense" } else { "" },
+    ]
+        .join(",")
+}
+
+/// Whether the copy of `body` wears what its source wore, and wears something.
+fn survives(body: string) -> bool {
+    let src = quoted(body)
+    let dst = parse_source("let x = 1")
+    let ss = held(src)
+    mut rb = copier(
+        src.store,
+        dst.store,
+        [],
+        hole_runs(src.store, src.store.answer_of(src.stmts[0])!),
+        no_door,
+    )
+    let copy = worn(dst.store, rb.stmts(ss))
+    worn(src.store, ss) == copy && copy != ","
+}
+
+/// The forms an expression tree's nodes were written in, one letter each.
+fn forms(store: SyntaxArena, root: ExprId) -> string {
+    [form_of(store, e) for e in store.every_expr(root)].join("")
+}
+
+fn form_of(store: SyntaxArena, e: ExprId) -> string {
+    [
+        if store.is_trailing(e) { "t" } else { "" },
+        if store.is_type_lit(e) { "l" } else { "" },
+        if store.is_raw_string(e) { "r" } else { "" },
+        if store.is_sugar_match(e) { "m" } else { "" },
+        if !store.struct_targs_of(e).is_empty() { "a" } else { "" },
+        if store.is_payload(e) != null { "p" } else { "" },
+        if store.grammar_lit_of(e) != null { "g" } else { "" },
+    ]
+        .join("")
+}
+
+/// Whether the copy of `body`'s last value is written in the forms its source was, and in some.
+fn keeps_forms(body: string) -> bool {
+    let src = quoted(body)
+    let dst = parse_source("let x = 1")
+    let ss = held(src)
+    mut rb = copier(
+        src.store,
+        dst.store,
+        [],
+        hole_runs(src.store, src.store.answer_of(src.stmts[0])!),
+        no_door,
+    )
+    let copied = rb.stmts(ss)
+    let before = forms(src.store, src.store.answer_of(ss.last()!)!)
+    before != "" && before == forms(dst.store, dst.store.answer_of(copied.last()!)!)
+}
+
+/// What a declaration wrote beside its keywords, one letter each.
+fn declared(store: SyntaxArena, s: StmtId) -> string {
+    [
+        if store.impl_tparams_of(s) != null { "i" } else { "" },
+        if !store.trait_args_of(s).is_empty() { "a" } else { "" },
+        if !store.trait_tparams_of(s).is_empty() { "p" } else { "" },
+        if !store.spreads_of(s).is_empty() { "s" } else { "" },
+        if store.grammar_of(s) != null { "g" } else { "" },
+        if store.instance_of(s) != null { "n" } else { "" },
+    ]
+        .join("")
+}
+
+/// Whether the copy of `body`'s statements declare what their sources did, and something.
+fn keeps_declared(body: string) -> bool {
+    let src = quoted(body)
+    let dst = parse_source("let x = 1")
+    let ss = held(src)
+    mut rb = copier(
+        src.store,
+        dst.store,
+        [],
+        hole_runs(src.store, src.store.answer_of(src.stmts[0])!),
+        no_door,
+    )
+    let before = [declared(src.store, s) for s in ss].join(",")
+    let after = [declared(dst.store, s) for s in rb.stmts(ss)].join(",")
+    before != "," && before == after
+}
+
+spec "features/tests — facts a template copy keeps" {
+    given "keywords a declaration wears" {
+        then "export survives" { survives("export fn a() -> int { 1 }") }
+        then "mut survives" { survives("mut fn a() -> int { 1 }") }
+        then "once survives" { survives("once fn a() -> int { 1 }") }
+        then "static survives" { survives("static fn a() -> int { 1 }") }
+        then "state survives" { survives("state n: int = 1") }
+        then "host survives" { survives("extern fn a() -> int { 1 }") }
+    }
+    given "forms an expression was written in" {
+        then "a trailing block survives" { keeps_forms("xs.map { it }") }
+        then "a type literal call survives" { keeps_forms("cx.type(List<int>)") }
+        then "a raw string survives" { keeps_forms("\"\"\"x\"\"\"") }
+        then "a trailing block of arms survives" { keeps_forms("xs.map { .Ok(v) -> v }") }
+        then "a literal's type arguments survive" { keeps_forms("Box<int> { v: 1 }") }
+        then "a binding if survives" { keeps_forms("if k is .A(v) { v } else { 0 }") }
+    }
+    given "what a declaration wrote beside its keywords" {
+        then "an impl's own type parameters survive" { keeps_declared("impl Box<T> { fn get() -> int { 1 } }") }
+        then "a trait impl's arguments survive" { keeps_declared("impl Show<X> for Box { fn show() -> int { 1 } }") }
+        then "a trait's own type parameters survive" { keeps_declared("trait Pair<A, B> { fn first() -> A }") }
+        then "a record's spreads survive" { keeps_declared("type P = { ..Q, x: int }") }
+    }
+}
