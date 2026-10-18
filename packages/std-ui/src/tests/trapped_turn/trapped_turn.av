@@ -1,0 +1,49 @@
+// proves: a handler that TRAPS is contained to its turn on every target with
+// no guard installed by the test — the app's own door catches it. The state
+// is as the handler left it, the failure is shown (read from a headless
+// screen, a status line in the terminal) and the next event still works.
+use @std.ui.components.{button, column, text}
+use @std.ui.headless.{Screen, headless}
+use @std.ui.terminal.{terminal}
+
+state count: int = 0
+state broken: bool = true
+
+fn read_at(i: int) -> int {
+    let xs = [10, 20]
+    xs[i]
+}
+
+fn view() -> column {
+    column {
+        text "count ${count}"
+        button "add" {
+            on press {
+                count = count + 1
+                if broken { count = read_at(5) }
+            }
+        }
+    }
+}
+
+fn shown(s: Screen) -> string {
+    [l.trim() for l in s.text().split("\n") if l.trim() != ""].join(" | ")
+}
+
+let s = headless(view)
+println("press=${s.press("add")} failure=${s.failure() ?? "none"} count=${count}")
+println(shown(s))
+broken = false
+println("press=${s.press("add")} failure=${s.failure() ?? "none"} count=${count}")
+println(shown(s))
+
+broken = true
+count = 0
+let on = terminal(view, width: 30)
+on.feed("\n")
+println("── terminal, trapped key")
+println(on.screen())
+broken = false
+on.feed("\n")
+println("── terminal, next key")
+println(on.screen())
