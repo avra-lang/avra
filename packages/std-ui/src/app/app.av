@@ -158,9 +158,11 @@ impl App {
         let view = self.view.get()
         let theme = self.theme.get()
         self.stands.begun()
-        let before = self.standers()
+        let before = self.standing.get()
         self.show(view(self.stands), theme())
-        if self.standers() != before { self.woken() }
+        let joined = self.joined(before)
+        if joined { self.refused.push(joined_by_order()) }
+        if joined || self.standers(before) != self.standers(self.standing.get()) { self.woken() }
     }
 
     /// A paint moved who stands on the screen: the loop is left a turn that
@@ -254,14 +256,22 @@ impl App {
     }
 
     /// Whether the control at `owner` is on the screen the last paint
-    /// showed. Work no control asked is always owned.
+    /// showed, and no sibling shares its place. Work no control asked is
+    /// always owned.
     fn owns(owner: string?) -> bool {
         let at? = owner else { return true }
-        self.standing.get().any(it.key == at)
+        self.standing.get().any(it.key == at && !it.ordered)
     }
 
-    /// Who stands on the screen, as one text.
-    fn standers() -> string { [o.key for o in self.standing.get()].join("\n") }
+    /// Who stands on a screen, as one text.
+    fn standers(on: List<Owner>) -> string { [o.key for o in on].join("\n") }
+
+    /// Whether a control that stood alone at `before` is now told from a
+    /// sibling by order alone: what it asked belongs to a place that now
+    /// names another control.
+    fn joined(before: List<Owner>) -> bool {
+        self.standing.get().any((o) -> o.ordered && before.any((b) -> b.key == o.key && !b.ordered))
+    }
 
     /// Whether work asked now is turned away: the control asking it is
     /// told from its siblings by order alone, so its place says nothing of
@@ -333,6 +343,10 @@ export fn stood(on: App?) { afoot().set(on) }
 export fn running() -> App? { afoot().get() }
 
 // ── voices ──────────────────────────────────────────────────────
+
+fn joined_by_order() -> string {
+    "work a control asked while it stood alone is dropped when siblings join it and tell it apart by order alone, since its place now names another control: give each its own `key`"
+}
 
 fn placed_by_order() -> string {
     "work a control asks belongs to the control's place, and among siblings told apart by order alone a place does not outlive a removal before it: give each its own `key`"
