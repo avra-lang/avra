@@ -16,6 +16,7 @@ use core.{
     DeclId,
     Binding,
     SeatMark,
+    SeatFill,
     mut_mark,
     state_mark,
     settled_mark,
@@ -850,7 +851,7 @@ impl TypeCx {
         let variadic: int? = self.view.decls.variadic_of(declared)
         if variadic != null { return self.variadic_placed(e, callee, variadic!, args, wants) }
         let spread: ExprId? = args.find((a) -> self.view.store.spread_operand(a) != null)
-        if spread != null { return self.spread_into_fixed(spread!, callee) }
+        if spread != null { return self.spread_placed(e, callee, declared, args, wants) }
         let seats: List<string> = self.view.decls.facts_of(declared)?.seats ?? []
         let defaults = self.view.decls.seat_defaults(declared)
         if args.all((a) -> self.view.store.arg_label(a) == null) { return self.by_position(e, callee, defaults, args, wants) }
@@ -1160,6 +1161,195 @@ impl TypeCx {
                 ),
             )
         null
+    }
+
+    /// A call with `..` arguments to a callee that has no variadic seat: a
+    /// RECORD's fields fill the seats of their names; any other source has
+    /// no seat to fill.
+    mut fn spread_placed(
+        e: ExprId,
+        callee: string,
+        d: DeclId,
+        args: List<ExprId>,
+        wants: List<TypeId>,
+    ) -> Placed? {
+        let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
+        let spreads = [a for a in args if self.view.store.spread_operand(a) != null]
+        let bad: ExprId? = spreads.find((a) -> self.fields_of(self.type_at(a)) == null)
+        if bad != null { return self.spread_unreadable(bad!, callee) }
+        if seats.length != wants.length { return self.spread_into_fixed(spreads[0], callee) }
+        let fields = [self.spread_names(a) for a in args]
+        let plain = [a for a in args if self.view.store.spread_operand(a) == null]
+        if !self.labels_lawful(e, callee, plain, seats) { return null }
+        if !self.fields_lawful(d, callee, args, seats, wants, fields) { return null }
+        let fills = self.view.store.seat_fills(args, seats, fields)
+        let defaults = self.view.decls.seat_defaults(d)
+        let unwritten: string? = [seats[j] for j, f in fills if f == null && defaults[j] == null]
+            .first()
+        if unwritten != null { return self.seat_unwritten(e, callee, unwritten!) }
+        self.overwritten_args(args, seats, fills)
+        let whole = [j for j, f in fills if f != null && f!.field < 0]
+        Placed { args: [args[fills[j]!.arg] for j in whole], wants: [wants[j] for j in whole] }
+    }
+
+    /// The field names argument `a` spreads, none for a plain argument.
+    fn spread_names(a: ExprId) -> List<string> {
+        if self.view.store.spread_operand(a) == null { return [] }
+        self.fields_of(self.type_at(a))?.names ?? []
+    }
+
+    /// Every spread field fills a seat of its name, a plain one, at its
+    /// own type.
+    mut fn fields_lawful(
+        d: DeclId,
+        callee: string,
+        args: List<ExprId>,
+        seats: List<string>,
+        wants: List<TypeId>,
+        fields: List<List<string>>,
+    ) -> bool {
+        mut lawful = true
+        for j, a in args {
+            for i, n in fields[j] {
+                if !self.field_lawful(d, callee, a, n, i, seats, wants) { lawful = false }
+            }
+        }
+        lawful
+    }
+
+    mut fn field_lawful(
+        d: DeclId,
+        callee: string,
+        a: ExprId,
+        name: string,
+        i: int,
+        seats: List<string>,
+        wants: List<TypeId>,
+    ) -> bool {
+        let s = seats.index_of(name)
+        if s < 0 { return self.spread_no_seat(a, callee, name) }
+        let m = self.view.decls.seat_mark(d, s)
+        if m.mutable || m.state || m.settled || m.unshared { return self.spread_place_seat(a, callee, name) }
+        if self.view.types.open(wants[s]) { return self.spread_open_seat(a, callee, name) }
+        let sig? = self.fields_of(self.type_at(a)) else { return true }
+        if sig.types[i] != wants[s] { return self.spread_field_type(a, callee, name, sig.types[i], wants[s]) }
+        true
+    }
+
+    /// A plain argument a later spread's field writes over: its seat takes
+    /// the field, and the argument is a dead write.
+    mut fn overwritten_args(args: List<ExprId>, seats: List<string>, fills: List<SeatFill?>) {
+        mut place = 0
+        for j, a in args {
+            if self.view.store.spread_operand(a) == null {
+                let label: string? = self.view.store.arg_label(a)
+                let seat = if label == null { place } else { seats.index_of(label!) }
+                if label == null { place = place + 1 }
+                if seat >= 0 && seat < seats.length && fills[seat] != null && fills[seat]!.arg != j {
+                    self.dead_argument(a, seats[seat])
+                }
+            }
+        }
+    }
+
+    /// A `..` source that is no record: a nullable one, a list (which has
+    /// no seat to fill here), or any other value.
+    mut fn spread_unreadable(a: ExprId, callee: string) -> Placed? {
+        let n = self.name_at(a)
+        if self.shape_at(a) is .Opt {
+            self
+                .emit(
+                    refusal(
+                        "type.spread_nullable",
+                        self.loc_of(a),
+                        "`..` spreads `${n}`, which may be null",
+                        "spread here",
+                        "unwrap it first — `..(opts ?? defaults)`",
+                    ),
+                )
+            return null
+        }
+        if self.view.types.element(self.view.types.seen_through(self.type_at(a))) != null { return self.spread_into_fixed(a, callee) }
+        self
+            .emit(
+                refusal(
+                    "type.spread_value",
+                    self.loc_of(a),
+                    "`..` spreads `${n}`, which has no fields",
+                    "spread here",
+                    "a call spreads a record into the seats of its fields' names — `f(..opts)`",
+                ),
+            )
+        null
+    }
+
+    mut fn spread_no_seat(a: ExprId, callee: string, name: string) -> bool {
+        self
+            .emit(
+                refusal(
+                    "type.spread_field",
+                    self.loc_of(a),
+                    "this spread carries `${name}`, and `${callee}` has no seat of that name",
+                    "spread here",
+                    "spread a record of `${callee}`'s seats, or write the arguments",
+                ),
+            )
+        false
+    }
+
+    mut fn spread_place_seat(a: ExprId, callee: string, name: string) -> bool {
+        self
+            .emit(
+                refusal(
+                    "type.spread_seat",
+                    self.loc_of(a),
+                    "`${callee}`'s seat `${name}` takes a place or a settled value, and a spread's field is neither",
+                    "spread here",
+                    "write `${name}` beside the spread",
+                ),
+            )
+        false
+    }
+
+    mut fn spread_open_seat(a: ExprId, callee: string, name: string) -> bool {
+        self
+            .emit(
+                refusal(
+                    "type.spread_seat",
+                    self.loc_of(a),
+                    "`${callee}`'s seat `${name}` is typed by a type parameter, which only an argument written at the call pins",
+                    "spread here",
+                    "write `${name}: …` beside the spread",
+                ),
+            )
+        false
+    }
+
+    mut fn spread_field_type(a: ExprId, callee: string, name: string, have: TypeId, want: TypeId) -> bool {
+        self
+            .emit(
+                refusal(
+                    "type.spread_field",
+                    self.loc_of(a),
+                    "this spread's field `${name}` is `${self.view.types.name_of(have)}`, and `${callee}`'s seat of that name wants `${self.view.types.name_of(want)}`",
+                    "spread here",
+                    "spread a record whose `${name}` is `${self.view.types.name_of(want)}`, or write `${name}: …` after the spread",
+                ),
+            )
+        false
+    }
+
+    mut fn dead_argument(a: ExprId, name: string) {
+        self
+            .emit(
+                warning(
+                    "type.spread_dead",
+                    self.loc_of(a),
+                    "the argument for seat `${name}` is overwritten by a spread after it",
+                    "overwritten",
+                    "write it after the spread to keep it",
+                ),
+            )
     }
 
     /// `..xs` where the callee has no seat that takes the rest.

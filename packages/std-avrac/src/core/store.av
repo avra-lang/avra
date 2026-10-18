@@ -47,6 +47,11 @@ export type PayloadIs = { pat: PatId, has_else: bool }
 /// The payload ask of a binding `is` pattern, as the source wrote it: with an `else`.
 fn binding_payload(asked: PatId) -> PayloadIs { PayloadIs { pat: asked, has_else: true } }
 
+/// A seat's source in a call that spreads a record: argument `arg`, whole
+/// (`field` is -1) or its field `field`.
+export type SeatFill = { arg: int, field: int }
+
+
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 @identity
@@ -337,9 +342,36 @@ impl SyntaxArena {
     /// A call's arguments in SEAT order, names stripped; a seat no
     /// argument writes is skipped. A callee that names fewer seats
     /// than it is handed keeps the written order.
-    fn seated_args(args: List<ExprId>, seats: List<string>) -> List<ExprId> {
+    fn seated_args(written: List<ExprId>, seats: List<string>) -> List<ExprId> {
+        let args = [a for a in written if self.spread_operand(a) == null]
         if seats.length < args.length { return [self.unnamed(a) for a in args] }
         [self.unnamed(args[i]) for i in self.seat_plan(args, seats) if i >= 0]
+    }
+
+    /// Where each seat's value comes from when an argument SPREADS a
+    /// record (`fields[j]` names argument `j`'s fields, none for a plain
+    /// one): written order, a later source winning a seat. A plain
+    /// argument fills the seat of its name, or the seat at its own place
+    /// among the plain ones; a field fills the seat of its name. Null is a
+    /// seat nothing writes.
+    fn seat_fills(args: List<ExprId>, seats: List<string>, fields: List<List<string>>) -> List<
+        SeatFill?,
+    > {
+        mut out: List<SeatFill?> = filled<SeatFill?>(seats.length, null)
+        mut place = 0
+        for j, a in args {
+            if self.spread_operand(a) != null {
+                for i, n in fields[j] {
+                    if seats.contains(n) { out.set(seats.index_of(n), SeatFill { arg: j, field: i }) }
+                }
+            } else {
+                let label: string? = self.arg_label(a)
+                let seat = if label == null { place } else { seats.index_of(label!) }
+                if label == null { place = place + 1 }
+                if seat >= 0 && seat < seats.length { out.set(seat, SeatFill { arg: j, field: 0 - 1 }) }
+            }
+        }
+        out
     }
 
     /// Which argument fills each seat: its index among `args`, or -1

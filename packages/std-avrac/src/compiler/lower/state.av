@@ -16,6 +16,7 @@ use core.{
     Binding,
     SyntaxArena,
     SeatMark,
+    SeatFill,
     same_expr,
     is_literal,
     state_mark,
@@ -90,10 +91,37 @@ impl LowerCx {
     mut fn seated_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
         let variadic: int? = self.view.decls.variadic_of(d)
         if variadic != null { return self.variadic_regs(e, d, variadic!, args, regs) }
+        if args.any((a) -> self.view.store.spread_operand(a) != null) { return self.spread_regs(e, d, args, regs) }
         let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
         if seats.length < regs.length { return regs }
         let defaults = self.view.decls.seat_defaults(d)
         [if i >= 0 { regs[i] } else { self.default_reg(e, defaults[j]) } for j, i in self.view.store.seat_plan(args, seats)]
+    }
+
+    /// A call that spreads a record: each seat from the argument or the
+    /// FIELD that fills it — read off the spread's one register, which
+    /// the caller evaluated once — or its default.
+    mut fn spread_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+        let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
+        let defaults = self.view.decls.seat_defaults(d)
+        let fills = self
+            .view
+            .store
+            .seat_fills(args, seats, [self.spread_field_names(a) for a in args])
+        [self.filled_reg(e, f, defaults[j], args, regs) for j, f in fills]
+    }
+
+    fn spread_field_names(a: ExprId) -> List<string> {
+        if self.view.store.spread_operand(a) == null { return [] }
+        self.fields_at(a)?.names ?? []
+    }
+
+    mut fn filled_reg(e: ExprId, f: SeatFill?, body: DeclId?, args: List<ExprId>, regs: List<Reg>) -> Reg {
+        let fill? = f else { return self.default_reg(e, body) }
+        if fill.field < 0 { return regs[fill.arg] }
+        let sig? = self.fields_at(args[fill.arg]) else { return self.lower_defect(e, "a spread over a value that is no record survived typing") }
+        self
+            .field_read(regs[fill.arg], self.type_at(args[fill.arg]), fill.field, sig.types[fill.field])
     }
 
     /// A variadic callee's registers: the seats before its `..` seat as
