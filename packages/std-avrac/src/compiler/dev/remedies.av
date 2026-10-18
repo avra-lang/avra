@@ -396,14 +396,30 @@ export fn rows() -> List<RemedyRow> {
             kind: "resolve.not_a_dependency",
             says: "is not a dependency of this package",
             refused: Witness.Package({"/w/avra.toml": app_manifest, "/w/src/main.av": "use @x.y.{z}\n1\n"}),
-            applied: Witness.Package({"/w/avra.toml": app_manifest + x_dependency, "/w/src/main.av": "use @x.y.{z}\n1\n", "/w/vendor/dep/avra.toml": x_package, "/w/vendor/dep/src/y.av": "export fn z() -> int { 1 }\n"}),
+            applied: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + x_dependency,
+                        "/w/src/main.av": "use @x.y.{z}\n1\n",
+                        "/w/vendor/dep/avra.toml": x_package,
+                        "/w/vendor/dep/src/y.av": z_module,
+                    },
+                ),
             becomes: Then.Clean,
         },
         RemedyRow {
             kind: "resolve.package_form",
             says: "names no package",
             refused: Witness.Package({"/w/avra.toml": app_manifest, "/w/src/main.av": "use @solo.{z}\n1\n"}),
-            applied: Witness.Package({"/w/avra.toml": app_manifest + x_dependency, "/w/src/main.av": "use @x.y.a.{z}\n1\n", "/w/vendor/dep/avra.toml": x_package, "/w/vendor/dep/src/a/a.av": "export fn z() -> int { 1 }\n"}),
+            applied: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest + x_dependency,
+                        "/w/src/main.av": "use @x.y.a.{z}\n1\n",
+                        "/w/vendor/dep/avra.toml": x_package,
+                        "/w/vendor/dep/src/a/a.av": z_module,
+                    },
+                ),
             becomes: Then.Clean,
         },
     ]
@@ -467,3 +483,6 @@ const x_dependency: string = "\n[dependencies]\n\"@x/y\" = { path = \"vendor/dep
 
 /// The dependency's own manifest.
 const x_package: string = "[package]\nname = \"@x/y\"\nversion = \"1.0.0\"\n"
+
+/// The module the dependency fixtures export `z` from.
+const z_module: string = "export fn z() -> int { 1 }\n"
