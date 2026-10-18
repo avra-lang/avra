@@ -1,0 +1,205 @@
+//! Record patterns: `P { x, y: 0, .. }` looks at the fields it names —
+//! a punned field binds its own name, `f: pattern` matches the field
+//! — and `..` says the fields not named are not looked at. Without a
+//! `..` every field must be named. A record is one shape, so a record
+//! pattern whose field patterns refuse nothing covers its subject.
+use core.{PatId, TypeId, Reg, Type, FieldsParts, flatten}
+use features.{PatSemantics, TypeCx, LowerCx, StructSig, slot_want, pat_semantics_of}
+use diagnostics.{refusal}
+
+export type FieldPatSemantics = {}
+
+impl PatSemantics for FieldPatSemantics {
+    fn pat_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
+        let parts? = cx.view.store.fields_parts(p) else { return [] }
+        fields_types(cx, p, parts, expected)
+    }
+
+    fn pat_accepts(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
+        let parts? = cx.view.store.fields_parts(p) else {
+            cx.defect("a pattern that is no record pattern reached the record test")
+            return cx.const_bool(false)
+        }
+        fields_accept(cx, parts, v, vty)
+    }
+
+    fn pat_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg> {
+        let parts? = cx.view.store.fields_parts(p) else {
+            cx.defect("a pattern that is no record pattern reached the record binds")
+            return []
+        }
+        fields_binds(cx, parts, v, vty)
+    }
+}
+
+// ── typing ──
+
+/// The subject is the named record; every field named is its, once;
+/// without a `..` every field is named; each pattern takes its field.
+fn fields_types(mut cx: TypeCx, p: PatId, parts: FieldsParts, expected: TypeId) -> List<TypeId> {
+    let sig? = cx.fields_of(cx.view.types.seen_through(expected)) else { return not_a_record(cx, p, parts.name, expected) }
+    if declared_name(cx, expected) != parts.name { return other_record(cx, p, parts.name, expected) }
+    let stray: string? = parts.fields.find((f) -> sig.slot_of(f) == null || sig.lacked(f) != null)
+    if stray != null { return no_such_field(cx, p, parts.name, stray!, sig) }
+    let twice: string? = parts.fields.find(repeats(parts.fields, it))
+    if twice != null { return field_twice(cx, p, twice!) }
+    if !parts.open {
+        let missing: string? = sig.names.find((n) -> !parts.fields.contains(n))
+        if missing != null { return field_unlisted(cx, p, parts.name, missing!) }
+    }
+    flatten(
+        [sub_types(cx, a, slot_want(cx.view.types, sig, sig.slot_of(parts.fields[j])!)) for j, a in parts.args],
+    )
+}
+
+/// Whether a field is named more than once.
+fn repeats(fields: List<string>, f: string) -> bool { [g for g in fields if g == f].length > 1 }
+
+/// The name a record's declaration gives its type, generic or not.
+fn declared_name(cx: TypeCx, ty: TypeId) -> string {
+    match cx.view.types.seen_shape(ty) { .Struct(_, n) or .App(_, n, _) -> n, rest -> "" }
+}
+
+fn sub_types(mut cx: TypeCx, a: PatId, ty: TypeId) -> List<TypeId> {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(a)).pat_types(cx, a, ty)
+}
+
+// ── lowering ──
+
+/// Every field pattern that looks accepts its field — `a && b` as the
+/// lazy region, so a later field is read only when the earlier ones
+/// accepted.
+fn fields_accept(mut cx: LowerCx, parts: FieldsParts, v: Reg, vty: TypeId) -> Reg {
+    let sig? = cx.fields_of(vty) else {
+        no_record(cx)
+        return cx.const_bool(false)
+    }
+    mut acc = cx.const_bool(true)
+    for j, a in parts.args {
+        if looks_inside(cx, a) { acc = field_accepts(cx, acc, a, sig, parts.fields[j], v, vty) }
+    }
+    acc
+}
+
+/// Whether a pattern looks at its field: a wildcard or a name that
+/// binds never refuses.
+fn looks_inside(cx: LowerCx, a: PatId) -> bool {
+    !(cx.view.store.irrefutable(a) && cx.names.compared(cx.view.store, a) == null)
+}
+
+fn field_accepts(
+    mut cx: LowerCx,
+    acc: Reg,
+    a: PatId,
+    sig: StructSig,
+    field: string,
+    v: Reg,
+    vty: TypeId,
+) -> Reg {
+    let slot = sig.slot_of(field) ?? 0
+    cx
+        .region_as(acc, cx.type(bool)) { cx -> sub_accepts(cx, a, cx.field_read(v, vty, slot, sig.types[slot]), sig.types[slot]) } else { cx -> cx.const_bool(false) }
+}
+
+fn sub_accepts(mut cx: LowerCx, a: PatId, r: Reg, ty: TypeId) -> Reg {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(a)).pat_accepts(cx, a, r, ty)
+}
+
+/// The registers each field pattern binds, in pattern order.
+fn fields_binds(mut cx: LowerCx, parts: FieldsParts, v: Reg, vty: TypeId) -> List<Reg> {
+    let sig? = cx.fields_of(vty) else {
+        no_record(cx)
+        return []
+    }
+    flatten([field_binds(cx, a, sig, parts.fields[j], v, vty) for j, a in parts.args])
+}
+
+/// One field's pattern binds, read at the field's slot.
+fn field_binds(mut cx: LowerCx, a: PatId, sig: StructSig, field: string, v: Reg, vty: TypeId) -> List<
+    Reg,
+> {
+    let slot = sig.slot_of(field) ?? 0
+    sub_binds(cx, a, cx.field_read(v, vty, slot, sig.types[slot]), sig.types[slot])
+}
+
+fn sub_binds(mut cx: LowerCx, a: PatId, r: Reg, ty: TypeId) -> List<Reg> {
+    pat_semantics_of(cx.dispatch, cx.view.store.pat(a)).pat_binds(cx, a, r, ty)
+}
+
+// ── voices ──
+
+fn no_record(mut cx: LowerCx) {
+    cx.defect("a record pattern over a value that is no record survived typing")
+}
+
+fn not_a_record(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.record_pattern",
+                cx.pat_loc(p),
+                "`${name} { … }` matches a record, found `${cx.view.types.name_of(expected)}`",
+                "this pattern",
+                "match a record of that name, or the shape the value is",
+            ),
+        )
+    []
+}
+
+fn other_record(mut cx: TypeCx, p: PatId, name: string, expected: TypeId) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.record_pattern",
+                cx.pat_loc(p),
+                "`${name} { … }` names another record than the subject's `${cx.view.types.name_of(expected)}`",
+                "this pattern",
+                "name the subject's record — `${cx.view.types.name_of(expected)} { … }`",
+            ),
+        )
+    []
+}
+
+fn no_such_field(mut cx: TypeCx, p: PatId, name: string, field: string, sig: StructSig) -> List<
+    TypeId,
+> {
+    cx
+        .emit(
+            refusal(
+                "type.record_pattern",
+                cx.pat_loc(p),
+                "`${name}` has no field `${field}` to look at",
+                "this pattern",
+                "the fields are ${sig.names.join(", ")}",
+            ),
+        )
+    []
+}
+
+fn field_twice(mut cx: TypeCx, p: PatId, field: string) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.record_pattern",
+                cx.pat_loc(p),
+                "field `${field}` is looked at more than once",
+                "this pattern",
+                "look at each field once",
+            ),
+        )
+    []
+}
+
+fn field_unlisted(mut cx: TypeCx, p: PatId, name: string, field: string) -> List<TypeId> {
+    cx
+        .emit(
+            refusal(
+                "type.record_pattern",
+                cx.pat_loc(p),
+                "this `${name}` pattern leaves field `${field}` out",
+                "this pattern",
+                "name `${field}`, or end the pattern with `..` — `${name} { …, .. }`",
+            ),
+        )
+    []
+}

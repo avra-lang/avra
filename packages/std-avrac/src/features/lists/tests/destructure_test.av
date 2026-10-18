@@ -1,0 +1,125 @@
+// Destructuring `let` and `is` over list and record patterns, by attack
+// class. Accepted programs run through `shown`; each refusal pins its
+// voice, and the goldens pin the rendering.
+use @std.avrac.testing.{shown, refused_with, projected}
+use compiler.{analyze_source}
+
+const PT: string = "type P = { x: int, y: int }\n"
+
+/// A program whose report says `phrase`; a refused `let` may leave later
+/// statements unjudged, so these do not pin the count.
+fn says(source: string, phrase: string) -> bool { analyze_source(source).report().contains(phrase) }
+
+spec "features/lists — destructuring let and is" {
+    given "let over a record" {
+        then "names bind the fields" {
+            shown(
+                "${PT}fn f(p: P) -> int {\n    let P { x, y } = p\n    x * 10 + y\n}\nf(P { x: 3, y: 4 })",
+            ) == "34"
+        }
+        then "a field binds under another name" {
+            shown(
+                "${PT}fn f(p: P) -> int {\n    let P { x: a, .. } = p\n    a\n}\nf(P { x: 3, y: 4 })",
+            ) == "3"
+        }
+        then "the names scope over the rest of the block" {
+            shown(
+                "${PT}fn f(p: P) -> int {\n    let P { x, .. } = p\n    let n = x + 1\n    n * 2\n}\nf(P { x: 3, y: 4 })",
+            ) == "8"
+        }
+        then "two destructurings in a row nest their scopes" {
+            shown(
+                "${PT}fn f(p: P, q: P) -> int {\n    let P { x, .. } = p\n    let P { y, .. } = q\n    x * 10 + y\n}\nf(P { x: 1, y: 2 }, P { x: 3, y: 4 })",
+            ) == "14"
+        }
+        then "a refused value takes the else" {
+            shown(
+                "${PT}fn f(p: P) -> int {\n    let P { x: 0, .. } = p else { return -1 }\n    p.y\n}\nf(P { x: 0, y: 5 }) * 10 + f(P { x: 1, y: 5 })",
+            ) == "49"
+        }
+    }
+    given "let over a list" {
+        then "an exact pattern binds each element" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    let [a, b] = xs else { return -1 }\n    a * 10 + b\n}\nf([1, 2])",
+            ) == "12"
+        }
+        then "a head and rest" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    let [h, ..t] = xs else { return -1 }\n    h * 10 + t.length\n}\nf([4, 5, 6])",
+            ) == "42"
+        }
+        then "the else runs when the list is too short" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    let [a, b] = xs else { return -1 }\n    a + b\n}\nf([1])",
+            ) == "-1"
+        }
+        then "a destructuring let answers as a block's tail" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    let [h, ..] = xs else { return 0 }\n    h\n}\nf([9, 8])",
+            ) == "9"
+        }
+    }
+    given "is over patterns" {
+        then "a list pattern binds on the taken side" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    if xs is [h, ..t] { return h + t.length }\n    0\n}\nf([5, 6, 7])",
+            ) == "7"
+        }
+        then "the other side takes the else" {
+            shown("fn f(xs: List<int>) -> int {\n    if xs is [h, ..] { h } else { -1 }\n}\nf([])") == "-1"
+        }
+        then "a record pattern asks the field" {
+            shown(
+                "${PT}fn f(p: P) -> int {\n    if p is P { x: 0, .. } { 1 } else { 2 }\n}\nf(P { x: 0, y: 1 }) * 10 + f(P { x: 1, y: 1 })",
+            ) == "12"
+        }
+    }
+    given "refusals" {
+        then "a refutable pattern without an else" {
+            refused_with(
+                "fn f(xs: List<int>) -> int {\n    let [h, ..t] = xs\n    h\n}\n1",
+                "can refuse it, and says nothing for the values it refuses",
+            )
+        }
+        then "a record pattern missing a field" {
+            says(
+                "${PT}fn f(p: P) -> int {\n    let P { x } = p\n    x\n}\n1",
+                "this `P` pattern leaves field `y` out",
+            )
+        }
+        then "a list pattern over a non-list" {
+            says(
+                "fn f(n: int) -> int {\n    let [h, ..] = n else { return 0 }\n    h\n}\n1",
+                "a list pattern matches a list, found `int`",
+            )
+        }
+        then "a destructuring let at the top level" {
+            says("let [q, ..] = [1] else { 1 }\n1", "a file's top level is no block")
+        }
+        then "an `is` outside an if cannot bind" {
+            says(
+                "fn f(xs: List<int>) -> bool {\n    xs is [h, ..t]\n}\n1",
+                "a payload `is` binds only in an `if` condition",
+            )
+        }
+    }
+    given "the refusals, rendered" {
+        then "a refutable let without an else" {
+            analyze_source("fn f(xs: List<int>) -> int {\n    let [h, ..t] = xs\n    h\n}\n1")
+                .report() == "error[type.let_pattern]: this `let` takes a `List<int>` apart by a pattern that can refuse it, and says nothing for the values it refuses\n  ╭─[<source>:2:5]\n2 │     let [h, ..t] = xs\n  ·     ┬\n  ·     ╰── this `let`\n──╯\nhelp: add an `else` that leaves — `let [first, ..] = xs else { return … }`"
+        }
+    }
+    given "the printer" {
+        then "a destructuring let keeps its place and the rest of its block" {
+            projected(
+                "type P = {\n    x: int,\n}\nfn f(p: P) -> int {\n    let P { x,   .. } = p\n    x + 1\n}\n",
+            ) == "type P = {\n    x: int,\n}\nfn f(p: P) -> int {\n    let P { x, .. } = p\n    x + 1\n}"
+        }
+        then "an else is spelled back" {
+            projected(
+                "fn f(xs: List<int>) -> int {\n    let [h, ..] = xs else { return 0 }\n    h\n}\n",
+            ) == "fn f(xs: List<int>) -> int {\n    let [h, ..] = xs else {\n        return 0\n    }\n    h\n}"
+        }
+    }
+}
