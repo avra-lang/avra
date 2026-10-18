@@ -25,7 +25,7 @@
 # A run asked for by hand (`gh workflow run checks --ref <branch>`) runs the
 # whole gate over every package. The shards are packed by measured seconds
 # (tools/shards.py), so the slowest is as short as the heaviest suite allows. The shard count
-# trades runner slots against wall time: five shards keeps a PR's gate short.
+# trades runner slots against wall time: six shards keeps a PR's gate short.
 name: checks
 
 on:
@@ -185,7 +185,7 @@ jobs:
           if [ "$event" = pull_request ] && ! git diff --quiet origin/main...HEAD -- \
               packages/std-avrac/src tools/codecs.py; then codecs=1; fi
           key=$(sh tools/compiler_paths.sh --key)
-          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 5)
+          shards=$(printf '%s\n' "$pkgs" | python3 tools/shards.py --split 6)
           if [ -f .github/ci/suite-seconds.measured ]; then echo "suite weights: $(grep -vc '^#' .github/ci/suite-seconds.measured) measured row(s) over the committed seed"; else echo "suite weights: the committed seed alone"; fi
           # A DRAFT RUNS THE LIGHT GATE: the compiler and the changed-file gate,
           # the compiler-free keepers and the codecs scan. The heavy legs owe
@@ -451,14 +451,15 @@ jobs:
           # suite reads what prepare's self-compile already analysed.
           # the store reclaims by its own rule before it rides to every job
           [ ! -d .avra-cache ] || { build/avra cache clean || echo "::warning::avra cache clean failed"; du -sh .avra-cache/* 2>/dev/null; }
-          tar -cf avra-build.tar --exclude=build/avra build
+          # gzip -1 (in the image) rides the tar: the store is text-heavy and the budget is the bytes a job downloads.
           # Downstream jobs read the analysis (`store`); machine code is each job's own to make.
-          [ ! -d .avra-cache ] || tar -rf avra-build.tar --exclude=.avra-cache/obj --exclude=.avra-cache/bin .avra-cache
-          # The tar rides to every downstream job; a store that grows into it costs each of them a download.
-          size=$(wc -c < avra-build.tar)
-          echo "hand-down: avra-build.tar is $(( size / 1048576 )) MB"
-          [ "$size" -le 314572800 ] || echo "::warning::avra-build.tar is $(( size / 1048576 )) MB; every downstream job downloads it (2.4 GB cost 3-5 min a job)"
-          [ "$size" -le 1073741824 ] || { echo "::error::avra-build.tar is $(( size / 1048576 )) MB, over the 1 GB budget every downstream job downloads"; exit 1; }
+          dirs=build; [ ! -d .avra-cache ] || dirs="build .avra-cache"
+          tar -cf - --exclude=build/avra --exclude=.avra-cache/obj --exclude=.avra-cache/bin $dirs | gzip -1 > avra-build.tar.gz
+          raw=$(du -sb $dirs | awk '{s+=$1} END {print s}')
+          size=$(wc -c < avra-build.tar.gz)
+          echo "hand-down: avra-build.tar.gz is $(( size / 1048576 )) MB compressed ($(( raw / 1048576 )) MB of files before excludes)"
+          [ "$size" -le 314572800 ] || echo "::warning::avra-build.tar.gz is $(( size / 1048576 )) MB; every downstream job downloads it (2.4 GB cost 3-5 min a job)"
+          [ "$size" -le 1073741824 ] || { echo "::error::avra-build.tar.gz is $(( size / 1048576 )) MB, over the 1 GB budget every downstream job downloads"; exit 1; }
           echo "objects: ${{ steps.objcache.outputs.cache-hit == 'true' && 'restored from cache' || 'built' }}"
       - if: steps.plan.outputs.build == '1' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
@@ -471,7 +472,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: avra-build
-          path: avra-build.tar
+          path: avra-build.tar.gz
+          compression-level: 0
           retention-days: 1
 
       - name: speed baseline
@@ -542,7 +544,7 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so no
       # job rebuilds what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
       # measured against, and it is not the VM's published spec.
       - name: room
@@ -627,7 +629,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with: { name: avra-build }
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       - name: keepers
         timeout-minutes: 30
         env:
@@ -667,7 +669,7 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so make
       # rebuilds none of what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       - name: seed check
         timeout-minutes: 20
         run: |
@@ -698,7 +700,7 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so no
       # job rebuilds what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       - name: cache-attacks
         timeout-minutes: 15
         run: |
@@ -830,7 +832,7 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so no
       # job rebuilds what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       - name: suites
         timeout-minutes: 30
         run: |
@@ -842,7 +844,7 @@ jobs:
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test "packages/$p" || { fail=1; echo "::error::suite $p failed"; }
+            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
             # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
@@ -963,7 +965,7 @@ jobs:
       # Handed-down objects stand newer than this checkout's sources, so no
       # job rebuilds what prepare built from the same commit.
       - name: built
-        run: tar -xf avra-build.tar && chmod +x build/avra && find build -type f -exec touch {} +
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
       # measured against, and it is not the VM's published spec.
       - name: room

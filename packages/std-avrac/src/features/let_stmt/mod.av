@@ -8,24 +8,23 @@
 use features.{LanguageFeature, BuilderRow}
 use features.let_stmt.{unmutated_mut}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
-use diagnostics.{DiagCode}
+use diagnostics.{DiagCode, Remedy}
 
 export fn let_stmt() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name         | build
-        "state_stmt" | build_state
-        "let_else"   | build_let_else
+        name       | build
+        "let_else" | build_let_else
     }
     let codes = table<DiagCode> {
-        kind           | summary
-        "type.binding" | "an annotated binding holds what it declares"
+        kind           | summary                                       | remedy
+        "type.binding" | "an annotated binding holds what it declares" | Remedy.Fix
     }
     LanguageFeature let_stmt {
         gram: grammar {
             stmt = "let" "_" "=" value:expression END -> Stmt.Discard
             stmt = "let" b:NAME "?" "=" s:expression ( tb:trailing )? "else" "{" ( e:stmt | BREAK )* "}" END -> let_else(b, s, tb, e) @head(s)
             stmt = "let" name:NAME ( ":" ty:type )? "=" value:expression END @recover(sync_to: "END") -> Stmt.Let
-            stmt = w:STATE n:NAME ( ":" t:type )? "=" v:expression END -> state_stmt(n, t, v)
+            stmt = is_state:STATE name:NAME ( ":" ty:type )? "=" value:expression END -> Stmt.MutLet
         }
         diags: codes
         builders: rows

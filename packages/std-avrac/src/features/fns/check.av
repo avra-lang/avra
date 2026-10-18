@@ -7,6 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{
+    void_ref,
     ExprId,
     StmtId,
     TypeId,
@@ -37,7 +38,6 @@ use features.{
     tparams_refused,
     unpinned_of,
     type_name_decl,
-    void_ref,
 }
 use diagnostics.{refusal}
 
@@ -360,13 +360,14 @@ export fn fits_seat_default(mut cx: TypeCx, d: ExprId, name: string, want: TypeI
     let n = cx.name_at(d)
     cx
         .emit(
-            refusal(
-                "type.param_default",
-                cx.loc_of(d),
-                "parameter `${name}` defaults to `${n}`, and it is `${cx.view.types.name_of(want)}`",
-                this_is(n),
-                null,
-            ),
+            cx
+                .seat_mismatch(
+                    "type.param_default",
+                    cx.loc_of(d),
+                    d,
+                    "parameter `${name}` defaults to `${n}`, and it is `${cx.view.types.name_of(want)}`",
+                    want,
+                ),
         )
 }
 
@@ -683,7 +684,7 @@ fn body_disagrees(mut cx: TypeCx, body: ExprId, fname: string, fret: TypeRef, go
                 cx.loc_of(body),
                 "the body answers `${gn}` but `${fname}` declares `${spelled(fret)}`",
                 this_is(gn),
-                null,
+                "the body's last expression is the answer — make it a `${spelled(fret)}`, or change the declared answer",
             ),
         )
 }
@@ -696,7 +697,7 @@ fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
                 cx.loc_of(e),
                 "`${callee}` is a fn VALUE — it takes no type arguments",
                 "pinned here",
-                null,
+                "drop the `<…>` — a fn value is already pinned to one signature",
             ),
         )
 }
@@ -873,7 +874,7 @@ fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) {
                 cx.loc_of(e),
                 "`${callee}` takes no type arguments",
                 "pinned here",
-                null,
+                "drop the `<…>` — this fn declares no type parameters",
             ),
         )
 }
@@ -912,7 +913,7 @@ fn wrong_pin_count(mut cx: TypeCx, e: ExprId, callee: string, want: int, found: 
                 cx.loc_of(e),
                 "`${callee}` takes ${want} type arguments, found ${found}",
                 "pinned here",
-                null,
+                "write exactly ${want} type argument(s) — `${callee}<…>`",
             ),
         )
 }
@@ -962,13 +963,14 @@ fn wrong_return(mut cx: TypeCx, s: StmtId, v: ExprId, want: TypeId) {
     let gn = cx.name_at(v)
     cx
         .emit(
-            refusal(
-                "type.return",
-                cx.stmt_loc(s),
-                "`return` answers `${cx.view.types.name_of(want)}`, this is `${gn}`",
-                this_is(gn),
-                null,
-            ),
+            cx
+                .seat_mismatch(
+                    "type.return",
+                    cx.stmt_loc(s),
+                    v,
+                    "`return` answers `${cx.view.types.name_of(want)}`, this is `${gn}`",
+                    want,
+                ),
         )
 }
 

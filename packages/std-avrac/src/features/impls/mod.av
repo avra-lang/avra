@@ -11,38 +11,37 @@
 use features.{LanguageFeature, BuilderRow, KeywordRemedy}
 use features.impls.{default_override}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
-use diagnostics.{DiagCode}
+use diagnostics.{DiagCode, Remedy}
 
 export fn impls() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name             | build
-        "impl_decl"      | build_impl
-        "trait_decl"     | build_trait
-        "trait_member"   | build_trait_member
-        "mut_fn_decl"    | build_mut_fn
-        "static_fn_decl" | build_static_fn
+        name           | build
+        "impl_decl"    | build_impl
+        "trait_decl"   | build_trait
+        "trait_member" | build_trait_member
     }
     let codes = table<DiagCode> {
-        kind                   | summary
-        "type.method"          | "a method call resolves through the receiver's impl"
-        "type.impl"            | "an impl block serves one declared type"
-        "type.orphan"          | "an impl lives in its type's package, or its trait's"
-        "type.builtin_name"    | "an impl on a builtin type adds names, never changes one"
-        "type.trait"           | "an impl-for answers every trait method, exactly"
-        "type.trait_member"    | "a trait names each member once"
-        "type.mut_fn"          | "`mut fn` marks a method — it lives in an impl or a trait"
-        "resolve.receiver"     | "`self` names a method's receiver"
-        "resolve.nested_impl"  | "impl and trait blocks live at the top level"
-        "type.receiver"        | "a writing method is called on a `mut` place"
-        "type.alias_copy"      | "a `mut` local copies a place — a write through it will not reach the place"
-        "type.seat"            | "a `mut` seat is handed a `mut` place, one root per seat"
-        "type.contract_write"  | "a method writes only under a `mut fn` contract"
-        "type.mut_fn_unused"   | "`mut fn` on a method that never writes"
-        "type.state_seat"      | "a `state` seat is a free fn's — a method has no caller's cell to reach"
-        "type.seat_unused"     | "a `mut` seat the fn never writes through"
-        "type.static_name"     | "a `static fn` and a variant of the same type cannot share a name"
-        "type.derive_contract" | "a trait's `derive` takes one declaration and answers `List<Directive>`"
-        "shape.identity_clash" | "two variants of one type fold to one identity"
+        kind                   | summary                                                                        | remedy
+        "type.method"          | "a method call resolves through the receiver's impl"                           | Remedy.Fix
+        "type.impl"            | "an impl block serves one declared type"                                       | Remedy.Help
+        "type.orphan"          | "an impl lives in its type's package, or its trait's"                          | Remedy.Help
+        "type.builtin_name"    | "an impl on a builtin type adds names, never changes one"                      | Remedy.Help
+        "type.trait"           | "an impl-for answers every trait method, exactly"                              | Remedy.Help
+        "type.trait_member"    | "a trait names each member once"                                               | Remedy.Help
+        "type.mut_fn"          | "`mut fn` marks a method — it lives in an impl or a trait"                   | Remedy.Help
+        "type.static_fn"       | "`static fn` marks a method with no receiver — a plain fn needs no mark"     | Remedy.Help
+        "resolve.receiver"     | "`self` names a method's receiver"                                             | Remedy.Help
+        "resolve.nested_impl"  | "impl and trait blocks live at the top level"                                  | Remedy.Help
+        "type.receiver"        | "a writing method is called on a `mut` place"                                  | Remedy.Help
+        "type.alias_copy"      | "a `mut` local copies a place — a write through it will not reach the place" | Remedy.Help
+        "type.seat"            | "a `mut` seat is handed a `mut` place, one root per seat"                      | Remedy.Help
+        "type.contract_write"  | "a method writes only under a `mut fn` contract"                               | Remedy.Help
+        "type.mut_fn_unused"   | "`mut fn` on a method that never writes"                                       | Remedy.Help
+        "type.state_seat"      | "a `state` seat is a free fn's — a method has no caller's cell to reach"     | Remedy.Help
+        "type.seat_unused"     | "a `mut` seat the fn never writes through"                                     | Remedy.Help
+        "type.static_name"     | "a `static fn` and a variant of the same type cannot share a name"             | Remedy.Help
+        "type.derive_contract" | "a trait's `derive` takes one declaration and answers `List<Directive>`"       | Remedy.Help
+        "shape.identity_clash" | "two variants of one type fold to one identity"                                | Remedy.Help
     }
     let words = table<KeywordRemedy> {
         word     | help
@@ -57,8 +56,8 @@ export fn impls() -> LanguageFeature {
             tseat = ( constant:"const" )? ( mutable:"mut" )? name:NAME ( ":" ty:type )? -> Record.ParamSyntax
             mparam = ( constant:"const" )? ( mutable:"mut" )? ( unshared:"isolated" )? name:NAME ( ":" ty:type )? ( "=" default:expression )? -> Record.ParamSyntax | spread:".." name:HOLE -> Record.ParamSyntax
             mtparam = name:NAME ( ":" NAME )? -> Record.ParamSyntax
-            stmt = "static" "fn" n:NAME ( "<" tp:mtparam ( "," tp:mtparam )* ","? ">" )? "(" ( ps:mparam ( "," ps:mparam )* ","? )? ")" ( "->" r:type )? b:block END -> static_fn_decl(n, tp, ps, r, b)
-            stmt = "mut" "fn" n:NAME ( "<" tp:mtparam ( "," tp:mtparam )* ","? ">" )? "(" ( ps:mparam ( "," ps:mparam )* ","? )? ")" ( "->" r:type )? b:block END -> mut_fn_decl(n, tp, ps, r, b)
+            stmt = is_static:"static" "fn" name:NAME ( "<" tparams:mtparam ( "," tparams:mtparam )* ","? ">" )? "(" ( params:mparam ( "," params:mparam )* ","? )? ")" ( "->" ret:type )? body:block END -> Stmt.FnDecl
+            stmt = is_mutating:"mut" "fn" name:NAME ( "<" tparams:mtparam ( "," tparams:mtparam )* ","? ">" )? "(" ( params:mparam ( "," params:mparam )* ","? )? ")" ( "->" ret:type )? body:block END -> Stmt.FnDecl
             primary = "self" -> Expr.Receiver
         }
         diags: codes

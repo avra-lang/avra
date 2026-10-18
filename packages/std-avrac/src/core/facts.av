@@ -1,0 +1,61 @@
+//! The vocabulary `NodeFacts` answers in (core/facts_derive.av).
+
+/// Whether a node's own kind ever admits purity: never, always (its
+/// kids decide), or by the reading row its method names.
+export enum Purity { Never, Always, ByRow }
+
+/// How a node stands at its seat: whether the source spells it as a
+/// value (a name adopts one directly — `let id: UserId = 5`), whether it
+/// needs no parentheses wherever it lands, and its purity.
+export type Form = { literal: bool, atomic: bool, purity: Purity }
+
+/// A node that is none of these until it says so — a sugar's default.
+export const form_compound: Form = Form { literal: false, atomic: false, purity: Purity.Never }
+
+/// A scalar, text, a list, a map, a variant, a record, a range.
+export const form_value: Form = Form { literal: true, atomic: true, purity: Purity.Always }
+
+/// A literal that runs its body: a comprehension, a lambda.
+export const form_body: Form = Form { literal: true, atomic: false, purity: Purity.Never }
+
+/// A name, a read, an unwrap — atomic and pure, no value of its own.
+export const form_atom: Form = Form { literal: false, atomic: true, purity: Purity.Always }
+
+/// An operator over its kids: pure, and parenthesised where it lands.
+export const form_operator: Form = Form { literal: false, atomic: false, purity: Purity.Always }
+
+/// A site that runs or holds code: atomic, and pure never by its own kind.
+export const form_site: Form = Form { literal: false, atomic: true, purity: Purity.Never }
+
+/// Where a node's leftmost word comes from: nothing, its own record
+/// literal, or the operand it begins with.
+export enum Leftmost {
+    Nothing
+    Literal
+    Operand(held: ExprId)
+}
+
+/// How a node may wait, before its names and types are read.
+export enum WaitProbe {
+    None
+    Call
+    Method
+    Value
+    Spawn
+    Read
+    Chain
+    Record
+    Select
+}
+
+/// The declaration a node's own use names, before its names and types are
+/// read: a plain read, a call's callee, a method, a record literal's type, a
+/// component's word, a written type.
+export enum UseShape {
+    Read
+    Callee
+    Method(subject: ExprId, name: Plain)
+    Record(name: Nominal)
+    Component(word: string)
+    TypeName(name: string)
+}

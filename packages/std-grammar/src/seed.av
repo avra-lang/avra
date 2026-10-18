@@ -365,7 +365,7 @@ export const grammar_of_grammars: Grammar = Grammar {
             ],
         ),
 
-        // tier = assoc word+ ( "suffix" STRING NAME )* ( "->" build )?
+        // tier = assoc word+ ( "->" build )? suffix_arm*
         // One precedence tier of an `@operators` block; the next
         // tier starts at the next associativity word.
         rule_def(
@@ -375,23 +375,28 @@ export const grammar_of_grammars: Grammar = Grammar {
                     [
                         cap("assoc", rule_ref("assoc")),
                         cap("words", rule_ref("word")) with { rep: Rep.Plus },
-                        item(
-                            group(
-                                [
-                                    seq(
-                                        [
-                                            item(lit("suffix")),
-                                            cap("suffix_words", named("STRING")),
-                                            cap("suffix_rules", named("NAME")),
-                                        ],
-                                    ),
-                                ],
-                            ),
-                        ) with { rep: Rep.Star },
+                        item(group([seq([item(lit("->")), cap("build", rule_ref("build"))])])) with { rep: Rep.Opt },
+                        cap("suffixes", rule_ref("suffix_arm")) with { rep: Rep.Star },
+                    ],
+                    Build.Call("build_tier", ["assoc", "words", "build", "suffixes"]),
+                ),
+            ],
+        ),
+
+        // suffix_arm = "suffix" STRING NAME ( "->" build )?
+        // An operator whose right side is a rule; its own build wins
+        // over its tier's.
+        rule_def(
+            "suffix_arm",
+            [
+                seq_to(
+                    [
+                        item(lit("suffix")),
+                        cap("word", named("STRING")),
+                        cap("rule", named("NAME")),
                         item(group([seq([item(lit("->")), cap("build", rule_ref("build"))])])) with { rep: Rep.Opt },
                     ],
-                    Build
-                        .Call("build_tier", ["assoc", "words", "suffix_words", "suffix_rules", "build"]),
+                    Build.Call("build_suffix", ["word", "rule", "build"]),
                 ),
             ],
         ),
