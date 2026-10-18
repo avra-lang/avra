@@ -46,3 +46,29 @@ export fn seat_of(owner: string, event: string) -> Seat? {
 export fn ties(rows: List<SeatRow>) -> List<string> {
     ["${r.owner}.${r.event}" for j, r in rows if rows.slice(0, j).any(it.owner == r.owner && it.event == r.event)]
 }
+
+extern fn avra_trap(message: string)
+
+/// The seat row of a semantic kind. Every seat of one kind agrees on what the
+/// page and the terminal make of it, so the first stands for them all. A kind
+/// no component of the program declares has no row, and that is spoken.
+export fn row_of(kind: EventKind) -> SeatRow {
+    let found = seat_rows.find(it.row.kind == kind)
+    if found == null { avra_trap(no_seat_row(kind.word())) }
+    found!.row
+}
+
+/// What the web calls a kind of event. A seat with no web form is one no page
+/// listens for, and asking for its word is spoken.
+export fn web_word(kind: EventKind) -> string {
+    let web = row_of(kind).web
+    if web == null { avra_trap("the `${kind.word()}` seat has no web event, and a page listens for one") }
+    web!.word()
+}
+
+/// The event a primitive's host-owned seat is, when it has one.
+export fn always_heard_by(p: Prim) -> EventKind? { [g.row.kind for g in seat_rows if g.row.prim == p && g.row.always].first() }
+
+fn no_seat_row(word: string) -> string {
+    "no component declares a `${word}` seat in this program — a node that hears `${word}` comes from a component that does, imported where the program is built"
+}

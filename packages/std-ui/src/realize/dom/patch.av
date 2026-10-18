@@ -10,6 +10,7 @@ use @std.meta.{derive}
 use tree.identity.{NodeId}
 use tree.node.{Action, EventKind, Handler, Said}
 use tree.codes.{Codes, Coded}
+use tree.seats.{row_of, web_word}
 use realize.html.element.{Element, Tagged, Worded}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 
@@ -80,28 +81,18 @@ export fn held_says(value: Held) -> Says {
 
 // ── the page's own facts ────────────────────────────────────────
 
-/// The page's word for each event. Every kind spelled.
-fn event_word(k: EventKind) -> string {
-    match k {
-        .Press -> "click",
-        .Input -> "input",
-        .Change -> "change",
-        .Submit -> "submit",
-        .Dismiss -> "cancel",
-    }
-}
+/// The page's word for an event: what the seat's `@host` calls it on the web.
+fn event_word(k: EventKind) -> string { web_word(k) }
 
 /// Whether the page's own answer to an event is stopped: a form's submit
-/// would leave the page the program is drawing. Every kind spelled.
-fn prevented(k: EventKind) -> bool {
-    match k { .Submit -> true, .Press or .Input or .Change or .Dismiss -> false }
-}
+/// would leave the page the program is drawing.
+fn prevented(k: EventKind) -> bool { row_of(k).prevent }
 
 /// The door the page's own answer to an event shuts: a dialog dismissed
-/// is closed by the page before the program hears of it. Every kind
-/// spelled.
+/// is closed by the page before the program hears of it.
 fn shut_by(k: EventKind) -> HtmlAttrName? {
-    match k { .Dismiss -> .Open, .Press or .Input or .Change or .Submit -> null }
+    let web? = row_of(k).web else { return null }
+    match web { .Cancel -> .Open, _ -> null }
 }
 
 /// What a handler hears. ONE arm per thing a control can say.
