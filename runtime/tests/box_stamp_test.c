@@ -84,6 +84,18 @@ int main(void) {
     ((Header*)laid - 1)->kind_word = 1;
     avra_rc_release(laid);
 
+    // A `once` answer lives for the process and is the runtime's own to mark: a
+    // top-level state's cell is one, and it can be observed.
+    void* forever = cell(1);
+    ((Header*)forever - 1)->kind_word = (int32_t)(-5 & 0xFF);
+    CHECK(avra_box_observe(forever) == 1, "a box that lives for the process can be observed");
+    avra_turn_next();
+    avra_slot_set(forever, 0, 2);
+    CHECK(taken() == 1, "and a write to it is logged");
+    CHECK(avra_box_unobserve(forever) == 1, "and let go");
+    ((Header*)forever - 1)->kind_word = 1;
+    avra_rc_release(forever);
+
     avra_box_unobserve(seen);
     avra_turn_next();
     avra_slot_set(seen, 0, 9);
@@ -116,6 +128,12 @@ int main(void) {
     CHECK(avra_mem_live() == before, "observing twice held it once, and the last unobserve frees it");
     CHECK(avra_box_unobserve(seen) == 1 && avra_box_unobserve(seen) == 0, "unobserving a box not observed leaves it alone");
     CHECK(avra_box_key((void*)16) == 0 && avra_box_key(seen) != 0, "a key names a box and nothing else");
+
+    void* laid_again = cell(1);
+    ((Header*)laid_again - 1)->kind_word = (int32_t)0xFFFFFF01u;
+    CHECK(avra_box_observe(laid_again) == 0, "a box laid out by the backend is not observed");
+    ((Header*)laid_again - 1)->kind_word = 1;
+    avra_rc_release(laid_again);
 
     CHECK(avra_box_observe((void*)16) == 0 && avra_box_observe(NULL) == 0, "a pointer that is not a box is not observed");
 
