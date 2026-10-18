@@ -3174,7 +3174,35 @@ No witness here: `@lacks` resolves to `@std/meta`'s own declaration, which a lon
 
 a sealed type is built and rewritten in the module that declares it
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use urls.{Url}
+let u: Url = "x"
+1
+// /w/src/urls/urls.av
+use @std.meta.{sealed}
+@sealed
+export type Url = string
+
+```
+
+```
+error[type.sealed]: `Url` is sealed — only `urls`, the module that declares it, builds or rewrites one
+  ╭─[/w/src/main.av:2:14]
+2 │ let u: Url = "x"
+  ·              ┬
+  ·              ╰── a literal fills it here
+──╯
+help: ask `urls` for one through a fn it exports; reading it — a field, `==`, a pattern — is open everywhere
+```
 
 ## type.coalesce
 

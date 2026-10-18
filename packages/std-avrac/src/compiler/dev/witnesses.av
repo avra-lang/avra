@@ -808,6 +808,15 @@ fn witnesses() -> List<CodeWitness> {
                 annotators,
             ),
         },
+        CodeWitness {
+            code: "type.sealed",
+            witness: meta_program(
+                "use urls.{Url}\nlet u: Url = \"x\"\n1",
+                {
+                    "/w/src/urls/urls.av": "use @std.meta.{sealed}\n@sealed\nexport type Url = string\n",
+                },
+            ),
+        },
     ]
     rows
 }
@@ -815,17 +824,14 @@ fn witnesses() -> List<CodeWitness> {
 /// The one module body a module witness imports from.
 const util_fn: string = "export fn f() -> int { 1 }\n"
 
-/// A program with `@std/meta` beside it, built.
-fn meta_program(main: string) -> Witness {
-    Witness
-        .Built(
-            vendored_meta(
-                {
-                    "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
-                    "/w/src/main.av": main,
-                },
-            ),
-        )
+/// A program with `@std/meta` beside it, built — and the modules beside its entry.
+fn meta_program(main: string, modules: Map<string, string> = {}) -> Witness {
+    mut files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
+        "/w/src/main.av": main,
+    }
+    for path, text in modules { files.set(path, text) }
+    Witness.Built(vendored_meta(files))
 }
 
 /// A program over one provider package `@x/c` (which sees `@std/meta`), built.
