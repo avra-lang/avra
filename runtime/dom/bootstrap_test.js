@@ -29,6 +29,8 @@ const setText = (id, content) => [OP.set_text, ...idBytes(id), ...str(content)];
 const define = (kind, event, says, reads, prevents) => [OP.define, ...i32(kind), ...i32(says), ...str(event), ...str(reads), ...i32(prevents ? 1 : 0)];
 const listen = (id, kind, event, says, reads, prevents) => [...define(kind, event, says, reads, prevents), OP.listen, ...idBytes(id), ...i32(kind), ...i32(says)];
 const unlisten = (id, kind) => [OP.unlisten, ...idBytes(id), ...i32(kind)];
+const setVar = (id, property, value) => [OP.set_var, ...idBytes(id), ...str(property), ...str(value)];
+const dropVar = (id, property) => [OP.drop_var, ...idBytes(id), ...str(property)];
 const style = (css) => [OP.style, ...str(css)];
 const call = (id, verb) => [OP.call, ...idBytes(id), ...str(verb)];
 const frame = (...recs) => Uint8Array.from([WIRE_VERSION, ...recs.flat()]);
@@ -71,6 +73,12 @@ a.apply(frame(setAttr(0, "class", "gap-m"), setAttr(0, "title", "a b")));
 check("set_attr writes an attribute, its value as given", div.attrs, { class: "gap-m", title: "a b" });
 a.apply(frame(dropAttr(0, "title")));
 check("drop_attr removes one", div.attrs, { class: "gap-m" });
+
+// ── set_var, drop_var ──
+a.apply(frame(setVar(0, "--w", "8px"), setVar(0, "--h", "3px")));
+check("set_var writes a custom property through the style object, never an attribute", [div.vars, div.attrs], [{ "--w": "8px", "--h": "3px" }, { class: "gap-m" }]);
+a.apply(frame(setVar(0, "--w", "9px"), dropVar(0, "--h")));
+check("set_var rewrites one and drop_var removes one", div.vars, { "--w": "9px" });
 
 // ── remove ──
 a.apply(frame(remove(1)));
@@ -231,7 +239,7 @@ check("ids at the seven-bit edges read whole, in the bytes of one more than the 
 const ended = page();
 ended.apply(frame(create(0, "div"), place(0, NO_ID, NO_ID), create(1, "span"), placeAtEnd(1, 0), create(2, "a"), placeAtEnd(2, 0), create(3, "li"), place(3, 0, NO_ID)));
 check("a place that says the end of the run goes last, and one that says first goes first", tags(ended.mount.childNodes[0]), ["li", "span", "a"]);
-check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["call", "create", "create_text", "define", "drop_attr", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "style", "unlisten"]);
+check("every op the table holds has a fixture here", Object.keys(OP).sort(), ["call", "create", "create_text", "define", "drop_attr", "drop_var", "listen", "place", "remove", "set_attr", "set_prop", "set_text", "set_var", "style", "unlisten"]);
 
 // ── the echo's seam ──
 // A program that hands out each seat at 32, GROWING its memory as it does:

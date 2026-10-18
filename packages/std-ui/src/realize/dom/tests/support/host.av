@@ -26,6 +26,8 @@ enum Rec {
     Unlisten(id: int, kind: int)
     Style(css: string)
     Call(id: int, verb: string)
+    SetVar(id: int, at: Pair)
+    DropVar(id: int, name: string)
 }
 
 // ── reading a frame ─────────────────────────────────────────────
@@ -117,6 +119,8 @@ impl Reader {
             .Unlisten -> Rec.Unlisten(self.id(), self.int()),
             .Style -> Rec.Style(self.text()),
             .Call -> Rec.Call(self.id(), self.text()),
+            .SetVar -> Rec.SetVar(self.id(), Pair { name: self.text(), value: self.text() }),
+            .DropVar -> Rec.DropVar(self.id(), self.text()),
         }
     }
 }
@@ -360,6 +364,14 @@ impl Host {
                 .rewrite(id, "unlisten", (s) -> s with { ears: [e for e in s.ears if e.kind != kind] }),
             .Style(css) -> { self.sheet = css },
             .Call(id, verb) -> self.call(id, verb),
+            .SetVar(id, at) -> self
+                .rewrite(
+                    id,
+                    "set_var",
+                    (s) -> s with { vars: [v for v in s.vars if v.name != at.name].concat([at]) },
+                ),
+            .DropVar(id, name) -> self
+                .rewrite(id, "drop_var", (s) -> s with { vars: [v for v in s.vars if v.name != name] }),
         }
     }
 
@@ -417,5 +429,7 @@ fn rec_line(r: Rec) -> string {
         .Unlisten(id, kind) -> "unlisten ${id} ${kind}",
         .Style(_) -> "style",
         .Call(id, verb) -> "call ${id} ${verb}",
+        .SetVar(id, at) -> "var ${id} ${at.name}=${quoted(at.value)}",
+        .DropVar(id, name) -> "unvar ${id} ${name}",
     }
 }

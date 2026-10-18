@@ -51,6 +51,8 @@ export function parseFrame(bytes) {
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
     else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
+    else if (op === OP.set_var) patches.push({ op, id: id(), property: str(), value: str() });
+    else if (op === OP.drop_var) patches.push({ op, id: id(), property: str() });
     else throw new Error(`unknown patch op ${op}`);
   }
   return patches;
@@ -170,6 +172,10 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     },
     [OP.set_attr]: (p) => need(p.id).setAttribute(p.name, p.value),
     [OP.drop_attr]: (p) => need(p.id).removeAttribute(p.name),
+    // A CUSTOM PROPERTY IS WRITTEN THROUGH THE ELEMENT'S STYLE OBJECT, never as a
+    // `style` attribute: a page that allows styles by nonce alone allows this.
+    [OP.set_var]: (p) => need(p.id).style.setProperty(p.property, p.value),
+    [OP.drop_var]: (p) => need(p.id).style.removeProperty(p.property),
     // A PROPERTY IS WRITTEN ONLY WHEN IT DIFFERS: writing a field's own
     // text back to it would move the caret a user is typing at.
     [OP.set_prop]: (p) => {

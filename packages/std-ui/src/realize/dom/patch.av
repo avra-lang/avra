@@ -11,6 +11,7 @@ use tree.identity.{NodeId}
 use tree.node.{Action, Handler, Said}
 use tree.codes.{Codes, Coded}
 use tree.seats.{Seat, row_at, web_word}
+use realize.html.css.{CssVar}
 use realize.html.element.{Element, Tagged, Worded}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 
@@ -30,6 +31,8 @@ export enum Patch {
     Unlisten(id: NodeId, seat: Seat)
     Style(css: string)
     Call(id: NodeId, verb: string)
+    SetVar(id: NodeId, property: string, value: string)
+    DropVar(id: NodeId, property: string)
 }
 
 /// What a value a control holds IS — the tag a host is told to read a
@@ -367,6 +370,7 @@ impl Differ {
             },
             .KeptTag(_, was, now) -> {
                 self.say(attributes(was.id, attrs_of(was), attrs_of(now)))
+                self.say(variables(was.id, was.vars, now.vars))
                 self.say(self.properties(was.id, props_of(was), props_of(now)))
                 self.say(hearing(was.id, was.hears, now.hears))
                 self.later(self.doors(was.id, doors_of(was), doors_of(now)))
@@ -391,6 +395,7 @@ impl Differ {
             .Tag(el) -> {
                 self.said.push(Patch.Create(id, el.tag))
                 self.say([Patch.SetAttr(id, a.name, a.value) for a in attrs_of(el)])
+                self.say(variables(id, [], el.vars))
                 self
                     .say([Patch.SetProp(id, p.name, p.value) for p in props_of(el) if !rests(p.value)])
                 self.say([Patch.Listen(id, listening_of(a)) for a in el.hears])
@@ -447,6 +452,13 @@ impl Differ {
 fn attributes(id: NodeId, old: List<HtmlAttr>, new: List<HtmlAttr>) -> List<Patch> {
     [Patch.SetAttr(id, a.name, a.value) for a in new if !old.any(it.name == a.name && it.value == a.value)]
         .concat([Patch.DropAttr(id, b.name) for b in old if !new.any(it.name == b.name)])
+}
+
+/// A custom property is written when it arrives or changes, and dropped
+/// when it goes: the values the element's classes read.
+fn variables(id: NodeId, old: List<CssVar>, new: List<CssVar>) -> List<Patch> {
+    [Patch.SetVar(id, v.property(), v.value) for v in new if !old.any(it.name == v.name && it.value == v.value)]
+        .concat([Patch.DropVar(id, v.property()) for v in old if !new.any(it.name == v.name)])
 }
 
 /// An event is heard anew when it is new, or says something else.
