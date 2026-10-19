@@ -922,6 +922,32 @@ ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
 RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
 fi
 
+if section vw; then
+# A FILE'S KEPT ROWS ARE JUDGED AGAINST THE PROGRAM THAT ASKS. A library tested as the root and
+# the same library read by an app see its files through different views, so after the suite
+# wrote last, an edit to the app must still find its own rows standing: no file falls back to
+# rebuilding.
+VW() { # VW <label> <max fallbacks>
+    steps=$((steps+1))
+    out=$(./avra check --counts $R/vwa 2>&1)
+    n=$(printf '%s\n' "$out" | grep -oE 'judge_fallbacks=[0-9]+' | tail -1 | cut -d= -f2)
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
+    if [ -z "$n" ]; then fails=$((fails+1)); echo "FAIL  $1: no judge_fallbacks count printed"; return; fi
+    if [ "$n" -le "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $n"; else fails=$((fails+1)); echo "FAIL  $1: judge_fallbacks=$n, wanted at most $2"; fi
+}
+mkdir -p $R/vwl/src/tests $R/vwa/src
+printf '[package]\nname = "@rt/vwl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-vwl"\npath = "src/lib.av"\n' > $R/vwl/avra.toml
+printf 'export fn three() -> int { 3 }\n' > $R/vwl/src/lib.av
+printf 'use @rt.vwl.{three}\nspec "three" { given "the fn" { then "it answers three" { three() == 3 } } }\n' > $R/vwl/src/tests/lib_test.av
+printf '[package]\nname = "rt-vwa"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/vwl" = { path = "../vwl" }\n' > $R/vwa/avra.toml
+printf 'use @rt.vwl.{three}\nexport fn shown() -> int { three() }\n' > $R/vwa/src/show.av
+printf 'use show.{shown}\nprintln("vw ${shown()}")\n' > $R/vwa/src/main.av
+./avra check $R/vwa >/dev/null 2>&1
+./avra test $R/vwl >/dev/null 2>&1
+printf '// edited\n' >> $R/vwa/src/main.av
+VW "vw: an app edit after the library's own suite wrote last judges by stamps" 0
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:

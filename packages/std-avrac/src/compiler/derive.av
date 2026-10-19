@@ -260,16 +260,6 @@ fn spoken(texts: List<string>) -> string { joined([text for text in texts if !te
 /// Where what a file said lives: beside its object, under the object's key.
 fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", okey]) }
 
-/// FILE-SAID: what a file said, keyed by PATH, with the answers it stood on — written
-/// beside the object-keyed rows so a suspect set can be observed, deciding no hold.
-fn said_row(path: string) -> string { node_key(Stored.Warn, ["said-row", path]) }
-
-/// FILE-SAID: a file's rule findings, keyed by PATH.
-fn rules_row(path: string) -> string { node_key(Stored.Warn, ["rules-row", path]) }
-
-/// FILE-SAID: a file's findings rows, keyed by PATH.
-fn findings_row(path: string) -> string { node_key(Stored.Warn, ["findings-row", path]) }
-
 /// Where a file's rule findings live, beside what it said — kept only by
 /// a derivation that wants diagnostics, since nothing a build makes reads
 /// them.
@@ -1335,9 +1325,10 @@ impl Workspace {
         let _ = store.keep_once(Stored.Warn, rules_key(okey), rules.rendered)
         let _ = store.keep_once(Stored.Warn, findings_key(okey), findings_text(rules.rows))
         self.keep_file_row(store, path, Stored.Unit, self.okey_row(path), okey)
-        self.keep_file_row(store, path, Stored.Warn, said_row(path), said_wire(told.said))
-        self.keep_file_row(store, path, Stored.Warn, rules_row(path), rules.rendered)
-        self.keep_file_row(store, path, Stored.Warn, findings_row(path), findings_text(rules.rows))
+        self.keep_file_row(store, path, Stored.Warn, self.said_row(path), said_wire(told.said))
+        self.keep_file_row(store, path, Stored.Warn, self.rules_row(path), rules.rendered)
+        self
+            .keep_file_row(store, path, Stored.Warn, self.findings_row(path), findings_text(rules.rows))
         match want {
             .Diagnostics -> told.said with { warnings: spoken([told.said.warnings, rules.rendered]), findings: rules.rows },
             .Binary -> told.said,
