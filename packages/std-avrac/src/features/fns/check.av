@@ -1129,7 +1129,7 @@ fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Par
                 cx.stmt_loc(s),
                 "seat ${j + 1} of `${hname}` is `mut` and wears `${spelled(pp.ty ?? void_written)}` — a `mut` host seat hands C the ADDRESS of the caller's cell",
                 "declared here",
-                "a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes.",
+                "a cell C writes is `ptr`, `ptr?`, or an integer at its declared width — `i32` for `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`; a bare `int` hides which, and a managed value cannot cross",
             ),
         )
 }
@@ -1194,7 +1194,7 @@ fn seat_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId
                 cx.stmt_loc(s),
                 "seat ${j + 1} of `${hname}` wears `${cx.view.types.name_of(p)}`, which cannot cross to C",
                 "declared here",
-                "a plain host seat is a machine word or ONE pointer C can read — `int`, `float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable over those. Everything else that rides a pointer is a box in Avra's layout, and its address means nothing on the far side: the compiled program hands C that address and the evaluator stages a HANDLE into its own table. A `mut` seat of this shape is refused above; this is its plain twin. Pass the parts one at a time, or make the callee a runtime row, whose arm materialises the box on both sides.",
+                "a host seat is a machine word or one pointer C reads — `int`, `float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable over those; any other box has an address C cannot follow. Pass its parts one at a time, or make the callee a runtime row",
             ),
         )
 }
@@ -1220,7 +1220,7 @@ fn row_seat_takes_no_absence(mut cx: TypeCx, s: StmtId, hname: string, j: int, p
                 cx.stmt_loc(s),
                 "seat ${j + 1} of `${hname}` wears `${cx.view.types.name_of(p)}`, and a runtime row's seat takes no absence",
                 "declared here",
-                "core's rows are the compiler's own C and every one of them READS the pointer it is handed, so absence there is a null nothing tests: the compiled program faults and the evaluator's fault takes the compiler down with it. A PACKAGE's C may take a pointer-or-NULL and mean it, and that seat is untouched — a row never does. Spell this one without the `?`.",
+                "a runtime row reads the pointer it is handed, so its seat takes no absence — spell it without the `?` (a package's own C may take a pointer-or-NULL)",
             ),
         )
 }
