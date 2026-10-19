@@ -11,6 +11,8 @@
 //! nested quote's body is copied verbatim, a sublanguage's expansion
 //! replaces its holes.
 
+use @std.relation.engine.{list_cell}
+
 /// What a hole is filled with — one shape per `HoleKind`, and ONE
 /// for a fill that no seat can hold. `Unplaceable` carries the words
 /// rather than a flag: the splice cannot re-derive why, and a fill
@@ -92,6 +94,10 @@ export type Rebuilder = {
     holed: List<bool>,
     // how a copied sugar's meaning is minted anew beside the copy
     door: Means,
+    // the copy of each source expression reached so far, by its index: a node
+    // the source reaches twice is one node in the copy. A cell, because it is
+    // an identity — a walk that copies the rebuilder shares it.
+    copies: Cell<List<ExprId?>>,
 }
 
 /// A classifying walk over a store's quote body, `runs` the run mark
@@ -118,6 +124,7 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         unplaceable: [],
         holed: [],
         door: no_door,
+        copies: list_cell(),
     }
 }
 
@@ -151,6 +158,7 @@ export fn copier(
         unplaceable: [],
         holed: [],
         door: door,
+        copies: list_cell(),
     }
 }
 
@@ -209,11 +217,30 @@ impl Rebuilder {
         }
         let tail: int? = self.tail_hole(x)
         if tail != null { return self.tail_block(e, x, tail!) }
+        let known? = self.copy_of(e) else { return self.rebuilt_expr(e, x) }
+        known
+    }
+
+    /// The copy already made of source expression `e`, if any.
+    fn copy_of(e: ExprId) -> ExprId? {
+        if e.index < self.copies.get().length { self.copies.get()[e.index] } else { null }
+    }
+
+    /// Remembers `copy` as source expression `e`'s.
+    fn remember(e: ExprId, copy: ExprId) {
+        while self.copies.get().length <= e.index { self.copies.push(null) }
+        self.copies.set_at(e.index, copy)
+    }
+
+    /// The copy of `e`, kept so a second reach of the same node answers it.
+    mut fn rebuilt_expr(e: ExprId, x: Expr) -> ExprId {
         self.holed.push(false)
         let rebuilt = x.rebuilt(self)
         let holed = self.holed.pop()
         if !self.copying { return e }
-        self.minted_expr(e, rebuilt, holed)
+        let copy = self.minted_expr(e, rebuilt, holed)
+        self.remember(e, copy)
+        copy
     }
 
     /// The hole a block's value is, when it is a lone one.
@@ -562,10 +589,7 @@ impl Rebuilder {
 
     mut fn minted_expr(e: ExprId, x: Expr, holed: bool) -> ExprId {
         let id = self.dst.alloc_expr(x, self.src.expr_span(e))
-        self.dst.wear_expr(id, self.src.expr_marks_at(e))
-        if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
-        if self.src.is_sugar_match(e) { self.dst.mark_sugar_match(id) }
-        if self.src.statement_if(e) { self.dst.mark_statement_if(id) }
+        self.src.copy_expr_tables(e, self.dst, id)
         let noted: string? = self.src.means_note(e)
         if noted != null {
             let minted = self.dst.mean(id, noted!, self.door)
@@ -574,12 +598,8 @@ impl Rebuilder {
         }
         let ip: PayloadIs? = self.src.payload_marked(e)
         if ip != null { self.dst.mark_is_payload(id, self.pat(ip!.pat), ip!.has_else) }
-        let gl: string? = self.src.grammar_lit_of(e)
-        if gl != null { self.dst.mark_grammar_lit(id, gl!) }
         let targs = self.src.struct_targs_of(e)
         if !targs.is_empty() { self.dst.mark_struct_targs(id, [self.tref(a) for a in targs]) }
-        let wc: int? = self.src.written_close(e)
-        if wc != null { self.dst.mark_written_close(id, wc!) }
         let bp: BodyParts? = x.body_of()
         if bp != null {
             let b = bp!
@@ -597,23 +617,14 @@ impl Rebuilder {
 
     mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {
         let id = self.dst.alloc_stmt(x, self.src.stmt_span(s))
-        self.dst.wear(id, self.src.marks_at(s))
-        let g: GrammarSpec? = self.src.grammar_of(s)
-        if g != null { self.dst.mark_grammar(id, g!) }
-        let of: string? = self.src.instance_of(s)
-        if of != null { self.dst.mark_component_inst(id, of!) }
-        let itp: ImplTypeParams? = self.src.impl_tparams_of(s)
-        if itp != null { self.dst.mark_impl_tparams(id, itp!.of, itp!.target) }
+        self.src.copy_stmt_tables(s, self.dst, id)
         let args = self.src.trait_args_of(s)
         if !args.is_empty() { self.dst.mark_trait_args(id, [self.tref(a) for a in args]) }
-        let own = self.src.trait_tparams_of(s)
-        if !own.is_empty() { self.dst.mark_trait_tparams(id, own) }
         let spreads = self.src.spreads_of(s)
         if !spreads.is_empty() { self.dst.spread_fields(id, [x with { of: self.tref(x.of) } for x in spreads]) }
         let docs: List<string>? = self.src.doc_comment(s)
         if docs != null { self.dst.document(id, docs!, self.src.doc_at(s)) }
         for a in annotations { self.dst.annotate(id, a) }
-        if self.src.is_collect_dense(s) { self.dst.mark_collect_dense(id, true) }
         if holed { self.holed_stmts.push(id) } else { self.made_stmts.push(id) }
         id
     }

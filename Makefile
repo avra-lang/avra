@@ -1113,17 +1113,12 @@ KEEPERS_B = fingerprints vocab families-left layers libs-self-test speed-note ho
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
-	@fail=0; for k in $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS)))))); do \
-	  t0=$$(date +%s); \
-	  echo "keepers: running $$k" >&2; \
-	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
-	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \
-	done; exit $$fail
+	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(if $(filter keepers-alone,$@),$(KEEPERS_ALONE),$(if $(filter keepers-a1,$@),$(KEEPERS_A1),$(if $(filter keepers-a2,$@),$(KEEPERS_A2),$(if $(filter keepers-a,$@),$(KEEPERS_A),$(if $(filter keepers-b,$@),$(KEEPERS_B),$(KEEPERS))))))
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 TOOL_WITNESSES = capped.sh\ --self-test failed_tail_test.sh host_fn_edit_attack.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
-                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh work_test.sh reclaim_test.sh
+                 witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh work_test.sh reclaim_test.sh keepers_loop.sh\ --self-test
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
@@ -1184,9 +1179,7 @@ KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-t
 .PHONY: keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
-	@fail=0; for k in $(KEEPERS_STATIC); do \
-	  $(MAKE) -s $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
-	done; exit $$fail
+	@sh tools/keepers_loop.sh "$(MAKE) -s" $(KEEPERS_STATIC)
 
 # THE KEEPERS A PULL REQUEST CAN BREAK ALONE, which its own check runs once
 # its compiler is built: each holds a file the tree generates or carries to
@@ -1198,11 +1191,7 @@ keepers-static:
 KEEPERS_PR = rt-header rt-ns witnesses dogfooding-rules footprint attack speed-ratchet warm-edit
 keepers-pr:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_PR))"; [ -z "$$left" ] || { echo "keepers-pr: $$left is no keeper — the train would not hold it" >&2; exit 1; }
-	@fail=0; for k in $(KEEPERS_PR); do \
-	  t0=$$(date +%s); \
-	  $(MAKE) -s -o avra $$k || { fail=1; echo "keepers: $$k refused" >&2; }; \
-	  echo "keepers: $$k $$(( $$(date +%s) - t0 ))s"; \
-	done; exit $$fail
+	@sh tools/keepers_loop.sh "$(MAKE) -s -o avra" $(KEEPERS_PR)
 
 # THE CODEC KEEPER: a record's wire ENCODER and its DECODER agree.
 # compiler/codecs.av's registry runs every pair over its exemplars,

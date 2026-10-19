@@ -840,7 +840,7 @@ impl Workspace {
         let code = avra_spawn_status(
             tools.linker,
             link_objects(
-                [o.obj for o in by_source(read.concat(held))].concat([p.obj for p in programs]),
+                [d.store.path(Stored.Obj, o.key) for o in by_source(read.concat(held)).concat(programs)],
                 self,
                 tools.runtime,
                 staged,
@@ -871,8 +871,10 @@ impl Workspace {
                 .keep_reading(Stored.Unit, host_fns_key(key), joined(host_fns, "\n"), reads!)
         }
         let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
+        clock.mark("keep binary")
         if !published(ready, binary) { fail BuildError.Unpublished(binary) }
         self.fallback_published(fallback.path, binary)
+        clock.mark("publish")
         BuildOutcome {
             binary: binary,
             warnings: warnings,
@@ -987,7 +989,7 @@ impl Workspace {
         }
     }
 
-    /// EVERY OBJECT A BUILD OWES, STANDING AND KEPT. One the store holds is placed;
+    /// EVERY OBJECT A BUILD OWES, STANDING AND KEPT. One the store holds is linked where it stands;
     /// the rest are made ONE way — here, by the compiler that runs, a worker each —
     /// so a tree's objects are the same bytes however many a build had to make. The
     /// workers are waited for whatever broke: a module handed over is theirs.
@@ -995,7 +997,7 @@ impl Workspace {
         int,
         BuildError,
     > {
-        let owed = [o for o in objects if !d.store.place(Stored.Obj, o.key, o.obj)]
+        let owed = [o for o in objects if !d.store.has(Stored.Obj, o.key)]
         let gone = owed.find((o: Made) -> in_bucket(o.which))
         if gone != null && !d.unlowered.is_empty() { fail BuildError.ObjectGone(gone!.obj) }
         if traced() {
