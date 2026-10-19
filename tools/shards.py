@@ -24,6 +24,13 @@ that path alone; a `cold` row runs first in a shard of its own among the cold
 ones, since its scope refuses to run after another suite on a warm store.
 `--check-splits` refuses a split package that carries a proof
 outside every listed path, which would otherwise run nowhere.
+
+A package's first suite on a shard pays its COMPILE, which its later suites there reuse
+(`std-avrac`: ~110 s). `.github/ci/suite-cold.txt` names it per package; `--merge-times`
+takes it out of a package's first suite on each shard it measured (the order of a
+`suite-times.txt` is the order the suites ran), so a weight is a WARM suite's seconds, and the
+packer puts a suite where its package's compile is already paid. `--predict <dir>` packs a
+run's own measured times both ways and prints each packing's predicted slowest shard.
 """
 import json
 import os
@@ -57,21 +64,58 @@ def layered_weights(paths):
     return out
 
 
-def merge_times(root, prior):
+def package_of(item):
+    """The package an item belongs to: `std-avrac/src/core` is `std-avrac`."""
+    return item.partition("/")[0]
+
+
+def cold_costs(path):
+    """package -> the seconds its first suite on a shard pays for the compile."""
+    return weights(path)
+
+
+def shard_cost(name, held, w, pcold):
+    """What `name` adds to a shard that already holds `held` (a set of packages): its warm
+    seconds, and its package's compile unless the shard has paid it."""
+    pkg = package_of(name)
+    return w.get(name, DEFAULT) + (0 if pkg in held else pcold.get(pkg, 0))
+
+
+def makespan(bins, w, pcold):
+    """The slowest shard, each package's compile counted once per shard it appears in."""
+    worst = 0
+    for b in bins:
+        held, load = set(), 0
+        for name in b:
+            load += shard_cost(name, held, w, pcold)
+            held.add(package_of(name))
+        worst = max(worst, load)
+    return worst
+
+
+def merge_times(root, prior, pcold=None):
     """Rows measured by a run -> the new weights. `prior`: path -> seconds, the
     measured weights so far; a path not timed this run keeps its prior row."""
     out = dict(prior)
     seen = {}
+    pcold = pcold or {}
     for dirpath, _, files in os.walk(root):
         for f in files:
             if f != "suite-times.txt":
                 continue
+            met = set()
             with open(os.path.join(dirpath, f)) as fh:
                 for line in fh:
                     parts = line.split()
                     if len(parts) in (2, 3) and parts[1].isdigit():
                         n = int(parts[1])
-                        warm = max(n - COLD, 1) if parts[2:] == ["first"] else n
+                        pkg = package_of(parts[0])
+                        first = parts[2:] == ["first"]
+                        # a package's first suite on a shard paid its compile: its own row when it
+                        # has one, else the runner's cold start for the shard's first suite
+                        paid = pcold.get(pkg, COLD if first else 0) if pkg not in met else 0
+                        met.add(pkg)
+                        warm = max(n - paid, 1) if paid else n
                         seen[parts[0]] = max(seen.get(parts[0], 0), warm)
     for path, warm in seen.items():
         out[path] = warm if path not in prior else (prior[path] + warm + 1) // 2
@@ -179,20 +223,26 @@ def unreached(root, table, groups=None):
     return gone
 
 
-def pack(names, n, w, cold=()):
-    """Heaviest first into the lightest shard. A cold item takes a shard of its
-    own among the cold ones and runs first there."""
+def pack(names, n, w, cold=(), pcold=None):
+    """Heaviest first into the shard it makes lightest, a package's compile (`pcold`) counted
+    once per shard it appears in. A cold item takes a shard of its own among the cold ones and
+    runs first there."""
+    pcold = pcold or {}
     bins = [[] for _ in range(n)]
     load = [0] * n
+    held = [set() for _ in range(n)]
+
+    def put(i, name):
+        load[i] += shard_cost(name, held[i], w, pcold)
+        held[i].add(package_of(name))
+        bins[i].append(name)
+
     firsts = sorted((x for x in names if x in cold), key=lambda p: (-w.get(p, DEFAULT), p))
     assert len(firsts) <= n, f"{len(firsts)} cold items, {n} shards"
     for i, name in enumerate(firsts):
-        bins[i].append(name)
-        load[i] += w.get(name, DEFAULT)
+        put(i, name)
     for name in sorted((x for x in names if x not in cold), key=lambda p: (-w.get(p, DEFAULT), p)):
-        i = load.index(min(load))
-        bins[i].append(name)
-        load[i] += w.get(name, DEFAULT)
+        put(min(range(n), key=lambda i: (load[i] + shard_cost(name, held[i], w, pcold), i)), name)
     # a shard runs its cold items, then its lightest suites first, so a long one never delays the short ones' verdicts
     return [sorted(b, key=lambda p: (p not in cold, w.get(p, DEFAULT), p)) for b in bins if b] or [[]]
 
@@ -239,7 +289,21 @@ def self_test():
         assert item_paths("p/@b", g, d) == ["packages/p/src/t/b_test.av"]
         assert unreached(d, {"p": ["@a", "@b"]}, g) == [], "two hands cover the directory"
         assert any("not listed" in x for x in unreached(d, {"p": ["@a"]}, g)), "a missing hand is named"
-    print("shards: self-test passed — 14 fixtures")
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "a"))
+        with open(os.path.join(d, "a", "suite-times.txt"), "w") as f:
+            f.write("p/x 150 first\np/y 40\nq 7\nq/z 6\n")
+        got = merge_times(d, {}, {"p": 100})
+        assert got == {"p/x": 50, "p/y": 40, "q": 7, "q/z": 6}, got
+        got = merge_times(d, {})
+        assert got["p/x"] == 50 and got["q"] == 7, "no package row: the shard's first suite is less the runner's cold start"
+    w = {"p/a": 30, "p/b": 30, "p/c": 30, "q": 100, "r": 20, "s": 20}
+    pc = {"p": 100}
+    assert makespan([["p/a", "p/b"], ["q"]], w, pc) == 160 and makespan([["p/a"], ["p/b"]], w, pc) == 130, "a package's compile counts once per shard"
+    for n in (2, 3, 4):
+        assert makespan(pack(sorted(w), n, w, (), pc), w, pc) <= makespan(pack(sorted(w), n, w), w, pc), "charging the compile never packs worse than ignoring it"
+    assert pack(["p/a", "p/b", "q"], 2, {"p/a": 50, "p/b": 50, "q": 200}, (), {"p": 100}) == [["q"], ["p/a", "p/b"]], "a package's suites stand together when its compile is dear"
+    print("shards: self-test passed — 18 fixtures")
 
 
 if __name__ == "__main__":
@@ -261,8 +325,16 @@ if __name__ == "__main__":
             print(f"shards: {len(table)} split package(s), every proof under a listed path")
         sys.exit(1 if bad else 0)
     measured = os.path.join(ci, "suite-seconds.measured")
+    pcold = cold_costs(os.path.join(ci, "suite-cold.txt"))
+    if sys.argv[1:2] == ["--predict"]:
+        n = int(sys.argv[3]) if len(sys.argv) > 3 else 6
+        w = merge_times(sys.argv[2], {}, pcold)
+        names = sorted(w)
+        for label, packed in (("old (cold ignored)", pack(names, n, w)), ("new (cold once per shard and package)", pack(names, n, w, (), pcold))):
+            print(f"{label}: slowest shard {makespan(packed, w, pcold)}s, shards {sorted((makespan([b], w, pcold) for b in packed), reverse=True)}")
+        sys.exit(0)
     if sys.argv[1:2] == ["--merge-times"]:
-        rows = merge_times(sys.argv[2], weights(measured))
+        rows = merge_times(sys.argv[2], weights(measured), pcold)
         print("# Suite seconds measured on main's own runs (tools/shards.py --merge-times).")
         for k in sorted(rows):
             print(f"{k} {rows[k]}")
@@ -273,4 +345,4 @@ if __name__ == "__main__":
     names = [l.strip() for l in sys.stdin if l.strip()]
     if split:
         names = split_items(names, table)
-    print(json.dumps(pack(names, n, layered_weights([os.path.join(ci, "suite-seconds.txt"), measured]), cold)))
+    print(json.dumps(pack(names, n, layered_weights([os.path.join(ci, "suite-seconds.txt"), measured]), cold, pcold)))
