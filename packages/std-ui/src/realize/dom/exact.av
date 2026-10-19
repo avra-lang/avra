@@ -113,6 +113,7 @@ export type Watch = {
     under: Map<string, List<int>>,
     structural: List<ptr>,
     opaque: bool,
+    said: Cell<string>,
 }
 
 fn key_of(cell: ptr) -> string { "${avra_box_key(cell)}" }
@@ -137,6 +138,7 @@ export fn watching(page: List<Element>) -> Watch {
         under: index,
         structural: structural,
         opaque: opaque_in(page) || placed.length != readings_in(page),
+        said: Cell.new(""),
     }
 }
 
@@ -183,7 +185,15 @@ impl Watch {
     fn turn() -> List<Patch>? {
         if avra_turn_next() == 1 { self.observed_again() }
         let changed = taken()
-        if self.opaque || self.structural_among(changed) { return null }
+        if self.opaque {
+            self.said.set("the page holds a node the compiler could not place")
+            return null
+        }
+        if self.structural_among(changed) {
+            self.said.set("a cell its frame reads outside a reading was written")
+            return null
+        }
+        self.said.set("")
         [p for at in self.affected(changed) for p in self.refreshed(at)]
     }
 
