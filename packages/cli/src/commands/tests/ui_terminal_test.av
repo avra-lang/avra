@@ -8,6 +8,8 @@ use @std.meta.{embed}
 use @std.process.{tool, cmd, ProcessError}
 use @std.time.{stamp}
 
+extern fn avra_trap(message: string)
+
 /// A field and a counting button, mounted in the terminal.
 const terminal_app: string = embed("ui_view/terminal_app.txt")
 
@@ -28,9 +30,20 @@ fn built(name: string, source: string) -> string {
     )
     let _ = write_text("${root}/src/main.av", source)
     match avra_ran(["build", root]) {
-        .Ok(o) -> o.out.stdout.trim().split("\n").last() ?? "",
-        .Err(_) -> "",
+        .Ok(o) -> if exit_is_zero(o.exit) {
+            o.out.stdout.trim().split("\n").last() ?? ""
+        } else {
+            unbuilt(name, o.out.stderr + o.out.stdout)
+        },
+        .Err(_) -> unbuilt(name, "the build did not run"),
     }
+}
+
+/// The fixture does not build: the test ends with the build's own words, never
+/// a binary that is no binary.
+fn unbuilt(name: string, said: string) -> string {
+    avra_trap("the ${name} fixture did not build: ${said}")
+    ""
 }
 
 /// The app, built once.
