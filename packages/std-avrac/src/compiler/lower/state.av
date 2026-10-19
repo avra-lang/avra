@@ -23,6 +23,8 @@ use core.{
     settled_mark,
     Static,
     StaticBox,
+    flatten,
+    some_list,
 }
 use diagnostics.{loc_at, refusal, Diag}
 use features.lists.{listed}
@@ -917,15 +919,7 @@ impl LowerCx {
     /// lambda, whose type is a box, and a captured `int` is not.
     fn capture_regs(e: ExprId) -> List<Reg> {
         let cap? = self.names.capture(e) else { return [] }
-        mut out: List<Reg> = []
-        for j in 0..cap.sources.length {
-            let r? = self.capture_reg(e, j) else {
-                self.out.defect("a capture without a value survived resolve")
-                continue
-            }
-            out.push(r)
-        }
-        out
+        flatten([some_list(self.capture_reg(e, j)) for j in 0..cap.sources.length])
     }
 
     /// The register of capture `j` of the closure `lam`, read in THIS body. A
@@ -934,11 +928,12 @@ impl LowerCx {
     /// lambda outlive the frame.
     fn capture_reg(lam: ExprId, j: int) -> Reg? {
         let cap? = self.names.capture(lam) else { return null }
-        if j >= cap.sources.length { return null }
-        match cap.sources[j] {
+        let r: Reg? = match cap.sources[j] {
             .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(lam, s, self.def_ty(s)),
             rest -> self.read_wearing(lam, cap.sources[j], self.capture_ty(lam, j)),
         }
+        if r == null { self.out.defect("a capture without a value survived resolve") }
+        r
     }
 
     /// The box a call goes THROUGH, when the callee is a fn-typed
