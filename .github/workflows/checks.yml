@@ -211,7 +211,7 @@ jobs:
             pr_json=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}") || pr_json=""
             [ -n "$pr_json" ] || echo "::warning::the PR's state could not be read; the full gate runs"
-            [ "$(printf '%s' "$pr_json" | python3 tools/pr_mode.py)" = light ] && full=0
+            [ "$(printf '%s' "$pr_json" | sh tools/avra_tools.sh pr_mode)" = light ] && full=0
           fi
           # A LABELED RUN NEVER DOUBLES A GATE: when another run on this head is or was the
           # full one, this run waits for it and mirrors its verdict (tools/ci_dup_run.py).
@@ -557,6 +557,15 @@ jobs:
         run: |
           chmod +x build/avra
           python3 tools/compiler_release.py publish "${{ needs.prepare.outputs.key }}" build/avra
+      # THE TOOLS ARE PUBLISHED BESIDE THE COMPILER, built by it from main's
+      # own tools/ and keyed by that source (tools/tools_key.sh): a PR that does
+      # not touch tools/ fetches this binary, never builds one.
+      - name: publish avra-tools
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          built=$(build/avra build tools | tail -n 1)
+          python3 tools/compiler_release.py --asset avra-tools publish "tools-$(sh tools/tools_key.sh)" "$built"
 
   keepers-a:
     needs: [prepare]
