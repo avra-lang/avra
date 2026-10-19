@@ -92,7 +92,12 @@ export type Rebuilder = {
     holed: List<bool>,
     // how a copied sugar's meaning is minted anew beside the copy
     door: Means,
+    // nodes the copy stands another node in for, by the source node
+    swaps: List<Swap>,
 }
+
+/// A copy takes `to`, a node of the destination, where the source holds `from`.
+export type Swap = { from: ExprId, to: ExprId }
 
 /// A classifying walk over a store's quote body, `runs` the run mark
 /// of each hole by index (`store.is_run_hole` over its fill
@@ -118,6 +123,7 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         unplaceable: [],
         holed: [],
         door: no_door,
+        swaps: [],
     }
 }
 
@@ -130,6 +136,7 @@ export fn copier(
     fills: List<fn(HoleKind) -> Filled>,
     runs: List<bool>,
     door: Means,
+    swaps: List<Swap> = [],
 ) -> Rebuilder {
     Rebuilder {
         src: src,
@@ -151,6 +158,7 @@ export fn copier(
         unplaceable: [],
         holed: [],
         door: door,
+        swaps: swaps,
     }
 }
 
@@ -200,6 +208,11 @@ impl Rebuilder {
     // ── seats ──
 
     mut fn expr(e: ExprId) -> ExprId {
+        let swap? = self.swaps.find((s: Swap) -> same_expr(s.from, e)) else { return self.copied_expr(e) }
+        swap.to
+    }
+
+    mut fn copied_expr(e: ExprId) -> ExprId {
         let x = self.src.expr(e)
         let k: int? = self.lone_hole(self.src.ident_name(e))
         if k != null {
