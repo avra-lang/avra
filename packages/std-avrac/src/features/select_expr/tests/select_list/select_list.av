@@ -2,15 +2,18 @@
 // last index here — binds its answer and its index, passes over a
 // member that ended cancelled, and rests while none has answered — in
 // both engines
-use @std.time.{ms, secs, sleep}
+use @std.task.{open_channel, Sink}
+use @std.time.{ms, sleep}
 
 fn after(wait: int, n: int) -> int {
     sleep(ms(wait))
     n
 }
 
-fn never() -> int {
-    sleep(secs(60))
+fn never(up: Sink<int>) -> int {
+    let silent = open_channel<int>(1)
+    let _ = up.post(1)
+    let _ = silent.source.next()
     0
 }
 
@@ -18,10 +21,11 @@ let race = [spawn after(40, 1), spawn after(2, 2)]
 let first = select {
     i, r in race -> r * 10 + i
 }
-let cut = [spawn never(), spawn after(2, 7)]
-sleep(ms(1))
+let up = open_channel<int>(1)
+let cut = [spawn never(up.sink), spawn after(2, 7)]
+let _ = up.source.next()
 cut[0].cancel()
 let kept = select {
     i, r in cut -> r * 10 + i
 }
-"${first} ${kept}"
+"${first} ${kept} ${cut[0].done}"

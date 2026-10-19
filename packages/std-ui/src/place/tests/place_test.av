@@ -1,0 +1,265 @@
+// The solver's geometry in cells: stacking, gaps, pads, growth,
+// distribution, alignment, wrapping, margins, order and fixed sizes.
+use @std.ui.tree.node.{Node}
+use @std.ui.style.layout.{Layout, Align, Distribute, Wrap, Sizing, Axis, Edge}
+use @std.ui.style.tokens.{Size}
+use @std.ui.place.measure.{Cells}
+use @std.ui.place.solve.{place, Placed, Rect}
+use @std.ui.place.describe.{describe}
+use @std.ui.realize.tests.support.{
+    holding,
+    boxed,
+    placed,
+    text_node,
+    button_node,
+    field_node,
+    card_node,
+    heading_node,
+}
+
+fn at(root: Node, width: int) -> string { describe(root, place(root, Cells {}, width)) }
+
+fn row(l: Layout, kids: List<Node>) -> Node { boxed(.Row, l, kids) }
+
+fn column(l: Layout, kids: List<Node>) -> Node { boxed(.Column, l, kids) }
+
+fn laid(n: Node, l: Layout) -> Node { placed(n, l) }
+
+fn margin_of(z: Size) -> Edge { Edge { start: z, end: z, top: z, bottom: z } }
+
+fn inside(p: Placed, outer: Rect) -> bool {
+    let r = p.rect
+    r.w >= 0 &&
+        r.h >= 0 &&
+        r.x >= outer.x &&
+        r.y >= outer.y &&
+        r.x + r.w <= outer.x + outer.w &&
+        r.y + r.h <= outer.y + outer.h &&
+        p.kids.all(inside(it, r))
+}
+
+fn app() -> Node {
+    column(
+        Layout { gap: .M, pad: Edge { start: .S, top: .S } },
+        [
+            heading_node("Settings for this account", 1),
+            row(
+                Layout {},
+                [button_node("Save"), button_node("Cancel"), button_node("Reset to defaults")],
+            ),
+            card_node(
+                "Profile",
+                [
+                    field_node("Name", "Ada"),
+                    text_node("A long note that wraps over several lines of the card"),
+                ],
+            ),
+            row(
+                Layout { distribute: .SpaceBetween, align: .Center },
+                [text_node("left"), text_node("right")],
+            ),
+        ],
+    )
+}
+
+spec "std/ui place — cells" {
+    given "stacking" {
+        then "a column stacks its children, each the column's width" {
+            at(column(Layout {}, [text_node("ab"), text_node("cde")]), 20) == "column 0,0 20x2\n  text 0,0 20x1\n  text 0,1 20x1"
+        }
+        then "a gap puts blank rows between" {
+            at(column(Layout { gap: .M }, [text_node("a"), text_node("b")]), 10) == "column 0,0 10x3\n  text 0,0 10x1\n  text 0,2 10x1"
+        }
+        then "text wraps at the width it is given" {
+            at(column(Layout {}, [text_node("aa bb cc")]), 5) == "column 0,0 5x2\n  text 0,0 5x2"
+        }
+    }
+    given "a row" {
+        then "children take their own width, a gap apart" {
+            at(row(Layout { gap: .S }, [text_node("ab"), button_node("OK")]), 30) == "row 0,0 30x1\n  text 0,0 2x1\n  button 3,0 6x1"
+        }
+        then "a pad indents the children and widens the row's height by its edges" {
+            at(
+                column(Layout { pad: Edge { start: .M, top: .S, bottom: .S } }, [text_node("a")]),
+                20,
+            ) == "column 0,0 20x3\n  text 4,1 16x1"
+        }
+    }
+    given "free room" {
+        then "a child that fills takes what the others leave" {
+            at(row(Layout {}, [text_node("a"), laid(text_node("b"), Layout { width: .Fill })]), 10) == "row 0,0 10x1\n  text 0,0 1x1\n  text 2,0 8x1"
+        }
+        then "growth is shared by weight, the odd cell to the largest fraction first" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        laid(text_node("a"), Layout { grow: 1 }),
+                        laid(text_node("b"), Layout { grow: 2 }),
+                    ],
+                ),
+                10,
+            ) == "row 0,0 10x1\n  text 0,0 4x1\n  text 4,0 6x1"
+        }
+        then "space-between puts the free room between" {
+            at(
+                row(
+                    Layout { gap: .None, distribute: .SpaceBetween },
+                    [text_node("a"), text_node("b"), text_node("c")],
+                ),
+                10,
+            ) == "row 0,0 10x1\n  text 0,0 1x1\n  text 5,0 1x1\n  text 9,0 1x1"
+        }
+        then "center and end set the run in the room" {
+            at(row(Layout { distribute: .Center }, [text_node("ab")]), 10) == "row 0,0 10x1\n  text 4,0 2x1" &&
+                at(row(Layout { distribute: .End }, [text_node("ab")]), 10) == "row 0,0 10x1\n  text 8,0 2x1"
+        }
+        then "a fixed height lets a column's growers take the rest" {
+            at(
+                column(
+                    Layout { height: .Fixed(6) },
+                    [text_node("a"), laid(text_node("b"), Layout { grow: 1 })],
+                ),
+                10,
+            ) == "column 0,0 10x6\n  text 0,0 10x1\n  text 0,1 10x5"
+        }
+    }
+    given "across the main axis" {
+        then "a row stretches its children to the tallest" {
+            at(row(Layout { gap: .None }, [text_node("a b c d e"), text_node("x")]), 4) == "row 0,0 4x3\n  text 0,0 3x3\n  text 3,0 1x3"
+        }
+        then "center and end place a short child across" {
+            at(
+                    row(
+                        Layout { gap: .None, align: .Center },
+                        [text_node("a b c d e"), text_node("x")],
+                    ),
+                    4,
+                ) == "row 0,0 4x3\n  text 0,0 3x3\n  text 3,1 1x1" &&
+                at(
+                    row(
+                        Layout { gap: .None, align: .End },
+                        [text_node("a b c d e"), text_node("x")],
+                    ),
+                    4,
+                ) == "row 0,0 4x3\n  text 0,0 3x3\n  text 3,2 1x1"
+        }
+        then "a column that does not stretch hugs and aligns its children" {
+            at(column(Layout { align: .End }, [text_node("ab"), text_node("abcd")]), 10) == "column 0,0 10x2\n  text 8,0 2x1\n  text 6,1 4x1"
+        }
+    }
+    given "wrapping" {
+        then "a row that wraps continues on the next line" {
+            at(
+                row(
+                    Layout { gap: .None, wrap: .Wrap },
+                    [button_node("one"), button_node("two"), button_node("six")],
+                ),
+                15,
+            ) == "row 0,0 15x2\n  button 0,0 7x1\n  button 7,0 7x1\n  button 0,1 7x1"
+        }
+        then "no-wrap lets a row overflow" {
+            at(
+                row(Layout { gap: .None, wrap: .NoWrap }, [button_node("one"), button_node("two")]),
+                12,
+            ) == "row 0,0 12x1\n  button 0,0 7x1\n  button 7,0 7x1"
+        }
+        then "a word wider than the box is cut where it must, and no further" {
+            at(text_node("abcdefgh"), 5) == "text 0,0 5x2"
+        }
+        then "wrap-reverse stacks the lines the other way" {
+            at(
+                row(
+                    Layout { gap: .None, wrap: .WrapReverse },
+                    [button_node("one"), button_node("two")],
+                ),
+                10,
+            ) == "row 0,0 10x2\n  button 0,1 7x1\n  button 0,0 7x1"
+        }
+    }
+    given "margins, order and fixed sizes" {
+        then "a margin keeps its neighbours away" {
+            at(
+                column(
+                    Layout {},
+                    [laid(text_node("a"), Layout { margin: margin_of(.S) }), text_node("b")],
+                ),
+                10,
+            ) == "column 0,0 10x4\n  text 2,1 6x1\n  text 0,3 10x1"
+        }
+        then "order sorts the children, ties as written" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        laid(text_node("a"), Layout { order: 2 }),
+                        text_node("b"),
+                        laid(text_node("c"), Layout { order: 1 }),
+                    ],
+                ),
+                10,
+            ) == "row 0,0 10x1\n  text 2,0 1x1\n  text 0,0 1x1\n  text 1,0 1x1"
+        }
+        then "a fixed width and height are taken as given" {
+            at(
+                column(
+                    Layout {},
+                    [laid(text_node("a"), Layout { width: .Fixed(4), height: .Fixed(3) })],
+                ),
+                10,
+            ) == "column 0,0 10x3\n  text 0,0 4x3"
+        }
+    }
+    given "defaults" {
+        then "a row keeps one space between its children and does not wrap unless it is told to" {
+            at(row(Layout {}, [button_node("one"), button_node("two"), button_node("six")]), 18) == "row 0,0 18x1\n  button 0,0 7x1\n  button 8,0 7x1\n  button 16,0 7x1"
+        }
+    }
+    given "a whole screen" {
+        then "every box lies inside its parent from sixty to a hundred cells" {
+            [w for w in 60..100 if !inside(place(app(), Cells {}, w), Rect { x: 0, y: 0, w: w, h: 1000 })]
+                .is_empty()
+        }
+        then "the same tree places to the same boxes twice" {
+            describe(app(), place(app(), Cells {}, 50)) == describe(app(), place(app(), Cells {}, 50))
+        }
+    }
+    given "sizes that hold, ask and fill" {
+        then "a fixed size holds beside a fill, which takes what is left" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        laid(text_node(""), Layout { width: .Fixed(10), height: .Fixed(1) }),
+                        laid(text_node(""), Layout { width: .Fill, height: .Fixed(1) }),
+                    ],
+                ),
+                30,
+            ) == "row 0,0 30x1\n  text 0,0 10x1\n  text 10,0 20x1"
+        }
+        then "a fill shares what is left by its growth" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        laid(text_node(""), Layout { width: .Fill }),
+                        laid(text_node(""), Layout { width: .Fill, grow: 3 }),
+                    ],
+                ),
+                40,
+            ) == "row 0,0 40x0\n  text 0,0 10x0\n  text 10,0 30x0"
+        }
+        then "text asks its words and gives way to what holds, no further than its longest word" {
+            at(
+                row(
+                    Layout { gap: .None },
+                    [
+                        text_node("aaaa bbbb"),
+                        laid(text_node(""), Layout { width: .Fixed(20), height: .Fixed(1) }),
+                    ],
+                ),
+                15,
+            ) == "row 0,0 15x2\n  text 0,0 4x2\n  text 4,0 20x1"
+        }
+    }
+}
