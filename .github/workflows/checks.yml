@@ -46,6 +46,9 @@ on:
       warm_skip:
         description: "set only to skip the warm-edit gate BY HAND; unset, a run that cannot judge FAILS (a skip is not a pass)"
         default: ""
+      cold:
+        description: "1 sets the hand-down store aside before the suites, so each runs from nothing and main records its COLD numbers (the watcher asks for one a day)"
+        default: ""
 
 # The event is part of the group: a run asked for by hand on a ref never
 # cancels that ref's own PR check or train.
@@ -890,6 +893,13 @@ jobs:
         run: |
           fail=0
           first=first
+          # A COLD PASS records main's cold numbers: the baseline keeps a number per cache state, and a
+          # PR's cold suite is only judged against a cold one.
+          if [ "${{ inputs.cold }}" = 1 ]; then
+            mkdir -p "${RUNNER_TEMP:-/tmp}/aside"
+            mv .avra-cache "${RUNNER_TEMP:-/tmp}/aside/" 2>/dev/null || :
+            echo "cold pass: the hand-down store is set aside; every suite runs from nothing"
+          fi
           for p in ${{ join(matrix.shard, ' ') }}; do
             [ -d "packages/${p%%/*}/src" ] || continue
             echo "::group::$p"
