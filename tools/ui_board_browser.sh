@@ -6,12 +6,14 @@
 # this proves what only an engine can — and the dev loop: the view's file is
 # edited and the running page must follow.
 #
-# It needs what `make ui-board` needs, and Firefox (FIREFOX names one that is
+# It needs what `make ui-board` needs, Firefox and Playwright's WebKit (FIREFOX names one that is
 # not in a usual place). Where one is absent this FAILS, naming what is
 # missing: a run that examined nothing is no pass. Only a hand-set
 # UI_BROWSER_SKIP=<reason> stands it down on a local machine, loudly; on the
 # checks' machine (CI=true) nothing does. UI_BOARD_TARGET names one wasm triple (default `wasm`);
-# UI_BROWSER_SHOTS names a directory the run leaves screenshots in.
+# UI_BROWSER_SHOTS names a directory the run leaves screenshots in. UI_BROWSER_ENGINES names the engines
+# to run, in order (default `firefox webkit`); UI_BROWSER_DEVICE names a Playwright device
+# ("iPhone 15") for the WebKit run: a touch screen and a phone's window.
 set -eu
 
 # `--self-test`: both surfaces of the skip contract, run against a compiler that
@@ -77,7 +79,27 @@ until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
 done
 url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
 
-if ! out=$(node "$here/ui-board/browser.mjs" "$url" --source "$work/tools/ui-board/src/board.av" ${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"} 2>&1); then
-    echo "$out" | grep -v '^ok ' ; echo "ui-browser: the board failed in the browser"; exit 1
+# THE ENGINES: Firefox, and WebKit — the engine every iOS browser is, which reads what Firefox
+# tolerates differently (a `showModal` on a dialog already open, an import encoding Firefox
+# reads and WebKit does not). Playwright, pinned, brings WebKit; where it cannot launch this
+# is a missing browser like any other: it fails unless stood down by name (`skip`).
+playwright_version=1.64.1
+playwright=${PLAYWRIGHT_DIR:-$tree/build/playwright}
+if [ ! -d "$playwright/node_modules/playwright" ]; then
+    mkdir -p "$playwright"
+    npm install --prefix "$playwright" --no-audit --no-fund "playwright@$playwright_version" >"$work/npm.out" 2>&1 &&
+        "$playwright/node_modules/.bin/playwright" install webkit >>"$work/npm.out" 2>&1 ||
+        skip "Playwright's WebKit did not install: $(tail -1 "$work/npm.out")"
 fi
-echo "ui-browser: ran $(echo "$out" | grep -c '^ok ') claims, all hold, in Firefox, served by \`avra dev\` at $url"
+export PLAYWRIGHT_DIR="$playwright"
+
+shots=${UI_BROWSER_SHOTS:+--shots "$UI_BROWSER_SHOTS"}
+for engine in ${UI_BROWSER_ENGINES:-firefox webkit}; do
+    status=0
+    out=$(node "$here/ui-board/browser.mjs" "$url" --engine "$engine" --source "$work/tools/ui-board/src/board.av" $shots 2>&1) || status=$?
+    [ "$status" -ne 3 ] || skip "$(echo "$out" | tail -1)"
+    if [ "$status" -ne 0 ]; then
+        echo "$out" | grep -v '^ok '; echo "ui-browser: the board failed in $engine"; exit 1
+    fi
+    echo "ui-browser: ran $(echo "$out" | grep -c '^ok ') claims, all hold, in $engine, served by \`avra dev\` at $url"
+done
