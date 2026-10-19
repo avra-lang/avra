@@ -18,7 +18,7 @@
 use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
 use compiler.{avra, new_workspace, one_shot_let_go, Want}
-use compiler.host.{memory_host}
+use compiler.host.{Host, memory_host}
 use testing.{
     vendored_meta,
     vendored_meta_as,
@@ -69,11 +69,18 @@ impl Witness {
 /// One code's witness, as the registry spells it.
 export type CodeWitness = { code: string, witness: Witness }
 
+/// The host a witness's files run on: a toolchain's std root is `/std` when
+/// the files carry one, so a vendored package sees the prelude it sees for real.
+fn witness_host(files: Map<string, string>) -> Host {
+    let host = memory_host(files, files.keys())
+    if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host }
+}
+
 /// A package witness BUILT: derived through the door `avra build` takes, so it
 /// says what a build says — the refusal, or the warnings of a program that lowers.
 fn built_report(files: Map<string, string>) -> string {
     one_shot_let_go()
-    let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
+    let ws = new_workspace(witness_host(files), "/w", avra())
     ws.alone()
     match ws.derived("/w/src/main.av", Want.Binary) { .Err(report) -> report, .Ok(d) -> d.warnings }
 }
@@ -131,12 +138,7 @@ fn is_carried(path: string) -> bool { path.starts_with("/w/vendor/") || path.sta
 /// time, so the one before is let go.
 fn package_report(files: Map<string, string>) -> string {
     one_shot_let_go()
-    let host = memory_host(files, files.keys())
-    let ws = new_workspace(
-        if files.keys().any(it.starts_with("/std/")) { host with { std_root: "/std" } } else { host },
-        "/w",
-        avra(),
-    )
+    let ws = new_workspace(witness_host(files), "/w", avra())
     ws.alone()
     let entry: string? = if files.has("/w/src/main.av") { "/w/src/main.av" } else { null }
     match ws.program(entry).check() { .Ok(warned) -> warned, .Err(report) -> report }
