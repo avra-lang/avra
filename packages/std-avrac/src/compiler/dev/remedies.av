@@ -242,6 +242,60 @@ export fn rows() -> List<RemedyRow> {
             becomes: Then.Clean,
         },
         RemedyRow {
+            kind: "manifest.tool_env_var",
+            says: "comes from the environment and names no `var`",
+            refused: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"env\" }\n"),
+            applied: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"env\", var = \"CC\" }\n"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "manifest.tool_abs_at",
+            says: "is an absolute tool and names no `at`",
+            refused: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"abs\" }\n"),
+            applied: manifest(
+                app_manifest + "\n[process.tools]\ncc = { from = \"abs\", at = \"/usr/bin/cc\" }\n",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "annotation.callee",
+            says: "names no fn",
+            refused: Witness.Source("const tag: int = 1\n@tag\nfn g() -> int { 1 }\ng()"),
+            applied: with_meta("use @std.meta.{Fn}\nfn tag(f: Fn) { }\n@tag\nfn g() -> int { 1 }\ng()"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "annotation.seats",
+            says: "takes 1 after the declaration, this writes 0",
+            refused: with_meta(
+                "use @std.meta.{Fn}\nfn tag(f: Fn, n: int) { }\n@tag\nfn g() -> int { 1 }\ng()",
+            ),
+            applied: with_meta(
+                "use @std.meta.{Fn}\nfn tag(f: Fn, n: int) { }\n@tag(1)\nfn g() -> int { 1 }\ng()",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "annotation.answer",
+            says: "answers `int`",
+            refused: with_meta(
+                "use @std.meta.{Fn}\nfn tag(f: Fn) -> int { 1 }\n@tag\nfn g() -> int { 1 }\ng()",
+            ),
+            applied: with_meta("use @std.meta.{Fn}\nfn tag(f: Fn) { }\n@tag\nfn g() -> int { 1 }\ng()"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "annotation.derive",
+            says: "is not a trait",
+            refused: with_meta(
+                "use @std.meta.{derive}\ntype X = { a: int }\n@derive(X)\ntype T = { x: int }\n0",
+            ),
+            applied: with_meta(
+                "use @std.meta.{derive, Type, Directive}\ntrait X {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\n@derive(X)\ntype T = { x: int }\n0",
+            ),
+            becomes: Then.Draws("annotation.seats"),
+        },
+        RemedyRow {
             kind: "manifest.unsupported_dependency",
             says: "is not a path dependency",
             refused: manifest(app_manifest + "\n[dependencies]\n\"@x/y\" = \"1.0\"\n"),

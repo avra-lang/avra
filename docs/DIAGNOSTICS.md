@@ -857,7 +857,22 @@ help: key by text — `Map<string, …>`
 
 an annotation names a fn over a declaration
 
-No witness yet.
+```avra
+const tag: int = 1
+@tag
+fn g() -> int { 1 }
+g()
+```
+
+```
+error[annotation.callee]: an annotation names a fn over a declaration
+  ╭─[witness.av:2:1]
+2 │ @tag
+  · ┬
+  · ╰── `@tag` names no fn
+──╯
+help: write `fn tag(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it
+```
 
 ## annotation.receiver
 
@@ -884,13 +899,63 @@ help: its first parameter is the declaration: `f: Fn`, or `t: Type` for a record
 
 an annotation's arguments fill its seats
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Fn}
+fn tag(f: Fn, n: int) { }
+@tag
+fn g() -> int { 1 }
+g()
+```
+
+```
+error[annotation.seats]: an annotation's arguments fill its seats
+  ╭─[/w/src/main.av:3:1]
+3 │ @tag
+  · ┬
+  · ╰── `tag` takes 1 after the declaration, this writes 0
+──╯
+help: write the arguments the annotation takes — `@tag(…)`
+```
 
 ## annotation.answer
 
 an annotation answers an effect
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Fn}
+fn tag(f: Fn) -> int { 1 }
+@tag
+fn g() -> int { 1 }
+g()
+```
+
+```
+error[annotation.answer]: an annotation answers an effect
+  ╭─[/w/src/main.av:3:1]
+3 │ @tag
+  · ┬
+  · ╰── `tag` answers `int`
+──╯
+help: `void` records the annotation and says nothing; `List<Diagnostic>` validates the declaration; `List<Directive>` generates declarations beside the one stood under; `Derived` runs each named trait's `derive` over the declaration; `Marker` marks the declaration for a reader that claims the word
+```
 
 ## annotation.said
 
@@ -958,7 +1023,7 @@ help: spell the kind `[A-Za-z0-9_-]+`, like `E1`
 
 an annotation generates a name the file already declares
 
-No witness yet.
+No witness here: the real `@std/meta` ships no annotator that generates a twin or wraps a fn, so the fixtures are the suite's own — the golden is features/annotations/tests/annotations_adversarial_test.av.
 
 ## annotation.warning
 
@@ -994,7 +1059,32 @@ help: stop using it, or ask the declaration's owner what replaces it
 
 `@derive` names a trait that declares `derive`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{derive}
+type X = { a: int }
+@derive(X)
+type T = { x: int }
+0
+```
+
+```
+error[annotation.derive]: an annotation derives through a trait that declares `derive`
+  ╭─[/w/src/main.av:3:9]
+3 │ @derive(X)
+  ·         ┬
+  ·         ╰── `X` is not a trait
+──╯
+help: `@derive` names a trait — `trait X { static fn derive(t: Type) -> List<Directive> }`
+```
 
 ## annotation.unsettled
 
@@ -1111,19 +1201,19 @@ help: a mark is read by a `@derive` whose trait declares `marks`
 
 a WRAP directive's `source` names no matching fn
 
-No witness yet.
+No witness here: the real `@std/meta` ships no annotator that generates a twin or wraps a fn, so the fixtures are the suite's own — the golden is features/annotations/tests/annotations_adversarial_test.av.
 
 ## annotation.wrap_bodiless
 
 a WRAP directive over a declaration with no body
 
-No witness yet.
+No witness here: the real `@std/meta` ships no annotator that generates a twin or wraps a fn, so the fixtures are the suite's own — the golden is features/annotations/tests/annotations_adversarial_test.av.
 
 ## annotation.wrap_mismatch
 
 a WRAP directive's wrapper signature does not match
 
-No witness yet.
+No witness here: the real `@std/meta` ships no annotator that generates a twin or wraps a fn, so the fixtures are the suite's own — the golden is features/annotations/tests/annotations_adversarial_test.av.
 
 ## annotation.wrap_kind
 
@@ -1326,13 +1416,75 @@ help: an exported name is its module's one declaration — rename one, or drop a
 
 a private name two files declare is each file's own
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use util.{g}
+g()
+
+// /w/src/util/a.av
+fn h() -> int { 1 }
+
+// /w/src/util/b.av
+fn h() -> int { 2 }
+
+// /w/src/util/c.av
+export fn g() -> int { h() }
+
+```
+
+```
+error[resolve.kept_apart]: `h` is private to each of `a.av` and `b.av` — a private name two files declare is each file's own
+  ╭─[/w/src/util/c.av:1:24]
+1 │ export fn g() -> int { h() }
+  ·                        ┬
+  ·                        ╰── read here
+──╯
+help: `export` one declaration to share it across the module, or declare this file's own
+```
 
 ## resolve.private_apart
 
 a test reads a private name its module declares once
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+1
+
+// /w/src/util/a.av
+fn h() -> int { 1 }
+
+// /w/src/util/b.av
+fn h() -> int { 2 }
+
+// /w/src/util/tests/u_test.av
+use util.{h}
+spec "u" {
+    given "g" {
+        then "t" { h() == 1 }
+    }
+}
+
+```
+
+```
+error[resolve.private_apart]: `h` is private to each of `a.av` and `b.av` in `util` — a test reads a private name its module declares once
+  ╭─[/w/src/util/tests/u_test.av:1:1]
+1 │ use util.{h}
+  · ┬
+  · ╰── in this use
+──╯
+help: rename one declaration, or test each through a name its own file exports
+```
 
 ## resolve.import_clash
 
@@ -1367,13 +1519,85 @@ help: list each name once — drop the repeat
 
 a module's surface names each name once
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use facade.{f}
+f()
+
+// /w/src/util/u.av
+export fn f() -> int { 1 }
+
+// /w/src/other/o.av
+export fn f() -> int { 2 }
+
+// /w/src/facade/f.av
+export use util.{f}
+export use other.{f}
+
+```
+
+```
+error[resolve.reexport_twice]: `f` is already on this module's surface
+  ╭─[/w/src/facade/f.av:2:8]
+2 │ export use other.{f}
+  ·        ┬
+  ·        ╰── re-exported here
+──╯
+help: a module exports each name once — re-export this one under another name with `as`
+```
 
 ## resolve.reexport_unreached
 
 a re-export names a declaration
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use a.{x}
+x
+
+// /w/src/a.av
+export use b.{x}
+
+// /w/src/b.av
+export use a.{x}
+
+```
+
+```
+error[resolve.reexport_unreached]: `b` re-exports `x`, and no declaration stands behind it
+  ╭─[/w/src/a.av:1:8]
+1 │ export use b.{x}
+  ·        ┬
+  ·        ╰── in this use
+──╯
+help: a re-export names a declaration — import `x` from the module that declares it, or break the re-export cycle
+
+error[resolve.reexport_unreached]: `a` re-exports `x`, and no declaration stands behind it
+  ╭─[/w/src/b.av:1:8]
+1 │ export use a.{x}
+  ·        ┬
+  ·        ╰── in this use
+──╯
+help: a re-export names a declaration — import `x` from the module that declares it, or break the re-export cycle
+
+error[resolve.reexport_unreached]: `a` re-exports `x`, and no declaration stands behind it
+  ╭─[/w/src/main.av:1:1]
+1 │ use a.{x}
+  · ┬
+  · ╰── in this use
+──╯
+help: a re-export names a declaration — import `x` from the module that declares it, or break the re-export cycle
+```
 
 ## resolve.reexport_cycle
 
@@ -1594,7 +1818,7 @@ help: write `name = "app"`, or drop the key
 
 running a package needs a `[bin]` or `src/main.av`
 
-No witness yet.
+No witness here: it is what `avra run` says of a package with no entry, which a check never asks.
 
 ## manifest.no_source
 
@@ -1690,7 +1914,29 @@ help: write one of those — `opt_level = 2`
 
 a profile name is `[a-z0-9_-]+`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[profile.Bad]
+opt_level = 2
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.bad_profile]: a profile name is `[a-z0-9_-]+` — `Bad` is not
+  ╭─[/w/avra.toml:5:1]
+5 │ [profile.Bad]
+  · ┬
+  · ╰── this profile
+──╯
+help: name the profile in lowercase letters, digits, `_` and `-` — `[profile.release]`
+```
 
 ## manifest.unscoped_dependency
 
@@ -1752,25 +1998,114 @@ help: write a path — `name = { path = "../name" }`
 
 a dependency calls itself what it was keyed as
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "@x/root"
+version = "1.0.0"
+
+[dependencies]
+"@x/y" = { path = "vendor/y" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.name_mismatch]: the package at `/w/vendor/y` calls itself `@x/z`, not `@x/y`
+  ╭─[/w/avra.toml:6:1]
+6 │ "@x/y" = { path = "vendor/y" }
+  · ┬
+  · ╰── this dependency
+──╯
+help: key it as `"@x/z"`
+```
 
 ## manifest.cycle
 
 packages do not depend in a cycle
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "@x/root"
+version = "1.0.0"
+
+[dependencies]
+"@x/y" = { path = "vendor/y" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.cycle]: packages depend in a cycle: @x/root -> @x/y -> @x/root
+  ╭─[/w/vendor/y/avra.toml:6:1]
+6 │ "@x/root" = { path = "../.." }
+  · ┬
+  · ╰── closes the cycle here
+──╯
+help: a package graph is acyclic — cut one edge
+```
 
 ## manifest.duplicate_package
 
 one package name is one directory
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "@x/root"
+version = "1.0.0"
+
+[dependencies]
+"@x/y" = { path = "vendor/y" }
+"@x/w" = { path = "vendor/w" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.duplicate_package]: `@x/y` is claimed by two directories: `/w/vendor/y` and `/w/vendor/other`
+  ╭─[/w/vendor/w/avra.toml:6:1]
+6 │ "@x/y" = { path = "../other" }
+  · ┬
+  · ╰── this dependency
+──╯
+help: one name is one package — point both at one directory
+```
 
 ## manifest.prelude_floor
 
 the prelude depends on nothing
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "@x/root"
+version = "1.0.0"
+
+[dependencies]
+"@std/prelude" = { path = "vendor/prelude" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.prelude_floor]: `@std/prelude` depends on nothing — it is the floor every package stands on
+  ╭─[/w/vendor/prelude/avra.toml:6:1]
+6 │ "@x/y" = { path = "../y" }
+  · ┬
+  · ╰── this dependency
+──╯
+help: move the verb that needs this package up, into the package that depends on it
+```
 
 ## manifest.link_option
 
@@ -1973,19 +2308,85 @@ help: write `from = "path"`, `"env"` or `"abs"`
 
 an `env` tool names its `var`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[process.tools]
+cc = { from = "env" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.tool_env_var]: `cc` comes from the environment and names no `var`
+  ╭─[/w/avra.toml:6:1]
+6 │ cc = { from = "env" }
+  · ┬
+  · ╰── here
+──╯
+help: add `var = "CC"`
+```
 
 ## manifest.tool_abs_at
 
 an `abs` tool names its `at`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[process.tools]
+cc = { from = "abs" }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.tool_abs_at]: `cc` is an absolute tool and names no `at`
+  ╭─[/w/avra.toml:6:1]
+6 │ cc = { from = "abs" }
+  · ┬
+  · ╰── here
+──╯
+help: add `at = "/usr/bin/…"`
+```
 
 ## manifest.unknown_process_key
 
 `[process]` takes only the keys it reads — a typo there is refused, never ignored
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[process.tools]
+git = { from = "path", frobnicate = 1 }
+
+// /w/src/main.av
+1
+
+```
+
+```
+error[manifest.unknown_process_key]: `frobnicate` is not a key of a tool row — and `[process]` bounds what this program may run
+  ╭─[/w/avra.toml:6:1]
+6 │ git = { from = "path", frobnicate = 1 }
+  · ┬
+  · ╰── here
+──╯
+help: the keys are from, var, default, at, terminator, min
+```
 
 ## manifest.unknown_section
 
@@ -3452,7 +3853,32 @@ No witness yet.
 
 a block word is the file's alone — no type, fn or binding may wear it
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{work}
+let work = 1
+0
+
+```
+
+```
+error[resolve.block_word]: `work` is a block word here, and nothing else in this file may wear it
+  ╭─[/w/src/main.av:2:1]
+2 │ let work = 1
+  · ┬
+  · ╰── this name
+──╯
+help: rename it, or import the word under another name
+```
 
 ## type.list_empty
 
