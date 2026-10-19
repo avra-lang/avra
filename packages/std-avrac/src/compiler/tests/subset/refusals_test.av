@@ -296,7 +296,7 @@ spec "compiler/subset — syntax the grammar lacks" {
         then "a literal of `null` alone names no type" {
             refused(
                 "fn f() {\n    let xs = [null, null]\n}\nfn g() -> int {\n    let ys = [null, 7]\n    1\n}\n",
-                "error[type.list_scalar]: a list element takes its type from its value, and `null` has none of its own",
+                "error[type.list_scalar]: a list element takes its type from its value, and `null` has none",
                 1,
             )
         }
@@ -345,7 +345,7 @@ spec "compiler/subset — syntax the grammar lacks" {
         then "a bare const name last in a match warns that it compares" {
             refused(
                 "const escape: int = 5\nfn f(c: int) -> int {\n    match c {\n        escape -> 1,\n        _ -> 0,\n    }\n}\nfn g(c: int) -> int {\n    match c {\n        0 -> 1,\n        escape -> 2,\n    }\n}\n",
-                "warning[type.const_pattern]: `escape` is a const here, so this arm compares — it does not take the values the arms above left",
+                "warning[type.const_pattern]: `escape` is a const here, so this arm compares",
                 2,
             )
         }
@@ -365,7 +365,7 @@ spec "compiler/subset — syntax the grammar lacks" {
         then "`m.entries()` in a lone file names the missing prelude" {
             refused(
                 "fn f(m: Map<string, int>) -> int { m.entries().length }\n",
-                "error[type.map_entry]: a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
+                "error[type.map_entry]: a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`",
                 1,
             )
         }
@@ -379,27 +379,37 @@ spec "compiler/subset — syntax the grammar lacks" {
                 "type Rows = List<int>\ntype Other = List<string>\nfn f(r: Rows) -> int { 1 }\n",
             )
         }
-        then "a record spread without its type's name is a map spread" { refused_with(
-                "type P = { x: int, y: int }\nfn f(a: P) -> int {\n    let m = { ..a, x: 3 }\n    m.length\n}\n",
+        then "a record spread without its type's name is a map spread" {
+            refused_with(
+                "type P = { x: int, y: int }\nfn f(a: P) -> int {\n    let m = { ..a, \"x\": 3 }\n    m.length\n}\n",
                 "`..` in a map spreads a map, found `P`",
-            ) }
-        then "a record pattern's `..` discards and cannot bind the rest" { refused_with(
+            )
+        }
+        then "a record pattern's `..` discards and cannot bind the rest" {
+            refused_with(
                 "type P = { x: int, y: int }\nfn f(p: P) -> int {\n    match p {\n        P { x, ..rest } -> x,\n    }\n}\n",
                 "expected `}` to close the `match`",
-            ) }
-        then "a list spreads only into its own element type" { refused_with(
+            )
+        }
+        then "a list spreads only into its own element type" {
+            refused_with(
                 "fn f(xs: List<int>) -> int {\n    let c: List<int?> = [null, ..xs]\n    1\n}\n",
                 "the first is `List<int?>`, this is `List<int>`",
-            ) }
-        then "a list spread into fixed seats is refused" { refused_with(
+            )
+        }
+        then "a list spread into fixed seats is refused" {
+            refused_with(
                 "fn g(a: int, b: int) -> int { a + b }\nfn f(xs: List<int>) -> int { g(..xs) }\n",
                 "`..` spreads into a seat that takes the rest of the arguments, and `g` declares none",
-            ) }
+            )
+        }
         then "`is` over a list pattern binds only under `if`" { refused_with("fn f(xs: List<int>) -> bool { xs is [first, ..] }\n", "is_bind") }
-        then "a refutable destructuring `let` needs its `else`" { refused_with(
+        then "a refutable destructuring `let` needs its `else`" {
+            refused_with(
                 "fn f(xs: List<int>) -> int {\n    let [first, ..] = xs\n    first\n}\n",
                 "let_pattern",
-            ) }
+            )
+        }
     }
 }
 
