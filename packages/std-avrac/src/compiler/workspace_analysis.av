@@ -2,6 +2,7 @@
 //! families and the lowered program. The core accessors live in
 //! workspace.av.
 use core.{
+    EmbedKind,
     StmtId,
     qtrace,
     traced,
@@ -642,9 +643,9 @@ impl Workspace {
     /// is recorded as read by the file whose run asks, THEN read — so the
     /// file's record names it, its object key digests it, and the file is
     /// held only while that text stands. `embed` is the one such read.
-    fn run_read(f: FileId, path: string) -> Result<string, string> {
+    fn run_read(f: FileId, path: string, kind: EmbedKind) -> Result<Bytes, string> {
         self.read_by(self.decls.file(f).path, [self.plain_read(path)])
-        self.embed_read(path)
+        self.embed_read(path, kind)
     }
 
     /// A const a unit's lowering asked for, noted on the UNIT: a unit is
@@ -902,7 +903,7 @@ impl Workspace {
         let r = self.settle_result(ask)
         // every file `embed` read is this query's input, a held answer's too
         match r {
-            .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path) } },
+            .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path, EmbedKind.Octets) } },
             .Err(_) -> { let _ = 0 },
         }
         let held = match r { .Ok(x) -> Settlement.Held(x), .Err(why) -> Settlement.Refused(why) }
@@ -960,7 +961,7 @@ impl Workspace {
         let r = run_settle(
             l,
             self.budgets(),
-            (path: string) -> ws.run_read(f, path),
+            (path: string, kind: EmbedKind) -> ws.run_read(f, path, kind),
             (nm: string) -> ws.type_named_lifted(f, nm),
         )
         let chain = match r { .Err(.Reach(_)) -> world_witness(l, true), _ -> null }
@@ -1002,7 +1003,7 @@ impl Workspace {
         match run_crossed(
             l,
             self.budgets(),
-            (path: string) -> ws.run_read(f, path),
+            (path: string, kind: EmbedKind) -> ws.run_read(f, path, kind),
             (nm: string) -> ws.type_named_lifted(f, nm),
         ) { .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)), .Err(why) -> .Err(why) }
     }
@@ -1017,8 +1018,23 @@ impl Workspace {
         Lifted,
         Unsettled,
     > {
+        self.lifted_at(self.lift_ask_of(d, f, s, call, args))
+    }
+
+    /// The refusal a lift HELD, in its own words. A second ask of a refused lift
+    /// answers `Spoken` — the first spoke — but an expansion's voices are wiped
+    /// when the expansion runs again, so the one that must speak again asks here.
+    fn lift_refusal(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Unsettled? {
+        match self.relation(Family.Lifted).ask(self.lift_ask_of(d, f, s, call, args)) {
+            .Reuse(held) -> match lifted_of(held) { .Refused(why) -> why, .Crossed(_) -> null },
+            .Compute or .Cycle -> null,
+        }
+    }
+
+    /// The query id of one annotation call, registered on first sight.
+    fn lift_ask_of(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> int {
         let name = "lift\$${f.index}\$${call.index}\$${d.index}"
-        let id = match interned(self.lift_asks_index, name, self.lift_asks.get().length) {
+        match interned(self.lift_asks_index, name, self.lift_asks.get().length) {
             .Found(id) -> {
                 self.lift_asks.set_at(id, lift_ask(name, d, f, s, call, args))
                 id
@@ -1028,7 +1044,6 @@ impl Workspace {
                 id
             },
         }
-        self.lifted_at(id)
     }
 
     /// One annotation query. The kernel's cycle verdict is the

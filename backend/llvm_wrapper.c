@@ -4,6 +4,8 @@
 // elsewhere. Every fn below is named by the tree; one that is not
 // is debris. Targets the LLVM 21 C API.
 
+#include <math.h>
+#include <string.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
@@ -494,6 +496,37 @@ LLVMValueRef avra_llvm_build_xor(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRe
 
 LLVMValueRef avra_llvm_build_not(LLVMBuilderRef b, LLVMValueRef val, const char* name) {
     return LLVMBuildNot(b, val, name);
+}
+
+/// The evaluator's ToInt: the int a float takes under `mode`, the code
+/// `rounding_code` gives: 0 floor, 1 ceil, 2 nearest (ties away from zero),
+/// 3 trunc. The caller has checked the float is in range.
+int64_t avra_float_to_int_raw(int64_t bits, int64_t mode) {
+    double d;
+    memcpy(&d, &bits, sizeof d);
+    switch (mode) {
+        case 0: return (int64_t)floor(d);
+        case 1: return (int64_t)ceil(d);
+        case 2: return (int64_t)round(d);
+        default: return (int64_t)trunc(d);
+    }
+}
+
+/// A float rounded by `mode` (the code `rounding_code` gives) and converted
+/// to an i64: the LLVM rounding intrinsic, then the convert. Both inline.
+LLVMValueRef avra_llvm_build_to_int(LLVMBuilderRef b, LLVMValueRef val, int64_t mode, const char* name) {
+    static const char* const intrinsics[] = {
+        "llvm.floor.f64", "llvm.ceil.f64", "llvm.round.f64", "llvm.trunc.f64",
+    };
+    LLVMContextRef ctx = LLVMGetTypeContext(LLVMTypeOf(val));
+    LLVMTypeRef f64 = LLVMDoubleTypeInContext(ctx);
+    LLVMTypeRef fty = LLVMFunctionType(f64, &f64, 1, 0);
+    LLVMModuleRef m = LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(b)));
+    const char* sym = intrinsics[mode];
+    LLVMValueRef fn = LLVMGetNamedFunction(m, sym);
+    if (!fn) fn = LLVMAddFunction(m, sym, fty);
+    LLVMValueRef rounded = LLVMBuildCall2(b, fty, fn, &val, 1, "");
+    return LLVMBuildFPToSI(b, rounded, LLVMInt64TypeInContext(ctx), name);
 }
 
 // ── Comparison ──

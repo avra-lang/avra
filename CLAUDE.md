@@ -1060,12 +1060,13 @@ registry is the idiom engine's spec, written by dogfooding.
   inside the generic impl that wants the wrap. A REMEDY NAMES A FORM
   THAT PARSES WHERE IT IS SPOKEN — the `where` is half the claim, and
   the keeper this wants compiles the named form in the refusing
-  context. IT EXISTS (`make voices`, compiler/dev/remedies.av): a
+  context. IT EXISTS (`avra voices`, run by `make voices`; compiler/dev/remedies.av): a
   structured fix is spliced into its lone witness and must clear its
   refusal and still parse (`bad_fix`), and a REMEDY ROW — a refusal and
   the same program with the help's form applied — must come out as the
   row says (`bad_remedy`); a help that names a form with neither is
-  `no_remedy`, baselined and only shrinking. Its own test pins F2033's old
+  `no_remedy` (none stand today: 28 rows, lone sources, manifests,
+  `@std/meta`, `@std/task` and `@std/time` packages alike). Its own test pins F2033's old
   `(x: T0) -> f(x)` as a failing row: no `T0` is a type anywhere, so the
   help now writes the wrapper over the fn's own arity and lets the seat
   pin the types.
@@ -1740,7 +1741,7 @@ Syntax the grammar lacks:
   is `_q` — a leading underscore is a name, it compiles, and the idiom
   bar has always read that prefix as "unread by contract" (style.dead_parameter).
 - A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
-  keys are strings, not `int`", help "other key types are recorded".
+  keys are strings, not `int`", help "key by text — `Map<string, …>`".
   It kills the obvious trie-node shape; key by the text.
 - `++` IS NOT A LIST OPERATOR: `xs ++ ys` is F0100 "expected BREAK
   while parsing `stmt`" AT the `++`, and that is the WHOLE refusal —
