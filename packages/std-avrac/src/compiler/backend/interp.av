@@ -246,6 +246,14 @@ type Machine = {
     named: fn(string) -> Lifted,
 }
 
+/// Whether the memory a door's answer costs the compiler is the run's.
+enum Billing {
+    /// the answer is the run's own data
+    Billed
+    /// the compiler's state, built to answer and kept
+    Unbilled
+}
+
 /// A place in the program: a body and the instruction in it.
 type Place = { body: Body, pc: int }
 
@@ -1096,7 +1104,7 @@ impl Machine {
     /// `embed`: the file a literal named, read by the settlement's own
     /// reader — and recorded, so the build knows what the const read.
     fn embedded(path: string) -> Val {
-        match (self.embed)(path) {
+        match self.embed_door(path) {
             .Ok(text) -> {
                 self.embeds.push(path)
                 Val.S(text)
@@ -1114,18 +1122,36 @@ impl Machine {
     /// into this run's values — the door every OTHER row reaches C
     /// through, reached here into the compiler instead.
     fn type_named_val(name: string) -> Val {
-        let r = self.named_unbilled(name)
+        let r = self.named_door(name)
         self.val_of(r.heap, r.answer)
     }
 
-    /// The workspace answers from where it stands, and what it builds to
-    /// answer (types, signatures) stays with the workspace: a run is billed
-    /// for what it makes, never for what the compiler made on its behalf.
-    fn named_unbilled(name: string) -> Lifted {
+    /// EVERY CALL OUT OF A RUN INTO THE COMPILER IS A `*_door` VERB, and a door
+    /// says whether the memory the compiler builds to answer is the run's. A run is
+    /// billed for what it makes, never for what the compiler made on its behalf, so
+    /// an `Unbilled` door moves the run's base past what the call left standing and
+    /// a `Billed` one (the answer IS the run's own data) leaves it. A new callback
+    /// is a new door verb or `compiler/tests/doors_test.av` refuses it.
+    fn named_door(name: string) -> Lifted {
         let before = avra_mem_live()
         let r = self.named(name)
-        self.mem_base = self.mem_base + (avra_mem_live() - before)
+        self.past_door(Billing.Unbilled, before)
         r
+    }
+
+    fn embed_door(path: string) -> Result<string, string> {
+        let before = avra_mem_live()
+        let r = (self.embed)(path)
+        self.past_door(Billing.Billed, before)
+        r
+    }
+
+    /// Where a door's call left the heap, from `before`.
+    fn past_door(billing: Billing, before: int) {
+        match billing {
+            .Billed -> nothing(),
+            .Unbilled -> { self.mem_base = self.mem_base + (avra_mem_live() - before) },
+        }
     }
 
     fn trapped(msg: string) {
