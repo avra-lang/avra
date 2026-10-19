@@ -52,6 +52,7 @@ use core.{
     flatten,
     qtrace,
     digest_of,
+    rt_sigs,
 }
 
 /// The symbol of the body that answers `target`'s code hash.
@@ -86,6 +87,20 @@ export fn code_hashes(
         keys.push(if h == null { t } else { "${t}=${h!}" })
     }
     CodeHashes { bodies: out, keys: keys }
+}
+
+/// Each symbol's code hash over a lowered program as it runs — the final IR,
+/// every instantiation included — for the symbols that have one; a symbol that
+/// reaches a body nothing here holds is left out.
+export fn lowered_hashes(decls: Decls, lo: Lowered, symbols: List<string>) -> Map<string, string> {
+    let facts = code_facts(decls, lo.fns.concat([lo.entry]), lo.statics, [])
+    mut g = code_graph([facts], [], [r.name for r in rt_sigs()].concat(decls.extern_names()), [])
+    mut hashes: Map<string, string> = {}
+    for sym in symbols {
+        let h? = g.hash(sym) else { continue }
+        hashes.set(sym, h)
+    }
+    hashes
 }
 
 /// The body answering one target's hash: its text, or absence when it

@@ -8,7 +8,7 @@ use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_di
 use @std.io.{make_dirs, exists, write_text}
 use compiler.backend.{run_scheduled}
 use compiler.store.{Store, Stored, node_key}
-use compiler.lower.{Lowered, program_symbol}
+use compiler.lower.{Lowered, program_symbol, lowered_hashes}
 
 /// How many schedules a suite runs, and the one its i-th run uses — the
 /// runtime's settings, read as the native leg reads them.
@@ -128,16 +128,18 @@ impl Workspace {
         let store = self.opened_store()
         let owed = [path for path in programs if !self.native_only(path) && !self.proved(store, path)]
         let calls = [self.program_call(path, told_from) for path in programs]
+        let stamp = engines_stamp(tools)
         let began = self.clock()
         let d = self
             .evaluated(
                 store,
                 owed,
                 told_from,
+                stamp,
                 (met: Derived) -> link_owes(met, suite_module(met, only, calls), tools),
             )?
         eprintln(
-            "proofs: ${owed.length} of ${programs.length} programs owed, evaluated in ${(self.clock() - began) / 1000000} ms",
+            "proofs: ${owed.length} of ${programs.length} programs owed by source, settled in ${(self.clock() - began) / 1000000} ms",
         )
         let m = suite_module(d, only, calls)
         if m.cases.is_empty() && programs.is_empty() && refuses.is_empty() { return .Ok(null) }
@@ -191,53 +193,100 @@ impl Workspace {
     /// held body the record did not foresee is no verdict on the program.
     /// `owes` is the link's own whole question, asked here so no derivation is
     /// made again at the link.
-    fn evaluated(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
-        Derived,
-        string,
-    > {
-        match self.heard(store, owed, told_from, owes)? {
+    fn evaluated(
+        store: Store,
+        owed: List<string>,
+        told_from: string,
+        stamp: string?,
+        owes: fn(Derived) -> bool,
+    ) -> Result<Derived, string> {
+        match self.heard(store, owed, told_from, stamp, owes)? {
             .Agreed(d) -> .Ok(d),
-            .Quarrelled -> self.heard_whole(store, owed, told_from),
+            .Quarrelled -> self.heard_whole(store, owed, told_from, stamp),
         }
     }
 
     /// THE HELD DERIVATION, HEARD BY THE EVALUATOR: agreed with, or — quarrelling
     /// under a hold — let go, so the sources' own derivation never stands beside
     /// it. A quarrel with nothing held is the program's.
-    fn heard(store: Store, owed: List<string>, told_from: string, owes: fn(Derived) -> bool) -> Result<
-        Hearing,
-        string,
-    > {
+    fn heard(
+        store: Store,
+        owed: List<string>,
+        told_from: string,
+        stamp: string?,
+        owes: fn(Derived) -> bool,
+    ) -> Result<Hearing, string> {
         let reach = [ReadFile { path: path, why: Reads.Reached } for path in flatten([self.seen_files(store, path) for path in owed])]
         // the evaluator runs bodies, an instantiation's among them
         let d = self
             .derived_owing(null, Want.Binary, reach, (met: Derived) -> !owed.is_empty() || owes(met))?
-        let first = d.program.ws.quarrels(d, owed, told_from)
-        if first.is_empty() { return Hearing.Agreed(d.program.ws.agreed(store, d, owed)) }
+        let proofs = d.program.ws.ir_proofs(d, owed, stamp)
+        let first = d.program.ws.quarrels(d, owed, proofs, told_from)
+        if first.is_empty() { return Hearing.Agreed(d.program.ws.agreed(store, d, owed, proofs)) }
         if held_paths(d.program.ws).is_empty() { fail joined(first, "\n") }
         d.program.ws.discarded()
         Hearing.Quarrelled
     }
 
     /// The sources' own derivation, heard: the verdict on the program.
-    fn heard_whole(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+    fn heard_whole(store: Store, owed: List<string>, told_from: string, stamp: string?) -> Result<
+        Derived,
+        string,
+    > {
         let sure = self.from_sources(null, Want.Binary)?
-        let last = sure.program.ws.quarrels(sure, owed, told_from)
+        let proofs = sure.program.ws.ir_proofs(sure, owed, stamp)
+        let last = sure.program.ws.quarrels(sure, owed, proofs, told_from)
         if !last.is_empty() { fail joined(last, "\n") }
-        sure.program.ws.agreed(store, sure, owed)
+        sure.program.ws.agreed(store, sure, owed, proofs)
     }
 
-    /// The evaluator agreed with each: remembered under what the program can see.
-    fn agreed(store: Store, d: Derived, owed: List<string>) -> Derived {
+    /// The evaluator agreed with each: remembered under what the program can see, and under
+    /// what it runs as.
+    fn agreed(store: Store, d: Derived, owed: List<string>, proofs: Map<string, string>) -> Derived {
         let _ = make_dirs(self.proofs_dir())
         for path in owed { let _ = write_text(self.proof_file(store, path), "") }
+        for file in proofs.values() { let _ = write_text(file, "") }
         d
     }
 
-    /// Every program the evaluator did not say, in its own words.
-    fn quarrels(d: Derived, owed: List<string>, told_from: string) -> List<string> {
-        flatten([quarrel(d.lowered, self.program_call(path, told_from)) for path in owed])
+    /// Every program the evaluator did not say, in its own words — those its final IR
+    /// has already been proved for are not run again.
+    fn quarrels(d: Derived, owed: List<string>, proofs: Map<string, string>, told_from: string) -> List<
+        string,
+    > {
+        flatten(
+            [quarrel(d.lowered, self.program_call(path, told_from)) for path in owed if !self.proved_as_run(proofs, path)],
+        )
     }
+
+    /// WHERE AN AGREEMENT IS REMEMBERED BY WHAT IT READ: the engines' code and the runtime
+    /// (`stamp`), the program's final IR with every instantiation, the text it must print and
+    /// the orders it runs under — nothing of the source that made the IR. A program whose IR
+    /// cannot be hashed has no such proof.
+    fn ir_proofs(d: Derived, owed: List<string>, stamp: string?) -> Map<string, string> {
+        let stamp? = stamp else { return {} }
+        let hashes = lowered_hashes(self.decls, d.lowered, [self.run_symbol(path) for path in owed])
+        mut files: Map<string, string> = {}
+        for path in owed {
+            let ir? = hashes.get(self.run_symbol(path)) else { continue }
+            // LICENSED input.test_setting: how many orders a suite runs, never an input of what is built
+            let orders = avra_sched_runs_wanted()
+            let key = node_key(
+                Stored.Unit,
+                ["proved-ir", stamp, ir, self.listed_text(beside(path, "expected")), "${orders}"],
+            )
+            files.set(path, joined_path(self.proofs_dir(), key))
+        }
+        files
+    }
+
+    fn proved_as_run(proofs: Map<string, string>, path: string) -> bool {
+        let file? = proofs.get(path) else { return false }
+        exists(file)
+    }
+
+    /// The symbol that runs a program.
+    fn run_symbol(path: string) -> string { program_symbol(self.file_name(path)) }
 
     /// The package's program tests, in name order.
     fn program_tests() -> List<string> {
@@ -269,7 +318,7 @@ impl Workspace {
     fn program_call(path: string, told_from: string) -> ProgramCall {
         let text = self.listed_text(beside(path, "expected"))
         ProgramCall {
-            symbol: program_symbol(self.file_name(path)),
+            symbol: self.run_symbol(path),
             label: relative_path(told_from, joined_path(dir_of(path), stem_of(path))),
             expected: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
             evaluated: !self.native_only(path),
@@ -310,6 +359,13 @@ impl Workspace {
 
     // LICENSED input.test_setting: a proof only skips a test run, never an input of what is built
     fn proved(store: Store, path: string) -> bool { exists(self.proof_file(store, path)) }
+}
+
+/// WHAT THE ENGINES' AGREEMENT READS BESIDE A PROGRAM'S IR: the code of the engines and the
+/// runtime archive's digest — null when either has none, and then only the source's proof stands.
+fn engines_stamp(tools: Toolchain) -> string? {
+    let runtime? = digest_of_binary(tools.runtime) else { return null }
+    match engines_producer() { .Hashed(code) -> "${code}.${runtime}", .Absent -> null }
 }
 
 /// The file beside a program that wears its stem and this extension.

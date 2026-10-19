@@ -27,6 +27,7 @@ use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes, make_dirs, remove}
 use @std.text.{parse_int}
 use @std.time.{now_ns}
+use @std.meta.{code_hash}
 use compiler.backend.{
     in_symbol_order,
     emit_object,
@@ -42,10 +43,22 @@ use compiler.backend.{
     program_closed,
     unsupported_on_wasm,
     runs_tasks,
+    run_scheduled,
+    program_ended,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.memory.{sound_checked}
-use compiler.store.{Store, Stored, Keeping, Producers, node_key, store_stamped, Reading}
+use compiler.store.{
+    Store,
+    Stored,
+    Keeping,
+    Producer,
+    Producers,
+    producer_of,
+    node_key,
+    store_stamped,
+    Reading,
+}
 use compiler.host.{no_target, read_manifest, Stamp, Read}
 use @std.errors.{Error, ErrorInfo, info}
 use diagnostics.{new_source_file}
@@ -314,6 +327,13 @@ fn compiler_print(ws: Workspace) -> string {
     let digest? = ws.running_print() else { return unnamed_print() }
     let mode = ws.keys.build_mode.get()
     "${digest}${codegen_mode()}${proof_mode()}${if mode == "" { "" } else { "@${mode}" }}"
+}
+
+/// WHAT AN AGREEMENT OF THE ENGINES READS OF THE COMPILER, beside `compiler_print`, which names
+/// the binary whole: the code that runs a program and the code that emits it, each by its hash.
+/// Absent when either cannot be hashed.
+export fn engines_producer() -> Producer {
+    producer_of([code_hash(run_scheduled), code_hash(program_ended), code_hash(emit_object)])
 }
 
 /// WHERE A KEPT BINARY'S LINK ANSWER STANDS: the host fns it lists, kept with what the link
