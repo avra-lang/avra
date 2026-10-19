@@ -631,7 +631,7 @@ static void mem_ceiling_measure(void) {
         char msg[96];
         avra_fmt(msg, sizeof msg, "memory ceiling exceeded: %lld MB (AVRA_MEM_CEILING_MB)",
                (long long)(g_mem_ceiling >> 20));
-        avra_trap(msg);
+        avra_trap(msg); // LICENSED traps.process_limit: the memory ceiling is a limit of the process
     }
     g_mem_next = g_live_bytes + (g_mem_ceiling - used);
 }
@@ -673,7 +673,7 @@ static void acc_note(int k, int64_t bytes) {
     if (__builtin_expect(g_dump_at > 0 && g_acc_total_live > g_dump_at, 0)) {
         g_dump_at = 0;
         avra_say("mem: AVRA_MEM_DUMP_AT crossed — the report follows and the process ends (3)\n");
-        exit(3);
+        exit(3); // LICENSED traps.defect: the accounting found a box it did not count
     }
 }
 
@@ -908,7 +908,7 @@ void avra_release_guarded(void* p, Header* h) {
         for (int k = g_chain_len - 1; k >= 0; k--) {
             avra_say("  reclaiming %p (len %lld)\n", g_chain[k], (long long)guard_len(g_chain[k]));
         }
-        abort();
+        abort(); // LICENSED traps.defect: AVRA_RC_GUARD found a freed box released
     }
     if (avra_kind(h) < 0) return;
     h->rc--;
@@ -1565,7 +1565,7 @@ static void array_grow(AvraArray* a, void* pusher) {
 // TAIL-calls it and keeps no frame of its own.
 __attribute__((noinline))
 static void push_grown(AvraArray* a, int64_t v) {
-    if (a->cap >= CELL_CEILING || a->cap <= 0) avra_trap("a list grew past any possible size — a corrupted box");
+    if (a->cap >= CELL_CEILING || a->cap <= 0) avra_trap("a list grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
     array_grow(a, __builtin_return_address(0));
     a->data[a->len] = v;
     a->marks[a->len] = 0;
@@ -1747,7 +1747,7 @@ void avra_once_set(void* key, void* value) {
     // the guard answered absent, so a second setter cannot happen;
     // if it did, the FIRST answer stands
     if (once_at((const char*)key) >= 0) { return; }
-    if (g_once_count == AVRA_ONCE_MAX) { avra_trap("more `once` values than the cache holds"); }
+    if (g_once_count == AVRA_ONCE_MAX) { avra_trap("more `once` values than the cache holds"); } // LICENSED traps.process_limit: the once cache is full
     avra_rc_retain(key);
     avra_rc_retain(value);
     // THE ANSWER BECOMES IMMORTAL. It is held for the life of the
@@ -2061,9 +2061,26 @@ void* avra_owned_slot_unique(void* arr, int64_t i) {
 
 // A write into a slot: the old owned content is released.
 void avra_slot_set(void* arr, int64_t i, int64_t v) {
+    avra_array_get(arr, i);
+    avra_slot_put(arr, i, v);
+}
+
+void avra_slot_put_owned(void* arr, int64_t i, void* v) {
+    avra_rc_retain(v);
+    avra_slot_put(arr, i, (int64_t)(uintptr_t)v);
+    ((AvraArray*)arr)->marks[i] = MARK_OWNED;
+}
+
+void avra_slot_put_moved(void* arr, int64_t i, void* v) {
+    avra_slot_put(arr, i, (int64_t)(uintptr_t)v);
+    ((AvraArray*)arr)->marks[i] = MARK_OWNED;
+}
+
+// The same write into a slot the box's shape proves exists — a cell's one
+// slot, a record's declared field — so it has no bound to trap on.
+void avra_slot_put(void* arr, int64_t i, int64_t v) {
     avra_box_touch(arr);
     AvraArray* a = (AvraArray*)arr;
-    avra_array_get(arr, i);
     if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
     a->data[i] = v;
     a->marks[i] = 0;
@@ -2336,7 +2353,7 @@ static void index_free(AvraMap* m) {
 // key placed past the tripwire by the fast hash files them all again,
 // keyed.
 static void map_index_rebuild(AvraMap* m, int64_t icap, int keyed) {
-    if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box");
+    if (icap >= CELL_CEILING || icap <= 0) avra_trap("a map grew past any possible size — a corrupted box"); // LICENSED traps.defect: a corrupted box
     index_free(m);
     int64_t* words = (int64_t*)calloc((size_t)icap + 1, sizeof(int64_t));
     words[0] = (int64_t)((gen_minted() << 1) | (keyed ? 1 : 0));
@@ -4355,7 +4372,7 @@ void avra_box_changed(void* payload) {
     if (g_changes_len == g_changes_cap) {
         g_changes_cap = g_changes_cap ? g_changes_cap * 2 : 64;
         g_changes = (int64_t*)realloc(g_changes, g_changes_cap * sizeof(int64_t));
-        if (g_changes == NULL) avra_trap("out of memory logging a change");
+        if (g_changes == NULL) avra_trap("out of memory logging a change"); // LICENSED traps.process_limit: out of memory is a limit of the process
     }
     g_changes[g_changes_len++] = (int64_t)(uintptr_t)payload;
 }
