@@ -1,12 +1,15 @@
 // proves: a bare await of a task that ended cancelled cancels the
 // awaiter — here the program's own run, which says who asked and exits 1
-use @std.time.{ms, secs, sleep}
+use @std.task.{open_channel}
+use @std.time.{secs, sleep}
 
+let up = open_channel<int>(1)
 let t = spawn {
+    let _ = up.sink.post(1)
     sleep(secs(60))
     5
 }
-sleep(ms(1))
+let _ = up.source.next()
 t.cancel()
 let v = t.await
 println("unreached ${v}")
