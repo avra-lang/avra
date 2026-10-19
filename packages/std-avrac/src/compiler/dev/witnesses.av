@@ -736,6 +736,65 @@ fn witnesses() -> List<CodeWitness> {
             witness: manifest(app_manifest + "\n[package]\nname = \"other\"\n"),
         },
         CodeWitness {
+            code: "manifest.bad_profile",
+            witness: manifest(app_manifest + "\n[profile.Bad]\nopt_level = 2\n"),
+        },
+        CodeWitness {
+            code: "manifest.tool_env_var",
+            witness: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"env\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.tool_abs_at",
+            witness: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"abs\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.unknown_process_key",
+            witness: manifest(
+                app_manifest + "\n[process.tools]\ngit = { from = \"path\", frobnicate = 1 }\n",
+            ),
+        },
+        CodeWitness {
+            code: "manifest.no_target",
+            witness: Witness.Package({"/w/avra.toml": app_manifest}),
+        },
+        CodeWitness {
+            code: "manifest.name_mismatch",
+            witness: dependency_package(["y"], {"/w/vendor/y/avra.toml": package_toml("z", "")}),
+        },
+        CodeWitness {
+            code: "manifest.cycle",
+            witness: dependency_package(
+                ["y"],
+                {
+                    "/w/vendor/y/avra.toml": package_toml("y", "\n[dependencies]\n\"@x/root\" = { path = \"../..\" }\n"),
+                },
+            ),
+        },
+        CodeWitness {
+            code: "manifest.duplicate_package",
+            witness: dependency_package(
+                ["y", "w"],
+                {
+                    "/w/vendor/y/avra.toml": package_toml("y", ""),
+                    "/w/vendor/w/avra.toml": package_toml("w", "\n[dependencies]\n\"@x/y\" = { path = \"../other\" }\n"),
+                    "/w/vendor/other/avra.toml": package_toml("y", ""),
+                },
+            ),
+        },
+        CodeWitness {
+            code: "manifest.prelude_floor",
+            witness: dependency_package(
+                ["prelude"],
+                {
+                    "/w/vendor/prelude/avra.toml": package_toml(
+                        "prelude",
+                        "\n[dependencies]\n\"@x/y\" = { path = \"../y\" }\n",
+                        "@std",
+                    ),
+                },
+            ),
+        },
+        CodeWitness {
             code: "manifest.unset_link_variable",
             witness: manifest(app_manifest + "\n[link]\nsearch = [\"\${NOPE_VAR}/lib\"]\n"),
         },
@@ -1246,6 +1305,30 @@ fn program(files: Map<string, string>) -> Witness {
 /// A package witness over one manifest and the one-line program beside it.
 export fn manifest(toml: string) -> Witness {
     Witness.Package({"/w/avra.toml": toml, "/w/src/main.av": "1\n"})
+}
+
+/// A vendored package's manifest.
+fn package_toml(name: string, rows: string, scope: string = "@x") -> string {
+    "[package]\nname = \"${scope}/${name}\"\nversion = \"1.0.0\"\n${rows}"
+}
+
+/// A package that depends on each `vendored` name under `vendor/`, beside the vendored
+/// manifests in `more` — what a dependency's own manifest refuses is a property of the graph.
+fn dependency_package(vendored: List<string>, more: Map<string, string>) -> Witness {
+    mut files: Map<string, string> = {
+        "/w/avra.toml": package_toml("root", "\n[dependencies]\n${rows_of(vendored)}"),
+        "/w/src/main.av": "1\n",
+    }
+    for path, text in more { files.set(path, text) }
+    Witness.Package(files)
+}
+
+/// One `[dependencies]` row a vendored name.
+fn rows_of(vendored: List<string>) -> string {
+    joined(
+        ["\"${if n == "prelude" { "@std" } else { "@x" }}/${n}\" = { path = \"vendor/${n}\" }\n" for n in vendored],
+        "",
+    )
 }
 
 /// Where the planner's refusals are witnessed: a planned relation's marks
