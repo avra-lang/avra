@@ -20,6 +20,15 @@ use @std.ui.terminal.{Terminal, terminal}
 
 type Todo = { id: string, title: string, done: bool }
 
+/// An open dialog of two buttons, sent away into `open`.
+fn about(open: Cell<bool>) -> dialog {
+    dialog "About" {
+        open: open.get()
+        items: [button "Back" { on press {} }, button "Close" { on press {} }]
+        on dismiss { open.set(false) }
+    }
+}
+
 /// A small board's state, in cells a view reads and its handlers write.
 type Board = {
     tasks: Cell<List<Todo>> = Cell.new([]),
@@ -163,6 +172,54 @@ spec "one control holds the focus" {
             )
             on.feed("\n\t\n")
             hits.get() == 2
+        }
+    }
+    given "a dialog that is open" {
+        then "Escape sends it away, and its dismissal hears" {
+            let open: Cell<bool> = Cell.new(true)
+            let on = terminal(
+                () -> dialog "About" {
+                    open: open.get()
+                    items: [button "Close" { on press {} }]
+                    on dismiss { open.set(false) }
+                },
+            )
+            on.feed("${from_codepoint(27)}[27u")
+            open.get() == false
+        }
+        then "a lone Escape waits out the window, then sends it away" {
+            let open: Cell<bool> = Cell.new(true)
+            let on = terminal(() -> about(open))
+            on.feed(from_codepoint(27))
+            let held = open.get()
+            on.quiet()
+            held && !open.get()
+        }
+        then "an arrow cut after its escape and finished within the window moves the focus, and sends nothing away" {
+            let open: Cell<bool> = Cell.new(true)
+            let on = terminal(() -> about(open))
+            on.feed(from_codepoint(27))
+            on.feed("[A")
+            let whole = terminal(() -> about(Cell.new(true)))
+            whole.feed("${from_codepoint(27)}[A")
+            open.get() &&
+                on.screen() == whole.screen() &&
+                on.screen() != terminal(() -> about(Cell.new(true))).screen()
+        }
+    }
+    given "a field, and an escape the window closed on" {
+        then "what follows the escape is typed" {
+            let held: Cell<string> = Cell.new("")
+            let on = terminal(
+                () -> field "Name" {
+                    value: held.get()
+                    on input { typed -> held.set(typed) }
+                },
+            )
+            on.feed(from_codepoint(27))
+            on.quiet()
+            on.feed("[A")
+            held.get() == "[A"
         }
     }
     given "a screen with no control" {

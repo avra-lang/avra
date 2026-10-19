@@ -9,7 +9,7 @@
 //! told shows none of it.
 use @std.text.{ascii_lower, codepoints, from_codepoints}
 use app.{Act, Shown, running, shown, stood, notice_node}
-use tree.controls.{Control}
+use tree.controls.{Control, said_by_control}
 use tree.node.{Said, Node, Attribute}
 use realize.tui.said.{said_of}
 use realize.tui.tui.{focused, placed, raster}
@@ -21,9 +21,10 @@ use native.net.{over_http}
 use native.sources.{opened, served}
 use @std.task.{signals}
 use tree.terminal_key.{Key, Paste}
-use terminal.keys.{heard, keys, paste_cap, resume}
+use terminal.keys.{Heard, escape_window, heard, keys, paste_cap}
 use tree.bindings.{meeting, names}
 use tree.chord.{Chord, parsed}
+use tree.seats.{Seat, row_at}
 
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
@@ -70,6 +71,7 @@ export type Terminal = {
     paste_limit: int = paste_cap,
     lost_paste: Cell<int> = Cell.new(0),
     keyboard: Cell<int> = Cell.new(-1),
+    input: Cell<Heard> = Cell.new(Heard { keys: [], held: "".bytes() }),
 }
 
 /// `view` in a terminal `width` cells wide and `height` lines tall. The
@@ -168,6 +170,10 @@ fn chord_of(k: Key) -> Chord? {
     }
 }
 
+/// Whether a seat's terminal key is `k`: its row is the one place a key is
+/// tied to an event.
+fn answers(seat: Seat, k: Key) -> bool { row_at(seat).terminal?.names(k) ?? false }
+
 /// Whether a live binding names Ctrl-C.
 fn interrupt_bound(root: Node, seat: int?) -> bool {
     let c? = parsed("ctrl+c") else { return false }
@@ -182,14 +188,31 @@ fn moded_nothing(_mode: int) {}
 
 // ── what a key does to the control that holds the focus ─────────
 
-/// Enter: a control that is pressed is pressed, one that is on or off
-/// changes over, and a field sends the form it stands in.
-fn entered(c: Control) -> bool {
+/// A key on the control: its own seat that names the key fires with what
+/// the control says on a key, and a control that sends its form sends it
+/// when the form's seat names the key.
+fn keyed(c: Control, k: Key) -> bool {
+    let own = c.node.events.find(said_by_control(it) && answers(it.seat, k))?.fire(key_said(c)) ?? false
+    let form = sends_form(c) &&
+        (c.form?.events ?? []).find(!said_by_control(it) && answers(it.seat, k))?.fire(null) ?? false
+    own || form
+}
+
+/// What a control says when a key acts on it: a box or a switch its other
+/// state, any other control nothing.
+fn key_said(c: Control) -> Said? {
     match c.node.prim {
-        .Checkbox or .Switch -> c.says(Said.Flag(!said_of(c.node.attrs).checked)),
-        .Field -> c.sends(),
-        .Slider -> false,
-        .Text or .Heading or .Button or .Link or .Image or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Key -> c.pressed(),
+        .Checkbox or .Switch -> Said.Flag(!said_of(c.node.attrs).checked),
+        .Text or .Heading or .Button or .Link or .Image or .Field or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Slider or .Key -> null,
+    }
+}
+
+/// Whether a key on the control sends the form it stands in: a field's
+/// does, and so does a control that submits.
+fn sends_form(c: Control) -> bool {
+    match c.node.prim {
+        .Field -> true,
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> c.node.submits(),
     }
 }
 
@@ -224,7 +247,7 @@ fn one_line(text: string) -> string {
 fn clicked(c: Control) -> bool {
     match c.node.prim {
         .Field or .Slider -> false,
-        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Key -> entered(c),
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Key -> keyed(c, Key.Enter),
     }
 }
 
@@ -234,7 +257,7 @@ fn typed(c: Control, ch: string) -> bool {
     match c.node.prim {
         .Field -> c.says(Said.Text(said_of(c.node.attrs).value + ch)),
         .Slider -> match ch { "+" -> slid(c, 1), "-" -> slid(c, -1), _ -> false },
-        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Key -> ch == " " && entered(c),
+        .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Key -> ch == " " && keyed(c, Key.Enter),
     }
 }
 
@@ -501,8 +524,16 @@ impl Terminal {
         let _ = self.shown.app.flush()
         let met = match lane_of(k) { .Before -> self.bound(k), .After or .Never -> false }
         if met { return true }
-        let ran = self.defaulted(k)
+        let ran = self.act((c: Control) -> keyed(c, k)) || self.surfaced(k) || self.defaulted(k)
         match lane_of(k) { .After -> ran || self.bound(k), .Before or .Never -> ran }
+    }
+
+    /// The surface over the screen hears a key one of its own seats names,
+    /// wherever the focus is. True when a handler ran.
+    fn surfaced(k: Key) -> bool {
+        let over? = self.shown.over() else { return false }
+        let action? = over.events.find(!said_by_control(it) && answers(it.seat, k)) else { return false }
+        self.turn(() -> action.fire(null))
     }
 
     /// What the terminal does with a key that no binding took.
@@ -536,7 +567,7 @@ impl Terminal {
                 self.edge(true)
                 false
             },
-            .Escape -> false,
+            .Escape or .Shortcut or .Enter -> false,
             .Chord(text, ctrl, alt, shift) -> {
                 if text == "c" && ctrl && !alt && !shift { (self.interrupts)() }
                 false
@@ -564,8 +595,6 @@ impl Terminal {
                 self.kitty_asked()
                 false
             },
-            .Shortcut -> false,
-            .Enter -> self.act(entered),
             .Erase -> self.act(erased),
             .Char(ch) -> self.act((c: Control) -> typed(c, ch)),
         }
@@ -579,8 +608,19 @@ impl Terminal {
         }
     }
 
-    /// The keys `text` spells, each in turn, until the input ends.
-    fn feed(text: string) { self.press(resume(text.bytes(), 0, self.paste_limit).keys) }
+    /// The keys a read spells behind what the reads before it held: `got` the
+    /// octets it brought, or null when the escape window went by with none.
+    fn taken(got: Bytes?) -> List<Key> {
+        let run = self.input.get().after(got, self.paste_limit)
+        self.input.set(run)
+        run.keys
+    }
+
+    /// The keys `text` spells as one read, each in turn, until the input ends.
+    fn feed(text: string) { self.press(self.taken(text.bytes())) }
+
+    /// The escape window goes by with nothing read.
+    fn quiet() { self.press(self.taken(null)) }
 
     /// The screen as the terminal shows it: the tree in lines, the control
     /// that holds the focus marked, and under them a status line while the
@@ -619,34 +659,47 @@ impl Terminal {
     }
 }
 
-/// The act of a read: the keys `bytes` finishes, each in turn. What the
-/// read leaves unfinished — a character or an escape sequence it cut —
-/// stands in `held` before the next. A turn that ends the input ends the
-/// loop.
-fn keyed(on: Terminal, held: Cell<Bytes>, draining: Cell<int>, bytes: Bytes) -> Act {
+/// The act of a read: its keys, each in turn. A turn that ends the input
+/// ends the loop.
+fn pressing(on: Terminal, run: List<Key>) -> Act {
     () -> {
-        let run = resume(held.get().concat(bytes), draining.get(), on.paste_limit)
-        held.set(run.held)
-        draining.set(run.draining)
-        on.press(run.keys)
+        on.press(run)
         if on.ended.get() { on.shown.app.close() }
         true
     }
 }
 
-/// The standard input as a source: each read it parks for becomes an
-/// act in the app's inbox, and its end ends the loop.
+/// What a wait on the input brought: octets, the escape window going by
+/// with none, or the input's end.
+enum Arrival {
+    Octets(bytes: Bytes)
+    Quiet
+    Ended
+}
+
+/// The next thing the input brings: while a lone escape is held (`window`)
+/// the wait ends when the escape window does.
+fn arrived(window: bool) -> Arrival {
+    let ready = avra_fiber_park_fd(input, 0, if window { escape_window } else { -1 }) == 1
+    if window && !ready { return .Quiet }
+    let token = avra_fd_read(input, chunk)
+    if token <= 0 { .Ended } else { .Octets(avra_fd_taken(token)) }
+}
+
+/// The standard input as a source: each read's keys become an act in the
+/// app's inbox, and its end ends the loop. What a read leaves unfinished
+/// stands before the next, read here, in order.
 fn read(on: Terminal) -> bool {
-    let held: Cell<Bytes> = Cell.new("".bytes())
-    let draining = Cell.new(0)
     while true {
-        let _ = avra_fiber_park_fd(input, 0, -1)
-        let token = avra_fd_read(input, chunk)
-        if token <= 0 {
-            on.shown.app.close()
-            return true
+        let got = match arrived(on.input.get().escape_waits()) {
+            .Octets(bytes) -> on.taken(bytes),
+            .Quiet -> on.taken(null),
+            .Ended -> {
+                on.shown.app.close()
+                return true
+            },
         }
-        if !on.shown.app.post_unowned(keyed(on, held, draining, avra_fd_taken(token))) { return true }
+        if !on.shown.app.post_unowned(pressing(on, got)) { return true }
     }
     true
 }
