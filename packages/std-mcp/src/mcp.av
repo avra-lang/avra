@@ -22,6 +22,7 @@ use @std.action.{Impact, faults as impact_faults}
 use @std.errors.{Error}
 use @std.http.http.{Request, Unrouted, Response}
 use @std.http.route.{Route, fixed}
+use @std.text.{ascii_lower, parse_int}
 
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
@@ -338,11 +339,21 @@ fn origin_refusal(origin: string?, origins: List<string>) -> Response? {
 }
 
 fn is_loopback(origin: string) -> bool {
+    let o = ascii_lower(origin)
     ["http://", "https://"]
         .any(
             (s) -> ["localhost", "127.0.0.1", "[::1]"]
-                .any((h) -> origin == s + h || origin.starts_with(s + h + ":")),
+                .any((h) -> o == s + h || port_is(o, s + h + ":")),
         )
+}
+
+/// A port spelled right after `prefix` and nothing after it: digits
+/// that parse as an integer in 1 to 65535.
+fn port_is(origin: string, prefix: string) -> bool {
+    let parts = origin.split(prefix)
+    if parts.length != 2 || parts[0] != "" { return false }
+    let port? = parse_int(parts[1]) else { return false }
+    port >= 1 && port <= 65535
 }
 
 /// A page's Origin must be loopback or listed by the server, so a
