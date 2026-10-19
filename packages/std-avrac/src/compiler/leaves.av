@@ -25,7 +25,7 @@ use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
 use features.{SettleRoot, SeatValue}
 use compiler.lower.{code_facts, code_facts_wire}
 use @std.relation.db.{AnswerRef, Db as RowsDb, Leaf}
-use @std.relation.engine.{Key}
+use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
 
 impl Workspace {
@@ -40,6 +40,35 @@ impl Workspace {
             arg: (spelled: string) -> ws.decl_arg(spelled),
             hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
+    }
+
+    /// The impl sets, spelled by their type: a set is its members' wires, so an impl joining
+    /// or leaving moves it. No kernel key carries it.
+    fn named_impl_sets() -> AnswerRef {
+        let ws = self
+        AnswerRef {
+            name: "ImplSet",
+            family: () -> -1,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.impl_set_hash(DeclId { index: arg }),
+        }
+    }
+
+    fn impl_set_hash(target: DeclId) -> int {
+        fp_str(joined(sorted_texts([self.decl_ref(b) for b in self.method_blocks(target)]), ","))
+    }
+
+    /// A type's method table says what it stood on: its members' signatures and the set they
+    /// make, so a reader of the table stands on who may join it.
+    fn note_methods(k: Key, target: DeclId, blocks: List<DeclId>) {
+        let rdb = self.decls.rows_db.get()
+        let leaves = rdb.leaves_of([key(Family.Sig, b.index) for b in blocks])
+        rdb
+            .noted(
+                edge_of(k),
+                leaves?.concat([Leaf.Input("ImplSet", self.decl_ref(target), self.impl_set_hash(target))]),
+            )
     }
 
     /// The signatures, spelled by declaration. A signature settled by no query (a held
@@ -238,6 +267,7 @@ impl Workspace {
         let rdb = self.decls.rows_db.get()
         self.db.kernel.keep_folds()
         rdb.answer_known(self.named_sigs())
+        rdb.answer_known(self.named_impl_sets())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
