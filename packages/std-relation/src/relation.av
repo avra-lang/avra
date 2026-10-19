@@ -94,6 +94,7 @@ use stable.{
     written_opt,
     written_list,
     written_map,
+    read_over,
     written_all,
     written_tagged,
     writer,
@@ -179,8 +180,17 @@ fn storage_mode(t: Type) -> string {
 /// field or type that breaks it.
 export fn relation_problems(t: Type) -> List<Diagnostic> {
     let mode = storage_mode(t)
-    if mode == "rows" { return problems_under(t, named_shape) }
+    if mode == "rows" { return rows_problems(t) }
     partition_problems(t, mode)
+}
+
+/// The relation law, then: a row's every stable column reads back, so `encoded` never has a
+/// `decoded` missing or failing — each column that cannot is spoken here, named.
+fn rows_problems(t: Type) -> List<Diagnostic> {
+    let carried = problems_under(t, named_shape)
+    if !carried.is_empty() { return carried }
+    let helpers = uses_helpers(t)
+    [unreadable_column(t, f) for f in stable(t) if !readable_column(helpers, f)]
 }
 
 /// The partition law for `arena`/`side`: no `id` (the partition's own
@@ -393,7 +403,8 @@ fn decodable(k: Kind) -> bool {
         .List(elem) -> decodable(elem),
         .Named(n, _) -> match named_shape(n) {
             .Tagged(_) -> true,
-            .Dense(_) or .Record(_) or .Over(_) or .Plain or .Payload(_) -> false,
+            .Over(shape) -> decodable(shape),
+            .Dense(_) or .Record(_) or .Plain or .Payload(_) -> false,
         },
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
@@ -453,11 +464,12 @@ fn helper_decodable_under(k: Kind, seen: List<string>) -> bool {
             } else {
                 fs
                     .all(
-                        (f: Field) -> !marked(f, "local") &&
-                            helper_decodable_under(f.kind, seen.concat([n])),
+                        (f: Field) -> restorable(f) &&
+                            (marked(f, "local") || helper_decodable_under(f.kind, seen.concat([n]))),
                     )
             },
-            .Dense(_) or .Over(_) or .Plain -> false,
+            .Over(shape) -> helper_decodable_under(shape, seen),
+            .Dense(_) or .Plain -> false,
         },
         rest -> false,
     }
@@ -1102,7 +1114,8 @@ fn lookup_member(t: Type, f: Field, i: int, n: string, one: bool) -> Decls {
 
 fn hash_chain(t: Type) -> Code {
     mut acc: Code = quote { stable_hasher(${text_hash(stable_name(t))}) }
-    for f in stable(t) { acc = hashed(acc, quote { self.${f.name} }, f.kind, row_owner(t)) }
+    let owner = row_owner(t)
+    for f in stable(t) { acc = hashed(acc, quote { self.${f.name} }, f.kind, owner) }
     acc
 }
 
@@ -1168,27 +1181,23 @@ fn hash_each(k: Kind, owner: Owner) -> Code {
 fn encoded_member(t: Type) -> Decls {
     if stable(t).is_empty() { return quote { fn encoded() -> Bytes { writer().bytes() } } }
     let w = "w"
+    let owner = row_owner(t)
     quote {
         fn encoded() -> Bytes {
             let ${w} = writer()
-            ${[written(name(w), quote { self.${f.name} }, f.kind, row_owner(t)) for f in stable(t)]}
+            ${[written(name(w), quote { self.${f.name} }, f.kind, owner) for f in stable(t)]}
             ${name(w)}.bytes()
         }
     }
 }
 
-/// `decoded`, when every stable column reads back. RECORDED TRIGGER:
-/// fires when a relation can be asked to be durable — that ask refuses
-/// a relation whose columns cannot read back, naming the column, never
-/// a silently undurable one — owner: ORM.
-fn decoded_members(t: Type) -> List<Decls> {
-    let ok = if uses_helpers(t) {
-        stable(t).all((f: Field) -> helper_decodable(f.kind))
-    } else {
-        stable(t).all((f: Field) -> decodable(f.kind))
-    }
-    if !ok { return [] }
-    [decoded_member(t)]
+/// `decoded`: a row that writes octets reads them back. A column that cannot is refused
+/// at the declaration (`unreadable_column`), so this pair is never half.
+fn decoded_members(t: Type) -> List<Decls> { [decoded_member(t)] }
+
+/// Whether a stable column reads back, by the path its row's codec takes.
+fn readable_column(helpers: bool, f: Field) -> bool {
+    if helpers { helper_decodable(f.kind) } else { decodable(f.kind) }
 }
 
 /// `decoded`: a record's octets read back into its row, field by field
@@ -1196,7 +1205,8 @@ fn decoded_members(t: Type) -> List<Decls> {
 /// octets to spare refused, never half read. A row with `@local` columns
 /// reads back as its STORED type, which has none to read.
 fn decoded_member(t: Type) -> Decls {
-    let read = [quote { W { ${f.name}: ${read_value(f.kind, row_owner(t))} } } for f in stable(t)]
+    let owner = row_owner(t)
+    let read = [quote { W { ${f.name}: ${read_value(f.kind, owner)} } } for f in stable(t)]
     if localized(t) {
         return quote {
             static fn decoded(b: Bytes) -> Result<${t}Stored, CodecFault> {
@@ -1265,7 +1275,8 @@ fn read_value(k: Kind, owner: Owner) -> Code {
             match instance_shape(n, args) {
                 .Dense(field) -> quote { dense_read(rd, ${literal(n)}, (${"i"}) -> ${n} { ..${[quote { W { ${field}: ${name("i")} } }]} })? },
                 .Tagged(_) -> quote { ${tag_reader(quote { rd }, k, owner)}? },
-                .Over(_) or .Record(_) or .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
+                .Over(shape) -> quote { ${n}(${read_value(shape, owner)}) },
+                .Record(_) or .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
             }
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
@@ -1287,7 +1298,8 @@ fn read_each(k: Kind, owner: Owner) -> Code {
             match instance_shape(n, args) {
                 .Dense(field) -> quote { (r: Reader) -> dense_read(r, ${literal(n)}, (${"i"}) -> ${n} { ..${[quote { W { ${field}: ${name("i")} } }]} }) },
                 .Tagged(_) -> quote { (r: Reader) -> ${tag_reader(quote { r }, k, owner)} },
-                .Over(_) or .Record(_) or .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
+                .Over(shape) -> quote { (r: Reader) -> read_over(r, ${read_each(shape, owner)}, (x: ${shape.spelled()}) -> ${n}(x)) },
+                .Record(_) or .Payload(_) or .Plain -> quote { a_relation_field_kind_with_no_stable_encoding() },
             }
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
@@ -1406,8 +1418,9 @@ fn collect_kinds(k: Kind, acc: List<Kind>) -> List<Kind> {
 }
 
 fn codec_helper_members(t: Type) -> List<Decls> {
-    if !uses_helpers(t) { return [] }
-    [d for k in helper_types(stable(t), []) for d in helper_members(t, k, row_owner(t), true)]
+    let owner = row_owner(t)
+    if !owner.all { return [] }
+    [d for k in helper_types(stable(t), []) for d in helper_members(t, k, owner, true)]
 }
 
 /// Every field a stored type's wire holds, over all its variants.
@@ -1501,7 +1514,7 @@ fn stored_write(t: Type) -> List<Code> {
 fn stored_read(t: Type) -> Code {
     if carries_payload(t) { return quote { ${name(t.name)}.read_${helper_id(t.name)}(rd)? } }
     if !t.variants.is_empty() { return read_value(Kind.Named(t.name, []), stored_owner(t)) }
-    let inits = [quote { W { ${f.name}: ${stored_value(t, f)} } } for f in t.fields]
+    let inits = [quote { W { ${f.name}: ${field_value(f, stored_owner(t))} } } for f in t.fields]
     quote { ${t} { ..${inits} } }
 }
 
@@ -1509,11 +1522,15 @@ fn stored_read(t: Type) -> Code {
 fn carries_payload(t: Type) -> bool { t.variants.any((v: Variant) -> !v.fields.is_empty()) }
 
 /// A field's value in a decoded record: read from the wire, or the default a `@local` one declares.
-fn stored_value(t: Type, f: Field) -> Code {
-    if !marked(f, "local") { return read_value(f.kind, stored_owner(t)) }
+fn field_value(f: Field, owner: Owner) -> Code {
+    if !marked(f, "local") { return read_value(f.kind, owner) }
     let default? = f.default else { return quote { a_local_field_with_no_default() } }
     default
 }
+
+/// Whether a decoded value can stand for a field: the wire carries it, or it is `@local` and
+/// declares the default that stands in for it.
+fn restorable(f: Field) -> bool { !marked(f, "local") || f.default != null }
 
 /// Every way a declaration breaks the stored law, each spoken at the field that breaks it.
 export fn stored_problems(t: Type) -> List<Diagnostic> {
@@ -1545,7 +1562,11 @@ fn storable_name(n: string, args: List<Kind>, spelled: string, seen: List<string
     match instance_shape(n, args) {
         .Tagged(_) or .Dense(_) -> true,
         .Payload(vs) -> vs.all((v: Variant) -> v.fields.all((f: Field) -> storable_under(f.kind, inside))),
-        .Record(fs) -> fs.all((f: Field) -> !marked(f, "local") && storable_under(f.kind, inside)),
+        .Record(fs) -> fs
+            .all(
+                (f: Field) -> restorable(f) &&
+                    (marked(f, "local") || storable_under(f.kind, inside)),
+            ),
         .Over(shape) -> storable_under(shape, inside),
         .Plain -> false,
     }
@@ -1565,19 +1586,11 @@ fn helper_members(t: Type, k: Kind, owner: Owner, hashing: bool) -> List<Decls> 
     match shape {
         .Record(fs) -> {
             let writers = column_writers(n, fs, owner)
-            let reads = [quote { W { ${f.name}: ${read_value(f.kind, owner)} } } for f in columns(fs)]
+            let reads = [quote { W { ${f.name}: ${field_value(f, owner)} } } for f in fs]
             [
                 quote { static fn write_${id}(w: Writer, v: ${n}) -> void { written_all(w, v, [${..writers}]) } },
+                quote { static fn read_${id}(rd: Reader) -> Result<${n}, CodecFault> { .Ok(${base} { ..${reads} }) } },
             ]
-                .concat(
-                    if fs.all((f: Field) -> !marked(f, "local")) {
-                        [
-                            quote { static fn read_${id}(rd: Reader) -> Result<${n}, CodecFault> { .Ok(${base} { ..${reads} }) } },
-                        ]
-                    } else {
-                        []
-                    },
-                )
                 .concat(
                     if hashing {
                         [
@@ -1716,6 +1729,15 @@ fn kind_not_carried(t: Type, f: Field) -> Diagnostic {
         f.at ?? t.at,
         "a relation's fields carry a stable encoding — an int, a bool, a string, a tagged enum, a named type over one of those, a nested record of them, or a list or nullable of any — and `${t.name}.${f.name}` is `${f.ty}`",
         "store what identifies the value as one of those kinds, or mark the column `@local`",
+    )
+}
+
+fn unreadable_column(t: Type, f: Field) -> Diagnostic {
+    refuse_as_at(
+        "unreadable_column",
+        f.at ?? t.at,
+        "`${t.name}.${f.name}` is `${f.ty}`, which `encoded` writes and no reader reads back",
+        "store a kind a row reads back, or give a nested `@local` field a default: `@local x: T = …`",
     )
 }
 
