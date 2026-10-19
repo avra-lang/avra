@@ -562,25 +562,17 @@ impl Rebuilder {
 
     mut fn minted_expr(e: ExprId, x: Expr, holed: bool) -> ExprId {
         let id = self.dst.alloc_expr(x, self.src.expr_span(e))
-        self.dst.wear_expr(id, self.src.expr_marks_at(e))
-        if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
-        if self.src.is_sugar_match(e) { self.dst.mark_sugar_match(id) }
-        if self.src.statement_if(e) { self.dst.mark_statement_if(id) }
+        self.src.copy_expr_tables(e, self.dst, id)
         let noted: string? = self.src.means_note(e)
         if noted != null {
             let minted = self.dst.mean(id, noted!, self.door)
             self.made_exprs = self.made_exprs.concat(minted)
             self.made_from = self.made_from.concat([e for _m in minted])
         }
-        self.dst.wear_handler(id, self.src.on_handler(e))
         let ip: PayloadIs? = self.src.payload_marked(e)
         if ip != null { self.dst.mark_is_payload(id, self.pat(ip!.pat), ip!.has_else) }
-        let gl: string? = self.src.grammar_lit_of(e)
-        if gl != null { self.dst.mark_grammar_lit(id, gl!) }
         let targs = self.src.struct_targs_of(e)
         if !targs.is_empty() { self.dst.mark_struct_targs(id, [self.tref(a) for a in targs]) }
-        let wc: int? = self.src.written_close(e)
-        if wc != null { self.dst.mark_written_close(id, wc!) }
         let bp: BodyParts? = x.body_of()
         if bp != null {
             let b = bp!
@@ -598,23 +590,14 @@ impl Rebuilder {
 
     mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {
         let id = self.dst.alloc_stmt(x, self.src.stmt_span(s))
-        self.dst.wear(id, self.src.marks_at(s))
-        let g: GrammarSpec? = self.src.grammar_of(s)
-        if g != null { self.dst.mark_grammar(id, g!) }
-        let of: string? = self.src.instance_of(s)
-        if of != null { self.dst.mark_component_inst(id, of!) }
-        let itp: ImplTypeParams? = self.src.impl_tparams_of(s)
-        if itp != null { self.dst.mark_impl_tparams(id, itp!.of, itp!.target) }
+        self.src.copy_stmt_tables(s, self.dst, id)
         let args = self.src.trait_args_of(s)
         if !args.is_empty() { self.dst.mark_trait_args(id, [self.tref(a) for a in args]) }
-        let own = self.src.trait_tparams_of(s)
-        if !own.is_empty() { self.dst.mark_trait_tparams(id, own) }
         let spreads = self.src.spreads_of(s)
         if !spreads.is_empty() { self.dst.spread_fields(id, [x with { of: self.tref(x.of) } for x in spreads]) }
         let docs: List<string>? = self.src.doc_comment(s)
         if docs != null { self.dst.document(id, docs!, self.src.doc_at(s)) }
         for a in annotations { self.dst.annotate(id, a) }
-        if self.src.is_collect_dense(s) { self.dst.mark_collect_dense(id, true) }
         if holed { self.holed_stmts.push(id) } else { self.made_stmts.push(id) }
         id
     }
