@@ -133,9 +133,10 @@ fn face_rule(f: Font?, state: Interaction?) -> List<CssRule> { opted(f, state, f
 
 /// A size along `along`, the parent axis it is the main one of. A fixed
 /// size holds on it; a fill takes the room that is left there (a growth
-/// given is its share) and stretches across; hug and a fraction write
-/// nothing. The flex basis is a percentage so that a parent whose size
-/// along is not yet known gives it the content's.
+/// given is its share) and stretches across; a percent reads its share from the
+/// node, as a fixed size does; hug writes nothing. The flex basis is a
+/// percentage so that a parent whose size along is not yet known gives it the
+/// content's.
 fn sizing_rule(
     along: Axis,
     prefix: string,
@@ -146,7 +147,8 @@ fn sizing_rule(
 ) -> List<CssRule> {
     let v? = s else { return [] }
     match v {
-        .Hug or .Percent(_) -> [],
+        .Hug -> [],
+        .Percent(_) -> rule("${prefix}-pct", state, "${prop}:var(--${prefix})"),
         .Fill -> scoped(along, "${prefix}-fill", state, "flex:var(--grow) 1 0%;${least}:0")
             .concat(scoped(across(along), "${prefix}-fill", state, "align-self:stretch")),
         .Fixed(_) -> rule("${prefix}-fixed", state, "${prop}:var(--${prefix})")
@@ -276,12 +278,13 @@ impl CssVar {
     fn property() -> string { "--${self.name}" }
 }
 
-/// The property a fixed sizing writes, in pixels; nothing for any other sizing.
-fn px_var(name: string, s: Sizing?) -> List<CssVar> {
+/// The property a fixed or a percent sizing writes, in pixels or percent; nothing for any other sizing.
+fn size_var(name: string, s: Sizing?) -> List<CssVar> {
     let v? = s else { return [] }
     match v {
         .Fixed(n) -> [CssVar { name: name, value: "${n}px" }],
-        .Hug or .Fill or .Percent(_) -> [],
+        .Percent(p) -> [CssVar { name: name, value: "${p}%" }],
+        .Hug or .Fill -> [],
     }
 }
 
@@ -291,8 +294,8 @@ fn px_var(name: string, s: Sizing?) -> List<CssVar> {
 export fn box_vars(box: Box) -> List<CssVar> {
     flatten(
         [
-            px_var("w", box.layout.width),
-            px_var("h", box.layout.height),
+            size_var("w", box.layout.width),
+            size_var("h", box.layout.height),
             if box.layout.grow > 0 { [CssVar { name: "grow", value: "${box.layout.grow}" }] } else { [] },
             if box.layout.order != 0 { [CssVar { name: "order", value: "${box.layout.order}" }] } else { [] },
         ],
@@ -375,8 +378,10 @@ fn layout_vocabulary() -> List<CssRule> {
             flatten([wrap_rule(w, null) for w in wraps]),
             sizing_rule(.Row, "w", "width", "min-width", Sizing.Fill, null),
             sizing_rule(.Row, "w", "width", "min-width", Sizing.Fixed(0), null),
+            sizing_rule(.Row, "w", "width", "min-width", Sizing.Percent(0.0), null),
             sizing_rule(.Column, "h", "height", "min-height", Sizing.Fill, null),
             sizing_rule(.Column, "h", "height", "min-height", Sizing.Fixed(0), null),
+            sizing_rule(.Column, "h", "height", "min-height", Sizing.Percent(0.0), null),
             grow_rule(1, null),
             order_rule(1, null),
         ],

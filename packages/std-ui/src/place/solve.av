@@ -15,10 +15,13 @@
 //! start), distribute, width and height, grow and order. A `Fixed` size
 //! holds; a `Hug` size asks its content and may shrink to its narrowest;
 //! a `Fill` takes the room that is left along its parent's axis (a `grow`
-//! given is its share) and stretches across it. `Percent` reads as `Hug`.
+//! given is its share) and stretches across it; a `Percent` is that share of what
+//! holds it — its inner width, or its inner height when that holds one, else
+//! it hugs.
 //! Not read: aspect and inset.
 use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge}
 use tree.node.{Node, own_axis}
+use tree.trap.{trapped}
 use place.measure.{Measure, Extent}
 
 /// A box in the target's unit, from the root's top-left corner.
@@ -161,6 +164,43 @@ fn fixed_h(cx: Ctx, n: Node) -> int? {
     bigger(k, pad.top + pad.bottom)
 }
 
+/// A percent of `room`, when that is known: the percent to a whole number of
+/// hundredths of one percent by the declared rounding, then the share snapped,
+/// halves up. A percent that is no number is refused, never read as another
+/// size.
+fn share(p: float, room: int?) -> int? {
+    let whole? = room else { return null }
+    match (p * 100.0).round() {
+        .Ok(hundredths) -> at_least_zero(snapped(whole * hundredths, 10000)),
+        .Err(_) -> {
+            trapped("a percent size is a number of percent, and this one is not")
+            0
+        },
+    }
+}
+
+/// A size that stands on its own or on what holds the box: a fixed one, or a
+/// percent of `room` when that is known.
+fn standing(s: Sizing?, room: int?) -> int? {
+    let v? = s else { return null }
+    match v { .Fixed(k) -> k * unit, .Percent(p) -> share(p, room), .Hug or .Fill -> null }
+}
+
+/// A node's width where its container is `iw` wide inside, held no narrower
+/// than its own padding.
+fn sized_w(cx: Ctx, n: Node, iw: int) -> int? {
+    let k? = standing(n.box.layout.width, iw) else { return null }
+    let pad = sides(cx, n.box.layout.pad)
+    bigger(k, pad.start + pad.end)
+}
+
+/// A node's height where its container is `ih` high inside, when it is known.
+fn sized_h(cx: Ctx, n: Node, ih: int?) -> int? {
+    let k? = standing(n.box.layout.height, ih) else { return null }
+    let pad = sides(cx, n.box.layout.pad)
+    bigger(k, pad.top + pad.bottom)
+}
+
 fn fills(s: Sizing?) -> bool {
     let v? = s else { return false }
     v is .Fill
@@ -284,7 +324,7 @@ fn item_of(cx: Ctx, n: Node, path: string, i: int, iw: int, ih: int?, dir: Axis,
     let stretch = n.box.layout.align ?? .Stretch is .Stretch
     if dir is .Row {
         let pads = sides(cx, l.pad)
-        let wide = fixed_w(cx, c) ?? if fills(l.width) { pads.start + pads.end } else { max_w(cx, c, cp) }
+        let wide = sized_w(cx, c, iw) ?? if fills(l.width) { pads.start + pads.end } else { max_w(cx, c, cp) }
         let squeezed = min_w(cx, c, cp)
         let least = bigger(pads.start + pads.end, yields(l.width, squeezed, wide))
         Item {
@@ -306,10 +346,10 @@ fn item_of(cx: Ctx, n: Node, path: string, i: int, iw: int, ih: int?, dir: Axis,
     } else {
         let room = at_least_zero(iw - mg.start - mg.end)
         let stretching = fills(l.width) || l.width == null && stretch
-        let w = fixed_w(cx, c) ?? if stretching && !wrapped { room } else { smaller(max_w(cx, c, cp), bigger(min_w(cx, c, cp), room)) }
+        let w = sized_w(cx, c, iw) ?? if stretching && !wrapped { room } else { smaller(max_w(cx, c, cp), bigger(min_w(cx, c, cp), room)) }
         let content = height_at(cx, c, cp, w)
         let pads = sides(cx, l.pad)
-        let tall = fixed_h(cx, c) ?? if fills(l.height) && ih != null { pads.top + pads.bottom } else { content }
+        let tall = sized_h(cx, c, ih) ?? if fills(l.height) && ih != null { pads.top + pads.bottom } else { content }
         let least = bigger(pads.top + pads.bottom, yields(l.height, content, tall))
         Item {
             at: i,
@@ -513,7 +553,7 @@ fn flow(cx: Ctx, n: Node, path: string, iw: int, ih: int?) -> Flow {
     let lines = lines_of(items, along, gap, wrapped)
     let sized = [flexed(line, along, gap) for line in lines]
     let spans = [spanned(line, sized[k], along, gap, n.box.layout.distribute ?? .Start) for k, line in lines]
-    let crossed = [cross_sizes(cx, n, path, line, spans[k]) for k, line in lines]
+    let crossed = [cross_sizes(cx, n, path, ih, line, spans[k]) for k, line in lines]
     let natural = [[line[j].c0 + crossed[k][j] + line[j].c1 for j, _item in line].max() ?? 0 for k, line in lines]
     let definite = if dir is .Row { ih } else { iw }
     let rows = stacked_lines(natural, across_gap, definite, wrapped)
@@ -540,7 +580,7 @@ fn flow(cx: Ctx, n: Node, path: string, iw: int, ih: int?) -> Flow {
             }
             rects[item.at] = r
             let own_height = n.children[item.at].box.layout.height
-            sure[item.at] = fixed(own_height) != null ||
+            sure[item.at] = standing(own_height, ih) != null ||
                 if dir is .Row { item.stretches || fills(own_height) && ih != null } else { true }
         }
     }
@@ -557,15 +597,17 @@ fn line_asked(line: List<Item>, gap: int) -> int { [outer(item, item.hyp) for it
 
 /// Each item's size across, once its size along is settled: a column's was
 /// asked up front; a row's is its height at the width it came to.
-fn cross_sizes(cx: Ctx, n: Node, path: string, line: List<Item>, spans: List<Span>) -> List<int> {
-    [cross_of(cx, n, path, item, spans[j]) for j, item in line]
+fn cross_sizes(cx: Ctx, n: Node, path: string, ih: int?, line: List<Item>, spans: List<Span>) -> List<
+    int,
+> {
+    [cross_of(cx, n, path, ih, item, spans[j]) for j, item in line]
 }
 
-fn cross_of(cx: Ctx, n: Node, path: string, item: Item, span: Span) -> int {
+fn cross_of(cx: Ctx, n: Node, path: string, ih: int?, item: Item, span: Span) -> int {
     let known? = item.across else {
         let c = n.children[item.at]
         let content = height_at(cx, c, "${path}.${item.at}", span.size)
-        return fixed_h(cx, c) ?? content
+        return sized_h(cx, c, ih) ?? content
     }
     known
 }

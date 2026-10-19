@@ -7,6 +7,7 @@ use @std.meta.{Named, Marker}
 use tree.dom_event.{DomEvent}
 use tree.node.{Prim}
 use tree.terminal_key.{Key}
+use tree.trap.{trapped}
 
 /// A seat's number: its place among the program's seats.
 export type Seat = int
@@ -57,8 +58,6 @@ export fn ties(rows: List<SeatRow>) -> List<string> {
     ["${r.owner}.${r.event}" for j, r in rows if rows.slice(0, j).any(it.owner == r.owner && it.event == r.event)]
 }
 
-extern fn avra_trap(message: string)
-
 /// A seat's row.
 export fn row_at(seat: Seat) -> SeatRow { seat_rows[seat.of].row }
 
@@ -67,7 +66,7 @@ export fn row_at(seat: Seat) -> SeatRow { seat_rows[seat.of].row }
 /// there.
 export fn seat_named(owner: string, event: string) -> Seat {
     let found = seat_of(owner, event)
-    if found == null { avra_trap(no_seat_row(owner, event)) }
+    if found == null { trapped(no_seat_row(owner, event)) }
     found!
 }
 
@@ -75,7 +74,7 @@ export fn seat_named(owner: string, event: string) -> Seat {
 /// listens for, and asking for its word is spoken.
 export fn web_word(seat: Seat) -> string {
     let row = row_at(seat)
-    if row.web == null { avra_trap("`${row.owner}.${row.event}` has no web event, and a page listens for one") }
+    if row.web == null { trapped("`${row.owner}.${row.event}` has no web event, and a page listens for one") }
     row.web!.word()
 }
 

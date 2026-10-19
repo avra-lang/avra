@@ -104,11 +104,22 @@ const FIXED_CASES = [
   { prim: "Row", layout: { width: { fixed: 10 } }, kids: [text("abcdefgh"), text("ijklmnop")] },
   { prim: "Row", layout: { gap: "Xs", width: { fixed: 12 } }, kids: [text("abc defghijkl"), leaf({ width: { fixed: 6 }, height: { fixed: 2 } })] },
   { prim: "Row", layout: { gap: "Xs", pad: { start: "Xs", end: "Xs", top: "None", bottom: "None" }, width: { fixed: 60 } }, kids: [leaf({ width: { fixed: 10 }, height: { fixed: 3 } }), leaf({ width: "Fill", height: { fixed: 3 } })] },
+  // a percent is a share of what holds the box: half and a quarter of a row of
+  // twenty, a share that does not divide, a column's child across, a share of a
+  // fixed height, and a share of a height that is none (the child hugs)
+  { prim: "Row", layout: { width: { fixed: 20 } }, kids: [leaf({ width: { percent: 50 }, height: { fixed: 3 } }), leaf({ width: { percent: 25 }, height: { fixed: 3 } })] },
+  // two halves and the row's own gap overflow it: both give way
+  { prim: "Row", layout: { width: { fixed: 20 } }, kids: [leaf({ width: { percent: 50 }, height: { fixed: 3 } }), leaf({ width: { percent: 50 }, height: { fixed: 3 } })] },
+  { prim: "Row", layout: { gap: "None", width: { fixed: 20 } }, kids: [leaf({ width: { percent: 50 }, height: { fixed: 3 } }), leaf({ width: { percent: 50 }, height: { fixed: 3 } })] },
+  { prim: "Row", layout: { width: { fixed: 33 } }, kids: [leaf({ width: { percent: 50 }, height: { fixed: 3 } }), leaf({ width: { percent: 10 }, height: { fixed: 3 } })] },
+  { prim: "Column", layout: { width: { fixed: 40 } }, kids: [leaf({ width: { percent: 30 }, height: { fixed: 3 } })] },
+  { prim: "Column", layout: { width: { fixed: 20 }, height: { fixed: 10 } }, kids: [leaf({ width: { fixed: 4 }, height: { percent: 50 } })] },
+  { prim: "Column", layout: { width: { fixed: 20 } }, kids: [leaf({ width: { fixed: 4 }, height: { percent: 50 } })] },
 ];
 
 // ── the solver's side and the page ───────────────────────────────
 
-const sizing = (s) => (s === "Fill" ? ".Fill" : `.Fixed(${s.fixed})`);
+const sizing = (s) => (s === "Fill" ? ".Fill" : s.percent !== undefined ? `.Percent(${s.percent}.0)` : `.Fixed(${s.fixed})`);
 const edgeSrc = (e) => `Edge { start: .${e.start}, end: .${e.end}, top: .${e.top}, bottom: .${e.bottom} }`;
 
 function layoutSrc(l) {
