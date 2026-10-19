@@ -113,6 +113,9 @@ extern const char avra_rt_held_avra_map_remove __asm__(AVRA_RT_LABEL(avra_map_re
 extern const char avra_rt_held_avra_slot_unique __asm__(AVRA_RT_LABEL(avra_slot_unique));
 extern const char avra_rt_held_avra_owned_slot_unique __asm__(AVRA_RT_LABEL(avra_owned_slot_unique));
 extern const char avra_rt_held_avra_slot_set __asm__(AVRA_RT_LABEL(avra_slot_set));
+extern const char avra_rt_held_avra_slot_put __asm__(AVRA_RT_LABEL(avra_slot_put));
+extern const char avra_rt_held_avra_slot_put_owned __asm__(AVRA_RT_LABEL(avra_slot_put_owned));
+extern const char avra_rt_held_avra_slot_put_moved __asm__(AVRA_RT_LABEL(avra_slot_put_moved));
 extern const char avra_rt_held_avra_slot_set_owned __asm__(AVRA_RT_LABEL(avra_slot_set_owned));
 extern const char avra_rt_held_avra_slot_set_moved __asm__(AVRA_RT_LABEL(avra_slot_set_moved));
 extern const char avra_rt_held_avra_array_push_maybe __asm__(AVRA_RT_LABEL(avra_array_push_maybe));
@@ -342,6 +345,9 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_slot_unique,
     &avra_rt_held_avra_owned_slot_unique,
     &avra_rt_held_avra_slot_set,
+    &avra_rt_held_avra_slot_put,
+    &avra_rt_held_avra_slot_put_owned,
+    &avra_rt_held_avra_slot_put_moved,
     &avra_rt_held_avra_slot_set_owned,
     &avra_rt_held_avra_slot_set_moved,
     &avra_rt_held_avra_array_push_maybe,
@@ -623,6 +629,12 @@ _Static_assert(__builtin_classify_type(avra_owned_slot_unique(AVRA_RT_PTR, AVRA_
     "avra_owned_slot_unique: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_set(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
     "avra_slot_set: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_put(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_slot_put: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_put_owned(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), void),
+    "avra_slot_put_owned: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_put_moved(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), void),
+    "avra_slot_put_moved: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_set_owned(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), void),
     "avra_slot_set_owned: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_set_moved(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), void),
