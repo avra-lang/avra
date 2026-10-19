@@ -87,8 +87,19 @@ impl Live {
     /// sheet is resent only for a class the page has never worn or a new
     /// theme — never because the tree named its classes in another order.
     /// The handlers are kept anew EVERY paint: two trees that draw alike
-    /// may still close over different values.
+    /// may still close over different values. A tree built anywhere but
+    /// over this page's `stands` is a snapshot: it is painted whole and the
+    /// page stops watching, so the exact path never answers for it.
     fn patches(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
+        let full = self.painted(root, theme, notice)
+        self.unwatched()
+        full
+    }
+
+    /// `patches`, for a tree drawn by a walk over this page's `stands` — the
+    /// walk an app opens, or `paint_view` — whose instances are the ones the
+    /// page's readings watch. The exact path may answer for it.
+    fn patches_drawn(root: Node, theme: Theme, notice: Node? = null) -> List<Patch> {
         if exact_mode() == "" { return self.painted(root, theme, notice) }
         if exact_mode() != "check" { return self.exactly(root, theme, notice) }
         let exact = self.exact_turn()
@@ -96,8 +107,14 @@ impl Live {
         self.rewatched()
         let mine? = exact else { return full }
         let why? = disagreement(mine, full) else { return full }
-        if exact_mode() == "check" { avra_trap("exact patches disagree with the full paint: ${why}") }
+        avra_trap("exact patches disagree with the full paint: ${why}")
         full
+    }
+
+    /// The page watches nothing: a paint no walk of its own drew.
+    fn unwatched() {
+        self.watch.get()?.released()
+        self.watch.set(null)
     }
 
     /// The exact path alone: its patches stand for the turn, the page's words
@@ -201,15 +218,22 @@ impl Live {
     /// `patches`, as the frame a host applies.
     fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme), self.told) }
 
-    /// `view` painted on this page: the walk stands where the last paint's
+    /// `view` drawn on this page: the walk stands where the last paint's
     /// stood, so an instance the view reaches again keeps its state and a prop
     /// written to it moves its cells. The page owns that one standing — a
     /// tree built any other way is a snapshot (`tree_of`), which keeps no
     /// instance.
-    fn paint_view(view: dyn View, theme: Theme) -> Bytes {
+    fn drawn(view: dyn View) -> Node {
         self.stands.begun()
-        self.paint(rooted(view.describe(self.stands)), theme)
+        rooted(view.describe(self.stands))
     }
+
+    /// `view` painted on this page: drawn, then painted by the exact path or
+    /// the full one.
+    fn paint_view(view: dyn View, theme: Theme) -> Bytes { self.paint_drawn(self.drawn(view), theme) }
+
+    /// A tree this page drew, painted as the frame a host applies.
+    fn paint_drawn(root: Node, theme: Theme) -> Bytes { frame(self.patches_drawn(root, theme), self.told) }
 
     /// The host's echo: element `id` spoke `seat`, saying `said`. The
     /// handler the last paint bound there runs; false when nothing
