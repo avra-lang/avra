@@ -17,7 +17,8 @@
 //! stamp that is already spent.
 use tree.identity.{NodeId}
 use tree.sites.{Reading}
-use realize.html.element.{Element, Tagged, words_part}
+use realize.html.element.{Element, Tagged, words_part, control_part}
+use realize.html.tags.{HtmlAttrName}
 use realize.dom.patch.{Patch}
 
 extern fn avra_box_observe(cell: ptr) -> int
@@ -31,7 +32,7 @@ extern fn avra_rc_release(p: ptr)
 
 /// A reading the page has placed: the number it gave the text's run, the
 /// reading, and the words the page was last told.
-export type Placed = { node: NodeId, reading: Reading, shown: Cell<string> }
+export type Placed = { node: NodeId, host: NodeId, says: List<HtmlAttrName>, reading: Reading, shown: Cell<string> }
 
 /// The readings a paint placed, in page order: each text element that carries
 /// readings, the run it holds first.
@@ -52,11 +53,26 @@ fn words_host(el: Tagged) -> Tagged {
     span.tagged() ?? el
 }
 
+/// The element that wears the attributes a node's words repeat: itself, or
+/// the control a labelled one holds.
+fn named_host(el: Tagged) -> Tagged {
+    let control? = el.kids.find((k) -> k.seat() == control_part) else { return el }
+    control.tagged() ?? el
+}
+
 /// A reading with the text run its element holds.
 fn run_placed(el: Tagged, r: Reading) -> List<Placed> {
     let k? = words_host(el).kids.first() else { return [] }
     match k {
-        .Text(run) -> [Placed { node: run.id, reading: r, shown: Cell.new(run.content) }],
+        .Text(run) -> [
+            Placed {
+                node: run.id,
+                host: named_host(el).id,
+                says: el.says,
+                reading: r,
+                shown: Cell.new(run.content),
+            },
+        ],
         .Tag(_) -> [],
     }
 }
@@ -141,7 +157,7 @@ impl Watch {
         let now = (p.reading.words)()
         if now == p.shown.get() { return [] }
         p.shown.set(now)
-        [Patch.SetText(p.node, now)]
+        [Patch.SetText(p.node, now)].concat([Patch.SetAttr(p.host, name, now) for name in p.says])
     }
 
     /// Every cell observed again after the stamp wrapped: a cell stamped a

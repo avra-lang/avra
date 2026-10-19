@@ -47,6 +47,7 @@ export type Tagged = {
     opaque: Opaque = false,
     kids: List<Element> = [],
     crowded: bool = false,
+    says: List<HtmlAttrName> = [],
 }
 
 impl Element {
@@ -180,7 +181,7 @@ fn seat_of(seat: Seat?, step: Step, crowded: bool = false) -> Seat {
 
 /// The parts a lowering makes inside a node, by the step each stands at.
 const text_part = Step.Part("text").spelled()
-const control_part = Step.Part("control").spelled()
+export const control_part = Step.Part("control").spelled()
 export const words_part = Step.Part("words").spelled()
 
 fn title_part(j: int) -> string { Step.Part(if j == 0 { "title" } else { "title~${j}" }).spelled() }
@@ -222,6 +223,17 @@ fn words_lead(p: Prim) -> bool {
     }
 }
 
+/// The attribute that says a node's words again: a label names the element
+/// too, unless a name written after it takes the place.
+fn words_attrs(attrs: List<Attribute>) -> List<HtmlAttrName> {
+    let last? = [a for a in attrs if names_element(a)].last() else { return [] }
+    match last { .Label(_) -> [HtmlAttrName.AriaLabel], rest -> [] }
+}
+
+fn names_element(a: Attribute) -> bool {
+    match a { .Name(_) or .Label(_) -> true, rest -> false }
+}
+
 /// A control under its label: the label takes the node's place — its
 /// seat, its key and its classes — and the control inside it takes the
 /// node's attributes and hears its events. The control and its words
@@ -250,6 +262,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 attrs: node_attrs(n),
                 vars: box_vars(drawn_box(n)),
                 sites: n.sites,
+                says: words_attrs(n.attrs),
                 structural: n.box.structural,
                 opaque: n.box.opaque,
                 kids: if words_lead(n.prim) { [words, control] } else { [control, words] }.concat(kids),
@@ -284,6 +297,7 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
                 rests: rests_of(n.attrs),
                 hears: heard(n),
                 sites: n.sites,
+                says: words_attrs(n.attrs),
                 structural: n.box.structural,
                 opaque: n.box.opaque,
                 kids: kids,
