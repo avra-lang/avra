@@ -299,7 +299,7 @@ extern fn malloc(n: int) -> ptr {
 ```
 
 ```
-error[lower.host_fn_shadows]: `malloc` is a symbol this platform already defines — a host fn of that name would answer every caller of it
+error[lower.host_fn_shadows]: `malloc` is a platform symbol — a host fn of that name would answer every caller of it
   ╭─[/w/src/main.av:2:1]
 2 │ extern fn malloc(n: int) -> ptr {
   · ┬
@@ -679,7 +679,7 @@ error[flow.arm]: a `select` arm waits on a task, a list of tasks, a source or a 
   ·     ┬
   ·     ╰── this is `int`
 ──╯
-help: wait on what `spawn` answers — a head ending `.await` has already waited: drop it; the timers are `@std/time`'s, and this program loads no `@std/time`
+help: wait on what `spawn` answers — a head ending `.await` has already waited: drop it — or `use @std.time` for the timers
 ```
 
 ## flow.arm_binder
@@ -1762,7 +1762,7 @@ error[resolve.reexport_cycle]: `@std/high` already uses `@std/low`, so re-export
   ·        ┬
   ·        ╰── in this use
 ──╯
-help: packages never depend in a cycle — re-export both from a FACADE package above them, one made of `export use` lines
+help: packages never depend in a cycle — re-export both from a facade package above them, made of `export use` lines
 ```
 
 ## resolve.nested_use
@@ -3380,7 +3380,7 @@ error[const.form]: a computed const needs a compile-time value form
   ·                           ┬
   ·                           ╰── `f` declares `fn(int) -> int`
 ──╯
-help: use a scalar, text, octets, list, map, record, enum, result, or an optional over one of them — a value holding behaviour (a fn or `dyn`) is built at run time: answer it from a fn, or export it as a component instance
+help: use a scalar, text, octets, list, map, record, enum, result, or an optional over one — a value holding behaviour (a fn or `dyn`) is built at run time: answer it from a fn, or export it as a component instance
 ```
 
 ## const.cycle
@@ -4047,7 +4047,7 @@ match 1 { quote { let x: ${T}? = null } -> true, _ -> false }
 ```
 
 ```
-error[type.quote_pat_type]: a hole in type position binds only its WHOLE field — a lone `${T}`, nothing around it — at a `let`/`mut`/`const`'s own annotation, a call's one pinned type argument, or a param's own type
+error[type.quote_pat_type]: a hole in type position binds only a lone `${T}` — at a `let`/`mut`/`const` annotation, a call's one pinned type argument, or a param's own type
   ╭─[witness.av:1:11]
 1 │ match 1 { quote { let x: ${T}? = null } -> true, _ -> false }
   ·           ┬
@@ -4065,7 +4065,7 @@ match 1 { quote { let l${x}_y = 1 } -> true, _ -> false }
 ```
 
 ```
-error[type.quote_pat_seat]: a hole in name position binds only its WHOLE field — a lone `${x}`, nothing around it — at a let/for/const binder, a bind pattern, a variant test, a call's callee, a method or a field name
+error[type.quote_pat_seat]: a hole in name position binds only a lone `${x}` — at a let/for/const binder, a bind pattern, a variant test, a callee, a method or a field name
   ╭─[witness.av:1:11]
 1 │ match 1 { quote { let l${x}_y = 1 } -> true, _ -> false }
   ·           ┬
@@ -5591,7 +5591,7 @@ error[type.host_seat]: seat 1 of `c_count` is `mut` and wears `string` — a `mu
   · ┬
   · ╰── declared here
 ──╯
-help: a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes.
+help: a cell C writes is `ptr`, `ptr?`, or an integer at its declared width — `i32` for `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`; a bare `int` is refused here alone, as only the declaration knows its width, and a managed value cannot cross: C keeps no refcount for what it writes
 ```
 
 ## type.row_shape
@@ -5629,7 +5629,7 @@ error[type.host_absence]: seat 1 of `avra_str_len` wears `string?`, and a runtim
   · ┬
   · ╰── declared here
 ──╯
-help: core's rows are the compiler's own C and every one of them READS the pointer it is handed, so absence there is a null nothing tests: the compiled program faults and the evaluator's fault takes the compiler down with it. A PACKAGE's C may take a pointer-or-NULL and mean it, and that seat is untouched — a row never does. Spell this one without the `?`.
+help: a runtime row reads the pointer it is handed, so its seat takes no absence — spell it without the `?` (a package's own C may take a pointer-or-NULL)
 ```
 
 ## type.extern_value
@@ -5673,7 +5673,7 @@ error[type.host_seat]: seat 1 of `avra_probe_cb` wears `fn(int) -> ptr`, which c
   · ┬
   · ╰── declared here
 ──╯
-help: a plain host seat is a machine word or ONE pointer C can read — `int`, `float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable over those. Everything else that rides a pointer is a box in Avra's layout, and its address means nothing on the far side: the compiled program hands C that address and the evaluator stages a HANDLE into its own table. A `mut` seat of this shape is refused above; this is its plain twin. Pass the parts one at a time, or make the callee a runtime row, whose arm materialises the box on both sides.
+help: a host seat is a machine word or one pointer C reads — `int`, `float`, `bool`, a width word, `string`, `Bytes`, `ptr`, or a nullable over those; any other box has an address C cannot follow. Pass its parts one at a time, or make the callee a runtime row
 
 error[flow.callback_pointer]: seat `cb` of `avra_probe_cb` is a callback under a cancel, and it answers a pointer the C would follow
   ╭─[witness.av:1:1]
@@ -5914,7 +5914,7 @@ error[type.spread_seat]: `..` spreads into a seat that takes the rest of the arg
   ·              ┬
   ·              ╰── spread here
 ──╯
-help: declare `..rest: List<T>` on `g`, or pass each element — a list's length is known at run time, a seat's at compile time
+help: declare `..rest: List<T>` on `g`, or pass each element
 ```
 
 ## type.isolated
