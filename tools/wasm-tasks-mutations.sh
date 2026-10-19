@@ -36,7 +36,8 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
-node=${NODE:-node}
+# a module with tasks runs under the JSPI API of a Node 24, which the image carries as `node-jspi` beside its own older `node`
+node=${NODE:-$(command -v node-jspi || echo node)}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wmut.XXXXXX")}
 lib=$tree/build/wasm32/libavra_runtime.a
 say() { echo "wasm-tasks-mutations: $*" >&2; }
