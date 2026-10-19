@@ -171,6 +171,40 @@ S "kr: and the binary follows" kr
 steps=$((steps+1)); kr_out=$($R/kr/src/main 2>&1)
 [ "$kr_out" = "18 90" ] || { fails=$((fails+1)); echo "FAIL  kr: K or the seat it feeds kept the value of the body J ran before: printed '$kr_out', wanted '18 90'"; }
 fi
+if section kq; then
+# A CONST'S VALUE IS READ BY NAME. `kq`'s V reads B in another module and a plain fn
+# inlines C at lowering, while A is read by nobody. Moving A's value must leave every
+# kept verdict but A's own standing; moving B must rerun exactly its own and V's;
+# moving C must rerun only its own but re-lower the fn that inlined it, so the binary
+# follows. Verdicts are counted by what the query kernel says it ran.
+mkdir -p $R/kq/src/f $R/kq/src/x
+printf '[package]\nname = "rt-kq"\nversion = "0.1.0"\n' > $R/kq/avra.toml
+printf 'export const A: int = 1\nexport const B: int = 2\nexport const C: int = 3\n' > $R/kq/src/x/vals.av
+printf 'use x.{B, C}\nexport const V: int = B * 10\nexport fn shows() -> int { C }\n' > $R/kq/src/f/readers.av
+printf 'use f.{V, shows}\nprintln("${V} ${shows()}")\n' > $R/kq/src/main.av
+kq_ran() { # kq_ran <label> <want>: the verdicts the next check ran, counted
+    steps=$((steps+1)); n=$(AVRA_QTRACE=1 ./avra check $R/kq 2>&1 | grep -c 'const_verdict.*ran')
+    if [ "$n" -eq "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    kq: $1 -> $n verdicts ran"; else fails=$((fails+1)); echo "FAIL  kq: $1 ran $n verdicts, wanted $2"; fi
+}
+kq_prints() { # kq_prints <label> <want>: the native binary's line
+    steps=$((steps+1)); out=$(./avra build $R/kq 2>/dev/null); bin=$(printf '%s\n' "$out" | tail -1); got=$("$bin" 2>&1)
+    [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  kq: $1 printed '$got', wanted '$2'"; }
+}
+HR "cold kq" check kq 0
+S "kq: built with every verdict kept" kq
+kq_prints "cold" "20 3"
+printf '// moved\n' >> $R/kq/src/main.av
+kq_ran "an edit elsewhere" 0
+ed $R/kq/src/x/vals.av "A: int = 1" "A: int = 9"
+kq_ran "an unread const's value moved" 1
+kq_prints "after A" "20 3"
+ed $R/kq/src/x/vals.av "C: int = 3" "C: int = 4"
+kq_ran "a const only a fn body inlines moved" 1
+kq_prints "after C: the inlining fn follows" "20 4"
+ed $R/kq/src/x/vals.av "B: int = 2" "B: int = 5"
+kq_ran "a const a verdict read moved" 2
+kq_prints "after B: V follows" "50 4"
+fi
 if section kv; then
 # A KEPT VERDICT CARRIES THE READS OF THE RUN THAT MADE IT. `kv`'s L stands on K, K on
 # J, and J settles by running a body in a fourth file; E beside them reads nothing.

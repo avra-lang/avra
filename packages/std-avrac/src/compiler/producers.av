@@ -2,7 +2,7 @@
 //! walk needs to reach its neighbours — read from the record's lines once, kept as one
 //! small row beside the record, and read back in place so a names-only walk decodes no
 //! record line (docs/2026_10_06_COMPILER_DB.md, "load: the rest": records read in place).
-use core.{distinct, flatten, joined, digest_of, sorted_texts, ModulePath}
+use core.{distinct, flatten, joined, digest_of, sorted_texts, DeclKind, ModulePath}
 use core.debug.{db_verified_producers}
 use features.{ExternNote, DeclFacts, implements_kind}
 use compiler.store.{Store, Stored, node_key}
@@ -33,6 +33,10 @@ type Producers = {
     refs: List<Filed>,
     /// Each placed file's names, as its module's namespace binds them.
     narrows: List<FileNames>,
+    /// The files a file's types name and the files its impls sit in: value the file reached, path the file it is reached from.
+    typed: List<Filed>,
+    /// The files the record's non-builtin references name.
+    reach_refs: List<string>,
     /// The digest of what other modules' keys read of the record apart from its plain free fns: its
     /// imports, references and each file's unnamed interface.
     seen: string,
@@ -69,6 +73,8 @@ export fn producers_of(m: ModulePath, fields: List<List<string>>) -> Producers {
             [Filed { value: ref_target(p), path: p[1] } for p in fields if is_ref_row(p)],
         ),
         narrows: [file_names(decoded, made_ordinals(fields), p) for p in distinct([p[1] for p in fields if declares(p)])],
+        typed: distinct_filed(flatten([typed_edges(p) for p in fields])),
+        reach_refs: distinct([ref_target(p) for p in fields if is_ref_row(p) && !names_builtin(p)]),
         seen: seen_digest_of(fields),
         forms: if unnamed_recorded(fields) { digest_of(forms_text_of(fields)) } else { "whole" },
         forms_text: forms_text_of(fields),
@@ -103,7 +109,7 @@ fn forms_text_of(fields: List<List<string>>) -> string {
     joined(
         sorted_texts(
             flatten(
-                [[joined([fields[j][5], digest_of(placed_form(joined(fields[j], "\t")))], "\t") for j in p.lo..p.hi if j < fields.length && plain_fn(fields[j])] for p in places.values()],
+                [[joined([path, fields[j][5], digest_of(placed_form(joined(fields[j], "\t")))], "\t") for j in p.lo..p.hi if j < fields.length && named_alone(fields[j])] for path, p in places],
             ),
         ),
         "\n",
@@ -165,19 +171,41 @@ export fn head_of(bound: List<string>, generated: bool) -> string {
     )
 }
 
+/// Whether a declaration of this kind is reached by its name and nothing else, when nothing
+/// generated or annotated it: a free fn or a const.
+export fn reached_by_name(k: DeclKind) -> bool {
+    match k {
+        .Fn or .Const -> true,
+        .Default or .Method or .Impl or .Case or .Main or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Collect or .CollectEnum or .Builtin or .State -> false,
+    }
+}
+
 /// The name a declaration binds, marked `*` when it is a free fn nothing generated or annotated;
 /// null for a declaration whose name the namespace does not bind.
 fn bound_name(row: Row, made: bool) -> string? {
     let kind? = declared_kind(row.shape, row.kind) else { return null }
     if !binds_name(kind) { return null }
     let facts = facts_unblocked(row.facts)!
-    let plain = kind is .Fn &&
+    let plain = reached_by_name(kind) &&
         row.owner.is_empty() &&
         row.enclosing.is_empty() &&
         !made &&
         facts.word == null &&
         facts.annotations.is_empty()
     if plain { "*${row.name}" } else { row.name }
+}
+
+/// The edges one record line adds to the typed index: the files its types name, and the file an
+/// impl's aimed type sits in, which the impl's own file rides with.
+fn typed_edges(p: List<string>) -> List<Filed> {
+    let named = when {
+        is_ref_row(p) && shapes_signature(p[3]) && !names_builtin(p) -> [ref_target(p)]
+        p.length > 13 && declares(p) -> wired_files(p)
+        _ -> []
+    }
+    let aimed = aimed_file(p)
+    [Filed { value: n, path: p[1] } for n in named]
+        .concat(if aimed == null { [] } else { [Filed { value: p[1], path: aimed! }] })
 }
 
 /// The one name in a list, or none.
@@ -243,7 +271,7 @@ fn fault_of(p: Producers, here: List<string>) -> string {
 // ── THE ROW ─────────────────────────────────────────────────────────
 
 /// The row's version line: a row of another shape is no row.
-fn producers_head() -> string { "producers\t2" }
+fn producers_head() -> string { "producers\t3" }
 
 /// The row's last line: a row cut short never ends in it.
 fn producers_end() -> string { "end" }
@@ -269,6 +297,8 @@ export fn producers_text(p: Producers) -> string {
         .concat([path_line("implementor", path) for path in p.implementors])
         .concat([filed_line("refs", f) for f in p.refs])
         .concat([narrow_line(n) for n in p.narrows])
+        .concat([filed_line("typed", f) for f in p.typed])
+        .concat([path_line("rrefs", t) for t in p.reach_refs])
         .concat([joined(["seen", p.seen, p.forms], "\t")])
         .concat([joined(l, "\t") for l in p.files])
         .concat([producers_end()])
@@ -326,6 +356,8 @@ export fn producers_read(m: ModulePath, text: string) -> Producers? {
             head: r[2],
             bound: r[3].split(" "),
         } for r in rows if r[0] == "narrow"],
+        typed: filings(rows, "typed"),
+        reach_refs: tagged_paths(rows, "rrefs"),
         seen: seen_line_of(rows, 1),
         forms: seen_line_of(rows, 2),
         forms_text: "",
@@ -337,8 +369,8 @@ export fn producers_read(m: ModulePath, text: string) -> Producers? {
 fn producer_line(r: List<string>) -> bool {
     match r[0] {
         "complete" -> r.length == 1,
-        "fault" or "declared" or "placed" or "link" or "implementor" -> r.length == 2,
-        "name" or "word" or "mark" or "refs" -> r.length == 3,
+        "fault" or "declared" or "placed" or "link" or "implementor" or "rrefs" -> r.length == 2,
+        "name" or "word" or "mark" or "refs" or "typed" -> r.length == 3,
         "extern" -> r.length == 4,
         "seen" -> r.length == 3,
         "narrow" -> r.length == 5,
@@ -471,8 +503,8 @@ impl Workspace {
         let before = lines_set(kept)
         let after = lines_set(now)
         let moved: Cell<Map<string, bool>> = Cell.new({})
-        for l in before.keys() { if !after.has(l) { moved.put(l.split("\t")[0], true) } }
-        for l in after.keys() { if !before.has(l) { moved.put(l.split("\t")[0], true) } }
+        for l in before.keys() { if !after.has(l) { moved.put(l.split("\t")[1], true) } }
+        for l in after.keys() { if !before.has(l) { moved.put(l.split("\t")[1], true) } }
         self.hold.forms_moved.put("${m.text()}\t${was}", moved.get())
         moved.get()
     }
