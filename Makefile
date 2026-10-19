@@ -635,6 +635,7 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_index_attack.sh
 	@sh tools/fn_add_attack.sh
 	@sh tools/host_fn_edit_attack.sh
+	@sh tools/suspect_narrow_attack.sh
 	@sh tools/dep_tests_listing_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
