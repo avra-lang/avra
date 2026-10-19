@@ -426,8 +426,21 @@ impl Workspace {
 
     /// Whether a kept row that needs no analysis refuses: a view by its lines, any other by its own.
     fn row_refuses(store: Store, r: List<string>) -> bool {
-        if r[0] == "v" { return !self.view_stands(store, r) }
-        judged_by_files(r) && !self.kept_row_stands(r)
+        if r[0] == "v" { return !self.view_stands_early(store, r) }
+        judged_by_files(r) && !self.kept_row_stands(r) && !awaits_outline(r)
+    }
+
+    /// `view_stands` before the files that moved are parsed: a file line whose text moved but
+    /// whose outline was kept is judged by that outline once the file is read, so it is not
+    /// a refusal yet. A guess only — the attempt judges the view for real, and a verdict it
+    /// finds refused there costs an attempt, never a stale answer.
+    fn view_stands_early(store: Store, r: List<string>) -> bool {
+        if r.length != 2 { return false }
+        let said? = store.get(Stored.Unit, view_key(r[1])) else { return false }
+        let rows = rows_of(said)
+        let mods = [module_path(row[1].split(".")) for row in rows if row[0] == "m"]
+        rows.all((row: List<string>) -> self.kept_row_stands(row) || awaits_outline(row)) &&
+            rows.all((row: List<string>) -> row[0] != "n" || self.names_stand(row, mods, rows))
     }
 
     /// `seen` and every module it imports, to a fixed point.
@@ -908,3 +921,7 @@ fn settles(k: DeclKind) -> bool {
 fn verdict_fp(r: Result<Settled, Unsettled>) -> int {
     match r { .Ok(v) -> fp(309, [v.fingerprint]), .Err(why) -> fp(310, [fp_str(why.words())]) }
 }
+
+/// A file line whose text moved but whose outline was kept: the file is read, and the line is
+/// judged by its outline there.
+fn awaits_outline(r: List<string>) -> bool { r[0] == "f" && r.length == 4 && r[3] != "" }
