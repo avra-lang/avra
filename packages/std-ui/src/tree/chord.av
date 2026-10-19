@@ -7,7 +7,7 @@
 //! order, each once. Tab and Shift-Tab move the focus, and Ctrl-D ends the
 //! input, so a key cannot take them.
 use @std.meta.{sealed}
-use @std.text.{ascii_lower, codepoints}
+use @std.text.{ascii_lower, codepoints, from_codepoint}
 
 /// A key and the modifiers held with it.
 @sealed
@@ -87,6 +87,19 @@ fn reserved(c: Chord, text: string) -> Result<Chord, string> {
 }
 
 impl Chord {
+    /// The chord as a page's keydown is read by it: the modifiers held (`c`,
+    /// `a`, `s`), the `KeyboardEvent.code` of the key's place, and the key as
+    /// `KeyboardEvent.key` names it, each after a slash — the code lets a
+    /// layout whose `key` is another script meet the chord by its place.
+    fn web_spec() -> string {
+        let held = [
+            if self.ctrl { "c" } else { "" },
+            if self.alt { "a" } else { "" },
+            if self.shift { "s" } else { "" },
+        ]
+        "${held.join("")}/${dom_code(self.key)}/${dom_key(self.key)}"
+    }
+
     /// The chord as it is written: modifiers in a fixed order, then the key.
     fn text() -> string {
         if self.ctrl { ["ctrl"] } else { [] }
@@ -94,6 +107,50 @@ impl Chord {
             .concat(if self.shift { ["shift"] } else { [] })
             .concat([self.key])
             .join("+")
+    }
+}
+
+/// The key a named key is to `KeyboardEvent.key`; a character is its own.
+fn dom_key(key: string) -> string {
+    match key {
+        "Up" -> "ArrowUp",
+        "Down" -> "ArrowDown",
+        "Left" -> "ArrowLeft",
+        "Right" -> "ArrowRight",
+        "Space" -> " ",
+        "Plus" -> "+",
+        other -> other,
+    }
+}
+
+/// The `KeyboardEvent.code` of the place a printable key sits at on a US
+/// layout; none for a key with no printable place.
+fn dom_code(key: string) -> string {
+    match key {
+        "-" -> "Minus",
+        "=" -> "Equal",
+        "[" -> "BracketLeft",
+        "]" -> "BracketRight",
+        "\\" -> "Backslash",
+        ";" -> "Semicolon",
+        "'" -> "Quote",
+        "," -> "Comma",
+        "." -> "Period",
+        "/" -> "Slash",
+        "`" -> "Backquote",
+        other -> lettered(other),
+    }
+}
+
+/// The place of a letter or a digit, none for anything longer.
+fn lettered(key: string) -> string {
+    let at = codepoints(key)
+    let c = at.first() ?? 0
+    when {
+        at.length != 1 -> ""
+        c >= 97 && c <= 122 -> "Key${from_codepoint(c - 32)}"
+        c >= 48 && c <= 57 -> "Digit${key}"
+        _ -> ""
     }
 }
 

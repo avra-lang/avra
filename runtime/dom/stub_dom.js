@@ -19,6 +19,7 @@ function node(tagName, doc = null) {
     contains(other) { return other === this || this.childNodes.some((c) => c.contains(other)); },
     setAttribute(k, v) { this.attrs[k] = v; },
     removeAttribute(k) { delete this.attrs[k]; },
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
     // As a page does it: before itself is where it stands, and before a
     // node that is no child of this one is refused.
     insertBefore(c, at) {
@@ -54,7 +55,8 @@ function taken(n) {
 // `carries: true` is a page that can carry an element standing on it to
 // another place (`moveBefore`), dropping nothing.
 export function stubDocument({ carries = false } = {}) {
-  const doc = { activeElement: null };
+  const listeners = new Map();
+  const doc = { activeElement: null, listeners, addEventListener(name, fn) { listeners.set(name, fn); } };
   const made = (tag) => {
     const n = node(tag, doc);
     if (carries) {

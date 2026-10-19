@@ -138,8 +138,8 @@ fn rests_of(attrs: List<Attribute>) -> List<HtmlAttrName> {
 
 /// An element's attributes from the neutral node: what kind of control it
 /// is, then its properties.
-fn element_attrs(prim: Prim, attrs: List<Attribute>) -> List<HtmlAttr> {
-    control_attrs(prim, submits_among(attrs)).concat(attrs_of(attrs))
+fn element_attrs(n: Node) -> List<HtmlAttr> {
+    control_attrs(n.prim, submits_among(n.attrs), n.words()).concat(attrs_of(n.attrs))
 }
 
 // ── the class attribute ─────────────────────────────────────────
@@ -222,7 +222,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 seat: control_part,
                 reads: control_part,
                 tag: tag_of(n),
-                attrs: element_attrs(n.prim, n.attrs),
+                attrs: element_attrs(n),
                 rests: rests_of(n.attrs),
                 hears: n.events,
                 crowded: at.crowded,
@@ -265,7 +265,7 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
                 seat: at.matched,
                 reads: at.shown,
                 tag: tag_of(n),
-                attrs: element_attrs(n.prim, n.attrs).concat(node_attrs(n)),
+                attrs: element_attrs(n).concat(node_attrs(n)),
                 vars: box_vars(n.box),
                 rests: rests_of(n.attrs),
                 hears: heard(n),
@@ -297,10 +297,10 @@ fn lower(n: Node, at: Seat) -> List<Element> {
 /// Each child of `n` lowered at its own step — under `within`, when its
 /// children stand beside the node rather than inside it. A child is crowded
 /// when it, or what holds it, is told from a sibling by order alone. A key
-/// draws nothing.
+/// stands hidden and says its chord.
 fn lower_each(n: Node, stands: List<Step>, seat: Seat?, above: bool) -> List<Element> {
     let told = shared([c.box.stand() for c in n.children])
-    [e for i, c in n.children if c.drawn() for e in lower(c, seat_of(seat, stands[i], above || told[i]))]
+    [e for i, c in n.children for e in lower(c, seat_of(seat, stands[i], above || told[i]))]
 }
 
 /// The elements a tree lowers to, in page order.

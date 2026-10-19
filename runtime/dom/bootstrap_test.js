@@ -46,8 +46,9 @@ const page = () => {
   const mount = stubElement("root");
   const sent = [];
   const styleEl = { textContent: "" };
-  const apply = createApplier(stubDocument(), mount, (who, kind, said) => sent.push([who, kind, said]), styleEl);
-  return { mount, sent, styleEl, apply };
+  const doc = stubDocument();
+  const apply = createApplier(doc, mount, (who, kind, said) => sent.push([who, kind, said]), styleEl);
+  return { mount, sent, styleEl, apply, doc };
 };
 const tags = (n) => n.childNodes.map((c) => c.tagName);
 
@@ -159,6 +160,38 @@ s.apply(frame(remove(3)));
 check("a sibling leaving takes nothing from it", state(s, sin), [true, 2, 4, "forward", "typed", 40]);
 s.apply(frame(remove(1)));
 check("an element that leaves takes its focus with it", s.doc.activeElement, null);
+
+// ── a shortcut: a key stands hidden, saying its chord, and is pressed by the keydown that meets it ──
+const sc = page();
+const keyed = (id, chord, kind) => [create(id, "div"), setAttr(id, "hidden", ""), setAttr(id, "data-avra-chord", chord), listen(id, kind, "keydown", SAYS.nothing, "", false)];
+sc.apply(frame(
+  create(0, "div"), place(0, NO_ID, NO_ID), create(1, "input"), placeAtEnd(1, 0), ...keyed(2, "c/KeyS/s", 7), placeAtEnd(2, 0),
+  ...keyed(7, "c/Slash//", 7), placeAtEnd(7, 0), ...keyed(8, "c/Period/.", 7), placeAtEnd(8, 0),
+  create(3, "div"), placeAtEnd(3, NO_ID), create(4, "input"), placeAtEnd(4, 3), ...keyed(5, "c/KeyS/s", 7), placeAtEnd(5, 3),
+  ...keyed(6, "//F5", 7), placeAtEnd(6, NO_ID),
+));
+const inside = sc.mount.childNodes[0].childNodes[0];
+const aside = sc.mount.childNodes[1].childNodes[0];
+const body = stubElement("body");
+const stroke = (target, ev) => {
+  let prevented = false;
+  dispatch(sc.doc, target, "keydown", { preventDefault: () => { prevented = true; }, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, code: "", ...ev });
+  return prevented;
+};
+const heard = () => sc.sent.splice(0).map((s) => s[0]);
+check("a keydown that meets a key's chord presses it, and the browser's answer is stopped", [stroke(inside, { key: "s", ctrlKey: true }), heard()], [true, [2]]);
+check("a chord that is not the key's presses nothing and stops nothing", [stroke(inside, { key: "a", ctrlKey: true }), heard()], [false, []]);
+check("the key without its modifier presses nothing", [stroke(inside, { key: "s" }), heard()], [false, []]);
+check("an extra modifier is another chord", [stroke(inside, { key: "s", ctrlKey: true, shiftKey: true }), stroke(inside, { key: "s", ctrlKey: true, metaKey: true }), heard()], [false, false, []]);
+check("a letter meets its chord in either case, since shift is a modifier of its own", [stroke(inside, { key: "S", ctrlKey: true }), heard()], [true, [2]]);
+check("a key is pressed only from within what holds it: the other holder's key answers there", [stroke(aside, { key: "s", ctrlKey: true }), heard()], [true, [5]]);
+check("a key held at the page's root is live everywhere under it", [stroke(inside, { key: "F5" }), stroke(aside, { key: "F5" }), heard()], [true, true, [6, 6]]);
+check("a keydown heard by no key is left alone", [stroke(inside, { key: "q" }), heard()], [false, []]);
+check("with nothing focused the keydown lands on the body, and the root's key answers it", [stroke(body, { key: "F5" }), heard()], [true, [6]]);
+check("and a key held below the root does not", [stroke(body, { key: "s", ctrlKey: true }), heard()], [false, []]);
+check("a layout whose key is another script meets a letter chord by the key's place", [stroke(inside, { key: "ы", code: "KeyS", ctrlKey: true }), stroke(inside, { key: "σ", code: "KeyS", ctrlKey: true }), heard()], [true, true, [2, 2]]);
+check("and a punctuation chord by its place too", [stroke(inside, { key: "ю", code: "Period", ctrlKey: true }), stroke(inside, { key: "/", code: "Slash", ctrlKey: true }), heard()], [true, true, [8, 7]]);
+check("a key of another script at another place is no chord of that key", [stroke(inside, { key: "ы", code: "KeyA", ctrlKey: true }), heard()], [false, []]);
 
 // ── listen, unlisten, the echo ──
 const c = page();
