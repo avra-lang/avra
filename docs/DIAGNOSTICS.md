@@ -42,12 +42,6 @@ error[parse.expected]: this cannot start or continue a `stmt`
 help: it could begin with `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect` — and 52 more
 ```
 
-## parse.trailing
-
-input remains after the program ended
-
-No witness here: it is the grammar engine's word for a start rule that matched short, and Avra's `program` rule and every sublanguage block name what was expected instead — `expected EOF`, `unexpected input after` — so no program reaches it.
-
 ## build.failed
 
 a builder rejected its captures
