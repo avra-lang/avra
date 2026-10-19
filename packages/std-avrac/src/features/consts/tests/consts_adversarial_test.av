@@ -21,6 +21,24 @@ spec "features/consts (adversarial)" {
             shown("const READY = true\nlet f = () -> if READY { 1 } else { 0 }\nf()") == "1"
         }
     }
+    given "a top-level const reading a run-time `let`" {
+        // The value stands on its own floor, as a fn body does. It once
+        // trapped the compiler: the `let`'s type belongs to another body's facts.
+        then "is refused where it reads, with one refusal" {
+            let a = analyze_source("let p = \"a\"\nconst s: string = p\n0")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`p` is a run-time binding of the top level")
+        }
+        then "through a call as well" {
+            refused_with(
+                "fn f(x: string) -> string { x }\nlet p = \"a\"\nconst s: string = f(p)\n0",
+                "`p` is a run-time binding of the top level",
+            )
+        }
+        then "a const reading another const settles as it did" {
+            shown("const A = 2\nconst B = A + 1\nB") == "3"
+        }
+    }
     given "a name a `let` also claims" {
         // A top-level const is a DECLARATION: order-free and
         // module-wide, like a fn. A `let` of the same name shadows it
