@@ -4358,8 +4358,9 @@ const char* avra_embed_octets(const char* path) {
    a site still names it, and no header is ever written after it was freed.
    A write to an observed box that has not been written this turn stamps it
    and files its key in the change log, once; the turn takes the log and
-   re-renders only what read those boxes. A KEY names a box by its address and
-   opens nothing. One thread runs the loop, so the log is a plain array. */
+   re-renders only what read those boxes. A box is logged when a slot of it is
+   written in place; a length change or a map write is not a slot write. A KEY
+   names a box by its address and opens nothing. One thread runs the loop, so the log is a plain array. */
 uint32_t avra_turn_word = AVRA_STAMP_ONE;
 
 static int64_t* g_changes;
