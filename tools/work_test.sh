@@ -250,6 +250,26 @@ holds "olderhash $old_at" "$old_at"
 check "$(seeds env) $(grep -c '1 compiler commit(s) behind' "$scratch/out")" "copied 1" "work new: failing that, the nearest behind origin/main is a start, and says how far" "$scratch/out"
 check "$(seeds env AVRA_SEED_BEHIND=0) $(grep -c 'not copied' "$scratch/out")" "none 1" "work new: one past the bound is refused with the distance, never copied" "$scratch/out"
 
+# THE DEPOT: a stamped compiler kept after its worktree is gone is a start too (a Mac has no published one).
+dp=$scratch/depot
+mkdir -p "$dp/h1"
+echo bin > "$dp/h1/avra"; chmod +x "$dp/h1/avra"; echo "olderhash $old_at" > "$dp/h1/.avra-built-from"
+holds ""
+check "$(seeds env AVRA_COMPILER_DEPOT="$dp") $(grep -c '1 compiler commit(s) behind' "$scratch/out")" "copied 1" "work new: a stamped compiler in the depot is a start when no worktree holds one" "$scratch/out"
+holds "somethingelse edited"
+dp2=$scratch/depot2
+check "$(seeds env AVRA_COMPILER_DEPOT="$dp2")" "none" "work new: an empty depot and an edited worktree compiler start none" "$scratch/out"
+# deposit keeps a clean tree's stamped compiler, never an edited one, and only the newest AVRA_DEPOT_KEEP
+holds "hashA $old_at"
+AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
+holds "hashB edited"
+AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
+check "$(ls "$dp2" | tr '\n' ' ')" "hashA " "work deposit: a clean stamped compiler is kept, one built from edits is not" "$scratch/out"
+sleep 1
+holds "hashC $old_at"
+AVRA_DEPOT_KEEP=1 AVRA_COMPILER_DEPOT="$dp2" sh "$slw" deposit "$sl/held"
+check "$(ls "$dp2" | tr '\n' ' ')" "hashC " "work deposit: only the newest AVRA_DEPOT_KEEP entries stay" "$scratch/out"
+
 # ══ HELP: asked after any verb it prints that verb's line, and touches nothing
 export SPRITE_LOG="$scratch/sprite.log"
 : > "$SPRITE_LOG"; : > "$GH_LOG"

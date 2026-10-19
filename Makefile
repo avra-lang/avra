@@ -478,6 +478,7 @@ avra: $(COMPILER_OBJS)
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@# what this binary was built from, for a worktree that wants to start from it
 	@sh tools/work built-from . > build/.avra-built-from 2>/dev/null || rm -f build/.avra-built-from
+	@sh tools/work deposit . || true
 	@echo "avra: build/avra"
 
 # THE EDIT LOOP: the source built by the STANDING compiler into

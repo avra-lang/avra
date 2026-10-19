@@ -9,6 +9,33 @@ if [ ! -x build/avra ]; then
     echo "pre-commit: get a compiler — \`sh tools/work run\` fetches main's published one, or \`make try\` / \`make bootstrap\` builds one" >&2
     exit 1
 fi
+# THE COMPILER SAYS WHAT IT WAS BUILT FROM, AND IT IS NOT OLDER THAN THE MERGE-BASE: a binary copied in by
+# hand has no stamp and an unknown age, so its `fmt` may disagree with main's. The stamp (`make avra` writes
+# build/.avra-built-from: source hash, then the commit) is read and reported; a compiler built from a commit
+# with compiler-source commits between it and the merge-base is refused with the way to a current one.
+stamp=build/.avra-built-from
+if [ ! -s "$stamp" ]; then
+    echo "pre-commit: build/avra says nothing about what it was built from (no $stamp), so its age is unknown and the commit is refused" >&2
+    echo "pre-commit: \`sh tools/work compiler\` takes the nearest stamped compiler from a worktree or the depot, \`make avra\` builds a stamped one" >&2
+    exit 1
+fi
+read -r built_hash built_at < "$stamp"
+if [ "$built_at" = edited ]; then
+    echo "pre-commit: formatting with a compiler built from this tree's own edits ($(printf '%.8s' "$built_hash"))" >&2
+else
+    base=$(git merge-base origin/main HEAD 2>/dev/null || :)
+    if [ -n "$base" ] && git merge-base --is-ancestor "$built_at" "$base" 2>/dev/null; then
+        behind=$(git rev-list --count "$built_at..$base" -- $(sh tools/compiler_paths.sh . 2>/dev/null) ':(exclude,glob)**/tests/**' 2>/dev/null || echo 0)
+    else
+        behind=0
+    fi
+    if [ "$behind" != 0 ]; then
+        echo "pre-commit: build/avra was built at $(printf '%.8s' "$built_at"), $behind compiler commit(s) older than this branch's merge-base — its fmt may disagree with main's, so the commit is refused" >&2
+        echo "pre-commit: \`make avra\` (twice) brings it level, or \`sh tools/work compiler\` takes a newer one" >&2
+        exit 1
+    fi
+    echo "pre-commit: formatting with the compiler built at $(printf '%.8s' "$built_at") ($(printf '%.8s' "$built_hash"))" >&2
+fi
 # What is checked is the STAGED text, read where the file stands, so its
 # package and every sublanguage it uses resolve as they do for the real file.
 # A file whose working copy differs from the index is checked through a hidden
