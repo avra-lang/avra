@@ -435,7 +435,7 @@ f()
 ```
 
 ```
-error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn sees declarations only
+error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn body or a const sees declarations, not the values around it
   ╭─[witness.av:2:17]
 2 │ fn f() -> int { x }
   ·                 ┬
@@ -1104,7 +1104,7 @@ error[annotation.unread_mark]: every mark is read by something that claims it
   ·     ┬
   ·     ╰── `@nobody` — nothing on this declaration reads it
 ──╯
-help: a mark is read by a `@derive` whose trait declares `marks`
+help: the marks read here are `@default`
 ```
 
 ## annotation.wrap_missing
