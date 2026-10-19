@@ -1,0 +1,44 @@
+//! A page served: its policy and its one style element agree on a nonce
+//! drawn for this response alone.
+use @std.http.http.{Response}
+use @std.ui.realize.html.html.{Page}
+use @std.ui.realize.html.serve.{served}
+use @std.ui.realize.tests.support.{boxed}
+use @std.ui.style.layout.{Layout}
+use @std.ui.tree.node.{Node}
+
+fn small() -> Node { boxed(.Row, Layout { width: .Fixed(8) }, []) }
+
+/// The value of the response's `name` header.
+fn field(r: Response, name: string) -> string { r.header(name)?.value ?? "" }
+
+/// The nonce a policy names under `style-src`.
+fn named_in(policy: string) -> string {
+    let after = policy.split("'nonce-").drop(1).first() ?? ""
+    after.split("'").first() ?? ""
+}
+
+/// A page served, or the words it was not.
+fn one() -> Response {
+    match served(Page { title: "t" }, small()) { .Ok(r) -> r, .Err(_) -> Response { status: 500 } }
+}
+
+spec "std/ui — a page served" {
+    given "a page" {
+        then "is a 200 of HTML" {
+            one().status == 200 && field(one(), "content-type") == "text/html; charset=utf-8"
+        }
+        then "carries a policy that names the nonce its style element wears" {
+            let r = one()
+            let nonce = named_in(field(r, "content-security-policy"))
+            nonce != "" && r.body.text()!.contains("<style nonce=\"${nonce}\">")
+        }
+        then "allows styles by that nonce and no inline style" {
+            let policy = field(one(), "content-security-policy")
+            policy.contains("style-src 'self' 'nonce-") && !policy.contains("unsafe-inline")
+        }
+        then "draws a nonce of its own for each response" {
+            named_in(field(one(), "content-security-policy")) != named_in(field(one(), "content-security-policy"))
+        }
+    }
+}

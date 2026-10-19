@@ -1,0 +1,28 @@
+//! `realize/html/serve.av` — a page as the response that carries it. The
+//! policy and the page's one `style` element agree on a nonce drawn for this
+//! response, so a page is never served with styles allowed any other way.
+use @std.http.guard.{nonced_csp}
+use @std.http.http.{Response, header_pair}
+use realize.html.html.{Page, page}
+use realize.html.nonce.{fresh_nonce}
+use tree.node.{Node}
+
+/// `root` as a 200 under `p`, with a nonce of its own and the policy that
+/// allows its style element by that nonce. The words of why not when the OS
+/// gave none to draw it from.
+export fn served(p: Page, root: Node) -> Result<Response, string> {
+    let nonce? = fresh_nonce() else { return .Err(
+            "the page was not served: the operating system gave no randomness for its nonce",
+        ) }
+    let policy? = nonced_csp(nonce.text) else { return .Err("the page was not served: its nonce is not text a policy can carry") }
+    .Ok(
+        Response {
+            status: 200,
+            headers: [
+                header_pair("content-type", "text/html; charset=utf-8"),
+                header_pair("content-security-policy", policy),
+            ],
+            body: page(p with { nonce: nonce }, root).bytes(),
+        },
+    )
+}
