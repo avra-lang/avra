@@ -78,7 +78,16 @@ use features.{
     Instanced,
 }
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
-use core.{StmtId, ModulePath, watched_kernel, leaves_traced, db_verified}
+use core.{
+    EmbedKind,
+    EmbedBase,
+    ForeignRange,
+    StmtId,
+    ModulePath,
+    watched_kernel,
+    leaves_traced,
+    db_verified,
+}
 use diagnostics.{
     SourceFile,
     new_source_file,
@@ -143,7 +152,7 @@ type ExternNames = { decls: int, names: List<string> }
 type Suspects = { files: int, rows: Map<string, bool> }
 
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Map<string, int>>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Spelling>>, seen_views: Cell<Map<string, SeenView>>, suspects: Cell<Suspects>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
@@ -155,7 +164,7 @@ fn new_keys() -> Keys {
     let no_object: Map<string, string> = {}
     let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
-    let no_tokens: Map<string, Map<string, int>> = {}
+    let no_tokens: Map<string, Spelling> = {}
     let no_views: Map<string, SeenView> = {}
     let no_named: Map<string, int> = {}
     let no_seen: Map<string, int> = {}
@@ -273,6 +282,12 @@ type Hold = {
     refs_by_target: Cell<Map<string, List<string>>>,
     /// The references held files make into a held file, restored once per target.
     held_refs: Cell<Map<string, List<Ref>>>,
+    /// The files held because their kept rows stand: their object keys are the rows', never re-derived.
+    standing: Cell<Map<string, bool>>,
+    /// The plain free fn names a module's forms moved by, from the forms a row stood on: per `module<TAB>digest`.
+    forms_moved: Cell<Map<string, Map<string, bool>>>,
+    /// Each judged file's run tokens off its module's row, decoded once per build.
+    lite_runs: Cell<Map<string, List<string>>>,
     linked_by: Cell<List<string>>,
     held_flat: Cell<List<TypeId>>,
     moved: Cell<Map<string, List<PartMoved>>>,
@@ -359,6 +374,9 @@ fn new_hold() -> Hold {
         typed_by: list_cell(),
         refs_by_target: Cell.new(no_producers),
         held_refs: map_cell(),
+        standing: map_cell(),
+        forms_moved: map_cell(),
+        lite_runs: map_cell(),
         linked_by: list_cell(),
         held_flat: Cell.new(no_flat),
         moved: Cell.new(no_moved),
@@ -399,6 +417,8 @@ type Records = {
     /// A MODULE'S PRODUCERS, keyed by record key: what the load walk and the bucket
     /// readers read of its record, decoded once per build however many importers reach it.
     record_producers: Cell<Map<string, Producers>>,
+    /// What each module stands as to a reader, whole — asked once per build, restated when its record is.
+    record_stamps: Cell<Map<string, string>>,
     /// A FILE'S OWN ANSWER, keyed by path: whether it lexes to a
     /// `grammar` token at all — `module_names_syntax`'s cold-path
     /// pre-filter, asked once per file per build no matter how many
@@ -436,6 +456,7 @@ fn new_records() -> Records {
         record_fields: Cell.new(no_fields),
         record_places: Cell.new(no_places),
         record_producers: Cell.new(no_producers_of),
+        record_stamps: map_cell(),
         record_reexports: Cell.new(no_reexports),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
@@ -1068,7 +1089,12 @@ fn built(
             () -> ws.hold.typed_by.get(),
             (modules: List<string>) -> ws.minted_modules(modules),
         )
-    ws.decls.arm_embeds((f: FileId, rel: string) -> ws.embed_placed(f, rel))
+    ws
+        .decls
+        .arm_embeds(
+            (f: FileId, rel: string, kind: EmbedKind, base: EmbedBase) -> ws
+                .embed_placed(f, rel, kind, base),
+        )
     ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_entry(() -> ws.entry_of() != null)
@@ -1575,15 +1601,32 @@ impl Workspace {
         let t0 = self.clock()
         let words = self.block_words(f, first)
         self.timed("sublang", t0)
-        if words.is_empty() { return self.with_import_remedies(first, words) }
+        if words.is_empty() { return self.noted_origins(f, self.with_import_remedies(first, words)) }
         let t1 = self.clock()
         let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
         self.timed("ast", t1)
+        self.noted_origins(f, p)
+    }
+
+    /// Each run of nodes written elsewhere — a template's, a sublanguage's, a builder's —
+    /// filed under the file that wrote it, so its names resolve there.
+    fn noted_origins(f: FileId, p: Parsed) -> Parsed {
         for r in p.store.foreign.get() {
-            let origin = self.file_id(r.path)
+            let origin? = self.written_file(r) else { continue }
             if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
         }
         p
+    }
+
+    /// The file a run was written in: its path, or — for a builder that names a
+    /// module — that module's first file, its package admitted.
+    fn written_file(r: ForeignRange) -> FileId? {
+        if r.module.is_empty() { return self.file_id(r.path) }
+        let m = module_path(r.module.split("."))
+        let key? = m.package() else { return null }
+        if !self.std_admitted(key) && !self.packages().any(it.key == key) { return null }
+        let first? = self.module_files(m).first() else { return null }
+        self.file_id(first)
     }
 
     /// A parse that stops on a component nobody imported says where it

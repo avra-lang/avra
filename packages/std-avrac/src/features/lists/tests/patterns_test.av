@@ -1,0 +1,143 @@
+// List and record patterns, by attack class. Accepted programs run
+// through `shown`; each refusal pins its voice, and the goldens pin
+// the rendering.
+use @std.avrac.testing.{shown, refused_with, projected}
+use compiler.{analyze_source}
+
+/// A program whose report says `phrase` — a refused pattern may also leave
+/// its arm's coverage unspoken for, so these do not pin the count.
+fn says(source: string, phrase: string) -> bool { analyze_source(source).report().contains(phrase) }
+
+const PT: string = "type P = { x: int, y: int }\n"
+
+spec "features/lists — patterns, adversarial" {
+    given "list patterns" {
+        then "the empty pattern takes only the empty list" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [] -> 0\n        _ -> 1\n    }\n}\nf([]) * 10 + f([1])",
+            ) == "1"
+        }
+        then "an exact pattern takes only its length" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [a, b] -> a + b\n        _ -> -1\n    }\n}\nf([1, 2]) * 100 + f([1]) * 10 + f([1, 2, 3])",
+            ) == "289"
+        }
+        then "a rest binds the middle as a list" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [_, ..m, _] -> m.length\n        _ -> -1\n    }\n}\nf([1, 2, 3, 4]) * 10 + f([1, 2])",
+            ) == "20"
+        }
+        then "a rest at the front binds the init" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [..i, l] -> i.length * 100 + l\n        _ -> -1\n    }\n}\nf([1, 2, 7])",
+            ) == "207"
+        }
+        then "a bare rest looks at nothing" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [a, ..] -> a\n        _ -> -1\n    }\n}\nf([9, 8])",
+            ) == "9"
+        }
+        then "literal elements refuse by value" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [1, ..t] -> t.length\n        _ -> -1\n    }\n}\nf([1, 5, 6]) * 10 + f([2, 5, 6])",
+            ) == "19"
+        }
+        then "a list of lists nests" {
+            shown(
+                "fn f(xs: List<List<int>>) -> int {\n    match xs {\n        [[a, ..], ..] -> a\n        _ -> -1\n    }\n}\nf([[4, 5], [6]])",
+            ) == "4"
+        }
+        then "a head and tail cover every length" {
+            shown(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [] -> 0\n        [h, ..t] -> h\n    }\n}\nf([5])",
+            ) == "5"
+        }
+        then "an empty and a pair cover only those, so the rest is owed" {
+            refused_with(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [] -> 0\n        [a, b] -> a\n    }\n}\n1",
+                "match",
+            )
+        }
+    }
+    given "record patterns" {
+        then "a punned field binds its own name" {
+            shown("${PT}match P { x: 3, y: 4 } {\n    P { x, y } -> x * 10 + y\n}") == "34"
+        }
+        then "a field pattern refuses by value" {
+            shown(
+                "${PT}fn f(p: P) -> int {\n    match p {\n        P { x: 0, .. } -> 1\n        P { .. } -> 2\n    }\n}\nf(P { x: 0, y: 5 }) * 10 + f(P { x: 1, y: 5 })",
+            ) == "12"
+        }
+        then "a field binds under another name" {
+            shown("${PT}match P { x: 3, y: 4 } {\n    P { x: a, .. } -> a\n}") == "3"
+        }
+        then "a record pattern of irrefutable fields covers" {
+            shown("${PT}match P { x: 3, y: 4 } {\n    P { y, .. } -> y\n}") == "4"
+        }
+    }
+    given "refusals" {
+        then "a list pattern over a non-list" {
+            refused_with(
+                "let n = 3\nmatch n {\n    [a, ..] -> a\n    _ -> 0\n}",
+                "a list pattern matches a list, found `int`",
+            )
+        }
+        then "a record pattern over a non-record" {
+            says(
+                "${PT}let n = 3\nmatch n {\n    P { x, .. } -> x\n    _ -> 0\n}",
+                "`P { … }` matches a record, found `int`",
+            )
+        }
+        then "another record's name" {
+            refused_with(
+                "${PT}type Q = { x: int }\nlet q = Q { x: 1 }\nmatch q {\n    P { x, .. } -> x\n}",
+                "names another record",
+            )
+        }
+        then "a field the record lacks" {
+            refused_with(
+                "${PT}let p = P { x: 1, y: 2 }\nmatch p {\n    P { z, .. } -> z\n}",
+                "`P` has no field `z` to look at",
+            )
+        }
+        then "a field looked at twice" {
+            says(
+                "${PT}let p = P { x: 1, y: 2 }\nmatch p {\n    P { x, x: 1, .. } -> x\n    _ -> 0\n}",
+                "field `x` is looked at more than once",
+            )
+        }
+        then "a field left out without a rest" {
+            refused_with(
+                "${PT}let p = P { x: 1, y: 2 }\nmatch p {\n    P { x } -> x\n}",
+                "this `P` pattern leaves field `y` out",
+            )
+        }
+        then "two rests in one list pattern" {
+            !analyze_source("let xs = [1]\nmatch xs {\n    [..a, ..b] -> 1\n    _ -> 0\n}")
+                .diagnostics
+                .is_empty()
+        }
+        then "a rest that is not last in a record pattern" {
+            !analyze_source("${PT}let p = P { x: 1, y: 2 }\nmatch p {\n    P { .., x } -> x\n}")
+                .diagnostics
+                .is_empty()
+        }
+    }
+    given "the refusals, rendered" {
+        then "a list pattern over a non-list" {
+            analyze_source("let n = 3\nmatch n {\n    [a, ..] -> a\n    _ -> 0\n}").report() == "error[type.list_pattern]: a list pattern matches a list, found `int`\n  ╭─[<source>:3:5]\n3 │     [a, ..] -> a\n  ·     ┬\n  ·     ╰── this pattern\n──╯\nhelp: match a list — `[first, ..rest]`; for any other value, match what it is"
+        }
+    }
+    given "the printer" {
+        then "a list pattern keeps its spelling" {
+            projected(
+                "fn f(xs: List<int>) -> int {\n    match xs {\n        [a,   ..rest, z] -> a\n        _ -> 0\n    }\n}\n",
+            ) == "fn f(xs: List<int>) -> int {\n    match xs { [a, ..rest, z] -> a, _ -> 0 }\n}"
+        }
+        then "a record pattern keeps its spelling" {
+            projected(
+                "type P = {\n    x: int,\n}\nfn f(p: P) -> int {\n    match p {\n        P { x: 0,   .. } -> 1\n        P { x } -> x\n    }\n}\n",
+            ) == "type P = {\n    x: int,\n}\nfn f(p: P) -> int {\n    match p { P { x: 0, .. } -> 1, P { x } -> x }\n}"
+        }
+    }
+}

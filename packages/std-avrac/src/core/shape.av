@@ -79,6 +79,28 @@ impl SyntaxArena {
         }
     }
 
+    /// A struct literal's SITE CONTENT: its own fingerprint with every
+    /// struct literal nested under it reduced to its type's name, so an
+    /// edit below a literal moves nothing above it. The literal itself is
+    /// folded whole — its own words are part of where it was written.
+    fn site_fingerprint(e: ExprId) -> int { self.site_fp(At.Expr(e)) }
+
+    fn site_fp(at: At) -> int {
+        fp(310, [self.shallow_at(at), fp_list([self.site_kid(k) for k in self.kids_at(at)])])
+    }
+
+    /// One child under a site fold: a nested struct literal is its type's
+    /// name alone, anything else folds through.
+    fn site_kid(kid: At) -> int {
+        match kid {
+            .Expr(x) -> match self.expr(x) {
+                .StructLit(name, _, _) -> fp(311, [fp_str(name.of)]),
+                _ -> self.site_fp(kid),
+            },
+            rest -> self.site_fp(kid),
+        }
+    }
+
     /// A node's KIND alone — which of `At`'s categories, and which variant
     /// — every field left out: the index a pattern whose own root names a
     /// hole narrows to, since no field's spelling can be folded for it. A

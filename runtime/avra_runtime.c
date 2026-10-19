@@ -733,7 +733,7 @@ static void* box_alloc(size_t size, int32_t kind) {
         h = (Header*)fresh(sizeof(Header) + (cls ? cls * CLASS_BYTES : bytes));
     }
     h->tag = AVRA_TAG;
-    h->kind = kind;
+    h->kind_word = (int32_t)((uint32_t)kind & 0xFFu);
     h->rc = 1;
     h->len = (uint32_t)bytes;
     acc_box(kind, (int64_t)(sizeof(Header) + bytes));
@@ -773,7 +773,7 @@ static size_t str_len(const char* s) {
 // only because a static box is immortal and `box_free` never sees
 // one, which is safety by immortality rather than by arithmetic.
 static size_t box_bytes(Header* h) {
-    switch (h->kind) {
+    switch (avra_kind(h)) {
         case KIND_STR:
         case KIND_BYTES:
         case KIND_STATIC: return (size_t)h->len + 1;
@@ -785,7 +785,7 @@ static void box_free(void* p) {
     Header* h = (Header*)p - 1;
     size_t bytes = box_bytes(h);
     size_t cls = class_of(bytes);
-    acc_box(h->kind, -(int64_t)(sizeof(Header) + bytes));
+    acc_box(avra_kind(h), -(int64_t)(sizeof(Header) + bytes));
     h->tag = 0;
     if (cls && g_free_len[cls] < LIST_LIMIT) {
         *(Header**)(h + 1) = g_free[cls];
@@ -884,7 +884,7 @@ static inline int rc_guarded(void) { return avra_rc_guard_on; }
 void avra_rc_dead_check(void* p, const char* what) {
     if (!rc_guarded()) return;
     Header* h = hdr(p);
-    if (h && h->kind == KIND_DEAD) {
+    if (h && avra_kind(h) == KIND_DEAD) {
         avra_say("avra: %s read a RELEASED box %p\n", what, p);
         abort();
     }
@@ -901,7 +901,7 @@ void avra_retain_noted(void* p, Header* h) {
 // poisoned; a second release of a dead box reports its history.
 __attribute__((noinline, cold))
 void avra_release_guarded(void* p, Header* h) {
-    if (h->kind == KIND_DEAD) {
+    if (avra_kind(h) == KIND_DEAD) {
         avra_say("avra: released an already-dead box %p (len %lld)\n", p, (long long)guard_len(p));
         avra_say("  this one from %p\n", AVRA_CALLER());
         rc_history(p);
@@ -910,11 +910,11 @@ void avra_release_guarded(void* p, Header* h) {
         }
         abort();
     }
-    if (h->kind < 0) return;
+    if (avra_kind(h) < 0) return;
     h->rc--;
     rc_note(p, -1, AVRA_CALLER(), h->rc);
     if (h->rc > 0) return;
-    int32_t kind = h->kind;
+    int32_t kind = avra_kind(h);
     guard_kept(p, h);
     if (kind == KIND_ARRAY) {
         int pushed = g_chain_len < 64;
@@ -955,7 +955,7 @@ static const char* shared(const char* p) {
 // A text or octet box the handed reference holds alone.
 static inline int sole_sized(const char* p) {
     Header* h = hdr((void*)p);
-    return h && (h->kind == KIND_STR || h->kind == KIND_BYTES) && h->rc == 1;
+    return h && (avra_kind(h) == KIND_STR || avra_kind(h) == KIND_BYTES) && h->rc == 1;
 }
 
 static size_t block_size(Header* h) {
@@ -990,7 +990,7 @@ static int in_place_fits(Header* h, size_t need) {
 // A sized box's length moved to `n`, its terminator written.
 // Accounting follows the LENGTH, as `box_free` does.
 static void sized_resized(Header* h, size_t n) {
-    acc_box(h->kind, (int64_t)n - (int64_t)h->len);
+    acc_box(avra_kind(h), (int64_t)n - (int64_t)h->len);
     h->len = (uint32_t)n;
     ((char*)(h + 1))[n] = '\0';
 }
@@ -1017,9 +1017,9 @@ static char* sized_moved(char* p, size_t need) {
         // a classed box moves to a fresh one; under the guard every move
         // is fresh, and the old box is kept, marked dead and poisoned, so
         // a stale reader finds garbage rather than the text it expected
-        char* out = (char*)box_alloc(room + 1, h->kind);
+        char* out = (char*)box_alloc(room + 1, avra_kind(h));
         Header* oh = (Header*)out - 1;
-        acc_box(oh->kind, -(int64_t)(room - n));
+        acc_box(avra_kind(oh), -(int64_t)(room - n));
         oh->len = (uint32_t)n;
         memcpy(out, p, n);
         if (rc_guarded()) {
@@ -1490,15 +1490,15 @@ static void array_poison(void* p) {
 // line read what an unguarded run holds. Asked before the mark, while
 // the header still says what the box is.
 static void guard_kept(void* p, Header* h) {
-    if (h->kind == KIND_ARRAY) {
+    if (avra_kind(h) == KIND_ARRAY) {
         AvraArray* a = (AvraArray*)p;
         if (a->site) acc_site(a->site, -array_bytes(a), -1);
         if (!laid_out(a)) acc_add(ACC_BUF, -(int64_t)buf_bytes(a->cap));
-    } else if (h->kind == KIND_MAP) {
+    } else if (avra_kind(h) == KIND_MAP) {
         acc_add(ACC_INDEX, -index_words((AvraMap*)p) * (int64_t)sizeof(int64_t));
     }
-    acc_box(h->kind, -(int64_t)(sizeof(Header) + box_bytes(h)));
-    h->kind = KIND_DEAD;
+    acc_box(avra_kind(h), -(int64_t)(sizeof(Header) + box_bytes(h)));
+    avra_set_kind(h, KIND_DEAD);
     h->rc = 0;
 }
 
@@ -1705,8 +1705,8 @@ void* avra_once_get(void* key) {
 // ONE STILL-MORTAL BOX'S FOOTPRINT, walked the way `array_reclaim`
 // and `map_reclaim` would free it — box, buffer and every OWNED slot,
 // recursively — except nothing here is freed. Called from
-// `avra_once_set` BEFORE the kind is flipped, so `h->kind` is still
-// its true shape and `h->kind < 0` unambiguously means "never added
+// `avra_once_set` BEFORE the kind is flipped, so `avra_kind(h)` is still
+// its true shape and `avra_kind(h) < 0` unambiguously means "never added
 // to the mortal ledger": a STATIC aggregate (a const's, baked by the
 // backend at compile time) never touched `acc_box`/`acc_add` to
 // begin with, and neither did a string literal reached as a map key,
@@ -1720,8 +1720,8 @@ void* avra_once_get(void* key) {
 // trigger for the day one exists.
 static int64_t once_box_credit(void* p) {
     Header* h = hdr(p);
-    if (h == NULL || h->kind < 0) return 0;
-    switch (h->kind) {
+    if (h == NULL || avra_kind(h) < 0) return 0;
+    switch (avra_kind(h)) {
         case KIND_ARRAY: {
             AvraArray* a = (AvraArray*)p;
             int64_t total = array_bytes(a);
@@ -1759,9 +1759,9 @@ void avra_once_set(void* key, void* value) {
     // names its true shape — a cache held for the process's life is
     // not a leak, so it must not read as bytes still owed.
     Header* vh = hdr(value);
-    if (vh != NULL && vh->kind >= 0) {
+    if (vh != NULL && avra_kind(vh) >= 0) {
         g_mortal_live -= once_box_credit(value);
-        vh->kind = KIND_IMMORTAL(vh->kind);
+        avra_set_kind(vh, KIND_IMMORTAL(avra_kind(vh)));
     }
     g_once[g_once_count].key = key;
     g_once[g_once_count].value = value;
@@ -1878,7 +1878,7 @@ __attribute__((noinline, cold))
 void* avra_get_owned_guarded(void* arr, int64_t i) {
     void* v = (void*)(uintptr_t)avra_get_guarded(arr, i);
     Header* h = hdr(v);
-    if (h != 0 && h->kind >= 0) avra_retain_noted(v, h);
+    if (h != 0 && avra_kind(h) >= 0) avra_retain_noted(v, h);
     return v;
 }
 
@@ -1919,8 +1919,8 @@ static void* array_clone(AvraArray* a) {
 static int is_shared(void* p) {
     Header* h = hdr(p);
     if (h == NULL) return 0;
-    if (IS_IMMORTAL(h->kind)) return 1;
-    return h->kind >= 0 && h->rc > 1;
+    if (IS_IMMORTAL(avra_kind(h))) return 1;
+    return avra_kind(h) >= 0 && h->rc > 1;
 }
 
 // AVRA_ALIAS_LOG: one stderr line per ACTUAL uniquify clone (never
@@ -1953,13 +1953,13 @@ static void alias_log_clone(void* site, void* box) {
     Header* h = hdr(box);
     int64_t n = -1;
     if (h) {
-        n = (KIND_SHAPE(h->kind) == KIND_MAP) ? ((AvraMap*)box)->keys->len : ((AvraArray*)box)->len;
+        n = (KIND_SHAPE(avra_kind(h)) == KIND_MAP) ? ((AvraMap*)box)->keys->len : ((AvraArray*)box)->len;
     }
     // UNSLID: `atos -o <binary> <addr>` reads a file offset, not a
     // live ASLR address — subtract the image's own slide so the
     // printed address is directly symbolicatable after the fact.
     intptr_t slide = image_slide();
-    avra_say("ALIAS_CLONE site=%p kind=%d n=%lld\n", (void*)((char*)site - slide), h ? (int)KIND_SHAPE(h->kind) : -999, (long long)n);
+    avra_say("ALIAS_CLONE site=%p kind=%d n=%lld\n", (void*)((char*)site - slide), h ? (int)KIND_SHAPE(avra_kind(h)) : -999, (long long)n);
 }
 
 // Empties a cell WITHOUT releasing what it held: the cell's reference
@@ -1992,7 +1992,7 @@ void* avra_cell_unique(void* slot) {
 void* avra_cell_thawed(void* slot) {
     void* p = *(void**)slot;
     Header* h = hdr(p);
-    if (h == NULL || !IS_IMMORTAL(h->kind)) return p;
+    if (h == NULL || !IS_IMMORTAL(avra_kind(h))) return p;
     return avra_cell_unique(slot);
 }
 
@@ -2036,6 +2036,7 @@ int64_t avra_enum_word(void* box) {
 
 // The same one level down: the box in a slot, made unique in place.
 void* avra_slot_unique(void* arr, int64_t i) {
+    avra_box_touch(arr);
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);
     if (!is_shared(p)) return p;
     AvraArray* a = (AvraArray*)arr;
@@ -2060,6 +2061,7 @@ void* avra_owned_slot_unique(void* arr, int64_t i) {
 
 // A write into a slot: the old owned content is released.
 void avra_slot_set(void* arr, int64_t i, int64_t v) {
+    avra_box_touch(arr);
     AvraArray* a = (AvraArray*)arr;
     avra_array_get(arr, i);
     if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
@@ -2702,7 +2704,7 @@ static void* map_clone(AvraMap* m) {
 static void* box_clone(void* p) {
     CENSUS(note_copy(AVRA_CALLER()));
     Header* h = hdr(p);
-    return (h && KIND_SHAPE(h->kind) == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
+    return (h && KIND_SHAPE(avra_kind(h)) == KIND_MAP) ? map_clone((AvraMap*)p) : array_clone((AvraArray*)p);
 }
 
 // ── Text building ───────────────────────────────────────────────
@@ -2834,7 +2836,7 @@ void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
 // A list box the handed reference holds alone — never an immortal one.
 static inline int sole_array(void* p) {
     Header* h = hdr(p);
-    return h && h->kind == KIND_ARRAY && h->rc == 1;
+    return h && avra_kind(h) == KIND_ARRAY && h->rc == 1;
 }
 
 // `arr` cut to the slots from lo up to hi, in place when it is held
@@ -2877,6 +2879,14 @@ void* avra_array_concat_reusing(void* a, void* b) {
     avra_array_reserve(a, src->len);
     array_append(a, src, 0, src->len);
     return a;
+}
+
+// `src`'s slots appended to `dst`, owned ones retained; `dst` is
+// grown once, for all of them.
+void avra_array_extend(void* dst, void* src) {
+    AvraArray* s = (AvraArray*)src;
+    avra_array_reserve(dst, s->len);
+    array_append(dst, s, 0, s->len);
 }
 
 // ── The string vocabulary ───────────────────────────────────────
@@ -3645,6 +3655,124 @@ int64_t avra_fd_write(int64_t fd, const char* bytes, int64_t from) {
     }
 }
 
+// ── The terminal: its size, its mode, and what it is left as ─────
+
+#if defined(__wasm32__)
+int64_t avra_fd_tty_size(int64_t fd) { (void)fd; return 0; }
+int64_t avra_fd_tty_raw(int64_t fd, int64_t mode) { (void)fd; (void)mode; return 0; }
+void avra_fd_exit_writes(int64_t fd, const char* bytes) { (void)fd; (void)bytes; }
+#else
+#include <sys/ioctl.h>
+#include <termios.h>
+
+int64_t avra_fd_tty_size(int64_t fd) {
+    struct winsize ws;
+    if (ioctl((int)fd, TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0 || ws.ws_row == 0) return 0;
+    return (int64_t)ws.ws_col * 65536 + (int64_t)ws.ws_row;
+}
+
+// WHAT THE PROCESS LEAVES BEHIND is read by an exit handler and a signal
+// handler, so it is plain data written before either can run: the bytes, a
+// terminal mode saved before it was changed, and the handlers' priors.
+static int g_leave_fd = -1;
+static char* g_leave_bytes = NULL;
+static size_t g_leave_len = 0;
+static int g_tty_fd = -1;
+static int g_tty_saved = 0;
+static struct termios g_tty_was;
+static int g_leave_armed = 0;
+static struct sigaction g_leave_prior[NSIG];
+static const int g_leave_signals[] = { SIGHUP, SIGINT, SIGQUIT, SIGTERM, SIGSEGV, SIGBUS, SIGABRT, SIGFPE, SIGILL };
+
+// Async-signal-safe: write(2) and tcsetattr(3) only. Idempotent — the bytes
+// go out once, the mode is given back once.
+static void leave_now(void) {
+    if (g_leave_len > 0 && g_leave_fd >= 0) {
+        size_t at = 0;
+        while (at < g_leave_len) {
+            ssize_t put = write(g_leave_fd, g_leave_bytes + at, g_leave_len - at);
+            if (put < 0 && errno == EINTR) continue;
+            if (put <= 0) break;
+            at += (size_t)put;
+        }
+        g_leave_len = 0;
+    }
+    if (g_tty_saved) {
+        tcsetattr(g_tty_fd, TCSANOW, &g_tty_was);
+        g_tty_saved = 0;
+    }
+}
+
+// A terminating signal: leave, give the signal back to whoever had it, and
+// raise it again so the process ends as it would have.
+static void leave_on_signal(int sig) {
+    leave_now();
+    sigaction(sig, &g_leave_prior[sig], NULL);
+    raise(sig);
+}
+
+static void leave_arm(void) {
+    if (g_leave_armed) return;
+    g_leave_armed = 1;
+    atexit(leave_now);
+    for (size_t i = 0; i < sizeof g_leave_signals / sizeof g_leave_signals[0]; i++) {
+        int sig = g_leave_signals[i];
+        struct sigaction now;
+        if (sigaction(sig, NULL, &now) != 0) continue;
+        if (now.sa_handler == SIG_IGN) continue;
+        struct sigaction mine;
+        memset(&mine, 0, sizeof mine);
+        mine.sa_handler = leave_on_signal;
+        sigemptyset(&mine.sa_mask);
+        mine.sa_flags = SA_ONSTACK | SA_RESETHAND;
+        g_leave_prior[sig] = now;
+        sigaction(sig, &mine, NULL);
+    }
+}
+
+int64_t avra_fd_tty_raw(int64_t fd, int64_t mode) {
+    if (!isatty((int)fd)) return 0;
+    leave_arm();
+    if (mode == 0) {
+        if (!g_tty_saved) return 0;
+        tcsetattr(g_tty_fd, TCSANOW, &g_tty_was);
+        g_tty_saved = 0;
+        return 1;
+    }
+    if (g_tty_saved) return 1;
+    struct termios raw;
+    if (tcgetattr((int)fd, &raw) != 0) return 0;
+    g_tty_was = raw;
+    g_tty_fd = (int)fd;
+    if (mode == 2) {
+        cfmakeraw(&raw);
+    } else {
+        raw.c_lflag &= ~(tcflag_t)(ICANON | ECHO);
+        raw.c_iflag &= ~(tcflag_t)(IXON | ICRNL);
+        raw.c_cc[VMIN] = 1;
+        raw.c_cc[VTIME] = 0;
+    }
+    raw.c_oflag |= OPOST | ONLCR;
+    if (tcsetattr((int)fd, TCSANOW, &raw) != 0) return 0;
+    g_tty_saved = 1;
+    return 1;
+}
+
+void avra_fd_exit_writes(int64_t fd, const char* bytes) {
+    size_t n = bytes_len(bytes);
+    char* copy = n > 0 ? malloc(n) : NULL;
+    if (n > 0 && !copy) avra_trap("out of memory keeping the bytes a terminal is left with");
+    if (n > 0) memcpy(copy, bytes, n);
+    char* old = g_leave_bytes;
+    g_leave_len = 0;
+    g_leave_bytes = copy;
+    g_leave_fd = (int)fd;
+    g_leave_len = n;
+    free(old);
+    if (n > 0) leave_arm();
+}
+#endif
+
 
 // A list slot holding fresh text — the list owns the one reference.
 static void push_fresh_text(void* arr, const char* s, size_t n) {
@@ -4168,6 +4296,87 @@ const char* avra_embed_octets(const char* path) {
     (void)path;
     avra_trap("`embed_octets` reads a file at compile time, into a const — this program reached it at run time");
     return "";
+}
+
+/* ── Change tracking ─────────────────────────────────────────────
+   A site that reads a box OBSERVES it, and an observed box is HELD: observing
+   takes a reference and unobserving gives it back, so a box cannot die while
+   a site still names it, and no header is ever written after it was freed.
+   A write to an observed box that has not been written this turn stamps it
+   and files its key in the change log, once; the turn takes the log and
+   re-renders only what read those boxes. A KEY names a box by its address and
+   opens nothing. One thread runs the loop, so the log is a plain array. */
+uint32_t avra_turn_word = AVRA_STAMP_ONE;
+
+static int64_t* g_changes;
+static size_t g_changes_len, g_changes_cap;
+
+__attribute__((noinline, cold))
+void avra_box_changed(void* payload) {
+    Header* h = (Header*)payload - 1;
+    h->kind_word = (int32_t)(((uint32_t)h->kind_word & ~AVRA_STAMP_MASK) | avra_turn_word);
+    if (g_changes_len == g_changes_cap) {
+        g_changes_cap = g_changes_cap ? g_changes_cap * 2 : 64;
+        g_changes = (int64_t*)realloc(g_changes, g_changes_cap * sizeof(int64_t));
+        if (g_changes == NULL) avra_trap("out of memory logging a change");
+    }
+    g_changes[g_changes_len++] = (int64_t)(uintptr_t)payload;
+}
+
+/* A box's key: its address, as a number. */
+int64_t avra_box_key(void* p) {
+    return avra_hdr(p) ? (int64_t)(uintptr_t)p : 0;
+}
+
+/* Whether a box can be observed: a counted box, or one that lives for the
+   process (a `once` answer, which a top-level state's cell is), whose header
+   is the runtime's own to write. A box the backend laid out as data carries
+   every flag set, and its header may sit in read-only memory. */
+static int observable(Header* h) {
+    return ((uint32_t)h->kind_word & AVRA_FLAGS_MASK) != AVRA_FLAGS_MASK && avra_kind(h) != KIND_DEAD;
+}
+
+/* A box a site reads: held and observed from now, and stamped as not yet
+   written this turn, so its first write files it. Observing a box already
+   observed only stamps it again, so it is held once. A pointer that is not
+   a counted box answers 0. */
+int64_t avra_box_observe(void* p) {
+    Header* h = avra_hdr(p);
+    if (h == NULL || !observable(h)) return 0;
+    uint32_t stale = (avra_turn_word - AVRA_STAMP_ONE) & AVRA_STAMP_MASK;
+    int held = ((uint32_t)h->kind_word & AVRA_FLAGS_MASK) == AVRA_OBSERVED;
+    h->kind_word = (int32_t)(((uint32_t)h->kind_word & 0xFFu) | AVRA_OBSERVED | stale);
+    if (!held) avra_rc_retain(p);
+    return 1;
+}
+
+/* A box no site reads any more: let go. A box that was not observed is left
+   alone. */
+int64_t avra_box_unobserve(void* p) {
+    Header* h = avra_hdr(p);
+    if (h == NULL) return 0;
+    if (((uint32_t)h->kind_word & AVRA_FLAGS_MASK) != AVRA_OBSERVED) return 0;
+    h->kind_word = (int32_t)((uint32_t)h->kind_word & 0xFFu);
+    avra_rc_release(p);
+    return 1;
+}
+
+/* A turn begins: the stamp moves on. Answers 1 when it wrapped, which means
+   every observed box must be observed again, since a box stamped 65536 turns
+   ago would read as already written this turn. */
+int64_t avra_turn_next(void) {
+    avra_turn_word += AVRA_STAMP_ONE;
+    if (avra_turn_word == 0) { avra_turn_word = AVRA_STAMP_ONE; return 1; }
+    return 0;
+}
+
+/* The keys of the boxes written this turn, once each, in the order they were
+   first written, as a list the caller owns; the log starts empty again. */
+void* avra_changes_take(void) {
+    void* out = avra_array_new();
+    for (size_t i = 0; i < g_changes_len; i++) avra_array_push(out, g_changes[i]);
+    g_changes_len = 0;
+    return out;
 }
 
 /* `type_named` is answered by the compiler's own declaration table,

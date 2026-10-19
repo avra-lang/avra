@@ -5,6 +5,7 @@
 //! renderer.
 use core.{
     SyntaxArena,
+    spread_entry,
     jump_word,
     Remark,
     Trivia,
@@ -224,6 +225,9 @@ fn window_brace(t: string, w: Window) -> int? {
 }
 
 impl SourceText {
+    /// The annotations a statement was written with: a builder's own carry no span.
+    fn written_annotations(s: StmtId) -> List<Annotation> { [a for a in self.store.annotations_of(s) if a.span != null] }
+
     /// A statement, its documentation and its annotations.
     ///
     /// THE DOC AND ITS REMARKS INTERLEAVE: a `//` may sit before or
@@ -252,7 +256,7 @@ impl SourceText {
                 flatten(
                     [self
                         .trivia_before(start_of(a.span), depth)
-                        .concat([source_line(depth, self.annotation(a, depth))]) for a in self.store.annotations_of(s)],
+                        .concat([source_line(depth, self.annotation(a, depth))]) for a in self.written_annotations(s)],
                 ),
             )
             .concat(self.trivia_before(decl, depth))
@@ -381,6 +385,11 @@ impl SourceText {
         [source_line(depth, doc_line_text(line)) for line in doc]
     }
 
+    /// The path literal an asset statement's call was written with.
+    fn asset_path(value: ExprId) -> ExprId? {
+        match self.store.expr(value) { .Call(_, _, args) -> args.first(), rest -> null }
+    }
+
     /// The statement registry: every Stmt variant has one source form.
     mut fn statement_node(s: StmtId, depth: int) -> List<string> {
         let exported = if self.store.is_exported(s) { "export " } else { "" }
@@ -403,11 +412,13 @@ impl SourceText {
                 if self.store.is_component_inst(s) {
                     self.component_inst(exported, value, name.of, depth)
                 } else {
-                    let name_part = "${exported}const ${source_name(name.of)}"
+                    let word = if self.store.is_asset_stmt(s) { "asset" } else { "const" }
+                    let name_part = "${exported}${word} ${source_name(name.of)}"
                     let prefix = "${name_part}${self.annotation_type(ty, depth, col_after(name_part, depth * 4))} = "
+                    let shown = if self.store.is_asset_stmt(s) { self.asset_path(value) ?? value } else { value }
                     source_line(
                         depth,
-                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
+                        "${prefix}${self.expression(shown, loosest_tier, depth, col_after(prefix, depth * 4))}",
                     )
                 },
             ],
@@ -807,7 +818,8 @@ impl SourceText {
     /// A field or a seat as written: its marks, its word, its name, its
     /// type and its default.
     mut fn field(p: Param, depth: int) -> string {
-        let name = if p.name.is_empty() { "" } else { "${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
+        let dots = if p.variadic { ".." } else { "" }
+        let name = if p.name.is_empty() { "" } else { "${dots}${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { spelled(p.ty!) }
         let word = if p.state { "state " } else { "" }
         "${self.marks(p.marks, depth)}${word}${mark_prefixed(p.promises, name)}${ty}${self.default_value(p.default, depth)}"
@@ -1335,6 +1347,11 @@ impl SourceText {
             .Receiver -> grouped("self", atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
+            .LetPattern(pat, subject, otherwise, held) -> grouped(
+                self.let_pattern_text(pat, subject, otherwise, held, depth),
+                loosest_tier,
+                parent,
+            ),
             .Pipe(_, _) -> self.pipe_rendered(self.pipe_walk(id, depth), parent, depth, c),
             .Bitnot(value) -> grouped("~${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth, c), atom_tier, parent),
@@ -1387,9 +1404,10 @@ impl SourceText {
                 )
             },
             .Named(name, value) -> {
-                let head = "${source_name(name.of)}: "
+                let spreads = name.of == spread_entry
+                let head = if spreads { ".." } else { "${source_name(name.of)}: " }
                 grouped(
-                    "${head}${self.expression(value, loosest_tier, depth, col_after(head, c))}",
+                    "${head}${self.expression(value, if spreads { postfix_tier } else { loosest_tier }, depth, col_after(head, c))}",
                     loosest_tier,
                     parent,
                 )
@@ -1646,28 +1664,28 @@ impl SourceText {
             return self
                 .wrapped_list(
                     "{",
-                    ["${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, k in keys],
+                    [self.map_entry_text(k, values[j], depth + 1) for j, k in keys],
                     "}",
                     false,
                     depth,
                     col,
                 )
         }
-        if self.span_flat(span) { return "{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}" }
+        if self.span_flat(span) { return "{${joined([self.map_entry_text(k, values[j], depth) for j, k in keys], ", ")}}" }
         let body = flatten(
             [self
                 .trivia_before(start_of(self.store.expr_span(k)), depth + 1)
-                .concat(
-                    [
-                        source_line(
-                            depth + 1,
-                            "${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)},",
-                        ),
-                    ],
-                ) for j, k in keys],
+                .concat([source_line(depth + 1, "${self.map_entry_text(k, values[j], depth + 1)},")]) for j, k in keys],
         )
             .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// One map entry: `key: value`, or a spread's `..map` — its key is
+    /// the spread and its value a placeholder that prints nothing.
+    mut fn map_entry_text(k: ExprId, v: ExprId, depth: int) -> string {
+        if self.store.spread_operand(k) != null { return self.expression(k, loosest_tier, depth) }
+        "${self.expression(k, loosest_tier, depth)}: ${self.expression(v, loosest_tier, depth)}"
     }
 
     /// The table's lines, each column padded to its own widest cell
@@ -1731,28 +1749,27 @@ impl SourceText {
             return self
                 .wrapped_list(
                     "{",
-                    ["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)}" for j, f in fields],
+                    [self.field_text(f, values[j], depth + 1) for j, f in fields],
                     "}",
                     true,
                     depth,
                     col,
                 )
         }
-        if self.span_flat(span) { return "{ ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }" }
+        if self.span_flat(span) { return "{ ${joined([self.field_text(f, values[j], depth) for j, f in fields], ", ")} }" }
         let body = flatten(
             [self
                 .trivia_before(start_of(self.store.expr_span(values[j])), depth + 1)
-                .concat(
-                    [
-                        source_line(
-                            depth + 1,
-                            "${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)},",
-                        ),
-                    ],
-                ) for j, f in fields],
+                .concat([source_line(depth + 1, "${self.field_text(f, values[j], depth + 1)},")]) for j, f in fields],
         )
             .concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
         "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// One literal entry: `name: value`, or a spread's `..record`.
+    mut fn field_text(f: Plain, v: ExprId, depth: int) -> string {
+        if f.of == spread_entry { return "..${self.expression(v, postfix_tier, depth)}" }
+        "${source_name(f.of)}: ${self.expression(v, loosest_tier, depth)}"
     }
 
     /// A string literal's text: `"""raw"""` for the node the lexer's
@@ -1793,6 +1810,39 @@ impl SourceText {
         let yes = self.block(arms[0].value, one, depth)
         if !payload.has_else { return "if ${cond} ${yes}" }
         "if ${cond} ${yes} else ${self.if_group_else(arms[1].value, one, depth)}"
+    }
+
+    /// The `let pattern = subject [else { … }]` node and the statements it
+    /// holds: the head line, then the statements its block holds, level
+    /// with it — the first line unpadded, as an expression's text is.
+    mut fn let_pattern_text(
+        pat: PatId,
+        subject: ExprId,
+        otherwise: ExprId?,
+        rest: ExprId?,
+        depth: int,
+    ) -> string {
+        let prefix = "let ${self.pattern(pat, depth)} = "
+        let head = "${prefix}${self.expression(subject, loosest_tier, depth, col_after(prefix, depth * 4))}"
+        let opened = if otherwise == null { head } else { "${head} else ${self.block(otherwise!, self.span_flat(self.store.expr_span(otherwise!)), depth)}" }
+        let trail = self.trailing(end_of(self.store.expr_span(subject)))
+        let held = if rest == null { [] } else { self.let_rest_lines(rest!, depth) }
+        unpadded(joined(["${source_line(depth, opened)}${trail}"].concat(held), "\n"), depth)
+    }
+
+    /// The statements a destructuring `let` owns, then the value its
+    /// block answers with.
+    mut fn let_rest_lines(block: ExprId, depth: int) -> List<string> {
+        match self.store.expr(block) {
+            .Block(stmts, value) -> {
+                let body = flatten([self.statement(s, depth) for s in stmts])
+                let v? = value else { return body }
+                body
+                    .concat(self.trivia_before(start_of(self.store.expr_span(v)), depth))
+                    .concat([source_line(depth, self.expression(v, loosest_tier, depth))])
+            },
+            rest -> [source_line(depth, self.expression(block, loosest_tier, depth))],
+        }
     }
 
     /// The chained form of `payload_if` — a marked Match in an else
@@ -2281,7 +2331,41 @@ impl SourceText {
             .Quote(body) -> self.expression(body, loosest_tier, depth),
             .Typed(name, ty) -> "${source_name(name.of)}: ${self.type_ref_wrapped(ty, depth)}",
             .Member(name, bind) -> ".${source_name(name.of)} as ${source_name(bind.of)}",
+            .Seq(before, middle, after) -> self.seq_pattern(before, middle, after, depth),
+            .Fields(name, fields, args, open) -> self.fields_pattern(name.of, [f.of for f in fields], args, open, depth),
         }
+    }
+
+    /// `[a, ..rest, z]`: the elements before the `..`, the `..` with
+    /// the name it binds, the elements after.
+    mut fn seq_pattern(before: List<PatId>, middle: List<PatId>, after: List<PatId>, depth: int) -> string {
+        let dots = ["..${self.rest_binder(m)}" for m in middle]
+        "[${joined([self.pattern(p, depth) for p in before].concat(dots).concat([self.pattern(p, depth) for p in after]), ", ")}]"
+    }
+
+    /// The name a `..` binds, or nothing for a wildcard.
+    fn rest_binder(middle: PatId) -> string {
+        match self.store.pat(middle) { .Bind(name) -> source_name(name.of), _ -> "" }
+    }
+
+    /// `P { x, y: pattern, .. }`: a field whose pattern binds its own
+    /// name is written punned.
+    mut fn fields_pattern(
+        name: string,
+        fields: List<string>,
+        args: List<PatId>,
+        open: bool,
+        depth: int,
+    ) -> string {
+        let entries = [self.field_pattern(f, args[j], depth) for j, f in fields]
+            .concat(if open { [".."] } else { [] })
+        "${source_name(name)} { ${joined(entries, ", ")} }"
+    }
+
+    mut fn field_pattern(field: string, arg: PatId, depth: int) -> string {
+        let spelled = self.pattern(arg, depth)
+        if spelled == source_name(field) { return spelled }
+        "${source_name(field)}: ${spelled}"
     }
 
     /// A literal pattern's own text. A STRING is re-read by the format

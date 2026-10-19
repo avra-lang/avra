@@ -6,7 +6,44 @@
 //! variants — one arm per feature's node, no dispatch — and every
 //! pass reads them here, never by matching a node itself.
 
+/// The name a VALUE spread wears inside a literal: a record literal's
+/// field entry, or the `Named` node wrapping a list element.
+export const spread_entry: string = ".."
+
 impl SyntaxArena {
+    /// A destructuring `let` still waiting for its block, when the statement is one.
+    fn open_let(s: StmtId) -> LetParts? {
+        let v? = self.stmt_value(s) else { return null }
+        match self.expr(v) {
+            .LetPattern(pat, subject, otherwise, held) -> if held == null { LetParts { pat: pat, subject: subject, otherwise: otherwise } } else { null },
+            _ -> null,
+        }
+    }
+
+    /// A list pattern's parts, when the pattern is one.
+    fn seq_parts(p: PatId) -> SeqParts? {
+        match self.pat(p) {
+            .Seq(before, middle, after) -> SeqParts { before: before, rest: middle, after: after },
+            _ -> null,
+        }
+    }
+
+    /// A record pattern's parts, when the pattern is one.
+    fn fields_parts(p: PatId) -> FieldsParts? {
+        match self.pat(p) {
+            .Fields(name, fields, args, open) -> FieldsParts { name: name.of, fields: [f.of for f in fields], args: args, open: open },
+            _ -> null,
+        }
+    }
+
+    /// The value a list element spreads, when the element is a spread.
+    fn spread_operand(e: ExprId) -> ExprId? {
+        match self.expr(e) {
+            .Named(name, value) -> if name.of == spread_entry { value } else { null },
+            _ -> null,
+        }
+    }
+
     /// A statement's bound name, when it binds one. A PROJECTION
     /// registry beside the semantics map: one arm per binding
     /// feature, zero dispatch cost — projections are DATA about
@@ -646,3 +683,8 @@ export type EnumParts = { name: string, tparams: List<string>, variants: List<Va
 fn name_over(name: Scoped, tparams: List<Plain>, of: TypeRef) -> NamedParts {
     NamedParts { name: name.of, tparams: [t.of for t in tparams], of: of }
 }
+
+export type SeqParts = { before: List<PatId>, rest: List<PatId>, after: List<PatId> }
+export type FieldsParts = { name: string, fields: List<string>, args: List<PatId>, open: bool }
+
+export type LetParts = { pat: PatId, subject: ExprId, otherwise: ExprId? }

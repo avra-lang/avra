@@ -253,11 +253,13 @@ $(RUNTIME_LIB): $(RUNTIME_OBJS)
 	@rm -f $@
 	@ar rcs $@ $^
 
-# THE RUNTIME AS WEBASSEMBLY, one object per file, MINUS the two that have no
-# wasm body: a fiber switches stacks and a core forks, and wasm can do neither
-# without the stack-switching proposal. Excluding them HERE makes the law — a
-# DOM app must never link them — structural rather than a hope, and a program
-# links only the members it reaches in any case.
+# THE RUNTIME AS WEBASSEMBLY, one object per file, MINUS the one that has no
+# wasm body: a core forks, and wasm cannot. The scheduler is IN, hosted: its
+# tasks run on stacks the host makes (JSPI, or asyncify), so its OS halves —
+# stacks, poller, signals, the case runner — are compiled out
+# (runtime/avra_fiber.c, AVRA_HOSTED). Excluding the core HERE makes the law
+# structural rather than a hope, and a program links only the members it
+# reaches in any case.
 # THE WASM TOOLCHAIN IS FOUND, by the rule the compiler finds it by
 # (packages/cli/src/commands/shared.av, `wasm_tools`): the clang `LLVM_PREFIX`
 # names when it has one, else the PATH's; and the first triple that clang has
@@ -280,7 +282,7 @@ WASM_INSTRUMENTS ?= 0
 # setjmp/longjmp to throw and catch (the module links libsetjmp for the
 # rest). No other member is built so, and the exnref encoding is LLVM's default.
 WASM_SJLJ_avra_runtime.c := -mllvm -wasm-enable-sjlj -mexception-handling
-WASM_RUNTIME_SRCS := $(filter-out runtime/avra_fiber.c runtime/avra_cores.c,$(wildcard runtime/*.c))
+WASM_RUNTIME_SRCS := $(filter-out runtime/avra_cores.c,$(wildcard runtime/*.c))
 WASM_RUNTIME_OBJS := $(patsubst runtime/%.c,build/wasm32/%.o,$(WASM_RUNTIME_SRCS))
 WASM_RUNTIME_LIB := build/wasm32/libavra_runtime.a
 
@@ -303,10 +305,15 @@ build/wasm32/%.o: %.c build/%.sha
 
 -include $(patsubst %.o,%.d,$(WASM_RUNTIME_OBJS) $(WASM_PACKAGE_OBJS))
 
+# THE CORE OBJECT IS THE ARCHIVE'S FIRST MEMBER: the program imports every
+# runtime row from `avra:rt`, and a member that names one of them plain
+# (`env`) while the row is still undefined is a module mismatch at the link.
+# The linker takes members in archive order, so the object that DEFINES the
+# rows goes first and nothing meets an undefined one.
 $(WASM_RUNTIME_LIB): $(WASM_RUNTIME_OBJS)
 	@mkdir -p build/wasm32
 	@rm -f $@
-	@$(WASM_AR) rcs $@ $^
+	@$(WASM_AR) rcs $@ build/wasm32/avra_runtime.o $(filter-out build/wasm32/avra_runtime.o,$^)
 
 wasm-runtime: $(WASM_RUNTIME_LIB)
 
@@ -322,7 +329,17 @@ wasm-check:
 wasm-seam:
 	sh tools/wasm-seam-check.sh
 
-# THE REFUSALS: a fiber/core row or a package's C is named, not a linker error.
+# THE HOSTED SCHEDULER, BROKEN ON PURPOSE: each break of its wasm port must
+# turn the tasks fixture red.
+wasm-tasks-mutations:
+	sh tools/wasm-tasks-mutations.sh
+
+# THE HOST HALF under JSPI: a plain call that parks is refused in words, an
+# entered one runs, the artifact follows what the host can suspend.
+wasm-host-check:
+	sh tools/wasm-host-check.sh
+
+# THE REFUSALS: a core row, a wait on a descriptor or a package's C is named, not a linker error.
 wasm-refuses:
 	sh tools/wasm-refuses.sh
 
@@ -359,7 +376,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser layout-oracle h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost wasm-tasks-mutations wasm-host-check \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -410,7 +427,7 @@ seed: $(COMPILER_OBJS)
 recover: $(COMPILER_OBJS)
 	@mkdir -p build
 	@clang -w -O1 -rdynamic bootstrap/seed.ll $(SEED_LINK_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
+	    -L$(LLVM_PREFIX)/lib -lLLVM -lm -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
 
@@ -635,6 +652,8 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_index_attack.sh
 	@sh tools/fn_add_attack.sh
 	@sh tools/host_fn_edit_attack.sh
+	@sh tools/store_bound_attack.sh
+	@sh tools/obj_gone_attack.sh
 	@sh tools/dep_tests_listing_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
@@ -701,7 +720,7 @@ seed-check: $(COMPILER_OBJS)
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(SEED_LINK_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
+	    -L$(LLVM_PREFIX)/lib -lLLVM -lm -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@sh tools/capped.sh build/seed-check/out 200000 build/avra-seed-check build packages/cli \
 	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; \
@@ -918,9 +937,11 @@ attack:
 
 # NO DEFECT VOICE REACHES A USER PROGRAM: every malformed or edge program
 # in tools/defects/corpus.txt, and every mutation of its bases, is checked
-# and run, and one answered with a defect voice or a trap refuses.
+# and run, and one answered with a defect voice or a trap refuses. A SEEDED
+# SET of mutants of the tree's own program tests rides beside them; more is
+# `python3 tools/defects.py --only gen: --generate 500 --seed <n>`.
 defects:
-	@python3 tools/defects.py
+	@sh tools/watch.sh 6000 python3 tools/defects.py --generate 40 --seed 0
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.
@@ -959,6 +980,13 @@ ui-board:
 # Skips, spoken, where Firefox, node or a wasm toolchain is absent.
 ui-browser:
 	@sh tools/ui_board_browser.sh
+
+# THE LAYOUT SOLVER AGAINST THE WEB TARGET: std-ui's `place` and Firefox running
+# the page the real html realizer writes, on the same random trees (fixed seeds),
+# every box in agreement (tools/layout-oracle). Skips, spoken, where Firefox or
+# node is absent.
+layout-oracle:
+	@sh tools/layout_oracle.sh
 
 # A fingerprint tag NAMES a node kind: inside one fold space no two
 # kinds may wear one number, or they fingerprint alike by construction.
@@ -1023,7 +1051,7 @@ KEEPERS_A1 = speed-ratchet fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
 KEEPERS_B = fingerprints vocab families-left layers hooks-released inputs whole-reads cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack voices defects \
-            ui-host ui-host-test ui-board ui-browser tool-witnesses footprint tick-object no-threads \
+            ui-host ui-host-test ui-board ui-browser wasm-host-check tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
 keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
@@ -1036,7 +1064,7 @@ keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
-TOOL_WITNESSES = capped.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
+TOOL_WITNESSES = capped.sh\ --self-test failed_tail_test.sh host_fn_edit_attack.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
                  witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test

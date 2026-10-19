@@ -1,0 +1,239 @@
+//! `terminal/screen.av` — A SCREEN WRITTEN IN PLACE. The terminal's cells
+//! are a grid; a `Screen` keeps the grid it last wrote and turns the next
+//! into the fewest bytes that make the terminal show it: only the cells
+//! that changed, each run addressed by the cursor, a style written only
+//! where it differs. It enters the alternate screen first and leaves it
+//! last, so what the shell showed is what comes back.
+//!
+//! THE BYTES GO THROUGH A SEAT, never to a descriptor: a test hands it a
+//! function that keeps them and asserts them whole.
+//!
+//! A WIDE CELL is its left half, which holds the glyph, and a continuation
+//! after it, which holds nothing: a run never starts or ends between the
+//! two, so the terminal never draws half a character.
+use @std.text.{from_codepoint}
+use tree.lists.{flatten}
+use realize.tui.paint.{Grid, Pos, Tile}
+use terminal.keys.{kitty_off, kitty_on, modes_off, modes_on}
+
+/// A style bit and the attribute code it asks for.
+type Attribute = { bit: int, code: string }
+
+/// A run of changed cells in one line: columns `from` up to `to`.
+type Run = { y: int, from: int, to: int }
+
+/// The attributes a style's low bits ask for.
+const attributes = [
+    Attribute { bit: 1, code: "1" },
+    Attribute { bit: 2, code: "2" },
+    Attribute { bit: 4, code: "3" },
+    Attribute { bit: 8, code: "4" },
+    Attribute { bit: 16, code: "7" },
+]
+
+/// Unchanged cells between two changed ones that are rewritten rather than
+/// skipped with a cursor move: a move costs about this many cells.
+const bridged = 4
+
+fn esc() -> string { from_codepoint(27) }
+
+/// The cursor moved to a cell.
+fn at(x: int, y: int) -> string { "${esc()}[${y + 1};${x + 1}H" }
+
+/// A style as the escape that sets it: a reset, then each attribute and colour.
+fn sgr(style: int) -> string {
+    if style == 0 { return "${esc()}[0m" }
+    let fore = style / 256 % 256
+    let back = style / 65536 % 256
+    let parts = ["0"]
+        .concat([a.code for a in attributes if style / a.bit % 2 == 1])
+        .concat(if fore > 0 { ["38;5;${fore - 1}"] } else { [] })
+        .concat(if back > 0 { ["48;5;${back - 1}"] } else { [] })
+    "${esc()}[${parts.join(";")}m"
+}
+
+/// Whether two cells draw alike.
+fn alike(a: Tile, b: Tile) -> bool { a.text == b.text && a.wide == b.wide && a.style == b.style }
+
+/// Whether a cell is what a cleared terminal shows.
+fn blank(c: Tile) -> bool { c.text == " " && !c.wide && c.style == 0 }
+
+/// Whether the cell at `i` is not what the terminal shows: of the last grid
+/// written, or — none — of a cleared screen.
+fn changed(was: Grid?, next: Grid, i: int) -> bool {
+    let shown? = was else { return !blank(next.cells[i]) }
+    !alike(shown.cells[i], next.cells[i])
+}
+
+/// The runs of changed cells in line `y`, two nearer than `bridged` one run.
+fn runs_in(was: Grid?, next: Grid, y: int) -> List<Run> {
+    let row = y * next.width
+    let hits = [x for x in 0..next.width if changed(was, next, row + x)]
+    let none: List<Run> = []
+    let runs = hits.fold(none, (runs: List<Run>, x: int) -> extended(runs, x, y))
+    [stretched(next, r) for r in runs]
+}
+
+/// `runs` with the changed column `x` of line `y` in it: joining the last run
+/// when it is near enough, else a run of its own.
+fn extended(runs: List<Run>, x: int, y: int) -> List<Run> {
+    let fresh = Run { y: y, from: x, to: x + 1 }
+    let last? = runs.last() else { return [fresh] }
+    if x - last.to <= bridged { runs.slice(0, runs.length - 1).concat([last with { to: x + 1 }]) } else { runs.concat([fresh]) }
+}
+
+/// A run that does not begin on the continuation of a wide glyph nor end on
+/// its left half: the glyph is written whole or not at all.
+fn stretched(next: Grid, r: Run) -> Run {
+    let row = r.y * next.width
+    let from = if r.from > 0 &&
+        next.cells[row + r.from].text == "" &&
+        next.cells[row + r.from - 1].wide {
+        r.from - 1
+    } else {
+        r.from
+    }
+    let to = if r.to < next.width && next.cells[row + r.to - 1].wide { r.to + 1 } else { r.to }
+    r with { from: from, to: to }
+}
+
+/// Whether run `j` needs a cursor move: the cursor stands where the run
+/// before it ended only if that was in this line, short of its last column.
+fn moves(next: Grid, runs: List<Run>, j: int) -> bool {
+    if j == 0 { return true }
+    let before = runs[j - 1]
+    before.y != runs[j].y || before.to != runs[j].from || before.to == next.width
+}
+
+/// The bytes that draw `runs`: a move to each run not already under the
+/// cursor, a style where it changes, the glyphs. Leaves the style reset.
+fn drawn(next: Grid, runs: List<Run>) -> List<string> {
+    mut out: List<string> = []
+    mut style = 0
+    for j, r in runs {
+        if moves(next, runs, j) { out.push(at(r.from, r.y)) }
+        for x in r.from..r.to {
+            let c = next.cells[r.y * next.width + x]
+            if c.style != style {
+                out.push(sgr(c.style))
+                style = c.style
+            }
+            out.push(c.text)
+        }
+    }
+    if style != 0 { out.push(sgr(0)) }
+    out
+}
+
+/// A terminal being written: where its bytes go, the grid it shows (none:
+/// a cleared screen), and whether the alternate screen is entered and the
+/// caret shown.
+export type Screen = {
+    out: fn(string) -> void,
+    shown: Cell<Grid?>,
+    open: Cell<bool>,
+    caret: Cell<bool>,
+    kitty: Cell<bool>,
+}
+
+/// A screen whose bytes go to `out`.
+export fn screen(out: fn(string) -> void) -> Screen {
+    let nothing: Grid? = null
+    Screen {
+        out: out,
+        shown: Cell.new(nothing),
+        open: Cell.new(false),
+        caret: Cell.new(false),
+        kitty: Cell.new(false),
+    }
+}
+
+/// What a process leaves its terminal as: the input modes off, the style
+/// reset, the caret shown, the alternate screen left. Also what the runtime
+/// writes if the process ends any other way.
+export fn parting() -> string { parted(false) }
+
+/// `parting`, with the kitty keyboard protocol popped first when it was pushed.
+export fn parted(kitty: bool) -> string {
+    if kitty { kitty_off() } else { "" } + modes_off() + "${esc()}[0m${esc()}[?25h${esc()}[?1049l"
+}
+
+impl Screen {
+    /// The alternate screen, cleared, the caret hidden: the first thing a
+    /// screen writes.
+    fn enter() {
+        (self.out)("${esc()}[?1049h${esc()}[?25l${esc()}[2J${modes_on()}")
+        self.open.set(true)
+        self.caret.set(false)
+        self.shown.set(null)
+    }
+
+    /// The screen as it was found.
+    fn leave() {
+        if !self.open.get() { return }
+        (self.out)(self.parts())
+        self.open.set(false)
+        self.kitty.set(false)
+        self.shown.set(null)
+    }
+
+    /// What this screen leaves behind now: the kitty protocol popped if it
+    /// was pushed.
+    fn parts() -> string { parted(self.kitty.get()) }
+
+    /// The terminal answered the keyboard query: the kitty protocol is pushed,
+    /// and the bytes that do it are answered.
+    fn pushes() -> string {
+        self.kitty.set(true)
+        kitty_on()
+    }
+
+    /// The terminal changed size: what it shows is no longer known, so the
+    /// next paint clears it and writes in full.
+    fn resized() {
+        if !self.open.get() { return }
+        (self.out)("${esc()}[2J")
+        self.shown.set(null)
+    }
+
+    /// The terminal shows `next`. Nothing is written for a grid it already
+    /// shows; more than one run is written inside one synchronized update, so
+    /// the terminal draws it whole.
+    fn paint(next: Grid) {
+        if !self.open.get() { self.enter() }
+        let was = self.shown.get()
+        let resized = was != null && (was!.width != next.width || was!.height != next.height)
+        if resized { self.resized() }
+        let before = if resized { null } else { was }
+        let runs = flatten([runs_in(before, next, y) for y in 0..next.height])
+        let body = drawn(next, runs)
+        let moved = self.caret_moves(before, next)
+        let bytes = body.concat(moved)
+        self.shown.set(next)
+        if bytes.is_empty() { return }
+        let wrapped = runs.length > 1
+        (self.out)(
+            if wrapped { "${esc()}[?2026h${bytes.join("")}${esc()}[?2026l" } else { bytes.join("") },
+        )
+    }
+
+    /// The caret placed and shown, or hidden, where it differs from what the
+    /// terminal has: after writes it must be put back, since writing moved it.
+    fn caret_moves(before: Grid?, next: Grid) -> List<string> {
+        let c? = next.cursor else {
+            if !self.caret.get() { return [] }
+            self.caret.set(false)
+            return ["${esc()}[?25l"]
+        }
+        let wrote = before == null ||
+            [i for i in 0..next.cells.length if changed(before, next, i)].length > 0
+        let unmoved = before != null &&
+            before!.cursor != null &&
+            before!.cursor!.x == c.x &&
+            before!.cursor!.y == c.y
+        let show = if self.caret.get() { [] } else { ["${esc()}[?25h"] }
+        self.caret.set(true)
+        if unmoved && !wrote { return show }
+        [at(c.x, c.y)].concat(show)
+    }
+}
