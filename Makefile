@@ -1028,6 +1028,10 @@ layout-oracle:
 fingerprints:
 	@python3 tools/fingerprints.py
 
+# A template copy carries every table of the arena or says why not.
+copy-tables:
+	@python3 tools/copy_tables.py
+
 # THE FOOTPRINT: a program that spawns nothing links no scheduler, and the
 # smallest programs' bytes stay under a relative cap (tools/footprint.py).
 footprint: $(RUNTIME_LIB)
@@ -1085,7 +1089,7 @@ KEEPERS_ALONE = runtime-tests runtime-mutations
 KEEPERS_A1 = speed-ratchet fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = fingerprints vocab families-left layers libs-self-test hooks-released inputs whole-reads cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack voices defects \
+KEEPERS_B = fingerprints copy-tables vocab families-left layers libs-self-test hooks-released inputs whole-reads cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack voices defects \
             ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
@@ -1157,7 +1161,7 @@ pipeline-status:
 # together take half a minute, so a refusal stops on the PR instead of
 # failing a train and every PR riding it. Each is one of KEEPERS, which the
 # train runs whole.
-KEEPERS_STATIC = host-events fingerprints vocab families-left layers libs-self-test hooks-released inputs whole-reads cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc
+KEEPERS_STATIC = host-events fingerprints copy-tables vocab families-left layers libs-self-test hooks-released inputs whole-reads cited http-cites externs suites ui-browser-skip ci-invariants ci-verdict pr-watcher pipeline-doc
 .PHONY: keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b keepers-static keepers-pr pipeline-doc pipeline-status ci-invariants ci-verdict pr-watcher
 keepers-static:
 	@left="$(filter-out $(KEEPERS),$(KEEPERS_STATIC))"; [ -z "$$left" ] || { echo "keepers-static: $$left is no keeper — the train would not hold it" >&2; exit 1; }
@@ -1346,7 +1350,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
-gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: llvm-libs seed-check stems vocab fingerprints copy-tables ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
