@@ -64,6 +64,11 @@ int64_t avra_task_ended(void* task);
 // Who asked the cancel that ended the task: the asker's id, a scope's id,
 // or the task's own id for an answer.
 int64_t avra_task_ended_by(void* task);
+// How many fibers are parked on a task or a gate. Never parks.
+int64_t avra_parked_on(void* on);
+// How many fibers are parked on one direction of a descriptor: 0 reads,
+// 1 writes; any other direction traps. Never parks.
+int64_t avra_fd_parked(int64_t fd, int64_t dir);
 
 // The unwind frames the running task has passed: each fn's cold exit
 // pushes one, sixteen are kept, and past that the middle is dropped and
