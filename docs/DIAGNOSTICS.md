@@ -729,7 +729,7 @@ error[annotation.unread_mark]: every mark is read by something that claims it
   ·     ┬
   ·     ╰── `@nobody` — nothing on this declaration reads it
 ──╯
-help: a mark is read by a `@derive` whose trait declares `marks`
+help: the marks read here are `@default`
 ```
 
 ## annotation.wrap_missing

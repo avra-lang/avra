@@ -1,0 +1,60 @@
+//! A TYPE'S SHAPE KEY is a function of the type alone: the same declarations key alike
+//! whichever shape was asked first, because a kept verdict stands on a key computed in an
+//! earlier process.
+use compiler.{Workspace}
+use compiler.host.{memory_host}
+use compiler.lower.{type_shape_key}
+use core.{DeclKind}
+use @std.avrac.testing.{test_workspace}
+
+const PATH: string = "/w/src/main.av"
+
+fn cyclic() -> List<string> {
+    [
+        "type A = { b: B?, n: int }",
+        "type B = { a: A?, c: C?, m: string }",
+        "type C = { b: B?, a: A? }",
+        "type D = { a: A, c: C, b: B }",
+        "",
+    ]
+}
+
+fn workspace() -> Workspace {
+    test_workspace(
+        memory_host(
+            {
+                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+                PATH: cyclic().join("\n"),
+            },
+            ["/w/avra.toml", PATH],
+        ),
+        "/w",
+    )
+}
+
+/// The keys of the types A..D, asked in the given order, spelled by name.
+fn keys_asked(order: List<string>) -> Map<string, string> {
+    let ws = workspace()
+    let _ = ws.analyze_file(PATH)
+    let f? = ws.decls.known_file_id(PATH) else { return {} }
+    let by_name: Cell<Map<string, string>> = Cell.new({})
+    for name in order {
+        for d in ws.decls.decls_of_file(f) {
+            if ws.decls.decl(d).name == name && ws.decls.decl(d).kind is .Record {
+                by_name.put(name, type_shape_key(ws.decls, ws.decls.record_type(d)))
+            }
+        }
+    }
+    by_name.get()
+}
+
+spec "compiler — a type's shape key" {
+    then "four types are keyed" { keys_asked(["A", "B", "C", "D"]).length == 4 }
+    then "a cycle's members key alike whichever is asked first" {
+        let forward = keys_asked(["A", "B", "C", "D"])
+        let backward = keys_asked(["D", "C", "B", "A"])
+        let middle = keys_asked(["C", "A", "D", "B"])
+        ["A", "B", "C", "D"]
+            .all((n) -> forward.get(n) == backward.get(n) && forward.get(n) == middle.get(n))
+    }
+}
