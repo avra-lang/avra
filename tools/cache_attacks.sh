@@ -560,7 +560,9 @@ unset CC
 LK "CC back to the default word" built; LK "and nothing touched" hit
 lk_rt=build/libavra_runtime.a
 cp $lk_rt $R/lk.rt.kept
-printf '\n' >> $lk_rt
+# a member added through `ar` moves the archive's bytes and leaves it a valid one: bytes appended
+# raw make a malformed archive, which a strict linker (lld) refuses where GNU ld forgave it
+printf 'int lk_pad;\n' > $R/lk_pad.c; $lk_cc -c $R/lk_pad.c -o $R/lk_pad.o; ar q $lk_rt $R/lk_pad.o 2>/dev/null
 LK "the runtime archive moved" built
 cp $R/lk.rt.kept $lk_rt
 LK "and put back" built
