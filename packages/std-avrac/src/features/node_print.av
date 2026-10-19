@@ -13,6 +13,13 @@
 //! group, a climb, a captured literal, a stated payload) has no
 //! template, and its node keeps its own printer arm.
 //!
+//! SPACING IS THE PRINTER'S, NEVER THE GRAMMAR'S. Each word and hole
+//! wants a space before it and after it, and each mark wants what its
+//! `Layout` row says (`(` abuts, `=` and `->` stand apart, `:` and `,`
+//! hug what precedes them); a space goes wherever one side's "after"
+//! meets the other's "before". A mark with no row has no stated layout,
+//! so its rule has no template.
+//!
 //! ONE NODE, ONE SURFACE. A variant built by several rules is worded
 //! only when every rule reads the same, at the same tier.
 use core.{PayloadRow, row_for, carried, flatten, distinct, found_at, is_name_start}
@@ -42,15 +49,34 @@ export type RuleTier = { rule: string, tier: int }
 /// The tier of a rule the scale does not rank.
 export const no_tier: int = 0 - 1
 
-/// The punctuation a template may write: each abuts what it touches.
-/// Any other mark (`->`, `=`, `{`) spaces by a layout rule the grammar
-/// does not state, so a rule writing one has no template.
-const tight: List<string> = ["(", ")", "[", "]", "<", ">", ".", "..", "!", "~"]
+/// How a mark sits among its neighbours: whether it wants a space before
+/// it and one after. A word or a hole wants both. A template may write
+/// only a mark listed here — any other has a layout the grammar does not
+/// state, so a rule writing one has no template. A row is listed when a
+/// rule or a test uses it, never ahead of one.
+export type Layout = { mark: string, before: bool, after: bool }
 
-/// The rule a hole names, or the token class it takes a name from.
+const layouts: List<Layout> = [
+    Layout { mark: "(", before: false, after: false },
+    Layout { mark: ")", before: false, after: false },
+    Layout { mark: "[", before: false, after: false },
+    Layout { mark: "]", before: false, after: false },
+    Layout { mark: "<", before: false, after: false },
+    Layout { mark: ">", before: false, after: false },
+    Layout { mark: ".", before: false, after: false },
+    Layout { mark: "..", before: false, after: false },
+    Layout { mark: "!", before: false, after: false },
+    Layout { mark: "~", before: false, after: false },
+    Layout { mark: "=", before: true, after: true },
+    Layout { mark: "->", before: true, after: true },
+    Layout { mark: ":", before: false, after: true },
+    Layout { mark: ",", before: false, after: true },
+]
+
+/// The rules a hole may name for a written type, the token class it takes a name from, and the statement terminator.
 const name_class: string = "NAME"
 const terminator: string = "END"
-const type_rule: string = "type"
+const type_rules: List<string> = ["type", "type_atom"]
 
 /// What one rule branch says of one node: its template, or nothing when
 /// the branch is outside the shape.
@@ -125,7 +151,7 @@ fn literal(m: Item, text: string) -> List<Piece>? {
     when {
         m.label != null -> null
         m.rep == Rep.Opt -> []
-        m.rep == Rep.One && (wordy(text) || tight.contains(text)) -> [Piece.Word(text)]
+        m.rep == Rep.One && (wordy(text) || layout_of(text) != null) -> [Piece.Word(text)]
         _ -> null
     }
 }
@@ -169,12 +195,12 @@ fn holds_at(p: Piece) -> int? {
 }
 
 /// Whether the rule a hole names can fill the payload's type: an
-/// expression rule an `ExprId`, a name token a name, `type` a written type.
+/// expression rule an `ExprId`, a name token a name, a type rule a written type.
 fn fits(f: Field, rule: string) -> bool {
     match f.ty {
-        "ExprId" or "ExprId?" -> rule != name_class && rule != type_rule,
+        "ExprId" or "ExprId?" -> rule != name_class && !type_rules.contains(rule),
         "Plain" or "Scoped" -> rule == name_class,
-        "TypeRef" -> rule == type_rule,
+        "TypeRef" -> type_rules.contains(rule),
         rest -> false,
     }
 }
@@ -199,7 +225,7 @@ fn spaced(ps: List<Piece>) -> List<Piece>? {
     let each = [respaced(p) for p in ps]
     if each.any(it == null) { return null }
     let qs = [q! for q in each]
-    let gaps = [i > 0 && last_wordy(qs[i - 1]) && first_wordy(q) for i, q in qs]
+    let gaps = [i > 0 && closes(qs[i - 1]) && opens(q) for i, q in qs]
     if [gaps[i] && is_group(qs[i - 1]) for i, q in qs].any(it) { return null }
     flatten([parted(q, gaps[i]) for i, q in qs])
 }
@@ -235,20 +261,26 @@ fn respaced(p: Piece) -> Piece? {
     }
 }
 
-fn first_wordy(p: Piece) -> bool {
+/// A mark's layout, absent for a word or a mark no row lists.
+fn layout_of(text: string) -> Layout? { layouts.find(it.mark == text) }
+
+/// Whether a piece wants a space before it: a word or a hole does, a
+/// mark as its layout says, a group as its first piece does.
+fn opens(p: Piece) -> bool {
     match p {
-        .Word(text) -> wordy(text),
+        .Word(text) -> wordy(text) || layout_of(text)?.before ?? false,
         .Hole(_, _) -> true,
-        .Maybe(_, inner) -> !inner.is_empty() && first_wordy(inner[0]),
+        .Maybe(_, inner) -> !inner.is_empty() && opens(inner[0]),
         .Space -> false,
     }
 }
 
-fn last_wordy(p: Piece) -> bool {
+/// Whether a piece wants a space after it.
+fn closes(p: Piece) -> bool {
     match p {
-        .Word(text) -> wordy(text),
+        .Word(text) -> wordy(text) || layout_of(text)?.after ?? false,
         .Hole(_, _) -> true,
-        .Maybe(_, inner) -> !inner.is_empty() && last_wordy(inner.last()!),
+        .Maybe(_, inner) -> !inner.is_empty() && closes(inner.last()!),
         .Space -> false,
     }
 }
