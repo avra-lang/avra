@@ -326,8 +326,12 @@ fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", entry]) 
 
 /// Where the reads the last standing attempt needed are remembered, by its entry and the
 /// files its edit moved: a guess that only pre-admits, each path with the words of the
-/// reason it was read for. The same edit needs the same reads; another edit has no guess.
+/// reason it was read for. The same edit needs the same reads. Under no edit the row is
+/// the last standing attempt's reads whatever it moved, the guess for any other edit.
 fn guess_key(entry: string, edit: string) -> string { node_key(Stored.Unit, ["guess", entry, edit]) }
+
+/// Whether the last standing attempt of an entry read the program's instantiation homes.
+fn homes_read_key(entry: string) -> string { node_key(Stored.Unit, ["homes-read", entry]) }
 
 /// Where "these instantiations lowered clean" is remembered.
 fn clean_key(asked: string) -> string { node_key(Stored.Unit, ["clean", asked]) }
@@ -457,6 +461,7 @@ impl Workspace {
                     entry: entry,
                     want: want,
                     parse: parse,
+                    homes: self.homes_were_read(entry ?? self.root),
                     hold: !db_verified(),
                     edit: self.edit_print(entry, want),
                 },
@@ -765,7 +770,15 @@ impl Workspace {
     /// starts with them reads what it would have turned to read.
     fn guessed_reads(store: Store, at: Attempt, led: List<string>) -> List<ReadFile> {
         if at.edit.is_empty() { return [] }
-        [ReadFile { path: parts[0], why: Reads.Remembered(parts[1]) } for line in remembered(store, guess_key(self.known_as(at), at.edit)) for parts in [line.split("\t")] if parts.length == 2 && !led.contains(parts[0]) && self.there(parts[0])]
+        let own = remembered(store, guess_key(self.known_as(at), at.edit))
+        let lines = if own.length > 1 || own.any(!it.is_empty()) { own } else { remembered(store, guess_key(self.known_as(at), "")) }
+        [ReadFile { path: parts[0], why: Reads.Remembered(parts[1]) } for line in lines for parts in [line.split("\t")] if parts.length == 2 && !led.contains(parts[0]) && self.there(parts[0])]
+    }
+
+    /// Whether the last standing attempt of `entry` read the instantiation homes: the
+    /// attempt that starts with them stands without the one that finds it owes them.
+    fn homes_were_read(entry: string) -> bool {
+        self.opened_store().get(Stored.Unit, homes_read_key(entry)) ?? "" == "1"
     }
 
     /// The standing attempt's reads, kept for the next attempt 0.
@@ -779,6 +792,17 @@ impl Workspace {
         )
         let key = guess_key(self.known_as(at), at.edit)
         if store.get(Stored.Unit, key) ?? "" != wire { let _ = store.keep(Stored.Unit, key, wire, []) }
+        let last = joined(
+            distinct(
+                [line for r in at.parse if guessable(r) && !(r.why is .Moved) for line in [guess_line(r)] if !line.is_empty()],
+            ),
+            "\n",
+        )
+        let last_key = guess_key(self.known_as(at), "")
+        if store.get(Stored.Unit, last_key) ?? "" != last { let _ = store.keep(Stored.Unit, last_key, last, []) }
+        let homed_key = homes_read_key(self.known_as(at))
+        let homed = if at.homes { "1" } else { "0" }
+        if store.get(Stored.Unit, homed_key) ?? "" != homed { let _ = store.keep(Stored.Unit, homed_key, homed, []) }
     }
 
     /// The files a held module's kept const verdicts read, for those whose file lines
@@ -1400,3 +1424,4 @@ fn guessable(r: ReadFile) -> bool {
 fn guess_line(r: ReadFile) -> string {
     if r.path.contains("\t") || r.path.contains("\n") || r.why.says().contains("\n") { "" } else { "${r.path}\t${r.why.says()}" }
 }
+
