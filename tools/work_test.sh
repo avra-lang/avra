@@ -42,6 +42,21 @@ git -C "$main" remote add origin "$scratch/origin.git"
 git -C "$main" push -q -u origin main
 work="$main/tools/work"
 
+# WHAT A SPRITE MUST CARRY IS MAIN'S LIST: a lane branched before a package joined packages.txt has the
+# older file, and provisioning or judging health by it leaves a Sprite without what newer trees need.
+# A run installs main's list plus the checkout's own; health judges main's alone.
+pk=$scratch/pk
+git init -q --bare "$pk/origin.git"
+git init -q -b main "$pk/lane"
+mkdir -p "$pk/lane/tools" "$pk/lane/.github/ci"
+cp "$here/sprite-lib.sh" "$pk/lane/tools/"
+printf 'shared\nfrommain\n' > "$pk/lane/.github/ci/packages.txt"
+git -C "$pk/lane" add -A && git -C "$pk/lane" -c user.name=t -c user.email=t@t commit -q -m main
+git -C "$pk/lane" remote add origin "$pk/origin.git" && git -C "$pk/lane" push -q -u origin main
+printf 'shared\nlocalonly\n' > "$pk/lane/.github/ci/packages.txt"
+pkg_lists() { (here="$pk/lane/tools"; . "$here/sprite-lib.sh"; printf '%s|%s' "$(sprite_packages_list | tr ' ' '\n' | sort | tr '\n' ' ')" "$(health_packages_list | tr ' ' '\n' | sort | tr '\n' ' ')"); }
+check "$(pkg_lists)" "frommain localonly shared |frommain shared " "packages: a run installs main's list plus the checkout's own; health judges main's alone, never the checkout's stale or extra lines"
+
 cat > "$scratch/sprite" <<'STUB'
 #!/bin/sh
 # sprite -s <name> exec … : answers unless the name is in SILENT; the
