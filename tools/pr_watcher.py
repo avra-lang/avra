@@ -52,7 +52,11 @@ watcher closes the gap between "green" and "landed", deterministically:
       workflow (GITHUB_TOKEN pushes trigger none), so main's head can
       stand with no `checks` run at all. Once that head is older than
       MAIN_GRACE seconds with no `checks` run on it, dispatch `checks` on
-      main — once per SHA, deduped by state;
+      main — once per SHA, deduped by state.
+      A pass that sees a PR about to land FOLLOWS main (`--follow`, up to
+      FOLLOW_S): it polls main's head and runs again the moment it moves, so
+      the dispatch lands within the grace of a bot merge instead of waiting
+      for the next best-effort scheduled pass;
   (i) A HELD RUN — a `checks` run the Actions bot's push left in
       `action_required` (a bot-pushed head fires a run that waits for an
       approver) on an open, same-repository PR's CURRENT head: approve it,
@@ -116,7 +120,12 @@ PRIORITY_LABEL = "priority"
 HELD_GREEN_S = 2 * 3600
 # A bot merge's head gets a grace before the watcher asks for its run: a
 # push run that is merely slow to appear is not a missing run.
-MAIN_GRACE = 180
+MAIN_GRACE = 90
+# A bot merge starts no workflow, and a scheduled pass is best-effort (hours apart on a quiet repo),
+# so a pass that sees a PR about to land FOLLOWS main: it polls its head and runs the pass again
+# the moment it moves, which is what dispatches `checks` for a head no push run was made for.
+FOLLOW_S = 600
+FOLLOW_POLL_S = 20
 CONFLICT_PHRASE = ("this conflicts with main. Rebase onto origin/main, then "
                    "`sh tools/work land`")
 
@@ -728,8 +737,10 @@ def do_action(a, repo, run):
         run(["api", "-X", "POST", f"repos/{repo}/actions/runs/{a['run']}/approve"])
     elif a["do"] == "dispatch":
         run(["workflow", "run", "checks.yml", "-R", repo, "--ref", "main"])
+        print(f"::warning::pr-watcher dispatched `checks` on main — {a['text']}")
     elif a["do"] == "dispatch_image":
         run(["workflow", "run", "ci-image.yml", "-R", repo, "--ref", "main"])
+        print(f"::warning::pr-watcher dispatched `ci-image` on main — {a['text']}")
     elif a["do"] == "enqueue":
         # THE QUEUE IS OFF; this spelling is kept, corrected, for a repo that
         # re-enables one. `gh api graphql` reads the operation from the
@@ -1133,6 +1144,26 @@ def selftest():
     if sent != [["workflow", "run", "checks.yml", "-R", "avra-lang/avra", "--ref", "main"]]:
         sys.exit(f"pr-watcher: self-test — the dispatch was sent as {sent}")
 
+    # FOLLOW: a pass that sees a PR about to land polls main and runs a pass when its head moves.
+    def drive(heads, landings):
+        log = {"sleeps": [], "steps": 0}
+        hs, ls = iter(heads), iter(landings)
+        n = follow(lambda: next(ls, False), lambda: next(hs, heads[-1]),
+                   lambda: log.__setitem__("steps", log["steps"] + 1), log["sleeps"].append,
+                   budget=600, poll=20, grace=90)
+        return n, log
+    n, log = drive(["a", "a", "a", "b", "b", "b"], [True, True, True, True, False])
+    if n != 1 or log["steps"] != 1 or 95 not in log["sleeps"]:
+        sys.exit(f"pr-watcher: self-test — follow did not run one pass after main moved (grace waited): {n} {log}")
+    n, log = drive(["a", "b"], [False])
+    if n != 0 or log["sleeps"]:
+        sys.exit(f"pr-watcher: self-test — follow polled with no PR landing: {n} {log}")
+    n, log = drive(["a"], [True] * 100)
+    if n != 0 or sum(log["sleeps"]) < 600 or sum(log["sleeps"]) > 620:
+        sys.exit(f"pr-watcher: self-test — follow ran past its budget or quit early: {n} {sum(log['sleeps'])}")
+    # a head 100 s old with no checks run is dispatched (the grace is 90 s); one 60 s old is not
+    if [a["do"] for a in plan([], [], _empty_state(), {"sha": "m9", "age": 100, "checked": False})] != ["dispatch"]:
+        sys.exit("pr-watcher: self-test — a 100 s old unchecked main was not dispatched")
     # (i) a held checks run on a same-repo current head is approved once per
     # run id; a fork's, a stale head's and an approved one's are left alone.
     def pr_on(branch, sha, fork=False):
@@ -1322,6 +1353,24 @@ def run_pass(world, state, state_path, repo, execute_fn=execute, label="pr-watch
     return acts
 
 
+def follow(landing, head_of, step, sleep, budget=FOLLOW_S, poll=FOLLOW_POLL_S, grace=MAIN_GRACE):
+    """After a pass: while a PR is about to land (`landing()`), poll main's head, and when it
+    moves wait out the grace a push run needs to appear and run `step()` (a fresh pass). Gives
+    up after `budget` seconds. Answers how many follow-up passes ran."""
+    waited, last, passes = 0, head_of(), 0
+    while waited < budget and landing():
+        sleep(poll)
+        waited += poll
+        now = head_of()
+        if now != last:
+            sleep(grace + 5)
+            waited += grace + 5
+            last = now
+            step()
+            passes += 1
+    return passes
+
+
 def main(argv):
     if "--self-test" in argv:
         selftest()
@@ -1357,6 +1406,14 @@ def main(argv):
     acts = run_pass(world, state, state_path, repo)
     print(f"pr-watcher: {len(world['prs'])} open PR(s), {len(world['runs'])} doomed run(s) "
           f"— {len(acts)} action(s)")
+    if "--follow" in argv:
+        def again():
+            w = collect(repo, state)
+            a = run_pass(w, state, state_path, repo)
+            print(f"pr-watcher: follow-up pass after main moved — {len(a)} action(s)")
+        landed = lambda: any(_landing(p) for p in collect(repo, state)["prs"])
+        n = follow(landed, lambda: _gh_json(["api", f"repos/{repo}/commits/main"])["sha"], again, time.sleep)
+        print(f"pr-watcher: followed main — {n} follow-up pass(es)")
     return 0
 
 
