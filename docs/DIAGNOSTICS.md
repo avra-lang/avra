@@ -95,6 +95,14 @@ error[block.parse]: expected `SELECT` while parsing `select`
   ·                       ┬
 ──╯
 help: the block is parsed by the grammar its word declares — write the shape that grammar names
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## resolve.unresolved
@@ -864,13 +872,13 @@ p.n
 ```
 
 ```
-error[lower.component_checked]: a port is 1 to 65535, this is 70000
-  ╭─[/w/src/main.av:2:9]
-2 │ let p = port 70000
-  ·         ┬
-  ·         ╰── `check` refused this instance
-──╯
-help: change the instance's settings, or the library's `check` that refuses them
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## type.component_format
@@ -1064,6 +1072,14 @@ error[annotation.seats]: an annotation's arguments fill its seats
   · ╰── `tag` takes 1 after the declaration, this writes 0
 ──╯
 help: write the arguments the annotation takes — `@tag(…)`
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## annotation.answer
@@ -1095,6 +1111,14 @@ error[annotation.answer]: an annotation answers an effect
   · ╰── `tag` answers `int`
 ──╯
 help: `void` records the annotation and says nothing; `List<Diagnostic>` validates the declaration; `List<Directive>` generates declarations beside the one stood under; `Derived` runs each named trait's `derive` over the declaration; `Marker` marks the declaration for a reader that claims the word
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## annotation.said
@@ -1126,6 +1150,14 @@ error[annotation.said]: `f` is plain
   · ╰── refused by `@plain`
 ──╯
 help: change the declaration the annotation refuses, or the annotation's arguments
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## annotation.kind
@@ -1157,6 +1189,14 @@ error[annotation.kind]: an annotation's kind is a word
   · ╰── `@badkind` named `not a word`, saying: a refusal under a bad kind
 ──╯
 help: spell the kind `[A-Za-z0-9_-]+`, like `E1`
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## annotation.generated_taken
@@ -1186,13 +1226,13 @@ sum(1, 2)
 ```
 
 ```
-warning[annotation.warning]: `sum` is deprecated — use add
-  ╭─[/w/src/main.av:4:1]
-4 │ sum(1, 2)
-  · ┬
-  · ╰── used here
-──╯
-help: stop using it, or ask the declaration's owner what replaces it
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## annotation.derive
@@ -1224,6 +1264,14 @@ error[annotation.derive]: an annotation derives through a trait that declares `d
   ·         ╰── `X` is not a trait
 ──╯
 help: `@derive` names a trait — `trait X { static fn derive(t: Type) -> List<Directive> }`
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## annotation.unsettled
@@ -1256,6 +1304,14 @@ error[annotation.unsettled]: an annotation could not run
   · ╰── `derive` index 3 is out of bounds (length 0)
 ──╯
 help: an annotation runs at compile time from pure computation alone
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## annotation.meta
@@ -1315,6 +1371,14 @@ error[annotation.unplaceable]: a hole was filled with something no seat can hold
    ·                                        ╰── a field run takes `type _ = { … }` or `fn _(…)` templates, and the one from /w/vendor/c/src/c.av:545 carries no fields
 ───╯
 help: a fill the compiler cannot place is spoken, never spliced
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## annotation.unread_mark
@@ -4708,6 +4772,14 @@ error[type.sealed]: `Url` is sealed — only `urls`, the module that declares it
   ·              ╰── a literal fills it here
 ──╯
 help: ask `urls` for one through a fn it exports; reading it — a field, equality, a pattern — is open everywhere
+
+error[type.impl]: `impl ToInt` serves no declared type
+   ╭─[/w/vendor/errors/src/errors.av:86:1]
+86 │ impl Error for ToInt {
+   · ┬
+   · ╰── this impl
+───╯
+help: declare `ToInt` first — `type` or `enum`
 ```
 
 ## type.coalesce
