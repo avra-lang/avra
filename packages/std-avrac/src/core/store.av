@@ -1,6 +1,6 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
-use @std.meta.{identity, plain_field}
+use @std.meta.{derive, identity, plain_field}
 use @std.relation.engine.{list_cell, map_cell}
 
 /// How a sugar's meaning is minted beside it: the language's own door,
@@ -65,124 +65,125 @@ export type SeatFill = { arg: int, field: int }
 /// the store allocates into the same arenas as the original.
 @identity
 @plain_field("file")
+@derive(Copied)
 export type SyntaxArena = {
     exprs: Arena<Expr>,
-    expr_fingerprints: Cell<List<int>>,
+    @not_copied("folded at allocation and by each mark's verb") expr_fingerprints: Cell<List<int>>,
     stmts: Arena<Stmt>,
-    stmt_fingerprints: Cell<List<int>>,
-    marks: Cell<List<StmtMarks>>,
+    @not_copied("folded at allocation and by each mark's verb") stmt_fingerprints: Cell<List<int>>,
+    @copied(stmt, wear) marks: Cell<List<StmtMarks>>,
     // the format a `grammar` declaration read, by its statement
-    grammars: Cell<List<GrammarSpec?>>,
+    @copied(stmt, wear_grammar) grammars: Cell<List<GrammarSpec?>>,
     // a named instance's component, by its statement — the record it
     // desugars to carries every field the sugar would print, so the
     // mark alone is enough to read the spelling back
-    component_insts: Cell<List<string?>>,
+    @copied(stmt, wear_component_inst) component_insts: Cell<List<string?>>,
     // an impl's own written type-parameter lists, by its statement —
     // printing only, absent on a plain (non-generic) impl
-    impl_tparams: Cell<List<ImplTypeParams?>>,
+    @copied(stmt, wear_impl_tparams) impl_tparams: Cell<List<ImplTypeParams?>>,
     // a trait impl's trait arguments (`impl Realize<Text> for Html`), by its statement
-    impl_trait_args: Cell<List<List<TypeRef>>>,
+    @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") impl_trait_args: Cell<List<List<TypeRef>>>,
     // a trait's own type parameters beside `Self`, by its statement
-    trait_tparams: Cell<List<List<string>>>,
+    @copied(stmt, wear_trait_tparams) trait_tparams: Cell<List<List<string>>>,
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
-    hoisted: Cell<List<StmtId>>,
+    @not_copied("the file's own top level, never a node's") hoisted: Cell<List<StmtId>>,
     // plain for its identity: the path of the file this store
     // parsed, set once at construction — "" for a fragment
     file: string,
     // `@name(args)` marks per statement, in written order
-    annotations: Cell<List<List<Annotation>>>,
+    @copied_by_hand("minted_stmt: each annotation is annotated anew") annotations: Cell<List<List<Annotation>>>,
     // declaration-leading `///` lines; absent on synthesized nodes
-    docs: Cell<List<List<string>?>>,
+    @copied_by_hand("minted_stmt: document, with the doc position") docs: Cell<List<List<string>?>>,
     // the file's own `//!` header — a leading run before anything
     // else, absent when the file opens with something other than
     // one. Not folded into any statement's fingerprint yet: an
     // edit to only this text is invisible to program_hash-keyed
     // caches until a consumer needs that (today's one-shot `avra
     // docs` never holds a stale cell across an edit).
-    file_doc: Cell<List<string>?>,
+    @not_copied("the file's own header") file_doc: Cell<List<string>?>,
     // the offset each doc group's FIRST `///` was written at, and -1
     // for none, so the printer can put a remark between a doc and its
     // declaration back in the author's order
-    doc_ats: Cell<List<int>>,
+    @copied_by_hand("minted_stmt: document, with the docs") doc_ats: Cell<List<int>>,
     // plain `//` lines, by source offset — printing only
-    remarks: Cell<List<Remark>>,
-    pats: Cell<List<Pat>>,
-    pat_spans: Cell<List<Span?>>,
-    pat_reads: Cell<List<ExprId?>>,
-    pat_fingerprints: Cell<List<int>>,
+    @not_copied("the file's own comments") remarks: Cell<List<Remark>>,
+    @copied_by_hand("the pattern walk: alloc_pat") pats: Cell<List<Pat>>,
+    @copied_by_hand("the pattern walk: alloc_pat") pat_spans: Cell<List<Span?>>,
+    @copied_by_hand("the pattern walk: name_read") pat_reads: Cell<List<ExprId?>>,
+    @copied_by_hand("the pattern walk: alloc_pat") pat_fingerprints: Cell<List<int>>,
     // a seat's span, by ParamId — the store's only fact about a
     // Param, which otherwise never touches an arena
-    param_spans: Cell<List<Span?>>,
+    @copied_by_hand("the param walk: alloc_param_id") param_spans: Cell<List<Span?>>,
     // the forms an expression was written in, by id — one record, so a
     // template copy carries them all through `wear_expr`
-    expr_marks: Cell<List<ExprMarks>>,
+    @copied(expr, wear_expr) expr_marks: Cell<List<ExprMarks>>,
     // a call written as a PIPE (`x |> f(a)`), its first argument
     // a call written as a TYPE LITERAL (`v.type(T)`)
-    type_lits: Cell<List<bool>>,
+    @copied(expr, wear_type_lit) type_lits: Cell<List<bool>>,
     // a record's `..R` entries, by its statement
-    spreads: Cell<List<List<Spread>>>,
+    @copied_by_hand("minted_stmt: its TypeRefs are rebuilt through tref") spreads: Cell<List<List<Spread>>>,
     // a collect's `dense` mark, by its statement: its order is data,
     // unique and gap-free from 0
-    collect_dense: Cell<List<bool>>,
+    @copied(stmt, wear_collect_dense) collect_dense: Cell<List<bool>>,
     // a Match a trailing-block ARM sugar synthesized — never one a
     // program wrote — so a missing arm under a nullable seat answers
     // `null` instead of refusing; the mark is the ONE way the checker
     // tells the two apart
-    sugar_matches: Cell<List<bool>>,
+    @copied(expr, wear_sugar_match) sugar_matches: Cell<List<bool>>,
     // an `if` written at STATEMENT position — branches that hold
     // statements and answer nothing; what a promoted chain, or an `if`
     // written as an expression whose branch leaves, is not
-    statement_ifs: Cell<List<bool>>,
+    @copied(expr, wear_statement_if) statement_ifs: Cell<List<bool>>,
     // the SUGAR node whose meaning minted each node — null for a node
     // the author wrote; what lets a refusal about a minted node speak
     // at the sugar the author did write
-    minted_by: Cell<List<ExprId?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") minted_by: Cell<List<ExprId?>>,
     // the root of what a sugar means, by the sugar — the node a walk
     // descends into in its place; null for every other node
-    meaning: Cell<List<ExprId?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") meaning: Cell<List<ExprId?>>,
     // what a sugar node says its meaning is, by the sugar — the one
     // sentence `avra expand` prints and a refusal about a minted
     // node carries
-    means_notes: Cell<List<string?>>,
+    @copied_by_hand("minted_expr: mean re-mints what a sugar means") means_notes: Cell<List<string?>>,
     // the variant pattern an `if` that binds desugared into a Match
     // (`.V(p, q)`) — the binder list a match arm would take, kept
     // beside the node so the printer can spell the `if` back
-    is_payloads: Cell<List<PayloadIs?>>,
+    @copied_by_hand("minted_expr: its pattern is rebuilt through pat") is_payloads: Cell<List<PayloadIs?>>,
     // a component instance's WRAPPING STATEMENT — where its `///`
     // and `@name(args)` annotations live, attached from OUTSIDE once
     // the instance's own expression already stands; absent for an
     // instance that binds no statement of its own (a nested child)
-    instance_owners: Cell<List<StmtId?>>,
+    @not_copied("an owner is a statement of the source, attached from outside once a copy's own statement stands") instance_owners: Cell<List<StmtId?>>,
     // the DSL text an expression-position `grammar { … }` literal
     // read, by the `Grammar` struct literal it fully expanded into —
     // the raw block's own words, never rebuilt from the expansion
-    grammar_lits: Cell<List<string?>>,
+    @copied(expr, wear_grammar_lit) grammar_lits: Cell<List<string?>>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
     // the WRITTEN types rather than inferred from the fields
-    struct_targs: Cell<List<List<TypeRef>>>,
+    @copied_by_hand("minted_expr: its TypeRefs are rebuilt through tref") struct_targs: Cell<List<List<TypeRef>>>,
     // a written `{ … }`'s own closing-brace offset, by the Block whose
     // span `tail_scoped` narrowed to its lone tail value for
     // diagnostics — printing only, absent everywhere the node's own
     // span already reaches the brace
-    written_close: Cell<List<int?>>,
+    @copied(expr, wear_written_close) written_close: Cell<List<int?>>,
     // each quote by the offset it starts at — how a template VALUE
     // names its node
-    quotes_at: Cell<Map<string, int>>,
+    @copied_by_hand("minted_expr: a quote is named by its new offset") quotes_at: Cell<Map<string, int>>,
     // the file's sublanguage blocks, in order, and each one's body
     // offset in the source; what their grammars refused; the node
     // runs their actions minted, with the library each names
-    sublangs: Cell<List<ExprId>>,
-    body_starts: Cell<Map<string, int>>,
-    block_voices: Cell<List<BlockVoice>>,
-    foreign: Cell<List<ForeignRange>>,
+    @copied_by_hand("minted_expr: a block is named by its new offset") sublangs: Cell<List<ExprId>>,
+    @copied_by_hand("minted_expr: a block is named by its new offset") body_starts: Cell<Map<string, int>>,
+    @not_copied("the file's own parse refusals") block_voices: Cell<List<BlockVoice>>,
+    @not_copied("the file's own sublanguage ranges") foreign: Cell<List<ForeignRange>>,
     // an `on <kind> { … }` handler's KIND, by the nullary lambda the
     // instance-body sugar built — the word the handler was written
     // with, so the printer spells the sugar back rather than the
     // setting and closure it lowers to
-    on_handlers: Cell<List<OnHandler?>>,
+    @copied(expr, wear_handler) on_handlers: Cell<List<OnHandler?>>,
 }
 
 export fn new_node_store(file: string = "") -> SyntaxArena {
@@ -728,6 +729,52 @@ impl SyntaxArena {
 
     /// The handler at `e`, when the sugar wrote it.
     fn on_handler(e: ExprId) -> OnHandler? { self.on_handlers.get()[e.index] }
+
+    /// The writers a template copy reaches, one per `@copied` table: each takes
+    /// the table's own element for the node and does nothing for the empty one.
+    fn wear_type_lit(e: ExprId, on: bool) { if on { self.mark_type_lit(e) } }
+
+    fn wear_sugar_match(e: ExprId, on: bool) { if on { self.mark_sugar_match(e) } }
+
+    fn wear_statement_if(e: ExprId, on: bool) { if on { self.mark_statement_if(e) } }
+
+    fn wear_grammar_lit(e: ExprId, text: string?) {
+        let held? = text else { return }
+        self.mark_grammar_lit(e, held)
+    }
+
+    fn wear_written_close(e: ExprId, hi: int?) {
+        let held? = hi else { return }
+        self.mark_written_close(e, held)
+    }
+
+    fn wear_collect_dense(s: StmtId, on: bool) { if on { self.mark_collect_dense(s, true) } }
+
+    fn wear_grammar(s: StmtId, read: GrammarSpec?) {
+        let held? = read else { return }
+        self.mark_grammar(s, held)
+    }
+
+    fn wear_component_inst(s: StmtId, of: string?) {
+        let held? = of else { return }
+        self.mark_component_inst(s, held)
+    }
+
+    fn wear_impl_tparams(s: StmtId, held: ImplTypeParams?) {
+        let own? = held else { return }
+        self.mark_impl_tparams(s, own.of, own.target)
+    }
+
+    fn wear_trait_tparams(s: StmtId, names: List<string>) { if !names.is_empty() { self.mark_trait_tparams(s, names) } }
+
+    /// Gives `e` the handler `worn` records, if any, each mark through its own
+    /// verb so the fingerprint follows — the door a copy uses.
+    fn wear_handler(e: ExprId, worn: OnHandler?) {
+        let held? = worn else { return }
+        if held.sugar { self.mark_on_handler(e, held.event) } else { self.mark_heard(e, held.event) }
+        let why? = held.unheard else { return }
+        self.mark_unheard(e, why)
+    }
 
     /// Where a quote's runs of text start in the source, one per part.
     fn mark_quote_at(e: ExprId) {

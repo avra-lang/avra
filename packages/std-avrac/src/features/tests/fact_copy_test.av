@@ -2,7 +2,19 @@
 // keywords a declaration was written with and the forms its values were
 // spelled in survive the splice.
 use @std.avrac.compiler.{parse_source, Parsed}
-use @std.avrac.core.{SyntaxArena, StmtId, ExprId, Stmt, copier, hole_runs, no_door}
+use @std.avrac.core.{
+    SyntaxArena,
+    StmtId,
+    ExprId,
+    Expr,
+    Stmt,
+    Nominal,
+    Plain,
+    copier,
+    hole_runs,
+    no_door,
+    OnHandler,
+}
 
 /// The statements a `quote { … }` holds, and the program they stand in.
 fn quoted(body: string) -> Parsed {
@@ -113,6 +125,48 @@ fn keeps_declared(body: string) -> bool {
     before != "," && before == after
 }
 
+/// The copy of an expression its source marked as the handler of `press`.
+fn handler_copy() -> OnHandler? {
+    let src = quoted("1")
+    let dst = parse_source("let x = 1")
+    let ss = held(src)
+    src.store.mark_on_handler(src.store.answer_of(ss.last()!)!, "press")
+    mut rb = copier(
+        src.store,
+        dst.store,
+        [],
+        hole_runs(src.store, src.store.answer_of(src.stmts[0])!),
+        no_door,
+    )
+    dst.store.on_handler(dst.store.answer_of(rb.stmts(ss).last()!)!)
+}
+
+/// What a literal's copy holds in its two fields, where its source held ONE node
+/// twice.
+fn copied_values(src: SyntaxArena, dst: SyntaxArena, lit: ExprId) -> List<ExprId> {
+    mut rb = copier(src, dst, [], [], no_door)
+    dst.struct_lit_parts(rb.expr(lit))?.values ?? []
+}
+
+/// The source's literal whose two fields are one node.
+fn twice_held(src: SyntaxArena) -> ExprId {
+    let node = src.alloc_expr(Expr.StrLit("x"))
+    src.alloc_expr(Expr.StructLit(Nominal("T"), [Plain("p"), Plain("q")], [node, node]))
+}
+
+fn shared_copy() -> List<ExprId> {
+    let src = parse_source("let x = 1")
+    copied_values(src.store, parse_source("let x = 1").store, twice_held(src.store))
+}
+
+/// The nodes two separate copies of one literal hold: each copy is its own.
+fn separate_copies() -> List<ExprId> {
+    let src = parse_source("let x = 1")
+    let dst = parse_source("let x = 1")
+    let lit = twice_held(src.store)
+    copied_values(src.store, dst.store, lit).concat(copied_values(src.store, dst.store, lit))
+}
+
 spec "features/tests — facts a template copy keeps" {
     given "keywords a declaration wears" {
         then "export survives" { survives("export fn a() -> int { 1 }") }
@@ -135,5 +189,15 @@ spec "features/tests — facts a template copy keeps" {
         then "a trait impl's arguments survive" { keeps_declared("impl Show<X> for Box { fn show() -> int { 1 } }") }
         then "a trait's own type parameters survive" { keeps_declared("trait Pair<A, B> { fn first() -> A }") }
         then "a record's spreads survive" { keeps_declared("type P = { ..Q, x: int }") }
+    }
+    given "the event an expression is a handler of" {
+        then "a handler's event survives" { handler_copy()?.event == "press" }
+    }
+    given "a node its source reaches twice" {
+        then "is one node in the copy" { shared_copy().length == 2 && shared_copy()[0] == shared_copy()[1] }
+        then "is one node in each of two copies, and the copies share none" {
+            let all = separate_copies()
+            all.length == 4 && all[0] == all[1] && all[2] == all[3] && all[0] != all[2]
+        }
     }
 }
