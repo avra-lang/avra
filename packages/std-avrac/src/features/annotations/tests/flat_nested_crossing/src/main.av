@@ -1,0 +1,23 @@
+// proves: a crossed record that nests an all-scalar record reads it where the
+// runtime laid it. `Spelled.mark` is such a record, so a fn type's `mut` seat
+// reads back as the mark it was written with: the crossing counts slots, not
+// declared names, and the scalars ride inline in their container.
+use @std.meta.{Type, Diagnostic, refuse}
+
+type Target = { n: int }
+
+fn marks_read(t: Type) -> List<Diagnostic> {
+    let seats = t.fields[0].spelled!.args
+    let ok = seats[0].mark.mutable &&
+        !seats[0].mark.settled &&
+        !seats[1].mark.mutable &&
+        !seats[1].mark.settled
+    if ok { [] } else { [refuse("a seat's mark read back wrong")] }
+}
+
+@marks_read
+type Carrier = {
+    call: fn(mut Target, int) -> int,
+}
+
+println("ok")
