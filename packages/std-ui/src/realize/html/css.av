@@ -11,7 +11,7 @@ use style.style.{Style, StateStyle, Interaction}
 use style.layout.{Axis, Align, Distribute, Wrap, Sizing, Edge, Layout, around}
 use style.theme.{Theme, Mode}
 use tree.lists.{flatten}
-use tree.node.{Node, Prim, own_axis, gap_between}
+use tree.node.{Node, Prim, Attribute, own_axis, gap_between}
 use style.tokens.{Size, Tone, Font}
 use realize.html.tags.{HtmlTag}
 
@@ -309,8 +309,26 @@ export fn node_rules(prim: Prim, box: Box) -> List<CssRule> {
     axis.concat(gap).concat(box.rules())
 }
 
+/// The height a window's spacer stands for, in pixels: its unbuilt rows at the
+/// height each took. Any other attribute stands for none.
+fn spacing(a: Attribute) -> List<int> {
+    match a { .Skipped(_, rows, extent) -> [rows * extent], rest -> [] }
+}
+
+/// The box a node is drawn with: a window's spacer stands as the fixed height of
+/// the rows it stands for, so it wears what every fixed height wears.
+export fn drawn_box(n: Node) -> Box {
+    let height? = [h for a in n.attrs for h in spacing(a)].first() else { return n.box }
+    n.box with { layout: n.box.layout with { height: .Fixed(height) } }
+}
+
+/// Every rule a tree's nodes name, in walk order.
+export fn rules_of(n: Node) -> List<CssRule> {
+    node_rules(n.prim, drawn_box(n)).concat([r for c in n.children for r in rules_of(c)])
+}
+
 /// Every class a node names, once, in rule order.
-export fn class_names(n: Node) -> List<string> { names_once([r.name for r in node_rules(n.prim, n.box)]) }
+export fn class_names(n: Node) -> List<string> { names_once([r.name for r in node_rules(n.prim, drawn_box(n))]) }
 
 fn names_once(names: List<string>) -> List<string> { [name for i, name in names if !names.slice(0, i).contains(name)] }
 
