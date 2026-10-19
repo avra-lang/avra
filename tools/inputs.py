@@ -137,6 +137,7 @@ ROWS = {
     "avra_spawn_in": "spawn", "avra_spawn_status": "spawn", "avra_exec_self": "spawn",
     "avra_self_dir": "tool", "avra_now_ns": "clock",
     "avra_own_pid": "pid", "avra_pid_alive": "pid",
+    "avra_box_observe": "effect", "avra_box_unobserve": "effect", "avra_turn_next": "effect", "avra_changes_take": "effect",
     "avra_sched_runs_wanted": "env", "avra_sched_schedule_at": "env", "avra_case_clock_virtual": "env",
     "avra_cores_online": "env",
     "avra_selfhost_argc": "argv", "avra_selfhost_get_arg_cstr": "argv",
