@@ -334,6 +334,31 @@ impl SyntaxArena {
         self.trait_parts(s)?.fns ?? [m for m in self.component_parts(s)?.fns ?? [] if self.body_member(m) == null]
     }
 
+    /// A fn whose body walks `Self`'s own fields (`[… for f in fields(Self)]`):
+    /// a trait default that is a SHAPE, read per implementer, never run as written.
+    fn shaped(s: StmtId) -> bool {
+        let body? = self.fn_parts(s)?.body else { return false }
+        self.every_expr(body).any((e: ExprId) -> self.walks_fields(e))
+    }
+
+    /// A comprehension whose head loops over `fields(Self)`.
+    fn walks_fields(e: ExprId) -> bool {
+        match self.expr(e) {
+            .Comp(_, clauses) -> clauses.any((c: CompClause) -> self.heads_fields(c)),
+            _ -> false,
+        }
+    }
+
+    fn heads_fields(c: CompClause) -> bool {
+        match c {
+            .Head(_, _, source, _) -> match self.expr(source) {
+                .Call(callee, _, args) -> callee.of == "fields" && args.length == 1 && self.ident_name(args[0]) == "Self",
+                _ -> false,
+            },
+            .Filter(_) -> false,
+        }
+    }
+
     /// A sublanguage declaration's pieces, when the statement is one.
     fn syntax_parts(s: StmtId) -> SyntaxParts? {
         match self.stmt(s) {
