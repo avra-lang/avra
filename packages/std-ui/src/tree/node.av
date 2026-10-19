@@ -8,9 +8,9 @@ use style.tokens.{Size}
 use style.layout.{Axis}
 use @std.meta.{derive}
 use style.words.{Words}
-use tree.codes.{Codes, Coded}
 use tree.facets.{Facets, Facet}
 use tree.url.{Url}
+use tree.seats.{Seat}
 
 /// The interaction contract a component IS. Every target answers every
 /// one, or the build names the target.
@@ -41,21 +41,6 @@ export enum Prim {
     @word(key) Key
 }
 
-/// What a node says when the user speaks to it, in words no platform
-/// owns: a `press` is a click, a tap or a key, as its target hears one; a
-/// `dismiss` is the key or the press outside that sends a dialog away. A
-/// REGISTRY: every target subscribes to every arm, or the build names the
-/// target. Each kind carries the number a host echoes it back as.
-@derive(Words)
-@derive(Codes)
-export enum EventKind {
-    @word(press) @code(1) Press
-    @word(input) @code(2) Input
-    @word(change) @code(3) Change
-    @word(submit) @code(4) Submit
-    @word(dismiss) @code(5) Dismiss
-}
-
 /// What a control SAYS when it speaks: the value the user gave it, as
 /// DATA a target hands back with the event. ABSENCE IS THE OPTION'S OWN
 /// NULL — a press says nothing — never a sentinel value.
@@ -78,7 +63,7 @@ export enum Handler {
 /// What a node does when it speaks: the KIND of event and the handler the
 /// component bound to it. The handler stays in the program — a target
 /// subscribes to the kind and echoes WHICH node spoke, never the code.
-export type Action = { kind: EventKind, handler: Handler }
+export type Action = { seat: Seat, handler: Handler }
 
 impl Said {
     /// The text said, when text is what was said.
@@ -92,6 +77,20 @@ impl Said {
 
     fn number() -> int? {
         match self { .Number(n) -> n, .Text(_) or .Flag(_) -> null }
+    }
+}
+
+impl Handler {
+    /// Whether this handler hears what was said: a handler that wants a value
+    /// hears only a value of its shape, and one that wants none hears nothing
+    /// said. Every shape spelled.
+    fn hears(said: Said?) -> bool {
+        match self {
+            .Nothing(_) -> said == null,
+            .Text(_) -> said?.text() != null,
+            .Flag(_) -> said?.flag() != null,
+            .Number(_) -> said?.number() != null,
+        }
     }
 }
 

@@ -1,0 +1,36 @@
+// proves: a lambda whose seat says it answers a Result leaves by `?`, `fail`
+// and `return` as a fn declaring that answer does — the failure passes to
+// the lambda's caller, a good run is auto-Ok'd, a seat that says nothing
+// still refuses
+fn half(n: int) -> Result<int, string> {
+    if n % 2 != 0 { fail "odd ${n}" }
+    n / 2
+}
+
+fn apply(f: fn(int) -> Result<int, string>, n: int) -> Result<int, string> { f(n) }
+
+fn shown(r: Result<int, string>) -> string {
+    match r { .Ok(v) -> "ok ${v}", .Err(e) -> "err ${e}" }
+}
+
+fn quarter(n: int) -> Result<int, string> {
+    let twice: fn(int) -> Result<int, string> = (m) -> {
+        let h = half(m)?
+        half(h)?
+    }
+    twice(n)
+}
+
+fn early(n: int) -> Result<int, string> {
+    apply(
+        (m) -> {
+            if m < 0 { return .Err("negative") }
+            if m == 0 { fail "zero" }
+            m + 100
+        },
+        n,
+    )
+}
+
+let good = apply((m) -> half(m)?, 8)
+"${shown(good)} ${shown(apply((m) -> half(m)?, 7))} ${shown(quarter(12))} ${shown(quarter(6))} ${shown(early(-1))} ${shown(early(0))} ${shown(early(5))}"

@@ -16,7 +16,7 @@ use core.{
     same_decl,
     user_kind,
 }
-use features.{ResolveCx, TypeCx}
+use features.{ResolveCx, TypeCx, default_mark}
 use @std.meta.{Diagnostic}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
@@ -34,6 +34,7 @@ fn resolve_component(mut cx: ResolveCx, s: StmtId) {
 fn check_component(mut cx: TypeCx, s: StmtId) {
     let c? = cx.view.store.component_parts(s) else { return }
     seats_law(cx, c)
+    default_law(cx, s, c)
     check_body(cx, s)
     check_law(cx, c)
     expand_law(cx, c)
@@ -73,6 +74,17 @@ fn seats_law(mut cx: TypeCx, c: ComponentParts) {
         let twice? = names.find([n for n in names if n == it].length > 1) else { continue }
         let declared? = e.holder.default else { continue }
         cx.emit(seat_twice(cx.loc_of(declared), e.name, twice))
+    }
+}
+
+/// THE DEFAULT LAW: `@default` marks an event, and at most one — bare
+/// statements in an instance fill the one default, so two would leave them
+/// no home.
+fn default_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    let defaults = [e.name for e in c.events() if e.holder.marks.any(it.name == default_mark)]
+    if defaults.length > 1 { cx.emit(default_twice(cx.stmt_loc(s), c.name, defaults)) }
+    for f in c.fields() {
+        if f.marks.any(it.name == default_mark) { cx.emit(default_field(cx.stmt_loc(s), c.name, f.name.of)) }
     }
 }
 
@@ -281,6 +293,26 @@ fn seat_twice(at: Loc?, event: string, seat: string) -> Diag {
         "an event's seats have distinct names, and `${event}` names `${seat}` twice",
         "declared here",
         "rename one — a handler names each seat it is told",
+    )
+}
+
+fn default_twice(at: Loc?, owner: string, events: List<string>) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "a component has one default event, and `${owner}` marks ${ticked(events)} `@default`",
+        "declared here",
+        "keep `@default` on the event bare statements should run, and write `on <event> { … }` for the others",
+    )
+}
+
+fn default_field(at: Loc?, owner: string, field: string) -> Diag {
+    refusal(
+        "type.component_event",
+        at,
+        "only an event can be a component's default, and `${field}` of `${owner}` is a field",
+        "declared here",
+        "mark an `on` event — `@default on press`",
     )
 }
 

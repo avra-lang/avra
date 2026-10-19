@@ -172,6 +172,40 @@ S "kr: and the binary follows" kr
 steps=$((steps+1)); kr_out=$($R/kr/src/main 2>&1)
 [ "$kr_out" = "18 90" ] || { fails=$((fails+1)); echo "FAIL  kr: K or the seat it feeds kept the value of the body J ran before: printed '$kr_out', wanted '18 90'"; }
 fi
+if section kq; then
+# A CONST'S VALUE IS READ BY NAME. `kq`'s V reads B in another module and a plain fn
+# inlines C at lowering, while A is read by nobody. Moving A's value must leave every
+# kept verdict but A's own standing; moving B must rerun exactly its own and V's;
+# moving C must rerun only its own but re-lower the fn that inlined it, so the binary
+# follows. Verdicts are counted by what the query kernel says it ran.
+mkdir -p $R/kq/src/f $R/kq/src/x
+printf '[package]\nname = "rt-kq"\nversion = "0.1.0"\n' > $R/kq/avra.toml
+printf 'export const A: int = 1\nexport const B: int = 2\nexport const C: int = 3\n' > $R/kq/src/x/vals.av
+printf 'use x.{B, C}\nexport const V: int = B * 10\nexport fn shows() -> int { C }\n' > $R/kq/src/f/readers.av
+printf 'use f.{V, shows}\nprintln("${V} ${shows()}")\n' > $R/kq/src/main.av
+kq_ran() { # kq_ran <label> <want>: the verdicts the next check ran, counted
+    steps=$((steps+1)); n=$(AVRA_QTRACE=1 ./avra check $R/kq 2>&1 | grep -c 'const_verdict.*ran')
+    if [ "$n" -eq "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    kq: $1 -> $n verdicts ran"; else fails=$((fails+1)); echo "FAIL  kq: $1 ran $n verdicts, wanted $2"; fi
+}
+kq_prints() { # kq_prints <label> <want>: the native binary's line
+    steps=$((steps+1)); out=$(./avra build $R/kq 2>/dev/null); bin=$(printf '%s\n' "$out" | tail -1); got=$("$bin" 2>&1)
+    [ "$got" = "$2" ] || { fails=$((fails+1)); echo "FAIL  kq: $1 printed '$got', wanted '$2'"; }
+}
+HR "cold kq" check kq 0
+S "kq: built with every verdict kept" kq
+kq_prints "cold" "20 3"
+printf '// moved\n' >> $R/kq/src/main.av
+kq_ran "an edit elsewhere" 0
+ed $R/kq/src/x/vals.av "A: int = 1" "A: int = 9"
+kq_ran "an unread const's value moved" 1
+kq_prints "after A" "20 3"
+ed $R/kq/src/x/vals.av "C: int = 3" "C: int = 4"
+kq_ran "a const only a fn body inlines moved" 1
+kq_prints "after C: the inlining fn follows" "20 4"
+ed $R/kq/src/x/vals.av "B: int = 2" "B: int = 5"
+kq_ran "a const a verdict read moved" 2
+kq_prints "after B: V follows" "50 4"
+fi
 if section kv; then
 # A KEPT VERDICT CARRIES THE READS OF THE RUN THAT MADE IT. `kv`'s L stands on K, K on
 # J, and J settles by running a body in a fourth file; E beside them reads nothing.
@@ -561,7 +595,9 @@ unset CC
 LK "CC back to the default word" built; LK "and nothing touched" hit
 lk_rt=build/libavra_runtime.a
 cp $lk_rt $R/lk.rt.kept
-printf '\n' >> $lk_rt
+# a member added through `ar` moves the archive's bytes and leaves it a valid one: bytes appended
+# raw make a malformed archive, which a strict linker (lld) refuses where GNU ld forgave it
+printf 'int lk_pad;\n' > $R/lk_pad.c; $lk_cc -c $R/lk_pad.c -o $R/lk_pad.o; ar q $lk_rt $R/lk_pad.o 2>/dev/null
 LK "the runtime archive moved" built
 cp $R/lk.rt.kept $lk_rt
 LK "and put back" built
@@ -851,6 +887,41 @@ else case "$hh_out" in *"does not export \`target\`"*) [ -n "${VERBOSE:-}" ] && 
 rm -rf $hh
 fi
 
+if section rx; then
+# A NAME REACHED THROUGH A RE-EXPORT KEYS ON THE RE-EXPORTING FILE TOO: `show.av`
+# names `twice` from `@rt/rxl`, whose `lib.av` re-exports it, so the importer's
+# reference lands on the ORIGINAL declaration's file. Re-pointing the re-export at
+# another declaration never moves that file, and must still re-read `show.av` —
+# or it stays held against a name that now means something else. A body edit to
+# the original holds it (avra-8sb5.64.10.1).
+RX() { # RX <label> <path-substr> <want: held|read> <printed>
+    steps=$((steps+1))
+    out=$(./avra build --time $R/rx 2>&1)
+    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; *"held 0/"*) [ "$3" = held ] && { fails=$((fails+1)); echo "FAIL  $1: a derivation held nothing, so a file staying held was never examined"; } ;; esac
+    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
+    printed=$("$(printf '%s\n' "$out" | tail -1)" 2>&1)
+    [ "$printed" = "$4" ] || { fails=$((fails+1)); echo "FAIL  $1 printed '$printed', wanted '$4'"; }
+}
+mkdir -p $R/rxl/src/util $R/rxl/src/other $R/rx/src
+printf '[package]\nname = "@rt/rxl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-rxl"\npath = "src/lib.av"\n' > $R/rxl/avra.toml
+printf 'export fn twice() -> int { 2 }\n' > $R/rxl/src/util/u.av
+printf 'export fn twice() -> int { 20 }\n' > $R/rxl/src/other/o.av
+printf 'export use util.{twice}\n' > $R/rxl/src/lib.av
+printf '[package]\nname = "rt-rx"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/rxl" = { path = "../rxl" }\n' > $R/rx/avra.toml
+printf 'use @rt.rxl.{twice}\nexport fn shown() -> int { twice() }\n' > $R/rx/src/show.av
+printf 'println("rx ${shown()}")\n' > $R/rx/src/main.av
+S "cold rx: an importer reaches a name through a re-export" rx
+ed $R/rxl/src/util/u.av "{ 2 }" "{ 4 }"
+RX "rx: the original's body only moves — show.av stays held" show.av held "rx 4"
+ed $R/rxl/src/util/u.av "{ 4 }" "{ 2 }"
+RX "rx: and back" show.av held "rx 2"
+ed $R/rxl/src/lib.av "util.{twice}" "other.{twice}"
+RX "rx: the re-export is re-pointed — show.av re-reads" show.av read "rx 20"
+ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
+RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
+fi
+
 # CACHE_ATTACKS set: the sections named above are the whole run.
 if [ -n "${CACHE_ATTACKS:-}" ]; then
     # THE COMPILER'S OWN BINARY is identified by a stamp-keyed record of its bytes' digest:
@@ -884,6 +955,7 @@ fi
 rm -f $bi build/.avra.bi.print $R/bi.orig $R/bi.other
 
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
+    [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the sections named examined nothing"; exit 1; }
     [ "$fails" -eq 0 ]; exit $?
 fi
 S "cold a" a; S "b after a (shared leaf, other bodies + other instantiation)" b
@@ -1281,38 +1353,6 @@ ed $R/mhl/src/pt_say.av "fn base() -> int { 1 }" "fn base() -> int { 1 }
 impl Say for Pt { fn say() -> int { self.v + base() } }"
 S "mh: the impl back home" mh
 
-# A NAME REACHED THROUGH A RE-EXPORT KEYS ON THE RE-EXPORTING FILE TOO: `show.av`
-# names `twice` from `@rt/rxl`, whose `lib.av` re-exports it, so the importer's
-# reference lands on the ORIGINAL declaration's file. Re-pointing the re-export at
-# another declaration never moves that file, and must still re-read `show.av` —
-# or it stays held against a name that now means something else. A body edit to
-# the original holds it (avra-8sb5.64.10.1).
-RX() { # RX <label> <path-substr> <want: held|read> <printed>
-    steps=$((steps+1))
-    out=$(./avra build --time $R/rx 2>&1)
-    case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    case "$out" in *"read:"*"$2"*) got=read ;; *) got=held ;; esac
-    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $1 wanted $3, got $got: $(printf '%s' "$out" | grep -A5 '^read:' | tr '\n' ' ')"; fi
-    printed=$("$(printf '%s\n' "$out" | tail -1)" 2>&1)
-    [ "$printed" = "$4" ] || { fails=$((fails+1)); echo "FAIL  $1 printed '$printed', wanted '$4'"; }
-}
-mkdir -p $R/rxl/src/util $R/rxl/src/other $R/rx/src
-printf '[package]\nname = "@rt/rxl"\nversion = "0.1.0"\n\n[lib]\nname = "rt-rxl"\npath = "src/lib.av"\n' > $R/rxl/avra.toml
-printf 'export fn twice() -> int { 2 }\n' > $R/rxl/src/util/u.av
-printf 'export fn twice() -> int { 20 }\n' > $R/rxl/src/other/o.av
-printf 'export use util.{twice}\n' > $R/rxl/src/lib.av
-printf '[package]\nname = "rt-rx"\nversion = "0.1.0"\n\n[dependencies]\n"@rt/rxl" = { path = "../rxl" }\n' > $R/rx/avra.toml
-printf 'use @rt.rxl.{twice}\nexport fn shown() -> int { twice() }\n' > $R/rx/src/show.av
-printf 'println("rx ${shown()}")\n' > $R/rx/src/main.av
-S "cold rx: an importer reaches a name through a re-export" rx
-ed $R/rxl/src/util/u.av "{ 2 }" "{ 4 }"
-RX "rx: the original's body only moves — show.av stays held" show.av held "rx 4"
-ed $R/rxl/src/util/u.av "{ 4 }" "{ 2 }"
-RX "rx: and back" show.av held "rx 2"
-ed $R/rxl/src/lib.av "util.{twice}" "other.{twice}"
-RX "rx: the re-export is re-pointed — show.av re-reads" show.av read "rx 20"
-ed $R/rxl/src/lib.av "other.{twice}" "util.{twice}"
-RX "rx: and back — the store still keeps the first build's importer" show.av held "rx 2"
 
 # `--verify-held` OVER A HELD `collect enum` (avra-8sb5.57.109): its record line's
 # shape is `enum`, and its KIND column is what says a collect made it — read the

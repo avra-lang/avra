@@ -3,9 +3,10 @@
 //! heard — kept so the next paint says only what changed and a host's
 //! echo finds the handler it names.
 use tree.identity.{NodeId, Owner}
-use tree.node.{Node, Action, EventKind, Said}
+use tree.node.{Node, Action, Said}
+use tree.seats.{Seat}
 use realize.html.element.{Element, lowered}
-use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet, root_vars}
+use realize.html.css.{CssRule, distinct_rules, page_sheet, root_vars, rules_of}
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
 use realize.html.tags.{HtmlAttrName}
 use realize.dom.wire.{frame}
@@ -25,15 +26,11 @@ export type Live = {
     worn: Cell<string?> = Cell.new(null),
     bound: Cell<List<Bound>> = Cell.new([]),
     heard: Cell<List<Heard>> = Cell.new([]),
+    told: Cell<List<int>> = Cell.new([]),
 }
 
 /// A page nothing was painted on.
 export fn live() -> Live { Live {} }
-
-/// Every rule a tree's nodes name, in walk order.
-fn rules_of(n: Node) -> List<CssRule> {
-    node_rules(n.prim, n.box).concat([r for c in n.children for r in rules_of(c)])
-}
 
 /// The rules a notice's classes need, none when there is none.
 fn rules_of_notice(notice: Node?) -> List<CssRule> {
@@ -78,6 +75,18 @@ impl Live {
         lowered(node)
     }
 
+    /// A page that has nothing: a new connection to the same app. The elements,
+    /// the sheet and what a host was told of each seat are forgotten together,
+    /// so the next paint says all of it again.
+    fn reconnected() {
+        self.page.set([])
+        self.rules.set([])
+        self.worn.set(null)
+        self.bound.set([])
+        self.heard.set([])
+        self.told.set([])
+    }
+
     /// The owner keys of the elements that hear something: a node's
     /// number, the identity a page gives it while it stays.
     fn owners() -> List<Owner> { [Owner { key: "${b.id.n}", ordered: b.ordered } for b in self.bound.get()] }
@@ -97,14 +106,14 @@ impl Live {
     }
 
     /// `patches`, as the frame a host applies.
-    fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme)) }
+    fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme), self.told) }
 
-    /// The host's echo: element `id` spoke `kind`, saying `said`. The
+    /// The host's echo: element `id` spoke `seat`, saying `said`. The
     /// handler the last paint bound there runs; false when nothing
     /// answered. What a control said is what its property now holds, so
     /// the next paint compares against that.
-    fn fire(id: NodeId, kind: EventKind, said: Said?) -> bool {
-        let found? = self.bound.get().find(it.id == id && it.action.kind == kind) else { return false }
+    fn fire(id: NodeId, seat: Seat, said: Said?) -> bool {
+        let found? = self.bound.get().find(it.id == id && it.action.seat == seat) else { return false }
         self.hear(id, found.action, said)
         found.action.fire(said)
     }

@@ -570,12 +570,27 @@ impl LowerCx {
         self.bin(Type.Bool, BinOp.Eq, self.tag_of(a), self.tag_of(b))
     }
 
+    /// A variant packs exactly the payloads it declares. A count that
+    /// differs is the compiler's own defect: it is recorded here, and the
+    /// build refuses, rather than a value packed silently.
+    mut fn declared_payloads(ty: TypeId, tag: int, packed: int) {
+        let sig? = self.variants_of(ty) else { return }
+        let declared = sig.payloads[tag].length
+        if declared != packed {
+            self
+                .defect(
+                    "a variant packs exactly the payloads it declares: `${sig.names[tag]}` declares ${declared}, packed ${packed}",
+                )
+        }
+    }
+
     /// THE TAGGED VALUE: an enum's variant is a slot array holding its
     /// TAG at slot 0 and its payloads, in order, at slots 1... — a
     /// value-record payload laid inline, its fields as slots.
     mut fn tagged_value(sh: Type, tag: int, payloads: List<Reg>) -> Reg {
         // an enum whose variants carry nothing IS its tag
         let ty = self.view.types.intern(sh)
+        self.declared_payloads(ty, tag, payloads.length)
         if self.view.types.is_flat(ty) { return self.pack(ty, [self.const_int(tag)]) }
         // a value enum is its tag and its one word, in registers
         if self.view.types.is_valued(ty) { return self.pack(ty, [self.const_int(tag), payloads.first() ?? self.const_int(0)]) }

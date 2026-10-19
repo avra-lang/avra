@@ -42,6 +42,39 @@ fn rows() -> List<PayloadRow> {
             ],
         },
         PayloadRow {
+            owner: "Expr",
+            variant: "Spawn",
+            payloads: [Field { name: "body", ty: "ExprId", at: null, kind: .Named("ExprId", []) }],
+        },
+        PayloadRow {
+            owner: "Expr",
+            variant: "Wrap",
+            payloads: [Field { name: "inner", ty: "ExprId", at: null, kind: .Named("ExprId", []) }],
+        },
+        PayloadRow {
+            owner: "Expr",
+            variant: "Seq",
+            payloads: [
+                Field {
+                    name: "items",
+                    ty: "List<ExprId>",
+                    at: null,
+                    kind: .List(.Named("ExprId", [])),
+                },
+            ],
+        },
+        PayloadRow {
+            owner: "Expr",
+            variant: "Name",
+            payloads: [Field { name: "value", ty: "string", at: null, kind: .Str }],
+        },
+        PayloadRow { owner: "Pat", variant: "Wild", payloads: [] },
+        PayloadRow {
+            owner: "E",
+            variant: "Flag",
+            payloads: [Field { name: "on", ty: "bool", at: null, kind: .Bool }],
+        },
+        PayloadRow {
             owner: "E",
             variant: "Many",
             payloads: [
@@ -78,10 +111,25 @@ fn slots_of(src: string) -> List<Slot>? {
     match held { .Node(_, _, _, slots) -> slots, .Call(_, _) or .Var(_) -> null }
 }
 
+/// A slot as text: a label, `=text` for a stated word, `{Owner.Variant}` for
+/// a node built in place, `[…]` for a list, `-` for nothing.
+fn slot_text(s: Slot) -> string {
+    match s {
+        .Label(name) -> name,
+        .Fixed(text) -> "=${text}",
+        .Nested(b) -> match b {
+            .Node(owner, variant, _, _) -> "{${owner}.${variant}}",
+            .Call(_, _) or .Var(_) -> "{?}",
+        },
+        .Items(items) -> "[${[slot_text(i) for i in items].join(",")}]",
+        .Empty -> "-",
+    }
+}
+
 fn label_at(src: string, j: int) -> string {
     let slots = slots_of(src)
     if slots == null || j >= slots!.length { return "" }
-    match slots![j] { .Label(name) -> name, .Fixed(text) -> "=${text}", .Empty -> "-" }
+    slot_text(slots![j])
 }
 
 spec "features/node_grammar" {
@@ -154,6 +202,88 @@ spec "features/node_grammar" {
         then "a stated payload renders with its value" {
             render_grammar(grammar_of("r = \"t\" -> E.Lit(value = true)\n"))
                 .contains("-> E.Lit(value = true)")
+        }
+    }
+    given "a `bool` payload" {
+
+        then "is the presence of a terminal the rule captures" {
+            defects_of("r = on:\"raw\" -> E.Flag\n").is_empty()
+        }
+        then "or is stated `true` or `false`" {
+            defects_of("r = \"x\" -> E.Flag(on = true)\n").is_empty() &&
+                defects_of("r = \"x\" -> E.Flag(on = false)\n").is_empty()
+        }
+        then "a stated word that is neither refuses, and says what a bool is" {
+            refuses(
+                "r = \"x\" -> E.Flag(on = maybe)\n",
+                "a `bool` payload is stated `true` or `false`",
+            )
+        }
+        then "a named terminal's presence is a truth too (`state:STATE`)" {
+            defects_of("r = on:NAME -> E.Flag\n").is_empty()
+        }
+        then "a built node is no truth" {
+            refuses("r = on:e -> E.Flag\ne = NAME\n", "from a built node")
+        }
+    }
+    given "a node built in place" {
+
+        then "a stated node fills its payload, built from the branch's captures" {
+            label_at("r = e:expr -> Expr.Spawn(body = Expr.Wrap(inner = e))\nexpr = NAME\n", 0) == "{Expr.Wrap}"
+        }
+        then "its own payloads are filled from the same labels" {
+            let g = bind_nodes(
+                grammar_of("r = e:expr -> Expr.Spawn(body = Expr.Wrap(inner = e))\nexpr = NAME\n"),
+                rows(),
+            )
+                .g
+            let outer? = g.rules[0].body.branches[0].build else { return false }
+            match outer {
+                .Node(_, _, _, slots) -> match slots![0] {
+                    .Nested(inner) -> match inner { .Node(_, _, _, s) -> slot_text(s![0]) == "e", rest -> false },
+                    rest -> false,
+                },
+                rest -> false,
+            }
+        }
+        then "a word that is a capture's label reads as the capture, under a payload of another name" {
+            label_at("r = x:expr -> Expr.Wrap(inner = x)\nexpr = NAME\n", 0) == "x"
+        }
+        then "a list states its items in order, a capture among them" {
+            label_at("r = a:expr b:expr -> Expr.Seq(items = [a, b])\nexpr = NAME\n", 0) == "[a,b]"
+        }
+        then "an empty list is a list, not an absence" {
+            label_at("r = \"x\" -> Expr.Seq(items = [])\n", 0) == "[]"
+        }
+        then "nothing refuses for a well-formed nesting" {
+            [d.message for d in defects_of("r = e:expr -> Expr.Spawn(body = Expr.Wrap(inner = e))\nexpr = NAME\n")]
+                .join("|") == ""
+        }
+        then "a nested build renders as it was written" {
+            render_grammar(
+                grammar_of("r = e:expr -> Expr.Spawn(body = Expr.Wrap(inner = e))\nexpr = NAME\n"),
+            )
+                .contains("-> Expr.Spawn(body = Expr.Wrap(inner = e))")
+        }
+        then "the arity law holds inside: a nested build leaving a payload unfilled refuses" {
+            refuses("r = \"x\" -> Expr.Spawn(body = Expr.Wrap)\n", "nothing fills `inner")
+        }
+        then "a nested node of another kind refuses, naming what it builds" {
+            refuses("r = \"x\" -> Expr.Wrap(inner = Pat.Wild)\n", "builds a `PatId`")
+        }
+        then "a node cannot fill a text payload" {
+            refuses(
+                "r = e:expr -> Expr.Name(value = Expr.Wrap(inner = e))\nexpr = NAME\n",
+                "it holds a token's text",
+            )
+        }
+        then "a nested node that is no variant refuses" {
+            refuses("r = \"x\" -> Expr.Wrap(inner = Expr.Nowhere)\n", "no such variant is declared")
+        }
+        then "a builder call has no place in a stated payload" {
+            parse_grammar("r = a:NAME -> Expr.Wrap(inner = made(a))\n")
+                .diagnostics
+                .any(it.message.contains("calls a builder"))
         }
     }
     given "a node build nested in a group" {
@@ -250,5 +380,5 @@ fn group_build(p: Prim) -> Build? {
 
 fn first_label(slots: List<Slot>?) -> string {
     if slots == null { return "<unbound>" }
-    match slots![0] { .Label(name) -> name, .Fixed(text) -> "=${text}", .Empty -> "-" }
+    slot_text(slots![0])
 }

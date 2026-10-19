@@ -1,0 +1,33 @@
+// `?` in a lambda, by seat law: a lambda whose seat says what it answers
+// promises that answer, and the failure it passes must fit it; a lambda
+// whose seat says nothing still promises none.
+use @std.avrac.testing.{shown, refused_with}
+
+const OK: string = "fn ok(n: int) -> Result<int, string> { n }\n"
+
+spec "features/closures — `?` in a lambda" {
+    given "a seat that says the answer" {
+        then "a good run is auto-Ok'd and a failure passes to the caller" {
+            shown(
+                "${OK}fn run(f: fn(int) -> Result<int, string>, n: int) -> Result<int, string> { f(n) }\nmatch run((m) -> ok(m)? + 1, 4) {\n    .Ok(v) -> \"ok \${v}\"\n    .Err(e) -> e\n}",
+            ) == "ok 5"
+        }
+        then "a promise that is no Result refuses the failure in the promise's words" {
+            refused_with(
+                "${OK}fn run(f: fn(int) -> int, n: int) -> int { f(n) }\nrun((m) -> ok(m)?, 1)",
+                "`?` makes this fn answer the failure, but it promises `int`",
+            )
+        }
+        then "a failure the promise does not cover is refused" {
+            refused_with(
+                "${OK}fn run(f: fn(int) -> Result<int, int>, n: int) -> Result<int, int> { f(n) }\nrun((m) -> ok(m)?, 1)",
+                "the failures disagree",
+            )
+        }
+    }
+    given "a seat that says nothing" {
+        then "the lambda still promises none" {
+            refused_with("${OK}let g = (m: int) -> ok(m)?\n1", "a lambda promises none")
+        }
+    }
+}

@@ -4,8 +4,12 @@
 //! the diff, so what it ends holding is what the patches SAID. A record a
 //! page could not apply — an element it does not hold, a sibling under
 //! another parent, a number given twice — is a FAULT, kept and told.
-use realize.dom.wire.{Op, wire_version, no_id}
+use realize.dom.wire.{Op, wire_version, no_id, after_first, after_append, after_sibling}
+use realize.html.tags.{HtmlTag}
 use realize.dom.patch.{Says}
+
+/// A `place`'s `after` that names no sibling but the end of the run.
+const appended = -2
 
 /// One record of a frame.
 enum Rec {
@@ -17,10 +21,13 @@ enum Rec {
     DropAttr(id: int, name: string)
     SetProp(id: int, name: string, says: int, value: string)
     SetText(id: int, content: string)
-    Listen(id: int, ear: Ear)
+    Define(ear: Ear)
+    Listen(id: int, kind: int, says: int)
     Unlisten(id: int, kind: int)
     Style(css: string)
     Call(id: int, verb: string)
+    SetVar(id: int, at: Pair)
+    DropVar(id: int, name: string)
 }
 
 // ── reading a frame ─────────────────────────────────────────────
@@ -52,11 +59,35 @@ impl Reader {
         if w >= 2147483648 { w - 4294967296 } else { w }
     }
 
-    /// Eight little-endian bytes as a signed number.
-    fn id() -> int {
-        let low = self.word()
-        self.int() * 4294967296 + low
+    /// Seven-bit groups, the low group first, as a number from zero up.
+    fn varint() -> int {
+        mut n = 0
+        mut scale = 1
+        while true {
+            let b = self.byte()
+            n = n + b % 128 * scale
+            scale = scale * 128
+            if b < 128 { return n }
+        }
+        n
     }
+
+    /// An id is one more than its number; zero is no id.
+    fn id() -> int { self.varint() - 1 }
+
+    /// Where a `place` puts its element: the first place, the end of the
+    /// parent's run (`appended`), or the sibling it follows.
+    fn after() -> int {
+        let v = self.varint()
+        when {
+            v == after_first -> no_id
+            v == after_append -> appended
+            _ -> v - after_sibling
+        }
+    }
+
+    /// A tag by its place among the tags.
+    fn tag() -> string { HtmlTag.every()[self.varint()].word() }
 
     /// A length, then that many bytes as text.
     fn text() -> string {
@@ -68,8 +99,8 @@ impl Reader {
     fn ear() -> Ear {
         Ear {
             kind: self.int(),
-            event: self.text(),
             says: self.int(),
+            event: self.text(),
             reads: self.text(),
             prevents: self.int() != 0,
         }
@@ -79,18 +110,21 @@ impl Reader {
     /// writes it. Every op spelled.
     fn record(op: Op) -> Rec {
         match op {
-            .Create -> Rec.Create(self.id(), self.text()),
+            .Create -> Rec.Create(self.id(), self.tag()),
             .CreateText -> Rec.CreateText(self.id(), self.text()),
-            .Place -> Rec.Place(self.id(), self.id(), self.id()),
+            .Place -> Rec.Place(self.id(), self.id(), self.after()),
             .Remove -> Rec.Remove(self.id()),
             .SetAttr -> Rec.SetAttr(self.id(), Pair { name: self.text(), value: self.text() }),
             .DropAttr -> Rec.DropAttr(self.id(), self.text()),
             .SetProp -> Rec.SetProp(self.id(), self.text(), self.int(), self.text()),
             .SetText -> Rec.SetText(self.id(), self.text()),
-            .Listen -> Rec.Listen(self.id(), self.ear()),
+            .Define -> Rec.Define(self.ear()),
+            .Listen -> Rec.Listen(self.id(), self.int(), self.int()),
             .Unlisten -> Rec.Unlisten(self.id(), self.int()),
             .Style -> Rec.Style(self.text()),
             .Call -> Rec.Call(self.id(), self.text()),
+            .SetVar -> Rec.SetVar(self.id(), Pair { name: self.text(), value: self.text() }),
+            .DropVar -> Rec.DropVar(self.id(), self.text()),
         }
     }
 }
@@ -132,6 +166,7 @@ export type Host = {
     top: List<int> = [],
     faults: List<string> = [],
     sheet: string = "",
+    defs: List<Ear> = [],
 }
 
 /// A host showing nothing.
@@ -231,6 +266,7 @@ impl Host {
         }
         if parent != no_id && self.holds(parent, id) { return self.fault("place puts ${id} under itself") }
         self.lift(id)
+        let after = if after == appended { self.under(parent).last() ?? no_id } else { after }
         if after != no_id && !self.under(parent).contains(after) {
             self.put(id, h with { stood: Stood.Loose })
             return self
@@ -276,6 +312,15 @@ impl Host {
         self.rewrite(id, "listen", (s) -> s with { ears: s.ears.concat([ear]) })
     }
 
+    /// A listen, resolved by the definition an earlier record gave its seat.
+    mut fn listened(id: int, kind: int, says: int) {
+        let ear? = self.defs.find(it.kind == kind && it.says == says) else {
+            return self
+                .fault("listen names ${id} saying ${says} of seat ${kind}, which no define told")
+        }
+        self.listen(id, ear)
+    }
+
     /// Whether `id`'s door stands open.
     fn open(id: int) -> bool { self.live(id)?.seen?.props?.any(it.name == door) ?? false }
 
@@ -317,11 +362,20 @@ impl Host {
                 .rewrite(id, "drop_attr", (s) -> s with { attrs: [a for a in s.attrs if a.name != name] }),
             .SetProp(id, name, says, value) -> self.set_prop(id, name, says, value),
             .SetText(id, content) -> self.set_text(id, content),
-            .Listen(id, ear) -> self.listen(id, ear),
+            .Define(ear) -> { self.defs = self.defs.concat([ear]) },
+            .Listen(id, kind, says) -> self.listened(id, kind, says),
             .Unlisten(id, kind) -> self
                 .rewrite(id, "unlisten", (s) -> s with { ears: [e for e in s.ears if e.kind != kind] }),
             .Style(css) -> { self.sheet = css },
             .Call(id, verb) -> self.call(id, verb),
+            .SetVar(id, at) -> self
+                .rewrite(
+                    id,
+                    "set_var",
+                    (s) -> s with { vars: [v for v in s.vars if v.name != at.name].concat([at]) },
+                ),
+            .DropVar(id, name) -> self
+                .rewrite(id, "drop_var", (s) -> s with { vars: [v for v in s.vars if v.name != name] }),
         }
     }
 
@@ -361,19 +415,25 @@ export fn records(frame: Bytes) -> List<string> { [rec_line(r) for r in read(fra
 /// An id as a line spells it: `-` where a record names none.
 fn id_word(id: int) -> string { if id == no_id { "-" } else { "${id}" } }
 
+/// What a `place` follows, as a line spells it: `end` where the run's end is said.
+fn after_word(after: int) -> string { if after == appended { "end" } else { id_word(after) } }
+
 fn rec_line(r: Rec) -> string {
     match r {
         .Create(id, tag) -> "create ${id} ${tag}",
         .CreateText(id, content) -> "text ${id} ${quoted(content)}",
-        .Place(id, parent, after) -> "place ${id} in ${id_word(parent)} after ${id_word(after)}",
+        .Place(id, parent, after) -> "place ${id} in ${id_word(parent)} after ${after_word(after)}",
         .Remove(id) -> "remove ${id}",
         .SetAttr(id, at) -> "attr ${id} ${at.name}=${quoted(at.value)}",
         .DropAttr(id, name) -> "unattr ${id} ${name}",
         .SetProp(id, name, says, value) -> "prop ${id} ${name}=${says}:${quoted(value)}",
         .SetText(id, content) -> "retext ${id} ${quoted(content)}",
-        .Listen(id, ear) -> "listen ${id} ${ear.kind}:${ear.event}:${ear.says}:${ear.reads}:${ear.prevents}",
+        .Define(ear) -> "define ${ear.kind}:${ear.event}:${ear.says}:${ear.reads}:${ear.prevents}",
+        .Listen(id, kind, says) -> "listen ${id} ${kind}:${says}",
         .Unlisten(id, kind) -> "unlisten ${id} ${kind}",
         .Style(_) -> "style",
         .Call(id, verb) -> "call ${id} ${verb}",
+        .SetVar(id, at) -> "var ${id} ${at.name}=${quoted(at.value)}",
+        .DropVar(id, name) -> "unvar ${id} ${name}",
     }
 }

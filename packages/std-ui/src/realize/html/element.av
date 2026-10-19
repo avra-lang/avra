@@ -11,9 +11,10 @@
 //! part's (`tree/identity.av`). A page that keeps it gives it a number. A URL arrives as a `Url`, which has no unsafe
 //! value, and every other value is escaped by whoever writes it.
 use tree.identity.{NodeId, Step, root as root_step, shared, steps, unplaced, under}
-use tree.node.{Node, Attribute, Prim, Action, EventKind, submits_among}
+use tree.node.{Node, Attribute, Prim, Action, submits_among}
+use tree.seats.{always_seat_of}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName, carries, control_attrs, tag_of}
-use realize.html.css.{class_names}
+use realize.html.css.{class_names, box_vars, drawn_box, CssVar}
 
 /// One piece of a page: an element, or a run of text.
 export enum Element {
@@ -27,7 +28,7 @@ export type Worded = { id: NodeId = unplaced, seat: string, reads: string, conte
 
 /// An element: where it stands among its siblings (`seat`, its step as
 /// matched; `reads`, the same step as a reader is shown it), its tag,
-/// its attributes in written order, what it hears, and what it holds. `id` is the number a page gave it — none until a
+/// its attributes in written order, the custom properties its classes read (`vars`), what it hears, and what it holds. `id` is the number a page gave it — none until a
 /// page places it. `rests` names what its node draws AT REST: a box
 /// drawn unticked holds no attribute, and is drawn all the same.
 export type Tagged = {
@@ -36,6 +37,7 @@ export type Tagged = {
     reads: string,
     tag: HtmlTag,
     attrs: List<HtmlAttr> = [],
+    vars: List<CssVar> = [],
     rests: List<HtmlAttrName> = [],
     hears: List<Action> = [],
     kids: List<Element> = [],
@@ -104,7 +106,6 @@ fn wrote(a: Attribute) -> List<Wrote> {
             Wrote { name: .DataWindow, value: path },
             Wrote { name: .DataSkip, value: "${rows}" },
             Wrote { name: .DataExtent, value: "${extent}" },
-            Wrote { name: .Style, value: "height:${rows * extent}px" },
         ],
         .Placed(at, of, reveal) -> [
             Wrote { name: .AriaPosinset, value: "${at + 1}" },
@@ -136,8 +137,8 @@ fn rests_of(attrs: List<Attribute>) -> List<HtmlAttrName> {
 
 /// An element's attributes from the neutral node: what kind of control it
 /// is, then its properties.
-fn element_attrs(prim: Prim, attrs: List<Attribute>) -> List<HtmlAttr> {
-    control_attrs(prim, submits_among(attrs)).concat(attrs_of(attrs))
+fn element_attrs(n: Node) -> List<HtmlAttr> {
+    control_attrs(n.prim, submits_among(n.attrs), n.words()).concat(attrs_of(n.attrs))
 }
 
 // ── the class attribute ─────────────────────────────────────────
@@ -220,7 +221,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 seat: control_part,
                 reads: control_part,
                 tag: tag_of(n),
-                attrs: element_attrs(n.prim, n.attrs),
+                attrs: element_attrs(n),
                 rests: rests_of(n.attrs),
                 hears: n.events,
                 crowded: at.crowded,
@@ -235,6 +236,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 reads: at.shown,
                 tag: .Label,
                 attrs: node_attrs(n),
+                vars: box_vars(drawn_box(n)),
                 kids: if words_lead(n.prim) { [words, control] } else { [control, words] }.concat(kids),
                 crowded: at.crowded,
             },
@@ -243,24 +245,15 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
 
 fn unheard() {}
 
-/// The event a primitive always hears on a page, handler or none: the
-/// page's own answer to it would undo what the program drew — a form's
-/// submit leaves the page, a dialog's dismissal closes it. Every primitive
-/// spelled.
-fn always_heard(p: Prim) -> EventKind? {
-    match p {
-        .Form -> .Submit,
-        .Dialog -> .Dismiss,
-        .Text or .Heading or .Button or .Link or .Image or .Field or .Checkbox or .Row or .Column or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Switch or .Slider or .Key -> null,
-    }
-}
-
 /// What a node's element hears: its own events, and the one its
-/// primitive always hears, doing nothing, when no handler does.
+/// primitive always hears, doing nothing, when no handler does. The page
+/// listens for that event handler or none: its own answer to it would undo
+/// what the program drew — a form's submit leaves the page, a dialog's
+/// dismissal closes it. The seat says so itself (`@host(…, always: true)`).
 fn heard(n: Node) -> List<Action> {
-    let kind? = always_heard(n.prim) else { return n.events }
-    if n.events.any(it.kind == kind) { return n.events }
-    n.events.concat([Action { kind: kind, handler: .Nothing(unheard) }])
+    let seat? = always_seat_of(n.prim) else { return n.events }
+    if n.events.any(it.seat == seat) { return n.events }
+    n.events.concat([Action { seat: seat, handler: .Nothing(unheard) }])
 }
 
 /// The node itself as one element holding `kids`.
@@ -271,7 +264,8 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
                 seat: at.matched,
                 reads: at.shown,
                 tag: tag_of(n),
-                attrs: element_attrs(n.prim, n.attrs).concat(node_attrs(n)),
+                attrs: element_attrs(n).concat(node_attrs(n)),
+                vars: box_vars(drawn_box(n)),
                 rests: rests_of(n.attrs),
                 hears: heard(n),
                 kids: kids,
@@ -302,10 +296,10 @@ fn lower(n: Node, at: Seat) -> List<Element> {
 /// Each child of `n` lowered at its own step — under `within`, when its
 /// children stand beside the node rather than inside it. A child is crowded
 /// when it, or what holds it, is told from a sibling by order alone. A key
-/// draws nothing.
+/// stands hidden and says its chord.
 fn lower_each(n: Node, stands: List<Step>, seat: Seat?, above: bool) -> List<Element> {
     let told = shared([c.box.stand() for c in n.children])
-    [e for i, c in n.children if c.drawn() for e in lower(c, seat_of(seat, stands[i], above || told[i]))]
+    [e for i, c in n.children for e in lower(c, seat_of(seat, stands[i], above || told[i]))]
 }
 
 /// The elements a tree lowers to, in page order.

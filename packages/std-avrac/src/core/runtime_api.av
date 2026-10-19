@@ -850,6 +850,26 @@ export once fn rt_sigs() -> List<RtSig> {
             host: RtHost.Text,
             inert: true,
         },
+        // A float's bit pattern as an int, and an int's as a float: the machine's
+        // own reinterpretation, every NaN payload, signed zero and subnormal kept.
+        RtSig {
+            name: "avra_float_to_bits",
+            ret: RtKind.I64,
+            params: [RtKind.F64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
+        RtSig {
+            name: "avra_float_of_bits",
+            ret: RtKind.F64,
+            params: [RtKind.I64],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            inert: true,
+        },
         RtSig {
             name: "avra_float_text_bits",
             ret: RtKind.Ptr,
@@ -1030,7 +1050,7 @@ export once fn rt_sigs() -> List<RtSig> {
             writes: [true, false],
             owns_result: false,
             has_owned_twin: false,
-            host: RtHost.Unhosted,
+            host: RtHost.ArrayExtend,
             inert: true,
             boxes: [Box.List, Box.List],
         },
@@ -1542,6 +1562,20 @@ export once fn rt_sigs() -> List<RtSig> {
             reach: Reach.World,
             inert: true,
         },
+        // The OS's entropy as `n` bytes: an empty box for none, absent only
+        // when the OS gave none — never a weaker source in its place. A
+        // negative `n` is the caller's mistake and traps. A secret, a nonce or a token is drawn here and nowhere else.
+        RtSig {
+            name: "avra_random_bytes",
+            ret: RtKind.Ptr,
+            params: [RtKind.I64],
+            answer: Box.Bytes,
+            owns_result: true,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            wasm: false,
+        },
         // THIS PROCESS'S OWN id — OS-assigned at birth, like the environment
         // `avra_host_env` reads, never a function of the program's own
         // logic. Unhosted and undeclared: nothing calls this yet
@@ -1645,6 +1679,39 @@ export once fn rt_sigs() -> List<RtSig> {
             inert: true,
             boxes: [Box.List],
         },
+        // A TASK HANDLE IS RELEASED: when it is the last one outside the
+        // scheduler and the task still runs, the releasing task joins it —
+        // cancelling it first when the releasing task is itself leaving by a
+        // cancel. The engine's own release follows; a handle that is not the
+        // last, or a task that has ended, joins nothing.
+        RtSig {
+            name: "avra_task_release",
+            waits: true,
+            wasm: false,
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            writes: [true],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            inert: true,
+        },
+        // A LIST OF TASKS IS RELEASED: the same for each member, when the list
+        // is released by its last handle.
+        RtSig {
+            name: "avra_tasks_release",
+            waits: true,
+            wasm: false,
+            ret: RtKind.Void,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            inert: true,
+            boxes: [Box.List],
+        },
         RtSig {
             name: "avra_task_join",
             waits: true,
@@ -1690,6 +1757,32 @@ export once fn rt_sigs() -> List<RtSig> {
             wasm: true,
             ret: RtKind.I64,
             params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            inert: true,
+        },
+        // how many fibers are parked on a task or a gate: the waiters
+        // filed on its record
+        RtSig {
+            name: "avra_parked_on",
+            wasm: false,
+            ret: RtKind.I64,
+            params: [RtKind.Ptr],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
+            reach: Reach.World,
+            inert: true,
+        },
+        // how many fibers are parked on one direction of a descriptor:
+        // 0 reads, 1 writes
+        RtSig {
+            name: "avra_fd_parked",
+            wasm: false,
+            ret: RtKind.I64,
+            params: [RtKind.I64, RtKind.I64],
             owns_result: false,
             has_owned_twin: false,
             host: RtHost.Unhosted,
@@ -2439,6 +2532,18 @@ export once fn rt_sigs() -> List<RtSig> {
             owns_result: false,
             has_owned_twin: false,
             host: RtHost.NowNs,
+            reach: Reach.World,
+            inert: true,
+        },
+        // THE PROCESS'S CPU TIME in nanoseconds — user plus system, which no
+        // virtual clock moves and no host stall inflates.
+        RtSig {
+            name: "avra_cpu_ns",
+            ret: RtKind.I64,
+            params: [],
+            owns_result: false,
+            has_owned_twin: false,
+            host: RtHost.Unhosted,
             reach: Reach.World,
             inert: true,
         },

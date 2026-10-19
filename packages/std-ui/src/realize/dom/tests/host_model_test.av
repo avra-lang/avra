@@ -2,6 +2,7 @@
 //! frame a page could not apply is a fault it names, and a frame it can
 //! is the page the records say. The diff is judged by this host, so each
 //! refusal is made to happen here.
+use @std.ui.realize.tests.support.{action, seat_for}
 use @std.ui.realize.dom.patch.{Patch, Held, listening_of}
 use @std.ui.realize.dom.tests.support.{host, records, told, whole}
 use @std.ui.realize.dom.wire.{frame, wire_version}
@@ -15,7 +16,9 @@ fn nothing() {}
 /// A `div` numbered `n`, made and placed first on the page.
 fn standing(n: int) -> List<Patch> { [Patch.Create(el(n), .Div), Patch.Place(el(n), null, null)] }
 
-fn pressed() -> Patch { Patch.Listen(el(0), listening_of(Action { kind: .Press, handler: Handler.Nothing(nothing) })) }
+fn pressed() -> Patch {
+    Patch.Listen(el(0), listening_of(action(.Press, Handler.Nothing(nothing))))
+}
 
 /// What a host shown `patches` as one frame could not apply.
 fn faults(patches: List<Patch>) -> string {
@@ -109,7 +112,7 @@ spec "the modelled host — a frame a page could not apply" {
     }
     given "an event heard twice by one element" {
         then "is a fault: a page would answer it twice" {
-            faults(standing(0).concat([pressed(), pressed()])) == "listen names 0, which already hears 1"
+            faults(standing(0).concat([pressed(), pressed()])) == "listen names 0, which already hears ${seat_for(.Press).number()}"
         }
     }
     given "a verb asked of an element that stands nowhere on the page" {
@@ -171,7 +174,7 @@ spec "the modelled host — a frame a page can apply" {
                     Patch.Place(el(1), el(0), el(2)),
                     Patch.DropAttr(el(0), .Class),
                 ],
-            ) == "#0 ul title=\"t\" @1:click:0::false\n  #2 input .checked=true .value=\"v\"\n  #1 li\n    #3 \"line\\nbreak\""
+            ) == "#0 ul title=\"t\" @${seat_for(.Press).number()}:click:0::false\n  #2 input .checked=true .value=\"v\"\n  #1 li\n    #3 \"line\\nbreak\""
         }
     }
     given "a property set back to rest" {
@@ -213,7 +216,55 @@ spec "the modelled host — a frame a page can apply" {
     }
     given "a frame's records, read back" {
         then "name where no id stands as `-`" {
-            records(frame(standing(0).concat([Patch.Unlisten(el(0), .Submit)]))).join("\n") == "create 0 div\nplace 0 in - after -\nunlisten 0 4"
+            records(frame(standing(0).concat([Patch.Unlisten(el(0), seat_for(.Submit))])))
+                .join("\n") == "create 0 div\nplace 0 in - after -\nunlisten 0 ${seat_for(.Submit).number()}"
+        }
+    }
+}
+
+/// A frame's records, as lines, from `patches` made into one frame.
+fn lines(patches: List<Patch>) -> string { records(frame(patches)).join("|") }
+
+spec "the wire's numbers" {
+    given "ids at the edges of a seven-bit group" {
+        then "make and place, and are read back whole" {
+            let edges = [0, 126, 127, 16382, 16383, 2097150, 2097151, 1099511627776]
+            let made = [p for n in edges for p in standing(n)]
+            faults(made) == "" && page(made).split("\n").length == edges.length
+        }
+        then "read back as the numbers they were (each placed first, so last made stands first)" {
+            let edges = [0, 126, 127, 16382, 16383, 2097150, 2097151, 1099511627776]
+            let made = [p for n in edges for p in standing(n)]
+            page(made).split("\n").map(it.split(" ")[0]).join(",") == "#1099511627776,#2097151,#2097150,#16383,#16382,#127,#126,#0"
+        }
+    }
+    given "children placed under a parent made in the same frame" {
+        then "say the end of the run and no sibling" {
+            let kids = [
+                Patch.Create(el(0), .Ul),
+                Patch.Create(el(1), .Li),
+                Patch.Create(el(2), .Li),
+                Patch.Place(el(0), null, null),
+                Patch.Place(el(1), el(0), null),
+                Patch.Place(el(2), el(0), el(1)),
+            ]
+            lines(kids).contains("place 1 in 0 after end|place 2 in 0 after end")
+        }
+        then "name the sibling under a parent an earlier frame made" {
+            lines([Patch.Place(el(2), el(0), el(1))]) == "place 2 in 0 after 1"
+        }
+        then "name it again once a child has moved away from the end" {
+            let moved = [
+                Patch.Create(el(0), .Ul),
+                Patch.Create(el(1), .Li),
+                Patch.Create(el(2), .Li),
+                Patch.Place(el(1), el(0), null),
+                Patch.Place(el(2), el(0), el(1)),
+                Patch.Place(el(2), el(0), null),
+                Patch.Place(el(1), el(0), el(2)),
+            ]
+            lines(moved).contains("place 1 in 0 after 2") &&
+                faults(moved.concat([Patch.Place(el(0), null, null)])) == ""
         }
     }
 }

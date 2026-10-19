@@ -1,0 +1,49 @@
+//! The custom properties a node's classes read, kept live by element: a
+//! paint writes one where it arrives or changes, drops it where it goes and
+//! says nothing for one that stays.
+use @std.ui.realize.dom.live.{live}
+use @std.ui.realize.dom.tests.support.{host, told, whole}
+use @std.ui.realize.dom.wire.{frame}
+use @std.ui.realize.tests.support.{boxed, spoken}
+use @std.ui.style.layout.{Layout}
+use @std.ui.style.theme.{default_theme}
+use @std.ui.tree.node.{Node}
+
+fn wide(n: int) -> Node { boxed(.Row, Layout { width: .Fixed(n) }, []) }
+
+fn filling() -> Node { boxed(.Row, Layout { width: .Fill }, []) }
+
+/// What turns a page showing `from` into one showing `to`.
+fn between(from: Node, to: Node) -> string {
+    let page = live()
+    let _ = page.patches(from, default_theme)
+    spoken(page, to, default_theme)
+}
+
+/// The page a host holds after being shown `from`, then `to`.
+fn held_after(from: Node, to: Node) -> string {
+    let page = live()
+    mut at = host()
+    at.take(frame(page.patches(from, default_theme)))
+    at.take(frame(page.patches(to, default_theme)))
+    told(at.page(), whole)
+}
+
+spec "std/ui dom — custom properties by element" {
+    given "an element that states a fixed width" {
+        then "a first paint writes it" { spoken(live(), wide(8), default_theme).contains("--w=8px") }
+        then "a width that changes is written again" { between(wide(8), wide(9)).contains("--w=9px") }
+        then "a width that stays says nothing" { between(wide(8), wide(8)) == "" }
+        then "a width that goes is dropped" {
+            between(wide(8), filling()).contains("unvar") &&
+                between(wide(8), filling()).contains("--w")
+        }
+    }
+    given "a host shown the paints" {
+        then "holds the width of the last" {
+            held_after(wide(8), wide(9)).contains(" --w=\"9px\"") &&
+                !held_after(wide(8), wide(9)).contains("8px")
+        }
+        then "holds none once the width is gone" { !held_after(wide(8), filling()).contains("--w") }
+    }
+}

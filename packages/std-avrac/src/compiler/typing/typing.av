@@ -8,6 +8,7 @@
 //! name types as the interned Error, which ABSORBS: the causing
 //! pass already spoke, so no diagnostic cascades from it.
 use core.{
+    some_list,
     StmtId,
     ExprId,
     TypeId,
@@ -80,6 +81,7 @@ export fn new_type_cx(
         narrow_params: [],
         fn_ret: [],
         lam_bar: [],
+        lam_promise: [],
         tscope: [],
         pairs: [],
         task_bodies: [],
@@ -292,19 +294,27 @@ impl TypeCx {
     /// statement LEAVES THE FN (nothing reads the tail), void otherwise.
     fn valueless_type(stmts: List<StmtId>) -> TypeId {
         let last: StmtId? = stmts.last()
-        if last != null && self.view.store.leaves_fn(last!) { return self.fn_ret.last() ?? self.error_type }
+        if last != null && self.view.store.leaves_fn(last!) { return self.enclosing_ret() ?? self.fn_ret.last() ?? self.error_type }
         self.view.decls.types.type(void)
     }
 
     /// A lambda's body typed under its params, behind the BARRIER —
     /// `return`/`?`/`fail` inside see no enclosing fn. Params and
     /// captures register FIRST so the body's reads answer.
-    mut fn lambda_body(lam: ExprId, ptys: List<TypeId>, marks: List<SeatMark>, body: ExprId) -> TypeId {
+    mut fn lambda_body(
+        lam: ExprId,
+        ptys: List<TypeId>,
+        marks: List<SeatMark>,
+        body: ExprId,
+        answer: TypeId? = null,
+    ) -> TypeId {
         self.facts.seat_lambda(lam, ptys, marks)
         self.facts.seat_captures(lam, self.capture_seats(lam))
         // LICENSED compiler.bracket_ritual: this IS the bracket
         self.lam_bar.push(self.fn_ret.length)
+        self.lam_promise.push(some_list(answer))
         let ret = self.walk_type(body)
+        let _ = self.lam_promise.pop()
         let _ = self.lam_bar.pop()
         ret
     }
@@ -379,7 +389,7 @@ impl TypeCx {
         if parts.params.length != seats.length || takes_by_name(self, parts.params, seats) { return null }
         self.facts.absorb_hunger(a)
         if answer != null { self.plant_want(parts.body, answer!) }
-        let ret = self.lambda_body(a, seats, marks, parts.body)
+        let ret = self.lambda_body(a, seats, marks, parts.body, self.promised(answer))
         // the lambda wears the declared answer once its body is accepted
         // by it — the body's lift recorded like any seat's
         let worn = if answer != null && !self.errored_ty(ret) && self.accepts(parts.body, answer!) { answer! } else { ret }
@@ -597,6 +607,14 @@ impl TypeCx {
         self.view.decls.decl_of(self.view.file, s)!
     }
 
+    /// What a lambda body PROMISES when its seat said what it answers:
+    /// that answer, once it is settled — the body then leaves by `?`,
+    /// `fail` and `return` as a fn declaring it does.
+    fn promised(answer: TypeId?) -> TypeId? {
+        let a? = answer else { return null }
+        if self.view.types.open(a) { null } else { a }
+    }
+
     /// Inside a lambda body — behind its barrier, no enclosing fn
     /// answers.
     fn behind_lambda() -> bool {
@@ -608,7 +626,7 @@ impl TypeCx {
     /// between: a lambda body answers itself, so `return`, `?`, and
     /// `fail` inside one see no enclosing fn at all.
     fn enclosing_ret() -> TypeId? {
-        if self.behind_lambda() { return null }
+        if self.behind_lambda() { return (self.lam_promise.last() ?? []).first() }
         self.fn_ret.last()
     }
 

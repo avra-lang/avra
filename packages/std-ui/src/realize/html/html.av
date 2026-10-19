@@ -8,51 +8,96 @@
 //! a URL arrives as a `Url`, which has no unsafe value. A control holds no
 //! content, so it sits under a `label` beside its words.
 use tree.node.{Node}
+use realize.html.tags.{HtmlAttr}
 use realize.html.element.{Element, lowered}
 use realize.html.writer.{HtmlOp, Head, document, page_source, source}
-use realize.html.css.{CssRule, distinct_rules, node_rules, page_sheet}
+use realize.html.css.{CssRule, CssVar, distinct_rules, page_sheet, rules_of}
 use style.theme.{Theme}
 use env.{Env}
 
 // ── the page ────────────────────────────────────────────────────
 
-/// One element as the writer's ops: opened, what it holds, closed.
-fn ops(e: Element) -> List<HtmlOp> {
+/// What a run of elements draws: the writer's ops, and the custom properties
+/// each element that writes any carries, in document order. An element's
+/// `data-v` is its place in that list, which the sheet's rule for it names.
+type Drawn = { ops: List<HtmlOp>, vars: List<List<CssVar>> }
+
+/// The elements as ops, the first of them standing after `before` that
+/// write custom properties.
+fn drawn_all(es: List<Element>, before: int) -> Drawn {
+    mut ops: List<HtmlOp> = []
+    mut vars: List<List<CssVar>> = []
+    for e in es {
+        let d = drawn_one(e, before + vars.length)
+        ops = ops.concat(d.ops)
+        vars = vars.concat(d.vars)
+    }
+    Drawn { ops: ops, vars: vars }
+}
+
+/// One element as ops: opened, what it holds, closed.
+fn drawn_one(e: Element, before: int) -> Drawn {
     match e {
-        .Text(run) -> [HtmlOp.Text(run.content)],
-        .Tag(el) -> [HtmlOp.Open(el.tag, el.attrs)]
-            .concat([op for k in el.kids for op in ops(k)])
-            .concat([HtmlOp.Close(el.tag)]),
+        .Text(run) -> Drawn { ops: [HtmlOp.Text(run.content)], vars: [] },
+        .Tag(el) -> {
+            let own: List<List<CssVar>> = if el.vars.is_empty() { [] } else { [el.vars] }
+            let kids = drawn_all(el.kids, before + own.length)
+            Drawn {
+                ops: [HtmlOp.Open(el.tag, el.attrs.concat(vars_attr(own, before)))]
+                    .concat(kids.ops)
+                    .concat([HtmlOp.Close(el.tag)]),
+                vars: own.concat(kids.vars),
+            }
+        },
     }
 }
 
-/// A tree as the writer's ops.
-fn drawn(root: Node) -> List<HtmlOp> { [op for e in lowered(root) for op in ops(e)] }
+/// The attribute that ties an element to its rule in the sheet, when it has one.
+fn vars_attr(own: List<List<CssVar>>, at: int) -> List<HtmlAttr> {
+    if own.is_empty() { [] } else { [HtmlAttr { name: .DataV, value: "${at}" }] }
+}
 
-/// Every rule a tree's nodes name, in walk order.
-fn rules_of(n: Node) -> List<CssRule> {
-    node_rules(n.prim, n.box).concat([r for c in n.children for r in rules_of(c)])
+/// A tree as the writer's ops and the custom properties it writes.
+fn drawn(root: Node) -> Drawn { drawn_all(lowered(root), 0) }
+
+/// The rule that writes one element's custom properties.
+fn vars_rule(at: int, vars: List<CssVar>) -> string {
+    let props = ["${v.property()}:${v.value}" for v in vars].join(";")
+    "[data-v=\"${at}\"]{${props}}"
+}
+
+/// A tree's sheet: the atomic rules and the theme, then the rule that writes
+/// each element's custom properties. The sheet is the one place a value
+/// lives, so no element carries a `style` attribute.
+fn sheet_of(root: Node, theme: Theme, alternates: List<Theme>, d: Drawn) -> string {
+    [page_sheet(distinct_rules(rules_of(root)), theme, alternates)]
+        .concat([vars_rule(i, vs) for i, vs in d.vars])
+        .join("\n")
 }
 
 /// The tree alone as HTML: no stylesheet, no document around it.
-export fn fragment(root: Node) -> string { source(drawn(root)) }
+export fn fragment(root: Node) -> string { source(drawn(root).ops) }
 
 /// The finished document for one tree: its one stylesheet, then its body.
 export fn render(root: Node, env: Env) -> string {
-    document(page_sheet(distinct_rules(rules_of(root)), env.theme, []), drawn(root))
+    let d = drawn(root)
+    document(sheet_of(root, env.theme, [], d), null, d.ops)
 }
 
 /// What a whole page says about itself. `alternates` are the themes the
 /// reader's own settings may choose over the environment's, each under
-/// the media query its mode names.
-export type Page = { title: string, env: Env = Env {}, alternates: List<Theme> = [] }
+/// the media query its mode names. A `nonce` marks the page's one `style`
+/// element, for a policy that allows styles by nonce alone.
+export type Page = { title: string, env: Env = Env {}, alternates: List<Theme> = [], nonce: string? = null }
 
 /// A complete document with no script: the page's head, its one
 /// stylesheet, then the tree.
 export fn page(p: Page, root: Node) -> string {
+    let d = drawn(root)
     page_source(
         Head { title: p.title, locale: p.env.locale, direction: p.env.direction },
-        page_sheet(distinct_rules(rules_of(root)), p.env.theme, p.alternates),
-        drawn(root),
+        sheet_of(root, p.env.theme, p.alternates, d),
+        p.nonce,
+        d.ops,
     )
 }

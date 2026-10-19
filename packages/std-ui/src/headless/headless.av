@@ -10,8 +10,8 @@ use @std.http_message.message.{Reply, Request}
 use @std.time.{Duration, ms, sleep}
 use tree.bindings.{live, meeting}
 use tree.chord.{parsed}
-use tree.controls.{Control}
-use tree.node.{EventKind, Said}
+use tree.controls.{Control, said_by_control}
+use tree.node.{Said}
 use tree.view.{View}
 
 extern fn avra_clock_virtual(on: int)
@@ -46,10 +46,10 @@ impl Screen {
         named[nth]
     }
 
-    /// The control named `name` speaks `kind`, saying `said`.
-    fn speak(name: string, nth: int, kind: EventKind, said: Said?) -> bool {
+    /// The control named `name` speaks, saying `said`.
+    fn speak(name: string, nth: int, said: Said?) -> bool {
         let c? = self.control(name, nth) else { return false }
-        self.painted(self.shown.app.turn_of(c.path, () -> c.says(kind, said)))
+        self.painted(self.shown.app.turn_of(c.path, () -> c.says(said)))
     }
 
     /// The user presses the control named `name`. False when no handler
@@ -62,14 +62,14 @@ impl Screen {
 
     /// The user gives the control named `name` its text — all of it, as a
     /// field says its own value.
-    fn fill(name: string, text: string, nth: int = 0) -> bool { self.speak(name, nth, .Input, Said.Text(text)) }
+    fn fill(name: string, text: string, nth: int = 0) -> bool { self.speak(name, nth, Said.Text(text)) }
 
     /// The user sets the control named `name` on or off.
-    fn check(name: string, on: bool, nth: int = 0) -> bool { self.speak(name, nth, .Change, Said.Flag(on)) }
+    fn check(name: string, on: bool, nth: int = 0) -> bool { self.speak(name, nth, Said.Flag(on)) }
 
     /// The user moves the control named `name` to `amount`.
     fn slide(name: string, amount: int, nth: int = 0) -> bool {
-        self.speak(name, nth, .Change, Said.Number(amount))
+        self.speak(name, nth, Said.Number(amount))
     }
 
     /// The user sends the form the control named `name` stands in, as a
@@ -84,7 +84,7 @@ impl Screen {
     /// is open, or the one that is hears no dismissal.
     fn dismiss() -> bool {
         let over? = self.shown.over() else { return false }
-        let action? = over.events.find(it.kind == EventKind.Dismiss) else { return false }
+        let action? = over.events.find(!said_by_control(it)) else { return false }
         self.painted(self.shown.app.turn(() -> action.fire(null)))
     }
 

@@ -9,14 +9,14 @@
 import { readFileSync } from "node:fs";
 import { createApplier } from "./bootstrap.js";
 import { SAYS } from "./wire.gen.js";
-import { stubDocument, stubElement } from "./stub_dom.js";
+import { dispatch, stubDocument, stubElement } from "./stub_dom.js";
 
 const unworded = (w) => (w === "-" ? "" : Buffer.from(w, "base64").toString("utf8"));
 const bytesOf = (w) => new Uint8Array(Buffer.from(w, "base64"));
 
 // What a stub node is made with: every other key is a property a patch or
 // a user wrote.
-const BUILT = new Set(Object.keys(stubElement("x")).concat(["__avra_id", "__avra_listeners", "showModal", "close"]));
+const BUILT = new Set(Object.keys(stubElement("x")).concat(["__avra_id", "showModal", "close"]));
 
 // The key a stub element keeps a property under: the model's own name,
 // but for one the stub is built with (`focus` is its verb), which is kept
@@ -54,15 +54,10 @@ function line(n) {
   const props = Object.keys(n).filter((k) => !BUILT.has(k) && n[k] !== "" && n[k] !== false)
     .map((k) => [nameOf(k), n[k]]).sort((a, b) => (a[0] < b[0] ? -1 : 1))
     .map(([name, value]) => ` .${name}=${propShown(value)}`).join("");
-  const ears = [...n.listeners.keys()].map((event) => [kindOf(n, event), event]).sort((a, b) => a[0] - b[0])
+  const vars = Object.keys(n.vars).sort().map((k) => ` ${k}=${quoted(n.vars[k])}`).join("");
+  const ears = page.apply.ears(n.__avra_id).map(([kind, ear]) => [kind, ear.event]).sort((a, b) => a[0] - b[0])
     .map(([kind, event]) => ` @${kind}:${event}`).join("");
-  return number + n.tagName + attrs + props + ears;
-}
-// The kind the host holds a listener for `event` under: -1 for one the
-// document still hears and the host has let go of.
-function kindOf(n, event) {
-  for (const [kind, held] of n.__avra_listeners || []) if (held.event === event) return kind;
-  return -1;
+  return number + n.tagName + attrs + props + vars + ears;
 }
 const lines = (n, indent) => n.childNodes.flatMap((c) => [indent + line(c), ...lines(c, indent + "  ")]);
 const told = (mount) => lines(mount, "").join("\n");
@@ -84,11 +79,11 @@ const echoText = ([who, kind, said]) => `${who} ${kind} ${said ? said.says : SAY
 // to the page, shuts the element.
 function spoken(page, id, event) {
   const el = find(page.mount, id);
-  const listener = el && el.listeners.get(event);
-  if (!listener) return { echo: `nothing on ${id} hears ${event}`, stopped: false };
+  const hears = page.apply.ears(id).some(([, ear]) => ear.event === event);
+  if (!el || !hears) return { echo: `nothing on ${id} hears ${event}`, stopped: false };
   page.sent.length = 0;
   let stopped = false;
-  listener({ preventDefault() { stopped = true; } });
+  dispatch(page.mount, el, event, { bubbles: false, preventDefault() { stopped = true; } });
   if (event === "cancel" && !stopped) el.close();
   return { echo: page.sent.map(echoText).join(" | "), stopped };
 }

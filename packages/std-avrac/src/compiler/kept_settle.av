@@ -482,10 +482,11 @@ impl Workspace {
     }
 
     /// A file's outline as a verdict keeps it: its declarations that are not named types (a
-    /// named type is keyed by its shape, in a `t` line) and its `use` lines.
+    /// named type is keyed by its shape, in a `t` line) and not reached by name alone (a verdict
+    /// stands on the fns and consts its run read, in its own lines) and its `use` lines.
     fn outline_values(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
-        let decls = [fp_str("${self.outline_syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind)]
+        let decls = [fp_str("${self.outline_syntax(d)}") for d in self.decls.decls_of_file(f) if outlined_value(self.decls.decl(d).kind) && !self.plain_free(d)]
         let uses = self.use_fps(f)
         "${fp(313, [fp_list(decls), fp_list(uses)])}"
     }
@@ -705,10 +706,10 @@ impl Workspace {
         [unmarked(b) for b in self.bound_of(path) if !narrow || !b.starts_with("*") || self.spelled_beside(path, unmarked(b), files)]
     }
 
-    /// Whether a declaration is a free fn nothing generated and no annotation touches.
+    /// Whether a declaration is a free fn or const nothing generated and no annotation touches.
     fn plain_free(d: DeclId) -> bool {
         let x = self.decls.decl(d)
-        x.kind is .Fn &&
+        reached_by_name(x.kind) &&
             x.owner.is_empty() &&
             x.maker.is_empty() &&
             x.enclosing.is_empty() &&
@@ -759,7 +760,7 @@ impl Workspace {
     /// body's own, and every `use` line.
     fn outline(path: string) -> string {
         let f? = self.decls.known_file_id(path) else { return "" }
-        let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined(self.decls.decl(d).kind)]
+        let decls = [fp_str("${self.syntax(d)}") for d in self.decls.decls_of_file(f) if outlined(self.decls.decl(d).kind) && !self.plain_free(d)]
         let uses = self.use_fps(f)
         "${fp(311, [fp_list(decls), fp_list(uses)])}"
     }

@@ -2708,12 +2708,52 @@ void avra_task_settle_all(void* list) {
     for (int64_t i = 0; i < a->len; i++) avra_task_settle((void*)(uintptr_t)a->data[i]);
 }
 
+// A handle to a running task is released. The scheduler holds one reference
+// of its own for as long as the task runs, so the last handle outside it is
+// the second: its release is where the task is joined (the owner's frame is
+// ending its life), and a copy's earlier release joins nothing.
+void avra_task_release(void* task) {
+    if (!task || task_cells(task)[GATE_OPEN]) return;
+    if (((const Header*)task - 1)->rc != 2) return;
+    avra_task_settle(task);
+}
+
+// The same for a list of tasks released by its last handle: each member is
+// its own owner, so each is joined.
+void avra_tasks_release(void* list) {
+    if (!list || ((const Header*)list - 1)->rc != 1) return;
+    avra_task_settle_all(list);
+}
+
 int64_t avra_task_done(void* task) {
     return task_cells(task)[GATE_OPEN];
 }
 
 int64_t avra_task_ended(void* task) {
     return task_cells(task)[TASK_END];
+}
+
+// How many fibers are parked on a task or a gate: the waiters filed on its
+// record. A fiber waiting on several sources counts once for each.
+int64_t avra_parked_on(void* on) {
+    int64_t n = 0;
+    for (const Waiter* w = (const Waiter*)(uintptr_t)task_cells(on)[GATE_HEAD]; w; w = w->next) n++;
+    return n;
+}
+
+__attribute__((noinline, cold, noreturn))
+static void fd_parked_bad_direction(void) {
+    avra_trap("a descriptor's waiters are read (0) or write (1)");
+}
+
+// How many fibers are parked on one direction of a descriptor: 0 reads,
+// 1 writes.
+int64_t avra_fd_parked(int64_t fd, int64_t dir) {
+    if (dir != 0 && dir != 1) fd_parked_bad_direction();
+    if (fd < 0 || (size_t)fd >= g_fds_cap) return 0;
+    int64_t n = 0;
+    for (const Waiter* w = g_fds[fd].head[dir]; w; w = w->next) n++;
+    return n;
 }
 
 // Who asked the cancel that ended the task, or the task's own id for an

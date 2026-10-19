@@ -248,6 +248,14 @@ type Machine = {
     named: fn(string) -> Lifted,
 }
 
+/// Whether the memory a door's answer costs the compiler is the run's.
+enum Billing {
+    /// the answer is the run's own data
+    Billed
+    /// the compiler's state, built to answer and kept
+    Unbilled
+}
+
 /// A place in the program: a body and the instruction in it.
 type Place = { body: Body, pc: int }
 
@@ -1100,7 +1108,7 @@ impl Machine {
     /// `embed`: the file a literal named, read by the settlement's own
     /// reader — and recorded, so the build knows what the const read.
     fn embedded(path: string, kind: EmbedKind) -> Val {
-        match (self.embed)(path, kind) {
+        match self.embed_door(path, kind) {
             .Ok(octets) -> {
                 self.embeds.push(path)
                 self.embedded_val(octets, kind)
@@ -1123,18 +1131,36 @@ impl Machine {
     /// into this run's values — the door every OTHER row reaches C
     /// through, reached here into the compiler instead.
     fn type_named_val(name: string) -> Val {
-        let r = self.named_unbilled(name)
+        let r = self.named_door(name)
         self.val_of(r.heap, r.answer)
     }
 
-    /// The workspace answers from where it stands, and what it builds to
-    /// answer (types, signatures) stays with the workspace: a run is billed
-    /// for what it makes, never for what the compiler made on its behalf.
-    fn named_unbilled(name: string) -> Lifted {
+    /// EVERY CALL OUT OF A RUN INTO THE COMPILER IS A `*_door` VERB, and a door
+    /// says whether the memory the compiler builds to answer is the run's. A run is
+    /// billed for what it makes, never for what the compiler made on its behalf, so
+    /// an `Unbilled` door moves the run's base past what the call left standing and
+    /// a `Billed` one (the answer IS the run's own data) leaves it. A new callback
+    /// is a new door verb or `compiler/tests/doors_test.av` refuses it.
+    fn named_door(name: string) -> Lifted {
         let before = avra_mem_live()
         let r = self.named(name)
-        self.mem_base = self.mem_base + (avra_mem_live() - before)
+        self.past_door(Billing.Unbilled, before)
         r
+    }
+
+    fn embed_door(path: string, kind: EmbedKind) -> Result<Bytes, string> {
+        let before = avra_mem_live()
+        let r = (self.embed)(path, kind)
+        self.past_door(Billing.Billed, before)
+        r
+    }
+
+    /// Where a door's call left the heap, from `before`.
+    fn past_door(billing: Billing, before: int) {
+        match billing {
+            .Billed -> nothing(),
+            .Unbilled -> { self.mem_base = self.mem_base + (avra_mem_live() - before) },
+        }
     }
 
     fn trapped(msg: string) {
@@ -1608,6 +1634,7 @@ impl Machine {
             .Strlen -> Val.I(self.byte_length(vals[0])),
             .ArrayPop -> self.array_pop_val(vals),
             .ArrayConcat -> self.consuming(row, vals, self.array_concat_val(vals)),
+            .ArrayExtend -> self.array_extend_val(vals),
             .ArraySlice -> self.consuming(row, vals, self.array_slice_val(vals)),
             .StrContains -> verdict(self.text_val(vals[0]).contains(self.text_val(vals[1]))),
             .StrStartsWith -> verdict(self.text_val(vals[0]).starts_with(self.text_val(vals[1]))),
@@ -2184,6 +2211,20 @@ impl Machine {
         let b: int? = array_id(vals[1])
         if a == null || b == null { return self.defect_val("a concat over a non-array") }
         self.shared_array(self.arrays[a!].concat(self.arrays[b!]))
+    }
+
+    /// `src`'s slots appended to `dst`, which the caller sized for them.
+    fn array_extend_val(vals: List<Val>) -> Val {
+        let d: int? = array_id(vals[0])
+        let s: int? = array_id(vals[1])
+        if d == null || s == null { return self.defect_val("an extend over a non-array") }
+        self.extended(d!, s!)
+    }
+
+    mut fn extended(d: int, s: int) -> Val {
+        if self.freed(d) { return self.read_freed() }
+        self.arrays[d] = self.arrays[d].concat(self.arrays[s])
+        Val.I(0)
     }
 
     /// The slots from lo up to hi, clamped — worded like the runtime's.

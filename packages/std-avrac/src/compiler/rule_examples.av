@@ -11,7 +11,8 @@
 //! second read of the declaration's own annotations.
 use core.{root_of, flatten, list_eq}
 use features.{Code, Fix, Fixes, Decl, Decls, Analysed}
-use compiler.{analyze_source, Analysis}
+use compiler.{analyze_source, Analysis, avra, new_workspace, one_shot_let_go}
+use compiler.host.{memory_host}
 use compiler.lower.{component_root_kind}
 use diagnostics.{spliced}
 
@@ -41,10 +42,30 @@ fn example_root(a: Analysis) -> Code? {
     a.code_at(root_of(a.view.store, s))
 }
 
+/// The example's program: a lone source, or — when it names files —
+/// the entry of the package those files complete, under a lawful
+/// manifest. One one-shot workspace is alive at a time, so the one
+/// before is let go.
+fn example_analysis(before: string, files: Map<string, string>) -> Analysis {
+    if files.is_empty() { return analyze_source(before) }
+    mut all = files
+    all.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n")
+    all.set("/w/src/main.av", before)
+    one_shot_let_go()
+    let ws = new_workspace(memory_host(all, all.keys()), "/w", avra())
+    ws.alone()
+    ws.analyze_file("/w/src/main.av")
+}
+
 /// Whether `rule`, applied to `before`, answers a rewrite whose
 /// rendered text — re-parsed — is span-blind equal to `after`.
-export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string) -> bool {
-    let root? = example_root(analyze_source(before)) else { return false }
+export fn checks_fixes(
+    applied: fn(Code) -> Fix?,
+    before: string,
+    after: string,
+    files: Map<string, string> = {},
+) -> bool {
+    let root? = example_root(example_analysis(before, files)) else { return false }
     let hit? = nearest_fix(applied, root) else { return false }
     let text? = hit.rendered() else { return false }
     same_fingerprint(text, after)
@@ -61,8 +82,8 @@ export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
 /// (`rule_delete.av`'s `delete_edits` — the SAME builder `avra fix`
 /// splices) leaves a file that still analyses clean. There is no
 /// rewritten form to fingerprint against, unlike `checks_fixes`.
-export fn checks_delete(applied: fn(Code) -> Fix?, before: string) -> bool {
-    let a = analyze_source(before)
+export fn checks_delete(applied: fn(Code) -> Fix?, before: string, files: Map<string, string> = {}) -> bool {
+    let a = example_analysis(before, files)
     let root? = example_root(a) else { return false }
     let hit? = nearest_fix(applied, root) else { return false }
     let what? = deleted(hit) else { return false }
@@ -74,7 +95,7 @@ export fn checks_delete(applied: fn(Code) -> Fix?, before: string) -> bool {
         return false
     }
     let after? = spliced(a.view.source.text, edits) else { return false }
-    analyze_source(after).clean()
+    example_analysis(after, files).clean()
 }
 
 fn same_fingerprint(rendered: string, after: string) -> bool {
@@ -132,7 +153,7 @@ fn named(r: RuleEntry, d: Decl) -> bool { r.name == d.name }
 /// rewrite, its absence a `Fix.Delete`.
 fn fixes_checked(applied: fn(Code) -> Fix?, f: Fixes) -> bool {
     match f.after {
-        after? -> checks_fixes(applied, f.before, after)
-        null -> checks_delete(applied, f.before)
+        after? -> checks_fixes(applied, f.before, after, f.files)
+        null -> checks_delete(applied, f.before, f.files)
     }
 }

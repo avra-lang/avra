@@ -67,6 +67,8 @@ MUTATIONS = [
     ("the shield overwrites a bit raised inside", "    if (--f->shield_depth == 0) *bit |= f->shield_saved;\n", "    if (--f->shield_depth == 0) *bit = f->shield_saved;\n"),
     ("the shield restores on every bracket", "    if (f->shield_depth == 0) return;\n    if (--f->shield_depth == 0) *bit |= f->shield_saved;", "    if (f->shield_depth == 0) return;\n    f->shield_depth--;\n    *bit = f->shield_saved;"),
     ("the evaluator's set does not raise the bit", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { virtual_at(t)->unwinding = v != 0; }", "void avra_vtask_set_unwinding(int64_t t, int64_t v) { (void)t; (void)v; }"),
+    ("a task handle that is not the last joins the task", "    if (((const Header*)task - 1)->rc != 2) return;\n", ""),
+    ("a list that is not released by its last handle joins its members", "    if (!list || ((const Header*)list - 1)->rc != 1) return;\n", "    if (!list) return;\n"),
     ("the shield's enter is its leave", "void avra_fiber_shield_enter(void) { shield_entered(g_current, &avra_unwinding); }", "void avra_fiber_shield_enter(void) { shield_left(g_current, &avra_unwinding); }"),
     ("a join answers a cancelled task", "        cancel_met();\n        return NULL;\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];", "        cancel_met();\n    }\n    void* answer = (void*)(uintptr_t)cells[TASK_ANSWER];"),
     ("an unwinding caller's join is handed an answer, or another's request", "    if (avra_unwinding) return NULL;\n    if (cells[TASK_END] == END_CANCELLED) {", "    if (cells[TASK_END] == END_CANCELLED) {"),
@@ -300,6 +302,9 @@ MUTATIONS = [
     ("a cancelled end names itself", "    cells[TASK_BY] = avra_unwinding ? asker_of(self) : id_of(self);\n", "    cells[TASK_BY] = id_of(self);\n"),
     ("a task's end records no asker", "    cells[TASK_END] = how;\n    cells[TASK_BY] = by;\n", "    cells[TASK_END] = how;\n"),
     ("the ended-by row answers the end, not the asker", "    return task_cells(task)[TASK_BY];\n}", "    return task_cells(task)[TASK_END];\n}"),
+    ("the parked-on row counts no waiter", "    for (const Waiter* w = (const Waiter*)(uintptr_t)task_cells(on)[GATE_HEAD]; w; w = w->next) n++;", "    (void)on;"),
+    ("the fd-parked row counts the wrong side", "    for (const Waiter* w = g_fds[fd].head[dir]; w; w = w->next) n++;", "    for (const Waiter* w = g_fds[fd].head[1 - dir]; w; w = w->next) n++;"),
+    ("the fd-parked row takes any direction", "    if (dir != 0 && dir != 1) fd_parked_bad_direction();\n", ""),
     ("the ended-by row answers no asker", "int64_t avra_task_ended_by(void* task) {\n    return task_cells(task)[TASK_BY];\n}", "int64_t avra_task_ended_by(void* task) {\n    (void)task;\n    return 0;\n}"),
     ("a virtual claim names whoever the host runs", "    return gate_claimed(gate, id_of(virtual_at(t)));", "    return gate_claimed(gate, id_of(g_current));"),
     ("a virtual task's end is not traced", "    if (TRACING) traced_fiber(\"end\", virtual_at(t), 0);\n", ""),
@@ -397,7 +402,7 @@ HOST_MUTATIONS = [
     ("a cold arm never records the pid", "    g_owner = this_pid();\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);", "    g_owner = 0;\n    __atomic_store_n(&g_parked, 0, __ATOMIC_RELAXED);"),
     ("the pid read is never counted", "    pid_t pid = getpid();\n    __atomic_add_fetch(&g_pid_reads, 1, __ATOMIC_RELAXED);\n    return pid;", "    return getpid();"),
 ]
-TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test", "sig_test"]
+TESTS = ["flow_test", "case_test", "verdict_test", "tasks_door_test", "clock_test", "seed_test", "cores_test", "vtask_test", "fiber_test", "fiber_adversarial_test", "tick_test", "sig_test", "task_release_test"]
 BOUND = 60
 # A BREAK LIVES INSIDE ITS OWN TEST. A mutation that makes the scheduler
 # spawn threads or processes without bound would otherwise exhaust the

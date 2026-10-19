@@ -7,10 +7,11 @@
 use realize.dom.patch.{Says, Heard, Held}
 use realize.html.element.{Element, Tagged}
 use realize.html.tags.{HtmlAttr, HtmlAttrName}
-use tree.node.{Action, EventKind, Handler}
+use realize.tests.support.{kind_at, Event}
+use tree.node.{Action, Handler}
 
 /// The page's word for each event. Every kind spelled.
-fn page_word(k: EventKind) -> string {
+fn page_word(k: Event) -> string {
     match k {
         .Press -> "click",
         .Input -> "input",
@@ -21,13 +22,13 @@ fn page_word(k: EventKind) -> string {
 }
 
 /// Whether the page's own answer to an event is stopped. Every kind spelled.
-fn stops(k: EventKind) -> bool {
+fn stops(k: Event) -> bool {
     match k { .Submit -> true, .Press or .Input or .Change or .Dismiss -> false }
 }
 
 /// Whether the page's own answer to an event shuts the element's door: a
 /// dialog sent away is closed before the program hears. Every kind spelled.
-fn shuts(k: EventKind) -> bool {
+fn shuts(k: Event) -> bool {
     match k { .Dismiss -> true, .Press or .Input or .Change or .Submit -> false }
 }
 
@@ -46,11 +47,11 @@ fn read_of(s: Says) -> string {
 fn ear_of(a: Action) -> Ear {
     let says = voice(a.handler)
     Ear {
-        kind: a.kind.code(),
-        event: page_word(a.kind),
+        kind: a.seat.number(),
+        event: page_word(kind_at(a.seat)),
         says: says.code(),
         reads: read_of(says),
-        prevents: stops(a.kind),
+        prevents: stops(kind_at(a.seat)),
     }
 }
 
@@ -92,6 +93,7 @@ export fn seen_of(e: Element) -> Seen {
                 [Pair { name: a.name.word(), value: a.value } for a in el.attrs if !is_property(a)],
             ),
             props: props_of(el.attrs),
+            vars: [Pair { name: v.property(), value: v.value } for v in el.vars],
             ears: [ear_of(a) for a in el.hears],
             kids: [seen_of(k) for k in el.kids],
         },

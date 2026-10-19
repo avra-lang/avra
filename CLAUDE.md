@@ -1157,16 +1157,19 @@ registry is the idiom engine's spec, written by dogfooding.
   the only word spoken was the TYPER's about the seat (F2075, "a hole
   takes what its seat takes"), which names neither the mistake nor
   its exits; it is F2085 now, homed at the hole, and it carries both.
-  THE FIX IS IN THE GENERATOR, NOT THE TEMPLATE: fold the list where
-  the derive runs, one hole per element (`[a].concat([b])`), so the
-  generated literal's length is fixed per type — which is also what
-  the ARITY law wants, so the two laws agree on one shape. Not listed
-  under "the subset today" because it SPEAKS, which is the whole
-  point of the change. And the hole vocabulary is wider than it
-  looks: an INT hole is native in both positions (`int_node` in an
-  expression, `int_name` in a name), so `${tag()}` needs no
-  hand-rolled `name("${v}")` — a second instrument for a question the
-  compiler already answers.
+  THE RUN HAS ITS OWN SEATS, which is the whole answer: a call's
+  arguments, a list's elements and a variant's payload take `..${xs}`
+  (or `${..xs}`) with a `List<Code>`; a record literal takes its fields
+  as `${t} { ..${inits} }` at any width, so no derive folds a list per
+  arity; and a block's LAST hole (`fn f() { ${steps} }`) takes a
+  `List<Stmts>` — statements joining the block, an expression its
+  value. Not listed under "the subset today" because each SPEAKS.
+  And the hole vocabulary is wider than it looks: an INT hole is
+  native in every seat — `int_node` in an expression, a block's end or
+  an arm's pattern (a LITERAL pattern: the arm tests for the number),
+  `int_name` in a name — so `${tag()}` needs no hand-rolled
+  `name("${v}")`, and an expression-only `quote { o.int(x) }` answers
+  `Stmts` where its seat wants statements.
 - A BOUNDARY CHECK MAKES A MOVED SHAPE UNMOVABLE IN ONE GENERATION,
   AND GROWTH IS NOT A MOVED SHAPE. `features/crossing.av` holds
   `@std/meta`'s shapes as rows the compiler was built against; a
@@ -1747,7 +1750,29 @@ Syntax the grammar lacks:
   while parsing `stmt`" AT the `++`, and that is the WHOLE refusal —
   the fn draws no type complaint of its own, and typing is not
   suppressed here (a sibling fn's error reports in the same run).
-  `xs.concat(ys)` is the spelling.
+  `xs.concat(ys)` is a spelling, and `[..xs, ..ys]` is the other
+  (one box, sized once).
+- A SPREAD'S REFUSALS ARE LAWS, not pending sugar (`..` is one spelling in
+  a record literal, a list, a map, a variadic seat, a call's named seats and
+  a pattern; probed, both engines):
+  - A RECORD SPREADS ONLY UNDER ITS TYPE'S NAME: `{ ..a, x: 3 }` is a MAP
+    literal — `type.spread_map` "`..` in a map spreads a map, found `P`";
+    the record is `P { ..a, x: 3 }`.
+  - `P { x, ..rest }` (binding the remainder) is F0100 "expected `}` to
+    close the `match`" at `..rest`: a record pattern's `..` discards, and
+    `P { x, .. }` is the spelling.
+  - A LIST SPREADS ONLY INTO ITS OWN ELEMENT TYPE: `let c: List<int?> = [null,
+    ..xs]` is `type.list_element` "the first is `List<int?>`, this is
+    `List<int>`" — lists do not widen element-wise.
+  - `f(..xs)` INTO FIXED SEATS is `type.spread_seat` "`..` spreads into a
+    seat that takes the rest of the arguments, and `g` declares none" — a
+    list's length is a run-time fact, a seat a compile-time one; declare
+    `..rest: List<T>`. A RECORD spread fills named seats by field name
+    (`f(..opts)`), plain seats only: a `mut`, `state`, `const` or `isolated`
+    seat is `type.spread_seat` too.
+  - `is` OVER A LIST OR RECORD PATTERN BINDS ONLY UNDER `if`
+    (`type.is_bind`), and a refutable destructuring `let` needs its `else`
+    (`type.let_pattern`): `let [first, ..] = xs else { return … }`.
 - `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
   > 0)` compiles — which retires the double negative `![…].any(!it)`.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA

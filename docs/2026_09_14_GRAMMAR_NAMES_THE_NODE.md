@@ -335,6 +335,30 @@ Riding the NEW variant costs nobody: only a rule that names a node
 carries slots, and only a feature that STATES a payload imports
 `Fixed` (today, `bool_lit` alone).
 
+### 5.1 A stated payload is a term
+
+`build_arg = NAME ( "=" term )?` and `term = build | NUMBER | STRING | "[" ( term ( "," term )* ","? )? "]"`.
+A stated payload is a word or literal, a node built in place
+(`Owner.Variant(args)`), or a list of terms. A word that names a capture reads
+as that capture, so `inner = e` fills `inner` from the capture labelled `e`.
+
+```avra
+primary = "spawn" e:expression -> Expr.Spawn(body = Expr.Lambda(body = e))
+```
+
+`Slot` gains `Nested(build)` and `Items(slots)`; binding fills every nested
+build against the declarations, by the labels of the branch that holds it, and
+the engine builds the inner node first and hands it to the outer builder as
+that payload. The arity law holds inside. A nested node must build the kind of
+value its payload holds (`Expr` answers `ExprId`, `Pat` `PatId`, `Stmt`
+`StmtId`, a `Record` row its record, any other enum itself), and no node fills a
+text payload — both refused where the grammar is assembled.
+
+A nested node's type must have a payload row, and one that is built at the
+top of a production must also have a `LangNode` carrier. Carriers are
+hand-listed in `features/node_scaffold.av`; deriving one from a type's own
+`@derive(Grammar)` is recorded as the follow-up.
+
 ## 6. The three refusals, at the assembly
 
 They live where the resolution does, in first.av's voice — a NAMED

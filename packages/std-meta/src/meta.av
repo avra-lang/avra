@@ -89,6 +89,10 @@ export enum Kind {
 /// demands the caller settle its value at compile time.
 export type Seat = { kind: Kind, mutable: bool, settled: bool }
 
+/// What a seat promises, ONE value wherever a seat is written: `mutable` lets
+/// the callee write through it, `settled` demands the caller settle its value.
+export type SeatMark = { mutable: bool = false, settled: bool = false }
+
 impl Kind {
     /// The words the compiler spells this shape with — exactly what
     /// the string seat beside it carries.
@@ -161,7 +165,11 @@ export type Fn = { name: string, params: List<Param>, answer: string, at: Loc?, 
 /// words its `derive` reads, and a mark no reader on the declaration
 /// claims is refused where it was written — so a misspelled mark
 /// cannot sit there doing nothing.
-export type Mark = { name: string, args: List<string>, at: Loc? }
+export type Mark = { name: string, args: List<string>, at: Loc?, named: List<MarkArg> = [] }
+
+/// An argument a mark names — `web: .Click` is `{ label: "web", value: "Click" }`.
+/// A mark's `args` hold its positional arguments only.
+export type MarkArg = { label: string, value: string }
 
 /// `@name(args)` as a DECLARATION's own annotation, never a member's
 /// mark — `Mark`'s twin at the `Fn`/`Type` level: the call's name,
@@ -193,16 +201,48 @@ export type Site = int
 /// compiler found in the closure's body, fixed for the literal's life).
 export type Cells = List<ptr>
 
+/// THE STATE CELLS A PAGE READS AT PAINT TIME that no text says again: a label,
+/// a conditional, a loop, a helper's read. A field of this type that a record
+/// literal leaves unset holds the cells of the frame the literal stands in; a
+/// write to one of them takes the full paint.
+export type Structural = List<ptr>
+
+/// WHETHER A SUBTREE CANNOT BE PLACED: a read of a place no cell can be handed
+/// over for here. A field of this type that a record literal leaves unset
+/// holds whether the frame it stands in has such a read; a page that holds one
+/// is always painted whole.
+export type Opaque = bool
+
+/// THE WORDS A COMPONENT SAYS AGAIN: a closure over its head's text that
+/// recomputes it from the state as it stands. The instance's builder fills a
+/// field of this type with a closure over a copy of the head, so the compiler
+/// knows which field holds it by its type.
+export type Words = fn() -> string
+
+/// A written type, whole: its name, the module declaring that name as `use`
+/// spells it (absent for a builtin or a name nothing declares), its arguments,
+/// and the seat mark it was written with, as a fn type's parameter.
+export type Spelled = {
+    name: string,
+    module: string?,
+    args: List<Spelled> = [],
+    optional: bool = false,
+    dynamic: bool = false,
+    arrow: bool = false,
+    alternatives: List<Spelled> = [],
+    mark: SeatMark = SeatMark {},
+}
+
 /// A record's field: its name, its type's spelling, its shape, and
 /// the marks written before it. `doc`/`annotations` read as `Fn`'s.
 /// `defaulted` says it declares a default a literal may leave out.
 /// `default` is that default's own expression, absent when it declares
 /// none — a rule may omit the field's label and the default fills it.
-/// `state` says it is a place its record holds.
+/// `state` says it is a place its record holds. `spelled` is `ty` whole.
 /// `says` makes the field an EVENT its component declares (`on
 /// input(text: string)`): the seats its handler is told, none for an
 /// event that says nothing — and absent on a field that is no event.
-export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false, says: List<Param>? = null, state: bool = false, default: Code? = null }
+export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [], doc: string? = null, annotations: List<Annotation> = [], defaulted: bool = false, says: List<Param>? = null, state: bool = false, default: Code? = null, spelled: Spelled? = null }
 
 /// An enum's variant: its name, its payload's spellings, and the
 /// payload as FIELDS — each carrying the name a grammar rule's

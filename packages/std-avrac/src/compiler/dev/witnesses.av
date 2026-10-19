@@ -17,7 +17,7 @@
 //! fired.
 use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
-use compiler.{avra, new_workspace, one_shot_let_go}
+use compiler.{avra, new_workspace, one_shot_let_go, Want}
 use compiler.host.{memory_host}
 use testing.{
     vendored_meta,
@@ -69,17 +69,13 @@ impl Witness {
 /// One code's witness, as the registry spells it.
 export type CodeWitness = { code: string, witness: Witness }
 
-/// A package witness BUILT: what the program there says, then what
-/// lowering says of it.
+/// A package witness BUILT: derived through the door `avra build` takes, so it
+/// says what a build says — the refusal, or the warnings of a program that lowers.
 fn built_report(files: Map<string, string>) -> string {
     one_shot_let_go()
     let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
     ws.alone()
-    let p = ws.program("/w/src/main.av")
-    joined(
-        [r for r in [p.report(), p.rendered(p.lowered().diagnostics), p.warnings()] if !r.is_empty()],
-        "\n\n",
-    )
+    match ws.derived("/w/src/main.av", Want.Binary) { .Err(report) -> report, .Ok(d) -> d.warnings }
 }
 
 /// One code's witness, run: what the compiler actually said, and
@@ -743,12 +739,368 @@ fn witnesses() -> List<CodeWitness> {
             witness: manifest(app_manifest + "\n[package]\nname = \"other\"\n"),
         },
         CodeWitness {
+            code: "manifest.bad_profile",
+            witness: manifest(app_manifest + "\n[profile.Bad]\nopt_level = 2\n"),
+        },
+        CodeWitness {
+            code: "manifest.tool_env_var",
+            witness: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"env\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.tool_abs_at",
+            witness: manifest(app_manifest + "\n[process.tools]\ncc = { from = \"abs\" }\n"),
+        },
+        CodeWitness {
+            code: "manifest.unknown_process_key",
+            witness: manifest(
+                app_manifest + "\n[process.tools]\ngit = { from = \"path\", frobnicate = 1 }\n",
+            ),
+        },
+        CodeWitness {
+            code: "manifest.no_target",
+            witness: Witness
+                .Beyond("it is what `avra run` says of a package with no entry, which a check never asks"),
+        },
+        CodeWitness {
+            code: "manifest.name_mismatch",
+            witness: dependency_package(["y"], {"/w/vendor/y/avra.toml": package_toml("z", "")}),
+        },
+        CodeWitness {
+            code: "manifest.cycle",
+            witness: dependency_package(
+                ["y"],
+                {
+                    "/w/vendor/y/avra.toml": package_toml("y", "\n[dependencies]\n\"@x/root\" = { path = \"../..\" }\n"),
+                },
+            ),
+        },
+        CodeWitness {
+            code: "manifest.duplicate_package",
+            witness: dependency_package(
+                ["y", "w"],
+                {
+                    "/w/vendor/y/avra.toml": package_toml("y", ""),
+                    "/w/vendor/w/avra.toml": package_toml("w", "\n[dependencies]\n\"@x/y\" = { path = \"../other\" }\n"),
+                    "/w/vendor/other/avra.toml": package_toml("y", ""),
+                },
+            ),
+        },
+        CodeWitness {
+            code: "manifest.prelude_floor",
+            witness: dependency_package(
+                ["prelude"],
+                {
+                    "/w/vendor/prelude/avra.toml": package_toml(
+                        "prelude",
+                        "\n[dependencies]\n\"@x/y\" = { path = \"../y\" }\n",
+                        "@std",
+                    ),
+                },
+            ),
+        },
+        CodeWitness {
             code: "manifest.unset_link_variable",
             witness: manifest(app_manifest + "\n[link]\nsearch = [\"\${NOPE_VAR}/lib\"]\n"),
         },
         CodeWitness {
             code: "manifest.bad_tool_from",
             witness: manifest(app_manifest + "\n[process.tools]\ngit = { from = \"nowhere\" }\n"),
+        },
+        CodeWitness {
+            code: "resolve.kept_apart",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use util.{g}\ng()\n",
+                        "/w/src/util/a.av": private_h_one,
+                        "/w/src/util/b.av": private_h_two,
+                        "/w/src/util/c.av": "export fn g() -> int { h() }\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.private_apart",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "1\n",
+                        "/w/src/util/a.av": private_h_one,
+                        "/w/src/util/b.av": private_h_two,
+                        "/w/src/util/tests/u_test.av": "use util.{h}\nspec \"u\" {\n    given \"g\" {\n        then \"t\" { h() == 1 }\n    }\n}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_twice",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use facade.{f}\nf()\n",
+                        "/w/src/util/u.av": util_fn,
+                        "/w/src/other/o.av": other_fn,
+                        "/w/src/facade/f.av": "export use util.{f}\nexport use other.{f}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_unreached",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use a.{x}\nx\n",
+                        "/w/src/a.av": "export use b.{x}\n",
+                        "/w/src/b.av": "export use a.{x}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.block_word",
+            witness: with_provider(
+                "use @x.c.{work}\nlet work = 1\n0\n",
+                "export component work {\n    each: int\n}\n",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.callee",
+            witness: Witness.Source("const tag: int = 1\n@tag\nfn g() -> int { 1 }\ng()"),
+        },
+        CodeWitness {
+            code: "annotation.seats",
+            witness: meta_program(
+                "use @std.meta.{Fn}\nfn tag(f: Fn, n: int) { }\n@tag\nfn g() -> int { 1 }\ng()",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.answer",
+            witness: meta_program(
+                "use @std.meta.{Fn}\nfn tag(f: Fn) -> int { 1 }\n@tag\nfn g() -> int { 1 }\ng()",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.derive",
+            witness: meta_program(
+                "use @std.meta.{derive}\ntype X = { a: int }\n@derive(X)\ntype T = { x: int }\n0",
+            ),
+        },
+        CodeWitness {
+            code: "annotation.generated_taken",
+            witness: Witness.Beyond(meta_probes_golden),
+        },
+        CodeWitness { code: "annotation.wrap_missing", witness: Witness.Beyond(meta_probes_golden) },
+        CodeWitness {
+            code: "annotation.wrap_bodiless",
+            witness: Witness.Beyond(meta_probes_golden),
+        },
+        CodeWitness {
+            code: "annotation.wrap_mismatch",
+            witness: Witness.Beyond(meta_probes_golden),
+        },
+        CodeWitness {
+            code: "type.orphan",
+            witness: Witness.Source("impl int {\n    fn double() -> int { 2 }\n}\n1"),
+        },
+        CodeWitness {
+            code: "type.builtin_name",
+            witness: Witness
+                .Source(
+                    "trait Sz {\n    fn length() -> int\n}\nimpl Sz for string {\n    fn length() -> int { 0 }\n}\n1",
+                ),
+        },
+        CodeWitness {
+            code: "type.trait_member",
+            witness: Witness.Source("trait T {\n    fn a() -> int\n    fn a() -> int\n}\n1"),
+        },
+        CodeWitness {
+            code: "type.static_fn",
+            witness: Witness.Source("static fn f() -> int { 1 }\nf()"),
+        },
+        CodeWitness {
+            code: "type.contract_write",
+            witness: Witness
+                .Source(
+                    "trait T {\n    fn a() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    mut fn a() -> int {\n        self.x = 1\n        1\n    }\n}\n1",
+                ),
+        },
+        CodeWitness {
+            code: "type.state_seat",
+            witness: Witness
+                .Source("type P = { x: int }\nimpl P {\n    fn f(state n: int) -> int { n }\n}\n1"),
+        },
+        CodeWitness { code: "type.spread", witness: Witness.Source("type P = { ..P, a: int }\n1") },
+        CodeWitness {
+            code: "type.alias",
+            witness: Witness.Source("alias Box<T> = List<T>\nlet x: Box<void> = []\n1"),
+        },
+        CodeWitness {
+            code: "type.tparam",
+            witness: Witness.Source("fn f<T, T>(x: T) -> T { x }\n1"),
+        },
+        CodeWitness {
+            code: "type.struct_targs",
+            witness: Witness.Source("type G<T> = { v: T }\nlet g = G<int, string> { v: 1 }\n1"),
+        },
+        CodeWitness {
+            code: "type.format",
+            witness: Witness.Source("match 5 { \"{a}b\" -> 1\n    _ -> 0 }"),
+        },
+        CodeWitness {
+            code: "type.format_shape",
+            witness: Witness.Source("match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }"),
+        },
+        CodeWitness {
+            code: "type.format_repeat",
+            witness: Witness.Source("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }"),
+        },
+        CodeWitness {
+            code: "type.format_parse",
+            witness: Witness.Source("match \"x\" { \"{n: float}z\" -> 1\n    _ -> 0 }"),
+        },
+        CodeWitness {
+            code: "type.const_seat",
+            witness: Witness
+                .Source("const N: int = 1\nfn take(const n: int) -> int {\n    n\n}\ntake(N + 1)"),
+        },
+        CodeWitness {
+            code: "type.not_offered",
+            witness: Witness
+                .Source(
+                    "type Offer = { req: string, db: int }\nfn handle(f: fn(Offer) -> string) -> string {\n    f(Offer { req: \"GET /\", db: 7 })\n}\nhandle { db, reqq -> \"x\" }",
+                ),
+        },
+        CodeWitness {
+            code: "type.narrow",
+            witness: Witness.Source("match 5 {\n    c: int -> 1\n    _ -> 0\n}"),
+        },
+        CodeWitness {
+            code: "type.is_bind",
+            witness: Witness.Source("enum E {\n    a(int)\n}\nlet r = E.a(1) is .a(x)\n1"),
+        },
+        CodeWitness {
+            code: "type.pattern",
+            witness: Witness
+                .Source("enum E {\n    a(int)\n}\nmatch E.a(1) {\n    .a(.x) -> 1\n    _ -> 0\n}"),
+        },
+        CodeWitness {
+            code: "type.enum_all",
+            witness: Witness.Source("enum K {\n    A\n    B(int)\n}\nK.all()"),
+        },
+        CodeWitness {
+            code: "type.infer_result",
+            witness: Witness.Source("fn f() -> Result<int, _> {\n    .Ok(1)\n}\n1"),
+        },
+        CodeWitness {
+            code: "type.defer",
+            witness: Witness.Source("fn f() -> Result<int, string> {\n    .Ok(1)\n}\ndefer f()\n1"),
+        },
+        CodeWitness { code: "type.errdefer", witness: Witness.Source("errdefer println(\"x\")\n1") },
+        CodeWitness {
+            code: "flow.yield",
+            witness: Witness.Source("fn f() -> int {\n    yield 1\n    1\n}\n0"),
+        },
+        CodeWitness { code: "const.cycle", witness: Witness.Source("const a = a\n0") },
+        CodeWitness {
+            code: "type.embed_place",
+            witness: with_meta("use @std.meta.{embed}\nconst s: string = embed(\"../../x.txt\")\n0"),
+        },
+        CodeWitness {
+            code: "type.embed_file",
+            witness: with_meta("use @std.meta.{embed}\nconst s: string = embed(\"nothere.txt\")\n0"),
+        },
+        CodeWitness {
+            code: "type.embed_literal",
+            witness: with_meta(
+                "use @std.meta.{embed}\nconst p: string = \"a.txt\"\nconst s: string = embed(p)\n0",
+            ),
+        },
+        CodeWitness {
+            code: "type.code_hash_named",
+            witness: with_meta("use @std.meta.{code_hash}\nlet h = code_hash(1)\n0"),
+        },
+        CodeWitness {
+            code: "type.host_fn",
+            witness: Witness.Source("extern fn avra_bool_text(b: bool) -> string { \"x\" }\n0"),
+        },
+        CodeWitness {
+            code: "type.host_seat",
+            witness: Witness.Source("extern fn c_count(mut out: string) -> int\nmut s = \"\"\nc_count(s)"),
+        },
+        CodeWitness {
+            code: "type.row_shape",
+            witness: Witness.Source("extern fn avra_array_new(x: int) -> ptr\n0"),
+        },
+        CodeWitness {
+            code: "type.host_absence",
+            witness: Witness.Source("extern fn avra_str_len(s: string?) -> int\n0"),
+        },
+        CodeWitness {
+            code: "type.isolated",
+            witness: Witness
+                .Source(
+                    "fn run(isolated make: fn() -> int) -> int { make() }\nlet c = Cell.new(1)\nrun(() -> c.get())",
+                ),
+        },
+        CodeWitness {
+            code: "type.component_check",
+            witness: with_meta(
+                "use @std.meta.{Diagnostic}\ncomponent box {\n    a: int\n    fn check() -> int { 1 }\n}\n0",
+            ),
+        },
+        CodeWitness {
+            code: "type.within",
+            witness: with_time("use @std.time.{ms}\nlet r = within ms(100) {\n    let a = 1\n}\n0"),
+        },
+        CodeWitness {
+            code: "build.failed",
+            witness: Witness.Source("component tally {\n    n: int\n}\ntally Span { n: 2 } { n: 3 }\n0"),
+        },
+        CodeWitness {
+            code: "block.parse",
+            witness: provided_program(
+                "use @x.c.{sql, Select}\nlet q: Select = sql { garbage }\n0",
+                sql_provider,
+            ),
+        },
+        CodeWitness {
+            code: "type.syntax_action",
+            witness: Witness
+                .Source(
+                    "fn f(c: string) -> string { c }\ngrammar bad {\n    select = \"A\" x:nothing -> f(x)\n}\n0",
+                ),
+        },
+        CodeWitness {
+            code: "type.component_format",
+            witness: with_meta(
+                "use @std.meta.{Code}\ntype Format = { n: int }\ncomponent loose(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.body} }\n    }\n}\n0",
+            ),
+        },
+        CodeWitness {
+            code: "language.defect",
+            witness: Witness
+                .Beyond(
+                    "it is the compiler blaming its own grammar or builders, which no program can cause",
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_cycle",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use @std.low.{g}\ng()\n",
+                        "/std/std-low/avra.toml": "[package]\nname = \"@std/low\"\nversion = \"0.1.0\"\n",
+                        "/std/std-low/src/low.av": "export fn g() -> int {\n    1\n}\nexport use @std.high.{h}\n",
+                        "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
+                        "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "type.cell_map",
+            witness: Witness.Source("let c = Cell.new(1)\nc.put(\"k\", 1)\n1"),
         },
         CodeWitness {
             code: "collect.kind",
@@ -1009,7 +1361,7 @@ fn witnesses() -> List<CodeWitness> {
                 {
                     "/w/src/main.av": "use util.{f}\nf()\n",
                     "/w/src/util/a.av": util_fn,
-                    "/w/src/util/b.av": "export fn f() -> int { 2 }\n",
+                    "/w/src/util/b.av": other_fn,
                 },
             ),
         },
@@ -1119,6 +1471,12 @@ fn witnesses() -> List<CodeWitness> {
 /// The one module body a module witness imports from.
 const util_fn: string = "export fn f() -> int { 1 }\n"
 
+const other_fn: string = "export fn f() -> int { 2 }\n"
+
+const private_h_one: string = "fn h() -> int { 1 }\n"
+
+const private_h_two: string = "fn h() -> int { 2 }\n"
+
 /// A program with `@std/meta` beside it, built — and the modules beside its entry.
 fn meta_program(main: string, modules: Map<string, string> = {}) -> Witness {
     mut files = {
@@ -1145,6 +1503,9 @@ fn provided_files(main: string, provider: string, meta: string) -> Map<string, s
         meta,
     )
 }
+
+/// The sublanguage provider the block witnesses stand on: a `sql` grammar over a record.
+const sql_provider: string = "export type Select = { cols: List<string>, relation: string, cond: Where? }\nexport type Where = { col: string, value: int }\nexport fn query(cols: List<string>, relation: string, cond: Where?) -> Select { Select { cols: cols, relation: relation, cond: cond } }\nexport fn eq(col: string, value: int) -> Where { Where { col: col, value: value } }\nexport grammar sql {\n    select = \"SELECT\" c:NAME ( \",\" c:NAME )* \"FROM\" t:NAME ( \"WHERE\" w:where )? -> query(c, t, w)\n    where = c:NAME \"=\" v:NAME -> eq(c, v)\n}\n"
 
 /// The annotation fns the annotation witnesses stand on.
 const annotators: string = "use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}\nexport fn plain(f: Fn) -> List<Diagnostic> {\n    [refuse(\"`\${f.name}` is plain\")]\n}\nexport fn badkind(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"not a word\", \"a refusal under a bad kind\")]\n}\nexport trait Traps {\n    static fn derive(t: Type) -> Declared {\n        let none: List<Directive> = []\n        Declared { made: [none[3]] }\n    }\n}\nexport trait Fields {\n    static fn derive(t: Type) -> List<Directive> {\n        let rows: List<Decls> = [quote { enum E { A } }]\n        [Directive { twin: \"\", name: \"gen\", at: t.at, source: quote { fn gen(..\${rows}) {} } }]\n    }\n}\n"
@@ -1255,6 +1616,30 @@ export fn manifest(toml: string) -> Witness {
     Witness.Package({"/w/avra.toml": toml, "/w/src/main.av": "1\n"})
 }
 
+/// A vendored package's manifest.
+fn package_toml(name: string, rows: string, scope: string = "@x") -> string {
+    "[package]\nname = \"${scope}/${name}\"\nversion = \"1.0.0\"\n${rows}"
+}
+
+/// A package that depends on each `vendored` name under `vendor/`, beside the vendored
+/// manifests in `more` — what a dependency's own manifest refuses is a property of the graph.
+fn dependency_package(vendored: List<string>, more: Map<string, string>) -> Witness {
+    mut files: Map<string, string> = {
+        "/w/avra.toml": package_toml("root", "\n[dependencies]\n${rows_of(vendored)}"),
+        "/w/src/main.av": "1\n",
+    }
+    for path, text in more { files.set(path, text) }
+    Witness.Package(files)
+}
+
+/// One `[dependencies]` row a vendored name.
+fn rows_of(vendored: List<string>) -> string {
+    joined(
+        ["\"${if n == "prelude" { "@std" } else { "@x" }}/${n}\" = { path = \"vendor/${n}\" }\n" for n in vendored],
+        "",
+    )
+}
+
 /// Where the planner's refusals are witnessed: a planned relation's marks
 /// need `@std/meta`, which a lone source cannot import.
 const planned_golden: string = "a planned relation's `@plans` marks come from `@std/meta`, which a lone source cannot import — the golden is features/lists/tests/plan_test.av"
@@ -1277,6 +1662,9 @@ const code_hash_golden: string = "the refusal is spoken inside a const's settlem
 /// Why the wrap-kind guard has no witness: it speaks for a declaration that
 /// carries a body root yet is no fn or method (a seat default, a spec case),
 /// and no annotation stands on either.
+/// Where the directive-twin refusals are witnessed: the real `@std/meta` deliberately ships no annotator that generates a twin or wraps a fn, so the fixtures are the test's own.
+const meta_probes_golden: string = "the real `@std/meta` ships no annotator that generates a twin or wraps a fn, so the fixtures are the suite's own — the golden is features/annotations/tests/annotations_adversarial_test.av"
+
 const wrap_kind_golden: string = "a declaration with a body root that is no fn or method is a seat default or a spec case, and no annotation can stand on either — `@a` before `then` is a parse error"
 
 const quiet_never_golden: string = "a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av"

@@ -2915,6 +2915,11 @@ static int64_t as_bits(double d) { int64_t b; memcpy(&b, &d, sizeof b); return b
    of it; anything it would refuse cannot reach here. */
 int64_t avra_float_bits(const char* s) { return as_bits(strtod(s, NULL)); }
 
+/* A float's bit pattern, and a bit pattern's float: `memcpy`, so every NaN
+   payload, signed zero and subnormal crosses whole. */
+int64_t avra_float_to_bits(double f) { return as_bits(f); }
+double avra_float_of_bits(int64_t b) { return as_double(b); }
+
 /* Whether the text names a real a `float` HOLDS. Overflow answers
    infinity, and infinity is not the number on the page — the same
    law the integer literal already keeps, where a wrapped value must
@@ -3469,6 +3474,24 @@ int64_t avra_pid_alive(int64_t pid) {
     return errno == EPERM ? 1 : 0;
 }
 #endif
+
+static ssize_t os_random(void* out, size_t n) {
+#ifdef __APPLE__
+    arc4random_buf(out, n);
+    return (ssize_t)n;
+#elif defined(__wasm32__)
+    (void)out; (void)n;
+    return -1;
+#else
+    return getrandom(out, n, 0);
+#endif
+}
+
+#include "avra_random.h"
+
+// The OS's entropy as `n` bytes. No weaker source stands behind it: a nonce
+// or a token must never be drawn from a clock.
+const char* avra_random_bytes(int64_t n) { return random_from(n, os_random); }
 
 // This process's own id, OS-assigned at birth.
 int64_t avra_own_pid(void) {
@@ -4116,6 +4139,20 @@ static int64_t clock_asked(void) {
 int64_t avra_now_ns(void) {
     if (__builtin_expect(avra_clock.frozen, 0)) return clock_asked();
     return clock_real() + avra_clock.skew;
+}
+
+// THE PROCESS'S OWN CPU TIME, in nanoseconds: user plus system, never the wall.
+// A phase's wall time moves with the host (I/O stalls, other runs), its CPU time
+// with the work, so a budget over a phase is read from this one.
+// A target with no process CPU clock reads the wall instead.
+int64_t avra_cpu_ns(void) {
+#ifdef CLOCK_PROCESS_CPUTIME_ID
+    struct timespec ts;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
+#else
+    return clock_real();
+#endif
 }
 
 void avra_clock_virtual(int64_t on) {

@@ -6,20 +6,31 @@
 //! a user would meet.
 use @std.ui.realize.dom.live.{live}
 use @std.ui.realize.dom.tests.support.{Case, Sketch, Stray, repaint, repainted_page, verdict}
-use @std.ui.realize.tests.support.{spoken, named, field_node, holding, leaf, switch_node, text_node}
+use @std.ui.realize.tests.support.{
+    Event,
+    spoken,
+    named,
+    field_node,
+    holding,
+    leaf,
+    switch_node,
+    text_node,
+    hearing,
+    seat_for,
+}
 use @std.ui.style.theme.{default_theme}
 use @std.ui.style.tokens.{Tone}
-use @std.ui.tree.node.{Node, Action, EventKind, Handler, Said}
+use @std.ui.tree.node.{Node, Action, Handler, Said}
 
 fn heard_text(_text: string) {}
 
 fn heard_flag(_on: bool) {}
 
 /// `n` hearing what is typed into it.
-fn typed_into(n: Node) -> Node { n with { events: [Action { kind: .Input, handler: Handler.Text(heard_text) }] } }
+fn typed_into(n: Node) -> Node { hearing(n, .Input, Handler.Text(heard_text)) }
 
 /// `n` hearing its tick change.
-fn ticking(n: Node) -> Node { n with { events: [Action { kind: .Change, handler: Handler.Flag(heard_flag) }] } }
+fn ticking(n: Node) -> Node { hearing(n, .Change, Handler.Flag(heard_flag)) }
 
 /// A field the program draws no value for.
 fn bare_field() -> Node { leaf(.Field, [.Label("N")]) }
@@ -32,10 +43,10 @@ fn beside(field: Node, words: string) -> Node { holding(.Column, [field, text_no
 
 /// What each paint of `trees` says after the first, a line between two,
 /// the control named `name` hearing `kind` say `said` before the second.
-fn paints(name: string, kind: EventKind, said: Said, trees: List<Node>) -> string {
+fn paints(name: string, kind: Event, said: Said, trees: List<Node>) -> string {
     let page = live()
     let _ = page.patches(trees[0], default_theme)
-    let _ = page.fire(named(page, name)[0], kind, said)
+    let _ = page.fire(named(page, name)[0], seat_for(kind), said)
     [spoken(page, t, default_theme) for t in trees.drop(1)].join(" | ")
 }
 
