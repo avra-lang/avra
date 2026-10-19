@@ -27,10 +27,9 @@ command -v wasm-opt >/dev/null 2>&1 || skip "wasm-opt (binaryen) not on PATH"
 if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
     ( cd "$tree" && make -s wasm-runtime ) || skip "the wasm runtime archive did not build"
 fi
-# each fixture is built for the host too, and a gate job may hold only the compiler
-if [ ! -f "$tree/build/libavra_runtime.a" ]; then
-    ( cd "$tree" && make -s build/libavra_runtime.a ) || { say "the host runtime archive did not build"; exit 1; }
-fi
+# each fixture is built for the host too, and a gate job may hold only the compiler: the host
+# runtime archive and the objects the packages link are made here, by the Makefile's own rules
+( cd "$tree" && make -s build/libavra_runtime.a package-objs ) || { say "the host runtime archive or a package's object did not build"; exit 1; }
 
 # A module with tasks runs under JSPI; Node before it ships on needs the flag.
 jspi=""
