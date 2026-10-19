@@ -92,6 +92,7 @@ fn eq_through(t: MetaType, k: Kind, a: Code, b: Code, inside: List<string>) -> C
     let row = eq_row(k.spelled(), a, b)
     if row != null { return row! }
     match k {
+        .Int or .Bool or .Str -> quote { ${a} == ${b} },
         .List(inner) -> quote {
             (${a}.length == ${b}.length && [i for i in 0..${a}.length].all((at) -> ${eq_through(t, inner, quote { ${a}[at] }, quote { ${b}[at] }, inside)}))
         },
@@ -99,7 +100,7 @@ fn eq_through(t: MetaType, k: Kind, a: Code, b: Code, inside: List<string>) -> C
             (if ${a} == null || ${b} == null { ${a} == null && ${b} == null } else { ${eq_through(t, inner, quote { ${a}! }, quote { ${b}! }, inside)} })
         },
         .Named(n, _) -> declared_eq(t, n, a, b, inside),
-        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> quote { a_payload_type_the_exact_derive_has_no_row_for() },
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> quote { a_payload_type_the_exact_derive_has_no_row_for() },
     }
 }
 
@@ -151,11 +152,7 @@ fn eq_row(ty: string, a: Code, b: Code) -> Code? {
         "List<PatId>" -> quote { self.exact_pat_ids(${a}, ${b}) },
         "List<Param>" -> quote { self.exact_params(${a}, ${b}) },
         "List<Mark>" -> quote { exact_marks(${a}, ${b}) },
-        "string" -> quote { ${a} == ${b} },
         "List<string>" -> quote { exact_strs(${a}, ${b}) },
-        "int" or "bool" or "BinOp" -> quote { ${a} == ${b} },
-        "Scoped" or "Plain" or "Nominal" -> quote { ${a}.of == ${b}.of },
-        "Scoped?" or "Plain?" or "Nominal?" -> quote { ${a}?.of == ${b}?.of },
         "List<Plain>" -> quote { exact_plains(${a}, ${b}) },
         "List<Scoped>" -> quote { exact_scopeds(${a}, ${b}) },
         "TypeRef" or "TypeRef?" -> quote { exact_type_ref(${a}, ${b}) },
