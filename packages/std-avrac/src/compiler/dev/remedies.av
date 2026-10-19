@@ -296,6 +296,97 @@ export fn rows() -> List<RemedyRow> {
             becomes: Then.Draws("annotation.seats"),
         },
         RemedyRow {
+            kind: "flow.yield",
+            says: "no producer encloses it",
+            refused: Witness.Source("fn f() -> int {\n    yield 1\n    1\n}\n0"),
+            applied: with_task(
+                "use @std.task.{Source}\nlet pages: Source<int> = produce<int>(2) { yield 1 }\n0",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.component_check",
+            says: "a component's `check` answers `List<Diagnostic>` and takes nothing",
+            refused: with_meta(
+                "use @std.meta.{Diagnostic}\ncomponent box {\n    a: int\n    fn check() -> int { 1 }\n}\n0",
+            ),
+            applied: with_meta(
+                "use @std.meta.{Diagnostic}\ncomponent box {\n    a: int\n    fn check() -> List<Diagnostic> { [] }\n}\n0",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.static_fn",
+            says: "marks a method with no receiver",
+            refused: Witness.Source("static fn f() -> int { 1 }\nf()"),
+            applied: Witness.Source("fn f() -> int { 1 }\nf()"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.contract_write",
+            says: "writes through `self`, but `T.a` declares no `mut`",
+            refused: Witness
+                .Source(
+                    "trait T {\n    fn a() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    mut fn a() -> int {\n        self.x = 1\n        1\n    }\n}\n1",
+                ),
+            applied: Witness
+                .Source(
+                    "trait T {\n    mut fn a() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    mut fn a() -> int {\n        self.x = 1\n        1\n    }\n}\n1",
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.struct_targs",
+            says: "takes 1 type argument, and this literal writes 2",
+            refused: Witness.Source("type G<T> = { v: T }\nlet g = G<int, string> { v: 1 }\n1"),
+            applied: Witness.Source("type G<T> = { v: T }\nlet g = G<int> { v: 1 }\n1"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.format_repeat",
+            says: "names two spans of this format",
+            refused: Witness.Source("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }"),
+            applied: Witness.Source("match \"x\" { \"{a}z{_}\" -> 1\n    _ -> 0 }"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.is_bind",
+            says: "a payload `is` binds only in an `if` condition",
+            refused: Witness.Source("enum E {\n    a(int)\n}\nlet r = E.a(1) is .a(x)\n1"),
+            applied: Witness
+                .Source(
+                    "enum E {\n    a(int)\n}\nlet e = E.a(1)\nlet n = if e is .a(r) { r } else { 0 }\nn",
+                ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.defer",
+            says: "`defer` drops what its body answers",
+            refused: Witness.Source("fn f() -> Result<int, string> {\n    .Ok(1)\n}\ndefer f()\n1"),
+            applied: Witness
+                .Source("fn f() -> Result<int, string> {\n    .Ok(1)\n}\ndefer { let _ = f() }\n1"),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.embed_place",
+            says: "names a file outside it",
+            refused: with_meta("use @std.meta.{embed}\nconst s: string = embed(\"../../x.txt\")\n0"),
+            applied: with_meta_modules(
+                "use @std.meta.{embed}\nconst s: string = embed(\"x.txt\")\n0",
+                {"/w/src/x.txt": "hi"},
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
+            kind: "type.code_hash_named",
+            says: "hashes a declared fn, named where it is called",
+            refused: with_meta("use @std.meta.{code_hash}\nlet h = code_hash(1)\n0"),
+            applied: with_meta(
+                "use @std.meta.{code_hash}\nfn answer() -> int { 1 }\nlet h = code_hash(answer)\n0",
+            ),
+            becomes: Then.Clean,
+        },
+        RemedyRow {
             kind: "manifest.unsupported_dependency",
             says: "is not a path dependency",
             refused: manifest(app_manifest + "\n[dependencies]\n\"@x/y\" = \"1.0\"\n"),
