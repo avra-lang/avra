@@ -2,7 +2,7 @@
 // keywords a declaration was written with and the forms its values were
 // spelled in survive the splice.
 use @std.avrac.compiler.{parse_source, Parsed}
-use @std.avrac.core.{SyntaxArena, StmtId, ExprId, Stmt, copier, hole_runs, no_door}
+use @std.avrac.core.{SyntaxArena, StmtId, ExprId, Stmt, copier, hole_runs, no_door, OnHandler}
 
 /// The statements a `quote { … }` holds, and the program they stand in.
 fn quoted(body: string) -> Parsed {
@@ -113,6 +113,22 @@ fn keeps_declared(body: string) -> bool {
     before != "," && before == after
 }
 
+/// The copy of an expression its source marked as the handler of `press`.
+fn handler_copy() -> OnHandler? {
+    let src = quoted("1")
+    let dst = parse_source("let x = 1")
+    let ss = held(src)
+    src.store.mark_on_handler(src.store.answer_of(ss.last()!)!, "press")
+    mut rb = copier(
+        src.store,
+        dst.store,
+        [],
+        hole_runs(src.store, src.store.answer_of(src.stmts[0])!),
+        no_door,
+    )
+    dst.store.on_handler(dst.store.answer_of(rb.stmts(ss).last()!)!)
+}
+
 spec "features/tests — facts a template copy keeps" {
     given "keywords a declaration wears" {
         then "export survives" { survives("export fn a() -> int { 1 }") }
@@ -135,5 +151,8 @@ spec "features/tests — facts a template copy keeps" {
         then "a trait impl's arguments survive" { keeps_declared("impl Show<X> for Box { fn show() -> int { 1 } }") }
         then "a trait's own type parameters survive" { keeps_declared("trait Pair<A, B> { fn first() -> A }") }
         then "a record's spreads survive" { keeps_declared("type P = { ..Q, x: int }") }
+    }
+    given "the event an expression is a handler of" {
+        then "a handler's event survives" { handler_copy()?.event == "press" }
     }
 }
