@@ -14,6 +14,10 @@ AVRA_QTRACE=1 "$avra" check "$package" 2>&1 | grep -a '^Q	settle	Expanded' > "$t
 worst=$(cut -f4 "$trace" | sort | uniq -c | sort -rn | head -n 1)
 count=$(echo "$worst" | awk '{print $1}')
 echo "expanded-attack: $package, $(wc -l < "$trace" | tr -d ' ') Expanded settles, busiest file settled ${count:-0} times (limit $limit)"
+if [ ! -s "$trace" ]; then
+    echo "expanded-attack: FAILED — no Expanded settle was traced, so nothing was examined (a warm store answers without settling: clear it first)"
+    exit 1
+fi
 if [ "${count:-0}" -gt "$limit" ]; then
     echo "expanded-attack: FAILED — a file's expansion settled more than $limit times"
     exit 1
