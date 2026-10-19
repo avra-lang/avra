@@ -524,7 +524,7 @@ jobs:
       - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
-        run: cp speed-now.metrics speed-base.metrics
+        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
       - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
@@ -625,7 +625,7 @@ jobs:
           # tree's rusage, which needs nothing from the shell.
           peak() {
             peak_label="$1"; shift
-            python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS" % (sys.argv[1], u.ru_maxrss)); open("speed.log","a").write("speed cpu-%s %d\n" % (re.sub("[^a-z0-9-]+","-",sys.argv[1].lower()).strip("-"), u.ru_utime+u.ru_stime)); sys.exit(rc)' "$peak_label" "$@"
+            python3 tools/step_cpu.py "$peak_label" -- "$@"
           }
           ta=$(date +%s)
           peak keepers-a${{ matrix.group }} make -s -o avra keepers-a${{ matrix.group }} || a=1
@@ -657,7 +657,7 @@ jobs:
       - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
-        run: cp speed-now.metrics speed-base.metrics
+        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
       - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
@@ -695,7 +695,7 @@ jobs:
           # tree's rusage, which needs nothing from the shell.
           peak() {
             peak_label="$1"; shift
-            python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS" % (sys.argv[1], u.ru_maxrss)); open("speed.log","a").write("speed cpu-%s %d\n" % (re.sub("[^a-z0-9-]+","-",sys.argv[1].lower()).strip("-"), u.ru_utime+u.ru_stime)); sys.exit(rc)' "$peak_label" "$@"
+            python3 tools/step_cpu.py "$peak_label" -- "$@"
           }
           peak keepers-b make -s -o avra keepers-b || exit 1
   # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
@@ -780,7 +780,7 @@ jobs:
       - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
-        run: cp speed-now.metrics speed-base.metrics
+        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
       - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
@@ -896,7 +896,7 @@ jobs:
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS" % (sys.argv[1], u.ru_maxrss)); open("speed.log","a").write("speed cpu-%s %d\n" % (re.sub("[^a-z0-9-]+","-",sys.argv[1].lower()).strip("-"), u.ru_utime+u.ru_stime)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
+            python3 tools/step_cpu.py --state "$p" -- env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
             # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
@@ -937,7 +937,7 @@ jobs:
       - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
-        run: cp speed-now.metrics speed-base.metrics
+        run: sh tools/speed_note.sh merge speed-now.metrics speed-base.metrics > speed-merged.metrics && mv speed-merged.metrics speed-base.metrics
       - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
