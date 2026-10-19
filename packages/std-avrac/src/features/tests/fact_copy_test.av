@@ -2,7 +2,19 @@
 // keywords a declaration was written with and the forms its values were
 // spelled in survive the splice.
 use @std.avrac.compiler.{parse_source, Parsed}
-use @std.avrac.core.{SyntaxArena, StmtId, ExprId, Stmt, copier, hole_runs, no_door, OnHandler}
+use @std.avrac.core.{
+    SyntaxArena,
+    StmtId,
+    ExprId,
+    Expr,
+    Stmt,
+    Nominal,
+    Plain,
+    copier,
+    hole_runs,
+    no_door,
+    OnHandler,
+}
 
 /// The statements a `quote { … }` holds, and the program they stand in.
 fn quoted(body: string) -> Parsed {
@@ -129,6 +141,18 @@ fn handler_copy() -> OnHandler? {
     dst.store.on_handler(dst.store.answer_of(rb.stmts(ss).last()!)!)
 }
 
+/// The two values a copy of a literal holds, where its source held ONE node twice.
+fn shared_copy() -> List<ExprId> {
+    let src = parse_source("let x = 1")
+    let dst = parse_source("let x = 1")
+    let once = src.store.alloc_expr(Expr.StrLit("x"))
+    let lit = src
+        .store
+        .alloc_expr(Expr.StructLit(Nominal("T"), [Plain("p"), Plain("q")], [once, once]))
+    mut rb = copier(src.store, dst.store, [], [], no_door)
+    dst.store.struct_lit_parts(rb.expr(lit))?.values ?? []
+}
+
 spec "features/tests — facts a template copy keeps" {
     given "keywords a declaration wears" {
         then "export survives" { survives("export fn a() -> int { 1 }") }
@@ -154,5 +178,8 @@ spec "features/tests — facts a template copy keeps" {
     }
     given "the event an expression is a handler of" {
         then "a handler's event survives" { handler_copy()?.event == "press" }
+    }
+    given "a node its source reaches twice" {
+        then "is one node in the copy" { shared_copy().length == 2 && shared_copy()[0] == shared_copy()[1] }
     }
 }
