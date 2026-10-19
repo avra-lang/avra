@@ -4,6 +4,8 @@
 //! declaration it answers for and its settled hash.
 use core.{
     TypeId,
+    qtrace,
+    db_verified_files,
     sorted_texts,
     fp_str,
     traced,
@@ -91,7 +93,9 @@ impl Workspace {
     /// A signature's digest is its wire: types by their spelling, never by the interner's index.
     fn sig_digest(arg: int) -> int? {
         if arg < 0 || arg >= self.decls.sigs.get().length { return null }
-        let s? = self.decls.sigs.get()[arg] else { return fp_str("refused") }
+        let s? = self.decls.sigs.get()[arg] else {
+            return if self.db.kernel.hash_forced(key_at(Family.Sig.ordinal, arg)) == null { null } else { fp_str("refused") }
+        }
         fp_str(self.decl_sig_wire(s))
     }
 
@@ -309,6 +313,7 @@ impl Workspace {
         rdb.answer_known(self.named_by_file("Analysis", Family.Analysis))
         rdb.answer_known(self.named_names())
         rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
+        rdb.answer_known(self.named_by_module("HeldSig", Family.HeldSig))
         rdb.answer_known(self.named_once("References", Family.References))
         rdb.answer_known(self.named_by_bucket())
     }
@@ -621,37 +626,95 @@ impl Workspace {
 }
 
 impl Workspace {
-    /// Each file's manifest, kept under its path: every read its declarations' typed answers
-    /// stood on, once per name.
+    /// Each file's manifest, kept under its path: a section per declaration of the reads its
+    /// typed answer stood on. An answer reused this run stood on what it stood on, so its
+    /// section is carried; one that cannot be named is marked unknown, which judges as moved.
     fn manifest_pass(store: Store) {
         let rdb = self.decls.rows_db.get()
         mut homes: Map<string, List<int>> = {}
         for arg in 0..self.decls.decl_count() {
-            let d = DeclId { index: arg }
-            if self.decls.is_builtin(d) { continue }
-            let path = self.decls.file(self.decls.decl(d).file).path
+            if self.decls.is_builtin(DeclId { index: arg }) { continue }
+            let path = self.decls.file(self.decls.decl(DeclId { index: arg }).file).path
             homes.set(path, (homes.get(path) ?? []).concat([arg]))
         }
+        eprintln("Q\tPROBE homes ${homes.length} ${db_verified_files()}")
         for path, args in homes {
-            mut held: Map<string, string> = {}
-            for arg in args {
-                for l in self.typed_leaves(rdb, arg) { held.set(l.id(), l.digest_text()) }
+            let row = node_key(Stored.Unit, ["manifest", path])
+            if db_verified_files() {
+                self
+                    .manifest_verdict(store, path, self.decls.decl(DeclId { index: args[0] }).file, row)
             }
-            if held.is_empty() { continue }
-            let _ = store
-                .keep_reading(
-                    Stored.Unit,
-                    node_key(Stored.Unit, ["manifest", path]),
-                    "",
-                    [Reading { name: n, digest: v } for n, v in held],
-                )
+            let kept = manifest_sections(store.get(Stored.Unit, row) ?? "")
+            let sections = flatten(
+                [self.declaration_section(rdb, arg, kept.get(self.decl_ref(DeclId { index: arg }))) for arg in args],
+            )
+            let bytes = joined(sections, "\n")
+            if bytes.is_empty() || store.get(Stored.Unit, row) == bytes { continue }
+            let _ = store.keep_reading(Stored.Unit, row, bytes, section_reads(sections))
         }
     }
 
-    /// What the typed answer of the declaration at `arg` stood on, nameable or not.
-    fn typed_leaves(rdb: RowsDb, arg: int) -> List<Leaf> {
-        rdb.leaves_of(self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))) ?? []
+    /// A file's kept manifest judged against the digests standing now, traced beside whether
+    /// the hold read the file: a held file the manifest calls moved, or a read file it calls
+    /// standing, are where the two keys disagree.
+    fn manifest_verdict(store: Store, path: string, file: FileId, row: string) {
+        let lines? = store.reads_of(Stored.Unit, row) else { return }
+        let rdb = self.decls.rows_db.get()
+        let moved = lines.find((l) -> self.read_moved(rdb, l))
+        let held = self.is_held(file)
+        qtrace(
+            "Q\tmanifest\t${path}\t${if held { "held" } else { "read" }}\t${if moved == null { "stands" } else { "moved ${read_name(moved!)}" }}\n",
+        )
+        if held && moved != null {
+            wreck(
+                "the hold kept `${path}` while its manifest read `${read_name(moved!)}` moved: a manifest read the hold does not",
+            )
+        }
     }
+
+    /// Whether a kept read's digest differs from the one standing now; an unnamed read is moved, an
+    /// unanswerable one is not.
+    fn read_moved(rdb: RowsDb, line: string) -> bool {
+        if read_name(line) == UNKNOWN_READ { return true }
+        let now? = rdb.leaf_digest(read_name(line)) else { return false }
+        now != read_digest(line)
+    }
+
+    /// A declaration's manifest section: its typed answer's reads when it ran here, the one
+    /// kept when it was reused, an unknown mark when its reads have no name.
+    fn declaration_section(rdb: RowsDb, arg: int, kept: List<string>?) -> List<string> {
+        let head = "${SECTION_HEAD}${self.decl_ref(DeclId { index: arg })}"
+        let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
+        if reads.is_empty() { return if kept == null { [] } else { [head].concat(kept!) } }
+        let leaves? = rdb.leaves_of(reads) else { return [head, "0 ${UNKNOWN_READ}"] }
+        [head].concat(distinct([l.digest_text() + " " + l.id() for l in leaves]))
+    }
+}
+
+/// A section's first line names its declaration.
+const SECTION_HEAD = "@ "
+
+/// The read a section carries when its reads could not be named.
+const UNKNOWN_READ = "?unknown"
+
+/// A kept manifest's sections by declaration, each its lines with the head dropped.
+fn manifest_sections(bytes: string) -> Map<string, List<string>> {
+    mut out: Map<string, List<string>> = {}
+    mut at = ""
+    for line in bytes.split("\n") {
+        if line.starts_with(SECTION_HEAD) {
+            at = line.substring(SECTION_HEAD.length, line.length)
+            out.set(at, [])
+        } else {
+            out.set(at, (out.get(at) ?? []).concat([line]))
+        }
+    }
+    out
+}
+
+/// The reads of a manifest's sections, once each.
+fn section_reads(lines: List<string>) -> List<Reading> {
+    [Reading { name: read_name(l), digest: read_digest(l) } for l in distinct([l for l in lines if !l.starts_with(SECTION_HEAD)])]
 }
 
 impl Workspace {
