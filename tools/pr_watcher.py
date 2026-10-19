@@ -236,7 +236,7 @@ def _ahead(prs, front):
     return f"#{landing[0]} (landing)" if landing else "the order"
 
 
-def plan(prs, runs, state, trunk=None, held=None, now=None):
+def plan(prs, runs, state, trunk=None, held=None, now=None, seen_at=None):
     """The actions a pass owes. See the module docstring for the rules.
 
     `prs`: number, isDraft, state, mergeable, mergeStateStatus, title,
@@ -267,10 +267,15 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         branch = r.get("headBranch")
         if not branch or branch in open_branches:
             continue
+        # A RUN NEWER THAN THE PR LIST WAS READ CANNOT BE JUDGED BY IT: the pass reads every PR first
+        # (slowly) and the runs last, so a PR opened in between has runs and no row. A PR created
+        # seconds before its runs was "no longer open" and both of its runs were cancelled.
+        if seen_at and (r.get("createdAt") or "") > seen_at:
+            continue
         key = f"cancel:{r['databaseId']}"
         if key in told:
             continue
-        acts.append({"do": "cancel", "run": r["databaseId"], "key": key,
+        acts.append({"do": "cancel", "run": r["databaseId"], "branch": branch, "key": key,
                      "mark": ("told", key),
                      "text": f"cancelling run {r['databaseId']} on "
                              f"{branch} — its PR is no longer open"})
@@ -459,6 +464,17 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         if key not in told:
             acts.append({"do": "dispatch", "key": key, "mark": ("told", key),
                          "text": f"main {trunk['sha'][:7]} has no `checks` run — dispatching one"})
+    # (p) A COLD PASS ONCE A DAY: the speed baseline keeps a number per cache state (tools/step_cpu.py),
+    # and a PR whose suites ran cold is judged only against main's cold number, so main runs its suites
+    # cold once a day, when its head has a finished run and nothing of main's is running (a dispatch
+    # cancels main's other dispatch by concurrency, so it never starts over a live one). Best effort: a
+    # merge that lands while it runs cancels it, and the next day asks again.
+    if trunk and trunk.get("checked") and trunk.get("idle"):
+        day = (now or datetime.datetime.now(datetime.timezone.utc)).date().isoformat()
+        key = f"cold:{day}"
+        if key not in told:
+            acts.append({"do": "dispatch_cold", "key": key, "mark": ("told", key),
+                         "text": f"main has had no cold pass today ({day}) — dispatching one"})
     # (n) a merge that touched `.github/ci/**` fires no push event (a bot merge triggers
     # nothing), so the machine image is never rebuilt: dispatch `ci-image` once the newest such
     # commit on main has no `ci-image` run standing on it or any later commit.
@@ -569,7 +585,7 @@ def open_prs(repo):
 def _runs(repo):
     return _gh_json(["run", "list", "-R", repo, "-L", "100",
                      "--json", "databaseId,status,conclusion,headBranch,event,"
-                               "headSha,workflowName"])
+                               "headSha,workflowName,createdAt"])
 
 
 def main_state(repo, runs):
@@ -582,7 +598,10 @@ def main_state(repo, runs):
     age = (datetime.datetime.now(datetime.timezone.utc) - born).total_seconds()
     checked = any(r.get("headSha") == sha and r.get("workflowName") == "checks"
                   for r in runs)
-    out = {"sha": sha, "age": age, "checked": checked}
+    busy = any(r.get("workflowName") == "checks" and r.get("headBranch") == "main"
+               and (r.get("status") or "") in ("in_progress", "queued", "waiting", "pending")
+               for r in runs)
+    out = {"sha": sha, "age": age, "checked": checked, "idle": not busy}
     out.update(ci_touch(repo, runs))
     return out
 
@@ -654,6 +673,7 @@ DETAIL_CAP = 6
 
 def collect(repo, state):
     told = state[TOLD]
+    seen_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     prs = []
     for raw in open_prs(repo):
         p = dict(raw)
@@ -702,7 +722,7 @@ def collect(repo, state):
             if (r.get("event") or "") == PR
             and (r.get("workflowName") or "") == "checks"
             and (r.get("conclusion") or "") == "action_required"]
-    return {"prs": prs, "runs": runs, "held": held, "main": main_state(repo, every)}
+    return {"prs": prs, "runs": runs, "held": held, "main": main_state(repo, every), "seen_at": seen_at}
 
 
 # ---- doing the actions (gh) --------------------------------------------
@@ -730,6 +750,14 @@ def do_action(a, repo, run):
     elif a["do"] == "refresh":
         run(["pr", "update-branch", str(a["pr"]), "-R", repo])
     elif a["do"] == "cancel":
+        # asked again at the moment of the act: a PR that stands for this branch now keeps its run
+        # (the list the plan used may be minutes old)
+        if a.get("branch"):
+            open_now = (run(["pr", "list", "-R", repo, "--head", a["branch"], "--state", "open",
+                             "--json", "number", "--jq", "length"]) or "").strip()
+            if open_now not in ("", "0"):
+                print(f"pr-watcher: run {a['run']} kept — a PR for {a['branch']} is open now")
+                return
         run(["run", "cancel", str(a["run"]), "-R", repo])
     elif a["do"] == "disarm":
         run(["pr", "merge", str(a["pr"]), "-R", repo, "--disable-auto"])
@@ -738,6 +766,9 @@ def do_action(a, repo, run):
     elif a["do"] == "dispatch":
         run(["workflow", "run", "checks.yml", "-R", repo, "--ref", "main"])
         print(f"::warning::pr-watcher dispatched `checks` on main — {a['text']}")
+    elif a["do"] == "dispatch_cold":
+        run(["workflow", "run", "checks.yml", "-R", repo, "--ref", "main", "-f", "cold=1"])
+        print(f"::warning::pr-watcher dispatched a COLD `checks` pass on main — {a['text']}")
     elif a["do"] == "dispatch_image":
         run(["workflow", "run", "ci-image.yml", "-R", repo, "--ref", "main"])
         print(f"::warning::pr-watcher dispatched `ci-image` on main — {a['text']}")
@@ -1144,6 +1175,49 @@ def selftest():
     if sent != [["workflow", "run", "checks.yml", "-R", "avra-lang/avra", "--ref", "main"]]:
         sys.exit(f"pr-watcher: self-test — the dispatch was sent as {sent}")
 
+    # A DOOMED RUN IS ONE THE PR LIST COULD JUDGE: a run created after the list was read belongs to a PR
+    # the list may simply not hold yet (two runs of a PR opened mid-pass were both cancelled).
+    old = {"databaseId": 7, "status": "in_progress", "event": PR, "headBranch": "new-lane", "createdAt": "2026-10-19T21:00:00Z"}
+    newer = dict(old, databaseId=8, createdAt="2026-10-19T21:16:20Z")
+    got = [(a["do"], a["run"]) for a in plan([], [old, newer], _empty_state(), seen_at="2026-10-19T21:15:18Z")]
+    if got != [("cancel", 7)]:
+        sys.exit(f"pr-watcher: self-test — a run newer than the PR list was judged doomed: {got}")
+    # two runs of one head started 2 s apart, the PR not yet in the list: neither is cancelled, so the head keeps a live run
+    twin = dict(newer, databaseId=9, createdAt="2026-10-19T21:16:22Z")
+    if plan([], [newer, twin], _empty_state(), seen_at="2026-10-19T21:15:18Z"):
+        sys.exit("pr-watcher: self-test — a fresh PR's two runs were cancelled")
+    # and the act asks again: a PR open for the branch now keeps the run
+    sent = []
+    open_now = {"v": "1"}
+    def fake(args):
+        sent.append(args)
+        return open_now["v"] if args[:2] == ["pr", "list"] else ""
+    execute([{"do": "cancel", "run": 7, "branch": "new-lane", "text": "x"}], "avra-lang/avra", run=fake)
+    if any(a[:2] == ["run", "cancel"] for a in sent):
+        sys.exit("pr-watcher: self-test — a run whose PR is open now was cancelled")
+    open_now["v"] = "0"
+    sent.clear()
+    execute([{"do": "cancel", "run": 7, "branch": "gone-lane", "text": "x"}], "avra-lang/avra", run=fake)
+    if not any(a[:2] == ["run", "cancel"] for a in sent):
+        sys.exit("pr-watcher: self-test — a run whose PR is closed was kept")
+    # A COLD PASS: asked once a day, only with main idle and its head checked, never over a live run
+    day = datetime.datetime(2026, 10, 20, 12, 0, tzinfo=datetime.timezone.utc)
+    quiet = {"sha": "m1", "age": 600, "checked": True, "idle": True}
+    st = _empty_state()
+    first = plan([], [], st, quiet, now=day)
+    if [x["do"] for x in first] != ["dispatch_cold"]:
+        sys.exit(f"pr-watcher: self-test — an idle main with no cold pass today was not asked for one: {first}")
+    commit_marks(first, [], st)
+    if plan([], [], st, quiet, now=day):
+        sys.exit("pr-watcher: self-test — a second cold pass was asked for the same day")
+    if [x["do"] for x in plan([], [], st, quiet, now=day + datetime.timedelta(days=1))] != ["dispatch_cold"]:
+        sys.exit("pr-watcher: self-test — the next day asked for no cold pass")
+    if plan([], [], _empty_state(), dict(quiet, idle=False), now=day):
+        sys.exit("pr-watcher: self-test — a cold pass was dispatched over a live main run")
+    sent = []
+    execute(first, "avra-lang/avra", run=lambda args: sent.append(args) or "")
+    if sent != [["workflow", "run", "checks.yml", "-R", "avra-lang/avra", "--ref", "main", "-f", "cold=1"]]:
+        sys.exit(f"pr-watcher: self-test — the cold dispatch was sent as {sent}")
     # FOLLOW: a pass that sees a PR about to land polls main and runs a pass when its head moves.
     def drive(heads, landings):
         log = {"sleeps": [], "steps": 0}
@@ -1341,7 +1415,7 @@ def run_pass(world, state, state_path, repo, execute_fn=execute, label="pr-watch
     """One live pass. State is committed and SAVED in a `finally`:
     whatever an action or the pass itself does, the marks of what
     SUCCEEDED stand and the next pass retries only what failed."""
-    acts = plan(world["prs"], world["runs"], state, world.get("main"), world.get("held"))
+    acts = plan(world["prs"], world["runs"], state, world.get("main"), world.get("held"), seen_at=world.get("seen_at"))
     for a in acts:
         print(label, a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
     failed = []
@@ -1383,7 +1457,7 @@ def main(argv):
     state = load_state(state_path)
     world = collect(repo, state)
     if "--dry-run" in argv:
-        acts = plan(world["prs"], world["runs"], state, world.get("main"), world.get("held"))
+        acts = plan(world["prs"], world["runs"], state, world.get("main"), world.get("held"), seen_at=world.get("seen_at"))
         armed = sum(1 for a in acts if a["do"] == "arm")
         refreshed = sum(1 for a in acts if a["do"] == "refresh")
         cancelled = sum(1 for a in acts if a["do"] == "cancel")

@@ -9,15 +9,28 @@
 <body>
 <div id="app"></div>
 <script type="module">
-import { run } from "./bootstrap.js";
-import { wasiPreview1 } from "./wasi.js";
-
-await run("./app.wasm", {
-  document,
-  mount: document.getElementById("app"),
-  style: document.getElementById("avra-style"),
-  wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
-});
+// A page that cannot start, or that hits an error after it has, says why on the page itself.
+let started = false;
+const told = (e) => {
+  const words = document.createElement("pre");
+  words.setAttribute("role", "alert");
+  words.style.cssText = "white-space:pre-wrap;color:#b00020;font:14px/1.4 monospace;padding:16px";
+  words.textContent = `${started ? "The page hit an error:" : "The page did not start:"}\n${e?.stack ?? e?.message ?? e}`;
+  document.body.prepend(words);
+};
+addEventListener("error", (ev) => told(ev.error ?? `${ev.message} (${ev.filename}:${ev.lineno}:${ev.colno})`));
+addEventListener("unhandledrejection", (ev) => told(ev.reason));
+try {
+  const { run } = await import("./bootstrap.js");
+  const { wasiPreview1 } = await import("./wasi.js");
+  await run("./app.wasm", {
+    document,
+    mount: document.getElementById("app"),
+    style: document.getElementById("avra-style"),
+    wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+  });
+  started = true;
+} catch (e) { told(e); }
 </script>
 <!--DEV-->
 </body>

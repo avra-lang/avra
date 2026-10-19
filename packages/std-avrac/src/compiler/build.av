@@ -124,14 +124,18 @@ export type BuildOutcome = {
 }
 
 /// THE FEATURES A WASM MODULE BUILT HERE MAY USE: LLVM's baseline for a
-/// wasm triple that names no CPU, which is what the backend and the C
-/// beside it are built to. The optimizer is told these and no others —
-/// told "every feature it knows", it also writes proposals no engine
-/// ships yet, and the module it answers does not compile where it runs.
+/// wasm triple that names no CPU, which is what the backend and the C beside
+/// it are built to, and exception handling, which the runtime's guarded run
+/// is built with (Makefile, `WASM_SJLJ_avra_runtime.c`). The optimizer is told
+/// these and no others: told "every feature it knows" it also writes the
+/// encodings no engine ships yet — the compact import section an iPhone's
+/// WebKit cannot parse — and a link carries no feature section it could read
+/// its own set from.
 const WASM_FEATURES = [
     "bulk-memory",
     "bulk-memory-opt",
     "call-indirect-overlong",
+    "exception-handling",
     "multivalue",
     "mutable-globals",
     "nontrapping-float-to-int",
@@ -139,16 +143,29 @@ const WASM_FEATURES = [
     "sign-ext",
 ]
 
-/// The optimizer's words to shrink `linked` into `shrunk`, for size — the
-/// spellings to try, in order. An optimizer too old to know a feature by
-/// name is older than any proposal "every feature" would turn on, so for
-/// it alone that word is the same set.
+/// The names an older optimizer does not know: it refuses an `--enable` of a
+/// feature it has no word for, and the same set without them is the set it knows.
+const NEWER_FEATURES = ["bulk-memory-opt", "call-indirect-overlong"]
+
+/// `--enable-<f>` for each of `features`.
+fn enabling(features: List<string>) -> List<string> { ["--enable-${f}" for f in features] }
+
+/// The optimizer's words for `shrinking`, the spellings to try in order: the
+/// features above, then the ones an older optimizer knows. Never a spelling that
+/// lets the optimizer pick.
+fn feature_tries(shrinking: List<string>) -> List<List<string>> {
+    [
+        enabling(WASM_FEATURES).concat(shrinking),
+        enabling([f for f in WASM_FEATURES if !NEWER_FEATURES.contains(f)]).concat(shrinking),
+    ]
+}
+
+/// The optimizer's words to shrink `linked` into `shrunk`, for size.
 /// THE FUNCTIONS ARE NUMBERED BY USE, after the size passes: a call spells
 /// its callee's index in as many bytes as the index needs, and the runtime's
 /// rows — a push, a release, a slot read — are what a program calls most.
 fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
-    let shrink = ["-Oz", "--reorder-functions", linked, "-o", shrunk]
-    [["--enable-${f}" for f in WASM_FEATURES].concat(shrink), ["--all-features"].concat(shrink)]
+    feature_tries(["-Oz", "--reorder-functions", linked, "-o", shrunk])
 }
 
 /// THE FALLBACK FOR A HOST THAT CANNOT SUSPEND A STACK: the same module with
@@ -157,9 +174,11 @@ fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
 const ASYNCIFIED = ["--asyncify", "--pass-arg=asyncify-imports@avra_host.switch,avra_host.idle"]
 
 fn asyncify_tries(shipped: string, out: string) -> List<List<string>> {
-    let words = ASYNCIFIED.concat(["-Oz", shipped, "-o", out])
-    [["--enable-${f}" for f in WASM_FEATURES].concat(words), ["--all-features"].concat(words)]
+    feature_tries(ASYNCIFIED.concat(["-Oz", shipped, "-o", out]))
 }
+
+/// A module the optimizer answered, or the words it did not: `path` is null when it made none.
+type Shrunk = { path: string?, said: string }
 
 /// Where the fallback of `binary` stands: beside it, `app.wasm` to `app.asyncify.wasm`.
 export fn fallback_name(binary: string) -> string {
@@ -838,10 +857,12 @@ impl Workspace {
                 .LinkFailed(code, if tools.target == "" { unanswered_externs(full, hosted) } else { [] })
         }
         clock.mark("link")
-        let ready = shipped(staged, tools)
+        let shrunk = shipped(staged, tools)
+        let ready = shrunk.path ?? staged
         let key = self.kept_key(under)
         let fallback = self.fallback_made(d, full, ready, key, binary, tools)
-        let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
+        let warnings = spoken([d.warnings, shrunk.said, fallback.said])
+        let _ = d.store.keep(Stored.Warn, key, warnings, [key])
         let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
         let reads = linked_reads(self.linked_files(tools.runtime, tools.target), tools.tools)
         if reads != null {
@@ -852,11 +873,11 @@ impl Workspace {
         let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
         clock.mark("keep binary")
         if !published(ready, binary) { fail BuildError.Unpublished(binary) }
-        self.fallback_published(fallback, binary)
+        self.fallback_published(fallback.path, binary)
         clock.mark("publish")
         BuildOutcome {
             binary: binary,
-            warnings: d.warnings,
+            warnings: warnings,
             reused: false,
             phases: d.timed(clock.spans),
             host_fns: host_fns,
@@ -873,15 +894,15 @@ impl Workspace {
         key: string,
         binary: string,
         tools: Toolchain,
-    ) -> string? {
-        if !tools.fallback || tools.wasm_opt == "" || !runs_tasks(full) { return null }
+    ) -> Shrunk {
+        if !tools.fallback || tools.wasm_opt == "" || !runs_tasks(full) { return Shrunk { path: null, said: "" } }
         let out = staged_beside(fallback_name(binary))
         if !asyncify_tries(shipped_to, out).any((words) -> wasm_opt_runs(tools.wasm_opt, words)) {
             let _ = remove(out)
-            return null
+            return Shrunk { path: null, said: no_fallback(tools.wasm_opt) }
         }
         let _ = d.store.keep_file(Stored.Bin, fallback_key(key), out, [key])
-        out
+        Shrunk { path: out, said: "" }
     }
 
     /// The fallback onto its place, or what stood there from an earlier build gone.
@@ -1092,17 +1113,17 @@ fn unanswered_note(names: List<string>) -> string {
 
 /// THE LINKED FILE AS IT SHIPS, the one staged file left standing: a wasm
 /// module is what a browser downloads, so it is shrunk when the host offers
-/// the optimizer and that succeeds — the link's own answer otherwise. What a
-/// build keeps and what it publishes are both this file.
-fn shipped(staged: string, tools: Toolchain) -> string {
-    if tools.target == "" || tools.wasm_opt == "" { return staged }
+/// the optimizer and that succeeds — the link's own answer otherwise, and the
+/// build says so. What a build keeps and what it publishes are both this file.
+fn shipped(staged: string, tools: Toolchain) -> Shrunk {
+    if tools.target == "" || tools.wasm_opt == "" { return Shrunk { path: staged, said: "" } }
     let shrunk = staged_beside(staged)
-    if !wasm_opt_tries(staged, shrunk).any((words) -> avra_spawn_status(tools.wasm_opt, words) == 0) {
+    if !wasm_opt_tries(staged, shrunk).any((words) -> wasm_opt_runs(tools.wasm_opt, words)) {
         let _ = remove(shrunk)
-        return staged
+        return Shrunk { path: staged, said: unoptimized(tools.wasm_opt) }
     }
     let _ = remove(staged)
-    shrunk
+    Shrunk { path: shrunk, said: "" }
 }
 
 /// The declarations a program's module brings that nothing standing makes — each once.
@@ -1162,6 +1183,14 @@ fn unpublished(path: string) -> string {
 
 fn module_unreadable(path: string) -> string {
     "avra: the entry's module could not be read back — ${path}"
+}
+
+fn unoptimized(tool: string) -> string {
+    "warning: `${tool}` refused the linked module under the features its link uses, so it ships unoptimized — a size cost, never another program"
+}
+
+fn no_fallback(tool: string) -> string {
+    "warning: `${tool}` could not asyncify the module, so none ships for a host that cannot suspend a stack"
 }
 
 fn wasm_unsupported(names: List<string>) -> string {
