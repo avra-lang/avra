@@ -41,6 +41,18 @@ type Focus = { path: string, at: int }
 /// A terminal's size in cells.
 type Size = { width: int, height: int }
 
+/// A size, named once.
+fn sized(width: int, height: int) -> Size { Size { width: width, height: height } }
+
+/// `x` held between `lo` and `hi`.
+fn clamped(x: int, lo: int, hi: int) -> int {
+    when {
+        x < lo -> lo
+        x > hi -> hi
+        _ -> x
+    }
+}
+
 /// An app in a terminal `width` cells wide: the screen its last paint
 /// showed, who holds the focus, and whether the input has ended.
 export type Terminal = {
@@ -71,7 +83,7 @@ export fn terminal<V: View>(
     let nowhere: Screen? = null
     let made = Terminal {
         shown: shown(view, rows: height, spaced: true),
-        size: Cell.new(Size { width: width, height: height }),
+        size: Cell.new(sized(width, height)),
         on_screen: nowhere,
         leaves: unspoken,
         interrupts: stopped,
@@ -98,7 +110,7 @@ export fn terminal_in_place<V: View>(
 ) -> Terminal {
     let made = Terminal {
         shown: shown(view, rows: height, spaced: true),
-        size: Cell.new(Size { width: width, height: height }),
+        size: Cell.new(sized(width, height)),
         on_screen: screen,
         leaves: leaves,
         interrupts: interrupts,
@@ -368,7 +380,7 @@ impl Terminal {
     /// The terminal changed size: the screen is cleared, the window refitted
     /// and the whole screen written again.
     fn resized(width: int, height: int) {
-        self.size.set(Size { width: width, height: height })
+        self.size.set(sized(width, height))
         let screen? = self.on_screen else { return }
         screen.resized()
         let _ = self.fit()
@@ -418,7 +430,7 @@ impl Terminal {
         let l? = self.listed_nth(nth) else { return }
         let size = l.to - l.from
         let last = if l.count - size < 0 { 0 } else { l.count - size }
-        let from = if l.from + by < 0 { 0 } else if l.from + by > last { last } else { l.from + by }
+        let from = clamped(l.from + by, 0, last)
         let _ = self.windowed(l, from, from + size)
     }
 
@@ -433,7 +445,7 @@ impl Terminal {
     fn slid(l: Listed, from: int) {
         let size = l.to - l.from
         let last = if l.count - size < 0 { 0 } else { l.count - size }
-        let at = if from < 0 { 0 } else if from > last { last } else { from }
+        let at = clamped(from, 0, last)
         let _ = self.windowed(l, at, at + size)
         let on = self.reachable()
         let first? = on.first() else { return }
