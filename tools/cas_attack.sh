@@ -2,8 +2,9 @@
 # THE SHARED CONTENT STORE, ATTACKED ACROSS PROCESSES (DB 11). Two store roots under one
 # AVRA_CACHE_DIR keep the same 5 MB value: the shared store holds ONE blob, both roots are
 # registered as its readers, and a second process reads the value back. A deleted blob is a
-# MISS, never an error, and the next keep puts it back. `avra cache gc` frees a blob no live
-# store names and keeps one that is named. Every phase is a process of its own, and a phase
+# MISS, never an error, and the next keep puts it back. `avra cache clean` sweeps the shared
+# store: it frees a blob no live store names and keeps one that is named. A blob removed under
+# a live reader is a miss too. Every phase is a process of its own, and a phase
 # that asserts nothing would pass vacuously, so the script first holds the assertion to a
 # phase that must FAIL (the miss phase while the blob stands).
 set -u
@@ -27,15 +28,17 @@ phase put | grep -q "1/1 tests passed" && say "two roots kept the value" || fail
 [ "$(readers)" = 2 ] && say "both roots are registered as readers" || fail "$(readers) readers registered, not two"
 phase read | grep -q "1/1 tests passed" && say "a second process reads the value back" || fail "the value did not read back"
 phase miss | grep -q "1/1 tests passed" && fail "the miss phase passed while the blob stands: the assertion examines nothing" || say "the miss phase fails while the blob stands"
-out=$(build/avra cache gc 2>&1); echo "$out" | grep -q "freed 0 blob" && say "gc keeps a blob a live store names" || fail "gc freed a named blob: $out"
-[ "$(blobs)" = 1 ] || fail "gc left $(blobs) blobs"
+out=$(build/avra cache clean 2>&1); echo "$out" | grep -q "shared store kept .* freed 0 blob" && say "clean keeps a blob a live store names" || fail "clean freed a named blob: $out"
+[ "$(blobs)" = 1 ] || fail "clean left $(blobs) blobs"
 find "$D/cache/cas" -mindepth 2 -maxdepth 2 -type f -size 5242880c -delete
 phase miss | grep -q "1/1 tests passed" && say "a deleted blob is a miss, never an error" || fail "a deleted blob was not a miss"
 phase again | grep -q "1/1 tests passed" && say "the next keep puts the blob back" || fail "the blob was not put back"
 [ "$(blobs)" = 1 ] && say "one blob again" || fail "$(blobs) blobs after the keep"
+phase removed | grep -q "1/1 tests passed" && say "a blob removed under a live reader is a miss, never a wrong answer" || fail "a removed blob was not a miss"
+phase again | grep -q "1/1 tests passed" || fail "the blob was not put back after the removal"
 find "$D/stores" -depth -delete
 mkdir -p "$D/stores"
-out=$(build/avra cache gc 2>&1); echo "$out" | grep -q "freed 1 blob" && say "gc frees a blob no live store names" || fail "gc did not free the orphan: $out"
+out=$(build/avra cache clean 2>&1); echo "$out" | grep -q "shared store kept .* freed 1 blob" && say "clean frees a blob no live store names" || fail "clean did not free the orphan: $out"
 [ "$(blobs)" = 0 ] && say "no blob stands" || fail "$(blobs) blobs after the sweep"
 [ $fails -eq 0 ] || { echo "cas-attack: $fails of $steps FAILED"; exit 1; }
 echo "cas-attack: $steps steps passed"

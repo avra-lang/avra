@@ -1,8 +1,9 @@
 // THE SHARED CONTENT STORE ACROSS PROCESSES (DB 11). `tools/cas_attack.sh` runs this file once
 // per phase, each a process of its own: two store roots keep one 5 MB value, a second process
-// asks it back, and a deleted blob answers a miss the next keep puts back. Run bare, no phase
-// is named and nothing is asserted.
-use @std.io.{env}
+// asks it back, and a deleted blob answers a miss the next keep puts back,
+// in this process as in the next. Run bare, no phase is named and nothing is asserted.
+use @std.io.{env, remove}
+use core.{digest_of_octets}
 use compiler.store.{Stored, node_key, store_at}
 
 fn phase() -> string { env("AVRA_CAS_PHASE") ?? "" }
@@ -12,6 +13,15 @@ fn scratch() -> string { env("AVRA_CAS_DIR") ?? "" }
 fn input_key() -> string { node_key(Stored.Unit, ["cas-attack"]) }
 
 const input_length: int = 5242880
+
+/// The blob a value is kept as, under the shared store this process was given.
+fn blob_of(value: string) -> string {
+    let d = digest_of_octets(value.bytes())
+    "${env("AVRA_CACHE_DIR") ?? ""}/cas/${d.substring(0, 2)}/${d}"
+}
+
+/// Whether the file was removed.
+fn gone(path: string) -> bool { match remove(path) { .Ok(_) -> true, .Err(_) -> false } }
 
 /// A 5 MB value: a sixteen-octet word doubled up, then cut.
 fn five_megabytes() -> string {
@@ -33,6 +43,10 @@ spec "the shared content store, across processes" {
                     b.get(Stored.Unit, input_key()) == big,
                 "read" -> a.get(Stored.Unit, input_key()) == big && b.get(Stored.Unit, input_key()) == big,
                 "miss" -> a.get(Stored.Unit, input_key()) == null && b.get(Stored.Unit, input_key()) == null,
+                "removed" -> a.keep(Stored.Unit, input_key(), big, []) &&
+                    a.get(Stored.Unit, input_key()) == big &&
+                    gone(blob_of(big)) &&
+                    a.get(Stored.Unit, input_key()) == null,
                 "again" -> a.keep(Stored.Unit, input_key(), big, []) && a.get(Stored.Unit, input_key()) == big,
                 _ -> true,
             }
