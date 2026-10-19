@@ -39,7 +39,7 @@ error[parse.expected]: this cannot start or continue a `stmt`
 1 │ }
   · ┬
 ──╯
-help: it could begin with `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect` — and 52 more
+help: it could begin with `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect` — and 53 more
 ```
 
 ## parse.trailing
@@ -4699,6 +4699,12 @@ help: a callback under a cancel answers zero — answer a word, or read nothing 
 a host fn defines the symbol its name spells — its seats and its answer are words and pointers a host hands over, plain
 
 No witness yet.
+
+## type.provided_kind
+
+`provided` names its kind — the file's octets do not choose it
+
+No witness here: `provided` is `@std/meta`'s, which a lone source cannot import — the golden is features/fns/tests/provided_test.av.
 
 ## type.embed_literal
 

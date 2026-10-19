@@ -3214,6 +3214,21 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — a record literal has no field shorthand
+
+`Size { width, height }` for `Size { width: width, height: height }` is F0100 "expected BREAK
+while parsing `stmt`" at the `,`. The wanting site is `terminal.av`'s `sized(width, height)`,
+a helper that exists only to name the long spelling once (three sites built it by hand). It is
+the FIELD PUNNING entry above: the type-name lexical class is what it waits on.
+
+### Interim record — an `Int` has no `clamp`
+
+`x.clamp(lo, hi)` is spelled by hand as a `when` ladder (and was an `if`/`else if` chain
+the idiom ratchet refuses). Wanting sites: `terminal.av`'s `wheel` and `slid` (the window
+held inside the rows there are), both through its one `clamped(x, lo, hi)`; the same helper is
+written in `compiler/backend/interp_host.av` and `@std/compress`. The want: the method on `int`,
+and the three copies die.
+
 ### Interim record — a quote wants a record literal over a computed field list
 
 `quote` builds a record only by a fixed field name (`seed with { ${fname}:

@@ -305,6 +305,21 @@ it red, so none is green by accident.
     fetched, and the clean artifact exports no `asyncify_*` symbol
     (a size keeper: a clean build that grew them is red).
 
+## The module exports nothing of the scheduler
+
+The host calls back into two scheduler fns: the entry a fresh task starts
+at and, for the fallback, the allocator of an unwind buffer. Neither is an
+export. Each port call (`switch`, `idle`) passes them as FUNCTION-TABLE
+INDICES, and the host reaches them through `__indirect_function_table`,
+which every wasm link exports (`-Wl,--export-table`). An export is a root
+the linker keeps whether or not anything reaches it; an address taken inside
+a reachable fn is kept exactly when that fn is. So a page that neither
+spawns nor waits links no scheduler, whatever its units' members carry: the
+linker's own GC is the reachability. The runtime's two settings readers
+(trace, tick) run lazily at the scheduler's first start on a hosted target,
+for the same reason: a constructor is a root too. `make ui-board` counts the
+board's `avra_host` and `path_open` imports and refuses any.
+
 ## Open
 
 - Cancel and `within` across an unwind: the cancel flag must be observed

@@ -15,6 +15,7 @@ import sys
 # A trailing slash is a directory; any other entry is one file.
 READS = {
     "runtime-keep": ("runtime/", "Makefile", "tools/memcap.sh"),
+    "layout-oracle": ("packages/std-ui/", "packages/std-text/", "tools/layout-oracle/", "tools/layout_oracle.sh"),
 }
 
 
@@ -36,6 +37,13 @@ def self_test():
         ("runtime-keep", "pull_request", [], False),
         ("runtime-keep", "pull_request", ["runtimes/x.c"], False),
         ("runtime-keep", "push", [], True),
+        ("layout-oracle", "pull_request", ["packages/std-ui/src/place/solve.av"], True),
+        ("layout-oracle", "pull_request", ["packages/std-ui/src/realize/html/css.av"], True),
+        ("layout-oracle", "pull_request", ["packages/std-text/src/display.av"], True),
+        ("layout-oracle", "pull_request", ["tools/layout-oracle/oracle.mjs"], True),
+        ("layout-oracle", "pull_request", ["packages/cli/src/main.av", "docs/x.md"], False),
+        ("layout-oracle", "pull_request", ["packages/std-uix/a.av"], False),
+        ("layout-oracle", "push", [], True),
         ("runtime-keep", "push", ["packages/cli/src/main.av"], True),
         ("runtime-keep", "workflow_dispatch", [], True),
     ]

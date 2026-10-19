@@ -27,7 +27,8 @@ console.log = real;
 check("fd_write answers 0", rc, 0);
 check("it printed the bytes the iovec named", said, ["hello"]);
 check("and reported the count it wrote", dv.getUint32(128, true), 5);
-check("an unknown call is simply absent, never a no-op", typeof wasi.path_open, "undefined");
+check("a program opens nothing: path_open has no directory to open under", wasi.path_open(3, 0, 0, 0, 0, 0n, 0n, 0, 0), 8);
+check("an unknown call is simply absent, never a no-op", typeof wasi.sock_accept, "undefined");
 
-console.log(fails === 0 ? "wasi: 4/4" : `wasi: ${fails} FAILED`);
+console.log(fails === 0 ? "wasi: 5/5" : `wasi: ${fails} FAILED`);
 process.exit(fails === 0 ? 0 : 1);

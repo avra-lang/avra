@@ -9,12 +9,19 @@
 //! -> … } else { cx -> … }`), so a site cannot open a bracket it
 //! does not close; the open/arm/close verbs remain for the folds and
 //! switches whose arms are not two.
-use core.{Reg, Ins, Type, TypeId, ExprId, StmtId, BinOp, UnOp, RtSig, RtFlag, same_type}
+use core.{Reg, Ins, Type, TypeId, ExprId, StmtId, BinOp, UnOp, Rounding, RtSig, RtFlag, same_type}
 use features.{MethodCall, LoopMark}
 
 // ── Constants ───────────────────────────────────────────────────
 
 impl LowerCx {
+    /// A float constant, given as its IEEE-754 bits.
+    mut fn float_const(bits: int) -> Reg {
+        let r = self.mint_shape(Type.Float)
+        self.emit(Ins.ConstFloat(r, bits))
+        r
+    }
+
     mut fn const_int(n: int) -> Reg {
         let r = self.mint_shape(Type.Int)
         self.emit(Ins.ConstInt(r, n))
@@ -93,6 +100,14 @@ impl LowerCx {
     mut fn bin_at(e: ExprId, op: BinOp, a: Reg, b: Reg) -> Reg {
         let dst = self.result(e)
         self.emit(Ins.Bin(dst, op, a, b))
+        dst
+    }
+
+    /// A float rounded by `mode` to the int it names, minted `Type.Int`.
+    /// The caller has checked that the float is in range.
+    mut fn float_int(mode: Rounding, src: Reg) -> Reg {
+        let dst = self.mint_shape(Type.Int)
+        self.emit(Ins.Un(dst, UnOp.ToInt(mode), src))
         dst
     }
 

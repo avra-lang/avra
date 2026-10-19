@@ -3,6 +3,7 @@
 //! one makes the objects of the files that moved and links them with the ones
 //! the store holds for the rest.
 use core.{
+    EmbedKind,
     new_digest,
     digest_text,
     digest_key,
@@ -40,6 +41,7 @@ use compiler.backend.{
     not_closed,
     program_closed,
     unsupported_on_wasm,
+    runs_tasks,
 }
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.memory.{sound_checked}
@@ -140,6 +142,24 @@ fn wasm_opt_tries(linked: string, shrunk: string) -> List<List<string>> {
     [["--enable-${f}" for f in WASM_FEATURES].concat(shrink), ["--all-features"].concat(shrink)]
 }
 
+/// THE FALLBACK FOR A HOST THAT CANNOT SUSPEND A STACK: the same module with
+/// asyncify over the two host imports a hosted scheduler parks through, the
+/// spellings to try in the order `wasm_opt_tries` tries them.
+const ASYNCIFIED = ["--asyncify", "--pass-arg=asyncify-imports@avra_host.switch,avra_host.idle"]
+
+fn asyncify_tries(shipped: string, out: string) -> List<List<string>> {
+    let words = ASYNCIFIED.concat(["-Oz", shipped, "-o", out])
+    [["--enable-${f}" for f in WASM_FEATURES].concat(words), ["--all-features"].concat(words)]
+}
+
+/// Where the fallback of `binary` stands: beside it, `app.wasm` to `app.asyncify.wasm`.
+export fn fallback_name(binary: string) -> string {
+    if binary.ends_with(".wasm") { "${binary.substring(0, binary.length - 5)}.asyncify.wasm" } else { "${binary}.asyncify" }
+}
+
+/// The key the fallback of a kept binary is kept under.
+fn fallback_key(key: string) -> string { "${key}.asyncify" }
+
 /// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
 /// where it stands for the link, and the source the link orders it by.
 type Made = { which: Owned, key: string, obj: string, source: string }
@@ -167,7 +187,7 @@ export type CaseHome = { call: CaseCall, path: string }
 /// the linker the host found, the stamp of the driver of each tool it runs —
 /// never what a driver runs in its turn — and the linker that driver is told
 /// to run (`ld`, its own choice when empty).
-export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "" }
+export type Toolchain = { opt: string, runtime: string, linker: string, tools: List<Stamp>, target: string = "", reactor: bool = false, wasm_opt: string = "", debug: bool = false, ld: string = "", fallback: bool = false }
 
 impl Workspace {
     /// THE PRODUCING COMPILER'S OWN IDENTITY — memoized once a workspace, so
@@ -387,7 +407,7 @@ impl Toolchain {
     /// host's own build is the empty mode.
     fn mode() -> string {
         if self.target == "" { return "" }
-        "${self.target}${marked(self.reactor, "+reactor")}${marked(self.wasm_opt != "", "+opt")}${marked(self.debug, "+debug")}"
+        "${self.target}${marked(self.reactor, "+reactor")}${marked(self.wasm_opt != "", "+opt")}${marked(self.debug, "+debug")}${marked(self.fallback, "+fallback")}"
     }
 }
 
@@ -469,12 +489,28 @@ impl Workspace {
             let _ = avra_spawn_status("chmod", ["+x", staged])
             if !published(staged, binary) { return null }
         }
+        self.fallback_kept(store, key, binary, tools)
         BuildOutcome {
             binary: binary,
             warnings: warnings,
             reused: true,
             host_fns: [line for line in host_fns.split("\n") if !line.is_empty()],
         }
+    }
+
+    /// The fallback a kept binary was built with, placed beside it; none standing
+    /// when the kept build made none.
+    fn fallback_kept(store: Store, key: string, binary: string, tools: Toolchain) {
+        let place = fallback_name(binary)
+        if !tools.fallback || !store.has(Stored.Bin, fallback_key(key)) {
+            let _ = remove(place)
+            return
+        }
+        let staged = staged_beside(place)
+        if !store.place(Stored.Bin, fallback_key(key), staged) { return }
+        // LICENSED input.staged_output: marks the program just placed executable, never an input of what is built
+        let _ = avra_spawn_status("chmod", ["+x", staged])
+        let _ = published(staged, place)
     }
 
     /// EVERY PACKAGE A PROGRAM'S KEY COVERS, each as `src<TAB>root`: the admitted
@@ -522,7 +558,10 @@ impl Workspace {
     /// text's digest — or why it can no longer be read, which is a
     /// different answer and never a trap.
     fn embed_said(path: string) -> string {
-        match self.embed_read(path) { .Ok(text) -> digest_of_file(text), .Err(why) -> "!${why}" }
+        match self.embed_read(path, EmbedKind.Octets) {
+            .Ok(octets) -> "${octets.length}.${digest_of_octets(octets)}",
+            .Err(why) -> "!${why}",
+        }
     }
 
     /// An embedded file's line of the key.
@@ -788,6 +827,7 @@ impl Workspace {
         clock.mark("link")
         let ready = shipped(staged, tools)
         let key = self.kept_key(under)
+        let fallback = self.fallback_made(d, full, ready, key, binary, tools)
         let _ = d.store.keep(Stored.Warn, key, d.warnings, [key])
         let host_fns = self.host_fn_lines([a.view.file for a in d.program.files])
         let reads = linked_reads(self.linked_files(tools.runtime, tools.target), tools.tools)
@@ -798,6 +838,7 @@ impl Workspace {
         }
         let _ = d.store.keep_file(Stored.Bin, key, ready, [key])
         if !published(ready, binary) { fail BuildError.Unpublished(binary) }
+        self.fallback_published(fallback, binary)
         BuildOutcome {
             binary: binary,
             warnings: d.warnings,
@@ -805,6 +846,37 @@ impl Workspace {
             phases: d.timed(clock.spans),
             host_fns: host_fns,
         }
+    }
+
+    /// THE FALLBACK, when this build asked for one and the program runs tasks: the
+    /// shipped module asyncified, kept beside the binary's own bytes. Null when
+    /// none is made — a program that never parks has nothing to unwind.
+    fn fallback_made(
+        d: Derived,
+        full: Lowered,
+        shipped_to: string,
+        key: string,
+        binary: string,
+        tools: Toolchain,
+    ) -> string? {
+        if !tools.fallback || tools.wasm_opt == "" || !runs_tasks(full) { return null }
+        let out = staged_beside(fallback_name(binary))
+        if !asyncify_tries(shipped_to, out).any((words) -> wasm_opt_runs(tools.wasm_opt, words)) {
+            let _ = remove(out)
+            return null
+        }
+        let _ = d.store.keep_file(Stored.Bin, fallback_key(key), out, [key])
+        out
+    }
+
+    /// The fallback onto its place, or what stood there from an earlier build gone.
+    fn fallback_published(staged: string?, binary: string) {
+        let place = fallback_name(binary)
+        let made? = staged else {
+            let _ = remove(place)
+            return
+        }
+        let _ = published(made, place)
     }
 
     /// The program's host fns, each as `package name`, in name order.
@@ -1140,4 +1212,10 @@ fn read_entry(line: string) -> ManifestEntry? {
         tag == "O" -> ManifestEntry.Object(first, second)
         _ -> null
     }
+}
+
+/// Whether `wasm-opt` ran clean over `words`.
+fn wasm_opt_runs(tool: string, words: List<string>) -> bool {
+    // LICENSED input.staged_output: post-processes the program just built, never an input of what is built
+    avra_spawn_status(tool, words) == 0
 }

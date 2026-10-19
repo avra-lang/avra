@@ -1,8 +1,10 @@
 // proves: a `within` written in a `defer` that runs under a cancel is
 // that cleanup's own limit — the wait under it is not cut by the cancel
+use @std.task.{open_channel}
 use @std.time.{ms, secs, sleep}
 
 let seen = Cell.new(0)
+let up = open_channel<int>(1)
 let t = spawn {
     defer {
         seen.set(seen.get() + 1)
@@ -12,10 +14,11 @@ let t = spawn {
         } catch _ -> 0
         seen.set(seen.get() + waited)
     }
+    let _ = up.sink.post(1)
     sleep(secs(60))
     0
 }
-sleep(ms(1))
+let _ = up.source.next()
 t.cancel()
-sleep(ms(50))
+let _ = t.await catch c -> 0
 "${t.done} ${seen.get()}"

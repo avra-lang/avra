@@ -78,7 +78,16 @@ use features.{
     Instanced,
 }
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
-use core.{StmtId, ModulePath, watched_kernel, leaves_traced, db_verified}
+use core.{
+    EmbedKind,
+    EmbedBase,
+    ForeignRange,
+    StmtId,
+    ModulePath,
+    watched_kernel,
+    leaves_traced,
+    db_verified,
+}
 use diagnostics.{
     SourceFile,
     new_source_file,
@@ -1080,7 +1089,12 @@ fn built(
             () -> ws.hold.typed_by.get(),
             (modules: List<string>) -> ws.minted_modules(modules),
         )
-    ws.decls.arm_embeds((f: FileId, rel: string) -> ws.embed_placed(f, rel))
+    ws
+        .decls
+        .arm_embeds(
+            (f: FileId, rel: string, kind: EmbedKind, base: EmbedBase) -> ws
+                .embed_placed(f, rel, kind, base),
+        )
     ws.decls.arm_package((f: FileId) -> ws.package_admitted(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_entry(() -> ws.entry_of() != null)
@@ -1587,15 +1601,32 @@ impl Workspace {
         let t0 = self.clock()
         let words = self.block_words(f, first)
         self.timed("sublang", t0)
-        if words.is_empty() { return self.with_import_remedies(first, words) }
+        if words.is_empty() { return self.noted_origins(f, self.with_import_remedies(first, words)) }
         let t1 = self.clock()
         let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
         self.timed("ast", t1)
+        self.noted_origins(f, p)
+    }
+
+    /// Each run of nodes written elsewhere — a template's, a sublanguage's, a builder's —
+    /// filed under the file that wrote it, so its names resolve there.
+    fn noted_origins(f: FileId, p: Parsed) -> Parsed {
         for r in p.store.foreign.get() {
-            let origin = self.file_id(r.path)
+            let origin? = self.written_file(r) else { continue }
             if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
         }
         p
+    }
+
+    /// The file a run was written in: its path, or — for a builder that names a
+    /// module — that module's first file, its package admitted.
+    fn written_file(r: ForeignRange) -> FileId? {
+        if r.module.is_empty() { return self.file_id(r.path) }
+        let m = module_path(r.module.split("."))
+        let key? = m.package() else { return null }
+        if !self.std_admitted(key) && !self.packages().any(it.key == key) { return null }
+        let first? = self.module_files(m).first() else { return null }
+        self.file_id(first)
     }
 
     /// A parse that stops on a component nobody imported says where it
