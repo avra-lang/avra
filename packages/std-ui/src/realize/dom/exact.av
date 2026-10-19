@@ -91,6 +91,14 @@ fn structural_of(e: Element) -> List<ptr> {
 /// was drawn by a composition.
 fn opaque_in(page: List<Element>) -> bool { page.any(opaque_element(it)) }
 
+/// The path of each node the page could not place.
+fn opaque_paths(page: List<Element>) -> List<string> { [p for e in page for p in opaque_paths_of(e)] }
+
+fn opaque_paths_of(e: Element) -> List<string> {
+    let el? = e.tagged() else { return [] }
+    if el.opaque.of { [e.reads()] } else { [] }.concat(opaque_paths(el.kids))
+}
+
 fn opaque_element(e: Element) -> bool {
     let el? = e.tagged() else { return false }
     el.opaque.of || el.kids.any(opaque_element(it))
@@ -114,6 +122,7 @@ export type Watch = {
     structural: List<ptr>,
     opaque: bool,
     said: Cell<string>,
+    cause: string,
 }
 
 fn key_of(cell: ptr) -> string { "${avra_box_key(cell)}" }
@@ -139,6 +148,7 @@ export fn watching(page: List<Element>) -> Watch {
         structural: structural,
         opaque: opaque_in(page) || placed.length != readings_in(page),
         said: Cell.new(""),
+        cause: "${opaque_paths(page).join(", ")} (${placed.length} of ${readings_in(page)} readings placed)",
     }
 }
 
@@ -186,7 +196,7 @@ impl Watch {
         if avra_turn_next() == 1 { self.observed_again() }
         let changed = taken()
         if self.opaque {
-            self.said.set("the page holds a node the compiler could not place")
+            self.said.set("the page holds a node the compiler could not place: ${self.cause}")
             return null
         }
         if self.structural_among(changed) {
