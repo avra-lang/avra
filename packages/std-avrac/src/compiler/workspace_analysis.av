@@ -1017,8 +1017,23 @@ impl Workspace {
         Lifted,
         Unsettled,
     > {
+        self.lifted_at(self.lift_ask_of(d, f, s, call, args))
+    }
+
+    /// The refusal a lift HELD, in its own words. A second ask of a refused lift
+    /// answers `Spoken` — the first spoke — but an expansion's voices are wiped
+    /// when the expansion runs again, so the one that must speak again asks here.
+    fn lift_refusal(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Unsettled? {
+        match self.relation(Family.Lifted).ask(self.lift_ask_of(d, f, s, call, args)) {
+            .Reuse(held) -> match lifted_of(held) { .Refused(why) -> why, .Crossed(_) -> null },
+            .Compute or .Cycle -> null,
+        }
+    }
+
+    /// The query id of one annotation call, registered on first sight.
+    fn lift_ask_of(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> int {
         let name = "lift\$${f.index}\$${call.index}\$${d.index}"
-        let id = match interned(self.lift_asks_index, name, self.lift_asks.get().length) {
+        match interned(self.lift_asks_index, name, self.lift_asks.get().length) {
             .Found(id) -> {
                 self.lift_asks.set_at(id, lift_ask(name, d, f, s, call, args))
                 id
@@ -1028,7 +1043,6 @@ impl Workspace {
                 id
             },
         }
-        self.lifted_at(id)
     }
 
     /// One annotation query. The kernel's cycle verdict is the

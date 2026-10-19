@@ -1114,8 +1114,18 @@ impl Machine {
     /// into this run's values — the door every OTHER row reaches C
     /// through, reached here into the compiler instead.
     fn type_named_val(name: string) -> Val {
-        let r = self.named(name)
+        let r = self.named_unbilled(name)
         self.val_of(r.heap, r.answer)
+    }
+
+    /// The workspace answers from where it stands, and what it builds to
+    /// answer (types, signatures) stays with the workspace: a run is billed
+    /// for what it makes, never for what the compiler made on its behalf.
+    fn named_unbilled(name: string) -> Lifted {
+        let before = avra_mem_live()
+        let r = self.named(name)
+        self.mem_base = self.mem_base + (avra_mem_live() - before)
+        r
     }
 
     fn trapped(msg: string) {
