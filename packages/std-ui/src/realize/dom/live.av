@@ -5,6 +5,8 @@
 use tree.identity.{NodeId, Owner}
 use tree.node.{Node, Action, Said}
 use tree.seats.{Seat}
+use tree.standing.{Standing, standing}
+use tree.view.{View, rooted}
 use realize.html.element.{Element, lowered}
 use realize.html.css.{CssRule, distinct_rules, page_sheet, root_vars, rules_of}
 use realize.dom.patch.{Patch, Heard, Held, diff, held_as, listening_of}
@@ -30,8 +32,10 @@ export type Live = {
     heard: Cell<List<Heard>> = Cell.new([]),
     told: Cell<List<int>> = Cell.new([]),
     watch: Cell<Watch?> = Cell.new(null),
+    why: Cell<string> = Cell.new(""),
     answered: Cell<int> = Cell.new(0),
     declined: Cell<int> = Cell.new(0),
+    stands: Standing = standing(),
 }
 
 /// A page nothing was painted on.
@@ -115,8 +119,12 @@ impl Live {
     /// What the exact path says of this turn: the readings under the cells
     /// written since the last paint. None before a paint has placed any.
     fn exact_turn() -> List<Patch>? {
-        let w? = self.watch.get() else { return null }
+        let w? = self.watch.get() else {
+            self.why.set("nothing was painted yet")
+            return null
+        }
         let said = w.turn()
+        self.why.set(w.said.get())
         if said == null { self.declined.set(self.declined.get() + 1) } else { self.answered.set(self.answered.get() + 1) }
         said
     }
@@ -124,6 +132,9 @@ impl Live {
     /// How many turns the exact path answered and how many it declined (a
     /// structural cell was written, or the page cannot be placed), since this
     /// page was made.
+    /// Why the exact path declined the last turn, or empty when it answered.
+    fn exact_why() -> string { self.why.get() }
+
     fn exact_counts() -> string { "answered ${self.answered.get()} declined ${self.declined.get()}" }
 
     /// The page's readings, watched anew after a paint: the old watch is let
@@ -189,6 +200,16 @@ impl Live {
 
     /// `patches`, as the frame a host applies.
     fn paint(root: Node, theme: Theme) -> Bytes { frame(self.patches(root, theme), self.told) }
+
+    /// `view` painted on this page: the walk stands where the last paint's
+    /// stood, so an instance the view reaches again keeps its state and a prop
+    /// written to it moves its cells. The page owns that one standing — a
+    /// tree built any other way is a snapshot (`tree_of`), which keeps no
+    /// instance.
+    fn paint_view(view: dyn View, theme: Theme) -> Bytes {
+        self.stands.begun()
+        self.paint(rooted(view.describe(self.stands)), theme)
+    }
 
     /// The host's echo: element `id` spoke `seat`, saying `said`. The
     /// handler the last paint bound there runs; false when nothing

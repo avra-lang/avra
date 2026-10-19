@@ -7,8 +7,16 @@
 //! the pack itself runs. Reads are the spine's property ladder (a
 //! slot read at the field's compile-time index) — zero new
 //! instructions anywhere.
-use core.{ExprId, StmtId, Reg, TypeId, Binding, filled, spread_entry}
-use features.{LowerCx, StructSig, slot_want, StatePlace, site_places_of, structural_places_of}
+use core.{ExprId, StmtId, Reg, TypeId, Binding, filled, flatten, spread_entry}
+use features.{
+    LowerCx,
+    StructSig,
+    slot_want,
+    StatePlace,
+    site_places_of,
+    structural_places_answering,
+    bound_to_receiver,
+}
 use features.cells.{cell_holding}
 
 /// The copy: values evaluate in written order, then the record whole
@@ -200,15 +208,79 @@ fn cells_reg(mut cx: LowerCx, ty: TypeId, regs: List<Reg>) -> Reg {
     cx.grown_box(cx.view.types.shape_of(cx.viewed(ty)), size, regs)
 }
 
-/// The cell of each place the literal's closure reads, or none at all when any
-/// place has no cell to hand over here.
+/// The cell of each place the literal's closure reads, then the cell of each
+/// `state` field of the receiver it reads, or none at all when any read has no
+/// cell to hand over here.
 fn placed_cells(mut cx: LowerCx, e: ExprId) -> List<Reg> {
     let lam? = minted_closure(cx, e) else { return [] }
     let parts? = cx.view.store.lambda_parts(lam) else { return [] }
     let places = site_places_of(cx.view, cx.names, parts.body, cx.decl_places)
     let regs: List<Reg?> = [cell_of_place(cx, lam, p) for p in places]
+    let selves? = receiver_cells(cx, lam, parts.body) else { return [] }
     if regs.any(it == null) { return [] }
-    [r! for r in regs]
+    [r! for r in regs].concat(selves)
+}
+
+/// One use of the receiver a minted closure captured: a field read through it,
+/// or any other use.
+enum SelfUse {
+    Field(name: string)
+    Bare
+}
+
+/// The capture of `lam`'s env that is the method's own receiver, held directly
+/// or through the captures of the closures around it.
+fn receiver_capture(cx: LowerCx, lam: ExprId) -> int? {
+    let cap? = cx.names.capture(lam) else { return null }
+    [j for j, b in cap.sources if bound_to_receiver(cx.names, b)].first()
+}
+
+/// Every use of the capture `j` of `lam` in the subtree, outermost first.
+fn self_uses(cx: LowerCx, lam: ExprId, j: int, e: ExprId) -> List<SelfUse> {
+    match cx.view.store.expr(e) {
+        .Prop(sub, name) if reads_capture(cx, lam, j, sub) -> [SelfUse.Field(name.of)],
+        .Receiver -> if reads_capture(cx, lam, j, e) { [SelfUse.Bare] } else { [] },
+        rest -> flatten([self_uses(cx, lam, j, k) for k in cx.view.store.expr_children(e)]),
+    }
+}
+
+/// Whether the expression is a read of the capture `j` of `lam`.
+fn reads_capture(cx: LowerCx, lam: ExprId, j: int, e: ExprId) -> bool {
+    let b? = cx.names.binding(e) else { return false }
+    match b { .Capture(l, i) -> l == lam && i == j, rest -> false }
+}
+
+/// The `state` slots of the receiver a closure reads, in first-read order:
+/// none when it does not capture the receiver; null when any use of the
+/// receiver is not a read of such a slot, or it is captured another way.
+fn receiver_slots(mut cx: LowerCx, lam: ExprId, body: ExprId) -> List<int>? {
+    let captured = (cx.names.capture(lam)?.sources ?? []).any((b) -> bound_to_receiver(cx.names, b))
+    if !captured { return [] }
+    let j? = receiver_capture(cx, lam) else { return null }
+    let sig? = cx.fields_of(cx.seen(cx.capture_ty(lam, j))) else { return null }
+    let names: List<string?> = [match u { .Field(n) -> n, .Bare -> null } for u in self_uses(cx, lam, j, body)]
+    if names.any(it == null) { return null }
+    let slots: List<int?> = [sig.slot_of(n!) for n in names]
+    if slots.any((s) -> s == null || !sig.state_at(s!)) { return null }
+    deduped_slots([s! for s in slots])
+}
+
+/// The cells those slots hold in the receiver, read in this body.
+fn receiver_cells(mut cx: LowerCx, lam: ExprId, body: ExprId) -> List<Reg>? {
+    let slots? = receiver_slots(cx, lam, body) else { return null }
+    if slots.is_empty() { return [] }
+    let j? = receiver_capture(cx, lam) else { return null }
+    let ty = cx.seen(cx.capture_ty(lam, j))
+    let sig? = cx.fields_of(ty) else { return null }
+    let at? = cx.capture_reg(lam, j) else { return null }
+    [cx.field_read(at, ty, s, sig.types[s]) for s in slots]
+}
+
+/// Each slot once, in first-read order.
+fn deduped_slots(slots: List<int>) -> List<int> {
+    mut out: List<int> = []
+    for s in slots { if !out.contains(s) { out.push(s) } }
+    out
 }
 
 /// The closure the builder minted beside a literal: the node that extends it
@@ -245,7 +317,27 @@ fn cell_of_place(mut cx: LowerCx, lam: ExprId, p: StatePlace) -> Reg? {
 /// `Unknown` for a frame whose code is not one expression.
 fn structural_set(cx: LowerCx) -> List<StatePlace> {
     let roots? = cx.roots else { return [StatePlace.Unknown] }
-    [p for r in roots for p in structural_places_of(cx.view, cx.names, r, cx.decl_structural)]
+    [p for r in roots for p in structural_places_answering(cx.view, cx.names, r, cx.decl_structural, (e) -> prop_heads(cx, e))]
+}
+
+/// The heads of an instance a cell of the instance takes: those whose field its
+/// signature made a `state` — each is written into the cell at every paint.
+fn prop_heads(cx: LowerCx, e: ExprId) -> List<ExprId> {
+    match cx.view.store.expr(e) {
+        .Component(_, heads, _, .Expanded(lit), _, _) -> {
+            let sig? = cx.fields_at(lit) else { return [] }
+            let parts? = cx.view.store.struct_lit_parts(lit) else { return [] }
+            let taken = [j for j in 0..heads.length if j < parts.fields.length && is_state_field(sig, parts.fields[j])]
+            [heads[j] for j in taken].concat([parts.values[j] for j in taken])
+        },
+        rest -> [],
+    }
+}
+
+/// Whether the signature makes the named field a `state` cell.
+fn is_state_field(sig: StructSig, name: string) -> bool {
+    let slot? = sig.slot_of(name) else { return false }
+    sig.state_at(slot)
 }
 
 /// The cells of the frame's structural places, when every one can be handed
@@ -259,8 +351,29 @@ fn structural_cells(mut cx: LowerCx, e: ExprId) -> List<Reg> {
 /// Whether a page cannot place this frame's structural reads: one is a place
 /// with no name, or has no cell to hand over here. Such a subtree is always
 /// painted whole.
-fn opaque_frame(cx: LowerCx) -> bool {
-    !structural_set(cx).all((p) -> placeable(cx, p))
+fn opaque_frame(mut cx: LowerCx) -> bool {
+    !structural_set(cx).all((p) -> placeable(cx, p)) || unplaced_selves(cx)
+}
+
+/// Whether a text the frame says again reads its receiver in a way no cell
+/// answers for: the page could not know when it changed.
+fn unplaced_selves(mut cx: LowerCx) -> bool {
+    let roots? = cx.roots else { return false }
+    ![r for r in roots if says_unplaced(cx, r)].is_empty()
+}
+
+fn says_unplaced(mut cx: LowerCx, e: ExprId) -> bool {
+    let own = match cx.view.store.expr(e) {
+        .Component(_, _, _, .Expanded(lit), _, _) -> unplaced_closure(cx, lit),
+        rest -> false,
+    }
+    own || ![k for k in cx.view.store.walked(e) if says_unplaced(cx, k)].is_empty()
+}
+
+fn unplaced_closure(mut cx: LowerCx, lit: ExprId) -> bool {
+    let lam? = minted_closure(cx, lit) else { return false }
+    let parts? = cx.view.store.lambda_parts(lam) else { return false }
+    receiver_slots(cx, lam, parts.body) == null
 }
 
 /// Whether a place has a cell in THIS body: a top-level state always, a local

@@ -3214,6 +3214,14 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — `Cell<T>` has no spelled form in a pass
+
+A type in a pass is spelled (`cx.type(List<string?>)`), but `types.type(Cell<ty>)` is
+refused ("`Cell<…>` names a declaration — name that binding instead"), so `declare.av`'s `slot_of`
+(the ONE place a `state` field's slot becomes its `Cell`) still spells it by hand,
+`intern(Type.Cell(ty))`, which `style.interned_by_hand` ratchets. The want: `Cell<hole>` in a
+type literal, the way `List`, `Map` and `Opt` already stand, so the wrap reads like the others.
+
 ### Interim record — a record literal has no field shorthand
 
 `Size { width, height }` for `Size { width: width, height: height }` is F0100 "expected BREAK

@@ -28,6 +28,7 @@ use core.{
     FileId,
     Scoped,
     faceted,
+    propped,
 }
 use diagnostics.{refusal, Diag, unread_behind}
 use features.{
@@ -224,12 +225,15 @@ impl TypeCx {
         self.view.types.begin_declare(ty)
         defer { self.view.types.end_declare(ty) }
         let lacking = self.view.decls.lacking(record)
+        let plain = [self.field_type(s, f) for f in fields]
+        let states = [f.state || propped(f.marks) && self.compares_by_value(plain[j]) for j, f in fields]
+        let types = [self.slot_of(plain[j], states[j]) for j in 0..fields.length]
         let own = StructSig {
             names: [f.name.of for f in fields],
-            types: [self.field_slot(s, f) for f in fields],
+            types: types,
             defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
             lacking: lacking,
-            states: [f.state for f in fields],
+            states: states,
         }
         let written = if spreads.is_empty() { own } else { self.spread_into(s, owner, own, spreads) }
         let sig = self.with_carried(s, written)
@@ -466,9 +470,11 @@ impl TypeCx {
     /// The type a field's SLOT holds: a plain field's declared type, a
     /// `state` field's `Cell<T>` — its reads answer the `T` the cell
     /// holds.
-    fn field_slot(s: StmtId, f: Param) -> TypeId {
-        let ty = self.field_type(s, f)
-        if !f.state { return ty }
+    fn field_slot(s: StmtId, f: Param) -> TypeId { self.slot_of(self.field_type(s, f), f.state) }
+
+    /// The slot a field of type `ty` takes: a `state` field's is its `Cell`.
+    fn slot_of(ty: TypeId, state: bool) -> TypeId {
+        if !state { return ty }
         self.view.types.intern(Type.Cell(ty))
     }
 

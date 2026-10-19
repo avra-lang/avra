@@ -47,6 +47,7 @@ export type Tagged = {
     opaque: Opaque = false,
     kids: List<Element> = [],
     crowded: bool = false,
+    says: List<HtmlAttrName> = [],
 }
 
 impl Element {
@@ -180,10 +181,17 @@ fn seat_of(seat: Seat?, step: Step, crowded: bool = false) -> Seat {
 
 /// The parts a lowering makes inside a node, by the step each stands at.
 const text_part = Step.Part("text").spelled()
-const control_part = Step.Part("control").spelled()
-const words_part = Step.Part("words").spelled()
+export const control_part = Step.Part("control").spelled()
+export const words_part = Step.Part("words").spelled()
 
 fn title_part(j: int) -> string { Step.Part(if j == 0 { "title" } else { "title~${j}" }).spelled() }
+
+/// A node's words as a run: always one when the node carries a reading, so
+/// an empty text is a run the page can place and later patch.
+fn said_of(n: Node) -> List<Element> {
+    if n.words() == "" && n.sites.is_empty() { return [] }
+    [Element.Text(Worded { seat: text_part, reads: text_part, content: n.words() })]
+}
 
 /// A run of text, when there are words to say.
 fn said(words: string) -> List<Element> {
@@ -215,6 +223,17 @@ fn words_lead(p: Prim) -> bool {
     }
 }
 
+/// The attribute that says a node's words again: a label names the element
+/// too, unless a name written after it takes the place.
+fn words_attrs(attrs: List<Attribute>) -> List<HtmlAttrName> {
+    let last? = [a for a in attrs if names_element(a)].last() else { return [] }
+    match last { .Label(_) -> [HtmlAttrName.AriaLabel], rest -> [] }
+}
+
+fn names_element(a: Attribute) -> bool {
+    match a { .Name(_) or .Label(_) -> true, rest -> false }
+}
+
 /// A control under its label: the label takes the node's place — its
 /// seat, its key and its classes — and the control inside it takes the
 /// node's attributes and hears its events. The control and its words
@@ -233,7 +252,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
             },
         )
     let words = Element
-        .Tag(Tagged { seat: words_part, reads: words_part, tag: .Span, kids: said(n.words()) })
+        .Tag(Tagged { seat: words_part, reads: words_part, tag: .Span, kids: said_of(n) })
     Element
         .Tag(
             Tagged {
@@ -242,6 +261,10 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 tag: .Label,
                 attrs: node_attrs(n),
                 vars: box_vars(drawn_box(n)),
+                sites: n.sites,
+                says: words_attrs(n.attrs),
+                structural: n.box.structural,
+                opaque: n.box.opaque,
                 kids: if words_lead(n.prim) { [words, control] } else { [control, words] }.concat(kids),
                 crowded: at.crowded,
             },
@@ -274,6 +297,7 @@ fn element(n: Node, at: Seat, kids: List<Element>) -> Element {
                 rests: rests_of(n.attrs),
                 hears: heard(n),
                 sites: n.sites,
+                says: words_attrs(n.attrs),
                 structural: n.box.structural,
                 opaque: n.box.opaque,
                 kids: kids,
@@ -293,7 +317,7 @@ fn lower(n: Node, at: Seat) -> List<Element> {
             element(
                 n,
                 at,
-                said(n.words()).concat(headings(n)).concat(lower_each(n, stands, null, at.crowded)),
+                said_of(n).concat(headings(n)).concat(lower_each(n, stands, null, at.crowded)),
             ),
         ],
         .Never -> [element(n, at, [])].concat(lower_each(n, stands, at, at.crowded)),
