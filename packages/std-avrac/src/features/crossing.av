@@ -532,8 +532,8 @@ fn meta_of_param(x: MetaParam, mut heap: MetaHeap) -> MetaVal {
         [
             MetaVal.Text(x.name),
             MetaVal.Text(x.ty),
-            MetaVal.Bool(x.mutable),
-            MetaVal.Bool(x.settled),
+            MetaVal.Bool(x.mark.mutable),
+            MetaVal.Bool(x.mark.settled),
             meta_of_loc(x.at, heap),
             meta_of_kind(x.kind, heap),
         ],
@@ -716,14 +716,14 @@ fn meta_of_kind(k: Kind, mut heap: MetaHeap) -> MetaVal {
     }
 }
 
-/// A seat's promises as @std/meta spells them: the one conversion every
-/// crossed seat takes.
+/// A seat's promises as @std/meta spells them — its mirror of the compiler's
+/// `SeatMark` — the one conversion every crossed seat takes.
 export fn meta_mark(m: SeatMark) -> MetaSeatMark { MetaSeatMark { mutable: m.mutable, settled: m.settled } }
 
 fn meta_of_seat(s: MetaSeatValue, mut heap: MetaHeap) -> MetaVal {
     written(
         "Seat",
-        [meta_of_kind(s.kind, heap), MetaVal.Bool(s.mutable), MetaVal.Bool(s.settled)],
+        [meta_of_kind(s.kind, heap), MetaVal.Bool(s.mark.mutable), MetaVal.Bool(s.mark.settled)],
         heap,
     )
 }
@@ -765,7 +765,7 @@ fn seat_kinds(types: TypeRegistry, params: List<TypeId>, marks: List<SeatMark>) 
 }
 
 fn seat_kind(types: TypeRegistry, p: TypeId, m: SeatMark) -> MetaSeatValue {
-    MetaSeatValue { kind: kind_of(types, p), mutable: m.mutable, settled: m.settled }
+    MetaSeatValue { kind: kind_of(types, p), mark: meta_mark(m) }
 }
 
 /// The shape of an annotation that WROTE no type — an absent seat is

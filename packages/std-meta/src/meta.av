@@ -87,7 +87,7 @@ export enum Kind {
 /// A fn seat: what it carries, and what the callee may do through
 /// it. `mutable` lets the callee write through the seat; `settled`
 /// demands the caller settle its value at compile time.
-export type Seat = { kind: Kind, mutable: bool, settled: bool }
+export type Seat = { kind: Kind, mark: SeatMark = SeatMark {} }
 
 /// What a seat promises, ONE value wherever a seat is written: `mutable` lets
 /// the callee write through it, `settled` demands the caller settle its value.
@@ -122,8 +122,8 @@ impl Seat {
     /// A seat as a fn type spells it — its marks in front when it
     /// carries any.
     fn spelled() -> string {
-        if self.settled { return if self.mutable { "const mut ${self.kind.spelled()}" } else { "const ${self.kind.spelled()}" } }
-        if self.mutable { return "mut ${self.kind.spelled()}" }
+        if self.mark.settled { return if self.mark.mutable { "const mut ${self.kind.spelled()}" } else { "const ${self.kind.spelled()}" } }
+        if self.mark.mutable { return "mut ${self.kind.spelled()}" }
         self.kind.spelled()
     }
 }
@@ -143,7 +143,7 @@ fn answer_spelling(answer: Kind) -> string {
 /// A fn's parameter as an annotation sees it: its name, its type's
 /// spelling and its SHAPE, whether it is a `mut` seat, and whether
 /// it is a `const` seat — settled at compile time.
-export type Param = { name: string, ty: string, mutable: bool, settled: bool, at: Loc?, kind: Kind = Kind.Unspelled("") }
+export type Param = { name: string, ty: string, mark: SeatMark = SeatMark {}, at: Loc?, kind: Kind = Kind.Unspelled("") }
 
 /// A fn declaration as an annotation's first seat receives it. Types
 /// are SPELLED here and SHAPED beside the spelling: `answer` is the
@@ -813,7 +813,7 @@ type Ways = { called: Code, recurred: Code, selves: List<string>, wraps: bool, b
 /// One parameter of a delegated method, keeping its `mut` mark.
 fn seat(t: Type, p: Param) -> Decls {
     let ty = standing(t, p.ty)
-    if p.mutable { return quote { fn _(mut ${p.name}: ${ty}) {} } }
+    if p.mark.mutable { return quote { fn _(mut ${p.name}: ${ty}) {} } }
     quote { fn _(${p.name}: ${ty}) {} }
 }
 
