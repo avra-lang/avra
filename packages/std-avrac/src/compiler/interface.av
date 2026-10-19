@@ -12,6 +12,7 @@ use core.{
     digest_of,
     same_decl,
     ModulePath,
+    DeclKind,
     Type,
     TypeId,
     DeclId,
@@ -515,7 +516,7 @@ impl Workspace {
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
-        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.ran_by(store, f.path))}\t${f.iface}\t${f.idents}\t${f.global}" for f in parts]
+        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.runs_recorded(store, m, f.path))}\t${f.iface}\t${f.idents}\t${f.global}" for f in parts]
         let iface = ifaces_digest([f.iface for f in parts])
         joined(
             ["iface\t${iface}"]
@@ -525,6 +526,13 @@ impl Workspace {
                 .concat(flatten([f.lines for f in parts])),
             "\n",
         )
+    }
+
+    /// What a file's runs read, as its record states it: a read file's from its runs, a held
+    /// file's as the record kept them — it is held against that key, and no run ran to say
+    /// otherwise, so a rewritten record must not forget them.
+    fn runs_recorded(store: Store, m: ModulePath, path: string) -> List<RunRead> {
+        if self.read_here(path) { self.ran_by(store, path) } else { kept_runs(record_places(self, store, m).get(path)) }
     }
 
     /// One file's part of its module's record. A HELD file's lines are copied
@@ -753,7 +761,8 @@ impl Decls {
         let b = self.name_bucket(name)
         if b >= self.cell_names.get().length { self.room_for_cell(b, name) }
         self.bucket_moved(b)
-        self.record_kernel.record_at(self.record_names.get(), b)
+        // a `main` is its own file's: the shared bucket holds one per file
+        if kind == kind_word(DeclKind.Main) { self.rows_read(f) } else { self.record_kernel.record_at(self.record_names.get(), b) }
         by.get(wire_key(kind, owner, name)) ?? []
     }
 
