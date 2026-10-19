@@ -116,7 +116,7 @@ export fn producer_under(parts: List<string?>, toolchain: string) -> Producer {
 /// is read from disk once however many workspaces ask for it. A pack lives while a
 /// workspace holds it (`pack_held`): the last release lets it go, so a process that
 /// makes workspaces of its own prints does not keep every index it ever read. An
-/// emptied entry is a pack let go.
+/// emptied entry is a pack let go; a pack nobody holds is never entered.
 once fn packs() -> Cell<Map<string, List<Pack>>> { map_cell() }
 
 /// How many workspaces hold each pack, by its key.
@@ -130,9 +130,11 @@ fn pack_for(root: string, print: string) -> Pack {
     known ?? mint_pack(at, root, print)
 }
 
+/// A pack is SHARED only while a workspace holds its key; a store made with no holder
+/// owns its pack, which goes with it.
 fn mint_pack(at: string, root: string, print: string) -> Pack {
     let made = pack_at(root, print)
-    packs().put(at, [made])
+    if holders().get().get(at) ?? 0 > 0 { packs().put(at, [made]) }
     made
 }
 
