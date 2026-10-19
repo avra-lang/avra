@@ -742,6 +742,21 @@ jobs:
         with: { name: avra-build }
       - name: built
         run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      # THE BROWSER LEG'S LIBRARIES, here and nowhere else: `make ui-browser` also runs the board in
+      # Playwright's WebKit, whose host libraries (.github/ci/packages-browser.txt) no other job needs.
+      - name: browser libraries
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
+      # Playwright and its WebKit build are fetched once per pinned version, never per run: the pin is
+      # the one `tools/ui_board_browser.sh` installs by.
+      - name: playwright pin
+        id: playwright
+        run: echo "version=$(sed -n 's/^playwright_version=//p' tools/ui_board_browser.sh)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: build/playwright
+          key: playwright-${{ steps.playwright.outputs.version }}-webkit
       - name: keepers
         timeout-minutes: 30
         env:
