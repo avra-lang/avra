@@ -4,6 +4,8 @@
 //! declaration it answers for and its settled hash.
 use core.{
     TypeId,
+    qtrace,
+    db_verified_files,
     sorted_texts,
     fp_str,
     traced,
@@ -21,11 +23,12 @@ use diagnostics.{Diag, Voices}
 use @std.errors.{Loc, Frame, Edit}
 use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Reading, node_key}
+use compiler.work.{work_unknown_section}
 use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
 use features.{SettleRoot, SeatValue}
 use compiler.lower.{code_facts, code_facts_wire}
-use @std.relation.db.{AnswerRef, Leaf}
-use @std.relation.engine.{Key}
+use @std.relation.db.{AnswerRef, Db as RowsDb, Leaf}
+use @std.relation.engine.{Key, edge_of}
 use compiler.families.{Family}
 
 impl Workspace {
@@ -40,6 +43,45 @@ impl Workspace {
             arg: (spelled: string) -> ws.decl_arg(spelled),
             hash: (arg: int) -> ws.db.kernel.hash_forced(key_at(ordinal, arg)),
         }
+    }
+
+    /// The impl sets, spelled by their type: a set is its members' wires, so an impl joining
+    /// or leaving moves it. No kernel key carries it.
+    fn named_impl_sets() -> AnswerRef {
+        let ws = self
+        AnswerRef {
+            name: "ImplSet",
+            family: () -> -1,
+            spelled: (arg: int) -> ws.spelled_decl(arg),
+            arg: (spelled: string) -> ws.decl_arg(spelled),
+            hash: (arg: int) -> ws.impl_set_hash(DeclId { index: arg }),
+        }
+    }
+
+    fn impl_set_hash(target: DeclId) -> int {
+        fp_str(joined(sorted_texts([self.decl_ref(b) for b in self.method_blocks(target)]), ","))
+    }
+
+    /// The key a declaration's signature is read through: its own, or its module's held record
+    /// for a declaration of a held file, which keeps no signature of its own.
+    fn signature_key(d: DeclId) -> Key {
+        let f = self.decls.decl(d).file
+        if !self.is_held(f) { return key(Family.Sig, d.index) }
+        let m = self.decls.file(f).module_id
+        self.held_sig_asked(m)
+        key(Family.HeldSig, m.index)
+    }
+
+    /// A type's method table says what it stood on: its members' signatures and the set they
+    /// make, so a reader of the table stands on who may join it.
+    fn note_methods(k: Key, target: DeclId, blocks: List<DeclId>) {
+        let rdb = self.decls.rows_db.get()
+        let leaves = rdb.leaves_of([self.signature_key(b) for b in blocks])
+        rdb
+            .noted(
+                edge_of(k),
+                leaves?.concat([Leaf.Input("ImplSet", self.decl_ref(target), self.impl_set_hash(target))]),
+            )
     }
 
     /// The signatures, spelled by declaration. A signature settled by no query (a held
@@ -62,7 +104,9 @@ impl Workspace {
     /// A signature's digest is its wire: types by their spelling, never by the interner's index.
     fn sig_digest(arg: int) -> int? {
         if arg < 0 || arg >= self.decls.sigs.get().length { return null }
-        let s? = self.decls.sigs.get()[arg] else { return fp_str("refused") }
+        let s? = self.decls.sigs.get()[arg] else {
+            return if self.is_held(self.decls.decl(DeclId { index: arg }).file) { null } else { fp_str("refused") }
+        }
         fp_str(self.decl_sig_wire(s))
     }
 
@@ -238,6 +282,7 @@ impl Workspace {
         let rdb = self.decls.rows_db.get()
         self.db.kernel.keep_folds()
         rdb.answer_known(self.named_sigs())
+        rdb.answer_known(self.named_impl_sets())
         rdb.answer_known(self.named_consts("ConstTyped", Family.ConstTyped))
         rdb.answer_known(self.named_consts("Settled", Family.Settled))
         let ws = self
@@ -279,6 +324,7 @@ impl Workspace {
         rdb.answer_known(self.named_by_file("Analysis", Family.Analysis))
         rdb.answer_known(self.named_names())
         rdb.answer_known(self.named_by_module("Namespace", Family.Namespace))
+        rdb.answer_known(self.named_by_module("HeldSig", Family.HeldSig))
         rdb.answer_known(self.named_once("References", Family.References))
         rdb.answer_known(self.named_by_bucket())
     }
@@ -588,6 +634,95 @@ impl Workspace {
         )
         if mismatched > 0 { wreck("a valid TypedSaid differs from a fresh typing: a read is missing") }
     }
+}
+
+impl Workspace {
+    /// Each file's manifest, kept under its path: a section per declaration of the reads its
+    /// typed answer stood on. An answer reused this run stood on what it stood on, so its
+    /// section is carried; one that cannot be named is marked unknown, which judges as moved.
+    fn manifest_pass(store: Store) {
+        let rdb = self.decls.rows_db.get()
+        mut homes: Map<string, List<int>> = {}
+        for arg in 0..self.decls.decl_count() {
+            if self.decls.is_builtin(DeclId { index: arg }) { continue }
+            let path = self.decls.file(self.decls.decl(DeclId { index: arg }).file).path
+            homes.set(path, (homes.get(path) ?? []).concat([arg]))
+        }
+        for path, args in homes {
+            let row = node_key(Stored.Unit, ["manifest", path])
+            if db_verified_files() {
+                self
+                    .manifest_verdict(store, path, self.decls.decl(DeclId { index: args[0] }).file, row)
+            }
+            let kept = manifest_sections(store.get(Stored.Unit, row) ?? "")
+            let sections = flatten(
+                [self.declaration_section(rdb, arg, kept.get(self.decl_ref(DeclId { index: arg }))) for arg in args],
+            )
+            let bytes = joined(sections, "\n")
+            if bytes.is_empty() || store.get(Stored.Unit, row) == bytes { continue }
+            let _ = store.keep_reading(Stored.Unit, row, bytes, section_reads(sections))
+        }
+    }
+
+    /// A file's kept manifest judged against the digests standing now, traced beside whether
+    /// the hold read the file: a held file the manifest calls moved is the manifest coarser, a
+    /// read file it calls standing the hold coarser — never a verdict on its own, since only an
+    /// answer that differs from a cold one is a missed read.
+    fn manifest_verdict(store: Store, path: string, file: FileId, row: string) {
+        let lines? = store.reads_of(Stored.Unit, row) else { return }
+        let rdb = self.decls.rows_db.get()
+        let moved = lines.find((l) -> self.read_moved(rdb, l))
+        qtrace(
+            "Q\tmanifest\t${path}\t${if self.is_held(file) { "held" } else { "read" }}\t${if moved == null { "stands" } else { "moved ${read_name(moved!)}" }}\n",
+        )
+    }
+
+    /// Whether a kept read's digest differs from the one standing now; an unnamed read is moved, an
+    /// unanswerable one is not.
+    fn read_moved(rdb: RowsDb, line: string) -> bool {
+        if read_name(line) == UNKNOWN_READ { return true }
+        let now? = rdb.leaf_digest(read_name(line)) else { return false }
+        now != read_digest(line)
+    }
+
+    /// A declaration's manifest section: its typed answer's reads when it ran here, the one
+    /// kept when it was reused, an unknown mark when its reads have no name.
+    fn declaration_section(rdb: RowsDb, arg: int, kept: List<string>?) -> List<string> {
+        let head = "${SECTION_HEAD}${self.decl_ref(DeclId { index: arg })}"
+        let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
+        if reads.is_empty() { return if kept == null { [] } else { [head].concat(kept!) } }
+        let leaves? = rdb.leaves_of(reads) else {
+            work_unknown_section()
+            return [head, "0 ${UNKNOWN_READ}"]
+        }
+        [head].concat(distinct([l.digest_text() + " " + l.id() for l in leaves]))
+    }
+}
+
+/// A section's first line names its declaration.
+const SECTION_HEAD = "@ "
+
+/// The read a section carries when its reads could not be named.
+const UNKNOWN_READ = "?unknown"
+
+/// A kept manifest's sections by declaration, each its lines with the head dropped.
+fn manifest_sections(bytes: string) -> Map<string, List<string>> {
+    mut out: Map<string, List<string>> = {}
+    mut at = ""
+    for line in bytes.split("\n") {
+        if line.starts_with(SECTION_HEAD) {
+            at = line.substring(SECTION_HEAD.length, line.length)
+            out.set(at, [])
+        } else {
+            out.set(at, (out.get(at) ?? []).concat([line]))
+        }
+    }
+    out
+}
+
+/// The reads of a manifest's sections, once each.
+fn section_reads(lines: List<string>) -> List<Reading> {
+    [Reading { name: read_name(l), digest: read_digest(l) } for l in distinct([l for l in lines if !l.starts_with(SECTION_HEAD)])]
 }
 
 impl Workspace {
