@@ -95,6 +95,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import sys
 import tempfile
 
@@ -462,8 +463,17 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
 
 
 # ---- reading the world (gh) --------------------------------------------
+TRIES = 3
+
+
 def _gh(args, check=True):
-    p = subprocess.run(["gh", *args], capture_output=True, text=True)
+    """One gh call; a 5xx from GitHub (a heavy GraphQL read times out under load) is tried
+    again, so one slow answer never fails a whole pass."""
+    for attempt in range(TRIES):
+        p = subprocess.run(["gh", *args], capture_output=True, text=True)
+        if p.returncode == 0 or not re.search(r"HTTP 5\d\d", p.stderr) or attempt == TRIES - 1:
+            break
+        time.sleep(2 * (attempt + 1))
     if check and p.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args)}: {p.stderr.strip()}")
     return p.stdout
@@ -535,10 +545,16 @@ def behind_by(repo, trunk, head):
 
 
 def open_prs(repo):
-    return _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
-                     "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
-                               "title,headRefName,autoMergeRequest,"
-                               "headRefOid,statusCheckRollup,isCrossRepository,createdAt,labels"])
+    """Every open PR. The list is light (a rollup over every PR is the read that times out);
+    a non-draft PR's checks are read one by one, a draft's are never acted on."""
+    prs = _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
+                    "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
+                              "title,headRefName,autoMergeRequest,"
+                              "headRefOid,isCrossRepository,createdAt,labels"])
+    for p in prs:
+        p["statusCheckRollup"] = _gh_json(["pr", "view", str(p["number"]), "-R", repo,
+                                           "--json", "statusCheckRollup"]).get("statusCheckRollup")
+    return prs
 
 
 def _runs(repo):
@@ -581,8 +597,26 @@ def ci_touch(repo, every_runs):
     return {"ci_touched": None, "ci_covered": True}
 
 
+def current_checks(rollup):
+    """The checks of a PR's CURRENT runs: of each workflow's runs on the head, only the newest
+    (a rerun, or a new run for the same head, supersedes the earlier one). A job left `pending`
+    by a superseded run never finishes and would hold the PR out of green for good. Entries
+    that name no run (a commit status) stand."""
+    def run_of(c):
+        m = re.search(r"/runs/(\d+)", c.get("detailsUrl") or c.get("targetUrl") or "")
+        return int(m.group(1)) if m else None
+    newest = {}
+    for c in rollup or []:
+        r = run_of(c)
+        if r is not None:
+            w = c.get("workflowName") or ""
+            newest[w] = max(newest.get(w, 0), r)
+    return [c for c in rollup or []
+            if run_of(c) is None or run_of(c) == newest[c.get("workflowName") or ""]]
+
+
 def test_of(repo, pr):
-    for c in pr.get("statusCheckRollup") or []:
+    for c in current_checks(pr.get("statusCheckRollup")):
         name = c.get("name") or c.get("context")
         if name != "test":
             continue
@@ -622,11 +656,11 @@ def collect(repo, state):
         # cancel it, the group being one per event.
         # A job of the run already failed, or a job is still live: what the aggregate `test` has not said yet.
         p["red"] = any((c.get("conclusion") or "").upper() in ("FAILURE", "TIMED_OUT", "STARTUP_FAILURE")
-                       for c in raw.get("statusCheckRollup") or [])
+                       for c in current_checks(raw.get("statusCheckRollup")))
         p["live"] = any((c.get("status") or "COMPLETED") != "COMPLETED"
-                        for c in raw.get("statusCheckRollup") or [])
+                        for c in current_checks(raw.get("statusCheckRollup")))
         p["test_live"] = any(c.get("status", "COMPLETED") != "COMPLETED"
-                             for c in raw.get("statusCheckRollup") or []
+                             for c in current_checks(raw.get("statusCheckRollup"))
                              if (c.get("name") or c.get("context")) == "test")
         prs.append(p)
     # A green, armed-or-armable PR's merge state is read from the compare, never trusted from
@@ -981,6 +1015,18 @@ def selftest():
         got = [(a["do"], a.get("pr", a.get("run"))) for a in acts]
         if got != want:
             sys.exit(f"pr-watcher: self-test failed on `{name}`: got {got}, want {want}")
+    # a job left pending by a superseded run is not the PR's state: only the newest run of each
+    # workflow counts, so the PR reads green and is refreshed in its turn.
+    old = {"name": "suites (x)", "workflowName": "checks", "status": "IN_PROGRESS", "conclusion": "",
+           "detailsUrl": "https://github.com/o/r/actions/runs/10/job/1"}
+    new = {"name": "test", "workflowName": "checks", "status": "COMPLETED", "conclusion": "SUCCESS",
+           "detailsUrl": "https://github.com/o/r/actions/runs/20/job/2"}
+    other = {"name": "auto", "workflowName": "auto-merge", "status": "COMPLETED", "conclusion": "SUCCESS",
+             "detailsUrl": "https://github.com/o/r/actions/runs/15/job/3"}
+    if current_checks([old, new, other]) != [new, other]:
+        sys.exit("pr-watcher: self-test — a superseded run's pending job was kept")
+    if current_checks([old, other]) != [old, other]:
+        sys.exit("pr-watcher: self-test — another workflow's run was dropped")
     # a lazily computed CLEAN or BLOCKED over a head that lacks main's commits reads BEHIND.
     for field, lacks, want in (("CLEAN", 3, "BEHIND"), ("BLOCKED", 1, "BEHIND"), ("CLEAN", 0, "CLEAN"),
                                ("BLOCKED", 0, "BLOCKED"), ("", None, "CLEAN")):

@@ -12,6 +12,7 @@ use core.{
     Plain,
     Scoped,
     some_list,
+    spread_entry,
 }
 use features.{LangNode, Builder, expr_id_at, zip_defect, aligned_binds, chained_binder, params_at}
 use grammar.{Token}
@@ -98,7 +99,7 @@ fn build_asked_bind(b: Builder) -> Result<LangNode, string> {
 /// and a payload `is` anywhere else has enums name it and refuse.
 fn asked_expr(b: Builder, l: ExprId, asked: PatId) -> Result<LangNode, string> {
     match b.store.pat(asked) {
-        .Variant(_, _) or .Typed(_, _) -> b.wrap_expr(b.expr_node(Expr.Is(l, asked))),
+        .Variant(_, _) or .Typed(_, _) or .Seq(_, _, _) or .Fields(_, _, _, _) -> b.wrap_expr(b.expr_node(Expr.Is(l, asked))),
         rest -> .Err(compare_without_right_side()),
     }
 }
@@ -251,4 +252,10 @@ fn block_after_literal() -> string {
 
 fn second_block() -> string {
     "a second trailing block follows the first — `else { … }` fills the next fn seat, and a block statement starts on its own line"
+}
+
+/// `f(..xs)` — an argument that spreads: the `Named` node `..` wearing its
+/// operand, which the callee's variadic seat takes whole.
+fn build_spread_arg(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Named(Plain(spread_entry), b.expr(0)?))
 }

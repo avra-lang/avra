@@ -1,0 +1,56 @@
+//! A settlement is billed for what ITS OWN run holds. `type_named` asks the
+//! workspace, which builds types and signatures to answer and keeps them —
+//! memory the compiler made on the run's behalf, never the run's. A budget
+//! that counted it made a derive's fate depend on how much the compiler had
+//! already loaded: the same derive settled in 2 MB or was cut off past 5 MiB,
+//! and the cut dropped its declarations without a word.
+use @std.avrac.testing.{ir_of}
+use @std.avrac.core.{Ins, Reg}
+use @std.avrac.features.{Unsettled, Lifted, MetaVal, new_meta_heap, budgets_of}
+use compiler.backend.{run_crossed}
+use compiler.lower.{Body, Lowered}
+
+/// An entry that asks the workspace for `X` before its own answer.
+fn asks_the_workspace() -> Lowered {
+    let base = ir_of("fn f() -> int { 3 }\nf()")
+    let plain: Body = base.fns.first()!
+    let e = plain with { name: base.entry.name }
+    let at = e.reg_types.length
+    let text = Reg { index: at }
+    let answer = Reg { index: at + 1 }
+    // LICENSED compiler.raw_rt_call: the witness hand-builds the one instruction whose row reaches the workspace
+    let kept = e with { ins: [Ins.ConstStr(text, "X"), Ins.CallRt(answer, "avra_type_named", [text])].concat(e.ins), reg_types: e.reg_types.concat([e.reg_types[0], e.reg_types[0]]) }
+    base with { entry: kept, fns: [] }
+}
+
+/// The workspace's answer: absent, after building (and keeping) `bytes` of state.
+fn answered(held: Cell<List<int>>, bytes: int) -> Lifted {
+    held.set([0 for i in 0..bytes / 8])
+    Lifted { answer: MetaVal.Absent, heap: new_meta_heap() }
+}
+
+/// How the run ended: `settled`, or the refusal in its own words.
+fn ended(kept_bytes: int) -> string {
+    let held: Cell<List<int>> = Cell.new([0])
+    match run_crossed(
+        asks_the_workspace(),
+        budgets_of(1000, 1),
+        no_embed,
+        (_name: string) -> answered(held, kept_bytes),
+    ) {
+        .Ok(_) -> "settled",
+        .Err(.Budget(words)) -> "budget: ${words}",
+        .Err(.Trap(words)) -> "trap: ${words}",
+        .Err(.Reach(words)) -> "reach: ${words}",
+        .Err(.Param(words)) -> "param: ${words}",
+        .Err(.Spoken) -> "spoken",
+        .Err(.Recursive) -> "recursive",
+    }
+}
+
+spec "compiler/settle — the bill" {
+    given "a run that asks the workspace, which keeps what it builds" {
+        then "settles under a budget the kept memory alone would break" { ended(4 * 1048576) == "settled" }
+        then "a run that holds nothing settles the same" { ended(0) == "settled" }
+    }
+}

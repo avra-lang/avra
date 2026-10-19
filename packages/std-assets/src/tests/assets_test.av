@@ -1,0 +1,132 @@
+// What a file's leading octets say: sizes from headers, kinds claimed or not.
+use @std.assets.{
+    Blob,
+    png_size,
+    jpeg_size,
+    svg_size,
+    size_of,
+    picture_of,
+    blob_of,
+    is_picture,
+    id_of,
+    Picture,
+}
+
+/// A PNG's signature and `IHDR` for a `w` by `h` image, no pixels.
+fn png(w: int, h: int) -> Bytes {
+    [
+        137,
+        80,
+        78,
+        71,
+        13,
+        10,
+        26,
+        10,
+        0,
+        0,
+        0,
+        13,
+        73,
+        72,
+        68,
+        82,
+        w / 16777216,
+        w / 65536 % 256,
+        w / 256 % 256,
+        w % 256,
+        h / 16777216,
+        h / 65536 % 256,
+        h / 256 % 256,
+        h % 256,
+    ]
+        .bytes()!
+}
+
+/// A JPEG: start of image, one comment segment, then a baseline frame.
+fn jpeg(w: int, h: int) -> Bytes {
+    [
+        255,
+        216,
+        255,
+        254,
+        0,
+        4,
+        65,
+        66,
+        255,
+        192,
+        0,
+        17,
+        8,
+        h / 256,
+        h % 256,
+        w / 256,
+        w % 256,
+        3,
+        1,
+        34,
+        0,
+        2,
+        17,
+        1,
+        3,
+        17,
+        1,
+    ]
+        .bytes()!
+}
+
+spec "std/assets" {
+    given "a PNG header" {
+        then "its size is the IHDR width and height" {
+            let s = png_size(png(300, 120))
+            s != null && s!.width == 300 && s!.height == 120
+        }
+        then "a truncated header is no PNG" { png_size(png(1, 1).slice(0, 20)) == null }
+        then "a wide image does not wrap" { png_size(png(70000, 3))!.width == 70000 }
+    }
+    given "a JPEG" {
+        then "its size is the first frame's, past a comment segment" {
+            let s = jpeg_size(jpeg(640, 480))
+            s != null && s!.width == 640 && s!.height == 480
+        }
+        then "a cut frame is no JPEG" { jpeg_size(jpeg(1, 1).slice(0, 12)) == null }
+    }
+    given "an SVG" {
+        then "width and height attributes state its size" {
+            let s = svg_size(
+                "<?xml version=\"1.0\"?><svg xmlns=\"x\" width=\"24\" height=\"12\"></svg>".bytes(),
+            )
+            s != null && s!.width == 24 && s!.height == 12
+        }
+        then "a viewBox states it when the attributes do not" {
+            svg_size("<svg viewBox=\"0 0 16 8\"></svg>".bytes())!.height == 8
+        }
+        then "text without an svg tag is not one" { svg_size("hello".bytes()) == null }
+    }
+    given "the kinds" {
+        then "a PNG is a picture and carries its path's id" {
+            let p? = picture_of("art/logo.png", png(2, 3)) else { return false }
+            match p {
+                .Bundled(id, w, h, _) -> id == id_of("art/logo.png") && w == 2 && h == 3,
+                .Remote(_, _, _) -> false,
+            }
+        }
+        then "arbitrary octets are no picture but are a blob" {
+            let junk = [1, 2, 3].bytes()!
+            !is_picture(junk) &&
+                picture_of("a.bin", junk) == null &&
+                blob_of("a.bin", junk).length == 3
+        }
+        then "two paths have two ids" { id_of("a.png") != id_of("b.png") }
+    }
+}
+
+spec "std/assets — providers" {
+    given "a file's octets" {
+        then "Picture provides a PNG" { Picture.provide("a.png", png(2, 3)) != null }
+        then "Picture does not provide junk" { Picture.provide("a.bin", [1, 2, 3].bytes()!) == null }
+        then "Blob provides anything" { Blob.provide("a.bin", [1, 2, 3].bytes()!)!.length == 3 }
+    }
+}

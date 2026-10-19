@@ -8,6 +8,8 @@
 //! the representation laws re-judge every substituted slot.
 use core.{
     void_ref,
+    EmbedKind,
+    EmbedBase,
     ExprId,
     StmtId,
     TypeId,
@@ -45,6 +47,7 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, fparams, fret, body) -> {
             defaults_law(cx, s, fname.of, fparams)
+            variadic_law(cx, s, fname.of, fparams)
             if cx.view.store.is_host_fn(s) { host_fn_law(cx, s, fname.of, fparams) }
             checked_fn(cx, s, fname.of, fret ?? void_ref, body)
         },
@@ -344,6 +347,42 @@ fn defaults_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
     required_after_default(cx, unfilled, params[first])
 }
 
+/// THE VARIADIC LAW at the declaration: a `..rest: List<T>` seat is the
+/// last, the only one, and a list — it takes whatever the call leaves.
+fn variadic_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
+    let at? = params.find_index(it.variadic) else { return }
+    let p = params[at]
+    if at != params.length - 1 || params.filter(it.variadic).length > 1 { return variadic_misplaced(cx, s, p, fname) }
+    let listed = (cx.stmt_sig(s)?.params ?? []).last()
+    if listed == null || cx.view.types.element(cx.view.types.seen_through(listed!)) == null { variadic_unlisted(cx, s, p, fname) }
+}
+
+fn variadic_misplaced(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
+    cx
+        .emit(
+            refusal(
+                "type.variadic",
+                cx.stmt_loc(s),
+                "`..${p.name.of}` takes the rest of `${fname}`'s arguments, so it is the one seat that stands last",
+                "this seat",
+                "move it to the end, and keep one",
+            ),
+        )
+}
+
+fn variadic_unlisted(mut cx: TypeCx, s: StmtId, p: Param, fname: string) {
+    cx
+        .emit(
+            refusal(
+                "type.variadic",
+                cx.stmt_loc(s),
+                "`..${p.name.of}` of `${fname}` collects its arguments into a list",
+                "this seat",
+                "declare it a list — `..${p.name.of}: List<T>`",
+            ),
+        )
+}
+
 /// Whether a seat's default answers a type naming a type parameter.
 fn default_opens(cx: TypeCx, s: StmtId, p: Param) -> bool {
     if p.default == null { return false }
@@ -423,8 +462,13 @@ fn dispatched_call(
 ) -> TypeId {
     let placed? = cx.placed(e, callee, cx.bound_decl(e), args, s.params) else { return cx.error_type }
     let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args) }
-    if cx.view.decls.is_meta_fn(d, "embed") {
-        let refused: TypeId? = embed_law(cx, e, placed.args[0])
+    let reads = cx.view.decls.embed_kind_of(d)
+    if reads != null {
+        let refused: TypeId? = embed_law(cx, e, placed.args[0], reads!, EmbedBase.Beside)
+        if refused != null { return refused! }
+    }
+    if cx.view.decls.is_meta_fn(d, "provided") {
+        let refused: TypeId? = provided_law(cx, e, placed.args[0], pins)
         if refused != null { return refused! }
     }
     if cx.view.decls.is_meta_fn(d, "code_hash") && !names_a_fn(cx, placed.args[0]) { return code_hash_unnamed(cx, placed.args[0]) }
@@ -466,6 +510,12 @@ fn generic_call(
     mut spoke = false
     for j, a in args {
         if !generic_argument(cx, callee, j, placed.wants[j], a, decl, bound) { spoke = true }
+    }
+    for pin in placed.pins {
+        if !cx.unify(pin.want, pin.have, decl, bound) {
+            let _ = cx.spread_field_type(pin.at, callee, pin.name, pin.have, pin.want)
+            spoke = true
+        }
     }
     if spoke { return cx.error_type }
     if unpinned_of(tp, bound) != null { pinned_by_answer(cx, e, s.ret, decl, bound) }
@@ -663,7 +713,7 @@ fn required_after_default(mut cx: TypeCx, unfilled: Param, first: Param) {
             refusal(
                 "type.param_default",
                 cx.loc_of(first.default!),
-                "`${unfilled.name.of}` has no default and follows `${first.name.of}`, which has one — a call writes its seats in order, so `${first.name.of}` could never be left to its default",
+                "`${unfilled.name.of}` has no default and follows `${first.name.of}`, which has one — defaulted seats come last",
                 "the first default",
                 "move the defaulted seats last, or give `${unfilled.name.of}` a default too",
             ),
@@ -756,12 +806,33 @@ fn component_called(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
         )
 }
 
+/// THE PROVIDED LAW: the kind is written (a pin, or the seat's own type),
+/// and the file is judged as an octets embed from the package's root.
+/// Null when the call may stand.
+fn provided_law(mut cx: TypeCx, e: ExprId, path: ExprId, pins: List<TypeRef>) -> TypeId? {
+    if pins.is_empty() && cx.want_at(e) == null { return provided_unpinned(cx, e) }
+    embed_law(cx, e, path, EmbedKind.Octets, EmbedBase.Root)
+}
+
+fn provided_unpinned(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.provided_kind",
+                cx.loc_of(e),
+                "`provided` names its kind — the file's octets do not choose it",
+                "no kind written here",
+                "write it: `provided<Picture>(\"art/logo.svg\")`, or give the const its type",
+            ),
+        )
+}
+
 /// THE EMBED LAW, at the literal: the path is written, it stays inside
 /// the package that writes it, no link stands on the way to it, and
 /// what stands there is text. Null when the const may read it.
-fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId) -> TypeId? {
+fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId, kind: EmbedKind, base: EmbedBase) -> TypeId? {
     let rel? = cx.view.store.expr(path).text_of() else { return embed_computed_path(cx, e) }
-    let fault = match cx.view.decls.embed_placed(cx.view.file, rel) {
+    let fault = match cx.view.decls.embed_placed(cx.view.file, rel, kind, base) {
         .Ok(_) -> { return null },
         .Err(why) -> why,
     }
@@ -769,7 +840,7 @@ fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId) -> TypeId? {
         .Outside -> embed_outside(cx, path, rel),
         .Undeclared(key) -> embed_undeclared(cx, path, rel, key),
         .Linked -> embed_linked(cx, path, rel),
-        .Missing -> embed_missing(cx, path, rel),
+        .Missing -> embed_missing(cx, path, rel, base),
         .NotText(at) -> embed_not_text(cx, path, rel, at),
         .Refused(why) -> embed_unread(cx, path, why),
     }
@@ -814,17 +885,32 @@ fn embed_linked(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
         )
 }
 
-fn embed_missing(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
+fn embed_missing(mut cx: TypeCx, path: ExprId, rel: string, base: EmbedBase) -> TypeId {
     cx
         .spoken(
             refusal(
                 "type.embed_file",
                 cx.loc_of(path),
-                "`embed` finds no `${rel}` beside this source file",
+                embed_missing_words(rel, base),
                 "no file stands here",
-                "the path is read from this file's own directory",
+                embed_missing_help(base),
             ),
         )
+}
+
+/// Where the missing file was looked for.
+fn embed_missing_words(rel: string, base: EmbedBase) -> string {
+    match base {
+        .Beside -> "`embed` finds no `${rel}` beside this source file",
+        .Root -> "`provided` finds no `${rel}` at this package's root",
+    }
+}
+
+fn embed_missing_help(base: EmbedBase) -> string {
+    match base {
+        .Beside -> "the path is read from this file's own directory",
+        .Root -> "the path is read from the package's root, whatever directory this file is in",
+    }
 }
 
 fn embed_not_text(mut cx: TypeCx, path: ExprId, rel: string, at: int) -> TypeId {

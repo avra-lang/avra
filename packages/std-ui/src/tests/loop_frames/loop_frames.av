@@ -1,0 +1,70 @@
+// proves: turns that land together are one paint. Three timers due at one
+// instant walk the view once; a verb paints before it returns; and a source
+// that never lets the inbox drain (a 1 ms period whose turns each take 5 ms)
+// still gets the screen painted every frame (16 ms), never frozen —
+// eval == native.
+use @std.ui.components.{button, column, text}
+use @std.ui.headless.{headless}
+use @std.ui.app.{later, repeating}
+use @std.time.{ms, secs, sleep}
+
+state walks: int = 0
+state a: int = 0
+state b: int = 0
+state c: int = 0
+state slow: int = 0
+
+fn view() -> column {
+    walks = walks + 1
+    column { items: [text "a=${a} b=${b} c=${c} slow=${slow}", button "Go" { on press { a = a + 1 } }] }
+}
+
+fn bump_a() -> bool {
+    a = a + 1
+    true
+}
+
+fn bump_b() -> bool {
+    b = b + 1
+    true
+}
+
+fn bump_c() -> bool {
+    c = c + 1
+    true
+}
+
+fn tick_slowly() -> bool {
+    sleep(ms(5))
+    slow = slow + 1
+    true
+}
+
+let screen = headless(view)
+screen
+    .running(
+        () -> {
+            let start = walks
+            let _ = later(ms(10), bump_a)
+            let _ = later(ms(10), bump_b)
+            let _ = later(ms(10), bump_c)
+            screen.advance(ms(30))
+            println("three timers due together: ${walks - start} walk, ${a + b + c} bumps shown")
+            let before = walks
+            let _ = screen.press("Go")
+            println("a verb paints before it returns: ${walks - before} walk, a=${a}")
+            let quiet = walks
+            let framed = screen.shown.app.frames.get()
+            screen.advance(secs(10))
+            println(
+                "a quiet screen walks nothing: ${walks - quiet} walks, ${screen.shown.app.frames.get() - framed} frames in ten seconds",
+            )
+            let _ = later(ms(10), bump_a)
+            screen.advance(ms(40))
+            println("one turn brings one frame: ${screen.shown.app.frames.get() - framed} frame")
+            let during = walks
+            let _ = repeating(ms(1), tick_slowly)
+            screen.advance(ms(100))
+            println("a source that never lets the inbox drain still paints: ${walks - during >= 3}")
+        },
+    )

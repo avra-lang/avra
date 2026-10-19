@@ -5,7 +5,7 @@
 //! there first, and a disagreement stops the run before a binary exists.
 use core.{sorted_texts, joined, flatten, module_path, TypeRegistry, counted, FileId}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_dir}
-use @std.io.{make_dirs}
+use @std.io.{make_dirs, exists, write_text}
 use compiler.backend.{run_scheduled}
 use compiler.store.{Store, Stored, node_key}
 use compiler.lower.{Lowered, program_symbol}
@@ -126,8 +126,9 @@ impl Workspace {
         let kept = self.kept_binary(self.program_key(under.named, under.beside), binary, tools)
         if kept != null { return .Ok(kept! with { refuses: refuses }) }
         let store = self.opened_store()
-        let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
+        let owed = [path for path in programs if !self.native_only(path) && !self.proved(store, path)]
         let calls = [self.program_call(path, told_from) for path in programs]
+        let began = self.clock()
         let d = self
             .evaluated(
                 store,
@@ -135,6 +136,9 @@ impl Workspace {
                 told_from,
                 (met: Derived) -> link_owes(met, suite_module(met, only, calls), tools),
             )?
+        eprintln(
+            "proofs: ${owed.length} of ${programs.length} programs owed, evaluated in ${(self.clock() - began) / 1000000} ms",
+        )
         let m = suite_module(d, only, calls)
         if m.cases.is_empty() && programs.is_empty() && refuses.is_empty() { return .Ok(null) }
         let _ = make_dirs(dir_of(binary))
@@ -225,7 +229,8 @@ impl Workspace {
 
     /// The evaluator agreed with each: remembered under what the program can see.
     fn agreed(store: Store, d: Derived, owed: List<string>) -> Derived {
-        for path in owed { let _ = store.keep_once(Stored.Unit, self.proved_key(store, path), "") }
+        let _ = make_dirs(self.proofs_dir())
+        for path in owed { let _ = write_text(self.proof_file(store, path), "") }
         d
     }
 
@@ -280,16 +285,31 @@ impl Workspace {
         )
     }
 
-    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: under the text the program
-    /// must print and the text of every file it can reach — a BODY moves a run,
-    /// so an interface digest would not do.
+    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: under the compiler that agreed, the
+    /// text the program must print and the text of every file it can reach — a BODY moves
+    /// a run, so an interface digest would not do, and a compiler can move the answer.
     fn proved_key(store: Store, path: string) -> string {
         let texts = [self.text_digest(f) for f in self.seen_files(store, path)]
         node_key(
             Stored.Unit,
-            ["proved", path, self.listed_text(beside(path, "expected")), joined(texts, "\n")],
+            [
+                "proved",
+                self.compiler_id(),
+                path,
+                self.listed_text(beside(path, "expected")),
+                joined(texts, "\n"),
+            ],
         )
     }
+
+    /// A PROOF IS A FILE, one per key: empty, present once the evaluator agreed. A directory
+    /// of them moves between machines and runs by itself, which a packed store's rows do not.
+    fn proofs_dir() -> string { joined_path(build_cache_root(self), "proofs") }
+
+    fn proof_file(store: Store, path: string) -> string { joined_path(self.proofs_dir(), self.proved_key(store, path)) }
+
+    // LICENSED input.test_setting: a proof only skips a test run, never an input of what is built
+    fn proved(store: Store, path: string) -> bool { exists(self.proof_file(store, path)) }
 }
 
 /// The file beside a program that wears its stem and this extension.
