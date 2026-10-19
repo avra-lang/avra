@@ -1,0 +1,48 @@
+// A module's record rewritten while one of its files is held: the held file keeps
+// what its compile-time runs read as the record states them, however an earlier ask
+// of them answered — no run ran to say otherwise.
+use compiler.record.{RunRead, reads_field, reads_of, read_fields}
+use compiler.store.{Keeping, store_with}
+use compiler.host.{memory_host}
+use @std.avrac.testing.{test_workspace}
+
+const HERE: string = "/w/vendor/greet/src/greet.av"
+
+const HELD: string = "/w/vendor/greet/src/held.av"
+
+/// What the held file's runs read: `n` distinct files.
+fn reads(n: int) -> List<RunRead> {
+    [RunRead { path: "/w/src/r${i}.av", digest: "1.${i}", ref: "", print: "", outline: "" } for i in 0..n]
+}
+
+/// The runs a rewritten record states for a dependency's held file, whose prior record held
+/// `n` and whose runs were asked once before that record was loaded.
+fn runs_after(n: int) -> int {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/greet\" = { path = \"vendor/greet\" }\n",
+        "/w/src/main.av": "use @acme.greet.{greet}\ngreet(2)\n",
+        "/w/vendor/greet/avra.toml": "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/greet/src/greet.av": "export fn greet(n: int) -> int {\n    n + 40\n}\n",
+        "/w/vendor/greet/src/held.av": "export fn held() -> int {\n    1\n}\n",
+    }
+    let ws = test_workspace(memory_host(files, files.keys()), "/w")
+    let m = ws.module_path_of(HERE)
+    let key = ws.record_key(m)
+    let rows: Cell<Map<string, string>> = Cell.new({})
+    let store = store_with("/w/.avra-cache", "print", Keeping.Aside(rows))
+    ws.hold_only(HELD)
+    let _ = ws.ran_by(store, HELD)
+    let prior = "iface\t0\nfile\t${HELD}\t0\t${reads_field(reads(n))}\ti\tx\tg"
+    ws.records.record_texts.put(key, prior)
+    ws.records.record_lines.put(key, prior.split("\n"))
+    ws.records.record_fields.set({})
+    ws.records.record_places.set({})
+    let _ = ws.program(null)
+    let line? = ws.record_of(store, m).split("\n").find(it.starts_with("file\t${HELD}\t")) else { return -1 }
+    (reads_of(read_fields(line)[3]) ?? []).length
+}
+
+spec "compiler/interface — a held file's runs in a rewritten record" {
+    then "seventeen runs in, seventeen out" { runs_after(17) == 17 }
+    then "no runs in, none out" { runs_after(0) == 0 }
+}
