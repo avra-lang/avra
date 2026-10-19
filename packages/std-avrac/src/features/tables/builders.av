@@ -1,34 +1,28 @@
-//! Parse-time lowering: a row's cells ride a list node until the
-//! table builder reads them back and rewrites every row as the row
-//! type's struct literal — the header supplying the field names.
-use core.{Expr, ExprId, Nominal, Plain, TableSpec}
+//! Parse-time lowering: a row's cells ride a list node until the table
+//! builder reads them; the node keeps the rows as written, and what it
+//! means — a `Row { … }` literal per row, the header supplying the
+//! field names — is minted beside it.
+use core.{Expr}
 use features.{LangNode, Builder}
 
 fn build_table(b: Builder) -> Result<LangNode, string> {
-    let t = b.token(0)?
-    let names = b.tokens(1)?
+    let named = b.token(0)?
+    let row = named.text
+    let header = [h.text for h in b.tokens(1)?]
     let rows = b.exprs(2)?
-    let row_type = t.text
-    let header = [h.text for h in names]
-    mut lits: List<ExprId> = []
-    for j, r in rows {
-        let cells? = b.store.expr(r).elems_of() else { return .Err("defect: a table row that is not a cell list") }
-        if cells.length != header.length {
-            return .Err(
-                "row ${j + 1} has ${cells.length} cells, and the header names ${header.length} columns",
-            )
-        }
-        lits
-            .push(
-                b
-                    .store
-                    .alloc_expr(
-                        Expr.StructLit(Nominal(row_type), [Plain(t) for t in header], cells),
-                        b.store.expr_span(r),
-                    ),
-            )
+    let cells = [b.store.expr(r).elems_of() for r in rows]
+    if cells.any(it == null) { return .Err("defect: a table row that is not a cell list") }
+    let short = [j for j in 0..rows.length if cells[j]!.length != header.length].first()
+    if short != null {
+        return .Err(
+            "row ${short! + 1} has ${cells[short!]!.length} cells, and the header names ${header.length} columns",
+        )
     }
-    let e = b.expr_node(Expr.ListLit(lits))
-    b.store.mark_table(e, TableSpec { row_type: row_type, header: header })
-    b.wrap_expr(e)
+    let sugar = b.expr_node(Expr.Table(row, header, rows))
+    let _ = b.store.mean(sugar, table_means(row), b.words.door)
+    b.wrap_expr(sugar)
+}
+
+fn table_means(row: string) -> string {
+    "`table<${row}>` means a list of `${row} { … }` literals, one per row"
 }

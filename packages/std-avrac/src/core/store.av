@@ -11,6 +11,15 @@ export alias Means = fn(SyntaxArena, ExprId) -> List<ExprId>
 /// The door of a store whose language is not at hand: it mints nothing.
 export fn no_door(_store: SyntaxArena, _sugar: ExprId) -> List<ExprId> { [] }
 
+/// The forms an expression was written in: a lambda as a trailing block,
+/// a string as `"""raw"""`, a name inside a type literal (a hole), and a
+/// `${..name}` hole that binds a run of siblings rather than one node.
+export type ExprMarks = { is_trailing: bool, is_raw: bool, is_hole: bool, is_run_hole: bool }
+
+fn no_expr_marks() -> ExprMarks {
+    ExprMarks { is_trailing: false, is_raw: false, is_hole: false, is_run_hole: false }
+}
+
 /// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
 /// fn-shaped keywords a declaration wears, one bitset instead of four
 /// parallel `List<bool>` keyed alike. `grammars` does NOT fold in here
@@ -27,7 +36,6 @@ fn no_stmt_marks() -> StmtMarks {
         is_once: false,
         is_static: false,
         is_state: false,
-        is_provide: false,
         is_module_state: false,
         is_host: false,
         is_asset: false,
@@ -105,25 +113,17 @@ export type SyntaxArena = {
     // a seat's span, by ParamId — the store's only fact about a
     // Param, which otherwise never touches an arena
     param_spans: Cell<List<Span?>>,
-    // a lambda written as a TRAILING BLOCK (`f(a) { x -> … }`)
-    trailing: Cell<List<bool>>,
+    // the forms an expression was written in, by id — one record, so a
+    // template copy carries them all through `wear_expr`
+    expr_marks: Cell<List<ExprMarks>>,
     // a call written as a PIPE (`x |> f(a)`), its first argument
-    // a call written as a TYPE LITERAL (`v.type(T)`), and a NAME
-    // written inside one — a hole
+    // a call written as a TYPE LITERAL (`v.type(T)`)
     type_lits: Cell<List<bool>>,
-    holes: Cell<List<bool>>,
-    // a `${..name}` hole — a RUN, binding a sibling span rather than
-    // one node; the mark rides the hole's own CONTENT expr, never the
-    // quote body's placeholder
-    run_holes: Cell<List<bool>>,
     // a record's `..R` entries, by its statement
     spreads: Cell<List<List<Spread>>>,
     // a collect's `dense` mark, by its statement: its order is data,
     // unique and gap-free from 0
     collect_dense: Cell<List<bool>>,
-    // a string written `"""raw"""`, never `"escaped"` — the printer's
-    // only way to tell them apart once both are one StrLit
-    raw_strings: Cell<List<bool>>,
     // a Match a trailing-block ARM sugar synthesized — never one a
     // program wrote — so a missing arm under a nullable seat answers
     // `null` instead of refusing; the mark is the ONE way the checker
@@ -157,9 +157,6 @@ export type SyntaxArena = {
     // read, by the `Grammar` struct literal it fully expanded into —
     // the raw block's own words, never rebuilt from the expansion
     grammar_lits: Cell<List<string?>>,
-    // a `table<Row> { … }` literal's row type and header, by the
-    // list it desugared to
-    tables: Cell<List<TableSpec?>>,
     // the type arguments a literal or instance writes after its name
     // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
     // struct literal they pin — the record's parameters, seated from
@@ -180,11 +177,6 @@ export type SyntaxArena = {
     body_starts: Cell<Map<string, int>>,
     block_voices: Cell<List<BlockVoice>>,
     foreign: Cell<List<ForeignRange>>,
-    // a keyed list's reconciliation key, by the component instance
-    // that carries it — the `by it.<field>` accessor read on each
-    // element, the one fact that makes a list reconcile by identity
-    // rather than by position
-    keyed_lists: Cell<List<ExprId?>>,
     // an `on <kind> { … }` handler's KIND, by the nullary lambda the
     // instance-body sugar built — the word the handler was written
     // with, so the printer spells the sugar back rather than the
@@ -217,13 +209,10 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         pat_reads: list_cell(),
         pat_fingerprints: list_cell(),
         param_spans: list_cell(),
-        trailing: list_cell(),
+        expr_marks: list_cell(),
         type_lits: list_cell(),
-        holes: list_cell(),
-        run_holes: list_cell(),
         spreads: list_cell(),
         collect_dense: list_cell(),
-        raw_strings: list_cell(),
         sugar_matches: list_cell(),
         statement_ifs: list_cell(),
         minted_by: list_cell(),
@@ -232,7 +221,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         is_payloads: list_cell(),
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
-        tables: list_cell(),
         struct_targs: list_cell(),
         written_close: list_cell(),
         quotes_at: map_cell(),
@@ -240,7 +228,6 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         body_starts: map_cell(),
         block_voices: list_cell(),
         foreign: list_cell(),
-        keyed_lists: list_cell(),
         on_handlers: list_cell(),
     }
 }
@@ -294,11 +281,8 @@ impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
         self.expr_fingerprints.push(e.identity(self))
-        self.trailing.push(false)
+        self.expr_marks.push(no_expr_marks())
         self.type_lits.push(false)
-        self.holes.push(false)
-        self.run_holes.push(false)
-        self.raw_strings.push(false)
         self.sugar_matches.push(false)
         self.statement_ifs.push(false)
         self.minted_by.push(null)
@@ -307,10 +291,8 @@ impl SyntaxArena {
         self.is_payloads.push(null)
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
-        self.tables.push(null)
         self.struct_targs.push([])
         self.written_close.push(null)
-        self.keyed_lists.push(null)
         self.on_handlers.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
@@ -318,12 +300,12 @@ impl SyntaxArena {
     /// A lambda written as a TRAILING BLOCK — the mark is part of the
     /// node: the block's refusals speak in the block's words.
     fn mark_trailing(e: ExprId) {
-        self.trailing.set_at(e.index, true)
+        self.update_expr_marks(e, (m) -> m with { is_trailing: true })
         self.expr_fingerprints.set_at(e.index, fp(111, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_trailing(e: ExprId) -> bool {
-        self.trailing.get()[e.index]
+        self.expr_marks_at(e).is_trailing
     }
 
     /// The seat an argument names, when it is written `name: value`.
@@ -417,12 +399,12 @@ impl SyntaxArena {
     /// the printer spells its own delimiters back, never the escaped
     /// form its twin reads identically.
     fn mark_raw_string(e: ExprId) {
-        self.raw_strings.set_at(e.index, true)
+        self.update_expr_marks(e, (m) -> m with { is_raw: true })
         self.expr_fingerprints.set_at(e.index, fp(144, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_raw_string(e: ExprId) -> bool {
-        self.raw_strings.get()[e.index]
+        self.expr_marks_at(e).is_raw
     }
 
     /// An expression-position `grammar { … }` literal fully expanded
@@ -437,30 +419,6 @@ impl SyntaxArena {
 
     fn grammar_lit_of(e: ExprId) -> string? {
         self.grammar_lits.get()[e.index]
-    }
-
-    /// A `table<Row> { … }` literal desugared into this list — the
-    /// row type and header the rows' own fields cannot answer once
-    /// the table is empty, the mark's code 148.
-    fn mark_table(e: ExprId, tbl: TableSpec) {
-        self.tables.set_at(e.index, tbl)
-        self
-            .expr_fingerprints
-            .set_at(
-                e.index,
-                fp(
-                    148,
-                    [
-                        self.expr_fingerprints.get()[e.index],
-                        fp_str(tbl.row_type),
-                        fp_list(str_fps(tbl.header)),
-                    ],
-                ),
-            )
-    }
-
-    fn table_of(e: ExprId) -> TableSpec? {
-        self.tables.get()[e.index]
     }
 
     /// `tail_scoped` narrowed this Block's own span to its lone tail
@@ -478,18 +436,18 @@ impl SyntaxArena {
     /// A name written inside a type literal — a HOLE, the id it
     /// names: a binding of the wrong type refuses as a hole.
     fn mark_hole(e: ExprId) {
-        self.holes.set_at(e.index, true)
+        self.update_expr_marks(e, (m) -> m with { is_hole: true })
         self.expr_fingerprints.set_at(e.index, fp(113, [self.expr_fingerprints.get()[e.index]]))
     }
 
     fn is_hole(e: ExprId) -> bool {
-        self.holes.get()[e.index]
+        self.expr_marks_at(e).is_hole
     }
 
     /// A hole written `${..name}` — a RUN, standing for zero or more
     /// sibling nodes rather than one.
     fn mark_run_hole(e: ExprId) {
-        self.run_holes.set_at(e.index, true)
+        self.update_expr_marks(e, (m) -> m with { is_run_hole: true })
         self.expr_fingerprints.set_at(e.index, fp(149, [self.expr_fingerprints.get()[e.index]]))
     }
 
@@ -524,7 +482,7 @@ impl SyntaxArena {
     fn is_collect_dense(s: StmtId) -> bool { self.collect_dense.get()[s.index] }
 
     fn is_run_hole(e: ExprId) -> bool {
-        self.run_holes.get()[e.index]
+        self.expr_marks_at(e).is_run_hole
     }
 
     /// A `Match` a trailing block of arms sugar built (`{ .Ok(v) ->
@@ -692,13 +650,6 @@ impl SyntaxArena {
         self.instance_owners.get()[e.index]
     }
 
-    /// A keyed list's reconciliation key, by its component instance —
-    /// the element accessor the `by it.<field>` clause names. Absent
-    /// on every list that states no key, so `Tree` stays its lowering.
-    fn mark_keyed_list(e: ExprId, key: ExprId) {
-        self.keyed_lists.set_at(e.index, key)
-    }
-
     /// The type arguments a literal writes after its name — part of
     /// the expression's identity: `Box<int> { … }` and `Box<string> {
     /// … }` are different literals even where their fields read alike.
@@ -727,8 +678,11 @@ impl SyntaxArena {
         self.struct_targs_of(x)
     }
 
+    /// A keyed list's reconciliation key — the element accessor its
+    /// `by it.<field>` clause names; absent on every list that states
+    /// none, so `Tree` stays its lowering.
     fn keyed_list_key(e: ExprId) -> ExprId? {
-        self.keyed_lists.get()[e.index]
+        match self.expr(e) { .Component(_, _, _, _, _, key) -> key, _ -> null }
     }
 
     /// The event an `on <event> { … }` handler was written for, by the
@@ -848,7 +802,7 @@ impl SyntaxArena {
 
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Body(_, _, _, view) or .Component(_, _, _, view, _) -> view.expansion(),
+            .Body(_, _, _, view) or .Component(_, _, _, view, _, _) -> view.expansion(),
             _ -> null,
         }
     }
@@ -1325,8 +1279,39 @@ impl SyntaxArena {
         self.marks.set_at(s.index, upd(self.marks_at(s)))
     }
 
+    /// An expression's forms, replaced by what `upd` computes from what it
+    /// already wears — the one seam every expression `mark_*` writes through.
+    fn update_expr_marks(e: ExprId, upd: fn(ExprMarks) -> ExprMarks) {
+        self.expr_marks.set_at(e.index, upd(self.expr_marks_at(e)))
+    }
+
+    fn expr_marks_at(e: ExprId) -> ExprMarks { self.expr_marks.get()[e.index] }
+
+    /// Gives `e` every form `worn` records, each through its own verb so
+    /// the fingerprint follows — the one door a copy uses, so a new form
+    /// is added here and a template copy never forgets it.
+    fn wear_expr(e: ExprId, worn: ExprMarks) {
+        if worn.is_trailing { self.mark_trailing(e) }
+        if worn.is_raw { self.mark_raw_string(e) }
+        if worn.is_hole { self.mark_hole(e) }
+        if worn.is_run_hole { self.mark_run_hole(e) }
+    }
+
     /// The marks a statement wears.
     fn marks_at(s: StmtId) -> StmtMarks { self.marks.get()[s.index] }
+
+    /// Gives `s` every keyword `worn` records, each through its own verb
+    /// so the fingerprint follows — the one door a copy uses, so a new
+    /// bit is added here and a template copy never forgets it.
+    fn wear(s: StmtId, worn: StmtMarks) {
+        if worn.is_exported { self.mark_exported(s) }
+        if worn.is_mutating { self.mark_mutating(s) }
+        if worn.is_once { self.mark_once(s) }
+        if worn.is_static { self.mark_static(s) }
+        if worn.is_state { self.mark_state(s) }
+        if worn.is_module_state { self.mark_module_state(s) }
+        if worn.is_host { self.mark_host(s) }
+    }
 
     /// `mut fn` crossed this declaration — it says its receiver is
     /// written; a trait sig's word is the contract.
