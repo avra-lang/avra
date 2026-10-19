@@ -30,8 +30,24 @@ def link_row():
         return tomllib.load(f).get("link", {})
 
 
+def platform_hole(name):
+    """What a hole means on this platform when the environment names nothing: the compiler's
+    own `platform_hole` (compiler/whole.av), spelled again because this reader is Python — keep
+    the two in step (`make llvm-libs` runs both answers over the same row)."""
+    darwin = sys.platform == "darwin"
+    if name == "AVRA_CXX_RUNTIME":
+        return "c++" if darwin else "stdc++"
+    if name == "AVRA_SYS_SEARCH":
+        dirs = (["/opt/homebrew/lib", "/usr/local/lib"] if darwin else
+                ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"])
+        for d in dirs:
+            if any(os.path.exists(os.path.join(d, f"libzstd.{ext}")) for ext in ("a", "so", "dylib")):
+                return d
+    return ""
+
+
 def expanded(flag):
-    """`${NAME}` filled from the environment, as the compiler fills it."""
+    """`${NAME}` filled from the environment, else the platform's answer, as the compiler fills it."""
     out, i = [], 0
     while i < len(flag):
         if flag.startswith("${", i):
@@ -39,7 +55,8 @@ def expanded(flag):
             if close < 0:
                 out.append(flag[i:])
                 break
-            out.append(os.environ.get(flag[i + 2:close], ""))
+            name = flag[i + 2:close]
+            out.append(os.environ[name] if name in os.environ else platform_hole(name))
             i = close + 1
         else:
             out.append(flag[i])
