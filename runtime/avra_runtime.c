@@ -2915,6 +2915,11 @@ static int64_t as_bits(double d) { int64_t b; memcpy(&b, &d, sizeof b); return b
    of it; anything it would refuse cannot reach here. */
 int64_t avra_float_bits(const char* s) { return as_bits(strtod(s, NULL)); }
 
+/* A float's bit pattern, and a bit pattern's float: `memcpy`, so every NaN
+   payload, signed zero and subnormal crosses whole. */
+int64_t avra_float_to_bits(double f) { return as_bits(f); }
+double avra_float_of_bits(int64_t b) { return as_double(b); }
+
 /* Whether the text names a real a `float` HOLDS. Overflow answers
    infinity, and infinity is not the number on the page — the same
    law the integer literal already keeps, where a wrapped value must
