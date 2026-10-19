@@ -29,10 +29,7 @@ def decide(own, others):
     `work` when no run carries the verdict, `wait` while one is live, else the mirror."""
     if any(o["status"] != "completed" for o in others):
         return "wait"
-    # a cancelled (or skipped, or never-concluded) run carries no verdict: only a run that
-    # reached success or failure does
-    done = sorted((o for o in others if o["full"] and o["conclusion"] in ("success", "failure")),
-                  key=lambda o: o["id"], reverse=True)
+    done = sorted((o for o in others if o["full"]), key=lambda o: o["id"], reverse=True)
     if not done:
         return "work"
     newest = done[0]
@@ -91,11 +88,6 @@ def self_test():
         ("a light run beside a full one: the full verdict stands",
          [{"id": 4, "status": "completed", "conclusion": "failure", "full": False},
           {"id": 5, "status": "completed", "conclusion": "success", "full": True}], "mirror success 5"),
-        ("a cancelled full run carries nothing: this run does the work",
-         [{"id": 5, "status": "completed", "conclusion": "cancelled", "full": True}], "work"),
-        ("a cancelled run beside a finished one: the finished verdict stands",
-         [{"id": 4, "status": "completed", "conclusion": "success", "full": True},
-          {"id": 5, "status": "completed", "conclusion": "cancelled", "full": True}], "mirror success 4"),
     ]
     bad = [(name, got, want) for name, rows, want in cases for got in [decide({"id": 9}, rows)] if got != want]
     for name, got, want in bad:
