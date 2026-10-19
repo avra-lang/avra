@@ -329,25 +329,25 @@ jobs:
           fi
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
           echo "compiler: built from source in $(( $(date +%s) - s ))s (starting compiler: ${{ steps.release.outputs.source || 'cache' }})"
-      # A CEILING IS READ FROM A WARM STORE, SO PREPARE LEAVES ONE. An
-      # exact-key release or a cache hit may hand over a compiler with no
-      # matching store (a prefix restore is not this binary's), and the
-      # warm-edit keeper REFUSES rather than skip. One `check` of the gate's
-      # own target writes the store under THIS compiler's print, so the
-      # hand-down is always warm. A store already standing is left as it is:
-      # the bench's least-of-rounds warms a stale one.
+      # THE HAND-DOWN STORE IS WARM FOR WHAT THE JOBS RUN. A store is one compiler's: rows
+      # restored from an older compiler are never read, so a standing `.avra-cache` says
+      # nothing about THIS binary and no step skips on it. Two runs write this binary's rows
+      # side by side: a `check` of the gate's own target (the warm-edit ceiling is read from
+      # a warm store and REFUSES rather than skip) and one small scope of the std-avrac
+      # suite, whose derivation every suite shard then reads held instead of compiling the
+      # whole package cold (1049 of 1170 held, ~160 s -> ~25 s of compile). A `check`'s rows
+      # do not serve a suite's derivation, so neither run replaces the other.
       - if: steps.plan.outputs.build == '1'
         name: warm the store
         timeout-minutes: 15
         run: |
-          if [ -d .avra-cache ] && [ -n "$(ls -A .avra-cache 2>/dev/null)" ]; then
-            echo "warm store: .avra-cache already stands ($(du -sh .avra-cache 2>/dev/null | cut -f1))"
-            exit 0
-          fi
           s=$(date +%s)
           chmod +x build/avra
-          build/avra check packages/cli >/dev/null 2>&1 || true
-          echo "warm store: check packages/cli took $(( $(date +%s) - s ))s"
+          build/avra check packages/cli >/dev/null 2>&1 &
+          check=$!
+          build/avra test packages/std-avrac/src/grammar >/dev/null 2>&1 || true
+          wait "$check" || true
+          echo "warm store: check packages/cli and test std-avrac/src/grammar took $(( $(date +%s) - s ))s"
       # THE CACHE'S MACHINE CODE IS BOUNDED BY SIZE. `.avra-cache/obj` and `bin` are
       # restored by prefix from the run before and saved again, and an entry keyed to
       # a compiler that no longer exists is never read, so they only grow (1.1 GB, 621 MB
