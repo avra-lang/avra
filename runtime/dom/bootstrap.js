@@ -170,14 +170,19 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
 // Load the module and run it in a page. The host supplies `rt` (its own
 // rows for module `avra:rt`) and `wasi` (preview1). An import NO host row
 // answers REFUSES by name — a missing row must never be a silent no-op.
+// A module that links the runtime's scheduler imports its port (`avra_host`)
+// whether or not the program ever parks. A host that runs tasks supplies
+// `tasks`; a page does not, and the port it is given refuses BY NAME when
+// called, so a program that never parks pays nothing and one that does says why.
 export async function instantiate(source, host) {
+  const unhosted = new Proxy({}, { get: (_, name) => () => { throw new Error(`this page hosts no tasks: the module called avra_host.${String(name)}`); } });
   // A URL in a page, the bytes themselves in a test or a node harness.
   const bytes = source instanceof Uint8Array ? source : await (await fetch(source)).arrayBuffer();
   const module = await WebAssembly.compile(bytes);
   const imports = {};
   const unknown = [];
   for (const im of WebAssembly.Module.imports(module)) {
-    const table = im.module === "avra:rt" ? host.rt : im.module === "wasi_snapshot_preview1" ? host.wasi : null;
+    const table = im.module === "avra:rt" ? host.rt : im.module === "wasi_snapshot_preview1" ? host.wasi : im.module === "avra_host" ? host.tasks ?? unhosted : null;
     const fn = table ? table[im.name] : undefined;
     if (typeof fn !== "function") { unknown.push(`${im.module}.${im.name}`); continue; }
     imports[im.module] = imports[im.module] || {};

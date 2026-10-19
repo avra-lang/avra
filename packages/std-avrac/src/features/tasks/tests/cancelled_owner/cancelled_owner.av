@@ -1,33 +1,44 @@
 //! proves: a task cancelled while it holds tasks of its own cancels
 //! them as its scope ends — each unwinds, and its deferred call runs —
 //! whether it owns one by a binding or several through `Tasks`
-use @std.time.{ms, secs, sleep}
+use @std.task.{open_channel, Sink}
 
-fn child(left: Cell<int>) -> int {
+/// Parks until cancelled: nothing ever sends.
+fn stuck() {
+    let silent = open_channel<int>(1)
+    let _ = silent.source.next()
+}
+
+fn child(left: Cell<int>, up: Sink<int>) -> int {
     defer left.set(left.get() + 1)
-    sleep(secs(5))
+    let _ = up.post(1)
+    stuck()
     0
 }
 
-fn owns_one(left: Cell<int>) -> int {
-    let held = spawn child(left)
-    sleep(secs(5))
+fn owns_one(left: Cell<int>, up: Sink<int>) -> int {
+    let held = spawn child(left, up)
+    stuck()
     0
 }
 
-fn owns_many(left: Cell<int>) -> int {
+fn owns_many(left: Cell<int>, up: Sink<int>) -> int {
     let held = Tasks.new()
-    held.push(spawn child(left))
-    held.push(spawn child(left))
-    sleep(secs(5))
+    held.push(spawn child(left, up))
+    held.push(spawn child(left, up))
+    stuck()
     0
 }
 
 let left = Cell.new(0)
-let one = spawn owns_one(left)
-let many = spawn owns_many(left)
-sleep(ms(20))
+let up = open_channel<int>(3)
+let one = spawn owns_one(left, up.sink)
+let many = spawn owns_many(left, up.sink)
+for turn in 0..3 {
+    let _ = up.source.next()
+}
 one.cancel()
 many.cancel()
-sleep(ms(20))
+let _ = one.await catch c -> 0
+let _ = many.await catch c -> 0
 "${left.get()}"

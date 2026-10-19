@@ -8,6 +8,8 @@
 //! the representation laws re-judge every substituted slot.
 use core.{
     void_ref,
+    EmbedKind,
+    EmbedBase,
     ExprId,
     StmtId,
     TypeId,
@@ -460,8 +462,13 @@ fn dispatched_call(
 ) -> TypeId {
     let placed? = cx.placed(e, callee, cx.bound_decl(e), args, s.params) else { return cx.error_type }
     let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args) }
-    if cx.view.decls.is_meta_fn(d, "embed") {
-        let refused: TypeId? = embed_law(cx, e, placed.args[0])
+    let reads = cx.view.decls.embed_kind_of(d)
+    if reads != null {
+        let refused: TypeId? = embed_law(cx, e, placed.args[0], reads!, EmbedBase.Beside)
+        if refused != null { return refused! }
+    }
+    if cx.view.decls.is_meta_fn(d, "provided") {
+        let refused: TypeId? = provided_law(cx, e, placed.args[0], pins)
         if refused != null { return refused! }
     }
     if cx.view.decls.is_meta_fn(d, "code_hash") && !names_a_fn(cx, placed.args[0]) { return code_hash_unnamed(cx, placed.args[0]) }
@@ -799,12 +806,33 @@ fn component_called(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
         )
 }
 
+/// THE PROVIDED LAW: the kind is written (a pin, or the seat's own type),
+/// and the file is judged as an octets embed from the package's root.
+/// Null when the call may stand.
+fn provided_law(mut cx: TypeCx, e: ExprId, path: ExprId, pins: List<TypeRef>) -> TypeId? {
+    if pins.is_empty() && cx.want_at(e) == null { return provided_unpinned(cx, e) }
+    embed_law(cx, e, path, EmbedKind.Octets, EmbedBase.Root)
+}
+
+fn provided_unpinned(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.provided_kind",
+                cx.loc_of(e),
+                "`provided` names its kind — the file's octets do not choose it",
+                "no kind written here",
+                "write it: `provided<Picture>(\"art/logo.svg\")`, or give the const its type",
+            ),
+        )
+}
+
 /// THE EMBED LAW, at the literal: the path is written, it stays inside
 /// the package that writes it, no link stands on the way to it, and
 /// what stands there is text. Null when the const may read it.
-fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId) -> TypeId? {
+fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId, kind: EmbedKind, base: EmbedBase) -> TypeId? {
     let rel? = cx.view.store.expr(path).text_of() else { return embed_computed_path(cx, e) }
-    let fault = match cx.view.decls.embed_placed(cx.view.file, rel) {
+    let fault = match cx.view.decls.embed_placed(cx.view.file, rel, kind, base) {
         .Ok(_) -> { return null },
         .Err(why) -> why,
     }
@@ -812,7 +840,7 @@ fn embed_law(mut cx: TypeCx, e: ExprId, path: ExprId) -> TypeId? {
         .Outside -> embed_outside(cx, path, rel),
         .Undeclared(key) -> embed_undeclared(cx, path, rel, key),
         .Linked -> embed_linked(cx, path, rel),
-        .Missing -> embed_missing(cx, path, rel),
+        .Missing -> embed_missing(cx, path, rel, base),
         .NotText(at) -> embed_not_text(cx, path, rel, at),
         .Refused(why) -> embed_unread(cx, path, why),
     }
@@ -857,17 +885,32 @@ fn embed_linked(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
         )
 }
 
-fn embed_missing(mut cx: TypeCx, path: ExprId, rel: string) -> TypeId {
+fn embed_missing(mut cx: TypeCx, path: ExprId, rel: string, base: EmbedBase) -> TypeId {
     cx
         .spoken(
             refusal(
                 "type.embed_file",
                 cx.loc_of(path),
-                "`embed` finds no `${rel}` beside this source file",
+                embed_missing_words(rel, base),
                 "no file stands here",
-                "the path is read from this file's own directory",
+                embed_missing_help(base),
             ),
         )
+}
+
+/// Where the missing file was looked for.
+fn embed_missing_words(rel: string, base: EmbedBase) -> string {
+    match base {
+        .Beside -> "`embed` finds no `${rel}` beside this source file",
+        .Root -> "`provided` finds no `${rel}` at this package's root",
+    }
+}
+
+fn embed_missing_help(base: EmbedBase) -> string {
+    match base {
+        .Beside -> "the path is read from this file's own directory",
+        .Root -> "the path is read from the package's root, whatever directory this file is in",
+    }
 }
 
 fn embed_not_text(mut cx: TypeCx, path: ExprId, rel: string, at: int) -> TypeId {
