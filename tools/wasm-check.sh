@@ -11,12 +11,12 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
-node=${NODE:-node}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wasm.XXXXXX")}
 fixtures=$here/wasm-fixtures
 
 say() { echo "wasm-check: $*" >&2; }
 skip() { say "$* — skipped"; exit 0; }
+. "$here/jspi_node.sh"
 
 [ -x "$avra" ] || skip "no compiler at $avra"
 command -v "$node" >/dev/null 2>&1 || skip "node not on PATH"
@@ -84,7 +84,7 @@ for src in "$fixtures"/*/; do
         fail=1
     elif ! diff -u "$work/$name.native.out" "$work/$name.wasm.out" >"$work/$name.diff" 2>&1; then
         say "$name: wasm stdout differs from native"
-        cat "$work/$name.diff" >&2
+        cat "$work/$name.diff" "$work/$name.wasm.err" >&2
         fail=1
     elif ! diff -u "$work/$name.eval.out" "$work/$name.native.out" >"$work/$name.evaldiff" 2>&1; then
         say "$name: native stdout differs from the evaluator"

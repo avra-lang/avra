@@ -70,7 +70,14 @@ done
 # Each SKIPS, spoken, when the toolchain is absent, so a machine without it is
 # not falsely green. SKIPPED for a PR's minimum — the wasm builds and cache
 # attacks are minutes, and the train is where the target is proved.
-if [ "$pr_minimum" = 0 ] && command -v clang >/dev/null 2>&1 && clang --print-targets 2>/dev/null | grep -q wasm32; then
+# A PR's minimum skips that proof UNLESS the PR changes what it proves: the wasm scripts, fixtures,
+# host, or the runtime files the wasm port is built from.
+wasm_touched=0
+if [ -n "$base" ] && git diff --name-only --diff-filter=d "$base" "$head" \
+    | grep -qE '^(tools/(wasm|jspi_node)|runtime/(avra_fiber|dom/tasks|.*wasm)|\.github/ci/install_node)'; then
+    wasm_touched=1
+fi
+if { [ "$pr_minimum" = 0 ] || [ "$wasm_touched" = 1 ]; } && command -v clang >/dev/null 2>&1 && clang --print-targets 2>/dev/null | grep -q wasm32; then
     make -s -o avra wasm-runtime wasm-packages >/dev/null 2>&1 || true
     sh tools/wasm-check.sh || { echo "gate_changed: wasm-check refused" >&2; exit 1; }
     sh tools/wasm-seam-check.sh || { echo "gate_changed: wasm-seam refused" >&2; exit 1; }
