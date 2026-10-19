@@ -1,0 +1,26 @@
+// The wasm optimizer is told the features a module may use and no others: a spelling
+// that lets it pick writes encodings no engine ships (the compact import section a
+// phone's WebKit cannot parse), and a set without exception handling refuses the link.
+use @std.avrac.compiler.{wasm_opt_tries, asyncify_tries, WASM_FEATURES}
+
+fn all_tries() -> List<List<string>> { wasm_opt_tries("in.wasm", "out.wasm").concat(asyncify_tries("in.wasm", "out.wasm")) }
+
+spec "the wasm optimizer's features" {
+    given "every spelling the build tries" {
+        then "none lets the optimizer pick its own features" {
+            all_tries().all((words) -> !words.any(it == "--all-features"))
+        }
+        then "each enables exception handling, which the runtime's guarded run links" {
+            all_tries().all((words) -> words.contains("--enable-exception-handling"))
+        }
+        then "the first names every feature the build may use, once" {
+            let first = wasm_opt_tries("in.wasm", "out.wasm")[0]
+            WASM_FEATURES.all((f) -> [w for w in first if w == "--enable-${f}"].length == 1)
+        }
+        then "the second drops only the names an older optimizer lacks" {
+            let tries = wasm_opt_tries("in.wasm", "out.wasm")
+            let dropped = [f for f in WASM_FEATURES if !tries[1].contains("--enable-${f}")]
+            dropped.join(",") == "bulk-memory-opt,call-indirect-overlong"
+        }
+    }
+}

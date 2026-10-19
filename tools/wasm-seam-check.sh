@@ -29,6 +29,7 @@ skip() { say "$* — skipped"; exit 0; }
 
 [ -x "$avra" ] || skip "no compiler at $avra"
 command -v wasm-objdump >/dev/null 2>&1 || skip "wasm-objdump (wabt) not on PATH"
+command -v wasm-validate >/dev/null 2>&1 || skip "wasm-validate (wabt) not on PATH"
 if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
     ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
 fi
@@ -42,6 +43,15 @@ fi
 wasm=$(tail -1 "$work/build.out")
 [ -f "$wasm" ] || { say "no .wasm was written ($wasm)"; exit 1; }
 wasm-objdump -x "$wasm" >"$work/objdump.txt" 2>&1
+# THE SHIPPED MODULE PARSES IN EVERY ENGINE: wabt, with its default features and the module's
+# declared exception handling, refuses an
+# encoding an engine has not shipped — the compact import section an optimizer writes when
+# told "every feature it knows", which a phone's WebKit refuses ("can't get 1th Import's kind").
+# The runtime's guarded run links exception handling; a wabt older than the proposal's
+# standing asks for it by name.
+exceptions=""
+wasm-validate --help 2>&1 | grep -q -- "--enable-exceptions" && exceptions="--enable-exceptions"
+wasm-validate $exceptions "$wasm" >"$work/validate.txt" 2>&1 || { say "the shipped module does not validate: $(head -1 "$work/validate.txt")"; exit 1; }
 
 fail=0
 need_import() { grep -q "$1" "$work/objdump.txt" || { say "not imported: $1"; fail=1; }; }
