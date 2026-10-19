@@ -665,21 +665,16 @@ impl Workspace {
     }
 
     /// A file's kept manifest judged against the digests standing now, traced beside whether
-    /// the hold read the file: a held file the manifest calls moved, or a read file it calls
-    /// standing, are where the two keys disagree.
+    /// the hold read the file: a held file the manifest calls moved is the manifest coarser, a
+    /// read file it calls standing the hold coarser — never a verdict on its own, since only an
+    /// answer that differs from a cold one is a missed read.
     fn manifest_verdict(store: Store, path: string, file: FileId, row: string) {
         let lines? = store.reads_of(Stored.Unit, row) else { return }
         let rdb = self.decls.rows_db.get()
         let moved = lines.find((l) -> self.read_moved(rdb, l))
-        let held = self.is_held(file)
         qtrace(
-            "Q\tmanifest\t${path}\t${if held { "held" } else { "read" }}\t${if moved == null { "stands" } else { "moved ${read_name(moved!)}" }}\n",
+            "Q\tmanifest\t${path}\t${if self.is_held(file) { "held" } else { "read" }}\t${if moved == null { "stands" } else { "moved ${read_name(moved!)}" }}\n",
         )
-        if held && moved != null {
-            wreck(
-                "the hold kept `${path}` while its manifest read `${read_name(moved!)}` moved: a manifest read the hold does not",
-            )
-        }
     }
 
     /// Whether a kept read's digest differs from the one standing now; an unnamed read is moved, an
