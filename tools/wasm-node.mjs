@@ -4,9 +4,9 @@
 // an ordinary finish.
 //
 // A module that imports `avra_host` has a hosted scheduler (tasks): it runs
-// under JSPI (`node --experimental-wasm-jspi` until Node ships it on), the
-// program's entry on the first task's stack. Without JSPI it exits 3 and
-// says so — never a silent pass. `--asyncify <module>` is the fallback host:
+// under JSPI (a Node 24, which has `WebAssembly.Suspending`), the program's
+// entry on the first task's stack. Without it the module exits 3 and says so
+// — never a silent pass. `--asyncify <module>` is the fallback host:
 // the asyncified module (`app.asyncify.wasm`) driven without suspending a
 // stack, on any Node.
 import { WASI } from "node:wasi";
@@ -27,7 +27,7 @@ if (!hosted) {
     const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
     process.exitCode = wasi.start(instance);
 } else if (!fallback && !jspiAvailable()) {
-    console.error("wasm-node: the module has tasks and this Node has no JSPI — run with --experimental-wasm-jspi");
+    console.error(`wasm-node: the module has tasks and this Node (${process.version}) has no WebAssembly.Suspending — run it under a Node 24 (the image's node-jspi)`);
     process.exitCode = 3;
 } else {
     let instance = null;
