@@ -837,6 +837,7 @@ layers:
 # the image needs, never what it carries.
 libs-self-test:
 	@python3 tools/libs.py --self-test
+	@python3 tools/llvm_link.py --twin
 
 hooks-released:
 	@python3 tools/hooks_released.py

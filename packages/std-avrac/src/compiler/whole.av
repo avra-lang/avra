@@ -54,7 +54,7 @@ use compiler.lower.{
     collect_answer_type,
 }
 use compiler.host.{library_stem, Beneath, Read, InputName, embedded_kind}
-use compiler.backend.{platform_defines}
+use compiler.backend.{platform_defines, links_with_ld64}
 use @std.errors.{Loc}
 
 impl Workspace {
@@ -812,7 +812,40 @@ impl Workspace {
         let head = flag.substring(0, opens)
         let name = flag.substring(opens + 2, closes)
         let tail = flag.substring(closes + 1, flag.length)
-        "${head}${self.env(name) ?? ""}${self.env_filled(tail)}"
+        "${head}${self.env(name) ?? self.platform_hole(name) ?? ""}${self.env_filled(tail)}"
+    }
+}
+
+impl Workspace {
+    /// WHAT A LINK HOLE MEANS ON THIS PLATFORM when the environment names nothing: the C++ runtime a
+    /// static LLVM needs, and the directory the system's zstd lives in where the driver's default
+    /// search does not reach it. The environment still wins (a machine's own paths belong to the
+    /// machine); this is the floor, so a link run from any shell — a Sprite, a test binary, a bare
+    /// `build/avra` — carries them without a shim having set them.
+    fn platform_hole(name: string) -> string? {
+        match name {
+            "AVRA_CXX_RUNTIME" -> if links_with_ld64() { "c++" } else { "stdc++" },
+            "AVRA_SYS_SEARCH" -> self.system_library_dir(),
+            rest -> null,
+        }
+    }
+
+    /// The directory holding the system's `libzstd`: Homebrew's on macOS, else the first multiarch
+    /// or lib directory that has it, each probe an INPUT through the world's door (a cached build
+    /// re-judges when the library appears or moves). None when none does — the driver's own search
+    /// then decides.
+    fn system_library_dir() -> string? {
+        let candidates = if links_with_ld64() {
+            ["/opt/homebrew/lib", "/usr/local/lib"]
+        } else {
+            ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]
+        }
+        candidates.find((dir) -> self.holds_zstd(dir))
+    }
+
+    fn holds_zstd(dir: string) -> bool {
+        ["libzstd.a", "libzstd.so", "libzstd.dylib"]
+            .any((name) -> self.there(joined_path(dir, name)))
     }
 }
 
