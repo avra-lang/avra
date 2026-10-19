@@ -1138,12 +1138,23 @@ impl Decls {
         self.auditing.set(true)
     }
 
+    /// What a read under name bucket `b` records for a declaration of `kind` in `f`: the
+    /// bucket — except a `main`. Every file with top-level statements mints one under the one
+    /// name, so the bucket holds a `main` per file and would tie each to every other file's;
+    /// a `main` is a function of its own file's rows alone.
+    fn name_read(kind: DeclKind, f: FileId, b: int) {
+        match kind {
+            .Main -> self.rows_read(f),
+            rest -> self.record_kernel.record_at(self.record_names.get(), b),
+        }
+    }
+
     /// A read of one row records what the row is a function of in the open query: its
     /// name's bucket when its file's rows are settled, its module's record when the
     /// file is held, nothing while the rows are being minted.
     fn row_read(x: Decl) {
         if x.standing == 1 {
-            self.record_kernel.record_at(self.record_names.get(), x.bucket)
+            self.name_read(x.kind, x.file, x.bucket)
         } else if x.standing == 2 {
             (self.held_rows.get())(x.file)
         }
