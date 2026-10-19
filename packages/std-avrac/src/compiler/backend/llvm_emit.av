@@ -134,7 +134,9 @@ impl Emit {
             .LoopCond(c) -> self.loop_cond(c),
             .LoopEnd -> self.loop_end(),
             .LoopJump(outward, again) -> self.loop_jump(outward, again),
-            .ScopeEnter(_) or .ScopeExit(_) -> nothing(),
+            .ScopeEnter(_) -> self.scopes.push(Open.Plain),
+            .Cleanup(_) -> self.cleanup_open(),
+            .ScopeExit(_) -> self.scope_closed(),
         }
     }
 
@@ -191,6 +193,26 @@ impl Emit {
     /// The next register's value — registers mint in instruction order.
     fn define(v: ptr) {
         self.vals.push(v)
+    }
+
+    /// A cleanup region: its instructions are emitted for real, into a block of
+    /// their own that nothing branches to — the body of the landing a trap's
+    /// unwind enters. The walk returns to where it stood when the region closes.
+    fn cleanup_open() {
+        self.scopes.push(Open.Cleanup(avra_llvm_get_insert_block(self.b)))
+        avra_llvm_position_at_end(self.b, avra_llvm_append_basic_block(self.lc, self.fn_val, "cleanup"))
+    }
+
+    /// A scope closes; a cleanup region's block ends unreachable, and the walk
+    /// goes back to the block it left.
+    fn scope_closed() {
+        match self.scopes.pop() {
+            .Plain -> nothing(),
+            .Cleanup(resume) -> {
+                let _ = avra_llvm_build_unreachable(self.b)
+                avra_llvm_position_at_end(self.b, resume)
+            },
+        }
     }
 
     /// icmp predicates by number: 32 eq, 33 ne, 38 sgt, 39 sge, 40 slt,

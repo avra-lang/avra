@@ -54,11 +54,20 @@ type Emit = {
     vals: List<ptr>,
     frames: List<Region>,
     loops: List<LoopFrame>,
+    // the open scopes, innermost last
+    scopes: List<Open>,
     externs: List<RtSig>,
     // the runtime's rows by name, built once per module
     rt: Map<string, RtSig>,
     // whether each box a row mints is counted by its type (AVRA_CENSUS_TYPES)
     census: bool,
+}
+
+/// One open scope: a plain one, or a cleanup region and the block the walk
+/// returns to when it closes.
+enum Open {
+    Plain
+    Cleanup(resume: ptr)
 }
 
 /// One open loop: where the back edge returns and where false exits.
@@ -613,6 +622,7 @@ fn emit_body(
         vals: vals,
         frames: [],
         loops: [],
+        scopes: [],
         externs: externs,
         rt: rt,
         census: avra_llvm_census_types() != 0,

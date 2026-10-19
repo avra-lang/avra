@@ -422,6 +422,13 @@ fn dispatch(
                 next: close_at + 1,
             }
         },
+        // A CLEANUP REGION is entered by an unwind alone: its body is proved on its
+        // own, and the path past it stands as it was.
+        .Cleanup(_) -> {
+            let close_at = scope_close(ctx.ins, i)
+            let w = walk(ctx, i + 1, close_at, sim, null, check_end, outer.concat(born))
+            Stepped { sim: sim, diags: w.diags, born: born, diverges: false, next: close_at + 1 }
+        },
         .IfStart(_) or .SwitchStart(_, _) -> {
             let arms = region_arms(ctx.ins, i)
             let last_arm = arms.last()!
@@ -642,7 +649,7 @@ fn loop_bounds(ins: List<Ins>, open_at: int) -> LoopBounds {
 /// THE BRACKETS, independently counted: one OPENS a nested span, one
 /// CLOSES it — `ArmEnd`/`LoopCond` are TURNS, never counted here,
 /// which is what lets a depth-0 scan find them.
-fn opens(i: Ins) -> bool { i is .ScopeEnter || i is .IfStart || i is .SwitchStart || i is .LoopStart }
+fn opens(i: Ins) -> bool { i is .ScopeEnter || i is .Cleanup || i is .IfStart || i is .SwitchStart || i is .LoopStart }
 
 fn closes(i: Ins) -> bool { i is .ScopeExit || i is .RegionEnd || i is .LoopEnd }
 

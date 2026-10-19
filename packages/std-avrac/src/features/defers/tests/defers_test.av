@@ -186,6 +186,22 @@ spec "features/defers" {
         }
     }
     given "the IR, as `avra ir` prints it" {
+        then "a deferred call opens a cleanup region where the defer stands, and each exit retires it before it runs the call" {
+            let ir = render_ir(
+                ir_of(
+                    "fn note(n: int) {\n}\nfn f(x: int) -> int {\n    defer note(1)\n    if x == 0 { return 0 }\n    x\n}\nf(3)",
+                ),
+            )
+            ir.split("cleanup 0 {").length == 4 && ir.split("call note(").length == 4
+        }
+        then "a deferred body that needs its box runs it through the pointer inside its cleanup region" {
+            let ir = render_ir(
+                ir_of(
+                    "fn note(n: int) {\n}\nfn f(x: int) -> int {\n    defer note(x + 1)\n    x\n}\nf(3)",
+                ),
+            )
+            ir.split("cleanup 0 {").length == 3 && ir.split("callptr").length == 3
+        }
         then "a capture-free deferred body is static data — read once, called through, and never released" {
             let ir = render_ir(
                 ir_of("${puts()}fn f() -> int {\n    defer avra_puts(\"x\")\n    1\n}\nf()"),

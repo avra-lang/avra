@@ -986,6 +986,10 @@ void avra_llvm_add_case(LLVMValueRef switch_val, LLVMValueRef on_val, LLVMBasicB
     LLVMAddCase(switch_val, on_val, dest);
 }
 
+LLVMValueRef avra_llvm_build_unreachable(LLVMBuilderRef b) {
+    return LLVMBuildUnreachable(b);
+}
+
 LLVMValueRef avra_llvm_build_ret(LLVMBuilderRef b, LLVMValueRef val) {
     return LLVMBuildRet(b, val);
 }
