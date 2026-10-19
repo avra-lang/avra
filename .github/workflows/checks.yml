@@ -867,6 +867,9 @@ jobs:
         run: |
           fail=0
           first=first
+          # Each file's seconds, written by the suite itself as it ends (AVRA_SUITE_FILE_TIMES),
+          # one `<file> <seconds>` line a file a suite — so a long pole is read, not probed.
+          export AVRA_SUITE_FILE_TIMES="$PWD/suite-files.txt"
           for p in ${{ join(matrix.shard, ' ') }}; do
             [ -d "packages/${p%%/*}/src" ] || continue
             echo "::group::$p"
@@ -888,7 +891,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: suite-times-${{ strategy.job-index }}
-          path: suite-times.txt
+          path: |
+            suite-times.txt
+            suite-files.txt
           retention-days: 1
 
       - if: always() && needs.prepare.outputs.main == '1' && hashFiles('.avra-cache/proofs/*') != ''

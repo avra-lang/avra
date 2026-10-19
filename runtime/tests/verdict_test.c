@@ -342,6 +342,38 @@ static void said_at_the_end(void) {
     avra_case_schedules_said();
 }
 
+
+// A case labelled `<file>\t<words>` credits its seconds to its file, written at exit.
+static void times_child(const char* path) {
+    setenv("AVRA_SUITE_FILE_TIMES", path, 1);
+    avra_case_begin("a.av\tone");
+    usleep(30000);
+    avra_case_begin("a.av\ttwo");
+    usleep(30000);
+    avra_case_begin("b.av\tthree");
+    exit(0);
+}
+static void file_times(void) {
+    char path[64];
+    snprintf(path, sizeof path, "/tmp/avra-file-times-%d", (int)getpid());
+    fflush(stderr);
+    pid_t pid = fork();
+    if (pid == 0) times_child(path);
+    int status = 0;
+    waitpid(pid, &status, 0);
+    char text[256] = {0};
+    FILE* f = fopen(path, "r");
+    if (f) { size_t n = fread(text, 1, sizeof text - 1, f); text[n] = 0; fclose(f); }
+    double a = 0, b = -1;
+    char fa[16], fb[16];
+    int got = sscanf(text, "%15s %lf\n%15s %lf", fa, &a, fb, &b);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "the timed process ends");
+    CHECK(got == 4 && strcmp(fa, "a.av") == 0 && strcmp(fb, "b.av") == 0, "one line per file, in the order they began");
+    CHECK(a >= 0.05 && a < 2.0, "a file's seconds are its cases' together");
+    CHECK(b >= 0.0 && b < 0.05, "and the case in flight at exit is closed into its file");
+    remove(path);
+}
+
 int main(void) {
     alarm(120);
     heard("a case with one order fails", one_order_fails_quietly);
@@ -449,6 +481,7 @@ int main(void) {
         waitpid(pid, &status, 0);
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && says("AVRA_CLOCK is `virtual` or `real`"), "a clock setting that is neither traps by name");
     }
+    file_times();
     printf("verdict: %d checks, %d failed\n", g_checks, g_fails);
     return g_fails ? 1 : 0;
 }

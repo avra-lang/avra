@@ -7,9 +7,9 @@
 use core.{Ins, Reg, TypeId, TypeRegistry, BinOp, Level, RtKind, RtSig, extern_row, counted, FileId}
 use compiler.lower.{Body}
 
-/// One case as the entry needs it: the symbol that runs it and the
-/// line its verdict prints.
-export type CaseCall = { symbol: string, label: string }
+/// One case as the entry needs it: the symbol that runs it, the
+/// line its verdict prints, and the file whose seconds it counts toward.
+export type CaseCall = { symbol: string, label: string, file: string = "" }
 
 /// The host fns the test binary declares: the status it leaves by, the
 /// marker naming the case in flight — a suite runs in ONE process, so a
@@ -30,7 +30,7 @@ export const runner_rows: List<RtSig> = [
 /// binary's own line names the engines that agreed, so a reader of
 /// the gate's output learns a program is single-engine without
 /// opening a document.
-export type ProgramCall = { symbol: string, label: string, expected: string, evaluated: bool }
+export type ProgramCall = { symbol: string, label: string, expected: string, evaluated: bool, file: string = "" }
 
 /// The host fns a programs binary declares beyond the runner's: the
 /// runner's verdict on a program — run under a case's schedules and clock,
@@ -96,11 +96,14 @@ export fn suite_entry(types: TypeRegistry, cases: List<CaseCall>, programs: List
     e.built()
 }
 
+/// The marker the runtime reads: the case's words, led by its file and a tab when it has one.
+fn marked(file: string, label: string) -> string { if file == "" { label } else { "${file}\t${label}" } }
+
 /// One program: named for the wreck, run under a case's schedules —
 /// its output captured and held to what it must print under each — and
 /// counted when one prints otherwise, which the runtime says.
 fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
-    e.give(Ins.CallRtVoid("avra_case_begin", [e.text(pr.label)]))
+    e.give(Ins.CallRtVoid("avra_case_begin", [e.text(marked(pr.file, pr.label))]))
     // the runtime owns what the program printed: it captures, compares and releases it
     e.give(Ins.IfStart(e.zero_test(e.program_verdict(pr))))
     let held = e.mint(e.types.type(int))
@@ -158,7 +161,7 @@ fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
 /// One case: run as a task under its schedules, judged, and counted
 /// when it fails.
 fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
-    e.give(Ins.CallRtVoid("avra_case_begin", [e.text(c.label)]))
+    e.give(Ins.CallRtVoid("avra_case_begin", [e.text(marked(c.file, c.label))]))
     e.give(Ins.IfStart(e.zero_test(e.verdict(c))))
     // only a FAILURE speaks — a green case is the tally's business
     e.say("    ✗ ${c.label}")

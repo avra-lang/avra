@@ -1112,8 +1112,68 @@ const char* avra_guard_words(void) { return str_owned(g_guard_text, strlen(g_gua
 // was running when it died.
 static const char* g_case = NULL;
 
+// SECONDS A FILE'S CASES TOOK. A case's label may lead with its file and a tab
+// (`<file>\t<words>`): the words are the case, the file is where its seconds go.
+// With AVRA_SUITE_FILE_TIMES naming a path, the process appends one
+// `<file> <seconds>` line per file when it ends.
+typedef struct { const char* file; size_t len; double seconds; } FileTime;
+static FileTime* g_file_times = NULL;
+static size_t g_file_times_n = 0;
+static const char* g_case_file = NULL;
+static size_t g_case_file_len = 0;
+static double g_case_began = 0;
+static int g_times_state = 0; // 0 not asked, 1 recording, -1 off
+
+static double mono_seconds(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec + (double)t.tv_nsec / 1e9;
+}
+
+static void case_time_close(void);
+
+static void file_times_write(void) {
+    const char* path = getenv("AVRA_SUITE_FILE_TIMES");
+    FILE* f = path ? fopen(path, "a") : NULL;
+    if (!f) return;
+    for (size_t i = 0; i < g_file_times_n; i++) {
+        fprintf(f, "%.*s %.3f\n", (int)g_file_times[i].len, g_file_times[i].file, g_file_times[i].seconds);
+    }
+    fclose(f);
+}
+
+static void file_times_write_closing(void) {
+    case_time_close();
+    file_times_write();
+}
+
+static void case_time_close(void) {
+    if (g_times_state != 1 || !g_case_file) return;
+    double took = mono_seconds() - g_case_began;
+    for (size_t i = 0; i < g_file_times_n; i++) {
+        if (g_file_times[i].len == g_case_file_len && memcmp(g_file_times[i].file, g_case_file, g_case_file_len) == 0) {
+            g_file_times[i].seconds += took;
+            return;
+        }
+    }
+    FileTime* grown = realloc(g_file_times, (g_file_times_n + 1) * sizeof(FileTime));
+    if (!grown) return;
+    g_file_times = grown;
+    g_file_times[g_file_times_n++] = (FileTime){ g_case_file, g_case_file_len, took };
+}
+
 void avra_case_begin(const char* label) {
-    g_case = label;
+    if (g_times_state == 0) {
+        const char* path = getenv("AVRA_SUITE_FILE_TIMES");
+        g_times_state = path && path[0] ? 1 : -1;
+        if (g_times_state == 1) atexit(file_times_write_closing);
+    }
+    case_time_close();
+    const char* tab = strchr(label, '\t');
+    g_case_file = tab ? label : NULL;
+    g_case_file_len = tab ? (size_t)(tab - label) : 0;
+    g_case = tab ? tab + 1 : label;
+    g_case_began = mono_seconds();
 }
 
 const char* avra_case_now(void) {
