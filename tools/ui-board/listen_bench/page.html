@@ -1,0 +1,45 @@
+<!doctype html><meta charset=utf-8><body><div id=root></div>
+<script type=module>
+const q = new URLSearchParams(location.search);
+const N = Number(q.get("n"));
+const m = await import("./" + q.get("m") + "/bootstrap.js");
+const { OP, NO_ID, SAYS, WIRE_VERSION, TAGS, AFTER } = await import("./" + q.get("m") + "/wire.gen.js");
+let adds = 0;
+const add = EventTarget.prototype.addEventListener;
+EventTarget.prototype.addEventListener = function (...a) { adds++; return add.apply(this, a); };
+let echoes = 0;
+const mount = document.getElementById("root");
+const apply = m.createApplier(document, mount, () => { echoes++; });
+const enc = new TextEncoder();
+const bytes = [];
+const u8 = (v) => bytes.push(v);
+const i32 = (v) => { for (let k = 0; k < 4; k++) bytes.push((v >>> (8 * k)) & 255); };
+const str = (s) => { const b = enc.encode(s); i32(b.length); for (const x of b) bytes.push(x); };
+// A frame of N buttons under one container, written as each wire version writes it.
+const varint = (n) => { while (n >= 128) { u8((n % 128) + 128); n = Math.floor(n / 128); } u8(n); };
+const modern = WIRE_VERSION >= 12;
+const id = modern ? (n) => varint(n + 1) : (n) => { i32(n >>> 0); i32(Math.floor(n / 4294967296) | 0); };
+u8(WIRE_VERSION);
+const defining = OP.define !== undefined;
+if (defining) { u8(OP.define); i32(1); i32(SAYS.nothing); str("click"); str(""); i32(0); }
+u8(OP.create); id(0); if (modern) varint(TAGS.indexOf("div")); else str("div");
+u8(OP.place); id(0); id(NO_ID); id(NO_ID);
+if (modern) { /* the container is made here, so the run is known whole */ }
+for (let n = 1; n <= N; n++) {
+  u8(OP.create); id(n); if (modern) varint(TAGS.indexOf("button")); else str("button");
+  u8(OP.place); id(n); id(0);
+  if (modern) varint(AFTER.append); else id(n === 1 ? NO_ID : n - 1);
+  if (defining) { u8(OP.listen); id(n); i32(1); i32(SAYS.nothing); }
+  else { u8(OP.listen); id(n); i32(1); str("click"); i32(SAYS.nothing); str(""); i32(0); }
+}
+const frame = Uint8Array.from(bytes);
+const t0 = performance.now();
+apply(frame);
+const registered = performance.now() - t0;
+const els = [...mount.childNodes[0].childNodes];
+const K = Math.min(20000, N);
+const t1 = performance.now();
+for (let k = 0; k < K; k++) els[(k * 7919) % els.length].dispatchEvent(new MouseEvent("click", { bubbles: true }));
+const dispatched = performance.now() - t1;
+window.__bench = { n: N, adds, registered_ms: Math.round(registered), dispatch_us_per_event: Math.round((dispatched / K) * 1000), echoes, frame_bytes: frame.length, bytes_per_button: Math.round(frame.length / N) };
+</script>

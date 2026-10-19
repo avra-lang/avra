@@ -1,8 +1,8 @@
 //! What a terminal's input spells, key by key.
+use @std.ui.terminal.tests.support.{esc}
 use @std.text.{from_codepoint}
 use @std.text.{repeat}
 use @std.ui.terminal.keys.{
-    Key,
     Heard,
     heard,
     keys,
@@ -13,6 +13,7 @@ use @std.ui.terminal.keys.{
     paste_cap,
     resume,
 }
+use @std.ui.tree.terminal_key.{Key, Paste}
 
 fn word(k: Key) -> string {
     match k {
@@ -27,7 +28,7 @@ fn word(k: Key) -> string {
         .Top -> "top",
         .Bottom -> "bottom",
         .Escape -> "escape",
-        .Chord(t, ctrl, alt) -> "chord(${t},${if ctrl { "c" } else { "" }}${if alt { "a" } else { "" }})",
+        .Chord(t, ctrl, alt, shift) -> "chord(${t},${if ctrl { "c" } else { "" }}${if alt { "a" } else { "" }}${if shift { "s" } else { "" }})",
         .Click(x, y, shift, alt, ctrl) -> "click(${x},${y}${if shift { ",shift" } else { "" }}${if alt { ",alt" } else { "" }}${if ctrl { ",ctrl" } else { "" }})",
         .Wheel(x, y, toward_end) -> "wheel(${x},${y},${if toward_end { "down" } else { "up" }})",
         .Paste(.Text(t)) -> "paste(${t})",
@@ -35,12 +36,11 @@ fn word(k: Key) -> string {
         .FocusIn -> "focus_in",
         .FocusOut -> "focus_out",
         .Reports(n) -> "reports(${n})",
+        .Shortcut -> "shortcut",
     }
 }
 
 fn spelled(text: string) -> string { [word(k) for k in keys(text)].join(" ") }
-
-fn esc() -> string { from_codepoint(27) }
 
 /// What a run of octets spells, then how many it holds back: `'a' | 2`.
 fn read(octets: List<int>) -> string {
@@ -217,7 +217,7 @@ spec "the mouse, the paste, the focus and the kitty keyboard" {
                 modes_off() == "${esc()}[?1004l${esc()}[?2004l${esc()}[?1006l${esc()}[?1000l"
         }
         then "the kitty protocol is pushed once the terminal answers, and popped" {
-            kitty_on() == "${esc()}[>1u" && kitty_off() == "${esc()}[<u"
+            kitty_on() == "${esc()}[>5u" && kitty_off() == "${esc()}[<u"
         }
     }
 }

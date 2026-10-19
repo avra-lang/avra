@@ -37,9 +37,18 @@ export fn source(ops: List<HtmlOp>) -> string { [op_source(o) for o in ops].join
 /// written with the CSS escape for every one; the value is unchanged.
 fn css_safe(css: string) -> string { css.replace("<", "\\3c ") }
 
+/// The `style` element's opening tag: a page under a policy that allows
+/// styles by nonce names it.
+fn style_open(nonce: string?) -> string {
+    match nonce {
+        n? -> "<style nonce=\"${entities(n)}\">"
+        null -> "<style>"
+    }
+}
+
 /// The stylesheet, then the tree in a body.
-export fn document(css: string, ops: List<HtmlOp>) -> string {
-    "<style>${css_safe(css)}</style><body>${source(ops)}</body>"
+export fn document(css: string, nonce: string?, ops: List<HtmlOp>) -> string {
+    "${style_open(nonce)}${css_safe(css)}</style><body>${source(ops)}</body>"
 }
 
 /// What a document's head says: its title, its language and the way its
@@ -53,6 +62,6 @@ fn dir_word(d: Direction) -> string {
 
 /// A complete document: every value the head carries is escaped for the
 /// context it lands in.
-export fn page_source(head: Head, css: string, ops: List<HtmlOp>) -> string {
-    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>${entities(head.title)}</title><style>${css_safe(css)}</style></head><body>${source(ops)}</body></html>"
+export fn page_source(head: Head, css: string, nonce: string?, ops: List<HtmlOp>) -> string {
+    "<!doctype html><html lang=\"${entities(head.locale)}\" dir=\"${dir_word(head.direction)}\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>${entities(head.title)}</title>${style_open(nonce)}${css_safe(css)}</style></head><body>${source(ops)}</body></html>"
 }

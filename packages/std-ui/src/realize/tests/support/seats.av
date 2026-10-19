@@ -1,0 +1,50 @@
+//! The seats the target suites speak in: the five semantic kinds the neutral
+//! nodes are written with, each as the seat a std control declares for it.
+use tree.node.{Action, Handler, Node}
+use tree.seats.{Seat, seat_named}
+
+/// The five events the neutral nodes are written with, each the event of one std
+/// control; a test names an event and gets its seat.
+export enum Event {
+    Press
+    Input
+    Change
+    Submit
+    Dismiss
+}
+
+impl Event {
+    /// The event as a failing sketch is written out.
+    fn word() -> string {
+        match self {
+            .Press -> "press",
+            .Input -> "input",
+            .Change -> "change",
+            .Submit -> "submit",
+            .Dismiss -> "dismiss",
+        }
+    }
+}
+
+/// The seat a std control declares for an event.
+export fn seat_for(kind: Event) -> Seat {
+    match kind {
+        .Press -> seat_named("button", "press"),
+        .Input -> seat_named("field", "input"),
+        .Change -> seat_named("checkbox", "change"),
+        .Submit -> seat_named("form", "submit"),
+        .Dismiss -> seat_named("dialog", "dismiss"),
+    }
+}
+
+/// The event a seat is, among those the tests write with.
+export fn kind_at(seat: Seat) -> Event {
+    let every = [Event.Press, Event.Input, Event.Change, Event.Submit, Event.Dismiss]
+    every.find(seat_for(it) == seat) ?? Event.Press
+}
+
+/// An action hearing `kind` with `handler`.
+export fn action(kind: Event, handler: Handler) -> Action { Action { seat: seat_for(kind), handler: handler } }
+
+/// `n` hearing `kind` with `handler`, and nothing else.
+export fn hearing(n: Node, kind: Event, handler: Handler) -> Node { n with { events: [action(kind, handler)] } }

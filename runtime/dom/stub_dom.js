@@ -7,8 +7,8 @@
 // carried by `moveBefore` keeps both. A page's root is the node named
 // `root`: what stands under one stands on the page.
 function node(tagName, doc = null) {
-  return {
-    tagName, childNodes: [], attrs: {}, textContent: "", parentNode: null, listeners: new Map(),
+  const n = {
+    tagName, childNodes: [], attrs: {}, vars: {}, textContent: "", parentNode: null, listeners: new Map(),
     ownerDocument: doc, scrollTop: 0, selectionStart: null, selectionEnd: null, selectionDirection: "none",
     get nextSibling() {
       if (!this.parentNode) return null;
@@ -19,6 +19,7 @@ function node(tagName, doc = null) {
     contains(other) { return other === this || this.childNodes.some((c) => c.contains(other)); },
     setAttribute(k, v) { this.attrs[k] = v; },
     removeAttribute(k) { delete this.attrs[k]; },
+    getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
     // As a page does it: before itself is where it stands, and before a
     // node that is no child of this one is refused.
     insertBefore(c, at) {
@@ -39,6 +40,9 @@ function node(tagName, doc = null) {
     focus() { if (this.ownerDocument && this.isConnected) this.ownerDocument.activeElement = this; },
     setSelectionRange(start, end, direction = "none") { this.selectionStart = start; this.selectionEnd = end; this.selectionDirection = direction; },
   };
+  // The custom properties an element's style object holds, kept beside its attributes.
+  n.style = { setProperty(k, v) { n.vars[k] = v; }, removeProperty(k) { delete n.vars[k]; } };
+  return n;
 }
 
 // What a page drops from an element taken off it, and from all under it.
@@ -51,7 +55,8 @@ function taken(n) {
 // `carries: true` is a page that can carry an element standing on it to
 // another place (`moveBefore`), dropping nothing.
 export function stubDocument({ carries = false } = {}) {
-  const doc = { activeElement: null };
+  const listeners = new Map();
+  const doc = { activeElement: null, listeners, addEventListener(name, fn) { listeners.set(name, fn); } };
   const made = (tag) => {
     const n = node(tag, doc);
     if (carries) {
@@ -71,6 +76,14 @@ export function stubDocument({ carries = false } = {}) {
 }
 
 export const stubElement = node;
+
+// An event on `target`, as a page delivers it: the mount's capturing listener
+// for `type` hears it, with the target the event happened to. `bubbles` is
+// true unless the event says otherwise (a dialog's `cancel` does not).
+export function dispatch(mount, target, type, ev = {}) {
+  const heard = mount.listeners.get(type);
+  if (heard) heard({ bubbles: true, ...ev, target, type });
+}
 
 // What a reader of the page sees under `n`: its own text nodes and every
 // element's below it, in order.
