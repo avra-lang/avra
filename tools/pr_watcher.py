@@ -464,6 +464,17 @@ def plan(prs, runs, state, trunk=None, held=None, now=None, seen_at=None):
         if key not in told:
             acts.append({"do": "dispatch", "key": key, "mark": ("told", key),
                          "text": f"main {trunk['sha'][:7]} has no `checks` run — dispatching one"})
+    # (p) A COLD PASS ONCE A DAY: the speed baseline keeps a number per cache state (tools/step_cpu.py),
+    # and a PR whose suites ran cold is judged only against main's cold number, so main runs its suites
+    # cold once a day, when its head has a finished run and nothing of main's is running (a dispatch
+    # cancels main's other dispatch by concurrency, so it never starts over a live one). Best effort: a
+    # merge that lands while it runs cancels it, and the next day asks again.
+    if trunk and trunk.get("checked") and trunk.get("idle"):
+        day = (now or datetime.datetime.now(datetime.timezone.utc)).date().isoformat()
+        key = f"cold:{day}"
+        if key not in told:
+            acts.append({"do": "dispatch_cold", "key": key, "mark": ("told", key),
+                         "text": f"main has had no cold pass today ({day}) — dispatching one"})
     # (n) a merge that touched `.github/ci/**` fires no push event (a bot merge triggers
     # nothing), so the machine image is never rebuilt: dispatch `ci-image` once the newest such
     # commit on main has no `ci-image` run standing on it or any later commit.
@@ -587,7 +598,10 @@ def main_state(repo, runs):
     age = (datetime.datetime.now(datetime.timezone.utc) - born).total_seconds()
     checked = any(r.get("headSha") == sha and r.get("workflowName") == "checks"
                   for r in runs)
-    out = {"sha": sha, "age": age, "checked": checked}
+    busy = any(r.get("workflowName") == "checks" and r.get("headBranch") == "main"
+               and (r.get("status") or "") in ("in_progress", "queued", "waiting", "pending")
+               for r in runs)
+    out = {"sha": sha, "age": age, "checked": checked, "idle": not busy}
     out.update(ci_touch(repo, runs))
     return out
 
@@ -752,6 +766,9 @@ def do_action(a, repo, run):
     elif a["do"] == "dispatch":
         run(["workflow", "run", "checks.yml", "-R", repo, "--ref", "main"])
         print(f"::warning::pr-watcher dispatched `checks` on main — {a['text']}")
+    elif a["do"] == "dispatch_cold":
+        run(["workflow", "run", "checks.yml", "-R", repo, "--ref", "main", "-f", "cold=1"])
+        print(f"::warning::pr-watcher dispatched a COLD `checks` pass on main — {a['text']}")
     elif a["do"] == "dispatch_image":
         run(["workflow", "run", "ci-image.yml", "-R", repo, "--ref", "main"])
         print(f"::warning::pr-watcher dispatched `ci-image` on main — {a['text']}")
@@ -1183,6 +1200,24 @@ def selftest():
     execute([{"do": "cancel", "run": 7, "branch": "gone-lane", "text": "x"}], "avra-lang/avra", run=fake)
     if not any(a[:2] == ["run", "cancel"] for a in sent):
         sys.exit("pr-watcher: self-test — a run whose PR is closed was kept")
+    # A COLD PASS: asked once a day, only with main idle and its head checked, never over a live run
+    day = datetime.datetime(2026, 10, 20, 12, 0, tzinfo=datetime.timezone.utc)
+    quiet = {"sha": "m1", "age": 600, "checked": True, "idle": True}
+    st = _empty_state()
+    first = plan([], [], st, quiet, now=day)
+    if [x["do"] for x in first] != ["dispatch_cold"]:
+        sys.exit(f"pr-watcher: self-test — an idle main with no cold pass today was not asked for one: {first}")
+    commit_marks(first, [], st)
+    if plan([], [], st, quiet, now=day):
+        sys.exit("pr-watcher: self-test — a second cold pass was asked for the same day")
+    if [x["do"] for x in plan([], [], st, quiet, now=day + datetime.timedelta(days=1))] != ["dispatch_cold"]:
+        sys.exit("pr-watcher: self-test — the next day asked for no cold pass")
+    if plan([], [], _empty_state(), dict(quiet, idle=False), now=day):
+        sys.exit("pr-watcher: self-test — a cold pass was dispatched over a live main run")
+    sent = []
+    execute(first, "avra-lang/avra", run=lambda args: sent.append(args) or "")
+    if sent != [["workflow", "run", "checks.yml", "-R", "avra-lang/avra", "--ref", "main", "-f", "cold=1"]]:
+        sys.exit(f"pr-watcher: self-test — the cold dispatch was sent as {sent}")
     # FOLLOW: a pass that sees a PR about to land polls main and runs a pass when its head moves.
     def drive(heads, landings):
         log = {"sleeps": [], "steps": 0}
