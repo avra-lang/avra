@@ -37,7 +37,7 @@ use features.{
     bound_decl_of,
     EmbedFault,
     embed_literal_law,
-    admits_package,
+    gathers_across_files,
     AnnotationFact,
     LitArg,
 }
@@ -219,15 +219,16 @@ impl Workspace {
     /// when it is a `collect` that gathers its package whole.
     fn package_gathering(f: FileId, store: SyntaxArena, s: StmtId) -> Gathering? {
         let scope? = store.collect_scope(s) else { return null }
-        if !admits_package(scope) { return null }
+        if !gathers_across_files(scope) { return null }
         let parts? = store.collect_parts(s) else {
             let e? = store.collect_enum_parts(s) else { return null }
-            return Gathering { kind: e.kind, order: e.order, plans: [] }
+            return Gathering { kind: e.kind, scope: scope, order: e.order, plans: [] }
         }
         let rt = collect_answer_type(self.decls, f, s)
         let entry = self.decls.types.element(rt) ?? rt
         Gathering {
             kind: parts.kind,
+            scope: scope,
             order: parts.order,
             plans: [field_plan(self.decls, entry, pf.field.of, pf.path, parts.kind) for pf in parts.proj.fields],
         }
@@ -237,13 +238,7 @@ impl Workspace {
     /// order the collect itself gathers them, so two sets differ exactly when what
     /// the collect would bake moved.
     fn gathered_set(g: Gathering, owner: FileId) -> string {
-        let members = ordered_collect_members(
-            self.decls,
-            g.kind,
-            CollectScope.Package,
-            g.order,
-            owner,
-        )
+        let members = ordered_collect_members(self.decls, g.kind, g.scope, g.order, owner)
         digest_of(fields_wire([self.member_print(g, m) for m in members]))
     }
 
