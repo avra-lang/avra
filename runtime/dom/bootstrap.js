@@ -72,6 +72,26 @@ function saidBy(el, says, reads) {
   return held === undefined ? null : { says, value: String(held) };
 }
 
+// The attribute a shortcut says its chord in: the modifiers held (`c`, `a`,
+// `s`), the key's `KeyboardEvent.code`, and its `KeyboardEvent.key`, each
+// after a slash.
+const CHORD = "data-avra-chord";
+
+// Whether a keydown is the chord `spec` says: exactly its modifiers (the meta
+// key is no chord's), and its key — by what the key is called when that is
+// ASCII, and by the place it sits at when the layout calls it something else
+// (a Greek or Russian ctrl+s says `σ` or `ы` of the key `KeyS`).
+function meets(spec, ev) {
+  const [held, rest] = cut(spec);
+  const [code, key] = cut(rest);
+  const ascii = /^[\x20-\x7e]+$/.test(ev.key);
+  return ev.ctrlKey === held.includes("c") && ev.altKey === held.includes("a") && ev.shiftKey === held.includes("s")
+    && !ev.metaKey && (ascii ? ev.key.toLowerCase() === key.toLowerCase() : code !== "" && ev.code === code);
+}
+
+// A spec's first field, and the rest after its slash.
+const cut = (text) => { const at = text.indexOf("/"); return [text.slice(0, at), text.slice(at + 1)]; };
+
 // Where a control's caret stands — none for an element that has none, which
 // a page says by answering nothing or by refusing the question.
 function caretOf(el) {
@@ -107,15 +127,34 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     if (def.prevents && ev.preventDefault) ev.preventDefault();
     send(el.__avra_id, def.kind, saidBy(el, def.says, def.reads));
   };
+  const hearing = (el, ev) => {
+    const mine = hears[el.__avra_id];
+    if (mine === undefined) return;
+    if (Array.isArray(mine)) for (const def of mine) fire(el, ev, def); else fire(el, ev, mine);
+  };
+  // A SHORTCUT IS LIVE WHILE WHAT HOLDS IT HAS THE FOCUS, so a keydown is
+  // offered to the keys among each ancestor's children, nearest first, and the
+  // first whose chord it meets is pressed — and the browser's own answer to
+  // that chord is stopped, the page having bound it.
+  const pressed = (ev) => {
+    for (let el = mount.contains(ev.target) ? ev.target : mount; el; el = el.parentNode) {
+      for (const key of el.childNodes || []) {
+        const spec = key.getAttribute ? key.getAttribute(CHORD) : null;
+        if (spec === null || !meets(spec, ev)) continue;
+        if (ev.preventDefault) ev.preventDefault();
+        hearing(key, ev);
+        return;
+      }
+      if (el === mount) return;
+    }
+  };
   const heard = (ev) => {
     for (let el = ev.target; el && el !== mount; el = el.parentNode) {
-      const mine = hears[el.__avra_id];
-      if (mine !== undefined) {
-        if (Array.isArray(mine)) for (const def of mine) fire(el, ev, def); else fire(el, ev, mine);
-      }
+      hearing(el, ev);
       if (!ev.bubbles) break;
     }
   };
+  let chording = false;
   const listed = (id) => { const mine = hears[id]; return mine === undefined ? [] : Array.isArray(mine) ? mine : [mine]; };
   const need = (id) => {
     const el = nodes[id];
@@ -189,6 +228,12 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       if (!armed.has(def.event)) {
         armed.add(def.event);
         mount.addEventListener(def.event, heard, true);
+      }
+      // A keydown with nothing focused lands on the body, outside the mount, so
+      // shortcuts hear the DOCUMENT.
+      if (def.event === "keydown" && !chording) {
+        chording = true;
+        doc.addEventListener("keydown", pressed, true);
       }
     },
     [OP.unlisten]: (p) => {
