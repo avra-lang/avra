@@ -105,13 +105,48 @@ fn flag(v: bool) -> int {
 
 // ── The codec ──
 
+/// HOW A DENSE ID CROSSES A PROCESS. A `@dense` id is an arena's index, which means nothing
+/// outside the process that minted it, so a codec writes it through the scope its owner
+/// hands in: a spelling of the id — a durable name for a declaration, an offset from a
+/// window's base for an expression — and an inverse that answers absent for a spelling it
+/// does not hold. `kind` is the id type's own name.
+export trait Scope {
+    fn spelled(kind: string, index: int) -> string
+
+    fn unspelled(kind: string, text: string) -> int?
+}
+
+/// The scope that spells an id by its index, which only the process that wrote it reads back.
+export type Indexed = {}
+
+impl Scope for Indexed {
+    fn spelled(kind: string, index: int) -> string { "${index}" }
+
+    fn unspelled(kind: string, text: string) -> int? {
+        if text.is_empty() || text.length > 18 { return null }
+        mut n = 0
+        for i in 0..text.length {
+            let c = text.char_code(i)
+            if c < 48 || c > 57 { return null }
+            n = n * 10 + (c - 48)
+        }
+        n
+    }
+}
+
+/// The index scope, as a value.
+export fn indexed_scope() -> dyn Scope { Indexed {} }
+
 /// A record under construction, as octets. An IDENTITY: every holder
 /// of a writer writes the one record, so no seat needs `mut`.
-export type Writer = { out: Cell<List<int>> }
+export type Writer = { out: Cell<List<int>>, scope: dyn Scope }
 
-export fn writer() -> Writer {
+export fn writer() -> Writer { writer_in(indexed_scope()) }
+
+/// A writer whose dense ids cross by `scope`.
+export fn writer_in(scope: dyn Scope) -> Writer {
     let out: Cell<List<int>> = Cell.new([])
-    Writer { out: out }
+    Writer { out: out, scope: scope }
 }
 
 impl Writer {
@@ -127,6 +162,12 @@ impl Writer {
         self.byte(rest)
     }
 
+    /// A word as exactly eight octets, low first: a hash is uniform, so a varint would cost
+    /// nine or ten of them.
+    fn fixed(v: int) {
+        for k in 0..8 { self.byte(v >> 8 * k) }
+    }
+
     /// Zigzag, so a small negative is a short varint.
     fn int(v: int) { self.varint((v << 1) ^ (v >> 63)) }
 
@@ -137,6 +178,9 @@ impl Writer {
     fn count(n: int) { self.varint(n) }
 
     fn text(s: string) { self.octets(s.bytes()) }
+
+    /// A dense id of the type named `kind`, as its scope spells it.
+    fn dense(kind: string, index: int) { self.text(self.scope.spelled(kind, index)) }
 
     fn octets(b: Bytes) {
         self.count(b.length)
@@ -175,6 +219,15 @@ export fn written_all<T>(w: Writer, v: T, columns: List<fn(Writer, T) -> void>) 
     for each in columns { each(w, v) }
 }
 
+/// A map written: its count, then every entry's key and value in insertion order.
+export fn written_map<V>(w: Writer, m: Map<string, V>, each: fn(Writer, V) -> void) {
+    w.count(m.length)
+    for e in m.entries() {
+        w.text(e.key)
+        each(w, e.value)
+    }
+}
+
 export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
     w.count(xs.length)
     for x in xs { each(w, x) }
@@ -183,6 +236,12 @@ export fn written_list<T>(w: Writer, xs: List<T>, each: fn(Writer, T) -> void) {
 /// A tagged value: its variant's name, then its payload's writers in order.
 export fn written_tagged(w: Writer, tag: string, parts: List<fn(Writer) -> void>) {
     w.text(tag)
+    for part in parts { part(w) }
+}
+
+/// A variant of a fingerprinted codec: its place in the declaration, then its payload's writers.
+export fn written_ordinal(w: Writer, at: int, parts: List<fn(Writer) -> void>) {
+    w.count(at)
     for part in parts { part(w) }
 }
 
@@ -218,6 +277,10 @@ export enum CodecFault {
     NotVariant
     /// a record kept for other arguments than the call's
     OtherArguments
+    /// a record written under another shape than the type's own
+    OtherShape
+    /// a dense id whose spelling the scope does not hold
+    Unresolved
 }
 
 impl CodecFault {
@@ -230,16 +293,21 @@ impl CodecFault {
             .Trailing -> "trailing",
             .NotVariant -> "not_variant",
             .OtherArguments -> "other_arguments",
+            .OtherShape -> "other_shape",
+            .Unresolved -> "unresolved",
         }
     }
 }
 
 /// A record being read: its octets and the position reached. An
 /// IDENTITY, as a writer is: every holder reads on from one position.
-export type Reader = { b: Bytes, at: Cell<int> }
+export type Reader = { b: Bytes, at: Cell<int>, scope: dyn Scope }
 
-export fn reader(b: Bytes) -> Reader {
-    Reader { b: b, at: Cell.new(0) }
+export fn reader(b: Bytes) -> Reader { reader_in(indexed_scope(), b) }
+
+/// A reader whose dense ids return by `scope`.
+export fn reader_in(scope: dyn Scope, b: Bytes) -> Reader {
+    Reader { b: b, at: Cell.new(0), scope: scope }
 }
 
 impl Reader {
@@ -264,6 +332,13 @@ impl Reader {
             }
         }
         fail CodecFault.Overlong
+    }
+
+    /// Eight octets, low first: `fixed`'s reader.
+    fn fixed() -> Result<int, CodecFault> {
+        mut v = 0
+        for k in 0..8 { v = v | (self.byte()? << 8 * k) }
+        v
     }
 
     fn int() -> Result<int, CodecFault> {
@@ -296,6 +371,20 @@ impl Reader {
         s
     }
 
+    /// A dense id of the type named `kind`, read back through the scope.
+    fn dense(kind: string) -> Result<int, CodecFault> {
+        let spelling = self.text()?
+        let index? = self.scope.unspelled(kind, spelling) else { fail CodecFault.Unresolved }
+        index
+    }
+
+    /// A variant's place among `n` declared, refused past the last.
+    fn ordinal(n: int) -> Result<int, CodecFault> {
+        let at = self.varint()?
+        if at < 0 || at >= n { fail CodecFault.NotVariant }
+        at
+    }
+
     /// A variant read back by its NAME: its place among `names`, the
     /// enum's variants in declared order.
     fn variant(names: List<string>) -> Result<int, CodecFault> {
@@ -306,6 +395,11 @@ impl Reader {
 
     /// Whether every octet has been read.
     fn done() -> bool { self.at.get() == self.b.length }
+}
+
+/// A dense id read back through the reader's scope and built by `make`.
+export fn dense_read<T>(r: Reader, kind: string, make: fn(int) -> T) -> Result<T, CodecFault> {
+    .Ok(make(r.dense(kind)?))
 }
 
 /// A tagged enum's variant, read back by its place among the names.
@@ -329,4 +423,26 @@ export fn read_list<T>(r: Reader, each: fn(Reader) -> Result<T, CodecFault>) -> 
 > {
     let n = r.count()?
     .Ok([each(r)? for i in 0..n])
+}
+
+/// A map read back: its count, then every entry in order.
+export fn read_map<V>(r: Reader, each: fn(Reader) -> Result<V, CodecFault>) -> Result<
+    Map<string, V>,
+    CodecFault,
+> {
+    let n = r.count()?
+    mut m: Map<string, V> = {}
+    for i in 0..n {
+        let k = r.text()?
+        m.set(k, each(r)?)
+    }
+    m
+}
+
+/// A value read through `read`, then made into the type that stands over it.
+export fn read_over<A, B>(r: Reader, read: fn(Reader) -> Result<A, CodecFault>, make: fn(A) -> B) -> Result<
+    B,
+    CodecFault,
+> {
+    make(read(r)?)
 }
