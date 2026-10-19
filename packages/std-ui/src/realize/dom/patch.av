@@ -8,8 +8,9 @@
 //! what moved, what is a property, what an event says — is made here.
 use @std.meta.{derive}
 use tree.identity.{NodeId}
-use tree.node.{Action, EventKind, Handler, Said}
+use tree.node.{Action, Handler, Said}
 use tree.codes.{Codes, Coded}
+use tree.seats.{Seat, row_at, web_word}
 use realize.html.element.{Element, Tagged, Worded}
 use realize.html.tags.{HtmlTag, HtmlAttr, HtmlAttrName}
 
@@ -26,7 +27,7 @@ export enum Patch {
     SetProp(id: NodeId, name: HtmlAttrName, value: Held)
     SetText(id: NodeId, content: string)
     Listen(id: NodeId, to: Listening)
-    Unlisten(id: NodeId, kind: EventKind)
+    Unlisten(id: NodeId, seat: Seat)
     Style(css: string)
     Call(id: NodeId, verb: string)
 }
@@ -80,28 +81,11 @@ export fn held_says(value: Held) -> Says {
 
 // ── the page's own facts ────────────────────────────────────────
 
-/// The page's word for each event. Every kind spelled.
-fn event_word(k: EventKind) -> string {
-    match k {
-        .Press -> "click",
-        .Input -> "input",
-        .Change -> "change",
-        .Submit -> "submit",
-        .Dismiss -> "cancel",
-    }
-}
-
-/// Whether the page's own answer to an event is stopped: a form's submit
-/// would leave the page the program is drawing. Every kind spelled.
-fn prevented(k: EventKind) -> bool {
-    match k { .Submit -> true, .Press or .Input or .Change or .Dismiss -> false }
-}
-
 /// The door the page's own answer to an event shuts: a dialog dismissed
-/// is closed by the page before the program hears of it. Every kind
-/// spelled.
-fn shut_by(k: EventKind) -> HtmlAttrName? {
-    match k { .Dismiss -> .Open, .Press or .Input or .Change or .Submit -> null }
+/// is closed by the page before the program hears of it.
+fn shut_by(seat: Seat) -> HtmlAttrName? {
+    let web? = row_at(seat).web else { return null }
+    match web { .Cancel -> .Open, _ -> null }
 }
 
 /// What a handler hears. ONE arm per thing a control can say.
@@ -120,11 +104,11 @@ export fn listening_of(a: Action) -> Listening {
     let told = says(a.handler)
     Listening {
         action: a,
-        event: event_word(a.kind),
+        event: web_word(a.seat),
         says: told,
         reads: read_from(told),
-        prevents: prevented(a.kind),
-        shuts: shut_by(a.kind),
+        prevents: row_at(a.seat).prevent,
+        shuts: shut_by(a.seat),
     }
 }
 
@@ -326,7 +310,7 @@ fn still(stood: List<int?>) -> List<bool> {
 
 /// Whether two actions ask the page for the same listener: the kind, and
 /// what the event says.
-fn same_hearing(a: Action, b: Action) -> bool { a.kind == b.kind && says(a.handler) == says(b.handler) }
+fn same_hearing(a: Action, b: Action) -> bool { a.seat == b.seat && says(a.handler) == says(b.handler) }
 
 /// One element on the page, wearing its number, and the next number to
 /// give.
@@ -467,7 +451,7 @@ fn attributes(id: NodeId, old: List<HtmlAttr>, new: List<HtmlAttr>) -> List<Patc
 
 /// An event is heard anew when it is new, or says something else.
 fn hearing(id: NodeId, old: List<Action>, new: List<Action>) -> List<Patch> {
-    [Patch.Unlisten(id, was.kind) for was in old if !new.any((a) -> same_hearing(was, a))]
+    [Patch.Unlisten(id, was.seat) for was in old if !new.any((a) -> same_hearing(was, a))]
         .concat(
             [Patch.Listen(id, listening_of(a)) for a in new if !old.any((was) -> same_hearing(was, a))],
         )

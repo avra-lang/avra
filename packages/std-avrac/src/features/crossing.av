@@ -36,6 +36,7 @@ use @std.meta.{
     Field as MetaField,
     Variant as MetaVariant,
     Mark as MetaMark,
+    MarkArg as MetaMarkArg,
     Type as MetaType,
     Diagnostic,
     Named,
@@ -74,7 +75,13 @@ fn meta_records() -> List<MetaShape> {
             fields: ["name", "params", "answer", "at", "answers", "doc", "annotations", "owner"],
             recent: 1,
         },
-        MetaShape { pkg: "@std.meta", name: "Mark", fields: ["name", "args", "at"] },
+        MetaShape {
+            pkg: "@std.meta",
+            name: "Mark",
+            fields: ["name", "args", "at", "named"],
+            recent: 1,
+        },
+        MetaShape { pkg: "@std.meta", name: "MarkArg", fields: ["label", "value"] },
         MetaShape {
             pkg: "@std.meta",
             name: "Annotation",
@@ -540,9 +547,18 @@ fn meta_of_marks(ms: List<MetaMark>, mut heap: MetaHeap) -> MetaVal {
 fn meta_of_mark(x: MetaMark, mut heap: MetaHeap) -> MetaVal {
     written(
         "Mark",
-        [MetaVal.Text(x.name), meta_of_texts(x.args, heap), meta_of_loc(x.at, heap)],
+        [
+            MetaVal.Text(x.name),
+            meta_of_texts(x.args, heap),
+            meta_of_loc(x.at, heap),
+            heap.node([meta_of_mark_arg(a, heap) for a in x.named]),
+        ],
         heap,
     )
+}
+
+fn meta_of_mark_arg(x: MetaMarkArg, mut heap: MetaHeap) -> MetaVal {
+    written("MarkArg", [MetaVal.Text(x.label), MetaVal.Text(x.value)], heap)
 }
 
 /// A declaration's own `@name(args)` annotations, in written order —

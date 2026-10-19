@@ -8,16 +8,20 @@
 // program's own declarations — see realize/dom/wire.av.
 //
 // Same file for every app.
-import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS } from "./wire.gen.js";
+import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS, TAGS, AFTER } from "./wire.gen.js";
 import { createWindows } from "./windows.js";
 
 export { WIRE_VERSION, HOST, ROWS };
 
-// A frame's patches, in order. An id is a number in eight little-endian
-// bytes — the same width however deep its element sits — and `NO_ID` where
-// a record names none: the page itself as a parent, the first place as a
-// sibling. Every other number is four bytes; a text is its byte length,
-// then its bytes.
+// A `place` that follows no sibling but the end of the parent's run.
+export const APPENDED = -2;
+
+// A frame's patches, in order. An id is one more than its number in seven-bit
+// groups, so zero is `NO_ID`, where a record names none: the page itself as a
+// parent. A `place` says where it goes with one number: the first place, the
+// end of the parent's run, or two more than the sibling it follows. A tag is
+// its place among `TAGS`. Every other number is four bytes; a text is its
+// byte length, then its bytes.
 export function parseFrame(bytes) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const decoder = new TextDecoder();
@@ -27,19 +31,23 @@ export function parseFrame(bytes) {
     throw new Error(`unsupported wire version ${seen} — this host speaks ${WIRE_VERSION}`);
   }
   const int = () => { const v = dv.getInt32(i, true); i += 4; return v; };
-  const id = () => { const lo = dv.getUint32(i, true); const hi = dv.getInt32(i + 4, true); i += 8; return hi * 4294967296 + lo; };
+  const varint = () => { let n = 0, scale = 1, b; do { b = bytes[i++]; n += (b & 127) * scale; scale *= 128; } while (b >= 128); return n; };
+  const id = () => varint() - 1;
+  const after = () => { const v = varint(); return v === AFTER.first ? NO_ID : v === AFTER.append ? APPENDED : v - AFTER.sibling; };
+  const tag = () => TAGS[varint()];
   const str = () => { const len = int(); const s = decoder.decode(bytes.subarray(i, i + len)); i += len; return s; };
   const patches = [];
   while (i < bytes.length) {
     const op = bytes[i++];
-    if (op === OP.create) patches.push({ op, id: id(), tag: str() });
+    if (op === OP.create) patches.push({ op, id: id(), tag: tag() });
     else if (op === OP.create_text || op === OP.set_text) patches.push({ op, id: id(), content: str() });
-    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: id() });
+    else if (op === OP.place) patches.push({ op, id: id(), parent: id(), after: after() });
     else if (op === OP.remove) patches.push({ op, id: id() });
     else if (op === OP.set_attr) patches.push({ op, id: id(), name: str(), value: str() });
     else if (op === OP.drop_attr) patches.push({ op, id: id(), name: str() });
     else if (op === OP.set_prop) patches.push({ op, id: id(), name: str(), says: int(), value: str() });
-    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), event: str(), says: int(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.define) patches.push({ op, kind: int(), says: int(), event: str(), reads: str(), prevents: int() !== 0 });
+    else if (op === OP.listen) patches.push({ op, id: id(), kind: int(), says: int() });
     else if (op === OP.unlisten) patches.push({ op, id: id(), kind: int() });
     else if (op === OP.style) patches.push({ op, css: str() });
     else if (op === OP.call) patches.push({ op, id: id(), verb: str() });
@@ -72,21 +80,55 @@ function caretOf(el) {
   } catch { return null; }
 }
 
+// What an element hears once it hears `def` too: a seat it already heard is
+// replaced, a lone seat stays the definition itself, and only a second seat
+// makes a list.
+function with_seat(mine, def) {
+  if (mine === undefined) return def;
+  const rest = (Array.isArray(mine) ? mine : [mine]).filter((d) => d.kind !== def.kind);
+  return rest.length === 0 ? def : [...rest, def];
+}
+
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
-  const byId = new Map();
+  // THE PAGE'S TABLES ARE KEYED BY ID, AND IDS ARE DENSE: `nodes[id]` is the
+  // element, `hears[id]` what it hears — the shared definition of its one
+  // seat, or a list of them for a second — so an element costs no object here.
+  const nodes = [];
+  const hears = [];
+  const defined = new Map();
+  const armed = new Set();
+  // WHO HEARS WHAT IS DATA HERE, NEVER A LISTENER ON EACH ELEMENT: one
+  // capturing listener per event word on the mount finds the hearers on the
+  // way up from the target.
+  const fire = (el, ev, def) => {
+    if (def.event !== ev.type) return;
+    if (def.prevents && ev.preventDefault) ev.preventDefault();
+    send(el.__avra_id, def.kind, saidBy(el, def.says, def.reads));
+  };
+  const heard = (ev) => {
+    for (let el = ev.target; el && el !== mount; el = el.parentNode) {
+      const mine = hears[el.__avra_id];
+      if (mine !== undefined) {
+        if (Array.isArray(mine)) for (const def of mine) fire(el, ev, def); else fire(el, ev, mine);
+      }
+      if (!ev.bubbles) break;
+    }
+  };
+  const listed = (id) => { const mine = hears[id]; return mine === undefined ? [] : Array.isArray(mine) ? mine : [mine]; };
   const need = (id) => {
-    const el = byId.get(id);
+    const el = nodes[id];
     if (!el) throw new Error(`a patch names element ${id}, which is not on the page`);
     return el;
   };
   // An element that leaves takes everything under it.
   const forget = (el) => {
-    byId.delete(el.__avra_id);
+    nodes[el.__avra_id] = undefined;
+    hears[el.__avra_id] = undefined;
     for (const child of el.childNodes || []) forget(child);
   };
-  const keep = (id, el) => { el.__avra_id = id; byId.set(id, el); };
+  const keep = (id, el) => { el.__avra_id = id; nodes[id] = el; };
   // WHAT THE PAGE KEEPS ON AN ELEMENT IS NEVER THIS HOST'S TO LOSE: the
   // focus, a caret, how far it is scrolled, a video playing, an animation
   // under way. A page that can carry an element standing on it
@@ -117,7 +159,7 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     [OP.place]: (p) => {
       const parent = p.parent === NO_ID ? mount : need(p.parent);
       const el = need(p.id);
-      const before = (p.after === NO_ID ? parent.childNodes[0] : need(p.after).nextSibling) || null;
+      const before = (p.after === NO_ID ? parent.childNodes[0] : p.after === APPENDED ? null : need(p.after).nextSibling) || null;
       if (before === el || (el.parentNode === parent && el.nextSibling === before)) return;
       carry(parent, el, before);
     },
@@ -136,22 +178,22 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
       if (el[p.name] !== value) el[p.name] = value;
     },
     [OP.set_text]: (p) => { need(p.id).textContent = p.content; },
+    // WHAT A SEAT'S EVENT IS arrives once (`define`), and each `listen` of it
+    // is an element and two numbers.
+    [OP.define]: (p) => { defined.set(p.kind * 4 + p.says, p); },
     [OP.listen]: (p) => {
-      const el = need(p.id);
-      const held = el.__avra_listeners || (el.__avra_listeners = new Map());
-      const listener = (ev) => {
-        if (p.prevents && ev) ev.preventDefault();
-        send(p.id, p.kind, saidBy(el, p.says, p.reads));
-      };
-      el.addEventListener(p.event, listener);
-      held.set(p.kind, { event: p.event, listener });
+      need(p.id);
+      const def = defined.get(p.kind * 4 + p.says);
+      if (!def) throw new Error(`a patch listens to seat ${p.kind} saying ${p.says}, which no definition told`);
+      hears[p.id] = with_seat(hears[p.id], def);
+      if (!armed.has(def.event)) {
+        armed.add(def.event);
+        mount.addEventListener(def.event, heard, true);
+      }
     },
     [OP.unlisten]: (p) => {
-      const el = need(p.id);
-      const held = el.__avra_listeners && el.__avra_listeners.get(p.kind);
-      if (!held) return;
-      el.removeEventListener(held.event, held.listener);
-      el.__avra_listeners.delete(p.kind);
+      const rest = listed(p.id).filter((def) => def.kind !== p.kind);
+      hears[p.id] = rest.length === 0 ? undefined : rest.length === 1 ? rest[0] : rest;
     },
     [OP.style]: (p) => { if (styleEl) styleEl.textContent = p.css; },
     // A VERB OF THE ELEMENT'S OWN, asked for by name: the program says
@@ -163,9 +205,14 @@ export function createApplier(doc, mount, send = () => {}, styleEl = null) {
     },
   };
 
-  return function applyFrame(bytes) {
+  const applyFrame = (bytes) => {
     for (const p of parseFrame(bytes)) apply[p.op](p);
   };
+  // What each element hears, for a reader of the page to inspect.
+  applyFrame.ears = (id) => listed(id).map((def) => [def.kind, def]);
+  // How many slots hold an element and a hearing: what the page still keeps.
+  applyFrame.held = () => ({ nodes: nodes.filter((n) => n !== undefined).length, hears: hears.filter((h) => h !== undefined).length });
+  return applyFrame;
 }
 
 // Load the module and run it in a page. The host supplies `rt` (its own
@@ -387,7 +434,7 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   mod._initialize();
   const code = mod[HOST.entry]();
   if (code !== 0) throw new Error(`the program's statements answered ${code}`);
-  return mod;
+  return { mod, ears: apply.ears };
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length

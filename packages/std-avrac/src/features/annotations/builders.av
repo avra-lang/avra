@@ -1,6 +1,19 @@
 //! Parse-time lowering: the annotation lands on the declaration it
 //! crosses, as a fact; the declaration itself is the node answered.
-use core.{Expr, Stmt, ExprId, Span, Annotation, Mark, Scoped, BodyView}
+use core.{
+    Expr,
+    Stmt,
+    ExprId,
+    Span,
+    Annotation,
+    Mark,
+    MarkArg,
+    Scoped,
+    BodyView,
+    SyntaxArena,
+    flatten,
+    some_list,
+}
 use features.{LangNode, Builder, arg_text}
 
 fn build_annotated(b: Builder) -> Result<LangNode, string> {
@@ -30,12 +43,19 @@ fn build_mark(b: Builder) -> Result<LangNode, string> {
             .NMark(
                 Mark {
                     name: name,
-                    args: [arg_text(b.store, e) for e in args],
+                    args: [arg_text(b.store, e) for e in args if b.store.arg_label(e) == null],
+                    named: flatten([some_list(named_arg(b.store, e)) for e in args]),
                     span: at,
                     call: applied(b, name, args, at),
                 },
             ),
     )
+}
+
+/// An argument written `label: value`, as the pair a mark carries.
+fn named_arg(store: SyntaxArena, e: ExprId) -> MarkArg? {
+    let label? = store.arg_label(e) else { return null }
+    MarkArg { label: label, value: arg_text(store, store.unnamed(e)) }
 }
 
 /// `@name(args)` as the TEMPLATE `quote { name(${0}, args) }`, marked

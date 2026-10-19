@@ -7,7 +7,7 @@
 //! A FIELD SHOWS WHAT THE VIEW SAYS IT HOLDS: a typed character says the
 //! held text and the character, and a view that does not keep what it was
 //! told shows none of it.
-use @std.text.{codepoints, from_codepoints}
+use @std.text.{ascii_lower, codepoints, from_codepoints}
 use app.{Act, Shown, running, shown, stood, notice_node}
 use tree.controls.{Control}
 use tree.node.{Said, Node, Attribute}
@@ -20,7 +20,8 @@ use terminal.screen.{Screen, screen}
 use native.net.{over_http}
 use native.sources.{opened, served}
 use @std.task.{signals}
-use terminal.keys.{Key, Paste, heard, keys, paste_cap, resume}
+use tree.terminal_key.{Key, Paste}
+use terminal.keys.{heard, keys, paste_cap, resume}
 use tree.bindings.{meeting, names}
 use tree.chord.{Chord, parsed}
 
@@ -145,9 +146,9 @@ enum Lane {
 /// A key's lane. Every key spelled.
 fn lane_of(k: Key) -> Lane {
     match k {
-        .Escape or .Chord(_, _, _) or .PageUp or .PageDown or .Top or .Bottom -> .Before,
+        .Escape or .Chord(_, _, _, _) or .PageUp or .PageDown or .Top or .Bottom -> .Before,
         .Enter -> .After,
-        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) -> .Never,
+        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) or .Shortcut -> .Never,
     }
 }
 
@@ -160,8 +161,10 @@ fn chord_of(k: Key) -> Chord? {
         .PageDown -> parsed("PageDown"),
         .Top -> parsed("Home"),
         .Bottom -> parsed("End"),
-        .Chord(text, ctrl, alt) -> parsed("${if ctrl { "ctrl+" } else { "" }}${if alt { "alt+" } else { "" }}${text}"),
-        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) -> null,
+        .Chord(text, ctrl, alt, shift) -> parsed(
+            "${if ctrl { "ctrl+" } else { "" }}${if alt { "alt+" } else { "" }}${if shift { "shift+" } else { "" }}${ascii_lower(text)}",
+        ),
+        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) or .Shortcut -> null,
     }
 }
 
@@ -183,7 +186,7 @@ fn moded_nothing(_mode: int) {}
 /// changes over, and a field sends the form it stands in.
 fn entered(c: Control) -> bool {
     match c.node.prim {
-        .Checkbox or .Switch -> c.says(.Change, Said.Flag(!said_of(c.node.attrs).checked)),
+        .Checkbox or .Switch -> c.says(Said.Flag(!said_of(c.node.attrs).checked)),
         .Field -> c.sends(),
         .Slider -> false,
         .Text or .Heading or .Button or .Link or .Image or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Key -> c.pressed(),
@@ -195,7 +198,7 @@ fn slid(c: Control, by: int) -> bool {
     let reads = said_of(c.node.attrs)
     let to = reads.amount + by
     if reads.max > reads.min && (to < reads.min || to > reads.max) { return false }
-    c.says(.Change, Said.Number(to))
+    c.says(Said.Number(to))
 }
 
 /// Pasted text: a field takes it after what it holds, as one input and with
@@ -203,7 +206,7 @@ fn slid(c: Control, by: int) -> bool {
 /// no other control hears it, whatever the words in it say.
 fn pasted(c: Control, text: string) -> bool {
     match c.node.prim {
-        .Field -> c.says(.Input, Said.Text(said_of(c.node.attrs).value + one_line(text))),
+        .Field -> c.says(Said.Text(said_of(c.node.attrs).value + one_line(text))),
         .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> false,
     }
 }
@@ -229,7 +232,7 @@ fn clicked(c: Control) -> bool {
 /// moves on `+` and `-`, and a space acts as Enter does elsewhere.
 fn typed(c: Control, ch: string) -> bool {
     match c.node.prim {
-        .Field -> c.says(.Input, Said.Text(said_of(c.node.attrs).value + ch)),
+        .Field -> c.says(Said.Text(said_of(c.node.attrs).value + ch)),
         .Slider -> match ch { "+" -> slid(c, 1), "-" -> slid(c, -1), _ -> false },
         .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Key -> ch == " " && entered(c),
     }
@@ -241,7 +244,7 @@ fn erased(c: Control) -> bool {
         .Field -> {
             let held = codepoints(said_of(c.node.attrs).value)
             if held.is_empty() { return false }
-            c.says(.Input, Said.Text(from_codepoints(held.slice(0, held.length - 1))))
+            c.says(Said.Text(from_codepoints(held.slice(0, held.length - 1))))
         },
         .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> false,
     }
@@ -534,8 +537,8 @@ impl Terminal {
                 false
             },
             .Escape -> false,
-            .Chord(text, ctrl, alt) -> {
-                if text == "c" && ctrl && !alt { (self.interrupts)() }
+            .Chord(text, ctrl, alt, shift) -> {
+                if text == "c" && ctrl && !alt && !shift { (self.interrupts)() }
                 false
             },
             .Click(x, y, _, _, _) -> self.click(x, y),
@@ -561,6 +564,7 @@ impl Terminal {
                 self.kitty_asked()
                 false
             },
+            .Shortcut -> false,
             .Enter -> self.act(entered),
             .Erase -> self.act(erased),
             .Char(ch) -> self.act((c: Control) -> typed(c, ch)),
