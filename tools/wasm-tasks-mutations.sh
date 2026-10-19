@@ -36,11 +36,11 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 tree=$(cd "$here/.." && pwd)
 avra=${AVRA:-$tree/build/avra}
-node=${NODE:-node}
 work=${WASM_WORK:-$(mktemp -d "${TMPDIR:-/tmp}/avra-wmut.XXXXXX")}
 lib=$tree/build/wasm32/libavra_runtime.a
 say() { echo "wasm-tasks-mutations: $*" >&2; }
 skip() { say "$* — skipped"; exit 0; }
+. "$here/jspi_node.sh"
 
 [ -x "$avra" ] || skip "no compiler at $avra"
 command -v "$node" >/dev/null 2>&1 || skip "node not on PATH"
