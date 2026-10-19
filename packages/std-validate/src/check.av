@@ -1,0 +1,44 @@
+//! A typed value held to its rules. `Decode` reads rules at the
+//! boundary a value comes in by; `checked` runs the same rules over a
+//! value already built, so a write from anywhere (a route, a job, a
+//! CLI, an agent) meets the rules a form and a decode do.
+//!
+//!     @derive(Checked)
+//!     type Account = { @length(min: 1, max: 20) name: string, @range(0, 130) age: int }
+//!
+//!     let ok = checked(account)?             // Result<Account, Issues>
+use derive.{Checked}
+use validate.{Refusal}
+use issue.{Issue, Issues, Path}
+
+/// The value, or every rule it breaks.
+export fn checked<T: Checked>(v: T) -> Result<T, Issues> {
+    let found = v.check()
+    if found.all.is_empty() { v } else { fail found }
+}
+
+/// The issues a check has found so far.
+export type Checking = { found: List<Issue> = [] }
+
+impl Checking {
+    fn issues() -> Issues { Issues { all: self.found } }
+}
+
+/// A rule's verdict at the place it filed: what the rule answered, or
+/// null with its refusal filed — the rule named `rule` unless its
+/// issue names one.
+export fn filed<T, E: Refusal>(mut c: Checking, at: Path, rule: string, verdict: Result<T, E>) -> T? {
+    match verdict {
+        .Ok(v) -> v,
+        .Err(e) -> {
+            for i in e.issues() {
+                c
+                    .found
+                    .push(
+                        i with { path: i.path.under(at), rule: if i.rule.is_empty() { rule } else { i.rule } },
+                    )
+            }
+            null
+        },
+    }
+}

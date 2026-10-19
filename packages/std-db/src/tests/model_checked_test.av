@@ -1,0 +1,89 @@
+// A model's rules run before any SQL: a model with no rules writes as
+// ever, a row that breaks a rule is refused with its issues and
+// nothing runs, a valid one lands, and a taken `@unique` value comes
+// back as an issue at its field.
+use @std.db.{model}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError}
+use @std.validate.{length, range}
+
+@model
+type Plain = {
+    id: int = 0,
+    name: string,
+}
+
+@model
+type Member = {
+    id: int = 0,
+    @unique @length(min: 3) email: string,
+    @range(13, 130) age: int,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Plain.create_table(db)?
+    Member.create_table(db)?
+    db
+}
+
+fn count(db: Db, name: string) -> Result<int, SqlError> {
+    (db.scalar(sql("select count(*) from \"${name}\""))?).int()
+}
+
+/// Every issue as `path rule`.
+fn said(e: ModelError) -> string {
+    [i.path.text() + " " + i.rule for i in e.issues().all].join(", ")
+}
+
+fn plain_lands() -> Result<int, ModelError> {
+    mut db = modeled(seeded())?
+    let p = Plain { name: "" }.insert(db)?
+    p.id
+}
+
+fn refused_row() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    match Member { email: "ab", age: 3 }.insert(db) {
+        .Ok(_) -> "landed",
+        .Err(e) -> "${said(e)} | rows ${modeled(count(db, "Member"))?}",
+    }
+}
+
+fn valid_row() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let m = Member { email: "ada@x.com", age: 36 }.insert(db)?
+    "${m.id} | rows ${modeled(count(db, "Member"))?}"
+}
+
+fn refused_update() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let m = Member { email: "ada@x.com", age: 36 }.insert(db)?
+    match (m with { age: 3 }).update(db) { .Ok(_) -> "landed", .Err(e) -> said(e) }
+}
+
+fn taken_email() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let _ = Member { email: "ada@x.com", age: 36 }.insert(db)?
+    match Member { email: "ada@x.com", age: 40 }.insert(db) {
+        .Ok(_) -> "landed",
+        .Err(e) -> said(e),
+    }
+}
+
+spec "std/db checked on write" {
+    given "a model with no rules" {
+        then "an insert lands whatever the fields hold" { plain_lands() is .Ok }
+    }
+    given "a model with rules" {
+        then "a row that breaks them is refused, every issue kept, and no row is written" {
+            (refused_row() catch "") == "email length, age range | rows 0"
+        }
+        then "a valid row lands" { (valid_row() catch "") == "1 | rows 1" }
+        then "an update that breaks a rule is refused" { (refused_update() catch "") == "age range" }
+    }
+    given "a taken @unique value" {
+        then "comes back as an issue at its field" { (taken_email() catch "") == "email unique" }
+    }
+}

@@ -1,0 +1,85 @@
+// `checked` runs a type's rules over a value already built: the empty
+// record and a record with no rules pass, a rule that refuses files an
+// issue at its field, every refusal is kept in field order, and a
+// nullable field that holds nothing has nothing to judge.
+use @std.meta.{derive}
+use @std.validate.{Checked, Issues, checked, range, length, one_of}
+
+@derive(Checked)
+type Nothing = {}
+
+@derive(Checked)
+type Unruled = {
+    name: string,
+    age: int,
+}
+
+@derive(Checked)
+type Account = {
+    @length(min: 1, max: 8) name: string,
+    @range(13, 130) age: int,
+    @length(max: 3) nick: string? = null,
+    @one_of(["a", "b"]) mode: string = "a",
+}
+
+/// A rule over the whole record, run once its fields are held.
+fn rising(v: Span) -> Result<Span, string> {
+    if v.lo > v.hi { fail "lo is past hi" }
+    v
+}
+
+@derive(Checked)
+@rising
+type Span = {
+    lo: int,
+    hi: int,
+}
+
+fn account(name: string, age: int, nick: string?, mode: string) -> Account {
+    Account { name: name, age: age, nick: nick, mode: mode }
+}
+
+/// Every issue as `path rule`, or `ok`.
+fn paths(r: Result<Account, Issues>) -> string {
+    match r { .Ok(_) -> "ok", .Err(e) -> [i.path.text() + " " + i.rule for i in e.all].join(", ") }
+}
+
+spec "std/validate checked" {
+    given "a type with no rules" {
+        then "the empty record passes" { checked(Nothing {}) is .Ok }
+        then "a record of unruled fields passes whatever they hold" { checked(Unruled { name: "", age: -1 }) is .Ok }
+    }
+    given "a type with rules" {
+        then "a valid value comes back whole" {
+            match checked(account("ada", 36, null, "a")) {
+                .Ok(a) -> a.name == "ada" && a.age == 36,
+                .Err(_) -> false,
+            }
+        }
+        then "a refusing rule files its issue at its field" {
+            paths(checked(account("", 36, null, "a"))) == "name length"
+        }
+        then "every refusal is kept, in the order the fields are declared" {
+            paths(checked(account("", 3, "long nick", "z"))) == "name length, age range, nick length, mode one_of"
+        }
+        then "a nullable field that is null is not judged" {
+            paths(checked(account("ada", 36, null, "a"))) == "ok"
+        }
+        then "a nullable field that holds a value is" {
+            paths(checked(account("ada", 36, "abcd", "a"))) == "nick length"
+        }
+        then "a rule over the whole record files its issue at the record" {
+            match checked(Span { lo: 5, hi: 1 }) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all.length == 1 && e.all[0].path.text() == "" && e.all[0].rule == "rising",
+            }
+        }
+        then "and passes a record that satisfies it" { checked(Span { lo: 1, hi: 5 }) is .Ok }
+        then "a rule's own words are the issue's message" {
+            match checked(account("", 36, null, "a")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].message == "must be between 1 and 8 characters",
+            }
+        }
+    }
+}
