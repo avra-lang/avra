@@ -1246,22 +1246,32 @@ def selftest():
     if token_for(["pr", "merge", "5"], {}) is not None:
         sys.exit("pr-watcher: self-test — with no write token the process's own token should answer")
     # FOLLOW: a pass that sees a PR about to land polls main and runs a pass when its head moves.
-    def drive(heads, landings):
-        log = {"sleeps": [], "steps": 0}
+    def drive(heads, landings, step_cost=0, poll_cost=0):
+        log = {"sleeps": [], "steps": 0, "landing_asks": 0, "now": 0.0}
         hs, ls = iter(heads), iter(landings)
-        n = follow(lambda: next(ls, False), lambda: next(hs, heads[-1]),
-                   lambda: log.__setitem__("steps", log["steps"] + 1), log["sleeps"].append,
+        def sleep(s):
+            log["sleeps"].append(s)
+            log["now"] += s + poll_cost
+        def step():
+            log["steps"] += 1
+            log["now"] += step_cost
+        def landing():
+            log["landing_asks"] += 1
+            return next(ls, False)
+        n = follow(landing, lambda: next(hs, heads[-1]), step, sleep, lambda: log["now"],
                    budget=600, poll=20, grace=90)
         return n, log
-    n, log = drive(["a", "a", "a", "b", "b", "b"], [True, True, True, True, False])
-    if n != 1 or log["steps"] != 1 or 95 not in log["sleeps"]:
-        sys.exit(f"pr-watcher: self-test — follow did not run one pass after main moved (grace waited): {n} {log}")
+    # main moves once: one pass after the grace, and landing is asked at the start and after that pass only
+    n, log = drive(["a", "a", "a", "b", "b", "b"], [True, True, False])
+    if n != 1 or log["steps"] != 1 or 95 not in log["sleeps"] or log["landing_asks"] != 2:
+        sys.exit(f"pr-watcher: self-test — follow after main moved: {n} {log}")
     n, log = drive(["a", "b"], [False])
     if n != 0 or log["sleeps"]:
         sys.exit(f"pr-watcher: self-test — follow polled with no PR landing: {n} {log}")
-    n, log = drive(["a"], [True] * 100)
-    if n != 0 or sum(log["sleeps"]) < 600 or sum(log["sleeps"]) > 620:
-        sys.exit(f"pr-watcher: self-test — follow ran past its budget or quit early: {n} {sum(log['sleeps'])}")
+    # the budget is WALL time: polls whose own reads cost 30 s each end the follow after 600 s of wall, not 600 s of sleeps
+    n, log = drive(["a"], [True] * 100, poll_cost=30)
+    if n != 0 or log["now"] > 700 or log["landing_asks"] != 1:
+        sys.exit(f"pr-watcher: self-test — follow overran its wall budget or re-read every PR per poll: {n} {log}")
     # a head 100 s old with no checks run is dispatched (the grace is 90 s); one 60 s old is not
     if [a["do"] for a in plan([], [], _empty_state(), {"sha": "m9", "age": 100, "checked": False})] != ["dispatch"]:
         sys.exit("pr-watcher: self-test — a 100 s old unchecked main was not dispatched")
@@ -1454,21 +1464,22 @@ def run_pass(world, state, state_path, repo, execute_fn=execute, label="pr-watch
     return acts
 
 
-def follow(landing, head_of, step, sleep, budget=FOLLOW_S, poll=FOLLOW_POLL_S, grace=MAIN_GRACE):
-    """After a pass: while a PR is about to land (`landing()`), poll main's head, and when it
-    moves wait out the grace a push run needs to appear and run `step()` (a fresh pass). Gives
-    up after `budget` seconds. Answers how many follow-up passes ran."""
-    waited, last, passes = 0, head_of(), 0
-    while waited < budget and landing():
+def follow(landing, head_of, step, sleep, clock, budget=FOLLOW_S, poll=FOLLOW_POLL_S, grace=MAIN_GRACE):
+    """After a pass: while a PR is about to land, poll main's head — ONE cheap call per poll —
+    and when it moves wait out the grace a push run needs to appear, run `step()` (a fresh pass)
+    and ask `landing()` again, which reads every PR and is asked only then. Gives up after
+    `budget` WALL seconds (`clock()`), the reads included. Answers how many passes ran."""
+    began, last, passes = clock(), head_of(), 0
+    ours = landing()
+    while ours and clock() - began < budget:
         sleep(poll)
-        waited += poll
         now = head_of()
         if now != last:
             sleep(grace + 5)
-            waited += grace + 5
             last = now
             step()
             passes += 1
+            ours = landing()
     return passes
 
 
@@ -1513,7 +1524,8 @@ def main(argv):
             a = run_pass(w, state, state_path, repo)
             print(f"pr-watcher: follow-up pass after main moved — {len(a)} action(s)")
         landed = lambda: any(_landing(p) for p in collect(repo, state)["prs"])
-        n = follow(landed, lambda: _gh_json(["api", f"repos/{repo}/commits/main"])["sha"], again, time.sleep)
+        n = follow(landed, lambda: _gh_json(["api", f"repos/{repo}/commits/main"])["sha"], again,
+                   time.sleep, time.monotonic)
         print(f"pr-watcher: followed main — {n} follow-up pass(es)")
     return 0
 
