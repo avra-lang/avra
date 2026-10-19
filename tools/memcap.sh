@@ -29,8 +29,18 @@
 tree_pids() {
     awk -v root="$1" '$2 == root { print $1 }'
 }
+# A child between spawn and exec shares its parent's address space and `ps` reports the parent's RSS
+# for it, so a big process whose RSS equals its parent's to the kilobyte is that memory once.
 tree_rss() {
-    ps -axo pid=,pgid=,rss= | awk -v root="$1" '$2 == root { s += $3 } END { print int(s/1024) }'
+    ps -axo pid=,pgid=,rss=,ppid= | awk -v root="$1" '
+        $2 == root { rss[$1] = $3; parent[$1] = $4 }
+        END {
+            for (p in rss) {
+                if (parent[p] != p && (parent[p] in rss) && rss[p] == rss[parent[p]] && rss[p] > 102400) continue
+                s += rss[p]
+            }
+            print int(s / 1024)
+        }'
 }
 kill_tree() {
     ps -axo pid=,pgid= | tree_pids "$1" | xargs kill -9 2>/dev/null
