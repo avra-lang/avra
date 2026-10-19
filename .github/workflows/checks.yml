@@ -418,7 +418,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: avra-store
-          path: .avra-cache
+          # `.avra-cache` is a hidden directory, which upload-artifact@v4 skips unless asked: the
+          # artifact was never made and every job reading it ran cold. Rows only: the objects and
+          # binaries ride the hand-down tar's own budget.
+          path: |
+            .avra-cache
+            !.avra-cache/obj
+            !.avra-cache/bin
+          include-hidden-files: true
           retention-days: 1
           if-no-files-found: ignore
       - if: steps.plan.outputs.build == '1'
