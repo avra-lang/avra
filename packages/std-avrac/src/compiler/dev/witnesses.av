@@ -1051,6 +1051,46 @@ fn witnesses() -> List<CodeWitness> {
             witness: with_time("use @std.time.{ms}\nlet r = within ms(100) {\n    let a = 1\n}\n0"),
         },
         CodeWitness {
+            code: "parse.trailing",
+            witness: Witness.Source("let v = 1\nmatch v { .R(o) -> o\n    .S -> \"s\"\n}\n0"),
+        },
+        CodeWitness {
+            code: "build.failed",
+            witness: Witness.Source("component tally {\n    n: int\n}\ntally Span { n: 2 } { n: 3 }\n0"),
+        },
+        CodeWitness {
+            code: "block.parse",
+            witness: provided_program(
+                "use @x.c.{sql, Select}\nlet q: Select = sql { garbage }\n0",
+                sql_provider,
+            ),
+        },
+        CodeWitness {
+            code: "type.syntax_action",
+            witness: Witness
+                .Source(
+                    "fn f(c: string) -> string { c }\ngrammar bad {\n    select = \"A\" x:nothing -> f(x)\n}\n0",
+                ),
+        },
+        CodeWitness {
+            code: "type.component_format",
+            witness: with_meta("type Format = { a: int }\ncomponent box {\n    pat: Format\n}\n0"),
+        },
+        CodeWitness {
+            code: "language.defect",
+            witness: Witness
+                .Beyond(
+                    "it is the compiler blaming its own grammar or builders, which no program can cause",
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_cycle",
+            witness: Witness
+                .Beyond(
+                    "it needs two packages whose re-exports close a package cycle, a graph the memory host cannot stand up in one witness",
+                ),
+        },
+        CodeWitness {
             code: "collect.kind",
             witness: Witness
                 .Source(
@@ -1451,6 +1491,9 @@ fn provided_files(main: string, provider: string, meta: string) -> Map<string, s
         meta,
     )
 }
+
+/// The sublanguage provider the block witnesses stand on: a `sql` grammar over a record.
+const sql_provider: string = "export type Select = { cols: List<string>, relation: string, cond: Where? }\nexport type Where = { col: string, value: int }\nexport fn query(cols: List<string>, relation: string, cond: Where?) -> Select { Select { cols: cols, relation: relation, cond: cond } }\nexport fn eq(col: string, value: int) -> Where { Where { col: col, value: value } }\nexport grammar sql {\n    select = \"SELECT\" c:NAME ( \",\" c:NAME )* \"FROM\" t:NAME ( \"WHERE\" w:where )? -> query(c, t, w)\n    where = c:NAME \"=\" v:NAME -> eq(c, v)\n}\n"
 
 /// The annotation fns the annotation witnesses stand on.
 const annotators: string = "use @std.meta.{Fn, Type, Named, Decls, Diagnostic, Directive, Declared, refuse, refuse_as}\nexport fn plain(f: Fn) -> List<Diagnostic> {\n    [refuse(\"`\${f.name}` is plain\")]\n}\nexport fn badkind(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"not a word\", \"a refusal under a bad kind\")]\n}\nexport trait Traps {\n    static fn derive(t: Type) -> Declared {\n        let none: List<Directive> = []\n        Declared { made: [none[3]] }\n    }\n}\nexport trait Fields {\n    static fn derive(t: Type) -> List<Directive> {\n        let rows: List<Decls> = [quote { enum E { A } }]\n        [Directive { twin: \"\", name: \"gen\", at: t.at, source: quote { fn gen(..\${rows}) {} } }]\n    }\n}\n"
