@@ -59,6 +59,15 @@ spec "@std.mcp — the Origin of a POST" {
         then "a port outside 1 to 65535 is refused" {
             status_from("http://localhost:0") == 403 && status_from("http://localhost:99999") == 403
         }
+        then "a mapped IPv4 loopback is not loopback, though it reaches one" {
+            status_from("http://[::ffff:127.0.0.1]") == 403
+        }
+        then "another 127 address is not loopback" {
+            status_from("http://127.0.0.2") == 403
+        }
+        then "a non-canonical spelling of ::1 is not loopback" {
+            status_from("http://[0:0:0:0:0:0:0:1]") == 403
+        }
         then "an Origin with a path is refused, since an Origin has none" {
             status_from("http://localhost:3000/") == 403
         }
@@ -77,6 +86,9 @@ spec "@std.mcp — the Origin of a POST" {
         }
         then "an IPv6 loopback origin is answered" {
             status_from("http://[::1]:8080") == 200
+        }
+        then "the bare IPv6 loopback passes, with or without a port" {
+            status_from("http://[::1]") == 200 && status_from("http://[::1]:3000") == 200
         }
         then "the scheme and host are case-insensitive" {
             status_from("HTTP://LOCALHOST") == 200
