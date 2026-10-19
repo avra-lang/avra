@@ -435,7 +435,7 @@ f()
 ```
 
 ```
-error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn sees declarations only
+error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn or a const sees declarations only
   ╭─[witness.av:2:17]
 2 │ fn f() -> int { x }
   ·                 ┬
@@ -466,7 +466,23 @@ help: only fns and fn-typed values take arguments
 
 a lambda takes a record seat's fields by name, and only the fields it offers
 
-No witness yet.
+```avra
+type Offer = { req: string, db: int }
+fn handle(f: fn(Offer) -> string) -> string {
+    f(Offer { req: "GET /", db: 7 })
+}
+handle { db, reqq -> "x" }
+```
+
+```
+error[type.not_offered]: `reqq` is not offered here — this seat offers `req`, `db`
+  ╭─[witness.av:5:8]
+5 │ handle { db, reqq -> "x" }
+  ·        ┬
+  ·        ╰── `reqq` asked for here
+──╯
+help: name what the seat offers, in any order and any subset
+```
 
 ## type.task_escape
 
@@ -493,7 +509,29 @@ help: keep it in a binding or a list of tasks here — its answer can leave: `t.
 
 `within` answers its block or the deadline it ran past
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use @std.time.{ms}
+let r = within ms(100) {
+    let a = 1
+}
+0
+```
+
+```
+error[type.within]: a `within` answers what its block did or the deadline it ran past, and this block answers nothing
+  ╭─[/w/src/main.av:2:24]
+2 │ let r = within ms(100) {
+  ·                        ┬
+  ·                        ╰── answers nothing
+──╯
+help: answer what the block did — end it on a value
+```
 
 ## flow.broken
 
@@ -505,7 +543,23 @@ No witness here: `@unbroken` resolves to `@std/meta`'s own declaration, which a 
 
 `yield` sends into the producer it stands in
 
-No witness yet.
+```avra
+fn f() -> int {
+    yield 1
+    1
+}
+0
+```
+
+```
+error[flow.yield]: `yield` sends into the producer it stands in, and no producer encloses it
+  ╭─[witness.av:2:5]
+2 │     yield 1
+  ·     ┬
+  ·     ╰── no producer here
+──╯
+help: write `produce<T>(n) { … yield … }` — a `-> Stream<T>` fn will say the same when COLLECTIONS lands
+```
 
 ## flow.produce
 
@@ -730,7 +784,33 @@ No witness here: a template is a `quote` of `@std/meta`'s `Code`, which a lone s
 
 a component's `check` answers `List<Diagnostic>`
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Diagnostic}
+component box {
+    a: int
+    fn check() -> int { 1 }
+}
+0
+```
+
+```
+error[type.component_check]: a component's `check` answers `List<Diagnostic>` and takes nothing — this answers `int`
+  ╭─[/w/src/main.av:4:5]
+4 │     fn check() -> int { 1 }
+  ·     ┬
+  ·     ╰── this `check`
+──╯
+help: `fn check() -> List<Diagnostic> { … }`, with `Diagnostic` from `@std.meta`
+```
 
 ## lower.component_checked
 
@@ -3227,7 +3307,20 @@ help: use a scalar, text, octets, list, map, record, enum, result, or an optiona
 
 a const's value asks for its own type
 
-No witness yet.
+```avra
+const a = a
+0
+```
+
+```
+error[const.cycle]: a const's value asks for its own type
+  ╭─[witness.av:1:1]
+1 │ const a = a
+  · ┬
+  · ╰── `a` reads itself here
+──╯
+help: a const settles from what is written and from other consts — not from its own value
+```
 
 ## type.method
 
@@ -3283,13 +3376,46 @@ help: declare `Nope` first — `type` or `enum`
 
 an impl lives in its type's package, or its trait's
 
-No witness yet.
+```avra
+impl int {
+    fn double() -> int { 2 }
+}
+1
+```
+
+```
+error[type.orphan]: `int` is the language's own type — a package adds to it only by implementing its own trait
+  ╭─[witness.av:1:1]
+1 │ impl int {
+  · ┬
+  · ╰── this impl
+──╯
+help: declare a trait here and write `impl YourTrait for int`, or write a free fn
+```
 
 ## type.builtin_name
 
 an impl on a builtin type adds names, never changes one
 
-No witness yet.
+```avra
+trait Sz {
+    fn length() -> int
+}
+impl Sz for string {
+    fn length() -> int { 0 }
+}
+1
+```
+
+```
+error[type.builtin_name]: `string` already answers `length` — an impl on a builtin type adds names, it never changes one
+  ╭─[witness.av:5:5]
+5 │     fn length() -> int { 0 }
+  ·     ┬
+  ·     ╰── this method
+──╯
+help: rename the trait's method
+```
 
 ## type.trait
 
@@ -3321,7 +3447,23 @@ help: move it to a separate `impl P { … }` block
 
 a trait names each member once
 
-No witness yet.
+```avra
+trait T {
+    fn a() -> int
+    fn a() -> int
+}
+1
+```
+
+```
+error[type.trait_member]: `T.a` is declared twice
+  ╭─[witness.av:3:8]
+3 │     fn a() -> int
+  ·        ┬
+  ·        ╰── declared again here
+──╯
+help: a trait names each member once — drop or rename one
+```
 
 ## type.mut_fn
 
@@ -3346,7 +3488,20 @@ help: drop `mut`, or move `f` into `impl <Type> { … }`
 
 `static fn` marks a method with no receiver — a plain fn needs no mark
 
-No witness yet.
+```avra
+static fn f() -> int { 1 }
+f()
+```
+
+```
+error[type.static_fn]: `static fn` marks a method with no receiver — `f` is already a plain fn
+  ╭─[witness.av:1:1]
+1 │ static fn f() -> int { 1 }
+  · ┬
+  · ╰── declared here
+──╯
+help: drop `static`, or move `f` into `impl <Type> { … }` and call it `<Type>.f(…)`
+```
 
 ## resolve.receiver
 
@@ -3480,7 +3635,29 @@ help: bind it `mut` first — `mut x = …` — then hand `x`
 
 a method writes only under a `mut fn` contract
 
-No witness yet.
+```avra
+trait T {
+    fn a() -> int
+}
+type P = { x: int }
+impl T for P {
+    mut fn a() -> int {
+        self.x = 1
+        1
+    }
+}
+1
+```
+
+```
+error[type.contract_write]: `a` writes through `self`, but `T.a` declares no `mut`
+  ╭─[witness.av:6:5]
+6 │     mut fn a() -> int {
+  ·     ┬
+  ·     ╰── writes here
+──╯
+help: declare `mut fn a(…)` in the trait — the contract decides for every signatory
+```
 
 ## type.mut_fn_unused
 
@@ -3509,7 +3686,23 @@ help: drop `mut`: the compiler infers a writing method
 
 a `state` seat is a free fn's — a method has no caller's cell to reach
 
-No witness yet.
+```avra
+type P = { x: int }
+impl P {
+    fn f(state n: int) -> int { n }
+}
+1
+```
+
+```
+error[type.state_seat]: `state n` is a free fn's seat — a method has no caller's cell to reach
+  ╭─[witness.av:3:5]
+3 │     fn f(state n: int) -> int { n }
+  ·     ┬
+  ·     ╰── declared here
+──╯
+help: move `n` onto the free fn the method runs inside
+```
 
 ## type.seat_unused
 
@@ -3880,12 +4073,6 @@ error[resolve.block_word]: `work` is a block word here, and nothing else in this
 help: rename it, or import the word under another name
 ```
 
-## type.list_empty
-
-an empty list has no element type to infer
-
-No witness yet.
-
 ## type.spread_list
 
 a list literal spreads lists
@@ -4118,7 +4305,20 @@ help: move it above the catch-all, or remove it
 
 a spread places another record's fields
 
-No witness yet.
+```avra
+type P = { ..P, a: int }
+1
+```
+
+```
+error[type.spread]: `P` spreads itself
+  ╭─[witness.av:1:1]
+1 │ type P = { ..P, a: int }
+  · ┬
+  · ╰── declared here
+──╯
+help: a spread places ANOTHER record's fields — a record cannot hold its own
+```
 
 ## type.spread_value
 
@@ -4280,7 +4480,21 @@ fix (high): interpolate it — `"${5}"`
 
 a literal's written type arguments pin the record's parameters
 
-No witness yet.
+```avra
+type G<T> = { v: T }
+let g = G<int, string> { v: 1 }
+1
+```
+
+```
+error[type.struct_targs]: `G` takes 1 type argument, and this literal writes 2
+  ╭─[witness.av:2:9]
+2 │ let g = G<int, string> { v: 1 }
+  ·         ┬
+  ·         ╰── written here
+──╯
+help: write `G<T> { … }`
+```
 
 ## type.with_struct
 
@@ -4325,13 +4539,40 @@ help: a named type stands over a shape it does not name — its names loop back 
 
 an alias names one type that is not itself
 
-No witness yet.
+```avra
+alias Box<T> = List<T>
+let x: Box<void> = []
+1
+```
+
+```
+error[type.alias]: `Box<...>` is given `void`, which is no value
+  ╭─[witness.av:2:1]
+2 │ let x: Box<void> = []
+  · ┬
+  · ╰── applied here
+──╯
+help: an alias's type arguments are the types of values
+```
 
 ## type.tparam
 
 a declaration's type parameters are fresh, distinct names
 
-No witness yet.
+```avra
+fn f<T, T>(x: T) -> T { x }
+1
+```
+
+```
+error[type.tparam]: `f` declares `T` more than once
+  ╭─[witness.av:1:1]
+1 │ fn f<T, T>(x: T) -> T { x }
+  · ┬
+  · ╰── in this declaration
+──╯
+help: rename one of them
+```
 
 ## type.identity_field
 
@@ -4529,31 +4770,98 @@ fix (high): drop the `??` and its right side
 
 a format pattern reads text — a `string` or a `Bytes`
 
-No witness yet.
+```avra
+match 5 { "{a}b" -> 1
+    _ -> 0 }
+```
+
+```
+error[type.format]: a format pattern reads text, found `int`
+  ╭─[witness.av:1:11]
+1 │ match 5 { "{a}b" -> 1
+  ·           ┬
+  ·           ╰── this is `int`
+──╯
+help: a format matches a `string` or a `Bytes`
+```
 
 ## type.format_repeat
 
 one name binds one span
 
-No witness yet.
+```avra
+match "x" { "{a}z{a}" -> 1
+    _ -> 0 }
+```
+
+```
+error[type.format_repeat]: `a` names two spans of this format
+  ╭─[witness.av:1:13]
+1 │ match "x" { "{a}z{a}" -> 1
+  ·             ┬
+  ·             ╰── written twice
+──╯
+help: rename one, or write `{_}` for a span you do not need
+```
 
 ## type.format_parse
 
 a typed hole parses through a type that reads text
 
-No witness yet.
+```avra
+match "x" { "{n: float}z" -> 1
+    _ -> 0 }
+```
+
+```
+error[type.format_parse]: `{n: float}` reads its span as `float`, and a hole reads text as `string` or `int`
+  ╭─[witness.av:1:13]
+1 │ match "x" { "{n: float}z" -> 1
+  ·             ┬
+  ·             ╰── here
+──╯
+help: take the span as text and convert it in the arm
+```
 
 ## type.format_shape
 
 two holes need a literal between them to be split
 
-No witness yet.
+```avra
+match "x" { "{a}{b}" -> 1
+    _ -> 0 }
+```
+
+```
+error[type.format_shape]: `{a}` and `{b}` have nothing between them
+  ╭─[witness.av:1:13]
+1 │ match "x" { "{a}{b}" -> 1
+  ·             ┬
+  ·             ╰── here
+──╯
+help: a scan needs a literal to stop at — put one between the holes
+```
 
 ## type.narrow
 
 a type pattern narrows a `dyn` to a type that implements its trait
 
-No witness yet.
+```avra
+match 5 {
+    c: int -> 1
+    _ -> 0
+}
+```
+
+```
+error[type.narrow]: a type pattern narrows a `dyn` — this is `int`
+  ╭─[witness.av:2:5]
+2 │     c: int -> 1
+  ·     ┬
+  ·     ╰── this is `int`
+──╯
+help: only a `dyn` hides which type it holds; match this value by its own shape
+```
 
 ## type.enum_decl
 
@@ -4622,7 +4930,23 @@ help: write `S.a(<value>)`
 
 a payload `is` binds only in an `if` condition
 
-No witness yet.
+```avra
+enum E {
+    a(int)
+}
+let r = E.a(1) is .a(x)
+1
+```
+
+```
+error[type.is_bind]: a payload `is` binds only in an `if` condition
+  ╭─[witness.av:4:9]
+4 │ let r = E.a(1) is .a(x)
+  ·         ┬
+  ·         ╰── this `is`
+──╯
+help: write the `match`, or test the variant bare and extract under it — `if a is .V(r) { … }`
+```
 
 ## type.enum_payload
 
@@ -4650,7 +4974,25 @@ help: a slot holds a value — `void` and a type name are not one
 
 a pattern fits the shape it tests: a variant of the enum, with exactly its payloads, or a literal of the type
 
-No witness yet.
+```avra
+enum E {
+    a(int)
+}
+match E.a(1) {
+    .a(.x) -> 1
+    _ -> 0
+}
+```
+
+```
+error[type.pattern]: `.x` tests a variant, but this is `int`
+  ╭─[witness.av:5:8]
+5 │     .a(.x) -> 1
+  ·        ┬
+  ·        ╰── this is `int`
+──╯
+help: a variant pattern tests an enum — match a pattern of the subject's own type
+```
 
 ## type.member_pattern
 
@@ -4827,7 +5169,23 @@ help: annotate the binding, return it from a fn that declares the type, or write
 
 `all` lists an enum whose variants carry nothing
 
-No witness yet.
+```avra
+enum K {
+    A
+    B(int)
+}
+K.all()
+```
+
+```
+error[type.enum_all]: `all` lists an enum whose variants carry nothing, and `K.B` carries a payload
+  ╭─[witness.av:5:1]
+5 │ K.all()
+  · ┬
+  · ╰── listed here
+──╯
+help: list the values you mean — or read a variant's word with `.name`, which every enum answers
+```
 
 ## type.fail
 
@@ -4873,13 +5231,52 @@ help: `int` has no failure — drop the `catch`
 
 `Result<T, _>` infers its failure type from a `fail` or `?` its fn contains
 
-No witness yet.
+```avra
+fn f() -> Result<int, _> {
+    .Ok(1)
+}
+1
+```
+
+```
+error[type.infer_result]: nothing here can fail — write the fn's true answer type, not `Result<T, _>`
+  ╭─[witness.av:1:1]
+1 │ fn f() -> Result<int, _> {
+  · ┬
+  · ╰── declared here
+──╯
+help: a `fail` or a `?` site is what `_` infers from; with none, spell the answer this fn actually returns
+
+error[type.variant_lit]: `.Ok` builds a variant, and `<error>` has none
+  ╭─[witness.av:2:5]
+2 │     .Ok(1)
+  ·     ┬
+  ·     ╰── this is `<error>`
+──╯
+help: a bare `.Ok` takes the enum its seat names — qualify it (`Enum.Ok`), or declare the variant on an enum
+```
 
 ## type.defer
 
 `defer` drops its body's answer — a `Result` there would fail unheard
 
-No witness yet.
+```avra
+fn f() -> Result<int, string> {
+    .Ok(1)
+}
+defer f()
+1
+```
+
+```
+error[type.defer]: `defer` drops what its body answers, and this one answers `Result<int, string>` — a failure nobody would hear
+  ╭─[witness.av:4:1]
+4 │ defer f()
+  · ┬
+  · ╰── deferred here
+──╯
+help: recover it with `catch`, or discard it on purpose: `defer { let _ = … }`
+```
 
 ## type.defer_inert
 
@@ -4903,7 +5300,28 @@ help: call something — `defer child.stop()` — or write the work in a block: 
 
 `errdefer` runs when the enclosing fn fails, so it needs one that can
 
-No witness yet.
+```avra
+errdefer println("x")
+1
+```
+
+```
+error[resolve.unresolved]: no `fn println` is defined
+  ╭─[witness.av:1:10]
+1 │ errdefer println("x")
+  ·          ┬
+  ·          ╰── called here
+──╯
+help: define it — `fn println(…) { … }` — or import it — `use module.{println}`
+
+error[type.errdefer]: an `errdefer` runs when the enclosing fn fails, and there is none enclosing
+  ╭─[witness.av:1:1]
+1 │ errdefer println("x")
+  · ┬
+  · ╰── deferred here
+──╯
+help: at the top level there is no failure channel — `defer` runs regardless
+```
 
 ## flow.unbounded_cleanup
 
@@ -5048,25 +5466,81 @@ help: a `once` answer is a managed value — a string, list, map, enum, or a rec
 
 a `const` seat is filled by a value that settles at compile time
 
-No witness yet.
+```avra
+const N: int = 1
+fn take(const n: int) -> int {
+    n
+}
+take(N + 1)
+```
+
+```
+error[type.const_seat]: `n` is a `const` seat — `take` settles it at compile time, and this is computed at run time
+  ╭─[witness.av:5:6]
+5 │ take(N + 1)
+  ·      ┬
+  ·      ╰── computed here
+──╯
+help: fill it with a literal or a `const` — a value that settles at compile time
+```
 
 ## type.host_seat
 
 a `mut` host seat wears a cell C may write, and is handed a local
 
-No witness yet.
+```avra
+extern fn c_count(mut out: string) -> int
+mut s = ""
+c_count(s)
+```
+
+```
+error[type.host_seat]: seat 1 of `c_count` is `mut` and wears `string` — a `mut` host seat hands C the ADDRESS of the caller's cell
+  ╭─[witness.av:1:1]
+1 │ extern fn c_count(mut out: string) -> int
+  · ┬
+  · ╰── declared here
+──╯
+help: a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes.
+```
 
 ## type.row_shape
 
 an extern that names a runtime row wears the row's shape — its seat count, and the box each pointer seat reads
 
-No witness yet.
+```avra
+extern fn avra_array_new(x: int) -> ptr
+0
+```
+
+```
+error[type.row_shape]: `avra_array_new` is a runtime row of 0 seat(s), declared here with 1
+  ╭─[witness.av:1:1]
+1 │ extern fn avra_array_new(x: int) -> ptr
+  · ┬
+  · ╰── this extern
+──╯
+help: declare the row's seats, or name a fn the runtime does not carry
+```
 
 ## type.host_absence
 
 a runtime row's seat takes no absence — core's C reads every pointer it is handed
 
-No witness yet.
+```avra
+extern fn avra_str_len(s: string?) -> int
+0
+```
+
+```
+error[type.host_absence]: seat 1 of `avra_str_len` wears `string?`, and a runtime row's seat takes no absence
+  ╭─[witness.av:1:1]
+1 │ extern fn avra_str_len(s: string?) -> int
+  · ┬
+  · ╰── declared here
+──╯
+help: core's rows are the compiler's own C and every one of them READS the pointer it is handed, so absence there is a null nothing tests: the compiled program faults and the evaluator's fault takes the compiler down with it. A PACKAGE's C may take a pointer-or-NULL and mean it, and that seat is untouched — a row never does. Spell this one without the `?`.
+```
 
 ## type.extern_value
 
@@ -5124,31 +5598,145 @@ help: a callback under a cancel answers zero — answer a word, or read nothing 
 
 a host fn defines the symbol its name spells — its seats and its answer are words and pointers a host hands over, plain
 
-No witness yet.
+```avra
+extern fn avra_bool_text(b: bool) -> string { "x" }
+0
+```
+
+```
+error[type.host_fn]: `avra_bool_text` is the runtime's own symbol — a host fn cannot define it again
+  ╭─[witness.av:1:1]
+1 │ extern fn avra_bool_text(b: bool) -> string { "x" }
+  · ┬
+  · ╰── defined here
+──╯
+help: name the host fn for what the host asks of this program
+
+error[type.host_fn]: seat `b` of the host fn `avra_bool_text` wears `bool`, which no host can hand over
+  ╭─[witness.av:1:1]
+1 │ extern fn avra_bool_text(b: bool) -> string { "x" }
+  · ┬
+  · ╰── declared here
+──╯
+help: a host fn's seat is `int`, `float`, `string`, `Bytes` or `ptr`
+```
 
 ## type.embed_literal
 
 `embed` reads a file named in the source — its path is a literal, written where it is called
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{embed}
+const p: string = "a.txt"
+const s: string = embed(p)
+0
+```
+
+```
+error[type.embed_literal]: `embed` reads a file named in the source — its path is a literal
+  ╭─[/w/src/main.av:3:19]
+3 │ const s: string = embed(p)
+  ·                   ┬
+  ·                   ╰── this path is computed, not written here
+──╯
+help: name the file directly, as a string literal
+```
 
 ## type.embed_place
 
 `embed` reads inside its own package, through no link
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{embed}
+const s: string = embed("../../x.txt")
+0
+```
+
+```
+error[type.embed_place]: `embed` reads inside its own package — `../../x.txt` names a file outside it
+  ╭─[/w/src/main.av:2:25]
+2 │ const s: string = embed("../../x.txt")
+  ·                         ┬
+  ·                         ╰── leaves the package here
+──╯
+help: keep the file in this package, or name a dependency's by its package — `embed("@scope/name/path")`
+```
 
 ## type.embed_file
 
 `embed` answers a file's text — the file stands there and is UTF-8
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{embed}
+const s: string = embed("nothere.txt")
+0
+```
+
+```
+error[type.embed_file]: `embed` finds no `nothere.txt` beside this source file
+  ╭─[/w/src/main.av:2:25]
+2 │ const s: string = embed("nothere.txt")
+  ·                         ┬
+  ·                         ╰── no file stands here
+──╯
+help: the path is read from this file's own directory
+```
 
 ## type.code_hash_named
 
 `code_hash` hashes a declared fn, named where it is called
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{code_hash}
+let h = code_hash(1)
+0
+```
+
+```
+error[type.code_hash_named]: `code_hash` hashes a declared fn, named where it is called
+  ╭─[/w/src/main.av:2:19]
+2 │ let h = code_hash(1)
+  ·                   ┬
+  ·                   ╰── this names no declared fn
+──╯
+help: name the fn itself — `code_hash(answer)` — never a value or a call
+```
 
 ## type.guard_value
 
@@ -5237,7 +5825,21 @@ help: declare `..rest: List<T>` on `g`, or pass each element — a list's length
 
 an `isolated` seat takes a fn that shares nothing with its caller — a lambda capturing no identity, a declared fn, or an `isolated` parameter
 
-No witness yet.
+```avra
+fn run(isolated make: fn() -> int) -> int { make() }
+let c = Cell.new(1)
+run(() -> c.get())
+```
+
+```
+error[type.isolated]: `make` of `run` is `isolated`, and this fn captures `c`, which is `Cell<int>` — an isolated fn shares nothing with its caller
+  ╭─[witness.av:3:5]
+3 │ run(() -> c.get())
+  ·     ┬
+  ·     ╰── captured here
+──╯
+help: make it inside the fn, so each place it runs makes its own
+```
 
 ## type.mismatch
 
