@@ -6,6 +6,7 @@ that row lists the static component libraries, and the hand-written clang lines
 second spelling.
 
   llvm_link.py --words    the `-L`/`-l` words, the environment's holes filled
+  llvm_link.py --twin     the compiler's platform defaults (whole.av) and this file's agree
   llvm_link.py --check    the row names every component the wrapper needs, as
                           `llvm-config --link-static` lists them, and each is on disk
 
@@ -38,9 +39,7 @@ def platform_hole(name):
     if name == "AVRA_CXX_RUNTIME":
         return "c++" if darwin else "stdc++"
     if name == "AVRA_SYS_SEARCH":
-        dirs = (["/opt/homebrew/lib", "/usr/local/lib"] if darwin else
-                ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"])
-        for d in dirs:
+        for d in PY_DIRS["darwin" if darwin else "linux"]:
             if any(os.path.exists(os.path.join(d, f"libzstd.{ext}")) for ext in ("a", "so", "dylib")):
                 return d
     return ""
@@ -62,6 +61,32 @@ def expanded(flag):
             out.append(flag[i])
             i += 1
     return "".join(out)
+
+
+WHOLE = os.path.join(ROOT, "packages", "std-avrac", "src", "compiler", "whole.av")
+PY_DIRS = {"darwin": ["/opt/homebrew/lib", "/usr/local/lib"],
+           "linux": ["/usr/lib/x86_64-linux-gnu", "/usr/lib/aarch64-linux-gnu", "/usr/lib64", "/usr/lib"]}
+
+
+def twin():
+    """The compiler's `platform_hole` (whole.av) and this file's answer the same thing: read the
+    compiler's literals out of its source and hold them to this file's. A keeper with no compiler."""
+    import re
+    src = open(WHOLE).read()
+    body = src[src.index("fn platform_hole"):]
+    runtime = re.search(r'"AVRA_CXX_RUNTIME" -> if links_with_ld64\(\) \{ "([^"]+)" \} else \{ "([^"]+)" \}', body)
+    lists = re.findall(r"\[((?:\s*\"/[^\"]+\",?)+)\s*\]", body[body.index("fn system_library_dir"):])
+    got = [re.findall(r'"(/[^"]+)"', x) for x in lists]
+    bad = []
+    if not runtime or (runtime[1], runtime[2]) != ("c++", "stdc++"):
+        bad.append(f"the C++ runtime names differ: compiler {runtime and runtime.groups()} vs c++/stdc++")
+    if got != [PY_DIRS["darwin"], PY_DIRS["linux"]]:
+        bad.append(f"the system library directories differ: compiler {got} vs {[PY_DIRS['darwin'], PY_DIRS['linux']]}")
+    for b in bad:
+        print("llvm-link: " + b, file=sys.stderr)
+    if not bad:
+        print("llvm-link: the compiler's platform defaults and llvm_link.py's agree")
+    return 1 if bad else 0
 
 
 def words():
@@ -106,7 +131,9 @@ if __name__ == "__main__":
     if len(sys.argv) == 2 and sys.argv[1] == "--words":
         print(" ".join(words()))
         sys.exit(0)
+    if len(sys.argv) == 2 and sys.argv[1] == "--twin":
+        sys.exit(twin())
     if len(sys.argv) == 2 and sys.argv[1] == "--check":
         sys.exit(check())
-    print("usage: llvm_link.py --words | --check", file=sys.stderr)
+    print("usage: llvm_link.py --words | --check | --twin", file=sys.stderr)
     sys.exit(2)
