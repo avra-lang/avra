@@ -1,7 +1,7 @@
 // Each primitive's exact HTML, the look as atomic classes, nesting, the
 // stylesheet and the page. Trees are neutral nodes, so no component is
 // involved.
-use @std.ui.tree.node.{Node, Prim}
+use @std.ui.tree.node.{Node, Prim, Attribute}
 use @std.ui.realize.html.html.{fragment, render, page, Page}
 use @std.ui.env.{Env}
 use @std.ui.realize.html.css.{all_rules, class_names}
@@ -396,5 +396,22 @@ spec "std/ui html — the sheet carries the values" {
         then "a page with no nonce writes a bare style element" {
             page(Page { title: "t" }, small()).contains("<style>")
         }
+    }
+}
+
+/// A spacer standing for four unbuilt rows of twenty pixels each, which says no height of its own.
+fn spacer() -> Node {
+    Node { prim: .Item, attrs: [Attribute.Skipped("p", 4, 20)], box: Box {}, children: [] }
+}
+
+spec "std/ui html — a window's spacer" {
+    given "a spacer standing for unbuilt rows" {
+        then "stands as a fixed height its class reads, never as a style attribute" {
+            let item = fragment(spacer())
+            item.contains("h-fixed") &&
+                item.contains("data-avra-skip=\"4\"") &&
+                !item.contains("style=")
+        }
+        then "has its height in the page's sheet" { page(Page { title: "t" }, spacer()).contains("{--h:80px}") }
     }
 }
