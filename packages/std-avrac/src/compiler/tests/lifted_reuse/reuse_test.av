@@ -1,0 +1,47 @@
+// A generator's run is a named query (`Family.Lifted`): an edit that
+// changes nothing the generator reads re-runs no row, and an edit to what
+// it crosses re-runs exactly the one row that crossed it.
+use @std.avrac.testing.{provided_workspace}
+use compiler.{Workspace}
+use compiler.families.{Family}
+use @std.relation.engine.{count_reads}
+
+fn provider() -> string {
+    "use @std.meta.{Type, Directive}\nexport trait Shape {\n    static fn derive(t: Type) -> List<Directive> {\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { fn made_row() -> int { 7 } } }]\n    }\n}\n"
+}
+
+fn head() -> string { "use @std.meta.{derive}\nuse @x.c.{Shape}\n" }
+
+fn tail() -> string { "export fn read(t: Row) -> int { t.a }\n" }
+
+/// The program: `@derive(Shape)` over `Row`, `above` written before it and
+/// `fields` the record's body.
+fn main_text(above: string, fields: string) -> string {
+    "${head()}${above}@derive(Shape)\ntype Row = { ${fields} }\n${tail()}"
+}
+
+const main_path: string = "/w/src/main.av"
+
+/// The `Lifted` rows `ws` has computed so far.
+fn lifted_computes(ws: Workspace) -> int { ws.db.kernel.served_computed(Family.Lifted.ordinal)[1] }
+
+/// A workspace checked once, then edited to `after` and checked again:
+/// the `Lifted` computes the second check added.
+fn added_by(before: string, after: string) -> int {
+    count_reads()
+    let ws = provided_workspace(before, provider())
+    let _ = ws.analysis(ws.file_id(main_path)).clean()
+    let first = lifted_computes(ws)
+    ws.host.write(main_path, after)
+    let _ = ws.world_moved()
+    let _ = ws.analysis(ws.file_id(main_path)).clean()
+    lifted_computes(ws) - first
+}
+
+spec "compiler/lifted — a generator's run is reused across edits" {
+    given "an annotated record and an edit that changes nothing the generator reads" {
+        then "a comment above it re-runs no row" {
+            added_by(main_text("", "a: int"), main_text("// a note\n", "a: int")) == 0
+        }
+    }
+}
