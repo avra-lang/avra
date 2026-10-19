@@ -38,6 +38,7 @@ use features.{
     EmbedFault,
     embed_literal_law,
     gathers_across_files,
+    admits_package,
     AnnotationFact,
     LitArg,
 }
@@ -216,7 +217,9 @@ impl Workspace {
     }
 
     /// What a statement gathers, in what order, and what it reads of each member,
-    /// when it is a `collect` that gathers its package whole.
+    /// when it is a `collect` that gathers across files. An IMPORT CLOSURE's members are
+    /// held to WHICH they are alone: what a member holds is read through the member's own
+    /// declaration, so no plan folds its text and an edit beside the members moves nothing.
     fn package_gathering(f: FileId, store: SyntaxArena, s: StmtId) -> Gathering? {
         let scope? = store.collect_scope(s) else { return null }
         if !gathers_across_files(scope) { return null }
@@ -230,7 +233,7 @@ impl Workspace {
             kind: parts.kind,
             scope: scope,
             order: parts.order,
-            plans: [field_plan(self.decls, entry, pf.field.of, pf.path, parts.kind) for pf in parts.proj.fields],
+            plans: if admits_package(scope) { [field_plan(self.decls, entry, pf.field.of, pf.path, parts.kind) for pf in parts.proj.fields] } else { [] },
         }
     }
 
@@ -243,8 +246,11 @@ impl Workspace {
     }
 
     /// One member as its collect sees it: where it is declared, its name, the mark
-    /// that gathered it, its shape, and what each projected field reads of it.
+    /// that gathered it, its shape, and what each projected field reads of it. An import
+    /// closure's member is only WHICH it is: its shape and fields are read through its own
+    /// declaration, and asking them here would type what no build has asked yet.
     fn member_print(g: Gathering, m: Decl) -> string {
+        if !admits_package(g.scope) { return digest_of(fields_wire([self.decls.module_of(m.id), m.name])) }
         digest_of(
             fields_wire(
                 [
