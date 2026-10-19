@@ -11,6 +11,8 @@
 //! nested quote's body is copied verbatim, a sublanguage's expansion
 //! replaces its holes.
 
+use @std.relation.engine.{list_cell}
+
 /// What a hole is filled with — one shape per `HoleKind`, and ONE
 /// for a fill that no seat can hold. `Unplaceable` carries the words
 /// rather than a flag: the splice cannot re-derive why, and a fill
@@ -93,8 +95,9 @@ export type Rebuilder = {
     // how a copied sugar's meaning is minted anew beside the copy
     door: Means,
     // the copy of each source expression reached so far, by its index: a node
-    // the source reaches twice is one node in the copy
-    copies: Map<string, ExprId>,
+    // the source reaches twice is one node in the copy. A cell, because it is
+    // an identity — a walk that copies the rebuilder shares it.
+    copies: Cell<List<ExprId?>>,
 }
 
 /// A classifying walk over a store's quote body, `runs` the run mark
@@ -121,7 +124,7 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         unplaceable: [],
         holed: [],
         door: no_door,
-        copies: {},
+        copies: list_cell(),
     }
 }
 
@@ -155,7 +158,7 @@ export fn copier(
         unplaceable: [],
         holed: [],
         door: door,
-        copies: {},
+        copies: list_cell(),
     }
 }
 
@@ -214,8 +217,19 @@ impl Rebuilder {
         }
         let tail: int? = self.tail_hole(x)
         if tail != null { return self.tail_block(e, x, tail!) }
-        let known? = self.copies.get("${e.index}") else { return self.rebuilt_expr(e, x) }
+        let known? = self.copy_of(e) else { return self.rebuilt_expr(e, x) }
         known
+    }
+
+    /// The copy already made of source expression `e`, if any.
+    fn copy_of(e: ExprId) -> ExprId? {
+        if e.index < self.copies.get().length { self.copies.get()[e.index] } else { null }
+    }
+
+    /// Remembers `copy` as source expression `e`'s.
+    fn remember(e: ExprId, copy: ExprId) {
+        while self.copies.get().length <= e.index { self.copies.push(null) }
+        self.copies.set_at(e.index, copy)
     }
 
     /// The copy of `e`, kept so a second reach of the same node answers it.
@@ -225,7 +239,7 @@ impl Rebuilder {
         let holed = self.holed.pop()
         if !self.copying { return e }
         let copy = self.minted_expr(e, rebuilt, holed)
-        self.copies.set("${e.index}", copy)
+        self.remember(e, copy)
         copy
     }
 
