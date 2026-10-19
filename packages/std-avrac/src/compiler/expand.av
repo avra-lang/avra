@@ -1270,12 +1270,15 @@ impl Workspace {
     /// fields a `..Record` spread placed, which the declaration never
     /// wrote, so the two runs do not share positions.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
-        [self.crossed(v, p, self.field_kind(d, p.name.of)) for p in v.store.declared_fields(s)]
+        [self.crossed(v, p, self.field_kind(d, p.name.of), self.field_state(d, p.name.of)) for p in v.store.declared_fields(s)]
     }
 
     /// One field as a `Field` value: the one door every crossed field takes.
-    fn crossed(v: FileView, p: Param, kind: Kind) -> MetaField {
-        crossed_field(v, p, kind, self.spelled_field(v.file, p.ty))
+    /// `cell` is the signature's word that the field is a cell: a head prop of a
+    /// stateful composition whose type compares by value is one, though it was
+    /// not written `state`.
+    fn crossed(v: FileView, p: Param, kind: Kind, cell: bool) -> MetaField {
+        crossed_field(v, p, kind, self.spelled_field(v.file, p.ty)) with { state: p.state || cell }
     }
 
     fn spelled_field(f: FileId, written: TypeRef?) -> MetaSpelled? {
@@ -1343,7 +1346,7 @@ impl Workspace {
             name: m.name,
             payload: [written_spelling(p.ty) for p in fields if !faceted(p.marks)],
             at: placed(v, v.store.stmt_span(m.stmt)),
-            fields: [self.crossed(v, p, kind_at(kinds, j)) for j, p in fields],
+            fields: [self.crossed(v, p, kind_at(kinds, j), false) for j, p in fields],
             marks: crossed_marks(v, self.decls.member_marks(m.id, gathering)),
             doc: self.decl_doc_text(m.id),
             annotations: self.decl_annotations(v, m.id),
@@ -1363,7 +1366,7 @@ impl Workspace {
             name: va.name.of,
             payload: [written_spelling(p.ty) for p in va.payloads if !faceted(p.marks)],
             at: placed(v, va.span),
-            fields: [self.crossed(v, p, kind_at(kinds, j)) for j, p in va.payloads],
+            fields: [self.crossed(v, p, kind_at(kinds, j), false) for j, p in va.payloads],
             marks: crossed_marks(v, va.marks),
             doc: null,
             annotations: crossed_annotations(v, va.marks),
@@ -1400,6 +1403,14 @@ impl Workspace {
     fn named_over(d: DeclId) -> Kind {
         let sig? = self.decls.sig(d) else { return no_kind() }
         match sig { .Named(n) -> kind_of(self.decls.types, n.of), rest -> no_kind() }
+    }
+
+    /// Whether the signature made the field a cell: a head prop of a stateful
+    /// composition whose type compares by value is one, though it was not
+    /// written `state`.
+    fn field_state(d: DeclId, name: string) -> bool {
+        let sig? = self.decls.sig(d)?.record_sig() else { return false }
+        [sig.state_at(j) for j, n in sig.names if n == name].first() ?? false
     }
 
     fn field_kind(d: DeclId, name: string) -> Kind {

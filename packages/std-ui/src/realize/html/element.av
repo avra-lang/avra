@@ -181,9 +181,16 @@ fn seat_of(seat: Seat?, step: Step, crowded: bool = false) -> Seat {
 /// The parts a lowering makes inside a node, by the step each stands at.
 const text_part = Step.Part("text").spelled()
 const control_part = Step.Part("control").spelled()
-const words_part = Step.Part("words").spelled()
+export const words_part = Step.Part("words").spelled()
 
 fn title_part(j: int) -> string { Step.Part(if j == 0 { "title" } else { "title~${j}" }).spelled() }
+
+/// A node's words as a run: always one when the node carries a reading, so
+/// an empty text is a run the page can place and later patch.
+fn said_of(n: Node) -> List<Element> {
+    if n.words() == "" && n.sites.is_empty() { return [] }
+    [Element.Text(Worded { seat: text_part, reads: text_part, content: n.words() })]
+}
 
 /// A run of text, when there are words to say.
 fn said(words: string) -> List<Element> {
@@ -233,7 +240,7 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
             },
         )
     let words = Element
-        .Tag(Tagged { seat: words_part, reads: words_part, tag: .Span, kids: said(n.words()) })
+        .Tag(Tagged { seat: words_part, reads: words_part, tag: .Span, kids: said_of(n) })
     Element
         .Tag(
             Tagged {
@@ -242,6 +249,9 @@ fn labelled(n: Node, at: Seat, kids: List<Element>) -> Element {
                 tag: .Label,
                 attrs: node_attrs(n),
                 vars: box_vars(drawn_box(n)),
+                sites: n.sites,
+                structural: n.box.structural,
+                opaque: n.box.opaque,
                 kids: if words_lead(n.prim) { [words, control] } else { [control, words] }.concat(kids),
                 crowded: at.crowded,
             },
@@ -293,7 +303,7 @@ fn lower(n: Node, at: Seat) -> List<Element> {
             element(
                 n,
                 at,
-                said(n.words()).concat(headings(n)).concat(lower_each(n, stands, null, at.crowded)),
+                said_of(n).concat(headings(n)).concat(lower_each(n, stands, null, at.crowded)),
             ),
         ],
         .Never -> [element(n, at, [])].concat(lower_each(n, stands, at, at.crowded)),
