@@ -1743,7 +1743,27 @@ help: a re-export names a declaration — import `x` from the module that declar
 
 a re-export never closes a package cycle
 
-No witness here: it needs two packages whose re-exports close a package cycle, a graph the memory host cannot stand up in one witness.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+// /w/src/main.av
+use @std.low.{g}
+g()
+
+```
+
+```
+error[resolve.reexport_cycle]: `@std/high` already uses `@std/low`, so re-exporting from it here would close a package cycle
+  ╭─[/std/std-low/src/low.av:4:8]
+4 │ export use @std.high.{h}
+  ·        ┬
+  ·        ╰── in this use
+──╯
+help: packages never depend in a cycle — re-export both from a FACADE package above them, one made of `export use` lines
+```
 
 ## resolve.nested_use
 
