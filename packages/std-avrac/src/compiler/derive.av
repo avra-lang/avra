@@ -691,10 +691,14 @@ impl Workspace {
         if at.hold {
             let interfaces = self.clock()
             let roots = held_modules(self, store, built_entry(at))
+            self.timed("roots", interfaces)
+            let naming = self.clock()
             // ON-DEMAND: the records are read for their NAMES alone — every file is
             // registered and every module's impl/trait names indexed — and only the
             // modules a file whose rows no longer stand sits in are loaded for real.
             for m in roots { bare_interface(self, store, m, at.entry, at.want) }
+            self.timed("names", naming)
+            let standing = self.clock()
             let must_read = self
                 .hold
                 .forced
@@ -702,9 +706,13 @@ impl Workspace {
                 .keys()
                 .concat(if at.entry != null { [at.entry!] } else { [] })
             let unstood = [fi.path for fi in self.decls.files_standing() if !self.file_rows_stand(store, fi.path, at.want) || must_read.contains(fi.path)]
+            self.timed("rows stand", standing)
+            let reading = self.clock()
             for path in unstood { self.declarers_registered(path) }
             let loading = distinct([self.module_path_of(path).text() for path in unstood])
             for name in loading { load_interface(self, store, module_path(segments_of(name)), at.entry, at.want) }
+            self.timed("loaded", reading)
+            let holding = self.clock()
             // every file a module did not load stands in the store's own rows
             for fi in self.decls.files_standing() {
                 if loading.contains(self.module_path_of(fi.path).text()) { continue }
@@ -713,10 +721,13 @@ impl Workspace {
                 self.hold_only(fi.path)
                 self.hold.standing.put(fi.path, true)
             }
+            self.timed("held only", holding)
             self.timed("interfaces", interfaces)
             // a home whose text moved moves what lowers from it: the homes are read from the start
             if !at.homes && self.known_homes(store, at).any((path) -> self.home_moved(store, path)) { fail Turn.Again(at with { homes: true }) }
+            let settling = self.clock()
             self.settle_holds(store, at.want)
+            self.timed("settle", settling)
         }
         self.hold.warm.set(!held_paths(self).is_empty())
         self.host.reads_ahead(self.reads_ahead())
