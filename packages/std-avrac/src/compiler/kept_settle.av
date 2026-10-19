@@ -468,17 +468,21 @@ impl Workspace {
     /// A module's kept line: its files, so a file added or removed moves it.
     fn module_line(m: ModulePath) -> string { joined(["m", m.text(), self.module_files(m).join(",")], "\t") }
 
-    /// A seen file's kept line: its text, and, when it is read, its outline.
+    /// A seen file's kept line: its text and its outline.
     fn file_line(path: string) -> string {
+        let outline = if self.file_is_read(path) { self.outline_values(path) } else { self.held_outline(path) }
         joined(
-            [
-                "f",
-                path,
-                self.text_digest(path),
-                if self.file_is_read(path) { "2${self.outline_values(path)}" } else { "" },
-            ],
+            ["f", path, self.text_digest(path), if outline == "" { "" } else { "2${outline}" }],
             "\t",
         )
+    }
+
+    /// A held file's outline, off its module's record: it is held against the text the record
+    /// kept it at. Empty for a record that kept none.
+    fn held_outline(path: string) -> string {
+        let store? = self.store.get() else { return "" }
+        let kept = record_places(self, store, self.module_path_of(path)).get(path)?.file ?? []
+        if kept.length > 7 && kept[2] == self.text_digest(path) { kept[7] } else { "" }
     }
 
     /// A file line stands when its text has not moved, or when it is read and

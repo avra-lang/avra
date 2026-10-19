@@ -1,5 +1,6 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
+use core.debug.{db_verified_outlines}
 use core.{
     wire_fields,
     joined,
@@ -41,7 +42,7 @@ use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
 
 /// One file's lines in its module's record, and the digest of what a caller can see of them.
-type FileLines = { path: string, lines: List<string>, iface: string, idents: string, global: string }
+type FileLines = { path: string, lines: List<string>, iface: string, idents: string, global: string, outline: string }
 
 impl Workspace {
 
@@ -515,7 +516,7 @@ impl Workspace {
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
-        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.runs_recorded(store, m, f.path))}\t${f.iface}\t${f.idents}\t${f.global}" for f in parts]
+        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.runs_recorded(store, m, f.path))}\t${f.iface}\t${f.idents}\t${f.global}\t${f.outline}" for f in parts]
         let iface = ifaces_digest([f.iface for f in parts])
         joined(
             ["iface\t${iface}"]
@@ -546,6 +547,7 @@ impl Workspace {
                 iface: iface_digest(lines),
                 idents: self.mentioned(path),
                 global: global_digest(lines),
+                outline: self.verified_outline(store, m, path),
             }
         }
         let lines = [line for line in kept.get(path) ?? [] if !line.starts_with("ref\t")]
@@ -556,7 +558,25 @@ impl Workspace {
             iface: if columns.length > 4 { columns[4] } else { iface_digest(lines) },
             idents: if columns.length > 6 { columns[5] } else { "" },
             global: if columns.length > 6 { columns[6] } else { "" },
+            outline: if columns.length > 7 { columns[7] } else { "" },
         }
+    }
+
+    /// A read file's value outline, as its record keeps it for the day the file is held. It is
+    /// not the interface digest: that hashes signatures, this hashes every declaration's syntax,
+    /// bodies included — what a verdict's view judges a moved file by. Under
+    /// `AVRA_DB_VERIFY=outlines`, a file whose text is the record's is judged against the outline
+    /// the record kept: one text has one outline.
+    fn verified_outline(store: Store, m: ModulePath, path: string) -> string {
+        let made = self.outline_values(path)
+        let kept = record_places(self, store, m).get(path)?.file ?? []
+        if db_verified_outlines() &&
+            kept.length > 7 &&
+            kept[2] == self.text_digest(path) &&
+            kept[7] != made {
+            self.defect(outlines_disagree(path))
+        }
+        made
     }
 
     /// THE NAMES A FILE MENTIONS: every token of its text, and every declaration its resolved
@@ -1017,3 +1037,8 @@ fn parks_word(r: CancelReach) -> string {
 
 /// One read's identity: the file and the declaration read in it.
 fn read_id(r: RunRead) -> string { "${r.path}\t${r.ref}" }
+
+/// A kept outline that is not the one its file's text makes.
+fn outlines_disagree(path: string) -> string {
+    "the outline kept for `${path}` is not what its text makes — a record keeps an outline with the text digest it was made from, so one of them was written by something else"
+}
