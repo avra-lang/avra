@@ -5,7 +5,8 @@
     census_ratchet.py --self-test
 
 `tools/census.sh check --counts packages/cli` builds a census compiler and runs the check
-cold under it: exact retain / release / list-read / list-write counts, the same on every
+cold under it: exact retain / release / list-read / list-write counts and the bytes the run
+left in its store (a row count alone misses rows that got larger), the same on every
 machine (the runtime counts operations, never time). A linear scan over a list shows up as
 list reads, so an algorithmic slowdown that moves no query or row count is still seen —
 what a wall clock on a shared runner cannot promise.
@@ -33,7 +34,7 @@ import sys
 
 BUDGET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "census.budget")
 SLACK_PPM = 15000
-COUNTERS = ("retains", "releases", "reclaims", "list_reads", "list_writes")
+COUNTERS = ("retains", "releases", "reclaims", "list_reads", "list_writes", "store_bytes")
 HEAD = """\
 # THE COLD-COMPILE CEILINGS: the most work a cold `check packages/cli` may do, per declaration
 # of the program, counted by the runtime (`make census-gate`, tools/census_ratchet.py). Exact,
@@ -53,6 +54,9 @@ def read_counts(text):
         m = re.match(r"rc: (\d+) list reads, (\d+) list writes", line)
         if m:
             got.update(list_reads=int(m[1]), list_writes=int(m[2]))
+    m = re.search(r"^store: (\d+) bytes", text, re.M)
+    if m:
+        got["store_bytes"] = int(m[1])
     m = re.search(r"program_decls=(\d+)", text)
     return got, int(m[1]) if m else 0
 
@@ -142,16 +146,16 @@ def main(argv):
 
 
 def self_test():
-    raw = "rc: 1000 retains, 2000 releases, 30 reclaims\nrc: 5000 list reads, 400 list writes\ncounts: x program_decls=10 y\n"
+    raw = "rc: 1000 retains, 2000 releases, 30 reclaims\nrc: 5000 list reads, 400 list writes\nstore: 70000 bytes\ncounts: x program_decls=10 y\n"
     got, decls = read_counts(raw)
-    assert got == dict(retains=1000, releases=2000, reclaims=30, list_reads=5000, list_writes=400) and decls == 10, (got, decls)
+    assert got == dict(retains=1000, releases=2000, reclaims=30, list_reads=5000, list_writes=400, store_bytes=70000) and decls == 10, (got, decls)
     now = per_decl(got, decls)
     assert now["retains"] == 100 and now["list_reads"] == 500
     ok = dict(now)
     assert judge(now, ok, False) == ([], [])
     low = {k: v + 50 for k, v in now.items()}
     bad, notes = judge(now, low, False)
-    assert bad == [] and len(notes) == 5, "under every ceiling says so, never refuses"
+    assert bad == [] and len(notes) == 6, "under every ceiling says so, never refuses"
     tight = dict(now, list_reads=100)
     bad, _ = judge(now, tight, False)
     assert len(bad) == 1 and bad[0].startswith("list_reads: 500"), bad
@@ -172,15 +176,19 @@ def self_test():
     # a waiver passes a PR over main's number while the committed ceiling holds it
     bad, notes = judge(now, ok, True, kept)
     assert bad == [] and any("list_reads" in n for n in notes), (bad, notes)
+    # a store that tripled with every operation count flat is refused: bytes are their own counter
+    fat = dict(now, store_bytes=now["store_bytes"] * 3)
+    bad, _ = judge(fat, ok, False)
+    assert len(bad) == 1 and bad[0].startswith("store_bytes:"), bad
     # a census that printed no counts FAILS: nothing examined is not a pass
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         empty = os.path.join(d, "out")
         open(empty, "w").write("census: nothing here\n")
         assert main(["--raw", empty]) == 1, "no counts must refuse"
-        open(empty, "w").write("rc: 1 retains, 2 releases, 3 reclaims\nrc: 4 list reads, 5 list writes\n")
+        open(empty, "w").write("rc: 1 retains, 2 releases, 3 reclaims\nrc: 4 list reads, 5 list writes\nstore: 6 bytes\n")
         assert main(["--raw", empty]) == 1, "counts with no program size must refuse"
-    print("census_ratchet: self-test passed — 13 fixtures")
+    print("census_ratchet: self-test passed — 14 fixtures")
     return 0
 
 
