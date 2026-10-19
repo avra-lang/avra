@@ -95,6 +95,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import sys
 import tempfile
 
@@ -462,8 +463,17 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
 
 
 # ---- reading the world (gh) --------------------------------------------
+TRIES = 3
+
+
 def _gh(args, check=True):
-    p = subprocess.run(["gh", *args], capture_output=True, text=True)
+    """One gh call; a 5xx from GitHub (a heavy GraphQL read times out under load) is tried
+    again, so one slow answer never fails a whole pass."""
+    for attempt in range(TRIES):
+        p = subprocess.run(["gh", *args], capture_output=True, text=True)
+        if p.returncode == 0 or not re.search(r"HTTP 5\d\d", p.stderr) or attempt == TRIES - 1:
+            break
+        time.sleep(2 * (attempt + 1))
     if check and p.returncode != 0:
         raise RuntimeError(f"gh {' '.join(args)}: {p.stderr.strip()}")
     return p.stdout
@@ -535,10 +545,16 @@ def behind_by(repo, trunk, head):
 
 
 def open_prs(repo):
-    return _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
-                     "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
-                               "title,headRefName,autoMergeRequest,"
-                               "headRefOid,statusCheckRollup,isCrossRepository,createdAt,labels"])
+    """Every open PR. The list is light (a rollup over every PR is the read that times out);
+    a non-draft PR's checks are read one by one, a draft's are never acted on."""
+    prs = _gh_json(["pr", "list", "-R", repo, "--state", "open", "--limit", "100",
+                    "--json", "number,id,isDraft,state,mergeable,mergeStateStatus,"
+                              "title,headRefName,autoMergeRequest,"
+                              "headRefOid,isCrossRepository,createdAt,labels"])
+    for p in prs:
+        p["statusCheckRollup"] = _gh_json(["pr", "view", str(p["number"]), "-R", repo,
+                                           "--json", "statusCheckRollup"]).get("statusCheckRollup")
+    return prs
 
 
 def _runs(repo):
