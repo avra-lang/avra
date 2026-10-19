@@ -295,7 +295,7 @@ f()
 ```
 
 ```
-error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn body sees declarations, not the values around it
+error[resolve.runtime_binding]: `x` is a run-time binding of the top level — a fn body or a const sees declarations, not the values around it
   ╭─[witness.av:2:17]
 2 │ fn f() -> int { x }
   ·                 ┬
