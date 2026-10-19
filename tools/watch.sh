@@ -82,8 +82,23 @@ tree_kill() {
 # `footprint` walks the process's whole map, seconds on a big one —
 # is read every fourth poll for the honest peak. A process once grew
 # from 7 GB to 16 GB between two footprint polls.
+# A CHILD BETWEEN SPAWN AND EXEC SHARES ITS PARENT'S ADDRESS SPACE and `ps` reports the parent's RSS
+# for it: summed, one heap reads as two, and a 3.5 GB parent trips a 6 GB cap for the half second
+# of a spawn. A big process whose RSS equals its parent's to the kilobyte is that same memory,
+# counted once. Input: `pid pgid rss ppid` per line, rss in KB.
+rss_sum() {
+    awk -v root="$1" '
+        $2 == root { rss[$1] = $3; parent[$1] = $4 }
+        END {
+            for (p in rss) {
+                if (parent[p] != p && (parent[p] in rss) && rss[p] == rss[parent[p]] && rss[p] > 102400) continue
+                s += rss[p]
+            }
+            print int(s / 1024)
+        }'
+}
 tree_rss() {
-    ps -eo pid=,pgid=,rss= | awk -v root="$1" '$2 == root { s += $3 } END { print int(s/1024) }'
+    ps -eo pid=,pgid=,rss=,ppid= | rss_sum "$1"
 }
 # THE GUARDED COMMAND BECOMES A PROCESS-GROUP LEADER, WITH OR WITHOUT A
 # TTY: its own pgid, equal to its own pid, is what the tree walkers
@@ -200,9 +215,25 @@ self_test() {
         echo "watch: self-test: fixture 3 wanted pids '500 501 ', got '$got'"
         return 1
     fi
-    rss=$(printf '%s\n' "$snapshot" | awk '{print $1, $3, $4}' | awk -v root=500 '$2 == root { s += $3 } END { print int(s/1024) }')
+    rss=$(printf '%s\n' "$snapshot" | awk '{print $1, $3, $4, $2}' | rss_sum 500)
     if [ "$rss" != 3 ]; then
         echo "watch: self-test: fixture 3 wanted 3 MB, the decoy's rss leaked in as $rss MB"
+        return 1
+    fi
+    # A SPAWN TWIN is its parent's memory: counted once. A child of its own size is a real one.
+    twins="500 500 500 3500000
+501 500 500 3500000
+502 500 500 2048"
+    rss=$(printf '%s\n' "$twins" | awk '{print $1, $3, $4, $2}' | rss_sum 500)
+    if [ "$rss" != 3419 ]; then
+        echo "watch: self-test: fixture 3 wanted 3419 MB (a spawn twin counted once), got $rss MB"
+        return 1
+    fi
+    apart="500 500 500 3500000
+501 500 500 3400000"
+    rss=$(printf '%s\n' "$apart" | awk '{print $1, $3, $4, $2}' | rss_sum 500)
+    if [ "$rss" != 6738 ]; then
+        echo "watch: self-test: fixture 3 wanted 6738 MB (two real processes both counted), got $rss MB"
         return 1
     fi
 
