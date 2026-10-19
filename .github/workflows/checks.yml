@@ -91,6 +91,7 @@ jobs:
       codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
       main: ${{ steps.plan.outputs.main }}
+      rungs: ${{ steps.rungs.outputs.list }}
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 20 }
@@ -244,6 +245,36 @@ jobs:
             echo "shards=${shards}"
           } >> "$GITHUB_OUTPUT"
           echo "plan: $event — full=$full build=$build compiler-changed=$compiler runtime=$runtime cache=$cache codecs=$codecs packages: $(echo $pkgs)"
+      # THE RUNGS OF THIS RUN: commits carrying a `Rung: <why>` trailer (tools/rungs.sh). A PR reads
+      # them off its own commits; main's own run, whose squash dropped them, reads the landed PR's
+      # head ref (`(#N)` in the title, refs/pull/N/head stays fetchable) so it replays the same
+      # ladder. A row and its first reader ride ONE landing as two commits; each rung is built by the
+      # product of the one before (tools/ladder.sh), never by a compiler that cannot read it.
+      - id: rungs
+        name: rungs
+        if: steps.plan.outputs.build == '1'
+        run: |
+          list=""
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            head="${{ github.event.pull_request.head.sha }}"
+            git fetch -q --depth=200 origin main "$head" 2>/dev/null || :
+            base=$(git merge-base origin/main "$head" 2>/dev/null || :)
+            [ -z "$base" ] || list=$(sh tools/rungs.sh "$base" "$head" | tr '\n' ' ')
+          elif [ "${{ steps.plan.outputs.main }}" = 1 ]; then
+            n=$(git log -1 --format=%s | sed -n 's/.*(#\([0-9][0-9]*\))$/\1/p')
+            [ -z "$n" ] || list=$(sh tools/rungs.sh --pr "$n" 2>/dev/null | tr '\n' ' ') || list=""
+          fi
+          echo "list=$(echo $list)" >> "$GITHUB_OUTPUT"
+          echo "key=rungs-$(printf '%s' "$list" | git hash-object --stdin)" >> "$GITHUB_OUTPUT"
+          [ -z "$list" ] || echo "rungs: $(echo $list | wc -w) rung(s) — $list"
+      # A LADDER'S PRODUCT IS CACHED PER PR: a re-push that leaves the rung commits as they were
+      # restores the last rung's compiler and builds only HEAD's two generations.
+      - if: steps.plan.outputs.build == '1' && steps.rungs.outputs.list != ''
+        uses: actions/cache/restore@v4
+        id: rungcache
+        with:
+          path: .rung-product
+          key: ${{ steps.rungs.outputs.key }}
       # THE COMPILER IS KEYED BY ITS OWN SOURCE (tools/compiler_paths.sh), so a
       # tree whose compiler is main's takes main's binary and builds nothing.
       # Otherwise the newest cached binary only has to BUILD this tree — one
@@ -323,6 +354,7 @@ jobs:
       # gate judges fmt and the idioms with it, and the full run is the proof.
       - if: steps.plan.outputs.build == '1' && steps.cache.outputs.cache-hit != 'true' && steps.release.outputs.hit != 'true' && (steps.plan.outputs.full == '1' || steps.release.outputs.source == 'none')
         name: compiler
+        id: compiler
         timeout-minutes: 50
         run: |
           s=$(date +%s)
@@ -335,6 +367,23 @@ jobs:
           # gen-2 by gen-1), so a source broken for real still dies there. The
           # fallback forgives a compiler too old, never a source wrong.
           gen() { timeout -k 10 1500 make -s avra; rc=$?; [ "$rc" = 0 ] || { said "$rc" "a compiler generation"; return 1; }; }
+          # THE LADDER, when the run carries rungs: the starting compiler builds rung 1, its product
+          # rung 2, and so on; the last product then builds HEAD twice below, as for any tree. A
+          # failing rung is a hard stop that names itself — the seed cannot read a rung either.
+          rungs="${{ steps.rungs.outputs.list }}"
+          if [ -n "$rungs" ]; then
+            if [ "${{ steps.rungcache.outputs.cache-hit }}" = true ] && [ -x .rung-product/avra ]; then
+              echo "ladder: the rung product is cached for these rungs"
+              cp .rung-product/avra build/avra
+            else
+              [ -x build/avra ] || { echo "::error::the ladder has no starting compiler (the release fetch found none)"; exit 1; }
+              product=$(AVRA_LADDER_S=900 sh tools/ladder.sh build/avra $rungs) || { echo "::error::the ladder failed: a rung did not build with the compiler of the rung before it"; exit 1; }
+              mkdir -p .rung-product && cp "$product" .rung-product/avra
+              cp "$product" build/avra
+              echo "built=1" >> "$GITHUB_OUTPUT"
+            fi
+            echo "speed ladder $(( $(date +%s) - s ))" >> speed.log
+          fi
           if [ -x build/avra ] && gen && gen; then :; else
             # a store is one compiler's: the recovery starts without the one the older compiler left
             [ -d .avra-cache ] && mv .avra-cache "${RUNNER_TEMP:-/tmp}/avra-cache-of-an-older-compiler"
@@ -342,6 +391,13 @@ jobs:
           fi
           echo "speed compiler $(( $(date +%s) - s ))" >> speed.log
           echo "compiler: built from source in $(( $(date +%s) - s ))s (starting compiler: ${{ steps.release.outputs.source || 'cache' }})"
+      - if: steps.compiler.outputs.built == '1' && github.event_name == 'pull_request'
+        name: keep the rung product
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: .rung-product
+          key: ${{ steps.rungs.outputs.key }}
       # A CEILING IS READ FROM A WARM STORE, SO PREPARE LEAVES ONE. An
       # exact-key release or a cache hit may hand over a compiler with no
       # matching store (a prefix restore is not this binary's), and the
@@ -726,9 +782,16 @@ jobs:
       # rebuilds none of what prepare built from the same commit.
       - name: built
         run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      # A BRANCH WITH RUNGS IS NOT THE SEED'S TO BUILD: the committed seed cannot read a row's first
+      # reader, by construction, so the check is spoken as skipped here and the seed is refreshed after
+      # the landing (main's run owes it). A rung-free tree is judged as ever.
       - name: seed check
         timeout-minutes: 20
         run: |
+          if [ -n "${{ needs.prepare.outputs.rungs }}" ]; then
+            echo "seed-check: SKIPPED, SPOKEN — this run carries Rung commit(s) (${{ needs.prepare.outputs.rungs }}); the seed cannot build a tree whose reader needs the row it lacks, and the seed refresh is owed after this lands"
+            exit 0
+          fi
           python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
   # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
   # through, and it runs beside the gate. It runs on the train, on main's own
