@@ -128,12 +128,19 @@ impl Program {
         if edits.any(it.loc.file != null && it.loc.file! != path) { return false }
         let after_text? = spliced(a.view.source.text, edits) else { return false }
         let after_p = self.after_program(path, after_text, path)
-        let after = after_p.files.find(it.view.source.file == path)?.diagnostics ?? []
-        let was = errors_spoken(before)
-        let now = errors_spoken(after)
-        if now.is_empty() { return lowers(after_p) }
-        now.length < was.length && now.all((e: string) -> was.contains(e))
+        let cleared = repair_cleared(after_p, path, before)
+        after_p.ws.discarded()
+        cleared
     }
+}
+
+/// Whether the after-program has fewer errors than `before` and none new.
+fn repair_cleared(after_p: Program, path: string, before: List<Diag>) -> bool {
+    let after = after_p.files.find(it.view.source.file == path)?.diagnostics ?? []
+    let was = errors_spoken(before)
+    let now = errors_spoken(after)
+    if now.is_empty() { return lowers(after_p) }
+    now.length < was.length && now.all((e: string) -> was.contains(e))
 }
 
 /// Whether a program with no file errors also LOWERS clean: the lowering
