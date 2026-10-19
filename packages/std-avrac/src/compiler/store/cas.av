@@ -51,22 +51,50 @@ export fn cas_is_ref(stored: string) -> bool { stored.starts_with(cas_prefix()) 
 /// The digest a reference names.
 export fn cas_digest_of(stored: string) -> string { stored.substring(cas_prefix().length, stored.length) }
 
+/// The reference to a value's blob, minted from its content alone: the same value is the
+/// same reference wherever it is written.
+export fn cas_ref_of(value: string) -> string { cas_prefix() + digest_of_octets(value.bytes()) }
+
+/// Whether a value belongs in the shared store rather than a store's own frames.
+export fn cas_big(value: string) -> bool { value.length > CAS_CUT }
+
+/// A value's blob put in the shared store, once. False when there is no store to put it in.
+export fn cas_blob(value: string) -> bool {
+    let dir? = cas_dir() else { return false }
+    let digest = digest_of_octets(value.bytes())
+    let at = blob_at(dir, digest)
+    // LICENSED input.store_io: the shared store's blob, asked whether it stands before it is written
+    if exists(at) { return true }
+    match make_dirs(dir_of(at)) { .Ok(_) -> {}, .Err(_) -> { return false } }
+    match write_bytes(at, value.bytes()) { .Ok(_) -> {}, .Err(_) -> { return false } }
+    if traced() { qtrace("Q\tcas\tput\t${digest}\t${value.length}\n") }
+    true
+}
+
 /// The reference a value is stored as when it belongs in the shared store: the blob put
 /// there once, and `store_root` registered as one of its readers. Absent when the value
 /// stays in the store's own frames — small, or no shared store to put it in.
 export fn cas_put(value: string, store_root: string) -> string? {
-    if value.length <= CAS_CUT && !cas_is_ref(value) { return null }
-    let dir? = cas_dir() else { return null }
-    let digest = digest_of_octets(value.bytes())
-    let at = blob_at(dir, digest)
-    // LICENSED input.store_io: the shared store's blob, asked whether it stands before it is written
-    if !exists(at) {
-        match make_dirs(dir_of(at)) { .Ok(_) -> {}, .Err(_) -> { return null } }
-        match write_bytes(at, value.bytes()) { .Ok(_) -> {}, .Err(_) -> { return null } }
-        if traced() { qtrace("Q\tcas\tput\t${digest}\t${value.length}\n") }
-    }
+    if !cas_big(value) && !cas_is_ref(value) { return null }
+    if !cas_blob(value) { return null }
+    cas_register(store_root)
+    cas_ref_of(value)
+}
+
+/// Registers a store root as a reader of the shared store, when a value it holds names a blob.
+export fn cas_register_if_named(stored: string, store_root: string) {
+    if stored.contains(cas_prefix()) { cas_register(store_root) }
+}
+
+fn cas_register(store_root: string) {
+    let dir? = cas_dir() else { return }
     registered(dir, store_root)
-    cas_prefix() + digest
+}
+
+/// The digests of every blob a stored value names, whole or inside its frames.
+export fn cas_named_in(stored: string) -> List<string> {
+    let width = digest_of_octets("".bytes()).length
+    [piece.substring(0, width) for piece in stored.split(cas_prefix()).drop(1) if piece.length >= width]
 }
 
 /// The value a reference names, checked against its digest: absent when the blob is missing

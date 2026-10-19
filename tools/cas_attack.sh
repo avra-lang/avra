@@ -40,5 +40,20 @@ find "$D/stores" -depth -delete
 mkdir -p "$D/stores"
 out=$(build/avra cache clean 2>&1); echo "$out" | grep -q "shared store kept .* freed 1 blob" && say "clean frees a blob no live store names" || fail "clean did not free the orphan: $out"
 [ "$(blobs)" = 0 ] && say "no blob stands" || fail "$(blobs) blobs after the sweep"
+# A 5 MB file `embed`ded by two worktrees: the settled const names ONE blob between them.
+E="$D/embed"; mkdir -p "$E"
+for w in a b; do
+    mkdir -p "$E/$w/src"
+    printf '[package]\nname = "embeds"\nversion = "0.1.0"\n' > "$E/$w/avra.toml"
+    head -c 5242880 /dev/zero | tr '\0' 'x' > "$E/$w/src/big.txt"
+    printf 'use @std.meta.{embed}\nconst A: string = embed("big.txt")\nprintln("${A.length}")\n' > "$E/$w/src/main.av"
+done
+built() { AVRA_CACHE_DIR="$E/cache" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1; "$E/$1/src/main"; }
+[ "$(built a | tail -1)" = 5242880 ] && [ "$(built b | tail -1)" = 5242880 ] && say "both worktrees build the embedding program" || fail "an embedding program did not build"
+n=$(find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | tr -d ' ')
+[ "$n" = 1 ] && say "two worktrees' 5 MB embed is ONE blob" || fail "$n blobs over 1 MB for one embedded file"
+[ "$(built a | tail -1)" = 5242880 ] && say "a warm build reads the embed back through the blob" || fail "the warm build did not answer"
+find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k -delete
+[ "$(built b | tail -1)" = 5242880 ] && say "an embed whose blob is gone is rebuilt, never wrong" || fail "a missing embed blob broke the build"
 [ $fails -eq 0 ] || { echo "cas-attack: $fails of $steps FAILED"; exit 1; }
 echo "cas-attack: $steps steps passed"
