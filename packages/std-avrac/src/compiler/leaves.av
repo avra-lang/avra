@@ -23,6 +23,7 @@ use diagnostics.{Diag, Voices}
 use @std.errors.{Loc, Frame, Edit}
 use compiler.rel_loc.{anchoring_wire}
 use compiler.store.{Store, Stored, Reading, node_key}
+use compiler.work.{work_unknown_section}
 use compiler.voices.{type_facts_fp, diag_fp, name_slice_fp, unit_fp_in}
 use features.{SettleRoot, SeatValue}
 use compiler.lower.{code_facts, code_facts_wire}
@@ -61,11 +62,21 @@ impl Workspace {
         fp_str(joined(sorted_texts([self.decl_ref(b) for b in self.method_blocks(target)]), ","))
     }
 
+    /// The key a declaration's signature is read through: its own, or its module's held record
+    /// for a declaration of a held file, which keeps no signature of its own.
+    fn signature_key(d: DeclId) -> Key {
+        let f = self.decls.decl(d).file
+        if !self.is_held(f) { return key(Family.Sig, d.index) }
+        let m = self.decls.file(f).module_id
+        self.held_sig_asked(m)
+        key(Family.HeldSig, m.index)
+    }
+
     /// A type's method table says what it stood on: its members' signatures and the set they
     /// make, so a reader of the table stands on who may join it.
     fn note_methods(k: Key, target: DeclId, blocks: List<DeclId>) {
         let rdb = self.decls.rows_db.get()
-        let leaves = rdb.leaves_of([key(Family.Sig, b.index) for b in blocks])
+        let leaves = rdb.leaves_of([self.signature_key(b) for b in blocks])
         rdb
             .noted(
                 edge_of(k),
@@ -94,7 +105,7 @@ impl Workspace {
     fn sig_digest(arg: int) -> int? {
         if arg < 0 || arg >= self.decls.sigs.get().length { return null }
         let s? = self.decls.sigs.get()[arg] else {
-            return if self.db.kernel.hash_forced(key_at(Family.Sig.ordinal, arg)) == null { null } else { fp_str("refused") }
+            return if self.is_held(self.decls.decl(DeclId { index: arg }).file) { null } else { fp_str("refused") }
         }
         fp_str(self.decl_sig_wire(s))
     }
@@ -637,7 +648,6 @@ impl Workspace {
             let path = self.decls.file(self.decls.decl(DeclId { index: arg }).file).path
             homes.set(path, (homes.get(path) ?? []).concat([arg]))
         }
-        eprintln("Q\tPROBE homes ${homes.length} ${db_verified_files()}")
         for path, args in homes {
             let row = node_key(Stored.Unit, ["manifest", path])
             if db_verified_files() {
@@ -686,7 +696,10 @@ impl Workspace {
         let head = "${SECTION_HEAD}${self.decl_ref(DeclId { index: arg })}"
         let reads = self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))
         if reads.is_empty() { return if kept == null { [] } else { [head].concat(kept!) } }
-        let leaves? = rdb.leaves_of(reads) else { return [head, "0 ${UNKNOWN_READ}"] }
+        let leaves? = rdb.leaves_of(reads) else {
+            work_unknown_section()
+            return [head, "0 ${UNKNOWN_READ}"]
+        }
         [head].concat(distinct([l.digest_text() + " " + l.id() for l in leaves]))
     }
 }
