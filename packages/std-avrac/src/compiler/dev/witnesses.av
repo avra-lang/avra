@@ -17,7 +17,7 @@
 //! fired.
 use core.{joined}
 use diagnostics.{DiagCode, new_source_file}
-use compiler.{avra, new_workspace, one_shot_let_go}
+use compiler.{avra, new_workspace, one_shot_let_go, Want}
 use compiler.host.{memory_host}
 use testing.{
     vendored_meta,
@@ -69,17 +69,16 @@ impl Witness {
 /// One code's witness, as the registry spells it.
 export type CodeWitness = { code: string, witness: Witness }
 
-/// A package witness BUILT: what the program there says, then what
-/// lowering says of it.
+/// A package witness BUILT: derived through the door `avra build` takes, so it
+/// says what a build says — the refusal, or the warnings of a program that lowers.
 fn built_report(files: Map<string, string>) -> string {
     one_shot_let_go()
     let ws = new_workspace(memory_host(files, files.keys()), "/w", avra())
     ws.alone()
-    let p = ws.program("/w/src/main.av")
-    joined(
-        [r for r in [p.report(), p.rendered(p.lowered().diagnostics), p.warnings()] if !r.is_empty()],
-        "\n\n",
-    )
+    match ws.from_sources("/w/src/main.av", Want.Binary) {
+        .Err(report) -> report,
+        .Ok(d) -> d.warnings,
+    }
 }
 
 /// One code's witness, run: what the compiler actually said, and
