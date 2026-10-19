@@ -206,6 +206,8 @@ extern const char avra_rt_held_avra_task_spawn __asm__(AVRA_RT_LABEL(avra_task_s
 extern const char avra_rt_held_avra_task_settle __asm__(AVRA_RT_LABEL(avra_task_settle));
 extern const char avra_rt_held_avra_tasks_push __asm__(AVRA_RT_LABEL(avra_tasks_push));
 extern const char avra_rt_held_avra_task_settle_all __asm__(AVRA_RT_LABEL(avra_task_settle_all));
+extern const char avra_rt_held_avra_task_release __asm__(AVRA_RT_LABEL(avra_task_release));
+extern const char avra_rt_held_avra_tasks_release __asm__(AVRA_RT_LABEL(avra_tasks_release));
 extern const char avra_rt_held_avra_task_join __asm__(AVRA_RT_LABEL(avra_task_join));
 extern const char avra_rt_held_avra_task_join_caught __asm__(AVRA_RT_LABEL(avra_task_join_caught));
 extern const char avra_rt_held_avra_task_done __asm__(AVRA_RT_LABEL(avra_task_done));
@@ -427,6 +429,8 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_task_settle,
     &avra_rt_held_avra_tasks_push,
     &avra_rt_held_avra_task_settle_all,
+    &avra_rt_held_avra_task_release,
+    &avra_rt_held_avra_tasks_release,
     &avra_rt_held_avra_task_join,
     &avra_rt_held_avra_task_join_caught,
     &avra_rt_held_avra_task_done,
@@ -793,6 +797,10 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_tasks_push(AVRA_RT_P
     "avra_tasks_push: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_settle_all(AVRA_RT_PTR)), void),
     "avra_task_settle_all: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_release(AVRA_RT_PTR)), void),
+    "avra_task_release: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_tasks_release(AVRA_RT_PTR)), void),
+    "avra_tasks_release: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_task_join(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_task_join: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_task_join_caught(AVRA_RT_PTR)) == AVRA_RT_POINTER,
