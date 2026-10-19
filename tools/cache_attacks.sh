@@ -5,6 +5,7 @@
 # disagreement here. The fixtures are written fresh each run: the steps edit them.
 set -u
 cd "$(dirname "$0")/.."
+. tools/lib/failed_tail.sh
 # The shim's own lines are no program's output: its `watch:` reports, and the
 # warning a shell with no terminal prints when the watchdog asks for job control.
 unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
@@ -117,7 +118,7 @@ S() { # S <label> <app>
     out=$(./avra build --time $R/$2 2>$R/$2.err); st=$?; bin=$(printf '%s\n' "$out" | tail -1)
     held=$(grep -oE "held [0-9]+/[0-9]+" $R/$2.err | tail -1)
     case "$held" in "held 0/"*|"") ;; *) holds=$((holds+1)) ;; esac
-    if [ ! -x "$bin" ]; then fails=$((fails+1)); echo "FAIL  $1 [$2] did not build (status $st): $(printf '%s\n' "$out" | cat - $R/$2.err | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    if [ ! -x "$bin" ]; then fails=$((fails+1)); echo "FAIL  $1 [$2] did not build (status $st)"; { printf '%s\n' "$out"; cat $R/$2.err; } | failed_words; return; fi
     # A REFUSED HOLD IS A FINDING HERE: the build is right and the hold was wrong.
     if grep -q "the hold was refused" $R/$2.err; then fails=$((fails+1)); echo "FAIL  $1 [$2] the hold was refused: $(grep 'the hold was refused' $R/$2.err | head -1 | cut -c1-200)"; return; fi
     nat=$("$bin" 2>&1); ev=$(./avra run $R/$2 2>/dev/null | unwatched)
@@ -134,7 +135,7 @@ HR() { # HR <label> <build|check> <pkg> <exit> [<path-substr> <held|read>]...
     label=$1; verb=$2; pkg=$3; want_st=$4; shift 4
     out=$(./avra $verb --time $R/$pkg 2>&1); st=$?
     case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    if [ $st -ne "$want_st" ]; then fails=$((fails+1)); echo "FAIL  $label: exit $st, wanted $want_st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    if [ $st -ne "$want_st" ]; then fails=$((fails+1)); echo "FAIL  $label: exit $st, wanted $want_st"; printf '%s\n' "$out" | failed_words; return; fi
     read_list=$(printf '%s\n' "$out" | sed -n '/^read:/,$p' | grep '^  ')
     while [ $# -ge 2 ]; do
         case "$read_list" in *"$1"*) got=read ;; *) got=held ;; esac
@@ -708,7 +709,7 @@ vd_case() { # vd_case <label> <ran|stood> <const module> <edit command>: warm, e
   steps=$((steps+1))
   AVRA_QTRACE=1 ./avra check $R/vdc/vd > $R/vd.out 2>&1; st=$?
   got=$(awk -F'\t' -v m="^x\\.$3" '$1 == "Q" && $2 == "const_verdict" && $3 ~ m { if (v != "ran") v = $4 } END { print v }' $R/vd.out)
-  if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"
+  if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the check failed (status $st)"; failed_tail $R/vd.out
   elif [ "$got" != "$2" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the $3 verdict was '$got', wanted '$2'"
   elif [ -n "${5:-}" ] && [ "$(./avra run $R/vdc/vd 2>/dev/null | tail -1)" != "$5" ]; then fails=$((fails+1)); echo "FAIL  vd: $1: the program printed '$(./avra run $R/vdc/vd 2>/dev/null | tail -1)', wanted '$5'"
   else [ -n "${VERBOSE:-}" ] && echo "ok    vd: $1 -> $got"; fi
@@ -815,7 +816,7 @@ printf 'use x.{one, two}\nuse @rt.exl.{exl_one}\nuse @rt.exl2.{exl2_one}\nprintl
 EXC() { # EXC <label> <want exit> <phrase the refusal speaks, or ->: a check of ex
     steps=$((steps+1)); ex_out=$(./avra check --time $ex 2>&1); ex_st=$?
     case "$ex_out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
-    if [ $ex_st -ne "$2" ]; then fails=$((fails+1)); echo "FAIL  ex: $1: exit $ex_st, wanted $2: $(printf '%s' "$ex_out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    if [ $ex_st -ne "$2" ]; then fails=$((fails+1)); echo "FAIL  ex: $1: exit $ex_st, wanted $2"; printf '%s\n' "$ex_out" | failed_words; return; fi
     case "$3" in -) ;; *) case "$ex_out" in *"$3"*) ;; *) fails=$((fails+1)); echo "FAIL  ex: $1: the refusal did not speak '$3': $(printf '%s' "$ex_out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')" ;; esac ;; esac
 }
 EXH() { # EXH <label> <symbol>: the build names the host fn and the binary defines it
@@ -1233,7 +1234,7 @@ MH() { # MH <label> <path-substr> <want: held|read> [<path-substr> <want>]...
     out=$(./avra build --time $R/mh 2>&1); st=$?
     case "$out" in *"held "[1-9]*"/"*) holds=$((holds+1)) ;; esac
     # a build that failed read nothing, and says nothing a hold could be judged by
-    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $label did not build (status $st): $(printf '%s' "$out" | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    if [ $st -ne 0 ]; then fails=$((fails+1)); echo "FAIL  $label did not build (status $st)"; printf '%s\n' "$out" | failed_words; return; fi
     while [ $# -ge 2 ]; do
         case "$out" in *"read:"*"$1"*) got=read ;; *) got=held ;; esac
         if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $label: $1 -> $got"; else fails=$((fails+1)); echo "FAIL  $label: $1 wanted $2, got $got: $(printf '%s' "$out" | grep -A6 '^read:' | tr '\n' ' ')"; fi
@@ -2270,7 +2271,7 @@ printf 'use util.{g, h}\nconst B: string = g()\nconst P: string = h()\nprintln("
 printf 'use util.{g}\nconst T: string = g()\nspec "kw" { then "reads the embed" { T == "b" } }\n' > $R/kw/src/tests/kw_test.av
 kw_tested() { # kw_tested <label>: the package's tests run and pass
     steps=$((steps+1)); out=$(./avra test $R/kw 2>&1); st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kw: $1: test exit $st: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -2 | tr '\n' ' ' | cut -c1-220)"; }
+    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  kw: $1: test exit $st"; printf '%s\n' "$out" | failed_words; }
 }
 kw_says() { # kw_says <label> <wanted>: the built binary prints the embedded texts as they stand
     steps=$((steps+1)); kw_out=$($R/kw/src/main 2>&1)
