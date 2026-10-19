@@ -2,6 +2,8 @@
 # THE JS HOST'S OWN PROOF, in two halves. runtime/dom/bootstrap_test.js
 # applies every patch op to a stub document and checks the echo, and
 # runtime/dom/dev_test.js runs the dev server's client over one.
+# runtime/dom/page_test.js runs the page's own script over one, with its modules
+# failing, and holds that a page that cannot start says why on the page.
 # runtime/dom/corpus_test.js then holds the host to the MODEL host the
 # diff's property test judges by: cases the program grows from a seed
 # (packages/std-ui/src/realize/dom/tests/host_corpus) are applied by
@@ -18,7 +20,7 @@ if ! command -v node >/dev/null 2>&1; then
     exit 0
 fi
 said=""
-for suite in bootstrap dev windows; do
+for suite in bootstrap dev windows page; do
     out=$(node "$here/runtime/dom/${suite}_test.js") || { echo "$out" | grep -v '^✓' ; echo "ui-host-test: the host's ${suite} tests failed"; exit 1; }
     said="$said $(echo "$out" | tail -1)"
 done
