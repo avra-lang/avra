@@ -17,7 +17,7 @@
 //! stamp that is already spent.
 use tree.identity.{NodeId}
 use tree.sites.{Reading}
-use realize.html.element.{Element, Tagged}
+use realize.html.element.{Element, Tagged, words_part}
 use realize.dom.patch.{Patch}
 
 extern fn avra_box_observe(cell: ptr) -> int
@@ -45,9 +45,16 @@ fn placed_of(e: Element) -> List<Placed> {
         .concat([p for k in el.kids for p in placed_of(k)])
 }
 
+/// The element that holds an element's words: itself, or the span a labelled
+/// control puts them in.
+fn words_host(el: Tagged) -> Tagged {
+    let span? = el.kids.find((k) -> k.seat() == words_part) else { return el }
+    span.tagged() ?? el
+}
+
 /// A reading with the text run its element holds.
 fn run_placed(el: Tagged, r: Reading) -> List<Placed> {
-    let k? = el.kids.first() else { return [] }
+    let k? = words_host(el).kids.first() else { return [] }
     match k {
         .Text(run) -> [Placed { node: run.id, reading: r, shown: Cell.new(run.content) }],
         .Tag(_) -> [],
@@ -71,6 +78,14 @@ fn opaque_in(page: List<Element>) -> bool { page.any(opaque_element(it)) }
 fn opaque_element(e: Element) -> bool {
     let el? = e.tagged() else { return false }
     el.opaque.of || el.kids.any(opaque_element(it))
+}
+
+/// How many readings the page's elements carry, placed or not.
+fn readings_in(page: List<Element>) -> int { [reading_count(e) for e in page].sum() }
+
+fn reading_count(e: Element) -> int {
+    let el? = e.tagged() else { return 0 }
+    el.sites.length + [reading_count(k) for k in el.kids].sum()
 }
 
 /// The placed readings a page watches, the keys filed under them (a cell's
@@ -101,7 +116,12 @@ export fn watching(page: List<Element>) -> Watch {
             index.set(key, (index.get(key) ?? []).concat([at]))
         }
     }
-    Watch { placed: placed, under: index, structural: structural, opaque: opaque_in(page) }
+    Watch {
+        placed: placed,
+        under: index,
+        structural: structural,
+        opaque: opaque_in(page) || placed.length != readings_in(page),
+    }
 }
 
 impl Watch {

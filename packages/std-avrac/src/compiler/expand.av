@@ -1239,7 +1239,7 @@ impl Workspace {
     /// fields a `..Record` spread placed, which the declaration never
     /// wrote, so the two runs do not share positions.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
-        [crossed_field(v, p, self.field_kind(d, p.name.of)) for p in v.store.declared_fields(s)]
+        [crossed_field(v, p, self.field_kind(d, p.name.of)) with { state: self.field_state(d, p.name.of) || p.state } for p in v.store.declared_fields(s)]
     }
 
     /// An enum's variants: name, payload spellings, and the payload
@@ -1338,6 +1338,14 @@ impl Workspace {
     fn named_over(d: DeclId) -> Kind {
         let sig? = self.decls.sig(d) else { return no_kind() }
         match sig { .Named(n) -> kind_of(self.decls.types, n.of), rest -> no_kind() }
+    }
+
+    /// Whether the signature made the field a cell: a head prop of a stateful
+    /// composition whose type compares by value is one, though it was not
+    /// written `state`.
+    fn field_state(d: DeclId, name: string) -> bool {
+        let sig? = self.decls.sig(d)?.record_sig() else { return false }
+        [sig.state_at(j) for j, n in sig.names if n == name].first() ?? false
     }
 
     fn field_kind(d: DeclId, name: string) -> Kind {
