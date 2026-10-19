@@ -81,6 +81,9 @@ export enum HoleKind {
     Fields
     /// a lone name standing as a whole field of a record literal
     Inits
+    /// a lone name standing as a block's LAST statement — the block's
+    /// value when it is an expression, else statements joining the block
+    Tail
 }
 
 /// The kind a template VALUE wears — one per `@std/meta` type.
@@ -149,8 +152,8 @@ export fn fits(class: FillClass, kind: HoleKind) -> bool {
             .Template(_) or .Templates(_) or .Bool or .Texts or .Id or .PatId or .Held or .Pattern -> false,
         },
         .Binder -> match class {
-            .Text or .Int or .Named or .Texts or .PatId -> true,
-            .Template(_) or .Templates(_) or .Bool or .Id or .Held or .Pattern -> false,
+            .Text or .Int or .Bool or .Named or .Texts or .PatId -> true,
+            .Template(_) or .Templates(_) or .Id or .Held or .Pattern -> false,
         },
         .Type -> match class {
             .Text or .Named or .Pattern -> true,
@@ -175,6 +178,11 @@ export fn fits(class: FillClass, kind: HoleKind) -> bool {
         .Inits -> match class {
             .Template(k) or .Templates(k) -> expresses(k),
             .Int or .Bool or .Text or .Texts or .Named or .Id or .PatId or .Held or .Pattern -> false,
+        },
+        .Tail -> match class {
+            .Template(k) or .Templates(k) -> !(k is .Arms),
+            .Int or .Bool or .Id or .Held or .Pattern -> true,
+            .Text or .Texts or .Named or .PatId -> false,
         },
     }
 }

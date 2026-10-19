@@ -20,6 +20,17 @@
 LLVM_PREFIX ?= /opt/homebrew/opt/llvm
 # a manifest's link flags name it as ${LLVM_PREFIX}
 export LLVM_PREFIX
+# THE C++ RUNTIME AND THE SYSTEM LIBRARY DIRECTORY the static LLVM link names
+# (packages/std-avrac/avra.toml), per platform.
+ifeq ($(shell uname -s),Darwin)
+export AVRA_CXX_RUNTIME ?= c++
+export AVRA_SYS_SEARCH ?= /opt/homebrew/lib
+else
+export AVRA_CXX_RUNTIME ?= stdc++
+endif
+# THE COMPILER'S LLVM LINK, one definition: the manifest row, read by the
+# hand-written clang lines below so none of them spells the libraries again.
+LLVM_LINK := $(shell python3 tools/llvm_link.py --words)
 
 # The objects the COMPILER itself links: the runtime every program
 # carries, and the compiler's own foreign machinery (the LLVM wrapper,
@@ -359,7 +370,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: llvm-libs db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -410,7 +421,7 @@ seed: $(COMPILER_OBJS)
 recover: $(COMPILER_OBJS)
 	@mkdir -p build
 	@clang -w -O1 -rdynamic bootstrap/seed.ll $(SEED_LINK_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
+	    $(LLVM_LINK) -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
 
@@ -595,6 +606,11 @@ compile-slots: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # kind a hold must survive, each binary held to the evaluator — and a kept binary held
 # to the archive and objects it linked. It CLEARS the store, so it runs last, and it
 # refuses a run in which no step held.
+# THE STATIC LLVM LINK'S LIBRARY LIST holds to `llvm-config --link-static`: a lagging
+# list is an undefined symbol at the link, far from its cause.
+llvm-libs:
+	@python3 tools/llvm_link.py --check
+
 # THE EDIT CORPUS: one scripted edit at a time, the warm answers held to a cold copy's.
 db-corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/db_corpus.sh
@@ -701,7 +717,7 @@ seed-check: $(COMPILER_OBJS)
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(SEED_LINK_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
+	    $(LLVM_LINK) -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@sh tools/capped.sh build/seed-check/out 200000 build/avra-seed-check build packages/cli \
 	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; \
@@ -1283,7 +1299,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here.
-gate: seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
+gate: llvm-libs seed-check stems vocab fingerprints ui-host ui-host-test ui-board ui-browser families-left layers hooks-released codecs rt-header rt-ns witnesses externs idioms cited dogfooding-rules fmt-lossless attack tested runtime-tests traps compile-slots witness tool-witnesses cache-attacks
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
