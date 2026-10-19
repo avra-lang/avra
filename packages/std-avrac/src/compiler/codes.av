@@ -24,11 +24,6 @@ fn engine_codes() -> List<EngineCode> {
             summary: "the parse needed a token that is not there",
         },
         EngineCode {
-            cause: Cause.Trailing,
-            kind: "parse.trailing",
-            summary: "input remains after the program ended",
-        },
-        EngineCode {
             cause: Cause.Builder,
             kind: "build.failed",
             summary: "a builder rejected its captures",
@@ -117,7 +112,9 @@ export const builtin_codes: List<DiagCode> = [DiagCode { kind: r.kind, summary: 
 /// The dotted kind an engine cause projects to — a defect when the
 /// registry has no row for it.
 fn kind_for(c: Cause) -> string {
-    engine_codes().find(it.cause == c)?.kind ?? defect_kind
+    // A parse that stops short is the expectation it breaks.
+    let said = match c { .Trailing -> Cause.Expected, rest -> c }
+    engine_codes().find(it.cause == said)?.kind ?? defect_kind
 }
 
 /// One engine diagnostic in language currency. A defect names its
@@ -142,13 +139,15 @@ fn message_of(d: Diagnostic) -> string {
 }
 
 /// What the reader can do. A builder's own words are its claim and a
-/// defect is the compiler's, so neither is advised here.
+/// defect is the compiler's, so neither is advised here; a block is the
+/// grammar its word declares, which says what it wants.
 fn help_of(d: Diagnostic) -> string? {
     match d.cause {
         .Lex -> "no token starts with this character — remove it, or put it inside a string",
         .Expected -> expected_help(d),
         .Trailing -> "the program ended before this — an extra closing `}` or `)` is the usual cause",
-        .Builder or .Defect or .Block -> null,
+        .Block -> "the block is parsed by the grammar its word declares — write the shape that grammar names",
+        .Builder or .Defect -> null,
     }
 }
 

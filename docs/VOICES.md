@@ -12,10 +12,10 @@ which only shrinks.
 |---|---|---|---|---|
 | lex | 1 | 1 | 1 | 0 |
 | parse | 2 | 1 | 1 | 0 |
-| build | 1 | 0 | 0 | 0 |
+| build | 1 | 1 | 0 | 0 |
 | language | 1 | 0 | 0 | 0 |
-| block | 1 | 0 | 0 | 0 |
-| resolve | 33 | 26 | 26 | 2 |
+| block | 1 | 1 | 1 | 0 |
+| resolve | 33 | 31 | 31 | 2 |
 | lower | 8 | 7 | 7 | 0 |
 | type | 134 | 85 | 85 | 6 |
 | flow | 17 | 11 | 11 | 0 |
@@ -23,7 +23,7 @@ which only shrinks.
 | manifest | 30 | 20 | 20 | 0 |
 | collect | 14 | 14 | 14 | 0 |
 | collect_enum | 7 | 7 | 7 | 0 |
-| const | 6 | 5 | 5 | 0 |
+| const | 6 | 6 | 6 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
 | **all** | 275 | 187 | 187 | 8 |
