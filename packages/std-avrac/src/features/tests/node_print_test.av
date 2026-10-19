@@ -1,0 +1,190 @@
+// A RULE IS THE PRINTER'S TEMPLATE. The wording a branch reads as — its
+// words, its holes at the tier of the rule each names, an optional group
+// around one hole — and every shape that has none, against a node model of
+// made-up variants; then the nodes the printer reads from their rule, each
+// spelled back through the printer.
+use @std.avrac.grammar.{parse_grammar}
+use @std.avrac.features.{node_wordings, shown, RuleTier}
+use @std.avrac.core.{PayloadRow, joined}
+use @std.avrac.compiler.{avra}
+use @std.avrac.testing.{projected}
+use @std.grammar.{Grammar}
+use @std.meta.{Field}
+
+fn field(name: string, ty: string) -> Field {
+    Field { name: name, ty: ty, at: null, kind: .Named(ty, []) }
+}
+
+fn row(variant: string, payloads: List<Field>) -> PayloadRow {
+    PayloadRow { owner: "E", variant: variant, payloads: payloads }
+}
+
+fn rows() -> List<PayloadRow> {
+    [
+        row("A", [field("x", "ExprId")]),
+        row("B", [field("x", "ExprId?"), field("y", "ExprId")]),
+        row("N", [field("name", "Plain")]),
+        row("T", [field("ty", "TypeRef"), field("cap", "ExprId?")]),
+        row("R", [field("items", "List<ExprId>")]),
+        row("F", [field("flag", "bool"), field("x", "ExprId")]),
+        row("Z", []),
+        row("O", [field("x", "ExprId?")]),
+        row("M", [field("name", "Plain"), field("bind", "Scoped")]),
+    ]
+}
+
+fn scale() -> List<RuleTier> {
+    [
+        RuleTier { rule: "e", tier: 0 },
+        RuleTier { rule: "u", tier: 10 },
+        RuleTier { rule: "p", tier: 13 },
+    ]
+}
+
+fn grammar_of(src: string) -> Grammar {
+    parse_grammar(src).built ?? Grammar { name: "unparsed", start: "unparsed", rules: [] }
+}
+
+/// The wording of `node` over a grammar, shown — or "none".
+fn worded(src: string, node: string) -> string {
+    let w = node_wordings(grammar_of(src), rows(), scale()).get(node)
+    if w == null { "none" } else { shown(w!) }
+}
+
+spec "features/node_print — what a rule reads as" {
+    given "a branch of words and labelled holes" {
+        then "is its wording, the hole at the tier of the rule it names" {
+            worded("u = \"!\" x:u -> E.A\n", "E.A") == "E.A@10: \"!\" \$0@10"
+        }
+        then "stands at the tier of the rule it is written in" {
+            worded("p = \"(\" x:e \")\" -> E.A\n", "E.A") == "E.A@13: \"(\" \$0@0 \")\""
+        }
+        then "stands at no tier in a rule the scale does not rank" {
+            worded("q = \"!\" x:u -> E.A\n", "E.A") == "E.A@-1: \"!\" \$0@10"
+        }
+        then "has no words at all when it writes none" {
+            worded("p = \"null\" -> E.Z\n", "E.Z") == "E.Z@13: \"null\""
+        }
+        then "is read from a payload's place among the carried ones, not from its label's place in the rule" {
+            worded("p = \"w\" y:e \"d\" x:e -> E.B\n", "E.B") == "E.B@13: \"w\" _ \$1@0 _ \"d\" _ \$0@0"
+        }
+    }
+    given "words and holes that meet" {
+        then "are kept apart by a space when both are words or holes" {
+            worded("p = \".\" name:NAME \"as\" bind:NAME -> E.M\n", "E.M") == "E.M@13: \".\" \$0@-1 _ \"as\" _ \$1@-1"
+        }
+        then "a word beside a hole spaces, and tight punctuation does not" {
+            worded("p = \"yield\" x:e -> E.A\n", "E.A") == "E.A@13: \"yield\" _ \$0@0" &&
+                worded("p = \"(\" x:e \")\" -> E.A\n", "E.A") == "E.A@13: \"(\" \$0@0 \")\""
+        }
+        then "a name hole follows a dot without a space" {
+            worded("p = \".\" name:NAME -> E.N\n", "E.N") == "E.N@13: \".\" \$0@-1"
+        }
+    }
+    given "an optional run" {
+        then "around one hole prints with that payload" {
+            worded("p = \"c\" \"<\" ty:type \">\" \"(\" ( cap:e )? \")\" -> E.T\n", "E.T") == "E.T@13: \"c\" \"<\" \$0@-1 \">\" \"(\" [\$1? \$1@0] \")\""
+        }
+        then "and an optional word the printer leaves out" {
+            worded("p = \"c\" \"<\" ty:type \",\"? \">\" -> E.T\n", "E.T") == "E.T@13: \"c\" \"<\" \$0@-1 \">\""
+        }
+        then "takes a space at its front inside the group, so the group prints it" {
+            worded("p = \"if\" ( x:e )? -> E.O\n", "E.O") == "E.O@13: \"if\" [\$0? _ \$0@0]"
+        }
+        then "has no wording when its end would meet a word" {
+            worded("p = \"if\" ( x:e )? \"do\" -> E.O\n", "E.O") == "none"
+        }
+        then "ignores the statement terminator, which the line owns" {
+            worded("p = \"yield\" x:e END -> E.A\n", "E.A") == "E.A@13: \"yield\" _ \$0@0"
+        }
+    }
+    given "a branch outside the shape" {
+        then "has no wording for a repeated group" { worded("p = \"[\" x:e* \"]\" -> E.R\n", "E.R") == "none" }
+        then "has none for a literal that fills a payload" {
+            worded("p = f:\"mut\" x:e -> E.F\n", "E.F") == "none"
+        }
+        then "has none for punctuation the layout of is not stated" {
+            worded("p = x:e \"->\" y:e -> E.B\n", "E.B") == "none"
+        }
+        then "has none when the hole's rule is not on the scale" {
+            worded("p = \"!\" x:other -> E.A\n", "E.A") == "none"
+        }
+        then "has none when a name fills an expression, or an expression a name" {
+            worded("p = \"!\" x:NAME -> E.A\n", "E.A") == "none" &&
+                worded("p = \"!\" name:e -> E.N\n", "E.N") == "none"
+        }
+    }
+    given "a node several rules build" {
+        then "has the one wording they agree on" {
+            worded("p = \"!\" x:u -> E.A | \"!\" x:u -> E.A\n", "E.A") == "E.A@13: \"!\" \$0@10"
+        }
+        then "has none when they stand at different tiers" {
+            worded("p = \"!\" x:u -> E.A\nu = \"!\" x:u -> E.A\n", "E.A") == "none"
+        }
+        then "has none when they disagree" {
+            worded("p = \"!\" x:u -> E.A | \"~\" x:u -> E.A\n", "E.A") == "none"
+        }
+    }
+}
+
+spec "features/node_print — the language's own nodes" {
+    given "the assembled language" {
+        then "reads each node the printer claims from its rule" {
+            let w = avra().wordings
+            [
+                shown(w.get("Expr.Not")!),
+                shown(w.get("Expr.Range")!),
+                shown(w.get("Expr.NullLit")!),
+                shown(w.get("Expr.Receiver")!),
+                shown(w.get("Expr.Channel")!),
+                shown(w.get("Stmt.Return")!),
+                shown(w.get("Stmt.Fail")!),
+                shown(w.get("Pat.Wild")!),
+                shown(w.get("Pat.Member")!),
+            ]
+                .join(" | ") == "Expr.Not@10: \"!\" \$0@10 | Expr.Range@13: \"(\" \$0@0 \"..\" \$1@0 \")\" | Expr.NullLit@13: \"null\" | Expr.Receiver@13: \"self\" | Expr.Channel@13: \"channel\" \"<\" \$0@-1 \">\" \"(\" [\$1? \$1@0] \")\" | Stmt.Return@-1: \"return\" [\$0? _ \$0@0] | Stmt.Fail@-1: \"fail\" _ \$0@0 | Pat.Wild@-1: \"_\" | Pat.Member@-1: \".\" \$0@-1 _ \"as\" _ \$1@-1"
+        }
+    }
+}
+
+spec "features/node_print — a node printed from its rule" {
+    given "a negation" {
+        then "abuts its operand" { projected("let a = !b") == "let a = !b" }
+        then "stacks" { projected("let a = !!b") == "let a = !!b" }
+        then "groups what binds looser than it" { projected("let a = !(b == c)") == "let a = !(b == c)" }
+        then "is grouped where a postfix needs a tighter operand" {
+            projected("let a = (!b).c") == "let a = (!b).c"
+        }
+    }
+    given "a range" {
+        then "holds its bounds in its own parentheses" { projected("let a = (1..n)") == "let a = (1..n)" }
+        then "prints a computed bound whole" { projected("let a = (lo + 1..hi * 2)") == "let a = (lo + 1..hi * 2)" }
+    }
+    given "null and the receiver" {
+        then "are their word" { projected("let a = null\nlet b = self") == "let a = null\nlet b = self" }
+    }
+    given "a channel" {
+        then "keeps its parentheses with no capacity" { projected("let c = channel<int>()") == "let c = channel<int>()" }
+        then "prints the capacity inside them" { projected("let c = channel<int>(8)") == "let c = channel<int>(8)" }
+        then "spells a nested type and a computed capacity" {
+            projected("let c = channel<List<int>>(n + 1)") == "let c = channel<List<int>>(n + 1)"
+        }
+        then "drops the optional comma a type list may carry" {
+            projected("let c = channel<int,>(8)") == "let c = channel<int>(8)"
+        }
+    }
+    given "a return and a fail" {
+        then "print their word, a space and the value" {
+            projected("fn f(n: int) -> int { return n + 1 }") == "fn f(n: int) -> int {\n    return n + 1\n}" &&
+                projected("fn g() -> Result<int, E> { fail E.boom }") == "fn g() -> Result<int, E> {\n    fail E.boom\n}"
+        }
+        then "print a bare return with no space after it" {
+            projected("fn f() { return }") == "fn f() {\n    return\n}"
+        }
+    }
+    given "a member pattern and a wildcard" {
+        then "spell their words apart" {
+            projected("fn f(s: S) -> int {\n    match s { .Dot as d -> d.at, _ -> 0 }\n}") == "fn f(s: S) -> int {\n    match s { .Dot as d -> d.at, _ -> 0 }\n}"
+        }
+    }
+}
