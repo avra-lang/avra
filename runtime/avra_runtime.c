@@ -4161,14 +4161,15 @@ int64_t avra_now_ns(void) {
 // THE PROCESS'S OWN CPU TIME, in nanoseconds: user plus system, never the wall.
 // A phase's wall time moves with the host (I/O stalls, other runs), its CPU time
 // with the work, so a budget over a phase is read from this one.
-// A target with no process CPU clock reads the wall instead.
+// A target with no process CPU clock answers -1: a negative is ABSENCE, never a time,
+// and a caller reads it as "no CPU clock here" rather than as a wall reading in disguise.
 int64_t avra_cpu_ns(void) {
 #ifdef CLOCK_PROCESS_CPUTIME_ID
     struct timespec ts;
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 #else
-    return clock_real();
+    return -1;
 #endif
 }
 
