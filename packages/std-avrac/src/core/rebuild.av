@@ -92,6 +92,9 @@ export type Rebuilder = {
     holed: List<bool>,
     // how a copied sugar's meaning is minted anew beside the copy
     door: Means,
+    // the copy of each source expression reached so far, by its index: a node
+    // the source reaches twice is one node in the copy
+    copies: Map<string, ExprId>,
 }
 
 /// A classifying walk over a store's quote body, `runs` the run mark
@@ -118,6 +121,7 @@ export fn classifier(store: SyntaxArena, runs: List<bool>) -> Rebuilder {
         unplaceable: [],
         holed: [],
         door: no_door,
+        copies: {},
     }
 }
 
@@ -151,6 +155,7 @@ export fn copier(
         unplaceable: [],
         holed: [],
         door: door,
+        copies: {},
     }
 }
 
@@ -209,11 +214,19 @@ impl Rebuilder {
         }
         let tail: int? = self.tail_hole(x)
         if tail != null { return self.tail_block(e, x, tail!) }
+        let known? = self.copies.get("${e.index}") else { return self.rebuilt_expr(e, x) }
+        known
+    }
+
+    /// The copy of `e`, kept so a second reach of the same node answers it.
+    mut fn rebuilt_expr(e: ExprId, x: Expr) -> ExprId {
         self.holed.push(false)
         let rebuilt = x.rebuilt(self)
         let holed = self.holed.pop()
         if !self.copying { return e }
-        self.minted_expr(e, rebuilt, holed)
+        let copy = self.minted_expr(e, rebuilt, holed)
+        self.copies.set("${e.index}", copy)
+        copy
     }
 
     /// The hole a block's value is, when it is a lone one.
