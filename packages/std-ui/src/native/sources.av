@@ -7,7 +7,7 @@
 //! from its own callbacks (docs/2026_10_05_UI_ARCHITECTURE.md, law 7).
 use app.{Act, App, Door, Job, Msg, Want, running}
 use @std.http_message.message.{Reply, Request}
-use @std.time.{Duration, every, ms, sleep}
+use @std.time.{Duration, every, ms, now_ms, sleep}
 use @std.task.{Channel, Posted, Sink, Source, unbounded_channel}
 
 /// A paint that shows nothing further.
@@ -67,23 +67,48 @@ type Hand = { queue: Sink<Job>, cuts: Sink<int>, owner: Cell<string?>, busy: Cel
 /// jobs were ever live at once, however many have run or been cancelled.
 /// WORK BELONGS TO THE CONTROL THAT ASKED: after a paint, the job of a
 /// control no longer on the screen is cancelled — the worker lives on —
-/// and what that control left in the inbox is dropped unrun. `painted`
-/// runs after a turn that ran.
+/// and what that control left in the inbox is dropped unrun. THE SCREEN IS
+/// PAINTED ON THE LOOP'S OWN FRAME (`window_ms`), the first after a turn
+/// moved it: turns that arrive within one frame — timers due together wake
+/// back to back, never at one instant — are one paint, and no source can keep
+/// the screen from being painted longer than a frame, however full the inbox
+/// stays. `painted` runs after each paint.
 export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
     let workers = Tasks.new()
     let hands: Cell<List<Hand>> = Cell.new([])
+    on.holding.set(true)
+    let wakes = unbounded_channel<bool>()
+    workers.push(spawn framed(wakes.source, on.sender()))
+    mut pending = false
+    mut since = now_ms()
     mut going = true
     while going {
         going = select {
             msg in inbox.source -> {
                 match msg {
                     .Turn(act, owner) -> {
-                        if on.owns(owner) && on.turn_for(owner, act) { painted() }
+                        if on.owns(owner) { let _ = on.turn_for(owner, act) }
                     },
                     .Start(job, owner) -> {
                         if on.owns(owner) { started(on, hands, workers, job, owner) }
                     },
                     .Ended(at, serial) -> { hands.get()[at].freed(serial) },
+                    .Frame -> {
+                        on.frames.set(on.frames.get() + 1)
+                        pending = false
+                        if on.flush() { painted() }
+                    },
+                }
+                if on.dirty.get() && !pending {
+                    pending = true
+                    since = now_ms()
+                    let _ = wakes.sink.post(true)
+                }
+                // a backlog keeps the frame's own message waiting behind it:
+                // the clock is read at each message, so the window holds
+                if pending && now_ms() - since >= window_ms {
+                    pending = false
+                    if on.flush() { painted() }
                 }
                 swept(on, hands)
                 on.jobs.set(hands.get().length)
@@ -97,7 +122,25 @@ export fn served(on: App, inbox: Channel<Msg>, painted: fn() -> void) {
         h.queue.close()
         h.cuts.close()
     }
+    wakes.sink.close()
+    if on.flush() { painted() }
+    on.holding.set(false)
     on.looping.set(false)
+}
+
+/// The loop's frame: short enough that a key shows at once, long enough that
+/// timers due together are one paint.
+const window_ms = 8
+
+/// The frame's own task: each time the loop says the screen moved, a window
+/// passes, then the loop is told. One task for the loop's whole life, parked
+/// on its channel between: an idle app wakes nothing.
+fn framed(wakes: Source<bool>, send: fn(Msg) -> bool) -> bool {
+    for _wake in wakes {
+        sleep(ms(window_ms))
+        let _ = send(Msg.Frame)
+    }
+    true
 }
 
 impl Hand {

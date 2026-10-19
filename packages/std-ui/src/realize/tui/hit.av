@@ -1,0 +1,54 @@
+//! `realize/tui/hit.av` — WHAT STANDS UNDER A CELL of the screen the layout
+//! solver placed. A node's box is where the solver put it, and a child's box
+//! is drawn over its parent's, so the node under a cell is the LAST box in
+//! the walk that holds it: the deepest, and among siblings the one drawn
+//! last. A node is named by its walk seat, the number the walk gives it in
+//! the order it opens (`tree/sink.av`), the one every control carries.
+use tree.lists.{flatten}
+use tree.node.{Node, Attribute}
+use place.solve.{Placed, Rect}
+
+/// A node, where the walk opened it, and its box.
+type Boxed = { seat: int, node: Node, rect: Rect }
+
+/// How many nodes `n` and what it holds open in the walk.
+fn size(n: Node) -> int { 1 + n.children.fold(0, (a: int, c: Node) -> a + size(c)) }
+
+/// Every node of `n` with its seat and box, in the order the walk opens them:
+/// a node before what it holds. `at` is the seat of `n`.
+fn boxes(n: Node, p: Placed, at: int) -> List<Boxed> {
+    let sizes = [size(c) for c in n.children]
+    let starts = [at + 1 + sizes.slice(0, j).fold(0, (a: int, k: int) -> a + k) for j in 0..sizes.length]
+    [Boxed { seat: at, node: n, rect: p.rect }]
+        .concat(flatten([boxes(c, p.kids[j], starts[j]) for j, c in n.children if j < p.kids.length]))
+}
+
+/// Whether the cell `x`, `y` is inside a box.
+fn holds(r: Rect, x: int, y: int) -> bool { x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h }
+
+/// The seat of the deepest node under the cell `x`, `y` that `wanted` says
+/// yes to — a control, say — or none.
+export fn hit(root: Node, placed: Placed, x: int, y: int, wanted: fn(int) -> bool) -> int? {
+    [b.seat for b in boxes(root, placed, 0) if holds(b.rect, x, y) && wanted(b.seat)].last()
+}
+
+/// Whether an attribute says its node is a row of a windowed list.
+export fn places(a: Attribute) -> bool {
+    match a { .Placed(_, _, _) -> true, _ -> false }
+}
+
+/// Whether a node holds rows of a windowed list.
+fn holds_rows(n: Node) -> bool { n.children.any(it.attrs.any(places)) }
+
+/// The nodes that hold windowed lists' rows, in the order the walk opens them:
+/// the same order the app's windowed lists are asked for.
+export fn list_nodes(n: Node) -> List<Node> {
+    if holds_rows(n) { [n] } else { [] }.concat(flatten([list_nodes(c) for c in n.children]))
+}
+
+/// The windowed list under the cell `x`, `y`, as its place among the lists
+/// of the tree (the deepest if they nest), or none.
+export fn list_at(root: Node, placed: Placed, x: int, y: int) -> int? {
+    let held = [b for b in boxes(root, placed, 0) if holds_rows(b.node)]
+    [j for j, b in held if holds(b.rect, x, y)].last()
+}

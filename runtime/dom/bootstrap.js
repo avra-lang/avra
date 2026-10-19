@@ -9,6 +9,7 @@
 //
 // Same file for every app.
 import { WIRE_VERSION, NO_ID, OP, SAYS, HOST, ROWS } from "./wire.gen.js";
+import { createWindows } from "./windows.js";
 
 export { WIRE_VERSION, HOST, ROWS };
 
@@ -219,6 +220,17 @@ export function sendEvent(mod, who, what, said) {
   event(BigInt(who), BigInt(what), BigInt(said.says), 0n, BigInt(bytes.length));
 }
 
+// The program's `scrolled(len, from, to, extent)` — `HOST.scrolled` — says which
+// rows of a windowed list the page shows and how tall they measure. The first
+// `len` octets of the seat are the list's path, a line break, and the key of the
+// row the focus rests on (none after it for none).
+export function sendScrolled(mod, path, from, to, extent, pin = "") {
+  const bytes = new TextEncoder().encode(`${path}\n${pin}`);
+  const at = Number(mod[HOST.seat](BigInt(bytes.length)));
+  new Uint8Array(mod.memory.buffer, at, bytes.length).set(bytes);
+  mod[HOST.scrolled](BigInt(bytes.length), BigInt(from), BigInt(to), BigInt(extent));
+}
+
 // The page's timers, for the program's asks. The program names a timer by
 // a number it counted out (`arm(token, ms, repeat)`), the host keeps the
 // handle, and `fired(token)` re-enters the program as a turn. A timer let
@@ -323,6 +335,22 @@ export function sendAnswer(mod, token, status, octets) {
   mod[HOST.answered](BigInt(token), BigInt(status), BigInt(octets.length));
 }
 
+// The page's frames, for the program's paints. The program asks for one when
+// state moved (`next()`), once until it comes; the host calls `painted` from
+// the display's own frame (`raf`, the page's requestAnimationFrame, or a
+// test's), and the program paints once however many turns moved it.
+export function createFrames(raf, painted) {
+  let pending = false;
+  return {
+    next: () => {
+      if (pending) return;
+      pending = true;
+      raf(() => { pending = false; painted(); });
+    },
+    waiting: () => pending,
+  };
+}
+
 // RUN AN APP ON A PAGE: load the module, apply each frame it sends to
 // `mount`, echo what the user does, then run the program's own statements
 // — its `mount(view)` paints the first frame. `document`, `mount` and
@@ -330,21 +358,24 @@ export function sendAnswer(mod, token, status, octets) {
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
 // the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a) }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb) }) {
   let mod = null;
   const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
+  const frames = createFrames(raf, () => mod[HOST.painted]());
   const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
+  const windows = createWindows(document, mount, (path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin));
   const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
     // The seat is a Bytes: the pointer names its box, and the LENGTH comes
     // from the runtime's own reader, exported by the module.
     rt: {
-      [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); },
+      [ROWS.frame]: (ptr) => { const bytes = frameOf(mod.memory, ptr, mod.avra_bytes_len); sent(bytes); apply(bytes); queueMicrotask(windows.check); },
       [ROWS.arm]: timers.arm,
       [ROWS.disarm]: timers.disarm,
       [ROWS.get]: (token, ptr) => fetches.get(token, frameOf(mod.memory, ptr, mod.avra_bytes_len).slice()),
       [ROWS.abort]: fetches.abort,
+      [ROWS.next_paint]: frames.next,
     },
   });
   const lacks = Object.values(HOST).filter((name) => typeof mod[name] !== "function");

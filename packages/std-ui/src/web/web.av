@@ -9,6 +9,7 @@ use realize.dom.wire.{request_frame}
 use @std.http_message.message.{Reply}
 use realize.dom.live.{live}
 use realize.dom.page.{Paged, paged}
+use tree.standing.{first_window}
 use tree.view.{View}
 use style.theme.{Theme}
 
@@ -17,6 +18,7 @@ extern fn avra_ui_arm(token: int, ms: int, repeat: int)
 extern fn avra_ui_disarm(token: int)
 extern fn avra_ui_get(token: int, request: Bytes)
 extern fn avra_ui_abort(token: int)
+extern fn avra_ui_next_paint()
 extern fn avra_bytes_with_room(n: int) -> Bytes
 extern fn avra_bytes_adopted(p: Bytes, n: int) -> Bytes
 
@@ -39,8 +41,12 @@ export fn mount<V: View>(view: fn() -> V, theme: fn() -> Theme = plain) {
         let made = paged(view, theme, live(), (sent: Bytes) -> avra_dom_frame(sent))
         mounted().set(made)
         stood(made.app)
+        made.app.stands.geometric()
+        made.app.stands.first_rows(first_window)
         made.app.door.set(opened())
         made.app.paint()
+        made.app.framer.set(asks_frame)
+        made.app.holding.set(true)
         made.app.warn()
         return
     }
@@ -106,7 +112,7 @@ fn sent(msg: Msg) -> bool {
     let held? = mounted().get() else { return false }
     match msg {
         .Turn(act, owner) -> held.app.turn_for(owner, act),
-        .Start(_, _) or .Ended(_, _) -> false,
+        .Start(_, _) or .Ended(_, _) or .Frame -> false,
     }
 }
 
@@ -170,4 +176,40 @@ fn failure_words(words: string?) -> string {
 fn replied(status: int, len: int) -> Result<Reply, string> {
     if status < 0 { return .Err(failure_words(seated_text(len))) }
     .Ok(Reply { status: status, body: seated_octets(len) })
+}
+
+/// The page is asked for its next frame.
+fn asks_frame() { avra_ui_next_paint() }
+
+// ── the frame ───────────────────────────────────────────────────
+
+/// The host's frame came (its `requestAnimationFrame`, asked for by the
+/// first turn since the last): the screen shows the state as it stands, one
+/// walk however many turns moved it. What left the page since is let go.
+extern fn avra_ui_painted() {
+    let held? = mounted().get() else { return }
+    let _ = held.app.flush()
+    swept(held)
+    held.app.warn()
+}
+
+/// The host measured a windowed list: its rows from `from` up to `to` are
+/// the ones on screen, each `extent` tall. The first `len` octets of the
+/// seat are the list's path, then a line break and the key of the row the
+/// focus rests on (nothing after it for none). The list builds the window
+/// and that row, and spaces the rest at that height.
+extern fn avra_ui_scrolled(len: int, from: int, to: int, extent: int) {
+    let held? = mounted().get() else { return }
+    let said? = seated_text(len) else { return }
+    let parts = said.split("\n")
+    let pin = if parts.length > 1 { parts[1] } else { "" }
+    let _ = held.app.scrolled(parts[0], from, to, extent, if pin == "" { null } else { pin })
+    held.app.warn()
+}
+
+/// How many times the page's view has been walked — the cost a frame saves,
+/// open to whoever asks.
+extern fn avra_ui_walks() -> int {
+    let held? = mounted().get() else { return 0 }
+    held.app.walks.get()
 }

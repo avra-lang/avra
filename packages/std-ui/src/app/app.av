@@ -28,6 +28,7 @@ export enum Msg {
     Turn(act: Act, owner: string?)
     Start(job: Job, owner: string?)
     Ended(worker: int, serial: int)
+    Frame
 }
 
 /// What a source asks the target for, as DATA: a wait of `ms`, once or
@@ -57,6 +58,11 @@ export type Door = { send: fn(Msg) -> bool, ask: fn(Want, Act, string?) -> bool,
 /// a timer, an answer, a stream — leaves its message once a loop runs;
 /// its writers never wait. A target with no loop runs an `Act` as a turn
 /// at once and starts no job. `jobs` is how many tasks the loop holds.
+/// `dirty` is whether state moved since the last paint, `holding` whether a
+/// target paints on its own frame (a page's, a loop's drained inbox) instead
+/// of at each turn, `asked` whether a frame is already asked for, `framer`
+/// how a target is asked, `walks` how many times the view was walked and `frames` how many frames
+/// a loop's own frame task brought.
 /// `guard` runs a turn's action and answers whether it ran, or the words
 /// of the failure that ended it; `failed` is the last turn's failure
 /// until a turn runs again, and `unsaid` is the part of it no target has
@@ -77,7 +83,16 @@ export type App = {
     asking: Cell<string?>,
     standing: Cell<List<Owner>>,
     refused: Cell<List<string>>,
+    dirty: Cell<bool>,
+    holding: Cell<bool>,
+    asked: Cell<bool>,
+    framer: Cell<fn() -> void>,
+    walks: Cell<int>,
+    frames: Cell<int>,
 }
+
+/// A target that is asked for no frame.
+fn nobody_asks() {}
 
 /// A turn that changes nothing.
 fn unmoved() -> bool { false }
@@ -139,6 +154,12 @@ export fn owned_app<V: View>(
         asking: Cell.new(nobody),
         standing: on_screen,
         refused: Cell.new(untold),
+        dirty: Cell.new(false),
+        holding: Cell.new(false),
+        asked: Cell.new(false),
+        framer: Cell.new(nobody_asks),
+        walks: Cell.new(0),
+        frames: Cell.new(0),
     }
 }
 
@@ -156,6 +177,8 @@ impl App {
     /// app's standing, so an instance this paint does not reach is gone
     /// with it.
     fn paint() {
+        self.dirty.set(false)
+        self.walks.set(self.walks.get() + 1)
         let view = self.view.get()
         let theme = self.theme.get()
         self.stands.begun()
@@ -164,6 +187,41 @@ impl App {
         for w in dead_keys(root) { self.stands.says(w) }
         self.show(root, theme())
         if self.standers() != before { self.woken() }
+    }
+
+    /// State moved: the next frame shows it. A target that paints at each
+    /// turn does at once; one that holds asks for its frame, once.
+    fn mark() {
+        self.dirty.set(true)
+        if !self.holding.get() {
+            let _ = self.flush()
+            return
+        }
+        if self.asked.get() { return }
+        self.asked.set(true)
+        (self.framer.get())()
+    }
+
+    /// A target scrolled the windowed list standing at `path` to rows `from`
+    /// up to `to`, its rows measuring `extent` tall (none: zero), its focus
+    /// resting on the row `pin` names (none: elsewhere): a frame follows.
+    fn scrolled(path: string, from: int, to: int, extent: int, pin: string?) -> bool {
+        let list? = self.stands.find(path) else { return false }
+        list.windowed(from, to)
+        list.pin_to(pin)
+        list.revealed()
+        if extent > 0 { list.measured(extent) }
+        self.mark()
+        true
+    }
+
+    /// THE FRAME: the screen shows the state as it stands, if it moved.
+    /// Answers whether it painted.
+    fn flush() -> bool {
+        self.asked.set(false)
+        if !self.dirty.get() { return false }
+        self.paint()
+        true
     }
 
     /// A paint moved who stands on the screen: the loop is left a turn that
@@ -216,8 +274,8 @@ impl App {
     fn held() -> int { self.stands.held() }
 
     /// THE ONE DOOR INTO THE LOOP. `act` is whatever may change the
-    /// program's state; it answers whether it ran, and a paint follows
-    /// only then. What the paint says is the target's to decide — a page
+    /// program's state; it answers whether it ran, and the screen follows
+    /// only then — at once, or at the target's frame when it holds. What the paint says is the target's to decide — a page
     /// that did not change is sent nothing. A FAILURE IS CONTAINED TO ITS
     /// TURN: it is kept in `failed`, the state stands as the handler
     /// left it, the view is painted as it stands, and the target is told
@@ -228,32 +286,39 @@ impl App {
             .Ok(ran) -> {
                 if ran {
                     self.said_failure(null)
-                    self.paint()
+                    self.mark()
                 }
                 ran
             },
             .Err(words) -> {
                 self.said_failure(words)
-                self.paint()
+                self.mark()
                 false
             },
         }
     }
 
-    /// The control at `owner` speaks: `act` is a turn, and whatever it
-    /// asks of the loop is that control's.
+    /// The control at `owner` speaks: an event. THE SCREEN IT MEETS IS THE
+    /// ONE THE USER SAW, so a paint still pending is shown first; then `act`
+    /// is a turn, and whatever it asks of the loop is that control's.
     fn turn_of(owner: string, act: Act) -> bool {
+        let _ = self.flush()
+        self.owned(owner, act)
+    }
+
+    /// `act` is a turn owned by `owner`, when it has one: a source's, which
+    /// only marks — it never flushes what an event has not yet shown.
+    fn turn_for(owner: string?, act: Act) -> bool {
+        let at? = owner else { return self.turn(act) }
+        self.owned(at, act)
+    }
+
+    fn owned(owner: string, act: Act) -> bool {
         let before = self.asking.get()
         self.asking.set(owner)
         let ran = self.turn(act)
         self.asking.set(before)
         ran
-    }
-
-    /// `act` is a turn owned by `owner`, when it has one.
-    fn turn_for(owner: string?, act: Act) -> bool {
-        let at? = owner else { return self.turn(act) }
-        self.turn_of(at, act)
     }
 
     /// Whether the control at `owner` is on the screen the last paint
@@ -313,7 +378,10 @@ impl App {
     /// A message with no loop to take it: a turn runs at once, a job has
     /// nowhere to run.
     fn direct(msg: Msg) -> bool {
-        match msg { .Turn(act, _) -> self.turn(act), .Start(_, _) or .Ended(_, _) -> false }
+        match msg {
+            .Turn(act, _) -> self.turn(act),
+            .Start(_, _) or .Ended(_, _) or .Frame -> false,
+        }
     }
 
     /// The loop ends once what stands in the inbox has run.

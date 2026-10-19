@@ -18,7 +18,7 @@ if ! command -v node >/dev/null 2>&1; then
     exit 0
 fi
 said=""
-for suite in bootstrap dev; do
+for suite in bootstrap dev windows; do
     out=$(node "$here/runtime/dom/${suite}_test.js") || { echo "$out" | grep -v '^✓' ; echo "ui-host-test: the host's ${suite} tests failed"; exit 1; }
     said="$said $(echo "$out" | tail -1)"
 done
