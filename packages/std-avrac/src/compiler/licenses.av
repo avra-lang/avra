@@ -14,8 +14,34 @@
 //! `site_licensed` is the SAME exemption read the other way: not
 //! "is this citation stale" but "does a finding's own site carry
 //! one" — `rule_pass.av`'s door, before a finding is even reported.
+use @std.text.{chars}
 use core.{SyntaxArena, Remark, flatten, joined}
 use diagnostics.{SourceFile}
+
+/// One keeper's family of licence ids, held at its site by the keeper
+/// that owns it: `prefix` then a word of `shape` — `snake` (lower-case
+/// letters and underscores) or exactly that text.
+export type LicenceFamily = { prefix: string, shape: string, keeper: string }
+
+/// The keepers' families — the one definition: `avra licences` projects
+/// it, and the keepers read their patterns from that answer.
+export fn families() -> List<LicenceFamily> {
+    [
+        LicenceFamily { prefix: "input.", shape: "snake", keeper: "tools/inputs.py" },
+        LicenceFamily { prefix: "whole.", shape: "cold", keeper: "tools/whole_reads.py" },
+    ]
+}
+
+fn snake(word: string) -> bool {
+    word != "" && chars(word).all((c) -> "abcdefghijklmnopqrstuvwxyz_".contains(c))
+}
+
+/// Whether `id` is a member of `f`: its prefix, then its shape.
+export fn belongs(id: string, f: LicenceFamily) -> bool {
+    id.starts_with(f.prefix) && fits(id.substring(f.prefix.length, id.length), f.shape)
+}
+
+fn fits(tail: string, shape: string) -> bool { if shape == "snake" { snake(tail) } else { tail == shape } }
 
 /// Every stale citation across `p`'s files, one `file\tline\tid` per
 /// line, joined — "" for a clean program.
@@ -25,9 +51,9 @@ export fn stale_license_lines(p: Program) -> string {
 }
 
 /// Whether a citation's id names nothing that reads it: no rule among
-/// `known`, and no `input.<why>` or `whole.<why>` — those keepers'.
+/// `known`, and no member of a keeper's family.
 export fn cites_nothing(id: string, known: List<string>) -> bool {
-    !known.contains(id) && !id.starts_with("input.") && !id.starts_with("whole.")
+    !known.contains(id) && !families().any(belongs(id, it))
 }
 
 fn file_stale_lines(a: Analysis, known: List<string>) -> List<string> {

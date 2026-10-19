@@ -28,6 +28,8 @@ import os
 import re
 import sys
 
+import licence_families
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
 BASELINE = "tools/whole_reads.baseline"
@@ -37,7 +39,7 @@ DEFINITION = re.compile(r"\bfn\s+all_(files|decls|in)\b|\bstatic\s+fn\s+all\b")
 # The door's own bodies: the verbs `all_files()` and `all_decls()` wrap `File.all` and `Decl.all`.
 # Their CALLERS are the sites, so the wrapping line is no second site.
 DOOR = {("packages/std-avrac/src/features/decls_mint.av", "[file_info(r) for r in File.all(self.rows_db.get())]")}
-LICENSE = re.compile(r"//\s*LICENSED\s+whole\.cold(:\s*(?P<why>.*\S))?")
+LICENSE = re.compile(r"//\s*LICENSED\s+" + licence_families.id_pattern("whole.") + r"(:\s*(?P<why>.*\S))?")
 
 
 def source_files(root):
@@ -146,6 +148,7 @@ def main(argv):
 
 
 def self_test():
+    licence_families.selftest()
     def one(text):
         return sites("x.av", text)
 
