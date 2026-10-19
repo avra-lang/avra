@@ -47,6 +47,7 @@ sudo ln -sf "$prefix/bin/llvm-config" /usr/local/bin/llvm-config
 printf '%s\n' \
     "export LLVM_PREFIX=$prefix" \
     "export CC=$prefix/bin/clang" \
+    "export AVRA_CXX_RUNTIME=stdc++" \
     | sudo tee /etc/profile.d/avra-llvm.sh >/dev/null
 
 test -f "$prefix/include/llvm-c/Core.h" \

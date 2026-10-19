@@ -21,12 +21,12 @@
 //! THE DIGEST IS OF A FRAME: a head that says the kind, the name and
 //! what was found — every part behind its own length, so no two shapes
 //! spell the same octets — then the body, last and whole.
-use core.{hex}
+use core.{hex, EmbedKind}
 use @std.hash.{hasher}
 use @std.relation.stable.{Writer, writer}
 
 /// What a read asks of the world.
-export enum InputKind { Text, Octets, Range, Listing, Exists, Env, Tool, Compiler, Embedded }
+export enum InputKind { Text, Octets, Range, Listing, Exists, Env, Tool, Compiler, Embedded, EmbeddedOctets }
 
 impl InputKind {
     /// Whether a read of this kind names the running process itself, so
@@ -34,7 +34,7 @@ impl InputKind {
     fn stands_for_process() -> bool {
         match self {
             .Compiler -> true,
-            .Text or .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Embedded -> false,
+            .Text or .Octets or .Range or .Listing or .Exists or .Env or .Tool or .Embedded or .EmbeddedOctets -> false,
         }
     }
 }
@@ -81,7 +81,7 @@ export enum Read {
     Refused(name: InputName, why: string)
     /// A file an `embed` names, read beneath the package root over it,
     /// through no link.
-    Embedded(key: string, seen: Beneath)
+    Embedded(key: string, kind: EmbedKind, seen: Beneath)
 }
 
 impl Read {
@@ -96,7 +96,7 @@ impl Read {
             .Tool(key, _) -> InputName { kind: .Tool, key: key },
             .Compiler(_) -> InputName { kind: .Compiler, key: "" },
             .Refused(name, _) -> name,
-            .Embedded(key, _) -> InputName { kind: .Embedded, key: key },
+            .Embedded(key, kind, _) -> InputName { kind: embedded_kind(kind), key: key },
         }
     }
 
@@ -142,7 +142,7 @@ impl Read {
                 head.count(REFUSED)
                 head.text(why)
             },
-            .Embedded(_, seen) -> beneath_found(head, seen),
+            .Embedded(_, _, seen) -> beneath_found(head, seen),
         }
         head.bytes()
     }
@@ -151,7 +151,11 @@ impl Read {
     fn body() -> Body {
         match self {
             .Text(_, text) or .Env(_, text) -> if text == null { Body.None } else { Body.Text(text!) },
-            .Embedded(_, seen) -> match seen { .Text(text) -> Body.Text(text), _ -> Body.None },
+            .Embedded(_, _, seen) -> match seen {
+                .Text(text) -> Body.Text(text),
+                .Octets(octets) -> Body.Octets(octets),
+                .Missing or .Linked or .NotText(_) or .Refused(_) -> Body.None,
+            },
             .Octets(_, octets) or .Range(_, _, _, octets) -> if octets == null { Body.None } else { Body.Octets(octets!) },
             .Listing(_, _) or .Exists(_, _) or .Tool(_, _) or .Compiler(_) or .Refused(_, _) -> Body.None,
         }
@@ -184,6 +188,11 @@ fn state(there: bool) -> int {
     if there { PRESENT } else { ABSENT }
 }
 
+/// The input kind an embedded file's read is keyed by.
+export fn embedded_kind(kind: EmbedKind) -> InputKind {
+    match kind { .Text -> InputKind.Embedded, .Octets -> InputKind.EmbeddedOctets }
+}
+
 /// A kind's number in a frame — stored, so a kind keeps its number.
 fn kind_tag(k: InputKind) -> int {
     match k {
@@ -196,13 +205,14 @@ fn kind_tag(k: InputKind) -> int {
         .Tool -> 7,
         .Compiler -> 8,
         .Embedded -> 9,
+        .EmbeddedOctets -> 10,
     }
 }
 
 /// What a read beneath a root saw: a state, then why it was refused.
 fn beneath_found(head: Writer, seen: Beneath) {
     match seen {
-        .Text(_) -> head.count(PRESENT),
+        .Text(_) or .Octets(_) -> head.count(PRESENT),
         .Missing -> head.count(ABSENT),
         .Linked -> {
             head.count(REFUSED)

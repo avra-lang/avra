@@ -2,7 +2,19 @@
 //! it through the app's one door, and the same view driven by keys and by
 //! the headless verbs ends in the same state.
 use @std.text.{from_codepoint}
-use @std.ui.components.{button, checkbox, column, dialog, field, form, item, list, slider, text}
+use @std.ui.components.{
+    button,
+    checkbox,
+    column,
+    dialog,
+    field,
+    form,
+    item,
+    list,
+    row,
+    slider,
+    text,
+}
 use @std.ui.headless.{headless}
 use @std.ui.terminal.{Terminal, terminal}
 
@@ -211,6 +223,23 @@ spec "a key acts on the control that holds the focus" {
             on.feed("Ada\n")
             sent.get() == "Ada"
         }
+        then "pasted text is one input, its line breaks as spaces, and presses nothing" {
+            let b = Board {}
+            let on = after(b, "")
+            on
+                .feed(
+                    "${from_codepoint(27)}[200~Buy\nmilk\t${from_codepoint(27)}[Ax${from_codepoint(27)}[201~",
+                )
+            b.draft.get() == "Buy milk [Ax" && b.told() == ""
+        }
+        then "pasted text after what the field holds, and a paste on a button does nothing" {
+            let b = Board {}
+            let on = after(b, "Buy ")
+            on.feed("${from_codepoint(27)}[200~milk${from_codepoint(27)}[201~")
+            let filled = b.draft.get() == "Buy milk"
+            on.feed("\t${from_codepoint(27)}[200~\n\n${from_codepoint(27)}[201~")
+            filled && b.told() == ""
+        }
         then "Enter outside a form does nothing" {
             let b = Board {}
             let _ = after(b, "Buy\n")
@@ -254,6 +283,79 @@ spec "a key acts on the control that holds the focus" {
             let on = counting(hits)
             on.feed("\t\n${from_codepoint(4)}\n\n")
             hits.get() == 1 && on.ended.get()
+        }
+    }
+    given "the mouse, the focus and the kitty keyboard" {
+        then "a click presses the control under the cell and gives it the focus" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("${from_codepoint(27)}[<0;3;2M")
+            hits.get() == 1 && on.screen().contains("> [ Count ]")
+        }
+        then "a click on a control that cannot be pressed from here moves the focus and presses nothing" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("${from_codepoint(27)}[<0;3;2M${from_codepoint(27)}[<0;3;1M")
+            hits.get() == 1 && on.screen().contains("> [ Idle ]")
+        }
+        then "a click over no control does nothing" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("${from_codepoint(27)}[<0;25;9M${from_codepoint(27)}[<0;3;7M")
+            hits.get() == 0
+        }
+        then "of two controls side by side the click names the one under it" {
+            let said: Cell<string> = Cell.new("")
+            let on = terminal(
+                () -> row {
+                    button "A" { on press { said.set(said.get() + "A") } }
+                    button "B" { on press { said.set(said.get() + "B") } }
+                },
+                width: 30,
+            )
+            on.feed("${from_codepoint(27)}[<0;10;1M${from_codepoint(27)}[<0;3;1M")
+            said.get() == "BA"
+        }
+        then "a click on a check box changes it over, and on a field only takes the focus" {
+            let b = Board {}
+            let on = after(b, "")
+            on.feed("${from_codepoint(27)}[<0;3;1M")
+            on.screen().starts_with("> New task: ____")
+        }
+        then "a release, a drag and the other buttons press nothing" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on
+                .feed(
+                    "${from_codepoint(27)}[<0;3;2m${from_codepoint(27)}[<32;3;2M${from_codepoint(27)}[<2;3;2M",
+                )
+            hits.get() == 0
+        }
+        then "the window's focus is told, and the terminal's keyboard report is kept" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("${from_codepoint(27)}[O")
+            let out = !on.active.get()
+            on.feed("${from_codepoint(27)}[I${from_codepoint(27)}[?1u")
+            out && on.active.get() && on.keyboard.get() == 1
+        }
+        then "Ctrl-C does not end the input: in cbreak mode it is a signal before it is a key, and as a key it is a chord" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("\t\n${from_codepoint(3)}\n")
+            hits.get() == 2 && !on.ended.get()
+        }
+        then "a paste past the terminal's limit changes nothing and is told, by its size" {
+            let b = Board {}
+            let on = terminal(() -> board(b), width: 40, paste_limit: 8)
+            on.feed("${from_codepoint(27)}[200~0123456789${from_codepoint(27)}[201~")
+            b.draft.get() == "" && on.lost_paste.get() == 10
+        }
+        then "an Escape and a chord are heard and do nothing" {
+            let hits: Cell<int> = Cell.new(0)
+            let on = counting(hits)
+            on.feed("${from_codepoint(27)}[27u${from_codepoint(27)}[105;5u\t\n")
+            hits.get() == 1
         }
     }
 }
