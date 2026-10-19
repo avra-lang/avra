@@ -17,8 +17,31 @@ use @std.ui.components.{
 }
 use @std.ui.headless.{headless}
 use @std.ui.terminal.{Terminal, terminal}
+use @std.ui.app.{running, stood}
+use @std.ui.native.net.{unwired}
+use @std.ui.native.sources.{opened, served, unshown}
+use @std.time.{ms, sleep}
 
 type Todo = { id: string, title: string, done: bool }
+
+/// `body` runs while the terminal's loop serves its sources, on the case's
+/// virtual clock.
+fn looped(on: Terminal, body: fn() -> void) {
+    let before = running()
+    stood(on.shown.app)
+    let inbox = opened(on.shown.app, unwired)
+    let loop = spawn served(on.shown.app, inbox, unshown)
+    body()
+    on.shown.app.close()
+    let _ = loop.await
+    stood(before)
+}
+
+/// `n` ms of the clock go by, and the turns they leave run.
+fn waited(n: int) {
+    sleep(ms(n))
+    sleep(ms(0))
+}
 
 /// An open dialog of two buttons, sent away into `open`.
 fn about(open: Cell<bool>) -> dialog {
@@ -187,19 +210,33 @@ spec "one control holds the focus" {
             on.feed("${from_codepoint(27)}[27u")
             open.get() == false
         }
-        then "a lone Escape waits out the window, then sends it away" {
+        then "a lone Escape is still held 20 ms on, and sends it away by 30" {
             let open: Cell<bool> = Cell.new(true)
             let on = terminal(() -> about(open))
-            on.feed(from_codepoint(27))
-            let held = open.get()
-            on.quiet()
-            held && !open.get()
+            let held = Cell.new(false)
+            looped(
+                on,
+                () -> {
+                    on.feed(from_codepoint(27))
+                    waited(20)
+                    held.set(open.get())
+                    waited(10)
+                },
+            )
+            held.get() && !open.get()
         }
         then "an arrow cut after its escape and finished within the window moves the focus, and sends nothing away" {
             let open: Cell<bool> = Cell.new(true)
             let on = terminal(() -> about(open))
-            on.feed(from_codepoint(27))
-            on.feed("[A")
+            looped(
+                on,
+                () -> {
+                    on.feed(from_codepoint(27))
+                    waited(10)
+                    on.feed("[A")
+                    waited(30)
+                },
+            )
             let whole = terminal(() -> about(Cell.new(true)))
             whole.feed("${from_codepoint(27)}[A")
             open.get() &&
@@ -216,9 +253,14 @@ spec "one control holds the focus" {
                     on input { typed -> held.set(typed) }
                 },
             )
-            on.feed(from_codepoint(27))
-            on.quiet()
-            on.feed("[A")
+            looped(
+                on,
+                () -> {
+                    on.feed(from_codepoint(27))
+                    waited(30)
+                    on.feed("[A")
+                },
+            )
             held.get() == "[A"
         }
     }
