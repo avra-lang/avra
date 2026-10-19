@@ -671,6 +671,7 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/suspect_narrow_attack.sh
 	@sh tools/store_bound_attack.sh
 	@sh tools/obj_gone_attack.sh
+	@sh tools/names_attack.sh
 	@sh tools/dep_tests_listing_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
