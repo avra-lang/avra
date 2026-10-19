@@ -1,0 +1,548 @@
+// "The subset today": each entry is a refusal the compiler speaks, pinned
+// by its words and its count. An entry the compiler starts accepting turns
+// its case red; delete the case and the entry together.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{refused_n, refused_with}
+
+/// A source that checks with no error — what a refused form's compiling
+/// sibling proves.
+fn accepted(source: string) -> bool {
+    analyze_source(source).program().check() is .Ok
+}
+
+/// A source refused with `n` messages, one of them `phrase`.
+fn refused(source: string, phrase: string, n: int) -> bool {
+    refused_n(analyze_source(source).program(), phrase, n)
+}
+
+spec "compiler/subset — syntax the grammar lacks" {
+    given "syntax the grammar lacks" {
+        then "an import spelled with a slash is refused at the slash" {
+            refused(
+                "use @std/io.{read_text}\n",
+                "error[parse.expected]: expected `.` while parsing `stmt`",
+                1,
+            )
+        }
+        then "`|` between or-pattern alternatives is refused" {
+            refused(
+                "fn f(x: int) -> int {\n    match x {\n        1 | 2 -> 5,\n        _ -> 0,\n    }\n}\n",
+                "error[parse.expected]: expected `}` to close the `match`",
+                1,
+            )
+        }
+        then "`or` as a boolean is refused" {
+            refused(
+                "fn f() -> bool { true or false }\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                1,
+            )
+        }
+        then "`and` as a boolean is refused" {
+            refused(
+                "fn f(a: bool, b: bool) -> bool { a and b }\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                1,
+            )
+        }
+        then "destructuring `enumerate()` in a comprehension is refused" {
+            refused(
+                "fn f(xs: List<int>) -> List<int> { [i for (i, m) in xs.enumerate()] }\n",
+                "error[type.list_element]: `enumerate` pairs only under a paired `for` head — pairs as values arrive with tuples",
+                1,
+            )
+        }
+        then "the paired `for` head over a comprehension compiles" { accepted("fn f(xs: List<int>) -> List<int> { [i + m for i, m in xs] }\n") }
+        then "a double `?` on a type is refused at the first `?`" {
+            refused(
+                "fn f(a: int??) -> int { 1 }\n",
+                "error[parse.expected]: expected `)` while parsing `stmt`",
+                1,
+            )
+        }
+        then "a `table` without its row type reads as a struct literal" {
+            refused(
+                "let rows = table { id: 1 }\n",
+                "error[resolve.unresolved]: no `type table` is declared",
+                1,
+            )
+        }
+        then "a `table<Row>` with a pipe header compiles" {
+            accepted(
+                "type Row = { id: int, name: string }\nlet rows = table<Row> {\n    id | name\n    1  | \"a\"\n    2  | \"b\"\n}\n",
+            )
+        }
+        then "a semicolon between statements is refused at the `;`" {
+            refused(
+                "fn f() -> int {\n    let a = 1; a + 1\n}\n",
+                "error[lex.error]: unexpected character `;`",
+                2,
+            )
+        }
+        then "`.length` on a range is refused beside range scans that compile" {
+            refused(
+                "fn f(n: int) -> bool { (0..n).any(it == 2) }\nfn g(n: int) -> int { (0..n).length }\n",
+                "error[type.unknown_prop]: no property `length` on `Range`",
+                1,
+            )
+        }
+        then "a `once fn` with type parameters is refused" {
+            refused(
+                "once fn f<T>() -> List<T> { [] }\n",
+                "error[parse.expected]: expected `(` while parsing `stmt`",
+                1,
+            )
+        }
+        then "a `once fn` answering a scalar is refused" {
+            refused(
+                "once fn seed() -> int { 7 }\n",
+                "error[type.once_fn]: `once fn seed` answers `int`, which the runtime cannot keep",
+                1,
+            )
+        }
+        then "a `once fn` taking arguments is refused" {
+            refused(
+                "once fn s(a: int) -> string { \"x\" }\n",
+                "error[type.once_fn]: `once fn s` takes arguments — a `once` answer is one value for the whole process",
+                1,
+            )
+        }
+        then "a trailing block in an `if` head is refused" {
+            refused(
+                "fn g(a: int, h: fn(int) -> bool) -> bool { h(a) }\nfn f(a: int) -> int {\n    if g(a) { x -> x > 1 } { 1 } else { 2 }\n}\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                1,
+            )
+        }
+        then "a seat default on an `extern fn` is refused" {
+            refused(
+                "extern fn g(a: int = 1)\n",
+                "error[parse.expected]: expected `)` while parsing `stmt`",
+                1,
+            )
+        }
+        then "a seat default in a trait fn is refused" {
+            refused(
+                "trait T {\n    fn m(a: int = 1)\n}\n",
+                "error[parse.expected]: expected `}` while parsing `stmt`",
+                1,
+            )
+        }
+        then "a seat default on a lambda is refused" {
+            refused(
+                "fn f() -> int {\n    let g = (a: int = 1) -> a\n    g(1)\n}\n",
+                "error[parse.expected]: expected `)` to close the group",
+                2,
+            )
+        }
+        then "a fn value of a defaulted fn wears every seat" {
+            refused(
+                "fn add(a: int, b: int = 1, c: int = 2) -> int { a + b + c }\nfn f() -> int { add(1, c: 9) }\nfn h() -> int {\n    let g = add\n    g(1)\n}\n",
+                "error[type.mismatch]: `g` takes 3 arguments, found 1",
+                1,
+            )
+        }
+        then "a default reads no param beside it" {
+            refused(
+                "fn f(a: int, b: int = a) -> int { a + b }\n",
+                "error[resolve.unresolved]: `a` is not defined",
+                1,
+            )
+        }
+        then "a pinned generic fn as a value is refused at the parse" {
+            refused(
+                "fn ident<T>(x: T) -> T { x }\nfn f() -> int {\n    let g: fn(int) -> int = ident<int>\n    g(1)\n}\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                2,
+            )
+        }
+        then "a bare generic fn as a value is refused in words" {
+            refused(
+                "fn ident<T>(x: T) -> T { x }\nfn f() -> int {\n    let g: fn(int) -> int = ident\n    g(1)\n}\n",
+                "error[type.lambda]: a generic fn is not a value — no single signature to wear",
+                1,
+            )
+        }
+        then "a shell `\${VAR}` in a string is Avra's interpolation" {
+            refused(
+                "fn f() -> string { \"echo \${HOME}\" }\n",
+                "error[resolve.unresolved]: `HOME` is not defined",
+                1,
+            )
+        }
+        then "`_` as a parameter name is a keyword" {
+            refused(
+                "fn f(_: int) -> int { 1 }\nfn g() -> int {\n    let _ = f(1)\n    2\n}\n",
+                "error[resolve.reserved]: `_` is a keyword",
+                1,
+            )
+        }
+        then "a map keyed by `int` is refused" {
+            refused(
+                "fn f(m: Map<int, int>) -> int { 1 }\n",
+                "error[type.applied]: a map's keys are strings, not `int`",
+                1,
+            )
+        }
+        then "`++` on lists is refused at the operator" {
+            refused(
+                "fn f(xs: List<int>, ys: List<int>) -> List<int> { xs ++ ys }\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                1,
+            )
+        }
+        then "`List` has `all` and not `every`" {
+            refused(
+                "fn f(xs: List<int>) -> bool { xs.every(it > 0) }\nfn g(xs: List<int>) -> bool { xs.all(it > 0) }\n",
+                "error[type.method]: `.every(…)` calls a method, and `List<int>` has none",
+                1,
+            )
+        }
+        then "a match arm on the brace's line needs a comma before the next arm" {
+            refused(
+                "enum R { A(x: int), B }\nfn f(v: R) -> string {\n    match v { .A(o) -> \"a\"\n        .B -> \"s\"\n    }\n}\n",
+                "error[parse.expected]: expected `}` to close the `match`",
+                1,
+            )
+        }
+        then "the same match compiles with the comma" {
+            accepted(
+                "enum R { A(x: int), B }\nfn f(v: R) -> string {\n    match v { .A(o) -> \"a\",\n        .B -> \"s\"\n    }\n}\n",
+            )
+        }
+        then "a present-bind arm after a comma-ended arm is refused" {
+            refused(
+                "fn f(v: int?) -> int {\n    match v {\n        null -> 1,\n        x? -> x\n    }\n}\n",
+                "error[parse.expected]: expected `}` to close the `match`",
+                1,
+            )
+        }
+        then "a present-bind arm ending in a comma is refused" {
+            refused(
+                "fn f(v: int?) -> int {\n    match v {\n        x? -> x,\n        null -> 0\n    }\n}\n",
+                "error[parse.expected]: expected `}` to close the `match`",
+                1,
+            )
+        }
+        then "an empty block as a match arm is an empty map" {
+            refused(
+                "fn f(x: int) {\n    match x {\n        1 -> {}\n        _ -> {}\n    }\n}\n",
+                "error[type.match]: a `match`'s arms disagree: `{}` vs the first arm's `void`",
+                3,
+            )
+        }
+        then "a bare `fail` as a match arm body is refused" {
+            refused(
+                "enum E { Bad(t: string) }\nfn f(x: int) -> Result<int, E> {\n    match x {\n        1 -> fail E.Bad(\"t\"),\n        _ -> 2,\n    }\n}\n",
+                "error[parse.expected]: expected `}` to close the `match`",
+                1,
+            )
+        }
+        then "the braced `fail` arm compiles" {
+            accepted(
+                "enum E { Bad(t: string) }\nfn f(x: int) -> Result<int, E> {\n    match x {\n        1 -> { fail E.Bad(\"t\") },\n        _ -> 2,\n    }\n}\n",
+            )
+        }
+        then "a field after `?` on a Result is refused as `?.`" {
+            refused(
+                "type P = { name: string }\nfn get(i: int) -> Result<P, string> { P { name: \"a\" } }\nfn f(i: int) -> Result<string, string> { get(i)?.name }\nfn g(i: int) -> Result<string, string> { (get(i)?).name }\n",
+                "error[type.chain]: `?.` reaches into a nullable, this is `Result<P, string>`",
+                1,
+            )
+        }
+        then "`export let` is refused" {
+            refused(
+                "export let x = 1\n",
+                "error[resolve.export_kind]: `export` marks a fn, type, enum or trait — not this statement",
+                1,
+            )
+        }
+        then "`export const` compiles" { accepted("export const x: int = 1\n") }
+        then "`Result<void, E>` as an answer is refused" {
+            refused(
+                "fn f() -> Result<void, string> { }\n",
+                "error[type.applied]: a `Result` side cannot hold `void` yet",
+                1,
+            )
+        }
+        then "a `mut` seat assigned whole is refused" {
+            refused(
+                "fn f(mut a: int) {\n    a = a + 1\n}\n",
+                "error[resolve.immutable]: `a` is a `mut` seat — a seat is written along a path, never replaced whole",
+                1,
+            )
+        }
+        then "two top-level consts of one name are refused" {
+            refused(
+                "const a: int = 1\nconst a: int = 2\n",
+                "error[resolve.duplicate_fn]: `a` is defined more than once",
+                1,
+            )
+        }
+        then "a method after `?` on a Result is refused as `?.`" {
+            refused(
+                "type R = { n: int }\nimpl R { fn run() -> int { 1 } }\nfn shell(l: string) -> Result<R, string> { R { n: 1 } }\nfn f(l: string) -> Result<int, string> { shell(l)?.run() }\n",
+                "error[type.chain]: `?.` reaches into a nullable, this is `Result<R, string>`",
+                1,
+            )
+        }
+        then "`fail` inside a `catch` block is refused" {
+            refused(
+                "fn g() -> Result<int, string> { 1 }\nfn f() -> Result<int, string> {\n    let x = g() catch e -> {\n        fail e\n    }\n    x\n}\n",
+                "error[type.catch]: a `catch` arm answers the ok side: `int`, this is `Result<int, string>`",
+                1,
+            )
+        }
+        then "a literal of `null` alone names no type" {
+            refused(
+                "fn f() {\n    let xs = [null, null]\n}\nfn g() -> int {\n    let ys = [null, 7]\n    1\n}\n",
+                "error[type.list_scalar]: a list element takes its type from its value, and `null` has none of its own",
+                1,
+            )
+        }
+        then "`derived` is refused at the name" {
+            refused(
+                "derived x = 1\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                1,
+            )
+        }
+        then "`query` is refused at the name" {
+            refused(
+                "query x = 1\n",
+                "error[parse.expected]: expected BREAK while parsing `stmt`",
+                1,
+            )
+        }
+        then "`@model` is not defined" {
+            refused(
+                "@model\ntype User = { name: string }\n",
+                "error[resolve.unresolved]: `model` is not defined",
+                1,
+            )
+        }
+        then "a built-in type name is not a domain type" {
+            refused(
+                "type Task = { id: int }\n",
+                "error[resolve.builtin_type]: `Task` is a built-in type",
+                1,
+            )
+        }
+        then "a bound on a generic type is refused at the `<`" {
+            refused(
+                "trait Tr { fn m() -> int }\ntype T<K: Tr, V> = { v: V }\n",
+                "error[parse.expected]: expected `=` while parsing `stmt`",
+                1,
+            )
+        }
+        then "a bound on a generic impl is refused at the `<`" {
+            refused(
+                "trait Tr { fn m() -> int }\ntype T<K, V> = { v: V }\nimpl T<K: Tr, V> {\n    fn f() -> int { 1 }\n}\n",
+                "error[parse.expected]: expected `{` while parsing `stmt`",
+                1,
+            )
+        }
+        then "a bare const name last in a match warns that it compares" {
+            refused(
+                "const escape: int = 5\nfn f(c: int) -> int {\n    match c {\n        escape -> 1,\n        _ -> 0,\n    }\n}\nfn g(c: int) -> int {\n    match c {\n        0 -> 1,\n        escape -> 2,\n    }\n}\n",
+                "warning[type.const_pattern]: `escape` is a const here, so this arm compares — it does not take the values the arms above left",
+                2,
+            )
+        }
+        then "a binder arm before a literal arm warns that it is never reached" {
+            refused_with(
+                "fn f(c: int) -> int {\n    match c {\n        gone -> 1,\n        0 -> 2,\n    }\n}\n",
+                "warning[type.unreachable_arm]: this arm is never reached — `gone` above binds, and takes every value",
+            )
+        }
+        then "a map walked with one binder is refused" {
+            refused(
+                "fn f(m: Map<string, int>) -> int {\n    mut n = 0\n    for k in m { n = n + 1 }\n    n\n}\nfn g(m: Map<string, int>) -> int {\n    mut n = 0\n    for k, v in m { n = n + v }\n    n\n}\n",
+                "error[type.mismatch]: a map walks as key and value — `for k, v in m` binds both",
+                1,
+            )
+        }
+        then "`m.entries()` in a lone file names the missing prelude" {
+            refused(
+                "fn f(m: Map<string, int>) -> int { m.entries().length }\n",
+                "error[type.map_entry]: a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
+                1,
+            )
+        }
+        then "a `mut`-taking fn type accepts a callee that does not write" {
+            accepted(
+                "fn a(f: fn(mut int) -> int) -> int { 1 }\nfn w(x: int) -> int { x }\nfn f() -> int { a(w) }\n",
+            )
+        }
+        then "a type closing a list type does not swallow the next statement" {
+            accepted(
+                "type Rows = List<int>\ntype Other = List<string>\nfn f(r: Rows) -> int { 1 }\n",
+            )
+        }
+        then "a record spread without its type's name is a map spread" { refused_with(
+                "type P = { x: int, y: int }\nfn f(a: P) -> int {\n    let m = { ..a, x: 3 }\n    m.length\n}\n",
+                "`..` in a map spreads a map, found `P`",
+            ) }
+        then "a record pattern's `..` discards and cannot bind the rest" { refused_with(
+                "type P = { x: int, y: int }\nfn f(p: P) -> int {\n    match p {\n        P { x, ..rest } -> x,\n    }\n}\n",
+                "expected `}` to close the `match`",
+            ) }
+        then "a list spreads only into its own element type" { refused_with(
+                "fn f(xs: List<int>) -> int {\n    let c: List<int?> = [null, ..xs]\n    1\n}\n",
+                "the first is `List<int?>`, this is `List<int>`",
+            ) }
+        then "a list spread into fixed seats is refused" { refused_with(
+                "fn g(a: int, b: int) -> int { a + b }\nfn f(xs: List<int>) -> int { g(..xs) }\n",
+                "`..` spreads into a seat that takes the rest of the arguments, and `g` declares none",
+            ) }
+        then "`is` over a list pattern binds only under `if`" { refused_with("fn f(xs: List<int>) -> bool { xs is [first, ..] }\n", "is_bind") }
+        then "a refutable destructuring `let` needs its `else`" { refused_with(
+                "fn f(xs: List<int>) -> int {\n    let [first, ..] = xs\n    first\n}\n",
+                "let_pattern",
+            ) }
+    }
+}
+
+spec "compiler/subset — wants the typer does not carry yet" {
+    given "wants the typer does not carry yet" {
+        then "an unpinned generic call in a struct literal field is refused" {
+            refused(
+                "fn mk<N>() -> List<N> { [] }\ntype MC<N> = { xs: List<N> }\nfn f<N>() -> MC<N> { MC { xs: mk() } }\nfn g<N>() -> MC<N> { MC { xs: mk<N>() } }\n",
+                "error[type.mismatch]: `N` is not pinned by the arguments",
+                1,
+            )
+        }
+        then "a lambda in a field seat does not read the seat's answer" {
+            refused(
+                "enum E { Bad }\ntype Cx = { get: fn(int) -> Result<int, E> }\nfn f() -> Cx { Cx { get: (n: int) -> .Ok(n) } }\n",
+                "error[type.variant_lit]: `.Ok` needs a known enum — nothing here says which",
+                1,
+            )
+        }
+        then "a `dyn` want does not reach `if` branches, and does reach `match` arms" {
+            refused(
+                "trait Show { fn show() -> string }\ntype P = { a: int }\ntype Q = { b: int }\nimpl Show for P { fn show() -> string { \"p\" } }\nimpl Show for Q { fn show() -> string { \"q\" } }\nfn f(k: int) -> dyn Show {\n    if k == 0 { P { a: 1 } } else { Q { b: 2 } }\n}\nfn g(k: int) -> dyn Show {\n    match k { 0 -> P { a: 1 }, _ -> Q { b: 2 } }\n}\n",
+                "error[type.mismatch]: an `if`'s branches disagree: `P` vs `Q`",
+                1,
+            )
+        }
+        then "a generic method is refused" {
+            refused(
+                "type Box<T> = { v: T }\nimpl Box<T> { fn m<U>(x: U) -> U { x } }\n",
+                "error[type.impl]: `m` is generic — generic methods are recorded, not landed",
+                1,
+            )
+        }
+        then "a bound on a free fn's parameter compiles" { accepted("trait Tr { fn m() -> int }\nfn f<T: Tr>(v: T) -> int { v.m() }\n") }
+        then "variant arms over a nullable enum are refused" {
+            refused(
+                "enum K { A, B }\nfn f(k: K?) -> int {\n    match k {\n        .A -> 1,\n        null -> 0,\n    }\n}\n",
+                "error[type.match]: `match` chooses over an enum, found `K?`",
+                1,
+            )
+        }
+        then "`is` over a nullable enum is refused" {
+            refused(
+                "enum K { A, B }\nfn f(k: K?) -> bool { k is .A }\n",
+                "error[type.match]: `is` asks an enum for its variant, found `K?`",
+                1,
+            )
+        }
+        then "a generic impl's local annotation naming `T` is refused" {
+            refused(
+                "type Box<T> = { rows: List<T> }\nimpl Box<T> {\n    fn first_of(i: int) -> int {\n        let held: T? = self.rows[i]\n        1\n    }\n}\n",
+                "error[type.unknown]: `T` names no type",
+                1,
+            )
+        }
+        then "a bound method as a value is read as a property" {
+            refused(
+                "type S = { n: int }\nimpl S {\n    fn rides(k: int) -> bool { k > self.n }\n    fn any_ride(xs: List<int>) -> bool { xs.any(self.rides) }\n}\n",
+                "error[type.unknown_prop]: no field `rides` on `S`",
+                1,
+            )
+        }
+        then "`it` through a self-method wrapper is refused" {
+            refused(
+                "type S = { n: int }\nimpl S {\n    fn rides(k: int) -> bool { k > self.n }\n    fn any_ride(xs: List<int>) -> bool { xs.any(self.rides(it)) }\n}\n",
+                "error[type.lambda]: `it` has no element here — this seat takes `int`, not a fn",
+                2,
+            )
+        }
+        then "`join` over a list that is not text is refused" {
+            refused(
+                "fn f() -> string { [1, 2].join(\",\") }\n",
+                "error[type.list_element]: `join` reads a list of text, this one holds `int`",
+                1,
+            )
+        }
+        then "a record of two fields has no `==`" {
+            refused(
+                "type Pair = { a: int, b: int }\nfn f(x: Pair, y: Pair) -> bool { x == y }\n",
+                "error[type.mismatch]: `==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                1,
+            )
+        }
+        then "a record of one field compares by it" { accepted("type Id = { n: int }\nfn f() -> bool { Id { n: 1 } == Id { n: 1 } }\n") }
+        then "an enum carrying a payload has no `==`" {
+            refused(
+                "enum E { A(x: int), B }\nfn f(a: E, b: E) -> bool { a == b }\n",
+                "error[type.mismatch]: `==` compares by value — a scalar, text, a tagged enum, or a record of one such field",
+                1,
+            )
+        }
+        then "a payload-free enum compares by variant" { accepted("enum E { A, B }\nfn f(a: E, b: E) -> bool { a == b }\n") }
+        then "a `Rows` seat refuses a computed `List<int>` and takes a literal" {
+            refused(
+                "type Rows = List<int>\nfn f(r: Rows) -> int { r.length }\nfn g() -> int { f([1, 2]) }\nfn h(xs: List<int>) -> int { f(xs) }\n",
+                "error[type.mismatch]: argument 1 of `f` wants `Rows`, found `List<int>`",
+                1,
+            )
+        }
+    }
+}
+
+spec "compiler/subset — methods the runtime lacks" {
+    given "methods the runtime lacks" {
+        then "`List.reverse()` and `sort()` are refused" {
+            refused(
+                "fn f(xs: List<int>) -> List<int> { xs.reverse() }\nfn g(xs: List<int>) -> List<int> { xs.sort() }\n",
+                "error[type.method]: `.reverse(…)` calls a method, and `List<int>` has none",
+                2,
+            )
+        }
+        then "`m[\"k\"]` on a map is refused" {
+            refused(
+                "fn f(m: Map<string, int>) -> int { m[\"k\"] }\n",
+                "error[type.mismatch]: `[...]` indexes a `List`, found `Map<string, int>`",
+                1,
+            )
+        }
+        then "`b[0]` on `Bytes` is refused" {
+            refused(
+                "fn f(b: Bytes) -> int { b[0] }\nfn g(b: Bytes) -> int { b.at(0) }\n",
+                "error[type.mismatch]: `[...]` indexes a `List`, found `Bytes`",
+                1,
+            )
+        }
+        then "`[104, 105].bytes()` is `Bytes?`" {
+            refused(
+                "fn f() {\n    let b: Bytes = [104, 105].bytes()\n}\n",
+                "error[type.binding]: `b` declares `Bytes`, this is `Bytes?`",
+                1,
+            )
+        }
+        then "`.at` on the nullable `Bytes?` is refused" {
+            refused(
+                "fn f() -> int {\n    let b = [104, 105].bytes()\n    b.at(0)\n}\n",
+                "error[type.method]: `.at(…)` calls a method, and `Bytes?` has none",
+                1,
+            )
+        }
+        then "an empty literal adopts a nullable aggregate want" {
+            accepted(
+                "fn f() {\n    let xs: List<int>? = []\n    let m: Map<string, int>? = {}\n}\nfn g() -> List<int>? { [] }\n",
+            )
+        }
+    }
+}
