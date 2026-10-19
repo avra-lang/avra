@@ -1055,14 +1055,10 @@ fn witnesses() -> List<CodeWitness> {
         },
         CodeWitness {
             code: "block.parse",
-            witness: Witness
-                .Package(
-                    provided_files(
-                        "use @x.c.{sql, Select}\nlet q: Select = sql { garbage }\n0",
-                        sql_provider,
-                        real_meta_source(),
-                    ),
-                ),
+            witness: provided_program(
+                "use @x.c.{sql, Select}\nlet q: Select = sql { garbage }\n0",
+                sql_provider,
+            ),
         },
         CodeWitness {
             code: "type.syntax_action",
@@ -1087,8 +1083,15 @@ fn witnesses() -> List<CodeWitness> {
         CodeWitness {
             code: "resolve.reexport_cycle",
             witness: Witness
-                .Beyond(
-                    "it needs two packages whose re-exports close a package cycle, a graph the memory host cannot stand up in one witness",
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use @std.low.{g}\ng()\n",
+                        "/std/std-low/avra.toml": "[package]\nname = \"@std/low\"\nversion = \"0.1.0\"\n",
+                        "/std/std-low/src/low.av": "export fn g() -> int {\n    1\n}\nexport use @std.high.{h}\n",
+                        "/std/std-high/avra.toml": "[package]\nname = \"@std/high\"\nversion = \"0.1.0\"\n",
+                        "/std/std-high/src/high.av": "use @std.low.{g}\nexport fn h() -> int {\n    g() + 1\n}\n",
+                    },
                 ),
         },
         CodeWitness {
