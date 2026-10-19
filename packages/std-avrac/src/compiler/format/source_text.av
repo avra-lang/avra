@@ -47,8 +47,13 @@ use core.{
     doc_line_text,
     same_param_id,
     pronoun_param_id,
+    Fill,
+    Surface,
+    wreck,
 }
-use features.{chained_binder}
+use features.{chained_binder, Wording, Piece, RuleTier}
+use compiler.{avra}
+use @std.grammar.{node_builder_name}
 use features.expr_spine.{words, applieds}
 use @std.text.{Text, builder}
 extern fn avra_float_text_bits(bits: int) -> string
@@ -474,18 +479,7 @@ impl SourceText {
                         ),
                 ]
             },
-            .Return(value) -> [
-                source_line(
-                    depth,
-                    if value == null { "return" } else { "return ${self.expression(value!, loosest_tier, depth, col_after("return ", depth * 4))}" },
-                ),
-            ],
-            .Fail(value) -> [
-                source_line(
-                    depth,
-                    "fail ${self.expression(value, loosest_tier, depth, col_after("fail ", depth * 4))}",
-                ),
-            ],
+            .Return(_) or .Fail(_) -> [source_line(depth, self.worded_stmt(s, depth))],
             .ImplDecl(of, target, fns) -> {
                 let itp = self.store.impl_tparams_of(s)
                 [
@@ -1337,16 +1331,10 @@ impl SourceText {
             .FloatLit(bits) -> numeric(avra_float_text_bits(bits), parent),
             .StrLit(value) -> grouped(self.str_lit_text(id, value), atom_tier, parent),
             .BytesLit(spelled) -> grouped("b\"${spelled}\"", atom_tier, parent),
-            .Range(lo, hi) -> grouped(
-                "(${self.expression(lo, loosest_tier, depth, c + 1)}..${self.expression(hi, loosest_tier, depth, c + 1)})",
-                atom_tier,
-                parent,
-            ),
+            .Range(_, _) or .Not(_) or .NullLit or .Receiver or .Channel(_, _) -> self.worded(id, parent, depth, c),
             .BoolLit(value) -> grouped(if value { "true" } else { "false" }, atom_tier, parent),
             .Ident(name) -> grouped(source_name(name.of), atom_tier, parent),
-            .Receiver -> grouped("self", atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
-            .Not(value) -> grouped("!${self.expression(value, unary_tier, depth, c + 1)}", unary_tier, parent),
             .LetPattern(pat, subject, otherwise, held) -> grouped(
                 self.let_pattern_text(pat, subject, otherwise, held, depth),
                 loosest_tier,
@@ -1387,7 +1375,6 @@ impl SourceText {
             .Within(limit, body) -> grouped(self.within_group(limit, body, id, depth, c), atom_tier, parent),
             .Emit(value) -> grouped("yield ${self.expression(value, loosest_tier, depth, c)}", atom_tier, parent),
             .Produce(elem, cap, body) -> grouped(self.produce_group(elem, cap, body, id, depth), atom_tier, parent),
-            .Channel(elem, cap) -> grouped(self.channel_group(elem, cap, depth), atom_tier, parent),
             .Select(fair, arms) -> grouped(
                 self.select_expr(fair, arms, end_of(self.store.expr_span(id)), depth),
                 atom_tier,
@@ -1420,7 +1407,6 @@ impl SourceText {
                 parent,
             ),
             .Match(subject, arms) -> grouped(self.match_or_payload_if(subject, arms, id, depth, c), atom_tier, parent),
-            .NullLit -> grouped("null", atom_tier, parent),
             .Coalesce(left, right) -> {
                 let l = self.expression(left, 5, depth, c)
                 grouped(
@@ -1880,14 +1866,6 @@ impl SourceText {
         "${head} ${self.block(block, one, depth)}"
     }
 
-    /// `channel<T>(cap)` — the manual pair. Its argument list is ALWAYS
-    /// written: the no-capacity spelling is the empty list, and a bare
-    /// `channel<T>` does not parse, so an omitted list is no round trip.
-    mut fn channel_group(elem: TypeRef, cap: ExprId?, depth: int) -> string {
-        let pinned = "channel${self.pins([elem])}"
-        if cap == null { "${pinned}()" } else { "${pinned}(${self.expression(cap!, loosest_tier, depth)})" }
-    }
-
     mut fn within_group(limit: ExprId, body: ExprId, id: ExprId, depth: int, col: int) -> string {
         let one = self.span_flat(self.store.expr_span(id))
         let shown = self.span_written(limit)
@@ -2318,7 +2296,7 @@ impl SourceText {
 
     mut fn pattern(id: PatId, depth: int) -> string {
         match self.store.pat(id) {
-            .Wild -> "_",
+            .Wild or .Member(_, _) -> self.worded_pat(id, depth),
             .Rest -> "rest",
             .Bind(name) -> source_name(name.of),
             .Variant(name, args) -> ".${source_name(name.of)}${if args.is_empty() { "" } else { "(${joined([self.pattern(p, depth) for p in args], ", ")})" }}",
@@ -2326,9 +2304,61 @@ impl SourceText {
             .Format(head, parts) -> format_source(head, parts),
             .Quote(body) -> self.expression(body, loosest_tier, depth),
             .Typed(name, ty) -> "${source_name(name.of)}: ${self.type_ref_wrapped(ty, depth)}",
-            .Member(name, bind) -> ".${source_name(name.of)} as ${source_name(bind.of)}",
             .Seq(before, middle, after) -> self.seq_pattern(before, middle, after, depth),
             .Fields(name, fields, args, open) -> self.fields_pattern(name.of, [f.of for f in fields], args, open, depth),
+        }
+    }
+
+    /// An expression printed from its rule's wording, grouped at the tier
+    /// the rule stands at.
+    mut fn worded(id: ExprId, parent: int, depth: int, col: int) -> string {
+        let seen = self.store.expr(id).surface()
+        let w = wording_of("Expr", seen)
+        grouped(self.pieces_text(w.pieces, seen.fills, depth, col), w.tier, parent)
+    }
+
+    /// A statement printed from its rule's wording, from the column its
+    /// line begins at.
+    mut fn worded_stmt(id: StmtId, depth: int) -> string {
+        let seen = self.store.stmt(id).surface()
+        self.pieces_text(wording_of("Stmt", seen).pieces, seen.fills, depth, depth * 4)
+    }
+
+    /// A pattern printed from its rule's wording.
+    mut fn worded_pat(id: PatId, depth: int) -> string {
+        let seen = self.store.pat(id).surface()
+        self.pieces_text(wording_of("Pat", seen).pieces, seen.fills, depth, -1)
+    }
+
+    /// The pieces in order, each hole printed from the column the words
+    /// before it end at.
+    mut fn pieces_text(pieces: List<Piece>, fills: List<Fill>, depth: int, col: int) -> string {
+        mut text = ""
+        for p in pieces { text = "${text}${self.piece_text(p, fills, depth, col_after(text, col))}" }
+        text
+    }
+
+    mut fn piece_text(p: Piece, fills: List<Fill>, depth: int, col: int) -> string {
+        match p {
+            .Word(text) -> text,
+            .Space -> " ",
+            .Hole(at, tier) -> self.fill_text(fills[at], tier, depth, col),
+            .Maybe(at, inner) -> match fills[at] {
+                .Gone -> "",
+                .Value(_) or .Name(_) or .Ty(_) or .Other -> self.pieces_text(inner, fills, depth, col),
+            },
+        }
+    }
+
+    mut fn fill_text(f: Fill, tier: int, depth: int, col: int) -> string {
+        match f {
+            .Value(id) -> self.expression(id, tier, depth, col),
+            .Name(text) -> source_name(text),
+            .Ty(ty) -> spelled(ty),
+            .Gone or .Other -> {
+                wreck("defect: a template hole reads a payload that is absent or no hole can read")
+                ""
+            },
         }
     }
 
@@ -2741,6 +2771,48 @@ const unary_tier: int = 10
 const with_tier: int = 11
 const postfix_tier: int = 12
 const atom_tier: int = 13
+
+/// The scale by the grammar rule each tier is the rank of. A template
+/// hole names a rule, and the rule's rank is what the site demands of the
+/// form that fills it; a rule not listed here ranks nothing, and a hole
+/// naming it leaves its node untemplated. Assembly refuses a claimed node
+/// whose template is missing.
+export const rule_scale: List<RuleTier> = [
+    RuleTier { rule: "expression", tier: loosest_tier },
+    RuleTier { rule: "unary", tier: unary_tier },
+    RuleTier { rule: "withed", tier: with_tier },
+    RuleTier { rule: "postfix", tier: postfix_tier },
+    RuleTier { rule: "primary", tier: atom_tier },
+]
+
+/// The nodes the printer reads from their rule, as `Owner.Variant`. Each
+/// is claimed here and refused at assembly when its rule no longer reads
+/// as a template.
+export const worded_nodes: List<string> = [
+    "Expr.Not",
+    "Expr.Range",
+    "Expr.NullLit",
+    "Expr.Receiver",
+    "Expr.Channel",
+    "Stmt.Return",
+    "Stmt.Fail",
+    "Pat.Wild",
+    "Pat.Member",
+]
+
+/// The language's wordings, held for the process: the printer asks once
+/// per node, so the map is read from the assembled language once.
+once fn wordings() -> Map<string, Wording> { avra().wordings }
+
+/// A node's wording, or the wreck a claimed node without one is.
+fn wording_of(owner: string, seen: Surface) -> Wording {
+    let at = node_builder_name(owner, seen.node)
+    let w? = wordings().get(at) else {
+        wreck("defect: `${at}` is printed from its rule and has no wording")
+        return Wording { node: at, tier: 0, pieces: [] }
+    }
+    w
+}
 
 /// A binary operator's tier — below `unary_tier`, above `loosest_tier`.
 fn binary_precedence(op: BinOp) -> int {
