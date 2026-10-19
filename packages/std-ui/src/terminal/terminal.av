@@ -8,7 +8,7 @@
 //! held text and the character, and a view that does not keep what it was
 //! told shows none of it.
 use @std.text.{ascii_lower, codepoints, from_codepoints}
-use app.{Act, Shown, running, shown, stood, notice_node}
+use app.{Act, Shown, Want, running, shown, stood, notice_node}
 use tree.controls.{Control, said_by_control}
 use tree.node.{Said, Node, Attribute}
 use realize.tui.said.{said_of}
@@ -72,6 +72,7 @@ export type Terminal = {
     lost_paste: Cell<int> = Cell.new(0),
     keyboard: Cell<int> = Cell.new(-1),
     input: Cell<Heard> = Cell.new(Heard { keys: [], held: "".bytes() }),
+    reads: Cell<int> = Cell.new(0),
 }
 
 /// `view` in a terminal `width` cells wide and `height` lines tall. The
@@ -609,18 +610,27 @@ impl Terminal {
     }
 
     /// The keys a read spells behind what the reads before it held: `got` the
-    /// octets it brought, or null when the escape window went by with none.
+    /// octets it brought, or null when the escape window closed with none. A
+    /// read that leaves a lone escape opens the window on the app's clock.
     fn taken(got: Bytes?) -> List<Key> {
         let run = self.input.get().after(got, self.paste_limit)
         self.input.set(run)
+        let at = self.reads.get() + 1
+        self.reads.set(at)
+        if run.escape_waits() { let _ = self.shown.app.ask(Want.After(escape_window), () -> self.closes(at)) }
         run.keys
+    }
+
+    /// The window read `at` opened closes: with no read since, the lone
+    /// escape it left is the Escape key. True when it was.
+    fn closes(at: int) -> bool {
+        if self.reads.get() != at { return false }
+        self.press(self.taken(null))
+        true
     }
 
     /// The keys `text` spells as one read, each in turn, until the input ends.
     fn feed(text: string) { self.press(self.taken(text.bytes())) }
-
-    /// The escape window goes by with nothing read.
-    fn quiet() { self.press(self.taken(null)) }
 
     /// The screen as the terminal shows it: the tree in lines, the control
     /// that holds the focus marked, and under them a status line while the
@@ -659,47 +669,27 @@ impl Terminal {
     }
 }
 
-/// The act of a read: its keys, each in turn. A turn that ends the input
-/// ends the loop.
-fn pressing(on: Terminal, run: List<Key>) -> Act {
+/// The act of a read: the keys `bytes` finishes behind what the reads
+/// before it held, each in turn. A turn that ends the input ends the loop.
+fn arrived(on: Terminal, bytes: Bytes) -> Act {
     () -> {
-        on.press(run)
+        on.press(on.taken(bytes))
         if on.ended.get() { on.shown.app.close() }
         true
     }
 }
 
-/// What a wait on the input brought: octets, the escape window going by
-/// with none, or the input's end.
-enum Arrival {
-    Octets(bytes: Bytes)
-    Quiet
-    Ended
-}
-
-/// The next thing the input brings: while a lone escape is held (`window`)
-/// the wait ends when the escape window does.
-fn arrived(window: bool) -> Arrival {
-    let ready = avra_fiber_park_fd(input, 0, if window { escape_window } else { -1 }) == 1
-    if window && !ready { return .Quiet }
-    let token = avra_fd_read(input, chunk)
-    if token <= 0 { .Ended } else { .Octets(avra_fd_taken(token)) }
-}
-
-/// The standard input as a source: each read's keys become an act in the
-/// app's inbox, and its end ends the loop. What a read leaves unfinished
-/// stands before the next, read here, in order.
+/// The standard input as a source: each read it parks for becomes an
+/// act in the app's inbox, and its end ends the loop.
 fn read(on: Terminal) -> bool {
     while true {
-        let got = match arrived(on.input.get().escape_waits()) {
-            .Octets(bytes) -> on.taken(bytes),
-            .Quiet -> on.taken(null),
-            .Ended -> {
-                on.shown.app.close()
-                return true
-            },
+        let _ = avra_fiber_park_fd(input, 0, -1)
+        let token = avra_fd_read(input, chunk)
+        if token <= 0 {
+            on.shown.app.close()
+            return true
         }
-        if !on.shown.app.post_unowned(pressing(on, got)) { return true }
+        if !on.shown.app.post_unowned(arrived(on, avra_fd_taken(token))) { return true }
     }
     true
 }
