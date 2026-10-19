@@ -16,6 +16,9 @@ use @std.avrac.compiler.store.{
     store_file_bytes,
     all_body_names,
     body_rev_of,
+    cas_live,
+    cas_collect,
+    cas_readers,
 }
 use @std.avrac.core.{sorted_by}
 use @std.text.{parse_int}
@@ -25,19 +28,20 @@ type CacheCmd = {}
 impl Runnable for CacheCmd {
     fn run(args: CliResult) -> int {
         let action = args.arg("action")
+        if action == "gc" { return cache_gc() }
         let store = cache_store()
         if action == "clean" { return cache_clean(store) }
         if action == "log" { return cache_log(store) }
         if action == "show" { return cache_show(store, args.arg("rev")) }
-        eprintln("avra cache: `clean`, `log` or `show <rev>`")
+        eprintln("avra cache: `clean`, `gc`, `log` or `show <rev>`")
         2
     }
 }
 
 export command cache {
-    description: "The compiler store: reclaim it (`clean`), list its sealed revisions (`log`), answer one (`show <rev>`)"
+    description: "The compiler store: reclaim it (`clean`), sweep the shared content store (`gc`), list its sealed revisions (`log`), answer one (`show <rev>`)"
     arg action {
-        description: "`clean`, `log` or `show`"
+        description: "`clean`, `gc`, `log` or `show`"
         required: true
     }
     arg rev {
@@ -69,6 +73,15 @@ fn cache_clean(store: Store) -> int {
         "avra cache clean: sealed ${yesno(rep.sealed)} · revisions ${rep.bodies_before} → ${rep.bodies_after} · evicted ${evicted}",
     )
     println("avra cache clean: bytes ${rep.bytes_before} → ${rep.bytes_after}")
+    0
+}
+
+/// `gc` sweeps the shared content store: blobs no live store names go, then the limits.
+fn cache_gc() -> int {
+    let rep = cas_collect(cas_live())
+    println(
+        "avra cache gc: kept ${rep.kept} blob(s) (${rep.kept_bytes} bytes) · freed ${rep.freed} blob(s) (${rep.freed_bytes} bytes) · ${cas_readers().length} live store(s)",
+    )
     0
 }
 

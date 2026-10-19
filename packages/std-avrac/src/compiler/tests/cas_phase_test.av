@@ -1,0 +1,41 @@
+// THE SHARED CONTENT STORE ACROSS PROCESSES (DB 11). `tools/cas_attack.sh` runs this file once
+// per phase, each a process of its own: two store roots keep one 5 MB value, a second process
+// asks it back, and a deleted blob answers a miss the next keep puts back. Run bare, no phase
+// is named and nothing is asserted.
+use @std.io.{env}
+use compiler.store.{Stored, node_key, store_at}
+
+fn phase() -> string { env("AVRA_CAS_PHASE") ?? "" }
+
+fn scratch() -> string { env("AVRA_CAS_DIR") ?? "" }
+
+fn input_key() -> string { node_key(Stored.Unit, ["cas-attack"]) }
+
+const input_length: int = 5242880
+
+/// A 5 MB value: a sixteen-octet word doubled up, then cut.
+fn five_megabytes() -> string {
+    mut s = "0123456789abcdef"
+    for _i in 0..19 { s = s + s }
+    s.substring(0, input_length)
+}
+
+spec "the shared content store, across processes" {
+    given "the phase this process is" {
+        then "its claim holds" {
+            let a = store_at("${scratch()}/a")
+            let b = store_at("${scratch()}/b")
+            let big = five_megabytes()
+            match phase() {
+                "put" -> a.keep(Stored.Unit, input_key(), big, []) &&
+                    b.keep(Stored.Unit, input_key(), big, []) &&
+                    a.get(Stored.Unit, input_key()) == big &&
+                    b.get(Stored.Unit, input_key()) == big,
+                "read" -> a.get(Stored.Unit, input_key()) == big && b.get(Stored.Unit, input_key()) == big,
+                "miss" -> a.get(Stored.Unit, input_key()) == null && b.get(Stored.Unit, input_key()) == null,
+                "again" -> a.keep(Stored.Unit, input_key(), big, []) && a.get(Stored.Unit, input_key()) == big,
+                _ -> true,
+            }
+        }
+    }
+}

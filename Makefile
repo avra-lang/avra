@@ -655,6 +655,7 @@ cache-attacks-b1: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/closure_gather_attack.sh
 	@sh tools/impl_held_attack.sh
 	@sh tools/store_reads_attack.sh
+	@sh tools/cas_attack.sh
 	@sh tools/docs_cache_attack.sh
 	@sh tools/static_names_attack.sh
 	@sh tools/moved_tree_attack.sh
