@@ -52,6 +52,8 @@ use tree.dom_event.{DomEvent}
 use tree.seats.{SeatRow, seat, seat_named}
 use tree.terminal_key.{Key}
 use tree.lists.{flatten}
+// LICENSED modules.unused_import: `sighted` is named by GENERATED code (the node a primitive derives).
+use tree.sites.{sighted}
 use tree.identity.{Stand, stand_of, steps, shared}
 use tree.standing.{Standing, Kept, standing, kept, stood}
 use style.box.{Box}
@@ -86,6 +88,7 @@ export trait View {
                 box: ${said.box_code(parts)},
                 children: ${held_by([c for p in parts for c in p.children])},
                 events: ${joined([c for p in parts for c in p.events])},
+                sites: ${sites_code(t)},
             }
         }
         Declared {
@@ -159,9 +162,11 @@ export fn made_of(at: Standing, items: List<dyn View>, key: string?) -> List<Nod
 }
 
 /// A node as a composition drew it: stepped through `via` where it was
-/// drawn through nothing yet, wearing `key` where it wears none.
+/// drawn through nothing yet, wearing `key` where it wears none. A composition
+/// reads state in a frame of its own that no node of its drawing answers for,
+/// so what it draws is opaque to a page that patches exactly.
 fn drawn_through(n: Node, via: string?, key: string?) -> Node {
-    n with { box: n.box with { via: n.box.via ?? via, key: n.box.key ?? key } }
+    n with { box: n.box with { via: n.box.via ?? via, key: n.box.key ?? key, opaque: true } }
 }
 
 /// What each of `items` draws, standing under `at` at its own step.
@@ -342,6 +347,7 @@ impl Vocabulary {
     /// The one thing a member's marks say. Each mark is read by its own
     /// word, so a member saying two things shows as two parts.
     fn marked(f: Field) -> Part {
+        if says_state(f) { return Part {} }
         let said = [self.attribute(f, m) for m in marks_of(f, attr_mark)]
             .concat([children(f, m) for m in marks_of(f, children_mark)])
             .concat([self.styled(f, m) for m in marks_of(f, style_mark)])
@@ -582,6 +588,24 @@ fn joined(runs: List<Code>) -> Code {
     if runs.length == 1 { return runs[0] }
     quote { flatten([${..runs}]) }
 }
+
+/// The readings a primitive carries: the closure its field of type
+/// `fn() -> string` holds and the cells its `Cells` field holds, made one
+/// reading when the cells are any. A primitive without both has none.
+fn sites_code(t: Type) -> Code {
+    let said? = t.fields.find(it.ty == said_type) else { return quote { [] } }
+    let read? = t.fields.find(it.ty == cells_type) else { return quote { [] } }
+    quote { sighted(self.site, self.${said.name}, self.${read.name}) }
+}
+
+/// The spellings a field wears to carry what the compiler knows of its text:
+/// the closure that says the words again and the cells it reads.
+const said_type = "Words"
+const cells_type = "Cells"
+
+/// Whether a field is one the compiler fills to carry a reading, which no
+/// attribute, child or style says.
+fn says_state(f: Field) -> bool { f.ty == said_type || f.ty == cells_type }
 
 /// The primitive a component named with `@prim` — `@prim(.Button)` says
 /// `Button` — absent when it named none.

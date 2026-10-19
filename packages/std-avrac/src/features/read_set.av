@@ -47,14 +47,36 @@ export enum StatePlace {
 }
 
 /// A place as one whole number — what a declaration-keyed query holds, so
-/// a set of places is a sorted list of ints with a hash.
+/// a set of places is a sorted list of ints with a hash. EVERY KEY LIES
+/// STRICTLY INSIDE (-2^51, 2^51): a place whose indexes would leave that
+/// range answers `Unknown`, which assumes any, so the structural tag below
+/// (the key moved out by 2^52) can never meet a plain key.
 export fn place_key(p: StatePlace) -> int {
     match p {
-        .Local(f, s) -> (f.index + 1) * 4294967296 + s.index,
-        .Global(d) -> 0 - (d.index + 2),
+        .Local(f, s) -> if f.index + 1 < max_files && s.index < max_stmts { (f.index + 1) * max_stmts + s.index } else { 0 - 1 },
+        .Global(d) -> if d.index + 2 < max_decls { 0 - (d.index + 2) } else { 0 - 1 },
         .Unknown -> 0 - 1,
     }
 }
+
+/// The statements a file's local keys count, and the files and declarations
+/// a key tells apart: the product of the first two is 2^51, the bound every
+/// key stays inside.
+const max_stmts = 4294967296
+const max_files = 524288
+const max_decls = 2251799813685248
+
+/// THE STRUCTURAL TAG: a place a declaration reads that no reading answers
+/// for, carried in the same set as the plain place as the key moved out by
+/// 2^52. Disjoint from every plain key by `place_key`'s bound.
+const structural_offset = 4503599627370496
+
+export fn structural_key(k: int) -> int { if k >= 0 { k + structural_offset } else { k - structural_offset } }
+
+export fn is_structural_key(k: int) -> bool { k >= structural_offset || k <= 0 - structural_offset }
+
+/// The plain key a structural key wraps.
+export fn plain_of_structural(k: int) -> int { if k >= 0 { k - structural_offset } else { k + structural_offset } }
 
 /// The place a `place_key` names.
 export fn place_at_key(k: int) -> StatePlace {
@@ -160,6 +182,83 @@ fn deduped(places: List<StatePlace>) -> List<StatePlace> {
         if !out.any(place_key(it) == place_key(p)) { out.push(p) }
     }
     out
+}
+
+// ── the STRUCTURAL set: reads a reading does not answer for ───────────
+
+/// Whether a closure's reads are not the paint's: the closure the builder
+/// minted to say a text again (its reads are the reading, answered by the
+/// page), and a handler an instance hears (it runs when the user speaks, not
+/// when the page is drawn).
+fn covered(view: FileView, e: ExprId) -> bool {
+    view.store.expr_is_closure(e) &&
+        (view.store.minted_for(e) != null || view.store.on_handler(e) != null)
+}
+
+/// The heads of an instance a reading answers for: its text, which the
+/// instance's minted closure says again.
+fn sited_heads(view: FileView, e: ExprId) -> List<ExprId> {
+    match view.store.expr(e) {
+        .Component(_, heads, _, .Expanded(lit), _, _) if says_again(view, lit) -> heads.take(1),
+        rest -> [],
+    }
+}
+
+/// Whether a literal is extended by a closure the builder minted for it.
+fn says_again(view: FileView, lit: ExprId) -> bool {
+    view.store.extended_by(lit).any((v) -> view.store.expr_is_closure(v))
+}
+
+/// The places the subtree reads that no reading answers for, children first.
+/// A covered closure is a leaf with no read; the head a reading says again is
+/// not walked; every other closure yields its captures, as `reads_of` has it.
+fn structural_reads(view: FileView, names: NameFacts, root: ExprId, skip: List<ExprId>) -> List<
+    StatePlace,
+> {
+    if skip.contains(root) || covered(view, root) { return [] }
+    let own = here(view, names, root)
+    if view.store.expr_is_closure(root) { return own }
+    let inner = skip.concat(sited_heads(view, root))
+    flatten([structural_reads(view, names, k, inner) for k in view.store.expr_children(root)])
+        .concat(own)
+}
+
+/// The places the calls in the subtree reach that no reading answers for: a
+/// callee's own STRUCTURAL places (`callee`, as `place_key`s), and `Unknown`
+/// where a body is out of sight.
+fn structural_calls(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    skip: List<ExprId>,
+    callee: fn(DeclId) -> List<int>,
+) -> List<StatePlace> {
+    if skip.contains(root) || covered(view, root) || view.store.expr_is_closure(root) { return [] }
+    let called = if view.store.expr_is_call(root) { callee_places(names, root, callee) } else { [] }
+    let method = if applies_method(view.store, root) { [StatePlace.Unknown] } else { [] }
+    let inner = skip.concat(sited_heads(view, root))
+    called
+        .concat(method)
+        .concat(
+            flatten(
+                [structural_calls(view, names, k, inner, callee) for k in view.store.expr_children(root)],
+            ),
+        )
+}
+
+/// Every place the subtree reads at paint time that a reading does NOT
+/// answer for: a page whose cell is among them takes the full paint when it
+/// is written.
+export fn structural_places_of(
+    view: FileView,
+    names: NameFacts,
+    root: ExprId,
+    callee: fn(DeclId) -> List<int>,
+) -> List<StatePlace> {
+    deduped(
+        structural_reads(view, names, root, [])
+            .concat(structural_calls(view, names, root, [], callee)),
+    )
 }
 
 /// The `state` places `root`'s subtree reads, deduped. A call is a
