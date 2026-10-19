@@ -27,6 +27,7 @@ outside every listed path, which would otherwise run nowhere.
 """
 import json
 import os
+import re
 import sys
 
 DEFAULT = 5
@@ -99,13 +100,34 @@ def splits(path):
     return out, cold, groups
 
 
-def item_paths(item, groups):
+STRIDE = re.compile(r"^(?P<dir>.+)%(?P<k>\d+)/(?P<n>\d+)$")
+
+
+def stride_files(base, d, k, n):
+    """A directory's proof files, dealt round-robin in name order into `n` hands: hand `k`."""
+    here = os.path.join(base, d)
+    names = sorted(f for f in os.listdir(here) if os.path.isfile(os.path.join(here, f)) and is_proof(os.path.join(here, f)))
+    return [os.path.join(d, f) for i, f in enumerate(names) if i % n == k]
+
+
+def item_paths(item, groups, root="."):
     """The `packages/...` paths one packed item is proved by: a package, a path under it, or
-    every path of a group."""
+    every path of a group. A path `dir%k/n` is hand `k` of `n` of the proof files directly in
+    `dir`, named one by one. A path `!file` is a file that only LOOKS like a proof (a spec inside
+    a string): the check holds it covered and no shard runs it."""
     pkg, _, rest = item.partition("/")
-    if rest.startswith("@"):
-        return [f"packages/{pkg}/{p}" for p in groups[item]]
-    return [f"packages/{item}"]
+    if not rest.startswith("@"):
+        return [f"packages/{item}"]
+    out = []
+    for p in groups[item]:
+        m = STRIDE.match(p)
+        if p.startswith("!"):
+            continue
+        if m:
+            out += [f"packages/{pkg}/{f}" for f in stride_files(os.path.join(root, "packages", pkg), m["dir"], int(m["k"]), int(m["n"]))]
+        else:
+            out.append(f"packages/{pkg}/{p}")
+    return out
 
 
 def split_items(names, table):
@@ -125,16 +147,35 @@ def unreached(root, table, groups=None):
     """Proof files under a split package that no listed path holds."""
     gone = []
     for pkg, listed in table.items():
-        paths = [q for p in listed for q in ((groups or {})[f"{pkg}/{p}"] if p.startswith("@") else [p])]
+        listed_paths = [q for p in listed for q in ((groups or {})[f"{pkg}/{p}"] if p.startswith("@") else [p])]
         base = os.path.join(root, "packages", pkg)
+        paths, hands = [], {}
+        for p in listed_paths:
+            m = STRIDE.match(p)
+            if m:
+                hands.setdefault((m["dir"], int(m["n"])), set()).add(int(m["k"]))
+            else:
+                paths.append(p)
+        held = set()
+        for (d, n), ks in hands.items():
+            if not os.path.isdir(os.path.join(base, d)):
+                gone.append(f"{pkg}/{d} is not a directory")
+            elif ks != set(range(n)):
+                gone.append(f"{pkg}/{d} is dealt in {n} hands and {sorted(set(range(n)) - ks)} are not listed")
+            else:
+                held |= {f for k in ks for f in stride_files(base, d, k, n)}
         for p in paths:
-            if not os.path.isdir(os.path.join(base, p)):
-                gone.append(f"{pkg}/{p} is not a directory")
+            if p.startswith("!"):
+                held.add(p[1:])
+            elif os.path.isfile(os.path.join(base, p)):
+                held.add(p)
+            elif not os.path.isdir(os.path.join(base, p)):
+                gone.append(f"{pkg}/{p} is not a directory or a file")
         for d, _, files in os.walk(os.path.join(base, "src")):
             rel = os.path.relpath(d, base)
             if any(rel == p or rel.startswith(p.rstrip("/") + "/") for p in paths):
                 continue
-            gone += [os.path.join(rel, f) for f in files if is_proof(os.path.join(d, f))]
+            gone += [os.path.join(rel, f) for f in files if is_proof(os.path.join(d, f)) and os.path.join(rel, f) not in held]
     return gone
 
 
@@ -189,7 +230,16 @@ def self_test():
         assert table == {"p": ["src/a", "@g", "src/d"]} and cold == {"p/src/a"} and groups == {"p/@g": ["src/b", "src/c"]}, (table, cold, groups)
         assert item_paths("p/@g", groups) == ["packages/p/src/b", "packages/p/src/c"]
         assert item_paths("p/src/d", groups) == ["packages/p/src/d"] and item_paths("cli", groups) == ["packages/cli"]
-    print("shards: self-test passed — 12 fixtures")
+        for n in ("a_test.av", "b_test.av", "c_test.av"):
+            os.makedirs(os.path.join(d, "packages", "p", "src", "t"), exist_ok=True)
+            with open(os.path.join(d, "packages", "p", "src", "t", n), "w") as fh:
+                fh.write("spec x {\n}\n")
+        g = {"p/@a": ["src/t%0/2"], "p/@b": ["src/t%1/2"]}
+        assert item_paths("p/@a", g, d) == ["packages/p/src/t/a_test.av", "packages/p/src/t/c_test.av"]
+        assert item_paths("p/@b", g, d) == ["packages/p/src/t/b_test.av"]
+        assert unreached(d, {"p": ["@a", "@b"]}, g) == [], "two hands cover the directory"
+        assert any("not listed" in x for x in unreached(d, {"p": ["@a"]}, g)), "a missing hand is named"
+    print("shards: self-test passed — 14 fixtures")
 
 
 if __name__ == "__main__":
@@ -201,7 +251,7 @@ if __name__ == "__main__":
     ci = os.path.join(root, ".github", "ci")
     table, cold, groups = splits(os.path.join(ci, "suite-splits.txt"))
     if sys.argv[1:2] == ["--paths"]:
-        print(" ".join(item_paths(sys.argv[2], groups)))
+        print(" ".join(item_paths(sys.argv[2], groups, root)))
         sys.exit(0)
     if sys.argv[1:] == ["--check-splits"]:
         bad = unreached(root, table, groups)

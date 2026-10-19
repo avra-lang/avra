@@ -38,7 +38,7 @@ data = bytearray(open(path, 'rb').read())
 if which == 'all':
     data = bytearray(b ^ 0x01 for b in data)
 else:
-    data[len(data) // 2 if which == 'mid' else len(data) - 1] ^= 0x01
+    data[20 if which == 'head' else len(data) // 2 if which == 'mid' else len(data) - 1] ^= 0x01
 open(path, 'wb').write(bytes(data))
 PY
 }
@@ -62,11 +62,18 @@ run_big clean
 [ "$(tail -1 $R/clean.out)" = "$WANT" ] || fail "a clean run printed '$(tail -1 $R/clean.out)', wanted $WANT"
 [ "$(grep -c '^Q	store	body	' $R/clean.err)" = 1 ] || fail "a warm run read $(grep -c '^Q	store	body	' $R/clean.err) bodies, not one"
 
+# A body is read lazily: its head and index are checked at open, a section when first read,
+# a row when decoded. A damaged HEAD is a torn body at open; damage past it is answered absent
+# where it is read — either way the answer is right.
 cp "$(newest)" $R/pack.saved
-flip "$(newest)" mid
+flip "$(newest)" head
 run_big torn_pack
-[ "$(tail -1 $R/torn_pack.out)" = "$WANT" ] || fail "a damaged newest body changed the answer to '$(tail -1 $R/torn_pack.out)'"
-[ "$(grep -c '^Q	store	torn' $R/torn_pack.err)" -ge 1 ] || fail "a damaged newest body was not seen as torn"
+[ "$(tail -1 $R/torn_pack.out)" = "$WANT" ] || fail "a damaged newest body's head changed the answer to '$(tail -1 $R/torn_pack.out)'"
+[ "$(grep -c '^Q	store	torn' $R/torn_pack.err)" -ge 1 ] || fail "a damaged newest body's head was not seen as torn"
+cp $R/pack.saved "$(newest)"
+flip "$(newest)" mid
+run_big mid_pack
+[ "$(tail -1 $R/mid_pack.out)" = "$WANT" ] || fail "a damaged newest body's middle changed the answer to '$(tail -1 $R/mid_pack.out)'"
 cp $R/pack.saved "$(newest)"
 
 # A process seals once, at its first write: a LATER process that writes anything folds every
