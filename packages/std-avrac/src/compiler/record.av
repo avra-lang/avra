@@ -1598,16 +1598,16 @@ impl Workspace {
     /// The files a module's record references by name, builtin types apart.
     fn reach_refs(store: Store, m: ModulePath) -> List<string> { self.producers_in(store, m).reach_refs }
 
-    /// The files of a seen module's record that re-export a name — memoized for
-    /// the build, since every module that sees `name` asks again and a scan of
+    /// The files of a seen module's record that re-export a name — memoized per record, so a
+    /// record written since is read again, since every module that sees `name` asks again and a scan of
     /// its whole record per asker is the module's lines squared.
     fn reexporting_files(store: Store, name: string) -> List<string> {
-        let known: List<string>? = self.records.record_reexports.get().get(name)
+        let m = module_path(name.split("."))
+        let key = self.record_key(m)
+        let known: List<string>? = self.records.record_reexports.get().get(key)
         if known != null { return known! }
-        let made = distinct(
-            [p[1] for p in self.producers_in(store, module_path(name.split("."))).reexports],
-        )
-        self.records.record_reexports.put(name, made)
+        let made = distinct([p[1] for p in self.producers_in(store, m).reexports])
+        self.records.record_reexports.put(key, made)
         made
     }
 
