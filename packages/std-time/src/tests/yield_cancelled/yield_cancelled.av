@@ -1,10 +1,13 @@
 //! proves: a task whose `while` only yields hears a cancel at its
 //! back-edge under a schedule too — the statement after its loop never
 //! runs, in both engines
+use @std.task.{open_channel}
 use @std.time.{ms, sleep}
 
 let ended = Cell.new(0)
+let up = open_channel<int>(1)
 let spinner = spawn {
+    let _ = up.sink.post(1)
     mut turns = 0
     while turns < 20000 {
         sleep(ms(0))
@@ -13,7 +16,7 @@ let spinner = spawn {
     ended.set(1)
     turns
 }
-sleep(ms(0))
+let _ = up.source.next()
 spinner.cancel()
-sleep(ms(1))
+let _ = spinner.await catch c -> 0
 "${ended.get()}"

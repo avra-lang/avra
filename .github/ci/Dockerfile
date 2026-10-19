@@ -1,6 +1,6 @@
 # The checks' machine: Ubuntu 26.04 and LLVM 22, as on a Sprite — its packages
 # are packages.txt, which a Sprite's provisioning reads too. `nodejs` runs the
-# UI host's own tests and the board on a page (ui-host-test, ui-board); the pinned Firefox runs the board in a real browser (ui-browser).
+# UI host's own tests and the board on a page (ui-host-test, ui-board); the pinned Firefox runs the board in a real browser (ui-browser); a pinned Node 24 (`node-jspi`) runs the JSPI half of the hosted scheduler (wasm-host-check).
 FROM ubuntu:26.04
 COPY packages.txt /tmp/packages.txt
 COPY install_firefox.sh /tmp/install_firefox.sh

@@ -1,0 +1,130 @@
+//! `realize/tui/paint.av` — a placed tree drawn on a grid of cells, the grid a
+//! value a terminal can diff. Every
+//! node writes its own lines at its box, in tree order, so a child covers
+//! what its parent drew under it; a list draws a bullet beside each child,
+//! and the node the keys go to draws `> ` in the gutter it keeps. A glyph
+//! takes the cells it is wide, and what passes the grid's width is cut off.
+use @std.text.{graphemes, cells}
+use tree.node.{Node}
+use place.solve.{Placed}
+use realize.tui.layout.{
+    own_lines,
+    kept_cells,
+    pad_cols,
+    gap_rows,
+    closed_node,
+    holds_children,
+    pointer_cells,
+}
+
+/// One cell of a grid (a tile): the glyph that starts in it (a whole cluster), whether
+/// it is two cells wide, and its look (0 is none: the terminal prints no look
+/// yet). The cell a wide glyph spills into holds no text and is not wide.
+export type Tile = { text: string, wide: bool, style: int }
+
+/// A place in a grid.
+export type Pos = { x: int, y: int }
+
+/// The screen as a value: `width` by `height` cells, row by row, and where
+/// the caret goes (nothing when no control holds the focus).
+export type Grid = { width: int, height: int, cells: List<Tile>, cursor: Pos? }
+
+/// What is being drawn on: a row at a time, each as long as what is written
+/// in it, and the caret once the focused node has drawn its mark.
+type Canvas = { width: int, rows: List<Cell<List<string>>>, cursor: Cell<Pos?> }
+
+/// A tree drawn: its rows (each only as long as it is written) and the caret.
+export type Painted = { rows: List<List<string>>, cursor: Pos? }
+
+fn blank_row() -> Cell<List<string>> { Cell.new([]) }
+
+/// A row blank out to column `to`: rows grow as far as something is written,
+/// never as far as the width allows.
+fn reached(row: Cell<List<string>>, to: int) {
+    while row.get().length < to { row.push(" ") }
+}
+
+/// The tree `root` placed as `placed`, drawn in `width` cells; `focus` is
+/// the path of the node the keys go to.
+export fn painted(root: Node, placed: Placed, width: int, focus: string) -> Painted {
+    let canvas = Canvas {
+        width: width,
+        rows: [blank_row() for _y in 0..placed.rect.h],
+        cursor: no_caret(),
+    }
+    paint(canvas, root, placed, "0", focus)
+    Painted { rows: [row.get() for row in canvas.rows], cursor: canvas.cursor.get() }
+}
+
+fn no_caret() -> Cell<Pos?> { Cell.new(null) }
+
+/// A row as text, its trailing blanks dropped.
+export fn trimmed(cells_of: List<string>) -> string {
+    let last = [i for i, c in cells_of if c != " "].last() ?? -1
+    cells_of.slice(0, last + 1).join("")
+}
+
+/// The grid of a drawing: `width` by `height` cells (absent: as many rows as
+/// were drawn), rows past the drawing blank, rows past the height cut off.
+export fn gridded(p: Painted, width: int, height: int?) -> Grid {
+    let h = height ?? p.rows.length
+    Grid {
+        width: width,
+        height: h,
+        cells: [cell_at(p.rows, x, y) for y in 0..h for x in 0..width],
+        cursor: p.cursor,
+    }
+}
+
+fn cell_at(rows: List<List<string>>, x: int, y: int) -> Tile {
+    let text = if y < rows.length && x < rows[y].length { rows[y][x] } else { " " }
+    Tile { text: text, wide: cells(text) == 2, style: 0 }
+}
+
+/// The rows of a grid as text, trailing blanks dropped.
+export fn lines(g: Grid) -> List<string> {
+    [trimmed([g.cells[y * g.width + x].text for x in 0..g.width]) for y in 0..g.height]
+}
+
+/// `line` written at column `x` of row `y`; a glyph that does not wholly fit
+/// the grid is not drawn, nor any after it. A glyph cut in two by what is
+/// written over it leaves blank where its other half was.
+fn put(canvas: Canvas, x: int, y: int, line: string) {
+    if y < 0 || y >= canvas.rows.length { return }
+    mut at = x
+    for g in graphemes(line) {
+        let n = cells(g)
+        if at + n > canvas.width { return }
+        if at >= 0 && n > 0 {
+            let row = canvas.rows[y]
+            reached(row, at + n + 1)
+            if row.get()[at] == "" && at > 0 { row.set_at(at - 1, " ") }
+            if row.get()[at + n] == "" { row.set_at(at + n, " ") }
+            row.set_at(at, g)
+            for k in 1..n { row.set_at(at + k, "") }
+        }
+        at = at + n
+    }
+}
+
+/// A node's own lines at its box, then each child's box over them; a list
+/// draws its bullet in the gutter it keeps beside each child.
+fn paint(grid: Canvas, n: Node, p: Placed, path: string, focus: string) {
+    if closed_node(n) { return }
+    let r = p.rect
+    let pad = n.box.layout.pad
+    let left = r.x + pad_cols(pad?.start ?? .None)
+    let top = r.y + gap_rows(pad?.top ?? .None)
+    let gutter = if path == focus { pointer_cells } else { 0 }
+    if gutter > 0 {
+        put(grid, left, top, "> ")
+        grid.cursor.set(Pos { x: left + gutter, y: top })
+    }
+    let inner = r.w - (left - r.x) - pad_cols(pad?.end ?? .None) - gutter - kept_cells(n)
+    for i, line in own_lines(n, inner) { put(grid, left + gutter + kept_cells(n), top + i, line) }
+    let held = if holds_children(n) { n.children } else { [] }
+    for i, c in held {
+        if n.prim is .List && !closed_node(c) { put(grid, p.kids[i].rect.x - kept_cells(n), p.kids[i].rect.y, "• ") }
+        paint(grid, c, p.kids[i], "${path}.${i}", focus)
+    }
+}

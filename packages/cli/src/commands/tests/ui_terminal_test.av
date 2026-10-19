@@ -8,55 +8,74 @@ use @std.meta.{embed}
 use @std.process.{tool, cmd, ProcessError}
 use @std.time.{stamp}
 
+extern fn avra_trap(message: string)
+
 /// A field and a counting button, mounted in the terminal.
 const terminal_app: string = embed("ui_view/terminal_app.txt")
 
 /// A button that asks the loop for a timer, mounted in the terminal.
 const clock_app: string = embed("ui_view/terminal_clock.txt")
 
-/// The app, built once: where its binary stands — "" when it did not build.
-once fn terminal_binary() -> string {
-    let root = "${scratch_dir()}/ui_terminal_${stamp()}"
+/// A button that asks for three timers due at one instant.
+const burst_app: string = embed("ui_view/terminal_burst.txt")
+
+/// A package minted fresh around `source` and built: where its binary stands
+/// — "" when it did not build.
+fn built(name: string, source: string) -> string {
+    let root = "${scratch_dir()}/${name}_${stamp()}"
     let _ = make_dirs("${root}/src")
     let _ = write_text(
         "${root}/avra.toml",
-        "[package]\nname = \"ui_terminal\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"ui_terminal\"\npath = \"src/main.av\"\n",
+        "[package]\nname = \"${name}\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"${name}\"\npath = \"src/main.av\"\n",
     )
-    let _ = write_text("${root}/src/main.av", terminal_app)
+    let _ = write_text("${root}/src/main.av", source)
     match avra_ran(["build", root]) {
-        .Ok(o) -> o.out.stdout.trim().split("\n").last() ?? "",
-        .Err(_) -> "",
+        .Ok(o) -> if exit_is_zero(o.exit) {
+            o.out.stdout.trim().split("\n").last() ?? ""
+        } else {
+            unbuilt(name, o.out.stderr + o.out.stdout)
+        },
+        .Err(_) -> unbuilt(name, "the build did not run"),
     }
 }
 
-/// The timer app, built once: where its binary stands — "" when it did not build.
-once fn clock_binary() -> string {
-    let root = "${scratch_dir()}/ui_clock_${stamp()}"
-    let _ = make_dirs("${root}/src")
-    let _ = write_text(
-        "${root}/avra.toml",
-        "[package]\nname = \"ui_clock\"\nversion = \"0.1.0\"\n\n[bin]\nname = \"ui_clock\"\npath = \"src/main.av\"\n",
-    )
-    let _ = write_text("${root}/src/main.av", clock_app)
-    match avra_ran(["build", root]) {
-        .Ok(o) -> o.out.stdout.trim().split("\n").last() ?? "",
-        .Err(_) -> "",
-    }
+/// The fixture does not build: the test ends with the build's own words, never
+/// a binary that is no binary.
+fn unbuilt(name: string, said: string) -> string {
+    avra_trap("the ${name} fixture did not build: ${said}")
+    ""
 }
 
-/// What the timer app prints when its input gives one return and stays
-/// open for `held` seconds.
-fn clock_printed(held: string) -> Result<string, ProcessError> {
+/// The app, built once.
+once fn terminal_binary() -> string { built("ui_terminal", terminal_app) }
+
+/// The timer app, built once.
+once fn clock_binary() -> string { built("ui_clock", clock_app) }
+
+/// The burst app, built once.
+once fn burst_binary() -> string { built("ui_burst", burst_app) }
+
+/// What `binary` prints when its input gives one return and stays open for
+/// `held` seconds.
+fn held_open(binary: string, held: string) -> Result<string, ProcessError> {
     let fed = cmd(tool("sh")?, ["-c", "printf '\\n'; sleep ${held}"])
-    let app = cmd(tool(clock_binary())?, []) with { timeout: hang_bound() }
+    let app = cmd(tool(binary)?, []) with { timeout: hang_bound() }
     let ran = fed.pipe(app).outcome()?
     ran.stages.last()?.out?.stdout ?? "the app did not run"
 }
 
 /// The timer app's last line after `held` seconds of open input.
 fn clocked(held: string) -> string {
-    match clock_printed(held) {
+    match held_open(clock_binary(), held) {
         .Ok(out) -> out.trim().split("\n").last() ?? "nothing printed",
+        .Err(_) -> "the pipe failed",
+    }
+}
+
+/// The screens the burst app printed, as the counts they showed.
+fn bursts() -> string {
+    match held_open(burst_binary(), "0.6") {
+        .Ok(out) -> [l.trim() for l in out.split("\n") if l.trim().starts_with("bumped ")].join("|"),
         .Err(_) -> "the pipe failed",
     }
 }
@@ -113,5 +132,10 @@ spec "a terminal app reads its own standard input" {
     }
     given "a timer asked for, and the input ending before it is due" {
         then "the loop ends and the timer with it" { clocked("0") == "said=waiting" }
+    }
+    given "three timers due at one instant" {
+        then "the screen is printed once for the three, not three times" {
+            bursts() == "bumped 0|bumped 0|bumped 3"
+        }
     }
 }

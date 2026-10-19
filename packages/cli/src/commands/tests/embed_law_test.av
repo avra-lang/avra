@@ -47,6 +47,19 @@ fn embed_refusals(path: string) -> List<string> {
     }
 }
 
+/// Every refusal `avra check` speaks of the package providing `path` (from its root) to a kind.
+fn octets_refusals(path: string) -> List<string> {
+    let pkg = "${embed_root()}/pkg"
+    let _ = write_text(
+        "${pkg}/src/main.av",
+        "use @std.meta.{provided, Provider}\ntype K = { n: int }\nimpl Provider for K {\n    static fn provide(path: string, octets: Bytes) -> K? { K { n: octets.length } }\n}\nconst A: K = provided<K>(\"${path}\")\nA.n\n",
+    )
+    match avra_ran(["check", pkg]) {
+        .Ok(o) -> [l for l in o.out.stdout.split("\n") if l.starts_with("error[")],
+        .Err(_) -> ["the check did not run"],
+    }
+}
+
 /// What the package's built binary prints.
 fn embed_built() -> string {
     let binary? = clean_stdout(avra_ran(["build", embedding_on_disk("hello.txt")])) else { return "the build refused" }
@@ -68,6 +81,20 @@ spec "avra — embed on a disk" {
         }
         then "a directory refuses as no file" {
             embed_refusals("sub").join("|") == "error[type.embed_file]: `embed` could not read its file — `src/sub` is not a file"
+        }
+    }
+    given "octets provided from the package root" {
+        then "a file that is not text is accepted" { octets_refusals("src/bad.bin").is_empty() }
+        then "a linked file refuses at the literal, as embed's does" {
+            octets_refusals("src/link.txt").join("|") == "error[type.embed_place]: `embed` follows no link — one stands on the way to `src/link.txt`"
+        }
+        then "a file under a linked directory refuses the same way" {
+            octets_refusals("src/ldir/secret.txt").join("|") == "error[type.embed_place]: `embed` follows no link — one stands on the way to `src/ldir/secret.txt`"
+        }
+        then "a path out of the package refuses" {
+            octets_refusals("../outside/secret.txt")
+                .join("|")
+                .starts_with("error[type.embed_place]: `embed` reads inside its own package")
         }
     }
     given "a file the law accepts" {
