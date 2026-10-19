@@ -41,6 +41,8 @@ import os
 import re
 import sys
 
+import licence_families
+
 SCOPE = ["packages/std-avrac/src", "packages/cli/src"]
 # The door is the FILES that define the input verbs and the disk's
 # answers to them. A read beside one, in the same directory, is outside
@@ -159,7 +161,7 @@ CHAINED = re.compile(r"^\s*\.(read|exists|beneath|list|is_dir|stamp|octets)\)?\(
 SEG = r"[a-z_][a-z_0-9]*"
 USE = re.compile(r"^use\s+@std\.(" + SEG + r")((?:\." + SEG + r")*)\.(\{[^}]*\}|[A-Za-z_][A-Za-z_0-9]*)", re.M | re.S)
 EXTERN = re.compile(r"^\s*(?:export\s+)?extern\s+fn\s+([A-Za-z_][A-Za-z_0-9]*)", re.M)
-LICENSE = re.compile(r"^\s*//\s*LICENSED\s+input\.[a-z_]+:\s*\S")
+LICENSE = re.compile(r"^\s*//\s*LICENSED\s+" + licence_families.id_pattern("input.") + r":\s*\S")
 
 Site = collections.namedtuple("Site", "file line text kind verb state")
 
@@ -408,6 +410,7 @@ HEADER = """# WORLD READS OUTSIDE THE INPUT DOOR, one TAB-separated site per lin
 
 
 def selftest():
+    licence_families.selftest()
     io = "use @std.io.{read_text, env,\n    write_text}\n"
     cases = [
         # refuses: a stray read, an env, a spawn, each naming its line
