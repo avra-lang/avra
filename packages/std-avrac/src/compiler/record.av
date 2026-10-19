@@ -13,6 +13,7 @@
 use @std.text.{parse_int}
 use core.{
     CollectKind,
+    CollectScope,
     Plain,
     wire_fields,
     some_list,
@@ -36,6 +37,7 @@ use core.{
 }
 use features.{
     implements_kind,
+    admits_package,
     ExternNote,
     DeclSig,
     DeclFacts,
@@ -791,9 +793,13 @@ fn load_gathered(
         ws.defect(gathers_unadmitted(parts[1]))
         return
     }
-    let files = gathered_files(ws, pkg.src)
-    for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
-    let held? = held_gather(parts, relative_path(ws.root, pkg.src)) else {
+    let line = held_gather(parts, relative_path(ws.root, pkg.src))
+    // an import closure's members are whatever the program's imports reach: no package is loaded for it
+    if line == null || admits_package(line!.gathering.scope) {
+        let files = gathered_files(ws, pkg.src)
+        for m in [module_path(name.split(".")) for name in distinct([ws.module_of(path) for path in files])] { load_named(ws, store, m, ws.module_files(m), entry, want, meet) }
+    }
+    let held? = line else {
         ws.hold.read_with.push(parts[2])
         ws.hold.read_seeds.push(ReadFile { path: parts[2], why: Reads.GathersUnread })
         return
@@ -808,10 +814,11 @@ fn held_gather(parts: List<string>, package: string) -> HeldGather? {
     let kind? = kind_of_words(parts[3], parts[4]) else { return null }
     let order? = hex_fields_of(parts[5]) else { return null }
     let plans? = plans_of(parts[6]) else { return null }
+    let scope? = scope_of_word(if parts.length > 8 { parts[8] } else { "package" }) else { return null }
     HeldGather {
         collector: parts[2],
         package: package,
-        gathering: Gathering { kind: kind, order: [Plain(o) for o in order], plans: plans },
+        gathering: Gathering { kind: kind, scope: scope, order: [Plain(o) for o in order], plans: plans },
         digest: parts[7],
     }
 }
@@ -831,6 +838,7 @@ fn gathers_line(key: string, path: string, g: Gathering, set: string) -> string 
                     hex_fields(["${o}" for o in g.order]),
                     hex_fields([hex_fields(plan_words(p)) for p in g.plans]),
                     set,
+                    scope_word(g.scope),
                 ],
             ),
         "\t",
@@ -880,6 +888,21 @@ fn kind_words(kind: CollectKind) -> List<string> {
         .Component(w) -> ["component", w],
         .UnknownKind(w) -> ["unknown", w],
     }
+}
+
+/// The scope a `gathers` line holds its collect to, as its last field.
+fn scope_word(scope: CollectScope) -> string {
+    match scope {
+        .Self -> "self",
+        .Package -> "package",
+        .Closure -> "closure",
+        .UnknownScope(_) -> "unknown",
+    }
+}
+
+/// `scope_word` read back; null for a word no scope writes, and for the two a line never holds.
+fn scope_of_word(word: string) -> CollectScope? {
+    match word { "package" -> CollectScope.Package, "closure" -> CollectScope.Closure, _ -> null }
 }
 
 /// `kind_words` read back; null for words no kind writes.
