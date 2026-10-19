@@ -1,0 +1,46 @@
+//! `avra-tools pr-mode` — the PR's run mode, read from the PR's API JSON on
+//! stdin: `light` for a draft without the `full-ci` label, `full` otherwise.
+//! An empty or unreadable answer is `full`, so a run whose PR state did not
+//! come back runs the whole gate.
+use @std.cli.{CliResult, Runnable, command}
+use @std.io.{read_text}
+use @std.json.{Json, parse}
+
+type PrModeCmd = {}
+
+impl Runnable for PrModeCmd {
+    fn run(_args: CliResult) -> int {
+        println(pr_mode_of(read_text("/dev/stdin") catch ""))
+        0
+    }
+}
+
+export command pr_mode {
+    description: "A PR's run mode from its API JSON on stdin: `light` for a draft without `full-ci`, else `full`"
+    run: PrModeCmd {}
+}
+
+fn field_of(v: Json, key: string) -> Json {
+    match v { .Obj(fields) -> fields.find(it.key == key)?.value ?? Json.Null, rest -> Json.Null }
+}
+
+fn text_of(v: Json) -> string {
+    match v { .Str(s) -> s, rest -> "" }
+}
+
+fn draft(pr: Json) -> bool {
+    match field_of(pr, "draft") { .Bool(b) -> b, rest -> false }
+}
+
+fn labelled(pr: Json, name: string) -> bool {
+    match field_of(pr, "labels") {
+        .Arr(items) -> items.any(text_of(field_of(it, "name")) == name),
+        rest -> false,
+    }
+}
+
+export fn pr_mode_of(text: string) -> string {
+    if text.trim() == "" { return "full" }
+    let pr = parse(text) catch Json.Null
+    if draft(pr) && !labelled(pr, "full-ci") { "light" } else { "full" }
+}
