@@ -813,6 +813,7 @@ layers:
 # A HOOK OF `Decls` THAT `let_go` DOES NOT RESET keeps its workspace alive.
 hooks-released:
 	@python3 tools/hooks_released.py
+	@python3 tools/hooks_pre_commit_check.py
 
 # EVERY READ OF THE WORLD IS AN INPUT THROUGH ONE DOOR: the world reads
 # outside the door, counted by subsystem; a site the baseline does
