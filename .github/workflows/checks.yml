@@ -354,6 +354,22 @@ jobs:
           chmod +x build/avra
           build/avra check packages/cli >/dev/null 2>&1 || true
           echo "warm store: check packages/cli took $(( $(date +%s) - s ))s"
+      # THE EVALUATOR'S PROOFS RIDE THE HAND-DOWN. A program test the evaluator agreed with is
+      # remembered by a file named for the compiler, the program's expected text and every file
+      # it reaches (`.avra-cache/proofs`), so a run owes only the programs whose key moved. Main's
+      # own runs save the set (`suite-timing`); every run restores the newest here.
+      - if: steps.plan.outputs.build == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: proofs-kept
+          key: proofs-restore-only-${{ github.run_id }}
+          restore-keys: proofs-
+      - if: steps.plan.outputs.build == '1'
+        name: place proofs
+        run: |
+          mkdir -p .avra-cache/proofs
+          [ ! -d proofs-kept ] || cp -R proofs-kept/. .avra-cache/proofs/
+          echo "proofs: $(ls .avra-cache/proofs | wc -l) kept row(s) handed down"
       # THE CACHE'S MACHINE CODE IS BOUNDED BY SIZE. `.avra-cache/obj` and `bin` are
       # restored by prefix from the run before and saved again, and an entry keyed to
       # a compiler that no longer exists is never read, so they only grow (1.1 GB, 621 MB
@@ -868,6 +884,14 @@ jobs:
           path: suite-times.txt
           retention-days: 1
 
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('.avra-cache/proofs/*') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: proofs-${{ strategy.job-index }}
+          path: .avra-cache/proofs
+          include-hidden-files: true
+          retention-days: 1
+
       - name: speed baseline
         uses: actions/cache/restore@v4
         continue-on-error: true
@@ -920,6 +944,26 @@ jobs:
         with:
           path: .github/ci/suite-seconds.measured
           key: suite-seconds-${{ github.run_id }}
+      # THE PROOFS A MAIN RUN HELD OR MADE, kept for every run's `prepare`: the union of every
+      # shard's set over the previous set, newest 4000 files (a proof is an empty file).
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: proofs-*, path: proofs-in, merge-multiple: true }
+      - uses: actions/cache/restore@v4
+        with:
+          path: proofs-kept
+          key: proofs-${{ github.run_id }}
+          restore-keys: proofs-
+      - name: merge proofs
+        run: |
+          mkdir -p proofs-kept
+          [ ! -d proofs-in ] || cp -R proofs-in/. proofs-kept/
+          find proofs-kept -type f -printf '%T@ %p\n' | sort -rn | tail -n +4001 | cut -d' ' -f2- | while IFS= read -r f; do find "$f" -delete; done
+          echo "proofs kept: $(ls proofs-kept | wc -l)"
+      - uses: actions/cache/save@v4
+        with:
+          path: proofs-kept
+          key: proofs-${{ github.run_id }}
   # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The gate runs these too, but a
   # PR runs them FIRST and for nothing, so a keeper that reads only the tree
   # refuses on the PR instead of after the objects build. The set is

@@ -652,6 +652,8 @@ cache-attacks-b2: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/store_index_attack.sh
 	@sh tools/fn_add_attack.sh
 	@sh tools/host_fn_edit_attack.sh
+	@sh tools/store_bound_attack.sh
+	@sh tools/obj_gone_attack.sh
 	@sh tools/dep_tests_listing_attack.sh
 	@sh tools/cancel_cache_attack.sh
 	@sh tools/writes_attack.sh
@@ -935,9 +937,11 @@ attack:
 
 # NO DEFECT VOICE REACHES A USER PROGRAM: every malformed or edge program
 # in tools/defects/corpus.txt, and every mutation of its bases, is checked
-# and run, and one answered with a defect voice or a trap refuses.
+# and run, and one answered with a defect voice or a trap refuses. A SEEDED
+# SET of mutants of the tree's own program tests rides beside them; more is
+# `python3 tools/defects.py --only gen: --generate 500 --seed <n>`.
 defects:
-	@sh tools/watch.sh 6000 python3 tools/defects.py
+	@sh tools/watch.sh 6000 python3 tools/defects.py --generate 40 --seed 0
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.
@@ -1060,7 +1064,7 @@ keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
-TOOL_WITNESSES = capped.sh\ --self-test host_fn_edit_attack.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
+TOOL_WITNESSES = capped.sh\ --self-test failed_tail_test.sh host_fn_edit_attack.sh\ --self-test gate_receipt.sh\ --self-test watch.sh\ --self-test memcap.sh\ --self-test seed_is_tree.sh\ --self-test \
                  witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh work_test.sh reclaim_test.sh
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test

@@ -101,7 +101,7 @@ impl TypeCx {
                                 x.at ?? self.loc_of(e),
                                 x.message,
                                 "used here",
-                                x.help,
+                                x.help ?? warned_help,
                             ),
                         )
                 }
@@ -249,7 +249,7 @@ impl TypeCx {
                 refusal(
                     "type.list_scalar",
                     self.loc_of(head),
-                    "${what} takes its type from its value, and `${n}` has none of its own",
+                    "${what} takes its type from its value, and `${n}` has none",
                     this_is(n),
                     "declare the type where it is bound — `let name: Type = …`",
                 ),
@@ -1508,7 +1508,7 @@ impl TypeCx {
     fn seat_help(found: ExprId, want: TypeId) -> string {
         match self.shape_at(found) {
             .TypeName(_, n) -> "`${n}` is a type, not a value — build one with `${n} { … }`",
-            _ -> "make the value a `${self.view.types.name_of(want)}`, or change the declaration that wants it",
+            _ -> "make the value `${self.view.types.name_of(want)}`, or change the declaration that wants it",
         }
     }
 
@@ -1935,7 +1935,7 @@ impl TypeCx {
                     self.loc_of(e),
                     "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`",
                     "a copy",
-                    "write through `${p}` directly if the write should reach it, or `Cell<T>` it if the copy must still share",
+                    "write through `${p}` to reach it, or `Cell<T>` it to share the copy",
                 ),
             )
     }
@@ -2338,7 +2338,7 @@ impl TypeCx {
                 refusal(
                     "type.map_entry",
                     self.loc_of(e),
-                    "a map's entries wear the prelude's `Entry`, and this program sees no `@std/prelude`",
+                    "a map's entries are the prelude's `Entry`, and this program sees no `@std/prelude`",
                     "asked here",
                     "a file in a package sees the prelude — or walk the pairs, `for k, v in m`",
                 ),
@@ -2460,6 +2460,9 @@ fn tested(g: Type, held: string) -> Conversion? {
 
 /// What every slot law says: a slot holds a value.
 export const slot_help: string = "a slot holds a value — `void` and a type name are not one"
+
+/// What a declaration's warning says when it gave no way out.
+const warned_help: string = "stop using it, or ask the declaration's owner what replaces it"
 
 const condition_help: string = "a condition is a `bool` — state it as a comparison (`n > 0`, `s != \"\"`, `xs.length > 0`) or test a nullable with `v != null`"
 

@@ -10,18 +10,15 @@
 # every exit. It CLEARS the store, as the attacks beside it do.
 set -u
 cd "$(dirname "$0")/.."
+. tools/lib/failed_tail.sh
 W=packages/std-ui/src/web/web.av
 T=packages/std-ui/src/tests/instance_page
 AVRA=${AVRA:-./avra}
 R=build/host-fn-edit-attack; fails=0
 unwatched() { grep -v -e '^watch:' -e 'job control turned off'; }
-# THE FAILED COMMAND'S OWN WORDS, both streams: the compiler prints a refusal on stdout and a
-# trap on stderr, so a reason read from one of them is often empty. Capped (the log law):
-# the last 20 lines, each cut at 300 characters.
-reason_of() { unwatched < $R/out | grep -v '^$' | tail -n 20 | cut -c1-300 | sed 's/^/        /'; }
 proved() { # proved <label>: the program test, through the store
     $AVRA test $T > $R/out 2>&1; st=$?
-    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st"; reason_of; return 1; }
+    [ $st -eq 0 ] || { fails=$((fails+1)); echo "FAIL  $1: status $st"; failed_tail $R/out; return 1; }
 }
 if [ "${1:-}" = "--self-test" ]; then
     # a forced failure must carry its stdout refusal and its stderr trap, and no more than 20 lines
