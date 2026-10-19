@@ -53,6 +53,8 @@ export enum WaitOn {
     OnFd(way: string, fd: string)
     OnGate(gate: string, arm: string)
     OnTime
+    /// Parked with nothing filed: only a cancel or its limit ends it.
+    OnNothing
 }
 
 /// One task's waits.
@@ -375,6 +377,7 @@ fn waited(src: string, arm: string) -> WaitOn {
         return WaitOn.OnFd(parts[1], if parts.length > 2 { parts[2] } else { "" })
     }
     if src.starts_with("gate:") { return WaitOn.OnGate(src.substring(5, src.length), arm) }
+    if src == "none" { return WaitOn.OnNothing }
     WaitOn.OnTime
 }
 
@@ -438,7 +441,7 @@ fn gate_rung(w: WaitOn, rest: string, mut rung: Map<string, int>) {
         .OnGate(gate, arm) -> {
             if arm == field(rest, "arm") ?? "" { rung.set(gate, by) }
         },
-        .OnTask(_) or .OnUnrun or .OnFd(_, _) or .OnTime -> touch(w),
+        .OnTask(_) or .OnUnrun or .OnFd(_, _) or .OnTime or .OnNothing -> touch(w),
     }
 }
 
@@ -449,6 +452,7 @@ fn edge_named(w: WaitOn, rung: Map<string, int>) -> string {
         .OnFd(way, fd) -> "descriptor ${fd} (${if way == "r" { "readable" } else { "writable" }})",
         .OnGate(gate, _) -> gate_named(gate, rung.get(gate)),
         .OnTime -> "a time",
+        .OnNothing -> "nothing — a cancel or its limit ends it",
     }
 }
 

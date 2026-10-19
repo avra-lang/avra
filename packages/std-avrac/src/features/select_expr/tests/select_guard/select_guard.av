@@ -1,0 +1,22 @@
+// proves: a guard is read once, before its head — a false one leaves
+// the arm dead though its task is ready, and reads no head; a true one
+// leaves the order as written — in both engines
+fn answer(n: int) -> int { n }
+
+fn counted(seen: Cell<int>) -> int {
+    seen.set(seen.get() + 1)
+    0
+}
+
+let ts = [spawn answer(1), spawn answer(2)]
+let both = ts[0].await + ts[1].await
+let reads = Cell.new(0)
+let shut = select {
+    x in ts[counted(reads)] if both > 100 -> x
+    y in ts[1] -> y + 10
+}
+let open = select {
+    x in ts[counted(reads)] if both == 3 -> x
+    y in ts[1] -> y + 10
+}
+"${shut} ${open} ${reads.get()}"

@@ -2,10 +2,12 @@
 //!
 //! A task parks in `next` until a watched path moves: the host's own
 //! events (inotify, kqueue) wake it through the scheduler, so nothing
-//! is polled and nothing sleeps. A module of its own because a wasm
-//! host has no such events: a program that never names it carries none
-//! of it.
+//! is polled and nothing sleeps. `changes` hands the same watch to a
+//! `select` arm as a running source, waited on beside a channel, a
+//! listener or a signal. A module of its own because a wasm host has no
+//! such events: a program that never names it carries none of it.
 use @std.io.{IoError, one_path, refused}
+use @std.task.{Source}
 
 // THIS PACKAGE'S OWN C (src/c/std_io_watch.c) — every one answers an
 // int: a handle, a slot, a count, a kind, or a negative errno.
@@ -21,6 +23,7 @@ extern fn avra_io_watch_slot(h: int, i: int) -> int
 extern fn avra_io_watch_what(h: int, i: int) -> int
 extern fn avra_io_watch_close(h: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+extern fn avra_wait_fd(fd: int, writable: int, arm: int, member: int)
 
 /// What became of a watched path between two looks.
 export enum Moved {
@@ -66,7 +69,56 @@ export enum Seen {
 /// so a reader that looked mid-save looks again.
 ///
 /// Every copy is the same watch; `close` ends it for all of them.
+/// `changes` is this watch as a source a `select` can wait on.
 export type Watch = { handle: int, fd: int, open: Cell<bool>, names: Cell<List<string>> }
+
+/// The source's own item: the host's answer with `.Quiet` and a refusal
+/// read as absence, and a lost look counted.
+fn trimmed(lost: Cell<int>, r: Result<Seen, IoError>) -> Seen? {
+    match r {
+        .Ok(.Quiet) -> null,
+        .Ok(.Everything) -> {
+            lost.set(lost.get() + 1)
+            Seen.Everything
+        },
+        .Ok(seen) -> seen,
+        .Err(_) -> null,
+    }
+}
+
+/// Whether a change is to hand, drained from the host if none was; the
+/// value stays in `held` for `taken` to read.
+fn offered(held: Cell<Seen?>, lost: Cell<int>, w: Watch) -> bool {
+    if held.get() != null { return true }
+    let got = trimmed(lost, w.taken())
+    if got == null { return false }
+    held.set(got)
+    true
+}
+
+/// A change now, or null with none: the one held, else one drained from
+/// the host without parking.
+fn take_change(held: Cell<Seen?>, lost: Cell<int>, w: Watch) -> Seen? {
+    match held.get() {
+        seen? -> {
+            held.set(null)
+            seen
+        }
+        null -> trimmed(lost, w.taken())
+    }
+}
+
+/// A change, the task parked until one moves: the one held, else the
+/// host's next.
+fn next_change(held: Cell<Seen?>, lost: Cell<int>, w: Watch) -> Seen? {
+    match held.get() {
+        seen? -> {
+            held.set(null)
+            seen
+        }
+        null -> trimmed(lost, w.next())
+    }
+}
 
 /// A watch over nothing yet — or why the host gave none.
 export fn watch() -> Result<Watch, IoError> {
@@ -126,16 +178,36 @@ impl Watch {
             )
     }
 
-    /// THE CALLING TASK PARKED UNTIL SOMETHING MOVES: what moved, or
-    /// `.Quiet` when a `within` around the call ran out first. Other
-    /// tasks run meanwhile, and a program with none simply waits.
+    /// THE CALLING TASK PARKED UNTIL SOMETHING MOVES: what moved, never
+    /// `.Quiet`. A `within` around the call bounds the wait and answers
+    /// its own `TimedOut`; other tasks run meanwhile, and a program with
+    /// none simply waits.
     fn next() -> Result<Seen, IoError> {
-        while true {
-            let seen = self.taken()?
-            if !(seen is .Quiet) { return seen }
-            if avra_fiber_park_fd(self.fd, 0, -1) == 0 { return Seen.Quiet }
+        mut seen = self.taken()?
+        while seen is .Quiet {
+            let _ = avra_fiber_park_fd(self.fd, 0, -1)
+            seen = self.taken()?
         }
-        Seen.Quiet
+        seen
+    }
+
+    /// THE SOURCE VIEW: this watch as a running supply, so a `select`
+    /// arm waits on it beside others. `arm` files the host descriptor;
+    /// a change already drained waits in the source, so nothing is lost
+    /// between a look and a take, and a closed watch answers `null`
+    /// once drained.
+    fn changes() -> Source<Seen> {
+        let held: Cell<Seen?> = Cell.new(null)
+        let lost: Cell<int> = Cell.new(0)
+        Source {
+            ready: () -> offered(held, lost, self),
+            next: () -> next_change(held, lost, self),
+            taken: () -> take_change(held, lost, self),
+            arm: (a: int) -> avra_wait_fd(self.fd, 0, a, 0),
+            ended: () -> !self.open.get(),
+            lost: () -> lost.get(),
+            work: null,
+        }
     }
 
     /// The watch ended and everything it held given back; a task parked

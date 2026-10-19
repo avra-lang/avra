@@ -1,0 +1,24 @@
+// proves: a `select` waits on a running source's arm, takes the item it
+// hands over, then lets a `quiet` arm fire while the source is still
+// silent — the scan calls the source's own `ready`/`taken`/`arm` and the
+// timer's own rows, in both engines
+use @std.task.{Source}
+use @std.time.{ms, secs, quiet, sleep}
+
+let src: Source<int> = produce<int>(4) {
+    yield 7
+    sleep(secs(30))
+    yield 8
+}
+
+let first = select {
+    x in src -> x
+    quiet(ms(50)) -> 0 - 1
+    src.ended -> 0 - 2
+}
+let second = select {
+    x in src -> x
+    quiet(ms(50)) -> 0 - 3
+    src.ended -> 0 - 4
+}
+"${first} ${second}"

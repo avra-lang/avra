@@ -10,7 +10,7 @@
 //! A READ SET IS ITS MEMBERS. The same members intern once whatever their
 //! order, and the set's hash at a revision is a pure fold of the two, so
 //! every record holding the set shares one value (S5).
-use core.{inserted, sorted_by, text_before}
+use core.{inserted, sorted_by, text_before, distinct}
 use @std.relation.engine.{list_cell, map_cell}
 use @std.relation.stable.{reader, writer, stable_hasher, Reader}
 
@@ -29,6 +29,12 @@ export fn names() -> Names {
 impl Names {
     /// How many names the body uses — the span of ids.
     fn length() -> int { self.texts.get().length }
+
+    /// The table of exactly these names, sorted and unique — one sort where `intern` shifts the
+    /// list once per insertion.
+    fn filled(texts: List<string>) {
+        self.texts.set(sorted_by(distinct(texts), text_before))
+    }
 
     /// The name's position in byte order, inserting it when absent. Ids
     /// after an insertion move; intern the whole set before recording one.

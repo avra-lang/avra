@@ -181,6 +181,7 @@ impl LowerCx {
     mut fn unwinds() {
         let landing = self.within_loops.last()
         if landing == null {
+            self.push_frame()
             self.shielded(0) { cx -> cx.failing() }
             self.emit(Ins.FnExit(self.exit_answer()))
             return
@@ -188,6 +189,20 @@ impl LowerCx {
         let floor = landing!.frame
         self.shielded(floor) { cx -> cx.run_from(floor, null) }
         self.emit(Ins.LoopJump(self.loops.length - 1 - landing!.loop, false))
+    }
+
+    /// The body's own frame joins the unwind's list at its cold exit,
+    /// so the landing that answers `TimedOut` names the bodies the
+    /// unwind left. A `within`'s landing catches the unwind inside
+    /// the same body, so nothing is pushed there — that fn has not
+    /// left. A program that links no scheduler never unwinds, and
+    /// pushes none.
+    mut fn push_frame() {
+        if !self.checks || self.frame == null { return }
+        let bf = self.frame!
+        let f = self.mint_shape(Type.Ptr)
+        self.static_read(f, bf.sym, bf.boxes, true)
+        self.unwind_push(f)
     }
 
     /// A COLD EXIT'S DEFERRED CALLS RUN UNDER THE SHIELD: the bracket
@@ -565,6 +580,19 @@ impl LowerCx {
             xs: null,
             len: self.reg_of(hi),
             idx: self.seeded_cell(int, self.reg_of(lo)),
+            elem: int,
+            kind: .List,
+            ord: null,
+        }
+    }
+
+    /// `0..len` over a count already in a register.
+    mut fn counted_to(len: Reg) -> Walk {
+        let int = self.type(int)
+        Walk {
+            xs: null,
+            len: len,
+            idx: self.seeded_cell(int, self.const_int(0)),
             elem: int,
             kind: .List,
             ord: null,

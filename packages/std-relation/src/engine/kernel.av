@@ -12,7 +12,7 @@
 //! driver sets. A key is a FAMILY number and the dense id the family
 //! keys by — two list indexes, no strings. Values live in the
 //! families' own typed tables; the kernel holds only bookkeeping.
-use @std.meta.{identity}
+use @std.meta.{identity, plain_field}
 
 /// A cell's address: its family, and the dense id the family keys
 /// by (a FileId, a DeclId).
@@ -205,6 +205,8 @@ fn spelled(edges: List<int>) -> string { ["${family_of(e)}:${arg_of(e)}" for e i
 /// stack, dependencies, and counters. Every table is its own cell, so
 /// a write lands in place and copies nothing beside it.
 @identity
+@plain_field("timing")
+@plain_field("reporting")
 export type Kernel = {
     rev: Cell<int>,
     /// ONE TABLE PER FAMILY, each its own `Cell` — `cells[family]`
@@ -230,15 +232,36 @@ export type Kernel = {
     tracing: Cell<bool>,
     hits: Cell<int>,
     misses: Cell<int>,
+    /// Asks answered by family: slot `2 * family` served, `2 * family + 1` computed.
+    verdicts: Cell<List<int>>,
+    /// Cells written.
+    settles: Cell<int>,
+    /// The clock the open frames are timed by, when the process asked for timing.
+    clock: Cell<fn() -> int>,
+    /// Whether the open frames are timed — fixed when the kernel was made, so a
+    /// frame pays one field load and no cell read.
+    timing: bool,
+    /// Each open frame's start, and the time its closed children took.
+    starts: Cell<List<int>>,
+    inners: Cell<List<int>>,
+    /// Nanoseconds spent inside each family's frames, children excluded.
+    spent: Cell<List<int>>,
     /// Each family's GRAIN — whether its queries read rows whole.
     whole_families: Cell<List<bool>>,
     /// Each family's name for the trace, where its owner gave one; a family
     /// without one is named by its number.
     family_names: Cell<List<string>>,
+    /// The fold a cell `settle_lazy` wrote unasked would answer, kept to be asked on demand.
+    folds: Cell<Map<string, fn() -> int>>,
+    /// Whether `settle_lazy` keeps its fold; off unless a saved answer will ask for it.
+    folds_kept: Cell<bool>,
     audit: Audit,
     graph: Graph,
     /// Recorded reads, counted here for every kernel — the process tally shares this cell.
     tally: Cell<int>,
+    /// Whether this kernel reports served/computed asks — fixed when the kernel was
+    /// made, so a plain ask pays one field load and no cell read.
+    reporting: bool,
     /// Whether this kernel counts its reads and abandoned frames — off unless asked for.
     counting: Cell<bool>,
     /// Whether the graph writes its trace, mirrored here so a counted read never reaches into the graph.
@@ -267,8 +290,17 @@ export fn new_kernel() -> Kernel {
         tracing: Cell.new(false),
         hits: Cell.new(0),
         misses: Cell.new(0),
+        verdicts: list_cell(),
+        settles: Cell.new(0),
+        clock: Cell.new(timed_clock().get()),
+        timing: timing_all().get(),
+        starts: list_cell(),
+        inners: list_cell(),
+        spent: list_cell(),
         whole_families: list_cell(),
         family_names: list_cell(),
+        folds: map_cell(),
+        folds_kept: Cell.new(false),
         audit: Audit {
             on: Cell.new(false),
             width: Cell.new(1),
@@ -284,6 +316,7 @@ export fn new_kernel() -> Kernel {
         },
         graph: new_graph(),
         tally: reads_tally(),
+        reporting: counting_all().get(),
         counting: Cell.new(counting_all().get()),
         writes: Cell.new(false),
     }
@@ -503,17 +536,17 @@ impl Kernel {
     fn ask(key: Key) -> Verdict {
         self.record_at(key.family, key.arg)
         if self.active(key) { return Verdict.Cycle }
-        let cell? = self.cell(key) else { return self.miss() }
+        let cell? = self.cell(key) else { return self.miss(key.family) }
         let rev = self.rev.get()
-        if cell.verified_at == rev { return self.hit() }
+        if cell.verified_at == rev { return self.hit(key.family) }
         // Marked verified at this revision BEFORE its deps are walked: a
         // verifier may recursively update this database and re-enter this
         // key, and a re-entry reads the mark and reuses rather than walking
         // again. The mark names the revision the walk began at, so a late
         // write during the walk leaves it stale.
         self.write_cell(key, cell with { verified_at: rev })
-        if self.any_dep_changed(cell) { return self.miss() }
-        self.hit()
+        if self.any_dep_changed(cell) { return self.miss(key.family) }
+        self.hit(key.family)
     }
 
     fn any_dep_changed(cell: QueryCell) -> bool {
@@ -648,6 +681,26 @@ impl Kernel {
     /// into a plain int a real hash could also answer.
     fn value_hash_of(key: Key) -> int? { self.cell(key)?.value_hash }
 
+    /// `key`'s value hash, asking the fold a lazy settle left unasked: the digest a
+    /// saved answer standing on it needs, paid only by the one that saves.
+    fn hash_forced(key: Key) -> int? {
+        let c? = self.cell(key) else { return null }
+        if c.value_hash != null { return c.value_hash }
+        let fold? = self.folds.get().get("${edge_of(key)}") else { return null }
+        let h = fold()
+        self.write_cell(key, c with { value_hash: h })
+        h
+    }
+
+    /// Keep the folds lazy settles leave unasked, so `hash_forced` can ask them.
+    fn keep_folds() { self.folds_kept.set(true) }
+
+    /// The kept folds, let go: each captures its owner.
+    fn folds_forgotten() {
+        let none: Map<string, fn() -> int> = {}
+        self.folds.set(none)
+    }
+
     fn begin(key: Key) {
         let none: List<int> = []
         let no_restore: Cell<List<Restore>>? = null
@@ -661,6 +714,7 @@ impl Kernel {
         self.asker.reader.set(reader)
         self.asker.last.set(no_edge())
         self.asker.whole.set(self.family_whole(key.family))
+        if self.timing { self.frame_opened() }
     }
 
     /// Whether `family`'s queries read rows whole.
@@ -702,6 +756,7 @@ impl Kernel {
         let deps = self.closed_frame()
         let prior? = self.cell(key) else {
             self.settled(key, deps, self.rev.get(), null, began)
+            if self.folds_kept.get() { self.folds.put("${edge_of(key)}", fingerprint) }
             return
         }
         let value_hash = fingerprint()
@@ -728,6 +783,7 @@ impl Kernel {
         let restores = self.asker.restore.get()
         // LICENSED lists.last_index: `last()!` of a nullable element never lets its referent go
         let restored: Cell<List<Restore>>? = restores[restores.length - 1]
+        if self.timing { self.frame_closed(family_of(self.asker.open.get().last() ?? 0 - 1)) }
         dropped(self.asker.pending)
         dropped(self.asker.restore)
         dropped(self.asker.open)
@@ -742,6 +798,8 @@ impl Kernel {
 
     /// Writes a settled cell and publishes it.
     fn settled(key: Key, deps: List<int>, changed: int, value_hash: int?, verified: int) {
+        // The settle count is a report's number, not a compile's: a compiling kernel pays nothing.
+        if self.reporting { self.settles.set(self.settles.get() + 1) }
         self
             .write_cell(
                 key,
@@ -840,14 +898,59 @@ impl Kernel {
         if self.graph.writes.get() { self.graph.evicted(family) }
     }
 
-    fn hit() -> Verdict {
+    fn hit(family: int) -> Verdict {
         self.hits.set(self.hits.get() + 1)
+        // Served/computed is a report's number, not a compile's: the tally's reads run only when reporting.
+        if self.reporting { self.verdict_counted(2 * family) }
         Verdict.Reuse
     }
 
-    fn miss() -> Verdict {
+    fn miss(family: int) -> Verdict {
         self.misses.set(self.misses.get() + 1)
+        if self.reporting { self.verdict_counted(2 * family + 1) }
         Verdict.Compute
+    }
+
+    /// One more ask of `slot`'s kind answered.
+    fn verdict_counted(slot: int) {
+        while self.verdicts.get().length <= slot { self.verdicts.push(0) }
+        self.verdicts.set_at(slot, self.verdicts.get()[slot] + 1)
+    }
+
+    /// How many asks of `family` were served from a standing cell, and how many computed.
+    fn served_computed(family: int) -> List<int> {
+        let all = self.verdicts.get()
+        [if 2 * family + i < all.length { all[2 * family + i] } else { 0 } for i in 0..2]
+    }
+
+    /// Nanoseconds spent inside `family`'s frames, the frames they opened excluded; 0 untimed.
+    fn family_ns(family: int) -> int {
+        let all = self.spent.get()
+        if family < all.length { all[family] } else { 0 }
+    }
+
+    /// Cells written so far.
+    fn settles_total() -> int { self.settles.get() }
+
+    /// A frame opened is timed from here.
+    fn frame_opened() {
+        let now = self.clock.get()
+        self.starts.push(now())
+        self.inners.push(0)
+    }
+
+    /// The innermost frame, owned by `family`, closed: its time is its own less its children's,
+    /// and all of it is its parent's child time.
+    fn frame_closed(family: int) {
+        if self.starts.get().is_empty() { return }
+        let now = self.clock.get()
+        let elapsed = now() - self.starts.get().last()!
+        let inner = self.inners.get().last()!
+        dropped(self.starts)
+        dropped(self.inners)
+        if !self.inners.get().is_empty() { self.inners.set_at(self.inners.get().length - 1, self.inners.get().last()! + elapsed) }
+        while self.spent.get().length <= family { self.spent.push(0) }
+        self.spent.set_at(family, self.spent.get()[family] + elapsed - inner)
     }
 
     fn stats() -> string { "rev ${self.rev.get()}: ${self.hits.get()} hits, ${self.misses.get()} misses" }
@@ -906,3 +1009,13 @@ once fn counting_all() -> Cell<bool> { Cell.new(false) }
 
 /// Every kernel made from here on counts its reads and abandoned frames.
 export fn count_reads() { counting_all().set(true) }
+
+once fn timing_all() -> Cell<bool> { Cell.new(false) }
+
+once fn timed_clock() -> Cell<fn() -> int> { Cell.new(() -> 0) }
+
+/// Every kernel made from here on times its frames by `now`, per family, children excluded.
+export fn time_frames(now: fn() -> int) {
+    timed_clock().set(now)
+    timing_all().set(true)
+}

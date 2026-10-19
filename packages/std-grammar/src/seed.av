@@ -299,6 +299,7 @@ export const grammar_of_grammars: Grammar = Grammar {
         // annot = "@expect" "(" STRING "," STRING ")"
         //       | "@recover" "(" "sync_to" ":" STRING ")"
         //       | "@head" "(" NAME ")" | "@trailer" "(" NAME ")"
+        //       | "@operators" "{" tier+ "}"
         rule_def(
             "annot",
             [
@@ -341,6 +342,81 @@ export const grammar_of_grammars: Grammar = Grammar {
                         expecting(lit(")"), "expected ')' to close @trailer"),
                     ],
                     Build.Call("build_trailer", ["label"]),
+                ),
+                seq_to(
+                    [
+                        item(lit("@operators")),
+                        item(lit("{")),
+                        cap("tiers", rule_ref("tier")) with { rep: Rep.Plus },
+                        expecting(lit("}"), "expected '}' to close @operators"),
+                    ],
+                    Build.Call("build_operators", ["tiers"]),
+                ),
+            ],
+        ),
+
+        // tier = assoc word+ ( "suffix" STRING NAME )* ( "->" build )?
+        // One precedence tier of an `@operators` block; the next
+        // tier starts at the next associativity word.
+        rule_def(
+            "tier",
+            [
+                seq_to(
+                    [
+                        cap("assoc", rule_ref("assoc")),
+                        cap("words", rule_ref("word")) with { rep: Rep.Plus },
+                        item(
+                            group(
+                                [
+                                    seq(
+                                        [
+                                            item(lit("suffix")),
+                                            cap("suffix_words", named("STRING")),
+                                            cap("suffix_rules", named("NAME")),
+                                        ],
+                                    ),
+                                ],
+                            ),
+                        ) with { rep: Rep.Star },
+                        item(group([seq([item(lit("->")), cap("build", rule_ref("build"))])])) with { rep: Rep.Opt },
+                    ],
+                    Build
+                        .Call("build_tier", ["assoc", "words", "suffix_words", "suffix_rules", "build"]),
+                ),
+            ],
+        ),
+
+        // assoc = "left" | "none" | "unmixed" "(" NAME ")"
+        rule_def(
+            "assoc",
+            [
+                seq_to([item(lit("left"))], Build.Call("build_assoc_left", [])),
+                seq_to([item(lit("none"))], Build.Call("build_assoc_single", [])),
+                seq_to(
+                    [
+                        item(lit("unmixed")),
+                        item(lit("(")),
+                        cap("refusal", named("NAME")),
+                        expecting(lit(")"), "expected ')' to close unmixed"),
+                    ],
+                    Build.Call("build_assoc_unmixed", ["refusal"]),
+                ),
+            ],
+        ),
+
+        // word = STRING | "(" STRING+ ")"
+        // An operator: one token, or several adjacent ones.
+        rule_def(
+            "word",
+            [
+                seq_to([cap("tokens", named("STRING"))], Build.Call("build_word", ["tokens"])),
+                seq_to(
+                    [
+                        item(lit("(")),
+                        cap("tokens", named("STRING")) with { rep: Rep.Plus },
+                        expecting(lit(")"), "expected ')' to close the operator"),
+                    ],
+                    Build.Call("build_word", ["tokens"]),
                 ),
             ],
         ),

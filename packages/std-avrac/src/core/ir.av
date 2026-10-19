@@ -210,6 +210,8 @@ export enum Ins {
 /// declared name). A new variant lands an arm here or the fold is
 /// incomplete, which `make fingerprints` reads.
 impl Ins {
+    fn fingerprint_in(_ids: Ids) -> int { self.fingerprint() }
+
     fn fingerprint() -> int {
         match self {
             .ConstInt(dst, v) -> derived([fp_str("Ins"), 0, dst.fingerprint(), v]),
@@ -681,8 +683,11 @@ fn slot_code_sym(c: Slot) -> List<string> {
 /// One settled aggregate's layout: every box, child-first, under the static's
 /// own name. `file` names the unit that first read it, so a per-file module
 /// knows which of them it owns — a GROWTH, defaulted, so the existing
-/// construction site is untouched.
-export type Static = { name: string, boxes: List<StaticBox>, file: FileId? = null }
+/// construction site is untouched. `debug` marks data a program READS but
+/// that is no part of what its code DOES — a body's frame, whose label and
+/// declaration span move when a line above the body is written — so the code
+/// graph resolves a reference to it without hashing it.
+export type Static = { name: string, boxes: List<StaticBox>, file: FileId? = null, debug: bool = false }
 
 /// Which instructions BRACKET a region — kept beside the enum, like
 /// every fact about it, so no consumer re-derives the list.
@@ -974,6 +979,16 @@ export enum RtHost {
     WaitGate
     WaitTask
     WaitPark
+    /// A task parks on a signal: one waiter per signal, so a source
+    /// watching several files each as its own member never needs an
+    /// aggregate at the seat. Darwin watches `EVFILT_SIGNAL`, Linux a
+    /// process signalfd.
+    WaitSig
+    /// A scan over several arms begins, and rests on what it filed.
+    WaitEnter
+    WaitRest
+    /// When a task answered, as a stamp a scan compares.
+    TaskSince
     GateNew
     GateClaim
     TaskPending

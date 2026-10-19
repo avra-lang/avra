@@ -7,6 +7,10 @@ use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed
 use diagnostics.{Diag, refusal}
 use features.{LowerCx, Deferred, Deferral, DirectCall, WithinMark, semantics_of, stmt_semantics_of}
 
+/// A block scope left open for its caller to close: `opened` says
+/// whether `lower_block_open` entered a scope at all.
+export type OpenBlock = { reg: Reg, opened: bool }
+
 impl LowerCx {
     /// One subtree's register, lowered at first request and
     /// memoized. The recursion IS the walk: an impl asking for a
@@ -210,7 +214,7 @@ impl LowerCx {
     /// binding through its slot, a dropped value through its register.
     mut fn owns_tasks(s: StmtId, r: Reg?) {
         let v? = self.view.store.owned_value(s) else { return }
-        if !self.view.decls.types.owns_tasks(self.type_at(v)) { return }
+        if !self.view.decls.owns_tasks(self.type_at(v)) { return }
         let slot = self.body.slot_of(s)
         let owner? = slot ?? r else { return }
         self
@@ -288,16 +292,30 @@ impl LowerCx {
     /// promise for a block that departed, void for one that merely
     /// ended. Every merge it feeds is typed by that same answer.
     mut fn lower_block(stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
+        let open = self.lower_block_open(stmts, value, ty)
+        self.lower_block_close(open)
+        open.reg
+    }
+
+    /// A block whose scope is LEFT OPEN for the caller to close, so a
+    /// read of a value it binds can be emitted while the frame that
+    /// owns it still stands — a `then` case's failure report reads the
+    /// operands of its own comparison, and closing the frame first
+    /// would release them before the failure arm ran.
+    mut fn lower_block_open(stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> OpenBlock {
         // A SCOPE THAT HOLDS ONLY ITS VALUE IS ITS VALUE. No statements
         // means no bindings and no `defer`s to frame, so an explicit
         // `{ 7 }` lowers as `7`: the block node is the author's FORM
         // (the printer keeps its braces) and the IR owes it no scope.
-        if stmts.is_empty() && value != null { return self.reg_of(value!) }
+        if stmts.is_empty() && value != null { return OpenBlock { reg: self.reg_of(value!), opened: false } }
         self.scope_enter()
         let vreg = self.lower_stmts(stmts, value)
-        let r = if value == null { self.hollow_of(ty) } else { vreg! }
-        self.scope_exit(r)
-        r
+        OpenBlock { reg: if value == null { self.hollow_of(ty) } else { vreg! }, opened: true }
+    }
+
+    /// Closes the scope `lower_block_open` left open, if it opened one.
+    mut fn lower_block_close(open: OpenBlock) {
+        if open.opened { self.scope_exit(open.reg) }
     }
 
     // ── The `defer` frames. Every STATEMENT LIST runs in a frame:
@@ -364,8 +382,11 @@ impl LowerCx {
 
     /// One entry runs: a `defer` always; an `errdefer` behind the
     /// tag of `answer` — the fn's answer when this exit is one,
-    /// null when nothing here decides.
+    /// null when nothing here decides. A SETTLE of the very value this
+    /// exit ANSWERS is skipped: an owner a fn returns is settled by
+    /// its receiver, never by the frame it leaves.
     mut fn run_entry(d: Deferred, answer: Reg?) {
+        if answer != null && d.work.settles(answer!) { return }
         if !d.on_error {
             self.run_deferred(d)
             return
@@ -470,19 +491,57 @@ impl LowerCx {
         self.deferring = was
     }
 
-    /// The `within` scope's end: the scope ends, and whether the cancel
-    /// it met was its own lands in the cell its epilogue reads.
+    /// The `within` scope's end: the scope ends, and whether an unwind
+    /// it asked for ended there lands in the cell its epilogue reads.
     mut fn landed_scope(scope: Reg, cell: Reg) {
         let landed = self.fiber_within_end(Type.Int, scope)
         self.stored(cell, landed)
     }
 
     /// An owner's tasks joined: the task, or each in its list — read out
-    /// of its cell first when the owner is a `mut` binding.
+    /// of its cell first when the owner is a `mut` binding. A MARKED
+    /// owner (`@owns`) holds PRODUCERS: each is cancelled, then joined.
     mut fn settle_owner(owner: Reg, cell: bool) {
         let ty = self.out.reg_types[owner.index]
         let held = if cell { self.loaded_as(ty, owner) } else { owner }
+        if self.view.decls.owns_by_mark(ty) { return self.settle_owned_fields(held, ty) }
         if self.view.types.owns_one_task(ty) { self.task_settle(held) } else { self.task_settle_all(held) }
+    }
+
+    /// A marked owner's producer handles, field by field: a task is
+    /// cancelled then joined, a nested owner settled in turn, and a list
+    /// of tasks joined. A plain record reaches none of this — the field
+    /// law refuses the task that would have got here.
+    mut fn settle_owned_fields(held: Reg, ty: TypeId) {
+        let sig? = self.view.decls.fields_of_type(ty) else { return }
+        for j, name in sig.names {
+            let fty = sig.types[j]
+            if !self.view.types.holds_tasks(fty) && !self.view.decls.owns_by_mark(fty) { continue }
+            let f = self.field_named(held, ty, name, fty)
+            if self.view.types.owns_one_task(fty) {
+                self.settle_task_field(f, fty)
+            } else if self.view.decls.owns_by_mark(fty) {
+                self.settle_owned_fields(f, fty)
+            } else {
+                self.task_settle_all(f)
+            }
+        }
+    }
+
+    /// One producer handle: a nullable is settled inside its presence
+    /// arm — absence joins nothing — a bare task directly.
+    mut fn settle_task_field(f: Reg, fty: TypeId) {
+        if !(self.view.types.shape_of(self.view.types.seen_through(fty)) is .Opt) {
+            self.task_cancel(f)
+            self.task_settle(f)
+            return
+        }
+        self
+            .void_region(self.presence_of(f, fty)) { cx ->
+                let task = cx.carried_of(f, fty)
+                cx.task_cancel(task)
+                cx.task_settle(task)
+            }
     }
 
     /// A deferred call made: the host row, or the declared fn by its

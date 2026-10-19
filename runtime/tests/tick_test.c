@@ -219,7 +219,7 @@ static void* doomed(void* self) {
     (void)self;
     int64_t scope = avra_fiber_within(20);
     while (!__atomic_load_n(&avra_unwinding, __ATOMIC_RELAXED)) avra_tick_cold();
-    avra_fiber_within_end(scope);
+    avra_scope_end(scope);
     return NULL;
 }
 

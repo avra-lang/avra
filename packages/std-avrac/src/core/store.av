@@ -133,6 +133,11 @@ export type SyntaxArena = {
     // a `table<Row> { … }` literal's row type and header, by the
     // list it desugared to
     tables: Cell<List<TableSpec?>>,
+    // the type arguments a literal or instance writes after its name
+    // (`Box<float> { … }`, `queue<Charge> charges { … }`), by the
+    // struct literal they pin — the record's parameters, seated from
+    // the WRITTEN types rather than inferred from the fields
+    struct_targs: Cell<List<List<TypeRef>>>,
     // a written `{ … }`'s own closing-brace offset, by the Block whose
     // span `tail_scoped` narrowed to its lone tail value for
     // diagnostics — printing only, absent everywhere the node's own
@@ -198,6 +203,7 @@ export fn new_node_store(file: string = "") -> SyntaxArena {
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
         tables: list_cell(),
+        struct_targs: list_cell(),
         written_close: list_cell(),
         quotes_at: map_cell(),
         sublangs: list_cell(),
@@ -257,7 +263,7 @@ export fn statement_after(starts: List<StmtStart>, at: int) -> StmtId? {
 impl SyntaxArena {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
-        self.expr_fingerprints.push(self.fingerprint_expr(e))
+        self.expr_fingerprints.push(e.identity(self))
         self.trailing.push(false)
         self.piped.push(false)
         self.type_lits.push(false)
@@ -269,6 +275,7 @@ impl SyntaxArena {
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
         self.tables.push(null)
+        self.struct_targs.push([])
         self.written_close.push(null)
         self.keyed_lists.push(null)
         self.on_handlers.push(null)
@@ -498,6 +505,34 @@ impl SyntaxArena {
         self.keyed_lists.set_at(e.index, key)
     }
 
+    /// The type arguments a literal writes after its name — part of
+    /// the expression's identity: `Box<int> { … }` and `Box<string> {
+    /// … }` are different literals even where their fields read alike.
+    fn mark_struct_targs(e: ExprId, args: List<TypeRef>) {
+        self.struct_targs.set_at(e.index, args)
+        if !args.is_empty() {
+            self
+                .expr_fingerprints
+                .set_at(
+                    e.index,
+                    fp(
+                        188,
+                        [self.expr_fingerprints.get()[e.index], fp_list([type_fp(a) for a in args])],
+                    ),
+                )
+        }
+    }
+
+    /// The written type arguments a literal carries, in written order.
+    fn struct_targs_of(e: ExprId) -> List<TypeRef> { self.struct_targs.get()[e.index] }
+
+    /// The type arguments a literal OR instance writes: an instance's
+    /// live on its expansion's literal.
+    fn targs_of_lit(e: ExprId) -> List<TypeRef> {
+        let x? = self.expansion_of(e) else { return self.struct_targs_of(e) }
+        self.struct_targs_of(x)
+    }
+
     fn keyed_list_key(e: ExprId) -> ExprId? {
         self.keyed_lists.get()[e.index]
     }
@@ -662,7 +697,7 @@ impl SyntaxArena {
             .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
         }
     }
 
@@ -681,7 +716,7 @@ impl SyntaxArena {
             .Ident(name) -> Expr.Call(name, [], [value]),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, [self.pronouned(value)]),
             .Lambda(_, _) -> Expr.CallValue(stage, [value]),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
         }
     }
 
@@ -736,7 +771,7 @@ impl SyntaxArena {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Collect(_, _, _, _, _, _) or .CollectEnum(_, _, _, _, _) or .Jump(_, _) or .Error -> null,
         }
     }
 
@@ -915,19 +950,23 @@ impl SyntaxArena {
     /// sequence and the same fingerprint. Two different programs,
     /// one identity, and the memo kernel cannot tell them apart.
     fn arm_fps(arms: List<Arm>) -> List<int> {
-        [fp(
+        [self.arm_fp(a) for a in arms]
+    }
+
+    fn arm_fp(a: Arm) -> int {
+        fp(
             29,
             [
                 fp_list([self.pat_fingerprint(p) for p in a.pats]),
                 fp_list([self.expr_fingerprint(g) for g in some_list(a.guard)]),
                 self.expr_fingerprint(a.value),
             ],
-        ) for a in arms]
+        )
     }
 
     /// The one statement-allocation seam.
     fn alloc_stmt(s: Stmt, span: Span? = null) -> StmtId {
-        self.stmt_fingerprints.push(self.fingerprint_stmt(s))
+        self.stmt_fingerprints.push(s.identity(self))
         self.marks.push(no_stmt_marks())
         self.grammars.push(null)
         self.component_insts.push(null)
@@ -1307,7 +1346,7 @@ impl SyntaxArena {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .Force(subject) -> PlaceStep.Unwrap(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Is(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> null,
         }
     }
 
@@ -1323,6 +1362,10 @@ impl SyntaxArena {
         [lo for j, lo in before if !before.slice(0, j).contains(lo)].length
     }
 
+    /// Every expression id the arena holds, by its place — `expr_ids`'
+    /// count, for a walker that slices by kind.
+    fn expr_count() -> int { self.exprs.count() }
+
     /// Whether `e` OPENS with a record literal — its leftmost word is a
     /// literal's name, its brace the next token. As an instance's head
     /// that brace would be read as the instance's block.
@@ -1331,7 +1374,7 @@ impl SyntaxArena {
             .StructLit(_, _, _) -> true,
             .Binary(_, left, _) or .Coalesce(left, _) -> self.opens_with_literal(left),
             .Force(held) or .Propagate(held) or .Prop(held, _) or .Chain(held, _) or .Is(held, _) or .Index(held, _) or .MethodCall(held, _, _) or .With(held, _, _) or .CallValue(held, _) -> self.opens_with_literal(held),
-            .Not(_) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
+            .Not(_) or .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Error or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .When(_, _, _) or .Block(_, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Comp(_, _) or .Collect(_) or .VariantLit(_, _) or .Named(_, _) or .Range(_, _) or .Env(_) -> false,
         }
     }
 
@@ -1463,12 +1506,6 @@ impl SyntaxArena {
         match self.expr(call) { .Call(_, _, args) -> args.slice(1, args.length), _ -> [] }
     }
 
-    /// A mark list's fingerprint parts: its word, its arguments' words
-    /// and the call they make — `@m([1])` and `@m([2])` share words.
-    fn mark_fps(marks: List<Mark>) -> List<int> {
-        [fp(131, [fp_str(m.name), fp_list(str_fps(m.args)), self.opt_fp(m.call)]) for m in marks]
-    }
-
     fn opt_fp(value: ExprId?) -> int {
         if value == null { return 0 }
         fp(128, [self.expr_fingerprint(value!)])
@@ -1503,7 +1540,7 @@ fn unheard_fp(why: Unheard) -> int {
 impl SyntaxArena {
     /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
-        [fp(125, [fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)]) for c in cases]
+        [c.identity(self) for c in cases]
     }
 
     /// A param list's fingerprint parts — ONE VALUE PER SEAT. A seat
@@ -1512,18 +1549,7 @@ impl SyntaxArena {
     /// are different records, and a defaults list beside the fields
     /// says which defaults exist without saying whose they are.
     fn param_fps(params: List<Param>) -> List<int> {
-        [fp(
-            123,
-            [
-                fp_str(p.name.of),
-                type_fp(p.ty),
-                mark_fp(p.promises),
-                self.opt_fp(p.default),
-                fp_list(self.mark_fps(p.marks)),
-                if p.state { 1 } else { 0 },
-                self.says_fp(p.says),
-            ],
-        ) for p in params]
+        [p.identity(self) for p in params]
     }
 
     /// A fn declaration's SIGNATURE as one value: its name, seats, answer and marks, never its body.
@@ -1560,25 +1586,11 @@ impl SyntaxArena {
         )
     }
 
-    /// What an event says, as ONE value — and an event that says
-    /// nothing is not a seat that is no event.
-    fn says_fp(says: List<Param>?) -> int {
-        let said? = says else { return 0 }
-        fp(188, [fp_list(self.param_fps(said))])
-    }
-
     /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.
     /// Spliced flat, a variant's payload run and the next variant's
     /// name share a boundary that moves.
     fn variant_fps(variants: List<Variant>) -> List<int> {
-        [fp(
-            124,
-            [
-                fp_str(v.name.of),
-                fp_list(self.param_fps(v.payloads)),
-                fp_list(self.mark_fps(v.marks)),
-            ],
-        ) for v in variants]
+        [v.identity(self) for v in variants]
     }
 
     /// A comprehension clause list's fingerprint parts — ONE VALUE

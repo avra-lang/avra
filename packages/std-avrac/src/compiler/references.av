@@ -112,8 +112,21 @@ impl Workspace {
         if refused { self.defect(references_refused(found.length)) }
         // refused, the relation holds the LAST pass's rows: no "used nowhere" is read off it
         self.decls.mark_refs_incomplete(refused || store == null && !held.is_empty())
+        self.decls.record_read_flags(rows)
         self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in rows])]))
         rows.length
+    }
+
+    /// Whether a declaration is read as a value anywhere, as the pass settled it: the cell a
+    /// consumer of that one bit stands on, so a use of another name leaves it standing.
+    fn read_found_of(d: DeclId) -> int {
+        if self.db.family_active(Family.Resolved.ordinal) { return 0 }
+        let k = key(Family.ReadFound, d.index)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let _ = self.references()
+        self.db.settle(k, fp(43, [if self.decls.read_flag_of(d) { 1 } else { 0 }]))
+        0
     }
 
     /// The references a held file's body once made, read back off its own
@@ -232,7 +245,7 @@ impl Workspace {
             .StructLit(name, _, _) -> some_list(self.named_type_ref(f, names, e, name)),
             .Component(word, _, _, _, _) -> some_list(self.component_ref(f, names, e, word)),
             .Env(tr) -> some_list(self.type_name_ref(f, names, e, tr.name)),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .NullLit or .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .With(_, _, _) or .VariantLit(_, _) or .CallValue(_, _) or .Force(_) or .Block(_, _) or .Collect(_) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or .Binary(_, _, _) or .Not(_) or .Comp(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Named(_, _) or .Error or .Range(_, _) -> some_list(self.use_of(f, names, e, UseKind.Read)),
         }
     }
 

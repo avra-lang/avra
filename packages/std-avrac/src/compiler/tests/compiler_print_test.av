@@ -9,15 +9,15 @@ use @std.avrac.testing.{test_workspace}
 use @std.avrac.compiler.{build_cache_root, db_qualified, digest_of_binary}
 use compiler.{Workspace}
 use compiler.host.{memory_host}
-use compiler.store.{store_at}
-use core.{module_path}
+use compiler.store.{Keeping, Producer, Producers, Store, store_at, store_stamped}
+use core.{ModulePath, module_path}
 use @std.io.{write_text, make_dirs}
-use @std.time.{now_ns}
+use @std.time.{stamp}
 
 /// A scratch directory nothing has ever written to: nanosecond-unique,
 /// so no run reads what an earlier one left behind.
 fn print_pkg_named(name: string) -> string {
-    let root = "/tmp/avra-cacheprint-test/${name}-${now_ns()}"
+    let root = "/tmp/avra-cacheprint-test/${name}-${stamp()}"
     let _ = make_dirs(root)
     root
 }
@@ -67,11 +67,11 @@ spec "compiler/build — a durable row's key names the compiler that wrote it" {
                 print_workspace(real_binary("root-b", "compiler two, a different one")),
             )
         }
-        then "a module's record key disagrees — an old compiler's Sig row is never read by a new one" {
+        then "a module's record key agrees — the producer's stamp, not the compiler, decides who reads the row" {
             let m = module_path(["app"])
             let a = print_workspace(real_binary("record-a", "compiler generation one"))
                 .record_key(m)
-            a != print_workspace(real_binary("record-b", "compiler generation two")).record_key(m)
+            a == print_workspace(real_binary("record-b", "compiler generation two")).record_key(m)
         }
         then "avra docs's own qualified name disagrees for the same package and the same lookup" {
             let a = print_workspace(real_binary("docs-a", "the renderer, before")).compiler_id()
@@ -104,19 +104,23 @@ spec "compiler/build — a durable row's key names the compiler that wrote it" {
         }
     }
     given "a record durably written by one compiler print, over the SAME real store" {
-        then "another print's record key misses it — the held/mint read answers absent, never a stranger's bytes" {
-            let store = store_at("${print_pkg_named("held-mint-a")}/.avra-cache")
+        then "another print with the same producer reads it back" {
+            let root = "${print_pkg_named("held-mint-a")}/.avra-cache"
             let m = module_path(["app"])
-            let a = print_workspace(real_binary("held-mint-a-bin", "compiler generation one"))
-            a.db.insert_sig(store, a.record_key(m), "a record generation one wrote")
-            let b = print_workspace(real_binary("held-mint-b-bin", "compiler generation two"))
-            b.db.sig(store, b.record_key(m)) == null
+            kept_by(root, "held-mint-a-bin", Producer.Hashed("same"), m)
+            read_by(root, "held-mint-b-bin", Producer.Hashed("same"), m) == "a record generation one wrote"
         }
-        then "another print's record BODY key differs too — a body is never read across compilers" {
+        then "one whose producer differs misses it — never a stranger's bytes" {
+            let root = "${print_pkg_named("held-mint-c")}/.avra-cache"
+            let m = module_path(["app"])
+            kept_by(root, "held-mint-c-bin", Producer.Hashed("one"), m)
+            read_by(root, "held-mint-d-bin", Producer.Hashed("two"), m) == "none"
+        }
+        then "another print's record BODY key is the same too — the stamp separates, not the key" {
             let a = print_workspace(real_binary("body-key-a-bin", "compiler generation one"))
                 .record_bodies()
                 .key("app", "i")
-            a != print_workspace(real_binary("body-key-b-bin", "compiler generation two"))
+            a == print_workspace(real_binary("body-key-b-bin", "compiler generation two"))
                 .record_bodies()
                 .key("app", "i")
         }
@@ -130,4 +134,21 @@ spec "compiler/build — a durable row's key names the compiler that wrote it" {
             b.db.sig(store, b.record_key(m)) == "the one true record"
         }
     }
+}
+
+/// A store over `root` the way `ws`'s compiler opens it, its Sig family under `producer`.
+fn stamped(root: string, ws: Workspace, producer: Producer) -> Store {
+    store_stamped(root, ws.compiler_id(), Producers { sig: producer }, Keeping.Disk)
+}
+
+/// A record filed by a compiler whose binary holds `binary`.
+fn kept_by(root: string, binary: string, producer: Producer, m: ModulePath) {
+    let ws = print_workspace(real_binary(binary, "compiler generation one"))
+    ws.db.insert_sig(stamped(root, ws, producer), ws.record_key(m), "a record generation one wrote")
+}
+
+/// What a compiler whose binary holds another's bytes reads of it.
+fn read_by(root: string, binary: string, producer: Producer, m: ModulePath) -> string {
+    let ws = print_workspace(real_binary(binary, "compiler generation two"))
+    ws.db.sig(stamped(root, ws, producer), ws.record_key(m)) ?? "none"
 }

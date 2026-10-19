@@ -1,13 +1,23 @@
 // THE PACK'S CONTRACT: one writer's segment, each frame ended by a commit
 // marker; a later open reads what committed; a segment whose plain header
-// names another compiler's print is foreign and read not at all.
-use @std.time.{now_ns}
+// names another compiler's print is read all the same — a row's stamp, which is part
+// of its family's name, says who may address it.
+use @std.time.{stamp}
 use @std.io.{list_dir, remove, read_bytes, write_bytes}
 use @std.path.{joined_path}
-use compiler.store.{pack_at, pack_put, pack_has, pack_get, seal, val_path}
+use compiler.store.{
+    pack_at,
+    pack_put,
+    pack_has,
+    pack_get,
+    pack_suspects,
+    pack_traffic,
+    seal,
+    val_path,
+}
 
 /// One store directory per case, so no case reads another's segments.
-fn pack_root(name: string) -> string { "/tmp/avra-pack-test/${name}-${now_ns()}" }
+fn pack_root(name: string) -> string { "/tmp/avra-pack-test/${name}-${stamp()}" }
 
 /// The store's files, so a read-only open can be held to creating none.
 fn pack_files(root: string) -> List<string> {
@@ -46,11 +56,11 @@ spec "store/pack — segments, commit markers, the two tiers" {
         }
     }
     given "a segment whose plain header names another compiler's print" {
-        then "no row is read, and the pack says foreign" {
-            let root = pack_root("foreign")
+        then "its row is read, and the pack does not say foreign" {
+            let root = pack_root("other-print")
             let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "v", [])
             let other = pack_at(root, "print-two")
-            !pack_has(other, "unit", "k") && other.foreign.get()
+            pack_get(other, "unit", "k") == "v" && !other.foreign.get()
         }
     }
     given "a read-only open" {
@@ -95,12 +105,12 @@ spec "store/pack — segments, commit markers, the two tiers" {
         }
     }
     given "one process holding two compiler prints" {
-        then "each print reads its own rows and no other's" {
+        then "rows under two stamped family names stand together" {
             let root = pack_root("prints")
-            let _ = pack_put(pack_at(root, "print-one"), "unit", "k", "one", [])
-            let _ = pack_put(pack_at(root, "print-two"), "unit", "k", "two", [])
-            pack_get(pack_at(root, "print-one"), "unit", "k") == "one" &&
-                pack_get(pack_at(root, "print-two"), "unit", "k") == "two"
+            let _ = pack_put(pack_at(root, "print-one"), "unit@one", "k", "one", [])
+            let _ = pack_put(pack_at(root, "print-two"), "unit@two", "k", "two", [])
+            let read = pack_at(root, "print-one")
+            pack_get(read, "unit@one", "k") == "one" && pack_get(read, "unit@two", "k") == "two"
         }
     }
     given "a seal over a view older than the newest body" {
@@ -118,6 +128,50 @@ spec "store/pack — segments, commit markers, the two tiers" {
             refused &&
                 pack_get(fresh, "unit", "first") == "1" &&
                 pack_get(fresh, "unit", "second") == "2"
+        }
+    }
+    given "rows that read inputs, sealed into a body" {
+        then "a fresh open names the readers of a moved input from the reverse section alone" {
+            let root = pack_root("suspects")
+            let w = pack_at(root, "print-one")
+            let _ = pack_put(w, "unit", "a", "1", ["d1 a.av", "d9 shared.av"])
+            let _ = pack_put(w, "unit", "b", "2", ["d2 b.av", "d9 shared.av"])
+            let _ = pack_put(w, "warn", "c", "3", ["d3 c.av"])
+            let _ = seal(w)
+            for file in pack_files(root) {
+                if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+            }
+            let r = pack_at(root, "print-one")
+            pack_suspects(r, ["a.av"]).length == 1 &&
+                pack_suspects(r, ["shared.av"]).length == 2 &&
+                pack_suspects(r, ["c.av", "a.av"]).length == 2 &&
+                pack_suspects(r, []).is_empty() &&
+                pack_suspects(r, ["nothing.av"]).is_empty()
+        }
+        then "a row overwritten after the seal is judged by its new reads" {
+            let root = pack_root("suspects-over")
+            let w = pack_at(root, "print-one")
+            let _ = pack_put(w, "unit", "a", "1", ["d1 a.av"])
+            let _ = seal(w)
+            let r = pack_at(root, "print-one")
+            let _ = pack_put(r, "unit", "a", "2", ["d1 z.av"])
+            pack_suspects(r, ["a.av"]).is_empty() && pack_suspects(r, ["z.av"]).length == 1
+        }
+    }
+    given "lookups and value reads asked of a pack" {
+        then "are counted: a row found, a row absent, a value read out of the sealed body" {
+            let root = pack_root("traffic")
+            let writer = pack_at(root, "print-one")
+            let _ = pack_put(writer, "unit", "k", "value", [])
+            let _ = seal(writer)
+            for file in pack_files(root) {
+                if file.starts_with("seg-") { let _ = remove(joined_path("${root}/store", file)) }
+            }
+            let reader = pack_at(root, "print-one")
+            let _ = pack_has(reader, "unit", "absent")
+            let _ = pack_get(reader, "unit", "k")
+            let t = pack_traffic(reader)
+            t.hits == 1 && t.misses == 1 && t.values == 1 && t.bytes == 5
         }
     }
 }

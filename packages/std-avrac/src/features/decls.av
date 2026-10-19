@@ -50,10 +50,10 @@ use core.{
     Annotation,
     At,
 }
-use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind}
-use @std.relation.db.{Db, new_db}
+use core.{SeatMark, mark_at, plain_mark, ArenaRuns, wreck, Mark, CollectKind, db_verified}
+use @std.relation.db.{Db, Durable, durable_db, transient}
 use @std.relation.rows.{Rows, bool_key, text_key, SideRows, side_rows}
-use core.{Fingerprint, Exemplar, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
+use core.{Fingerprint, Exemplar, Ids, fp, fp_list, mix_final, same_type, touch, list_eq, opt_eq}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -474,6 +474,8 @@ export type Decls = {
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
     held_items: Cell<Map<string, List<DeclId>>>,
+    spliced: Cell<Map<string, List<DeclId>>>,
+    reentered: Table<List<DeclId>>,
     /// Each file's declarations by kind, owner and name, keyed by file
     /// index, kept until the file holds more declarations than it was
     /// indexed with.
@@ -562,6 +564,9 @@ export type Decls = {
     name_buckets: Cell<List<int>>,
     /// The name each name bucket files, dense by bucket — its `Named` cell's label.
     cell_names: Cell<List<string>>,
+    /// Each declaration's and type's durable fold, dense by index; -1 until asked.
+    decl_fps: Cell<List<int>>,
+    type_fps: Cell<List<int>>,
     rows_state: Cell<List<int>>,
     held_rows: Cell<fn(FileId) -> void>,
     /// The revision each armed relation cell last moved at, by family.
@@ -640,6 +645,9 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
     ensure_writes: Cell<fn(DeclId) -> bool>,
+    // the workspace's cancel hook: a record-carrying declaration's reach
+    // read by name, so a reader stands on that decl's answer alone
+    ensure_cancels: Cell<fn(DeclId) -> bool>,
     // WHICH SEATS THE BODY CONSUMES (R3) — computed on first ask
     // through `ensure_consumed`, the same shape as `marks` (null =
     // unasked). No fixpoint: unlike `written_seats`, a seat's
@@ -651,6 +659,10 @@ export type Decls = {
     /// cannot answer "used nowhere" with any confidence.
     refs_incomplete: Cell<bool>,
     ensure_refs: Cell<fn() -> bool>,
+    /// Whether each declaration is read as a value anywhere, as the references pass found it,
+    /// by DeclId; a declaration past the end is read nowhere.
+    read_flags: Cell<List<bool>>,
+    ensure_read: Cell<fn(DeclId) -> bool>,
     /// THE SEAL INDEX — a type name to the `.Fn` decls whose `mut` parameters
     /// write it, kept by `face` as every declaration's facts land, so it covers
     /// a module minted after the first ask as well as one parsed before it.
@@ -768,7 +780,10 @@ export enum ConstType {
 
 fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 
-export fn new_decls() -> Decls {
+export fn new_decls() -> Decls { new_decls_under(transient()) }
+
+/// The declaration table whose relation Db keeps its query answers where `durable` does.
+export fn new_decls_under(durable: Durable) -> Decls {
     let no_mains: List<DeclId?> = []
     let no_stores: List<SyntaxArena?> = []
     let no_generations: List<List<Generation>> = []
@@ -790,7 +805,7 @@ export fn new_decls() -> Decls {
     let no_impls: List<Cell<List<DeclId>>> = []
     let no_written_seats: List<Cell<List<bool>>> = []
     let empty_consumed: List<List<bool>?> = []
-    let db = new_db()
+    let db = durable_db(durable)
     let d = Decls {
         types: new_type_registry(),
         mains: Cell.new(no_mains),
@@ -813,6 +828,8 @@ export fn new_decls() -> Decls {
         recording: Cell.new(false),
         name_buckets: list_cell(),
         cell_names: list_cell(),
+        decl_fps: list_cell(),
+        type_fps: list_cell(),
         rows_state: list_cell(),
         held_rows: Cell.new(no_store),
         ensure_store: Cell.new(no_store),
@@ -829,6 +846,8 @@ export fn new_decls() -> Decls {
         meta_ids: map_cell(),
         held: map_cell(),
         held_items: map_cell(),
+        spliced: map_cell(),
+        reentered: new_table(),
         wire_index: map_cell(),
         faces: Cell.new(no_faces),
         doc_facts: Cell.new(side_table("doc_facts", 0, 0, DocFact { doc: null, annotations: [] })),
@@ -859,6 +878,7 @@ export fn new_decls() -> Decls {
         declared_writes: Cell.new(no_declared_writes),
         written_seats: Cell.new(no_written_seats),
         ensure_writes: Cell.new(no_answer),
+        ensure_cancels: Cell.new(no_answer),
         inferred_errs: new_table(),
         inferred_unresolved: new_table(),
         ensure_failures: Cell.new(no_failures_ensure),
@@ -873,6 +893,8 @@ export fn new_decls() -> Decls {
         composers_of: Cell.new(none_apart),
         refs_incomplete: Cell.new(false),
         ensure_refs: Cell.new(no_refs_ensure),
+        read_flags: list_cell(),
+        ensure_read: Cell.new(no_answer),
         mut_seat_index: map_cell(),
     }
     // the registry cannot reach a declaration on its own — a struct or
@@ -1086,6 +1108,38 @@ impl Decls {
         self.decl_row_rows.get().members(b)
     }
 
+    /// Arena ids as a fold reaches them: by the durable name of what they index.
+    fn ids() -> Ids {
+        let ds = self
+        Ids {
+            decl: (i: int) -> if i < 0 { i } else { ds.decl_door(DeclId { index: i }) },
+            ty: (i: int) -> if i < 0 { i } else { ds.durable(ds.type_fps, i, () -> fp_str(ds.type_wire(TypeId { index: i }))) },
+            file: (i: int) -> if i < 0 { i } else { fp_str(ds.file(FileId { index: i }).path) },
+            expr: (i: int) -> i,
+            stmt: (i: int) -> i,
+        }
+    }
+
+    /// A declaration's durable fold. Its wire counts same-named siblings, which are all minted
+    /// only once the file's rows settle, so a fold made earlier is never remembered.
+    fn decl_door(d: DeclId) -> int {
+        let ds = self
+        let make = () -> fp_str(ds.decl_wire(d))
+        if self.is_builtin(d) || self.home_stand(self.decl(d).file) != 0 { return self.durable(self.decl_fps, d.index, make) }
+        if db_verified() { wreck("a declaration's durable name was asked before its file's rows settled") }
+        make()
+    }
+
+    /// `memo`'s fold at `at`, made once.
+    fn durable(memo: Cell<List<int>>, at: int, make: fn() -> int) -> int {
+        while memo.get().length <= at { memo.push(-1) }
+        let held = memo.get()[at]
+        if held >= 0 { return held }
+        let made = make()
+        memo.set_at(at, made)
+        made
+    }
+
     /// Room for name bucket `b`'s label in the dense table.
     fn room_for_cell(b: int, name: string) {
         while self.cell_names.get().length <= b { self.cell_names.push("") }
@@ -1097,6 +1151,19 @@ impl Decls {
     @bracket("decls")
     fn named_now(b: int) {
         self.record_kernel.set_input(self.name_key_at(b), self.decl_row_rows.get().bucket_hash(b))
+    }
+
+    /// The name bucket `b` is filed under, when it stands.
+    fn bucket_label(b: int) -> string? {
+        if b < 0 || b >= self.cell_names.get().length { return null }
+        self.cell_names.get()[b]
+    }
+
+    /// The bucket `name` files under, when one stands; nothing is opened.
+    @bracket("decls")
+    fn bucket_standing(name: string) -> int? {
+        let found = self.decl_row_rows.get().bucket_of_text(name_index, name)
+        if found >= 0 { found } else { null }
     }
 
     /// How many name buckets stand, emptied ones among them.
@@ -1286,6 +1353,27 @@ impl Decls {
             if !self.expansion_voices.get()[f.index].get().any(same_voice(it, d)) { self.expansion_voices.get()[f.index].push(d) }
         }
     }
+
+    /// The declarations an earlier splice of this very code made, while
+    /// every one of them still stands: a re-entrant expansion asks again
+    /// and reads them instead of splicing a second copy into the store.
+    fn spliced_before(key: string) -> List<DeclId>? {
+        let made? = self.spliced.get().get(key) else { return null }
+        if made.all((d) -> self.row_at(d.index) != null) { made } else { null }
+    }
+
+    fn splice_kept(key: string, made: List<DeclId>) { self.spliced.put(key, made) }
+
+    /// What a file's first re-entrant expansion settled, while the run it
+    /// re-entered is open.
+    fn reentry_answer(f: FileId) -> List<DeclId>? {
+        match self.reentered.entry(f.index) { .Present(made) -> made, .Missing -> null }
+    }
+
+    fn reentry_kept(f: FileId, made: List<DeclId>) { self.reentered.keep(f.index, made) }
+
+    /// The outer run ended: a later run starts with no re-entry settled.
+    fn reentry_over(f: FileId) { self.reentered.drop(f.index) }
 
     /// A file's expansion begins with nothing refused.
     fn hush_expansion(f: FileId) {
@@ -1612,6 +1700,7 @@ impl Decls {
         self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_answer)
+        self.ensure_cancels.set(no_answer)
         self.ensure_marks.set(no_marks)
         self.ensure_store.set(no_store)
         self.ensure_file.set(no_store)
@@ -1632,6 +1721,8 @@ impl Decls {
         self.ensure_target.set(no_ensure)
         self.ensure_consumed.set(no_ensure)
         self.ensure_refs.set(no_refs_ensure)
+        self.ensure_read.set(no_answer)
+        self.rows_db.get().answers_forgotten()
         self.embed_judge.set(embed_unjudged)
         self.audit_hook.set(no_audit)
         self.types.disarm_declare()
@@ -2117,9 +2208,22 @@ impl Decls {
         self.cancels.keep(d.index, r)
     }
 
-    /// The recorded answer — null where nothing has said.
+    /// The recorded answer — null where nothing has said. A reader asks through the
+    /// workspace's hook, so it stands on the declaration's own `CancelBits` answer;
+    /// the pass's own reads go to `cancels_so_far`.
     fn cancel_bits(d: DeclId) -> CancelReach? {
+        (self.ensure_cancels.get())(d)
         self.cancels.at(d.index)
+    }
+
+    /// The pass's own read, hook-free — the table as it stands.
+    fn cancels_so_far(d: DeclId) -> CancelReach? {
+        self.cancels.at(d.index)
+    }
+
+    /// The workspace arms the cancel hook once.
+    fn arm_cancels(ensure: fn(DeclId) -> bool) {
+        self.ensure_cancels.set(ensure)
     }
 
     /// The program-wide bit the cancel pass settled.
@@ -2188,11 +2292,20 @@ impl Decls {
         self.consumed.set_at(d.index, bits)
     }
 
+    /// Whether the pass has recorded `d`'s bits.
+    fn consumed_known(d: DeclId) -> bool { self.consumed.get()[d.index] != null }
+
+    /// The bits recorded for `d`, none where unrecorded.
+    fn consumed_bits(d: DeclId) -> List<bool> {
+        let row: List<bool>? = self.consumed.get()[d.index]
+        row ?? []
+    }
+
     /// Whether the body infers seat `i` CONSUMED — asking runs the
     /// pass; a held (precompiled) declaration answers false, since
     /// nothing here re-infers from a body it never stored.
     fn consumed_seat(d: DeclId, i: int) -> bool {
-        if self.consumed.get()[d.index] == null { (self.ensure_consumed.get())(d) }
+        (self.ensure_consumed.get())(d)
         let row: List<bool>? = self.consumed.get()[d.index]
         row != null && i < row!.length && row![i]
     }
@@ -2222,8 +2335,22 @@ impl Decls {
     /// Whether a plain read names `d`, or null where the references do not
     /// stand: an absence of a finding is no finding of absence.
     fn read_found(d: DeclId) -> bool? {
-        if !self.refs_stand() { return null }
-        Ref.by_decl(self.rows_db.get(), d).any((r: Ref) -> r.kind is .Read)
+        if !(self.ensure_read.get())(d) { return null }
+        self.read_flag_of(d)
+    }
+
+    /// The finding as it stands for `d`: a declaration the pass never saw is read nowhere.
+    fn read_flag_of(d: DeclId) -> bool { d.index < self.read_flags.get().length && self.read_flags.get()[d.index] }
+
+    /// The pass's finding of which declarations are read, kept for `read_found`.
+    fn record_read_flags(rows: List<Ref>) {
+        self.read_flags.set([false for _i in 0..self.decl_count()])
+        for r in rows { if r.kind is .Read { self.read_flags.set_at(r.decl.index, true) } }
+    }
+
+    /// The workspace arms the read-found hook once.
+    fn arm_read_found(ensure: fn(DeclId) -> bool) {
+        self.ensure_read.set(ensure)
     }
 
     /// Every plain read of `d` — never a call, never a write.
@@ -2668,6 +2795,33 @@ impl Decls {
         a.args.length == 2 && self.is_meta_annotation(a, file, "lacks")
     }
 
+    /// Whether a declaration carries `@std/meta`'s `@owns` — a record
+    /// whose tasks are PRODUCERS: a binding of it is settled by
+    /// cancelling each task it holds, then joining it.
+    fn is_owned(d: DeclId) -> bool {
+        let file = self.annotation_home(d)
+        self.annotations_of(d).any((a: AnnotationFact) -> self.is_meta_annotation(a, file, "owns"))
+    }
+
+    /// A type a package MARKED `@owns`, or a nullable of one. Read by
+    /// the task law: a marked owner is the one answer a `Task` field
+    /// may ride in, and the one a fn may answer.
+    fn owns_by_mark(id: TypeId) -> bool {
+        match self.types.shape_of(self.types.seen_through(id)) {
+            .Struct(d, _) or .App(d, _, _) -> self.is_owned(d),
+            .Opt(t) -> self.owns_by_mark(t),
+            rest -> false,
+        }
+    }
+
+    /// The owners a block can settle: every structural task owner, plus
+    /// a MARKED record. A bare `Task` is one; a plain record holding
+    /// one is not — only a package's `@owns` makes it so.
+    fn owns_tasks(id: TypeId) -> bool { self.types.owns_tasks(id) || self.owns_by_mark(id) }
+
+    /// `owns_tasks` one task at a time, with the mark read.
+    fn owns_one_task(id: TypeId) -> bool { self.types.owns_one_task(id) || self.owns_by_mark(id) }
+
     /// Each written seat's default body, in seat order — null where
     /// the seat has none.
     fn seat_defaults(d: DeclId) -> List<DeclId?> {
@@ -2752,8 +2906,64 @@ impl Decls {
     }
 
     /// THE symbol a LIFTED body lowers to. A lambda has no name of
-    /// its own, so it takes its file's and the node that wrote it.
-    fn lifted_symbol(f: FileId, e: ExprId) -> string { self.file_symbol(f, "l${e.index}") }
+    /// its own, so it takes its file's and the node that wrote it. A
+    /// WRITTEN lambda is content-addressed — the file's module and stem,
+    /// its content, and its turn among the lambdas written alike — so a
+    /// line added above it moves nothing. A lambda a TEMPLATE copied here
+    /// or a derivation minted wears its arena index instead: its offsets
+    /// are another file's, so two copies of one template are alike by
+    /// content and a raw index is the one name that keeps them apart.
+    fn lifted_symbol(f: FileId, e: ExprId) -> string {
+        let local = if self.written_here(f, e) {
+            "${self.site_of(f, self.store_of(f).expr_fingerprint(e), self.written_turn(f, e))}"
+        } else {
+            "g${e.index}"
+        }
+        self.file_symbol(f, "l${local}")
+    }
+
+    /// Whether a file's node is one its OWN SOURCE wrote, never one a
+    /// template copied here or a derivation minted.
+    fn written_here(f: FileId, e: ExprId) -> bool {
+        let store = self.store_of(f)
+        self.generation_of(f, e) == null &&
+            !store.spanned_elsewhere(e) &&
+            store.expr_span(e) != null
+    }
+
+    /// A written node's TURN among the nodes written ALIKE in its file,
+    /// ordered by where they stand — an unrelated line added above moves
+    /// nothing. Two written at one offset (a sugar and its expansion) are
+    /// told apart by their arena order.
+    fn written_turn(f: FileId, e: ExprId) -> int {
+        let store = self.store_of(f)
+        let at? = store.expr_span(e)?.lo else { return 0 }
+        let own = store.expr_fingerprint(e)
+        let like = store.exprs_by_kind(0, store.expr_count(), store.tag_expr(store.expr(e)))
+        let before = [1 for x in like if store.expr_fingerprint(x) == own && self.written_here(f, x) for px in some_list(store.expr_span(x)) if px.lo < at || px.lo == at && x.index < e.index]
+        before.length
+    }
+
+    /// THE symbol a static literal lays its data under. A WRITTEN literal is
+    /// content-addressed — its content and the type that decides the layout,
+    /// folded, with its TURN among the literals folded alike — so a line added
+    /// above moves no symbol. A literal a TEMPLATE copied here or a derivation
+    /// minted wears its arena index instead: its offsets are another file's, and
+    /// two shapes that fold alike would otherwise share one static and read each
+    /// other's bytes. THE TURN IS NOT OPTIONAL FOR A WRITTEN ONE: a fold is a
+    /// HASH (`["call","makes"]` and `["make","calls"]` fold alike), so without
+    /// it two different values would share one static.
+    fn literal_symbol(f: FileId, e: ExprId, ty: TypeId) -> string {
+        let content = fp_list(
+            [self.store_of(f).expr_fingerprint(e), fp_str(self.types.name_of(ty))],
+        )
+        let local = if self.written_here(f, e) {
+            "${self.site_of(f, content, self.written_turn(f, e))}"
+        } else {
+            "${e.index}"
+        }
+        self.file_symbol(f, "lit${local}")
+    }
 
     /// The unit a const's initializer lowers as, named for its statement.
     fn const_symbol(f: FileId, s: StmtId) -> string { self.file_symbol(f, "const${s.index}") }

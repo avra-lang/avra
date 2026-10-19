@@ -52,7 +52,7 @@ use features.{
     Settlement,
     TypeCx,
     Decls,
-    new_decls,
+    new_decls_under,
     scalar_types,
     kind_word,
     Decl,
@@ -76,7 +76,7 @@ use features.{
     Instanced,
 }
 use @std.meta.{Diagnostic, bracket, identity, plain_field, derive, code_hash}
-use core.{StmtId, ModulePath, watched_kernel}
+use core.{StmtId, ModulePath, watched_kernel, leaves_traced, db_verified}
 use diagnostics.{
     SourceFile,
     new_source_file,
@@ -116,6 +116,9 @@ fn no_paths() -> List<string> { [] }
 /// No reads, typed.
 fn no_read_list() -> List<RunRead> { [] }
 
+/// A reader's list set aside while a scope reads into an empty one: what it held, and its generation.
+type ReadScope = { before: List<RunRead>, gen: int }
+
 /// No pending reads, typed.
 fn no_pending() -> List<PendingRead> { [] }
 
@@ -124,10 +127,6 @@ fn no_codes() -> List<CodeFacts> { [] }
 
 /// The host's environment — what a `${NAME}` hole in a link row fills from.
 extern fn avra_host_env(name: string) -> string
-
-/// Method clashes grouped in one pass, then read by the losing file.
-/// A new revision or declaration invalidates the grouping.
-type MethodDiagIndex = { revision: int, decl_count: int, by_file: List<List<Diag>> }
 
 /// The extern symbols of a declaration table of one size.
 type ExternNames = { decls: int, names: List<string> }
@@ -140,29 +139,39 @@ type ExternNames = { decls: int, names: List<string> }
 /// `object_parts` every record write, the rest only when a record's SEEN part (its
 /// interface or imports) moved.
 @identity
-type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, seen_views: Cell<Map<string, SeenView>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
+type Keys = { bytes_keys: Cell<Map<string, string>>, view_parts: Cell<Map<string, List<SeenPart>>>, view_index: Cell<Map<string, NarrowIndex>>, file_fns: Cell<Map<string, List<FnForm>>>, typed_files: Cell<Map<string, Map<string, List<string>>>>, file_owners: Cell<Map<string, string>>, placed_from: Cell<Map<string, bool>>, object_keys: Cell<Map<string, string>>, object_parts: Cell<Map<string, KeyParts>>, text_digests: Cell<Map<string, string>>, file_tokens: Cell<Map<string, Map<string, int>>>, seen_views: Cell<Map<string, SeenView>>, name_index: Cell<Map<string, int>>, name_seen: Cell<Map<string, int>>, viewed: Cell<Map<string, List<ModulePath>>>, view_marks: Cell<Map<string, bool>>, store_root: Cell<string>, keeping: Cell<Keeping>, compiler_id: Cell<string>, build_mode: Cell<string> }
 
 fn new_keys() -> Keys {
     let no_bytes: Map<string, string> = {}
     let no_view: Map<string, List<SeenPart>> = {}
+    let no_index: Map<string, NarrowIndex> = {}
+    let no_fns: Map<string, List<FnForm>> = {}
     let no_typed: Map<string, Map<string, List<string>>> = {}
     let no_placed: Map<string, bool> = {}
     let no_object: Map<string, string> = {}
     let no_parts: Map<string, KeyParts> = {}
     let no_digests: Map<string, string> = {}
+    let no_tokens: Map<string, Map<string, int>> = {}
     let no_views: Map<string, SeenView> = {}
+    let no_named: Map<string, int> = {}
+    let no_seen: Map<string, int> = {}
     let no_viewed: Map<string, List<ModulePath>> = {}
     let no_marks: Map<string, bool> = {}
     Keys {
         bytes_keys: Cell.new(no_bytes),
         view_parts: Cell.new(no_view),
+        view_index: Cell.new(no_index),
+        file_fns: Cell.new(no_fns),
         typed_files: Cell.new(no_typed),
         file_owners: Cell.new(no_bytes),
         placed_from: Cell.new(no_placed),
         object_keys: Cell.new(no_object),
         object_parts: Cell.new(no_parts),
         text_digests: Cell.new(no_digests),
+        file_tokens: Cell.new(no_tokens),
         seen_views: Cell.new(no_views),
+        name_index: Cell.new(no_named),
+        name_seen: Cell.new(no_seen),
         viewed: Cell.new(no_viewed),
         view_marks: Cell.new(no_marks),
         store_root: Cell.new(""),
@@ -199,12 +208,24 @@ fn new_keys() -> Keys {
 /// (`moved`); each file's module (`file_module`), the revision each
 /// module's `HeldSig` was last asked at (`sig_asked`), each open
 /// settlement's kept lines, innermost last (`settle_frames`), what each
-/// settlement read, by its ask (`settle_reads`), the units being lowered,
+/// settlement read, by its ask (`settle_reads`), each reader's list generation
+/// and the reads seen under it (`read_gen`, `read_seen`, `read_gens`), the units being lowered,
 /// innermost last (`lowering`), and the consts each unit's lowering asked
 /// for, by the unit (`unit_asks`), the declaration each lowered body belongs to, by its
 /// name (`owners`), whether kept units may stand in for lowering
 /// (`serving`), the units that did (`served`), each file's surface (`surfaces`), its kept rows (`rows`), the rows of
 /// this derivation (`rows_live`) and the files that made one (`rows_fresh`).
+/// A read's expansion, memoized for the attempt: the reads it inherits and the
+/// run generation of the path it walked. A read expands differently as a fn than
+/// as a whole file, so the run generation — not a "seen" mark — invalidates it.
+type Followed = { reads: List<RunRead>, gen: int }
+
+/// A view's standing, memoized for the attempt: the file count and body-ask
+/// count it was judged under. `view_stands` judges the module and file facts a
+/// build is building, so a file minted or a body asked while the attempt runs
+/// makes the standing stale.
+type ViewStand = { files: int, asks: int, stands: bool }
+
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -212,6 +233,12 @@ type Hold = {
     held_codes: Cell<List<CodeFacts>>,
     body_asks: Cell<List<string>>,
     runs: Cell<Map<string, List<RunRead>>>,
+    read_gen: Cell<Map<string, int>>,
+    read_seen: Cell<Map<string, bool>>,
+    read_gens: Cell<int>,
+    ran_followed: Cell<Map<string, Followed>>,
+    runs_gen: Cell<Map<string, int>>,
+    view_standing: Cell<Map<string, ViewStand>>,
     settle_reads: Cell<Map<string, List<RunRead>>>,
     pending_reads: Cell<List<PendingRead>>,
     pending_resolved: Cell<Map<string, string>>,
@@ -285,6 +312,12 @@ fn new_hold() -> Hold {
         held_codes: Cell.new(no_codes()),
         body_asks: Cell.new(no_paths()),
         runs: Cell.new(no_runs),
+        read_gen: map_cell(),
+        read_seen: map_cell(),
+        read_gens: Cell.new(0),
+        ran_followed: map_cell(),
+        runs_gen: map_cell(),
+        view_standing: map_cell(),
         settle_reads: map_cell(),
         pending_reads: Cell.new(no_pending()),
         pending_resolved: map_cell(),
@@ -330,6 +363,10 @@ type Records = {
     record_lines: Cell<Map<string, List<string>>>,
     record_fields: Cell<Map<string, List<List<string>>>>,
     record_places: Cell<Map<string, Map<string, Placed>>>,
+    /// A MODULE'S RE-EXPORTING FILES, keyed by module: the files its record
+    /// marks as re-exporting a name, read once per build however many
+    /// modules see it.
+    record_reexports: Cell<Map<string, List<string>>>,
     /// A MODULE'S RECORD FAULT, keyed by record key: "" when the record is
     /// whole, else the one reason its decoder refused it — read once per build,
     /// since the scan is over the record's every line and a module reached by
@@ -360,6 +397,7 @@ fn new_records() -> Records {
     let no_lines: Map<string, List<string>> = {}
     let no_fields: Map<string, List<List<string>>> = {}
     let no_places: Map<string, Map<string, Placed>> = {}
+    let no_reexports: Map<string, List<string>> = {}
     let no_fault: Map<string, string> = {}
     let no_met: Map<string, bool> = {}
     let no_block_named: Map<string, List<string>> = {}
@@ -370,6 +408,7 @@ fn new_records() -> Records {
         record_lines: Cell.new(no_lines),
         record_fields: Cell.new(no_fields),
         record_places: Cell.new(no_places),
+        record_reexports: Cell.new(no_reexports),
         record_fault: Cell.new(no_fault),
         met_files: Cell.new(no_met),
         block_named: Cell.new(no_block_named),
@@ -421,7 +460,6 @@ export type Workspace = {
     externs: Table<ExternNames>,
     sig_voices: Table<Voices>,
     method_clashes: Table<List<Clash>>,
-    method_diags: Cell<List<MethodDiagIndex>>,
     /// each file's clash diagnostics as `Family.MethodDiags` last settled them
     method_diag_rows: Table<List<Diag>>,
     asks: Cell<List<Wanted>>,
@@ -527,20 +565,34 @@ export enum Origin {
 }
 
 /// One timed phase, in nanoseconds of the workspace's clock.
-export type Phase = { name: string, ns: int }
+export type Phase = { name: string, ns: int, mints: int = 0, settles: int = 0 }
 
 impl Phase {
     fn shown() -> string { "${self.name} ${self.ns / 1000000}ms" }
+
+    /// The same, with what the phase minted and settled.
+    fn counted() -> string { "${self.shown()} ${self.mints} mints ${self.settles} settles" }
 }
 
 /// A PHASE CLOCK: each mark closes the span since the last one.
-export type Marks = { now: fn() -> int, last: int, spans: List<Phase> }
+export type Marks = { now: fn() -> int, counts: fn() -> List<int>, last: int, seen: List<int>, spans: List<Phase> }
 
 impl Marks {
     mut fn mark(name: string) {
         let at = self.now()
-        self.spans.push(Phase { name: name, ns: at - self.last })
+        let c = self.counts()
+        self
+            .spans
+            .push(
+                Phase {
+                    name: name,
+                    ns: at - self.last,
+                    mints: c[0] - self.seen[0],
+                    settles: c[1] - self.seen[1],
+                },
+            )
         self.last = at
+        self.seen = c
     }
 
     /// Closes the span since the last mark under the next of `names` — the phase
@@ -555,7 +607,18 @@ impl Marks {
 /// pushed hundreds of times folds to its total instead of flooding
 /// the line with one entry per file.
 export fn grouped_phases(phases: List<Phase>) -> List<Phase> {
-    [Phase { name: n, ns: phase_total(phases, n) } for n in distinct([p.name for p in phases])]
+    [Phase {
+        name: n,
+        ns: phase_total(phases, n),
+        mints: phase_sum([p.mints for p in phases if p.name == n]),
+        settles: phase_sum([p.settles for p in phases if p.name == n]),
+    } for n in distinct([p.name for p in phases])]
+}
+
+fn phase_sum(counts: List<int>) -> int {
+    mut sum = 0
+    for c in counts { sum = sum + c }
+    sum
 }
 
 export fn phase_total(phases: List<Phase>, name: string) -> int {
@@ -588,12 +651,14 @@ fn syntax_hash(store: SyntaxArena, x: Decl) -> int {
 }
 
 /// Whether a family's queries read declaration rows WHOLE — one edge per file,
-/// never one per name. Lowering and the compile-time runs come after typing and
-/// re-run with it, so what they read needs no finer edge than its file.
+/// never one per name. Lowering reads the one declaration it names, as typing
+/// does, so a signature edit moves only that declaration's bucket and the
+/// readers of it; the compile-time runs come after typing and re-run with it,
+/// so what they read needs no finer edge than its file.
 fn reads_rows_whole(f: Family) -> bool {
     match f {
-        .Lowered or .LiftLowered or .Lifted or .Settled -> true,
-        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach -> false,
+        .LiftLowered or .Lifted or .Settled -> true,
+        .Source or .Parsed or .Items or .Namespace or .Visible or .Resolved or .Sig or .Methods or .Typed or .ConstTyped or .Folded or .Analysis or .Manifest or .Receivers or .Expanded or .Plain or .References or .Failures or .HeldSig or .Raised or .MethodDiags or .Syntax or .Names or .Marks or .Admitted or .Named or .ReadReach or .DeclReads or .Input or .BlockScan or .ComponentScan or .ComponentNames or .CancelReach or .Writes or .CancelBits or .ReadFound or .Consumed or .Lowered -> false,
     }
 }
 
@@ -670,6 +735,26 @@ fn manifest_verified(ws: Workspace, arg: int) -> int {
 fn receivers_verified(ws: Workspace, arg: int) -> int {
     touch(ws.receivers())
     ws.db.changed_at(key(Family.Receivers, arg))
+}
+// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
+fn consumed_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.consumed_cell(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Consumed, arg))
+}
+// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
+fn read_found_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.read_found_of(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.ReadFound, arg))
+}
+// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
+fn writes_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.writes_of(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.Writes, arg))
+}
+// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
+fn cancel_bits_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.cancel_bits_of(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.CancelBits, arg))
 }
 fn expanded_verified(ws: Workspace, arg: int) -> int {
     touch(ws.expanded(file_at(arg)))
@@ -783,6 +868,10 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Syntax -> syntax_verified(ws, arg),
         .Names -> names_verified(ws, arg),
         .Marks -> marks_verified(ws, arg),
+        .Writes -> writes_verified(ws, arg),
+        .CancelBits -> cancel_bits_verified(ws, arg),
+        .ReadFound -> read_found_verified(ws, arg),
+        .Consumed -> consumed_verified(ws, arg),
         .Admitted -> admitted_verified(ws, arg),
         .Named -> named_verified(ws, arg),
         .ReadReach -> read_reach_verified(ws, arg),
@@ -831,8 +920,8 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
 
 /// The declaration table with the language's own declarations in it, its reads
 /// recording into `kernel`.
-fn language_decls(lang: Language, kernel: Kernel) -> Decls {
-    let decls = new_decls() with { record_kernel: kernel, rows: lang.rows.types.concat(scalar_types()) }
+fn language_decls(lang: Language, kernel: Kernel, answers: Cell<Store?>) -> Decls {
+    let decls = new_decls_under(answer_hooks(answers)) with { record_kernel: kernel, rows: lang.rows.types.concat(scalar_types()) }
     decls.admit_builtins()
     decls
 }
@@ -878,13 +967,13 @@ fn built(
     let no_lift_index: Map<string, int> = {}
     let no_settles: List<SettleAsk> = []
     let no_settle_index: Map<string, int> = {}
-    let no_method_diags: List<MethodDiagIndex> = []
     let no_module_names_of: Map<string, string> = {}
     let no_files_of: Map<string, List<string>> = {}
     let no_file_ids_of: Map<string, List<FileId>> = {}
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
     let no_store: Store? = null
+    let attached: Cell<Store?> = Cell.new(no_store)
     // ONE IDENTITY: every table is a Cell, so the hook closures armed
     // below (`ws.decls.arm(...)`, the family loop) and every holder of
     // this workspace write the same tables.
@@ -893,12 +982,11 @@ fn built(
         root: root,
         lang: lang,
         db: new_db(kernel),
-        decls: language_decls(lang, kernel),
-        store: Cell.new(no_store),
+        decls: language_decls(lang, kernel, attached),
+        store: attached,
         externs: new_table<ExternNames>(),
         sig_voices: new_table<Voices>(),
         method_clashes: new_table<List<Clash>>(),
-        method_diags: Cell.new(no_method_diags),
         method_diag_rows: new_table<List<Diag>>(),
         asks: Cell.new(no_asks),
         asks_index: Cell.new(no_asks_index),
@@ -956,9 +1044,11 @@ fn built(
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
-    ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
+    ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured(d))
+    ws.decls.arm_cancels((d: DeclId) -> ws.cancel_ensured(d))
     ws.decls.arm_consumed((d: DeclId) -> ws.consumed_ensured(d))
     ws.decls.arm_references(() -> ws.refs_ensured())
+    ws.decls.arm_read_found((d: DeclId) -> ws.read_found_ensured(d))
     ws.decls.arm_failures(() -> ws.failures_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
     let lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled> = (
@@ -977,6 +1067,7 @@ fn built(
             Family.Named.ordinal,
             (f: FileId) -> ws.held_sig_dep(f),
         )
+    if leaves_traced() || db_verified() { ws.answers_named() }
     ws.decls.arm_namespace((f: FileId) -> ws.visible(f))
     ws.decls.arm_apart((f: FileId) -> ws.namespace(ws.decls.file(f).module_id).apart)
     ws.decls.arm_composers((f: FileId) -> ws.composers(f))
@@ -1024,6 +1115,7 @@ impl Workspace {
     fn ended(why: Stand) {
         for f in Family.all() { self.relation(f).evict() }
         self.db.disarm()
+        self.db.kernel.folds_forgotten()
         self.decls.let_go(stand_voice(why))
         self.stand.set(why)
     }
@@ -1087,14 +1179,26 @@ impl Workspace {
 
     /// Runs the receivers pass and says so, or says it cannot: a whole-program pass never
     /// runs inside a resolve.
-    fn writes_ensured() -> bool {
+    fn writes_ensured(d: DeclId) -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
-        let _ = self.receivers()
+        if seated(self.decls.decl(d)) { let _ = self.writes_of(d) }
+        true
+    }
+
+    /// Runs the cancel pass and says so, or says it cannot: a whole-program pass never
+    /// runs inside a resolve, while a marks query is computing, or while a compile-time
+    /// body is lowering — it surveys every member's typed facts, and a lift that reads
+    /// a mark would otherwise re-enter it. Only a kind a call can enter is asked, so a
+    /// record or a type pulls nothing.
+    fn cancel_ensured(d: DeclId) -> bool {
+        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        if self.comptime_active() || self.db.family_active(Family.Marks.ordinal) { return false }
+        if calls_kind(self.decls.decl(d).kind) { let _ = self.cancel_bits_of(d) }
         true
     }
 
     fn consumed_ensured(d: DeclId) {
-        let _ = self.computed_consumed(d)
+        let _ = self.consumed_cell(d)
     }
 
     /// Runs the references pass and says so, or says it cannot: a whole-program pass
@@ -1102,6 +1206,13 @@ impl Workspace {
     fn refs_ensured() -> bool {
         if self.db.family_active(Family.Resolved.ordinal) { return false }
         let _ = self.references()
+        true
+    }
+
+    /// Runs the references pass for one declaration's read bit and says so, or says it cannot.
+    fn read_found_ensured(d: DeclId) -> bool {
+        if self.db.family_active(Family.Resolved.ordinal) { return false }
+        let _ = self.read_found_of(d)
         true
     }
 
@@ -1161,7 +1272,17 @@ impl Workspace {
     }
 
     /// A clock started now.
-    fn marking() -> Marks { Marks { now: self.clock, last: self.clock(), spans: [] } }
+    fn marking() -> Marks {
+        let decls = self.decls
+        let kernel = self.db.kernel
+        Marks {
+            now: self.clock,
+            counts: () -> [decls.decl_count(), kernel.settles_total()],
+            last: self.clock(),
+            seen: [decls.decl_count(), kernel.settles_total()],
+            spans: [],
+        }
+    }
 
     fn timed(name: string, ns: int) {
         self.phases.push(Phase { name: name, ns: ns })
@@ -1678,6 +1799,7 @@ impl Workspace {
         let paths = self.met_files(module_path(segments_of(self.decls.module_name(m))))
         let ordered: List<DeclId> = flatten([self.items(self.file_id(path)) for path in paths])
         let names = self.decls.module_names(ordered, (path: string) -> self.shown(path))
+        let ids = self.decls.ids()
         namespace_of(
             self
                 .relation(Family.Namespace)
@@ -1687,8 +1809,8 @@ impl Workspace {
                     fp(
                         3,
                         [
-                            fp_list([d.index for d in names.bound]),
-                            fp_list([d.index for d in names.apart]),
+                            fp_list([ids.of_decl(d.index) for d in names.bound]),
+                            fp_list([ids.of_decl(d.index) for d in names.apart]),
                             names.clashes.length,
                         ],
                     ),
@@ -1725,10 +1847,11 @@ impl Workspace {
                 (path: string) -> self.shown(path),
             )
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
+        let ids = self.decls.ids()
         visible_of(
             self
                 .relation(Family.Visible)
-                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r))),
+                .finish_lazy(f.index, DbRow.Visible(out), (r: DbRow) -> namespace_fp(visible_of(r), ids)),
         )
     }
 
@@ -1783,10 +1906,11 @@ impl Workspace {
         let out = resolved with { voices: Voices {
             list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()),
         } }
+        let ids = self.decls.ids()
         resolved_of(
             self
                 .relation(Family.Resolved)
-                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r))),
+                .finish_lazy(f.index, DbRow.Resolved(out), (r: DbRow) -> name_facts_fp(resolved_of(r), ids)),
         )
     }
 
@@ -2008,7 +2132,7 @@ impl Workspace {
         if !(self.db.ask(k) is .Compute) { return self.db.value_hash_of(k) ?? 0 }
         self.db.begin(k)
         let x = self.decls.decl(d)
-        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi)
+        let h = name_slice_fp(self.resolved(x.file), x.lo, x.hi, self.decls.ids())
         self.db.settle(k, h)
         h
     }
@@ -2074,11 +2198,11 @@ impl Workspace {
         self.db.active(key(Family.Sig, d.index))
     }
 
-    /// A type context over one declaration's BODY: reads the file's
-    /// resolved names, because a body's expressions are what resolve
-    /// computed.
+    /// A type context over one declaration's BODY: reads the names resolve computed for
+    /// its own expressions, standing on its slice of them and on the file's namespace
+    /// alone, so an edit elsewhere in the file moves nothing it read.
     fn type_cx_for(x: Decl) -> TypeCx {
-        self.cx_over(x, self.resolved(x.file))
+        self.cx_over(x, self.names_of(x.id))
     }
 
     /// A type context for SIGNING a declaration. A signature resolves
@@ -2129,10 +2253,11 @@ impl Workspace {
             self.db.abandon(key(Family.Typed, d.index))
             return out
         }
+        let ids = self.decls.ids()
         typed_of(
             self
                 .relation(Family.Typed)
-                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r))),
+                .finish_lazy(d.index, DbRow.Typed(out), (r: DbRow) -> type_facts_fp(typed_of(r), ids, true)),
         )
     }
 
@@ -2325,6 +2450,10 @@ export fn family_code_hash(f: Family) -> string {
         .Syntax -> code_hash(syntax_verified) ?? "",
         .Names -> code_hash(names_verified) ?? "",
         .Marks -> code_hash(marks_verified) ?? "",
+        .Writes -> code_hash(writes_verified) ?? "",
+        .CancelBits -> code_hash(cancel_bits_verified) ?? "",
+        .ReadFound -> code_hash(read_found_verified) ?? "",
+        .Consumed -> code_hash(consumed_verified) ?? "",
         .Admitted -> code_hash(admitted_verified) ?? "",
         .Named -> code_hash(named_verified) ?? "",
         .ReadReach -> code_hash(read_reach_verified) ?? "",

@@ -4,7 +4,7 @@
 // close a stranger's stream. Every case here reuses the number on
 // purpose and asserts that it did, so none can pass by the kernel
 // choosing another.
-use @std.net.{listen, connect, Listener, Poller, poller, Interest, Conn, Read, NetError}
+use @std.net.{listen, connect, Listener, Conn, Read, NetError, timely}
 use @std.time.{secs, ms}
 
 /// A listener, two clients queued on it, and the first accepted.
@@ -15,6 +15,14 @@ fn queued() -> Result<Queued, NetError> {
     let a = connect("127.0.0.1", l.port, secs(2))?
     let b = connect("127.0.0.1", l.port, secs(2))?
     .Ok(Queued { l: l, a: a, b: b, first: l.accept()? })
+}
+
+/// A REFUSAL UNDER A `within` IS THE VERB'S OWN: `timely` answers the
+/// read's failure, never an answer that only happens to hold one.
+fn a_refusal_under_a_within_is_a_refusal() -> Result<bool, NetError> {
+    let q = queued()?
+    q.first.close()?
+    .Ok(timely(within ms(200) { q.first.read(8) }) is .Err)
 }
 
 fn closed_by<T>(r: Result<T, NetError>) -> bool {
@@ -51,7 +59,7 @@ fn a_stale_read_takes_nothing() -> Result<bool, NetError> {
     let second = q.l.accept()?
     q.b.write("mine".bytes())?
     let peeked = stale.try_read(64)
-    let parked = within ms(200) { stale.read(64) }
+    let parked = timely(within ms(200) { stale.read(64) })
     .Ok(
         second.fd == stale.fd &&
             closed_by(peeked) &&
@@ -182,27 +190,6 @@ fn the_listener_refusal_names_its_port() -> Result<bool, NetError> {
     .Ok(words(l.try_accept()).starts_with("accept port ${l.port}: "))
 }
 
-/// A CLOSED POLLER'S NUMBER IS THE NEXT POLLER'S: a stale watch or wait
-/// would reach a stranger's readiness queue.
-fn a_stale_poller_watches_nothing() -> Result<bool, NetError> {
-    let first = poller()?
-    let stale = first
-    first.close()?
-    let second = poller()?
-    let again = stale.close()
-    let watched = stale.watch(0, .Read)
-    let waited = stale.wait(ms(1))
-    .Ok(second.fd == stale.fd && closed_by(again) && closed_by(watched) && closed_by(waited))
-}
-
-/// Pollers made by hand hold a cell each, as conns do.
-fn a_hand_made_poller_holds_its_own_cell() -> Result<bool, NetError> {
-    let twin = Poller { fd: 999998 }
-    let other = Poller { fd: 999999 }
-    let _ = twin.close()
-    .Ok(closed_by(twin.live("wait")) && (other.live("wait") catch _ -> -1) == 999999)
-}
-
 spec "std.net a closed conn" {
     given "a copy made before the close, the number since handed to another connection" {
         then "a write through the copy is refused, and the stranger's peer reads nothing" { passes(a_stale_write_reaches_nobody()) }
@@ -221,10 +208,11 @@ spec "std.net a closed conn" {
     }
     given "the refusal" {
         then "names the verb and the number the conn held" { passes(the_refusal_names_the_number()) }
+        then "under a `within`, a refused read is `.Err`" { passes(a_refusal_under_a_within_is_a_refusal()) }
     }
 }
 
-spec "std.net a closed listener and poller" {
+spec "std.net a closed listener" {
     given "a listener copy whose number the kernel gave to another listener" {
         then "accept and close through the copy are refused, and the new listener still serves" {
             passes(a_stale_listener_accepts_nothing())
@@ -240,11 +228,5 @@ spec "std.net a closed listener and poller" {
     }
     given "the listener refusal" {
         then "names the verb and the port it held" { passes(the_listener_refusal_names_its_port()) }
-    }
-    given "a poller copy whose number the kernel gave to another poller" {
-        then "watch, wait and close through the copy are refused" { passes(a_stale_poller_watches_nothing()) }
-    }
-    given "a poller made by hand" {
-        then "holds its own cell" { passes(a_hand_made_poller_holds_its_own_cell()) }
     }
 }

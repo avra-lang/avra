@@ -806,7 +806,12 @@ impl LowerCx {
     /// its value boxed in a one-cell list.
     fn lift_task(e: ExprId) -> string { self.lifted_as(e, LiftKind.Task) }
 
-    fn lifted_as(e: ExprId, kind: LiftKind) -> string {
+    /// A PRODUCER's body: a task's lift whose `Sink<T>` rides the env
+    /// after every capture — the sink the reader's channel handed the
+    /// spawn, read back by `lower_lambda` for the body's `yield`s.
+    fn lift_produced(e: ExprId, sink: TypeId) -> string { self.lifted_as(e, LiftKind.Task, sink) }
+
+    fn lifted_as(e: ExprId, kind: LiftKind, sink: TypeId? = null) -> string {
         let base = self.view.decls.lifted_symbol(self.view.file, e)
         let sym = if kind is .Task { "${base}\$task" } else { base }
         let name = if self.sub == null { sym } else { self.view.decls.mangle(sym, self.sub!) }
@@ -814,7 +819,16 @@ impl LowerCx {
             self
                 .jobs
                 .lifts
-                .push(Lift { lam: e, name: name, sub: self.sub, kind: kind, unbroken: self.unbroken })
+                .push(
+                    Lift {
+                        lam: e,
+                        name: name,
+                        sub: self.sub,
+                        kind: kind,
+                        unbroken: self.unbroken,
+                        sink: sink,
+                    },
+                )
         }
         name
     }
@@ -915,8 +929,13 @@ impl LowerCx {
     /// A settled aggregate READ: its data laid out once per program
     /// under `name` — wanted on first sight, like a body — and its
     /// address here.
-    fn static_read(dst: Reg, name: string, boxes: List<StaticBox>) {
-        if self.unseen(name) { self.jobs.statics.push(Static { name: name, boxes: boxes, file: self.view.file }) }
+    fn static_read(dst: Reg, name: string, boxes: List<StaticBox>, debug: bool) {
+        if self.unseen(name) {
+            self
+                .jobs
+                .statics
+                .push(Static { name: name, boxes: boxes, file: self.view.file, debug: debug })
+        }
         self.out.give(Ins.StaticAddr(dst, name))
     }
 

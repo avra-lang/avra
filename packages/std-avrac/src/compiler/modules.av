@@ -203,6 +203,13 @@ impl Workspace {
         self.all_files_under(dir, [])
     }
 
+    /// `all_files` stopping short of a `tests` tree — a dependency's tests are
+    /// no input of a program that merely reaches it, so the walk need not
+    /// descend to find files nothing reads.
+    fn all_files_no_tests(dir: string) -> List<string> {
+        self.all_files_under(dir, [], true)
+    }
+
     /// `all_files`'s walk, refusing a directory already on its own way
     /// down. A DIRECTORY'S IDENTITY IS ITS NORMALIZED PATH, and a walk
     /// can only be trusted to advance when it is asked in that currency:
@@ -212,7 +219,7 @@ impl Workspace {
     /// into. `seen` is the walk's own path down, never the whole tree —
     /// two ordinary sibling directories share no ancestor and never
     /// collide here.
-    fn all_files_under(dir: string, seen: List<string>) -> List<string> {
+    fn all_files_under(dir: string, seen: List<string>, skip_tests: bool = false) -> List<string> {
         let here = normalized(dir)
         if seen.contains(here) { return [] }
         let below = seen.concat([here])
@@ -220,8 +227,11 @@ impl Workspace {
         for e in self.listing(dir) ?? [] {
             let full = joined_path(dir, e.name)
             if e.dir {
+                let skip = skip_tests && e.name == "tests"
                 // a directory of programs holds only its own files
-                if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files_under(full, below)) }
+                if !skip && !self.per_file && !self.is_package_dir(full) && !self.excluded(full) {
+                    out = out.concat(self.all_files_under(full, below, skip_tests))
+                }
             } else if self.listed_source(dir, e.name) {
                 out.push(full)
             }
@@ -308,9 +318,13 @@ impl Workspace {
                 .concat(self.engine_sources(joined_path(tree, "runtime")))
         }
         let manifests = [joined_path(at[1], "avra.toml") for at in covered if at.length > 1 && self.there(joined_path(at[1], "avra.toml"))]
-        sorted_texts(
-            flatten([self.all_files(at[0]) for at in covered]).concat(manifests).concat(engine),
-        )
+        // A DEPENDENCY'S TESTS ARE NEVER READ: only the root package's own test
+        // files enter the key, because only they are derived. A test file of a
+        // package this program merely reaches is no input of it, so covering it
+        // would rebuild on an edit nothing read.
+        let root_src = self.packages()[0].src
+        let deps = flatten([self.all_files_no_tests(at[0]) for at in covered if at[0] != root_src])
+        sorted_texts(self.all_files(root_src).concat(deps).concat(manifests).concat(engine))
     }
 
     /// A module's WRITTEN exported declarations, in file and declaration

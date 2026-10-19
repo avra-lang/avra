@@ -1,20 +1,582 @@
-//! The typing rule: a `select` is parsed and printed, and refused by
-//! name until its lowering stands.
-use core.{ExprId, TypeId}
-use features.{TypeCx}
-use diagnostics.{refusal}
+//! The typing rules. An arm waits on what its head's type says it can:
+//! one task, a list of tasks, a running `Source` (its `.ended` for the
+//! source's end), or a timer of `@std/time`. A task arm binds the
+//! answer; a list arm the member's answer, and its index when asked; a
+//! `Source` arm the item it takes; an `AnyOf` arm the item and its
+//! place; a timer binds nothing. A guard is a `bool` read BEFORE its
+//! head, so it reads nothing the arm binds. The arms answer one type,
+//! by `match`'s rule, and that is the `select`'s.
+use core.{
+    ExprId,
+    StmtId,
+    TypeId,
+    Type,
+    Span,
+    DeclId,
+    PlaceStep,
+    flatten,
+    joined,
+    some_list,
+    same_type,
+    same_decl,
+}
+use features.{TypeCx, FileView, post_order, this_is}
+use diagnostics.{Diag, refusal}
+
+/// What an arm waits on, read from its head's type.
+enum Waited {
+    Task(answer: TypeId)
+    Tasks(answer: TypeId)
+    Source(answer: TypeId)
+    AnyOf(answer: TypeId)
+    Ended
+    Deadline
+    Quiet
+    Every
+    Nothing
+}
+
+impl Waited {
+    /// Whether the head is a `Quiet` — the one wait an `else` beside it
+    /// never lets begin.
+    fn quiet() -> bool {
+        match self {
+            .Quiet -> true,
+            .Task(_) or .Tasks(_) or .Source(_) or .AnyOf(_) or .Ended or .Deadline or .Every or .Nothing -> false,
+        }
+    }
+
+    /// Whether the arm can fire again after it was taken — a running
+    /// supply fires once per item, a list and a deadline once.
+    fn again() -> bool {
+        match self {
+            .Quiet or .Every or .Source(_) or .AnyOf(_) -> true,
+            .Task(_) or .Tasks(_) or .Ended or .Deadline or .Nothing -> false,
+        }
+    }
+
+    /// Whether a head of this kind MADE inside a loop is refused: a
+    /// period always, a deadline beside an arm that fires `again`.
+    fn stale_made_fresh(again: bool) -> bool {
+        match self {
+            .Every -> true,
+            .Deadline -> again,
+            .Task(_) or .Tasks(_) or .Source(_) or .AnyOf(_) or .Ended or .Quiet or .Nothing -> false,
+        }
+    }
+}
+
+/// The timers `@std/time` declares, as types.
+type Timers = { deadline: TypeId, quiet: TypeId, every: TypeId }
+
+/// One arm's written seats: the arm, its index and binder names — each
+/// empty when unwritten — and its head.
+type ArmSeats = { arm: ExprId, index: string, bind: string, head: ExprId }
+
+impl ArmSeats {
+    fn indexed() -> bool { self.index != "" }
+
+    /// Whether the binder names a value: `_` names none.
+    fn named() -> bool { self.bind != "" && self.bind != "_" }
+}
+
+/// The names an arm binds, in order: the index when written, then the
+/// binder unless it is `_`.
+fn arm_binds(index: string, bind: string) -> List<string> {
+    [n for n in [index, bind] if n != "" && n != "_"]
+}
+
+/// THE SELECT LAW: every arm that stays answers one type, and the
+/// `select` wears it.
+fn select_type(mut cx: TypeCx, e: ExprId, arms: List<ExprId>) -> TypeId {
+    quiet_law(cx, arms)
+    fresh_law(cx, arms)
+    end_law(cx, arms)
+    if arms.any((a) -> cx.errored(a)) { return cx.error_type }
+    let values = flatten([some_list(arm_value(cx, a)) for a in arms])
+    let head? = values.find((v) -> cx.stays(v)) else { return cx.error_type }
+    cx.arms_agree("flow.select", "select", "the first arm", e, head, values)
+}
+
+/// A `Quiet` is armed as the `select` is entered, and an `else` beside
+/// it runs before any span has passed: the arm can never be taken.
+fn quiet_law(mut cx: TypeCx, arms: List<ExprId>) {
+    if !arms.any((a) -> is_else(cx, a)) { return }
+    for h in flatten([some_list(arm_head(cx, a)) for a in arms]) {
+        if !cx.errored(h) && waited(cx, h).quiet() { cx.emit(quiet_never(cx, h)) }
+    }
+}
+
+/// THE FRESH TIMER LAW: a timer made inside a loop starts over each
+/// turn. A period so made never reaches its second firing; a deadline
+/// so made never passes while a sibling arm fires again before it. A
+/// deadline beside arms taken once is a limit on each attempt, and
+/// stands.
+fn fresh_law(mut cx: TypeCx, arms: List<ExprId>) {
+    if !looped(cx) { return }
+    let heads = [h for h in flatten([some_list(arm_head(cx, a)) for a in arms]) if !cx.errored(h)]
+    let again = heads.any((h) -> waited(cx, h).again())
+    for h in heads {
+        if waited(cx, h).stale_made_fresh(again) && made_in_loop(cx, h) { cx.emit(fresh_timer(cx, h)) }
+    }
+}
+
+/// THE END LAW: a `select` is exhaustive over ends. Every arm that
+/// waits on a running supply is answered by that same supply's `.ended`
+/// arm, or the build refuses by name. The pair is matched by the
+/// supply's root binding, so a field or a name both say which source.
+fn end_law(mut cx: TypeCx, arms: List<ExprId>) {
+    let waits = flatten([some_list(source_wait(cx, a)) for a in arms])
+    let ends = flatten([some_list(ended_key(cx, a)) for a in arms])
+    for h in waits {
+        let k? = place_key(cx, h) else {
+            cx.emit(unkeyed_source(cx, h))
+            continue
+        }
+        if !ends.contains(k) { cx.emit(end_arm(cx, h)) }
+    }
+}
+
+/// A supply this arm waits on — its head, when the head is one.
+fn source_wait(cx: TypeCx, arm: ExprId) -> ExprId? {
+    let h? = arm_head(cx, arm) else { return null }
+    if cx.errored(h) { return null }
+    if ended_subject(cx.view, h) != null { return null }
+    if is_supply(cx.view, cx.type_at(h)) { h } else { null }
+}
+
+/// The supply an `.ended` arm names, as the place it is read from. A
+/// GUARDED end arm answers for nothing: a guard false at run time leaves
+/// the end unhandled, so only an unguarded one satisfies the law.
+fn ended_key(cx: TypeCx, arm: ExprId) -> string? {
+    if arm_guard(cx, arm) != null { return null }
+    let h? = arm_head(cx, arm) else { return null }
+    if cx.errored(h) { return null }
+    let subj? = ended_subject(cx.view, h) else { return null }
+    if !is_supply(cx.view, cx.type_at(subj)) { return null }
+    place_key(cx, subj)
+}
+
+/// A PLACE's key: the names along its path, so `x.ended` answers `x`
+/// and a field answers the field — not merely the receiver two fields
+/// share. Null for a head that is no place, a call among them.
+fn place_key(cx: TypeCx, e: ExprId) -> string? {
+    if cx.view.store.place_step(e) == null { return null }
+    joined(place_path(cx, e), ".")
+}
+
+/// The names a place is written down, in order: the root, then each
+/// field, with `[]` for an index and `!` for an unwrap.
+fn place_path(cx: TypeCx, e: ExprId) -> List<string> {
+    let step? = cx.view.store.place_step(e) else { return [] }
+    match step {
+        .Root(name) -> [name.of],
+        .Field(subject, name) -> place_path(cx, subject).concat([name.of]),
+        .At(subject, _) -> place_path(cx, subject).concat(["[]"]),
+        .Unwrap(subject) -> place_path(cx, subject).concat(["!"]),
+    }
+}
+
+/// Whether a loop's turn is being typed here, no lambda between.
+fn looped(cx: TypeCx) -> bool {
+    cx.loops.any(it.bars == cx.lam_bar.length)
+}
+
+/// Whether a head's value is made inside the loop being typed: written
+/// where it is waited on, or bound by a statement of the loop's body.
+fn made_in_loop(cx: TypeCx, head: ExprId) -> bool {
+    if cx.view.store.expr_is_call(head) { return true }
+    let b? = cx.names.binding(head) else { return false }
+    match b {
+        .Def(made) -> bodies_hold(cx, made),
+        .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
+    }
+}
+
+/// Whether a statement stands inside a loop whose turn is being typed.
+fn bodies_hold(cx: TypeCx, made: StmtId) -> bool {
+    let at? = cx.view.store.stmt_span(made) else { return false }
+    let owners = flatten([some_list(l.owner) for l in cx.loops if l.bars == cx.lam_bar.length])
+    owners.any((o) -> spans(cx.view.store.stmt_span(o), at))
+}
+
+/// Whether `outer` holds `inner`; an unknown span holds nothing.
+fn spans(outer: Span?, inner: Span) -> bool {
+    let o? = outer else { return false }
+    o.lo <= inner.lo && inner.hi <= o.hi
+}
+
+fn is_else(cx: TypeCx, arm: ExprId) -> bool {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(arm) { .ElseArm(_) -> true, rest -> false }
+}
+
+fn arm_value(cx: TypeCx, arm: ExprId) -> ExprId? {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(arm) {
+        .WaitArm(_, _, _, _, value) or .ElseArm(value) -> value,
+        rest -> null,
+    }
+}
+
+fn arm_head(cx: TypeCx, arm: ExprId) -> ExprId? {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(arm) { .WaitArm(_, _, head, _, _) -> head, rest -> null }
+}
+
+/// The guard an arm is written under, when one is.
+fn arm_guard(cx: TypeCx, arm: ExprId) -> ExprId? {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(arm) { .WaitArm(_, _, _, guard, _) -> guard, rest -> null }
+}
+
+/// THE ARM LAW: the head says what the arm binds; the guard and the
+/// body are typed under those names, and the arm answers its body.
+fn wait_arm_type(mut cx: TypeCx, s: ArmSeats, guard: ExprId?, value: ExprId) -> TypeId {
+    if cx.errored(s.head) { return cx.error_type }
+    let tys? = binder_types(cx, s) else { return cx.error_type }
+    if guard != null { guard_checks(cx, guard!, tys) }
+    cx.bind_types(value, tys)
+    cx.walk_type(value)
+}
+
+/// What a head's type lets its arm wait on. A head written `x.ended`
+/// waits on the supply `x` ends, whatever the read's own type is.
+fn waited(cx: TypeCx, head: ExprId) -> Waited {
+    let subj = ended_subject(cx.view, head)
+    if subj != null && is_supply(cx.view, cx.type_at(subj!)) { return Waited.Ended }
+    waited_of(cx.view, cx.type_at(head))
+}
+
+/// The subject a head reads `.ended` from, when it is written that way.
+fn ended_subject(view: FileView, head: ExprId) -> ExprId? {
+    // a feature cannot enumerate OTHER features' variants
+    match view.store.expr(head) {
+        .Prop(subject, name) -> if name.of == "ended" { subject } else { null },
+        rest -> null,
+    }
+}
+
+/// What a head of type `ty` lets its arm wait on — the one reading
+/// typing and lowering share.
+fn waited_of(view: FileView, ty: TypeId) -> Waited {
+    let one: TypeId? = view.types.task_answer(ty)
+    if one != null { return Waited.Task(one!) }
+    let src: TypeId? = supply_answer(view, ty, "Source")
+    if src != null { return Waited.Source(src!) }
+    let aof: TypeId? = supply_answer(view, ty, "AnyOf")
+    if aof != null { return Waited.AnyOf(aof!) }
+    let each: TypeId? = member_answer(view, ty)
+    if each != null { return Waited.Tasks(each!) }
+    let t? = timers_of(view) else { return Waited.Nothing }
+    if same_type(ty, t.deadline) { return Waited.Deadline }
+    if same_type(ty, t.quiet) { return Waited.Quiet }
+    if same_type(ty, t.every) { return Waited.Every }
+    Waited.Nothing
+}
+
+/// Whether a type is a running supply — a `@std.task.Source` or
+/// `AnyOf`, resolved through that package's OWN declaration so no name
+/// string decides.
+fn is_supply(view: FileView, ty: TypeId) -> bool {
+    supply_answer(view, ty, "Source") != null || supply_answer(view, ty, "AnyOf") != null
+}
+
+/// The item a `@std.task` supply of `name` hands over: its one type
+/// argument, when the type's declaration IS that package's declaration.
+fn supply_answer(view: FileView, ty: TypeId, name: string) -> TypeId? {
+    let d? = view.decls.package_decl("@std.task", name) else { return null }
+    let _ = view.decls.sig(d)
+    match view.types.seen_shape(ty) {
+        .App(decl, _, args) -> if same_decl(decl, d) && args.length == 1 { args.first() } else { null },
+        rest -> null,
+    }
+}
+
+/// What each member of a list of tasks answers.
+fn member_answer(view: FileView, ty: TypeId) -> TypeId? {
+    view.types.task_answer(view.types.element(ty)?)
+}
+
+/// The three timers; null when the program loads no `@std/time`.
+fn timers_of(view: FileView) -> Timers? {
+    let deadline = timer_type(view, "Deadline")?
+    let quiet = timer_type(view, "Quiet")?
+    let every = timer_type(view, "Every")?
+    Timers { deadline: deadline, quiet: quiet, every: every }
+}
+
+/// The record `@std/time` declares under `name`, as a type.
+fn timer_type(view: FileView, name: string) -> TypeId? {
+    let decl = view.decls.package_decl("@std.time", name)?
+    let _ = view.decls.sig(decl)
+    view.types.intern(Type.Struct(decl, name))
+}
+
+/// The types of the names an arm binds, in `arm_binds`' order; null
+/// when the arm's binders or its head were refused.
+fn binder_types(mut cx: TypeCx, s: ArmSeats) -> List<TypeId>? {
+    match waited(cx, s.head) {
+        .Task(answer) -> task_binds(cx, s, answer),
+        .Tasks(answer) -> member_binds(cx, s, answer),
+        .Source(answer) -> source_binds(cx, s, answer),
+        .AnyOf(answer) -> anyof_binds(cx, s, answer),
+        .Ended -> ended_binds(cx, s),
+        .Deadline or .Quiet or .Every -> timer_binds(cx, s),
+        .Nothing -> no_wait(cx, s.head),
+    }
+}
+
+/// A supply hands one item at a time: the binder takes it, and an
+/// index has nothing to count.
+fn source_binds(mut cx: TypeCx, s: ArmSeats, answer: TypeId) -> List<TypeId>? {
+    if s.indexed() {
+        cx.emit(index_of_source(cx, s))
+        return null
+    }
+    answer_bound(cx, s, answer)
+}
+
+/// A view of many hands over the member taken and its place: the index
+/// counts members, so it binds first, then the item.
+fn anyof_binds(mut cx: TypeCx, s: ArmSeats, answer: TypeId) -> List<TypeId>? {
+    let bound? = answer_bound(cx, s, answer) else { return null }
+    if s.indexed() { [cx.type(int)].concat(bound) } else { bound }
+}
+
+/// An `.ended` arm waits on the supply's end and binds nothing.
+fn ended_binds(mut cx: TypeCx, s: ArmSeats) -> List<TypeId>? {
+    if !s.indexed() && !s.named() { return [] }
+    cx.emit(end_bound(cx, s))
+    null
+}
+
+/// One task: its answer under the binder, and no index to count.
+fn task_binds(mut cx: TypeCx, s: ArmSeats, answer: TypeId) -> List<TypeId>? {
+    if s.indexed() {
+        cx.emit(index_of_one(cx, s))
+        return null
+    }
+    answer_bound(cx, s, answer)
+}
+
+/// A list of tasks: the member's index when asked, then its answer. A
+/// member that answered stays ready, so the arm is spent after one
+/// turn and a loop may not hold it; a literal has no index worth
+/// asking — its members are written in the head.
+fn member_binds(mut cx: TypeCx, s: ArmSeats, answer: TypeId) -> List<TypeId>? {
+    if looped(cx) {
+        cx.emit(spent_arm(cx, s))
+        return null
+    }
+    if s.indexed() && cx.view.store.expr(s.head).elems_of() != null {
+        cx.emit(index_of_literal(cx, s))
+        return null
+    }
+    let bound? = answer_bound(cx, s, answer) else { return null }
+    if s.indexed() { [cx.type(int)].concat(bound) } else { bound }
+}
+
+/// The answer under the arm's binder, when it names one: a task that
+/// answers nothing gives a name nothing to hold.
+fn answer_bound(mut cx: TypeCx, s: ArmSeats, answer: TypeId) -> List<TypeId>? {
+    if !s.named() { return [] }
+    if cx.view.types.shape_of(answer) is .Void {
+        cx.emit(binds_nothing(cx, s))
+        return null
+    }
+    [answer]
+}
+
+/// A timer fires and hands nothing over.
+fn timer_binds(mut cx: TypeCx, s: ArmSeats) -> List<TypeId>? {
+    if !s.indexed() && !s.named() { return [] }
+    cx.emit(timer_bound(cx, s))
+    null
+}
+
+/// A head no arm can wait on.
+fn no_wait(mut cx: TypeCx, head: ExprId) -> List<TypeId>? {
+    cx
+        .emit(
+            not_waitable(
+                cx,
+                head,
+                if timers_of(cx.view) == null { timers_unloaded() } else { waitable() },
+            ),
+        )
+    null
+}
+
+/// THE GUARD LAW: a `bool`, read before its own head — so it reads none
+/// of the names the head's answer fills.
+fn guard_checks(mut cx: TypeCx, guard: ExprId, tys: List<TypeId>) {
+    cx.bind_types(guard, tys)
+    let _ = cx.walk_type(guard)
+    cx.require_bool(guard, "a `select` arm's guard", "this decides whether the arm waits")
+    let read? = post_order(cx.dispatch, cx.view.store, guard)
+        .find((k) -> reads_binder(cx, guard, k)) else {
+        return
+    }
+    cx.emit(guard_binder(cx, read))
+}
+
+/// Whether `k` reads a name its own arm binds — bound over `guard`.
+fn reads_binder(cx: TypeCx, guard: ExprId, k: ExprId) -> bool {
+    let b? = cx.names.binding(k) else { return false }
+    match b {
+        .Pattern(at, _) -> at == guard,
+        .Param(_) or .Receiver or .Def(_) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
+    }
+}
 
 // ── The voices ──
 
-fn unlowered(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx
-        .spoken(
-            refusal(
-                "flow.select",
-                cx.loc_of(e),
-                "`select` is parsed and not yet lowered",
-                "this `select`",
-                "wait on one task with `t.await`",
-            ),
-        )
+fn not_waitable(cx: TypeCx, head: ExprId, help: string) -> Diag {
+    let n = cx.name_at(head)
+    refusal(
+        "flow.arm",
+        cx.loc_of(head),
+        "a `select` arm waits on a task, a list of tasks, a source or a timer, and this is `${n}`",
+        this_is(n),
+        help,
+    )
+}
+
+fn waitable() -> string {
+    "wait on what `spawn` answers, on a `Source`, or on `after`, `quiet` or `every` of `@std/time` — a head ending `.await` has already waited: drop it"
+}
+
+fn timers_unloaded() -> string {
+    "wait on what `spawn` answers — a head ending `.await` has already waited: drop it; the timers are `@std/time`'s, and this program loads no `@std/time`"
+}
+
+fn fresh_timer(cx: TypeCx, head: ExprId) -> Diag {
+    refusal(
+        "flow.fresh_deadline",
+        cx.loc_of(head),
+        "a timer made inside a loop starts over each turn, so it never runs out across the loop",
+        "made anew each turn",
+        "for one limit over the whole loop bind it before the loop; for nothing having happened for `d` write `quiet(d)`; for each `d`, bind `every(d)` before the loop",
+    )
+}
+
+fn index_of_one(cx: TypeCx, s: ArmSeats) -> Diag {
+    refusal(
+        "flow.arm_binder",
+        cx.loc_of(s.arm),
+        "`${s.index}` counts a list's members, and this arm waits on one task",
+        "one task here",
+        "drop the index — `${s.bind} in …`",
+    )
+}
+
+fn index_of_literal(cx: TypeCx, s: ArmSeats) -> Diag {
+    refusal(
+        "flow.arm_binder",
+        cx.loc_of(s.arm),
+        "`${s.index}` counts the members of a list written in the head — each has its place there",
+        "the list is written here",
+        "give each task its own arm, or name the list first and wait on the name",
+    )
+}
+
+fn index_of_source(cx: TypeCx, s: ArmSeats) -> Diag {
+    refusal(
+        "flow.arm_binder",
+        cx.loc_of(s.arm),
+        "`${s.index}` counts a list's members, and a source hands one item at a time",
+        "one item here",
+        "drop the index — `${s.bind} in …`",
+    )
+}
+
+fn end_bound(cx: TypeCx, s: ArmSeats) -> Diag {
+    refusal(
+        "flow.arm_binder",
+        cx.loc_of(s.arm),
+        "an `.ended` arm waits on a supply's end and binds nothing",
+        "waits on an end",
+        "drop the binder — `x.ended -> …`",
+    )
+}
+
+fn end_arm(cx: TypeCx, head: ExprId) -> Diag {
+    let n = place_name(cx, head)
+    refusal(
+        "flow.end_arm",
+        cx.loc_of(head),
+        "`${n}` can end and this `select` does not say what then",
+        "no `.ended` arm for it",
+        "add `${n}.ended -> …`",
+    )
+}
+
+/// A supply whose head is no place: a call has no name its `.ended` arm
+/// could be tied to, so the end law cannot be satisfied rather than
+/// silently skipped.
+fn unkeyed_source(cx: TypeCx, head: ExprId) -> Diag {
+    refusal(
+        "flow.end_arm",
+        cx.loc_of(head),
+        "a supply made by a call cannot be named, so no `.ended` arm can answer for it",
+        "a call here",
+        "bind the supply first — `let s = …` — then wait on `s` and `s.ended`",
+    )
+}
+
+/// The name a head is written under, for a refusal to say: a place's
+/// path when it is one, the head's type otherwise.
+fn place_name(cx: TypeCx, e: ExprId) -> string {
+    place_key(cx, e) ?? cx.name_at(e)
+}
+
+fn binds_nothing(cx: TypeCx, s: ArmSeats) -> Diag {
+    refusal(
+        "flow.arm_binder",
+        cx.loc_of(s.arm),
+        "`${s.bind}` has nothing to hold — the task this arm waits on answers nothing",
+        "answers nothing",
+        "a task answering nothing binds nothing — write the head bare, or `_ in t`",
+    )
+}
+
+fn timer_bound(cx: TypeCx, s: ArmSeats) -> Diag {
+    refusal(
+        "flow.arm_binder",
+        cx.loc_of(s.arm),
+        "a timer arm binds nothing — a timer fires and hands nothing over",
+        "a timer here",
+        "write the head alone",
+    )
+}
+
+fn spent_arm(cx: TypeCx, s: ArmSeats) -> Diag {
+    refusal(
+        "flow.spent_arm",
+        cx.loc_of(s.arm),
+        "a list arm is taken once — a member that answered stays ready, so a loop would take it every turn",
+        "waits on a list, inside a loop",
+        "wait on the list once, outside the loop",
+    )
+}
+
+fn guard_binder(cx: TypeCx, read: ExprId) -> Diag {
+    refusal(
+        "flow.guard_binder",
+        cx.loc_of(read),
+        "a guard is read before its arm's head, so it reads no name the arm binds",
+        "bound by this arm",
+        "test the value in the arm's body",
+    )
+}
+
+fn quiet_never(cx: TypeCx, head: ExprId) -> Diag {
+    refusal(
+        "flow.quiet_never",
+        cx.loc_of(head),
+        "a `Quiet` beside `else` is never taken — `else` runs before any quiet has passed",
+        "armed as the `select` is entered",
+        "drop the `else`, or wait on a `Deadline`",
+    )
 }

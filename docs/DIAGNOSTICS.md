@@ -33,7 +33,7 @@ the parse needed a token that is not there
 ```
 
 ```
-error[parse.expected]: expected PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `select`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
+error[parse.expected]: expected `yield`, PKG, `component`, COMPONENT, `use`, `export`, `spec`, `collect`, `let`, STATE, `const`, `impl`, `trait`, `static`, `mut`, `while`, `for`, `break`, `continue`, `grammar`, `if`, `type`, `alias`, `enum`, `fail`, `defer`, `errdefer`, `extern`, `fn`, `once`, `return`, `|>`, `!`, `-`, `~`, `(`, `spawn`, `within`, `produce`, `channel`, `select`, `self`, `true`, `false`, `quote`, BLOCK, `when`, `[`, NAME, `match`, `null`, `.`, `table`, NUMBER, `{`, STRING, OCTETS, ISTR_BEGIN, BREAK or EOF while parsing `stmt`
   ╭─[witness.av:1:1]
 1 │ }
   · ┬
@@ -334,15 +334,84 @@ error[type.task_escape]: a task cannot outlive the block that spawned it
 help: keep it in a binding or a list of tasks here — its answer can leave: `t.await`
 ```
 
+## type.within
+
+`within` answers its block or the deadline it ran past
+
+No witness yet.
+
 ## flow.broken
 
 an `@unbroken` fn lets no other task run
 
 No witness here: `@unbroken` resolves to `@std/meta`'s own declaration, which a lone source cannot import — the golden is compiler/tests/unbroken_test.av.
 
+## flow.yield
+
+`yield` sends into the producer it stands in
+
+No witness yet.
+
+## flow.produce
+
+`produce` answers `@std/task.Source`
+
+No witness yet.
+
+## flow.channel
+
+`channel` answers `@std/task.Channel`
+
+```avra
+channel<int>(2)
+0
+```
+
+```
+error[flow.channel]: `channel` answers `@std.task.Channel`, and this program loads no `@std/task`
+  ╭─[witness.av:1:1]
+1 │ channel<int>(2)
+  · ┬
+  · ╰── no `@std/task` here
+──╯
+help: add `use @std.task`
+```
+
+## flow.never_ends
+
+a bare `channel` ends only at `close()`
+
+No witness here: a `channel` needs `@std/task`'s carrier, which a lone source cannot import — the golden is features/tasks/tests/channel_test.av.
+
 ## flow.select
 
 a `select` waits on its arms, top to bottom
+
+```avra
+fn one() -> int {
+    1
+}
+fn hush() {
+}
+let job = spawn one()
+@fair select {
+    r in job -> hush()
+}
+```
+
+```
+error[flow.select]: `select` is typed and not yet lowered
+  ╭─[witness.av:7:1]
+7 │ @fair select {
+  · ┬
+  · ╰── `@fair` stands here
+──╯
+help: wait on one task with `t.await`
+```
+
+## flow.arm
+
+an arm waits on a task, a list of tasks, a source or a timer
 
 ```avra
 select {
@@ -351,14 +420,107 @@ select {
 ```
 
 ```
-error[flow.select]: `select` is parsed and not yet lowered
-  ╭─[witness.av:1:1]
-1 │ select {
-  · ┬
-  · ╰── this `select`
+error[flow.arm]: a `select` arm waits on a task, a list of tasks, a source or a timer, and this is `int`
+  ╭─[witness.av:2:5]
+2 │     1 -> 2
+  ·     ┬
+  ·     ╰── this is `int`
 ──╯
-help: wait on one task with `t.await`
+help: wait on what `spawn` answers — a head ending `.await` has already waited: drop it; the timers are `@std/time`'s, and this program loads no `@std/time`
 ```
+
+## flow.arm_binder
+
+an arm binds what its head hands over
+
+```avra
+fn one() -> int {
+    1
+}
+let job = spawn one()
+select {
+    i, r in job -> r
+}
+```
+
+```
+error[flow.arm_binder]: `i` counts a list's members, and this arm waits on one task
+  ╭─[witness.av:6:5]
+6 │     i, r in job -> r
+  ·     ┬
+  ·     ╰── one task here
+──╯
+help: drop the index — `r in …`
+```
+
+## flow.spent_arm
+
+a list arm is taken once, so no loop holds it
+
+```avra
+fn one() -> int {
+    1
+}
+let jobs = [spawn one()]
+mut n = 0
+while n < 1 {
+    n = n + select {
+        r in jobs -> r
+    }
+}
+```
+
+```
+error[flow.spent_arm]: a list arm is taken once — a member that answered stays ready, so a loop would take it every turn
+  ╭─[witness.av:8:9]
+8 │         r in jobs -> r
+  ·         ┬
+  ·         ╰── waits on a list, inside a loop
+──╯
+help: wait on the list once, outside the loop
+```
+
+## flow.guard_binder
+
+a guard is read before its arm's head
+
+```avra
+fn one() -> int {
+    1
+}
+let job = spawn one()
+select {
+    r in job if r > 0 -> r
+}
+```
+
+```
+error[flow.guard_binder]: a guard is read before its arm's head, so it reads no name the arm binds
+  ╭─[witness.av:6:17]
+6 │     r in job if r > 0 -> r
+  ·                 ┬
+  ·                 ╰── bound by this arm
+──╯
+help: test the value in the arm's body
+```
+
+## flow.quiet_never
+
+a `Quiet` beside `else` is never taken
+
+No witness here: a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av.
+
+## flow.fresh_deadline
+
+a timer made inside a loop starts over each turn
+
+No witness here: a timer is `@std/time`'s own declaration, which a lone source cannot import — the golden is features/select_expr/tests/select_expr_test.av.
+
+## flow.end_arm
+
+a source that can end says what happens when it does
+
+No witness yet.
 
 ## type.component_expand
 
@@ -1521,6 +1683,12 @@ error[loop.label]: `break` names a loop by what its `for` binds, and `y` is no e
 help: a `while` has no name — `break` alone ends the innermost loop
 ```
 
+## flow.source_loop
+
+a `for` over a `Source` walks a running supply
+
+No witness yet.
+
 ## type.quote_hole
 
 a hole takes what its seat takes
@@ -1771,6 +1939,12 @@ error[type.struct_fields]: field `x` is `int`, this is `bool`
   ·                ╰── this is `bool`
 ──╯
 ```
+
+## type.struct_targs
+
+a literal's written type arguments pin the record's parameters
+
+No witness yet.
 
 ## type.with_struct
 
@@ -2377,7 +2551,7 @@ error[flow.unbounded_cleanup]: this `defer`'s body waits, and no `within` it wri
   ·           ┬
   ·           ╰── waits here
 ──╯
-help: bound the cleanup in its own body — `defer { within ms(100) { … } }`
+help: bound the cleanup in its own body — `defer { let _ = within ms(100) { … } }`
 ```
 
 ## type.duplicate_param

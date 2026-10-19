@@ -6,8 +6,8 @@
 //! `avra_bin`, `scratch_dir` and `hang_bound` are the neighbouring tests'
 //! own.
 use @std.io.{make_dirs, write_text}
-use @std.process.{tool, cmd, inherited, Ready, Exit, ProcessError}
-use @std.time.{ms, now_ns}
+use @std.process.{tool, cmd, inherited, exit_text, Ready, Exit, ProcessError}
+use @std.time.{ms, stamp}
 use @std.http.frame.{framed, limits}
 use @std.http.http.{Request, Unrouted, Response, Pulled}
 use @std.http.body.{Body}
@@ -17,7 +17,7 @@ use commands.{Page, page_of, toolchain, root_workspace}
 
 /// A page package in scratch: one text, mounted.
 once fn dev_page() -> string {
-    let root = "${scratch_dir()}/dev_page_${now_ns()}"
+    let root = "${scratch_dir()}/dev_page_${stamp()}"
     let _ = make_dirs("${root}/src")
     let _ = write_text(
         "${root}/avra.toml",
@@ -74,7 +74,7 @@ fn followed(flags: List<string>) -> Result<string, ProcessError> {
 
 /// A directory that is no package: one page.
 once fn plain_dir() -> string {
-    let root = "${scratch_dir()}/dev_plain_${now_ns()}"
+    let root = "${scratch_dir()}/dev_plain_${stamp()}"
     let _ = make_dirs(root)
     let _ = write_text("${root}/index.html", "<h1>home</h1>")
     root
@@ -83,7 +83,7 @@ once fn plain_dir() -> string {
 /// A package with a manifest and `source` as its entry — or no entry at
 /// all when `source` is empty.
 fn package_of(name: string, source: string) -> string {
-    let root = "${scratch_dir()}/${name}_${now_ns()}"
+    let root = "${scratch_dir()}/${name}_${stamp()}"
     let _ = make_dirs("${root}/src")
     if source == "" {
         let _ = write_text(
@@ -143,6 +143,33 @@ spec "avra dev — as its help and its flags say" {
                 .Ok(said) -> said == "200 this machine alone",
                 .Err(_) -> false,
             }
+        }
+    }
+}
+
+/// A running `dev` sent SIGTERM: whether it left cleanly, and whether the
+/// port it held is free to be served on again.
+fn ended_by_signal() -> Result<string, ProcessError> {
+    let root = plain_dir()
+    let asked = cmd(tool(avra_bin())?, ["dev", "--port", "0", root]) with { env: inherited(), timeout: hang_bound() }
+    mut child = asked.start(Ready.Line(" at http://127.0.0.1:"), ms(120000))?
+    let port = (child.out.split(" at http://127.0.0.1:").last() ?? "").split("/").first() ?? ""
+    let exit = child.stop()
+    let again = cmd(tool(avra_bin())?, ["dev", "--port", port, root]) with { env: inherited(), timeout: hang_bound() }
+    let released = match again.start(Ready.Line(" at http://127.0.0.1:"), ms(30000)) {
+        .Ok(next) -> {
+            let _ = next.stop()
+            true
+        },
+        .Err(_) -> false,
+    }
+    "${exit_text(exit)} ${released}"
+}
+
+spec "avra dev — stopped the way a service is" {
+    given "a running server sent SIGTERM" {
+        then "it leaves cleanly and its port is free again" {
+            match ended_by_signal() { .Ok(said) -> said == "clean true", .Err(_) -> false }
         }
     }
 }

@@ -55,11 +55,14 @@ use diagnostics.{Diag, defect_at}
 /// types: soundness never imports the memory pass (memory.av calls
 /// THIS module, the one way the layering runs), so it takes the
 /// answer as a predicate rather than the module that computes it.
-export fn checked(l: Lowered, managed: fn(TypeId) -> bool) -> List<Diag> {
-    // A `.Call`'s callee is a SYMBOL, by name — the same map
-    // memory.av builds for the same reason (compiler.memory.memory),
-    // re-derived here rather than imported, on this file's own rule.
-    let by_name = marks_by_name(l.fns)
+export fn checked(l: Lowered, by_name: Map<string, List<SeatMark>>, managed: fn(TypeId) -> bool) -> List<
+    Diag,
+> {
+    // `by_name` is the memory pass's OWN map, built over every body
+    // BEFORE it drops the held-callee marks-only stubs from `l.fns`.
+    // Re-deriving it here from the post-filter list starved this
+    // checker of exactly those stubs, so every consumed seat of a
+    // held callee read as plain and the born argument looked leaked.
     flatten([checked_body(b, l.types, by_name, managed) for b in l.fns.concat([l.entry])])
 }
 
@@ -209,15 +212,6 @@ fn def_sites(count: int, ins: List<Ins>) -> List<int> {
         let d: Reg? = dst_of(step)
         if d != null { out.set(d!.index, at) }
     }
-    out
-}
-
-/// Every body's own marks, by its SYMBOL — compiler.memory.memory's
-/// `marks_by_name`, re-derived rather than imported (this file's own
-/// rule against calling the pass it checks).
-fn marks_by_name(fns: List<Body>) -> Map<string, List<SeatMark>> {
-    mut out: Map<string, List<SeatMark>> = {}
-    for b in fns { out.set(b.name, b.marks) }
     out
 }
 

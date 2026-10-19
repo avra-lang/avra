@@ -122,6 +122,19 @@ static int64_t leaks_tidily(void) {
     return 1;
 }
 
+// A DEADLOCK THAT KEEPS NOTHING IN A FRAME: the gate is the case's own
+// task's, in a slot, and the task spawned onto it is let go of before
+// the wait — so what stays live after the case is what abandoning left.
+static int64_t deadlocks_tidily(void) {
+    void* gate = avra_gate_new();
+    avra_task_slot_set(AVRA_TASK_SLOTS - 1, gate);
+    avra_rc_release(gate);
+    avra_rc_release(spawn1(waits_on, gate));
+    avra_wait_gate(gate, 0, 0);
+    avra_wait_park();
+    return 1;
+}
+
 // ── the runner's side ───────────────────────────────────────────
 
 // `body` in a child whose stderr is read: what it said, and that it
@@ -302,6 +315,14 @@ static void abandoning_costs_nothing(void) {
     avra_rc_release(g_tidy_gate);
 }
 
+static void a_deadlock_costs_nothing(void) {
+    avra_case_run(passes);
+    int64_t live = avra_mem_live();
+    CHECK(avra_case_run(deadlocks_tidily) == 0, "a case whose tasks wait on its own gate fails");
+    CHECK(avra_sched_tasks() == 0, "and its tasks are gone");
+    CHECK(avra_mem_live() == live, "and the gate, with both tasks, is freed");
+}
+
 static void wide_pages(void) {
     CHECK(avra_case_run(recurses) == 1, "a deep case passes");
     int64_t resident = avra_sched_wide_resident();
@@ -352,6 +373,7 @@ int main(void) {
     heard("a case that ends holding the clock", case_holds);
     CHECK(says("the case ended holding the clock 1 time(s); let go"), "and says so");
     heard("abandoning gives back what it can", abandoning_costs_nothing);
+    heard("a deadlock gives back its gate and its tasks", a_deadlock_costs_nothing);
     heard("the wide stack's pages", wide_pages);
     heard("a guest's tripwire stays quiet with nothing filed", guest_alone);
     heard("a case inside a case fails that case", nested);

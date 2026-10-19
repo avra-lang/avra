@@ -1,0 +1,52 @@
+//! MEMORY PER PARKED TASK in Avra: n tasks block on a rendezvous
+//! channel, the resident set is read from the process's own status,
+//! then the channel is closed and every task is joined. Prints bytes per
+//! parked task and the count.
+use @std.io.{env_or, read_text}
+use @std.text.{codepoints, parse_int}
+use @std.time.{ms, sleep}
+use @std.task.{open_channel}
+
+/// The benchmark's environment value, or its default.
+fn env_int(name: string, fallback: int) -> int {
+    parse_int(env_or(name, "${fallback}")) ?? fallback
+}
+
+/// The first run of digits in `s`, or zero.
+fn first_number(s: string) -> int {
+    mut out = 0
+    mut seen = false
+    for c in codepoints(s) {
+        if c >= 48 && c <= 57 {
+            out = out * 10 + (c - 48)
+            seen = true
+        } else if seen {
+            return out
+        }
+    }
+    out
+}
+
+/// The process's resident bytes, from `/proc/self/status`.
+fn rss_bytes() -> int {
+    let text = match read_text("/proc/self/status") { .Ok(t) -> t, .Err(_) -> { return 0 } }
+    let line = text.split("\n").find((l: string) -> l.starts_with("VmRSS:")) ?? ""
+    first_number(line) * 1024
+}
+
+let n = env_int("BENCH_N", 10000)
+let ch = open_channel<int>(0)
+let before = rss_bytes()
+mut ts: List<Task<int?>> = []
+mut i = 0
+while i < n {
+    ts.push(spawn ch.source.next())
+    i = i + 1
+}
+sleep(ms(50))
+let after = rss_bytes()
+ch.sink.close()
+for t in ts { let _ = t.await }
+let per = if n > 0 { (after - before) / n } else { 0 }
+println("parked_bytes\t${per}\tbytes\t1")
+println("parked_n\t${n}\tops\t1")

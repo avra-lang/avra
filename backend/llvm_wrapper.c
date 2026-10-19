@@ -192,6 +192,17 @@ static char* avra_mangle_symbol(const char* name) {
     return out;
 }
 
+// AVRA_FRAME_POINTERS=1 makes every emitted fn keep a frame pointer, so a sampling
+// profiler can unwind Avra stacks. Read once; unset leaves the emitted code unchanged.
+static int frame_pointers_wanted(void) {
+    static int known = -1;
+    if (known < 0) {
+        const char* v = getenv("AVRA_FRAME_POINTERS");
+        known = v != NULL && v[0] == '1';
+    }
+    return known;
+}
+
 LLVMValueRef avra_llvm_add_function(LLVMModuleRef m, const char* name, LLVMTypeRef fn_type) {
     if (!fn_type) {
         fprintf(stderr, "[CRASH] avra_llvm_add_function: fn_type is NULL (name=%s)\n", name);
@@ -273,6 +284,10 @@ LLVMValueRef avra_llvm_add_function(LLVMModuleRef m, const char* name, LLVMTypeR
     // under a page are unchanged.
     LLVMAttributeRef probe = LLVMCreateStringAttribute(LLVMGetModuleContext(m), "probe-stack", 11, "inline-asm", 10);
     LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, probe);
+    if (frame_pointers_wanted()) {
+        LLVMAttributeRef fp = LLVMCreateStringAttribute(LLVMGetModuleContext(m), "frame-pointer", 13, "all", 3);
+        LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, fp);
+    }
     return fn;
 }
 

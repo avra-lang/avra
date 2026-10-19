@@ -5,7 +5,7 @@
 // reset mid-body tells its handler, and the connection lives; and a
 // peer gone mid-answer leaves no connection behind once its handler
 // ends. Both engines.
-use @std.net.{Conn, NetError, listen, connect}
+use @std.net.{Conn, NetError, listen, connect, timely}
 use @std.time.{ms, secs, sleep, now_ms}
 use @std.http.frame.{limits, no_bytes}
 use @std.http.http.{Request, Unrouted, Response, text}
@@ -50,7 +50,7 @@ fn heard(c: Conn, wait_ms: int) -> Heard {
     let start = now_ms()
     mut closed = false
     while !closed && now_ms() - start < wait_ms {
-        match within ms(50) { c.read(65536) } {
+        match timely(within ms(50) { c.read(65536) }) {
             .Ok(b) -> {
                 closed = b == null
                 buf = buf.concat(b ?? no_bytes)

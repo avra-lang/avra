@@ -1,0 +1,89 @@
+//! proves: one `select` waits on a running channel, a timer and a file
+//! watch at once — and the watch arm's own `Seen` is READ, so the proof
+//! is the change it carried (the watched path and a write kind), never a
+//! bare boolean that a watch firing on anything would light. A second
+//! watch points elsewhere and is seen to stay quiet within a bounded
+//! loop, so a watch that fires for the wrong path FAILS; and the whole
+//! run is bounded, so a watch that never fires FAILS rather than hangs.
+use @std.io.{append_bytes, make_dirs, env_or}
+use @std.io.watch.{watch, Change, Moved, Seen}
+use @std.task.{Source}
+use @std.time.{ms, quiet, secs, sleep, stamp}
+
+/// The watched path written by another task, `after` ms from now.
+fn writes_later(path: string, after: int) {
+    sleep(ms(after))
+    let _ = append_bytes(path, "saved".bytes())
+}
+
+/// Whether a kind is a write of a path: an arrival or a change to one.
+fn is_write(w: Moved) -> bool {
+    match w { .Created or .Changed -> true, .Removed or .Unwatched -> false }
+}
+
+/// Whether a `Seen` says the watched path itself was written.
+fn saw(seen: Seen, path: string) -> bool {
+    match seen {
+        .Changes(cs) -> cs.any((c: Change) -> c.path == path && is_write(c.what)),
+        .Everything or .Quiet -> false,
+    }
+}
+
+fn three() -> string {
+    let dir = "${env_or("TMPDIR", "/tmp")}/avra-select-three-${stamp()}"
+    let f = "${dir}/f"
+    let g = "${dir}/g"
+    let _ = make_dirs(dir)
+    let w = match watch() { .Ok(w) -> w, .Err(e) -> { return "no watch: ${e.describe().message}" } }
+    let _ = w.add(f)
+    let saves: Source<Seen> = w.changes()
+    let ticks: Source<int> = produce<int>(1) {
+        yield 1
+        sleep(secs(30))
+    }
+    let writer = spawn writes_later(f, 40)
+    mut saved = false
+    mut matched = false
+    mut ticked = false
+    mut quieted = false
+    mut turns = 0
+    while !(saved && ticked && quieted) && turns < 100 {
+        select {
+            s in saves -> {
+                saved = true
+                matched = saw(s, f)
+            }
+            _ in ticks -> { ticked = true }
+            quiet(ms(50)) -> {
+                quieted = true
+                turns = turns + 1
+            }
+            saves.ended -> { let _ = 0 }
+            ticks.ended -> { let _ = 0 }
+        }
+    }
+    writer.await
+    w.close()
+    // A WATCH POINTED ELSEWHERE: `g` is never written, so an arm taken
+    // here is a watch that fires for the wrong path — a failure the run
+    // reports rather than a loop that waits forever for a change.
+    let w2 = match watch() {
+        .Ok(x) -> x,
+        .Err(e) -> { return "no watch: ${e.describe().message}" },
+    }
+    let _ = w2.add(g)
+    let idle: Source<Seen> = w2.changes()
+    mut spurious = false
+    mut tries = 0
+    while tries < 4 {
+        select {
+            _ in idle -> { spurious = true }
+            quiet(ms(20)) -> { tries = tries + 1 }
+            idle.ended -> { tries = tries + 1 }
+        }
+    }
+    w2.close()
+    "${saved} ${matched} ${ticked} ${quieted} ${spurious}"
+}
+
+three()

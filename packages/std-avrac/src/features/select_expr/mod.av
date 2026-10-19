@@ -3,8 +3,8 @@
 //! arm is a head to wait on (`stop`), a head whose answer it binds
 //! (`r in job`, `i, page in mirrors`), either under a guard (`if`), or
 //! `else ->`, which runs when nothing is ready. `@fair select` takes
-//! the arm ready longest instead. The front end alone stands here: a
-//! `select` parses, prints, and is refused by name where it is typed.
+//! the arm ready longest instead. The front end stands here: a `select`
+//! parses, prints and types, and is refused by name where it is lowered.
 use features.{LanguageFeature, BuilderRow}
 use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
@@ -19,8 +19,15 @@ export fn select_expr() -> LanguageFeature {
         "any_arm"     | build_any_arm
     }
     let codes = table<DiagCode> {
-        kind          | summary
-        "flow.select" | "a `select` waits on its arms, top to bottom"
+        kind                  | summary
+        "flow.select"         | "a `select` waits on its arms, top to bottom"
+        "flow.arm"            | "an arm waits on a task, a list of tasks, a source or a timer"
+        "flow.arm_binder"     | "an arm binds what its head hands over"
+        "flow.spent_arm"      | "a list arm is taken once, so no loop holds it"
+        "flow.guard_binder"   | "a guard is read before its arm's head"
+        "flow.quiet_never"    | "a `Quiet` beside `else` is never taken"
+        "flow.fresh_deadline" | "a timer made inside a loop starts over each turn"
+        "flow.end_arm"        | "a source that can end says what happens when it does"
     }
     LanguageFeature select_expr {
         gram: grammar {

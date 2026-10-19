@@ -1,0 +1,40 @@
+//! proves: `signals([.Int, .Term])` is a `Source<Sig>` a task parks
+//! on — a child signals the program, the parked wait wakes with the
+//! member that arrived, and the source answers it. `.Int` is member 0
+//! and `.Term` member 1, so the wake binds the right one.
+use @std.task.{signals, Sig, Signals}
+use @std.process.{Tool, ProcessError, tool, cmd}
+
+/// A child that signals the program that started it: `$PPID` is this
+/// process, and a process-directed SIGTERM is what a task's wait takes.
+fn killer(sh: Tool) -> string {
+    match cmd(sh, ["-c", "kill -TERM \$PPID"]).outcome() { .Ok(_) -> "sent", .Err(e) -> "failed" }
+}
+
+fn sig_word(s: Sig) -> string {
+    match s {
+        .Hup -> "hup",
+        .Int -> "int",
+        .Quit -> "quit",
+        .Term -> "term",
+        .Usr1 -> "usr1",
+        .Usr2 -> "usr2",
+        .Pipe -> "pipe",
+        .Alrm -> "alrm",
+        .Chld -> "chld",
+    }
+}
+
+fn run() -> string {
+    let sh = match tool("sh") { .Ok(t) -> t, .Err(e) -> { return "no sh" } }
+    let quit: Signals = signals([.Int, .Term])
+    let k = spawn killer(sh)
+    let got = quit.next()
+    let _ = k.await
+    match got {
+        s? -> sig_word(s)
+        null -> "none"
+    }
+}
+
+run()

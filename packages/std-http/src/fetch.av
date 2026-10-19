@@ -64,6 +64,7 @@ use client.{
     method_word,
     own_head,
     staged,
+    in_stage,
     carried,
     netted,
 }
@@ -147,7 +148,7 @@ export type Aim = { origin: string, secure: bool, host: string, port: int, field
 export fn fetch(method: Method, url: string, body: Payload, o: Options) -> Fetched {
     let deadline = now_ms() + o.timeouts.total.ms
     let answer = within o.timeouts.total { followed(Hop { method: method, url: url, body: body, via: [] }, o, deadline) }
-    overran(answer, deadline)
+    overran(in_stage(.Total, answer), deadline)
 }
 
 /// What a request by URL answers.
@@ -360,14 +361,24 @@ fn lent(wire: Bytes, aim: Aim, body: Payload, o: Options, deadline: int) -> Resu
     match carrier {
         .H1(client) -> {
             mut c = client
-            errdefer { let _ = within secs(5) { o.pool.drop(aim.origin, .H1(c)) } }
+            errdefer {
+                let _ = within secs(5) {
+                    o.pool.drop(aim.origin, .H1(c))
+                    true
+                }
+            }
             let done = exchanged(c, wire, body, o, deadline)?
             o.pool.give(aim.origin, .H1(done.client))
             .Ok(done.answer)
         },
         .H2(carried_h2) -> {
             mut h = carried_h2
-            errdefer { let _ = within secs(5) { o.pool.drop(aim.origin, .H2(h)) } }
+            errdefer {
+                let _ = within secs(5) {
+                    o.pool.drop(aim.origin, .H2(h))
+                    true
+                }
+            }
             let done = h2_exchanged(h, wire, aim, body, o, deadline)?
             o.pool.give(aim.origin, .H2(done.h2))
             .Ok(done.answer)
@@ -411,7 +422,7 @@ fn exchanged(mut c: Client, wire: Bytes, body: Payload, o: Options, deadline: in
     ClientError,
 > {
     sent(c, wire, body, deadline)?
-    let first = staged(.FirstByte, within o.timeouts.first_byte { c.received() })?
+    let first = in_stage(.FirstByte, within o.timeouts.first_byte { c.received() })?
     let answer = first ?? received_whole(c)?
     .Ok(Exchanged { client: c, answer: answer })
 }

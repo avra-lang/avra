@@ -1,6 +1,6 @@
 //! The typing rules: `spawn e` is a `Task` of what `e` answers, and
 //! `.await` answers it back; `.done` is a `bool`.
-use core.{ExprId, TypeId, Type, ResSides}
+use core.{ExprId, TypeId, Type, ResSides, TypeRef}
 use features.{TypeCx, FileView, FailureView, Refusal, MethodCall, this_is}
 use diagnostics.{refusal}
 
@@ -9,18 +9,33 @@ fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) { .Spawn(body) -> spawned(cx, body), rest -> cx.error_type }
 }
 
-/// `within limit { body }` answers what the body answers. The limit is
-/// a field read (`Duration.ms`), typed with the body so a limit that is
-/// no span refuses in the member law's own words.
+/// `within limit { body }` answers `Result<T, TimedOut>`: what the body
+/// answers, or the deadline it ran past. The limit is a field read
+/// (`Duration.ms`), typed with the body so a limit that is no span
+/// refuses in the member law's own words.
 fn within_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .Within(limit, body) -> {
             let _ = cx.walk_type(limit)
             if cx.errored(limit) { return cx.error_type }
-            cx.walk_type(body)
+            let answer = cx.walk_type(body)
+            if cx.errored_ty(answer) { return cx.error_type }
+            if cx.view.types.shape_of(answer) is .Void { return answers_nothing(cx, body) }
+            let late? = timed_out_type(cx) else { return no_timed_out(cx, e) }
+            // LICENSED compiler.interned_res: `answer` and `late` are interned ids — a computed pair has no literal spelling
+            cx.view.types.intern(Type.Res(answer, late))
         },
         rest -> cx.error_type,
     }
+}
+
+/// The `TimedOut` record `@std/time` declares — the span a block was
+/// given and the frames its unwind left. Absent when the program loads
+/// no `@std/time`.
+fn timed_out_type(cx: TypeCx) -> TypeId? {
+    let decl? = cx.view.decls.package_decl("@std.time", "TimedOut") else { return null }
+    let _ = cx.view.decls.sig(decl)
+    cx.view.types.intern(Type.Struct(decl, "TimedOut"))
 }
 
 /// The body is hidden from the walk — its lambda lowers only as the
@@ -80,7 +95,142 @@ fn check_push(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     cx.type(void)
 }
 
+/// `yield x` — the enclosing `produce`'s sink takes `x`, and the
+/// statement itself answers nothing. A `yield` no producer encloses
+/// is refused here, by name.
+fn emit_type(mut cx: TypeCx, e: ExprId, value: ExprId) -> TypeId {
+    let elem? = cx.sinks.last() else { return yield_without(cx, e) }
+    let _ = cx.walk_type(value)
+    if cx.errored(value) { return cx.error_type }
+    if !cx.accepts(value, elem) { return yield_unfit(cx, value, elem) }
+    cx.type(void)
+}
+
+/// A `yield` the producer's element does not take.
+fn yield_unfit(mut cx: TypeCx, value: ExprId, elem: TypeId) -> TypeId {
+    let got = cx.name_at(value)
+    let want = cx.view.types.name_of(elem)
+    cx
+        .spoken(
+            refusal(
+                "type.mismatch",
+                cx.loc_of(value),
+                "`yield` sends the producer's element `${want}`, found `${got}`",
+                this_is(got),
+                "send what the sink takes",
+            ),
+        )
+}
+
+/// `produce<T>(cap) { … }` answers `Source<T>`: the block runs with a
+/// `Sink<T>` in scope, and `cap` bounds the channel (0 when unwritten).
+fn produce_type(mut cx: TypeCx, e: ExprId, elem: TypeRef, cap: ExprId?, body: ExprId) -> TypeId {
+    let t = cx.written(e, elem)
+    if cx.errored_ty(t) { return cx.error_type }
+    let source? = task_app(cx, "Source", t) else { return no_task(cx, e) }
+    if cap != null { capacity(cx, cap!, "a `produce` capacity") }
+    cx.sink_enter(t)
+    cx.task_bodies.push(body)
+    let answered = cx.walk_type(body)
+    let _ = cx.task_bodies.pop()
+    cx.sink_exit()
+    if cx.errored_ty(answered) { return cx.error_type }
+    source
+}
+
+/// `channel<T>(cap)` answers `Channel<T>`: the manual pair, its two
+/// ends read off the one record. No block and no task; `cap` bounds
+/// what it holds, and its absence is the rendezvous `produce<T>` takes.
+fn channel_type(mut cx: TypeCx, e: ExprId, elem: TypeRef, cap: ExprId?) -> TypeId {
+    let t = cx.written(e, elem)
+    if cx.errored_ty(t) { return cx.error_type }
+    let chan? = task_app(cx, "Channel", t) else { return no_task_chan(cx, e) }
+    if cap != null { capacity(cx, cap!, "a `channel` capacity") }
+    chan
+}
+
+/// A `produce` or `channel` capacity: the one walk and the one counting
+/// law both read, so the bound's help is said once.
+fn capacity(mut cx: TypeCx, e: ExprId, subject: string) {
+    let _ = cx.walk_type(e)
+    if cx.errored(e) { return }
+    cx.require_int(e, subject, "this bounds the channel")
+}
+
+/// A `@std/task` generic record instantiated at `t`, or absent when
+/// the program loads no `@std/task`.
+fn task_app(cx: TypeCx, name: string, t: TypeId) -> TypeId? {
+    let decl = cx.view.decls.package_decl("@std.task", name)?
+    let _ = cx.view.decls.sig(decl)
+    cx.view.types.intern(Type.App(decl, name, [t]))
+}
+
 // ── The voices ──
+
+fn yield_without(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "flow.yield",
+                cx.loc_of(e),
+                "`yield` sends into the producer it stands in, and no producer encloses it",
+                "no producer here",
+                "write `produce<T>(n) { … yield … }` — a `-> Stream<T>` fn will say the same when COLLECTIONS lands",
+            ),
+        )
+}
+
+fn no_task(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "flow.produce",
+                cx.loc_of(e),
+                "`produce` answers `@std.task.Source`, and this program loads no `@std/task`",
+                "no `@std/task` here",
+                "add `use @std.task`",
+            ),
+        )
+}
+
+fn no_task_chan(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "flow.channel",
+                cx.loc_of(e),
+                "`channel` answers `@std.task.Channel`, and this program loads no `@std/task`",
+                "no `@std/task` here",
+                "add `use @std.task`",
+            ),
+        )
+}
+
+fn answers_nothing(mut cx: TypeCx, body: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.within",
+                cx.loc_of(body),
+                "a `within` answers what its block did or the deadline it ran past, and this block answers nothing",
+                "answers nothing",
+                "answer what the block did — end it on a value",
+            ),
+        )
+}
+
+fn no_timed_out(mut cx: TypeCx, e: ExprId) -> TypeId {
+    cx
+        .spoken(
+            refusal(
+                "type.within",
+                cx.loc_of(e),
+                "a `within` answers `Result<T, TimedOut>`, and `TimedOut` is `@std/time`'s",
+                "no `@std/time` here",
+                "give the limit as `@std/time`'s span — `use @std.time.{ms}`",
+            ),
+        )
+}
 
 fn cancelled_unloaded() -> Refusal {
     Refusal {

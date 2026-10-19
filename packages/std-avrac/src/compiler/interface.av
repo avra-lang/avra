@@ -39,7 +39,7 @@ use compiler.lower.{Body, collect_answer_type}
 use compiler.store.{Store, Stored, node_key}
 
 /// One file's lines in its module's record, and the digest of what a caller can see of them.
-type FileLines = { path: string, lines: List<string>, iface: string }
+type FileLines = { path: string, lines: List<string>, iface: string, idents: string, global: string }
 
 impl Workspace {
 
@@ -508,7 +508,7 @@ impl Workspace {
         let parts = [self.file_lines(store, m, path, kept) for path in files]
         // what a file's lines were read from, what its runs read and its own interface
         // stand on its `file` line; the module's interface is its files', in name order
-        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.ran_by(store, f.path))}\t${f.iface}" for f in parts]
+        let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${reads_field(self.ran_by(store, f.path))}\t${f.iface}\t${f.idents}\t${f.global}" for f in parts]
         let iface = ifaces_digest([f.iface for f in parts])
         joined(
             ["iface\t${iface}"]
@@ -526,15 +526,30 @@ impl Workspace {
     fn file_lines(store: Store, m: ModulePath, path: string, kept: Map<string, List<string>>) -> FileLines {
         if self.read_here(path) {
             let lines = self.lines_of(path)
-            return FileLines { path: path, lines: lines, iface: iface_digest(lines) }
+            return FileLines {
+                path: path,
+                lines: lines,
+                iface: iface_digest(lines),
+                idents: self.mentioned(path),
+                global: global_digest(lines),
+            }
         }
         let lines = [line for line in kept.get(path) ?? [] if !line.starts_with("ref\t")]
-        let at: Placed? = record_places(self, store, m).get(path)
+        let columns = record_places(self, store, m).get(path)?.file ?? []
         FileLines {
             path: path,
             lines: lines,
-            iface: if at != null && at!.file.length > 4 { at!.file[4] } else { iface_digest(lines) },
+            iface: if columns.length > 4 { columns[4] } else { iface_digest(lines) },
+            idents: if columns.length > 6 { columns[5] } else { "" },
+            global: if columns.length > 6 { columns[6] } else { "" },
         }
+    }
+
+    /// THE NAMES A FILE MENTIONS: every token of its text, and every declaration its resolved
+    /// references name — code a derive or a template wrote into it spells names its text does not.
+    fn mentioned(path: string) -> string {
+        let refs = [self.decls.decl(r.decl).name for r in self.file_refs(self.file_id(path))]
+        joined(sorted_texts(distinct(idents_of(self.listed_text(path)).concat(refs))), ",")
     }
 
     /// A file's `ref` lines: a held file's as its record kept them, a read one's fresh.
@@ -592,6 +607,23 @@ impl Workspace {
     /// a whole file, a declaration that generates others, a const with no verdict
     /// kept — inherits all its file's runs.
     fn followed(store: Store, r: RunRead) -> List<RunRead> {
+        // A read's expansion is a function of the store (fixed this build) and the
+        // runs recorded for ITS OWN path, so it is memoized per read for the
+        // attempt and invalidated only when that path's runs move. A closure read
+        // is never marked seen: a fn read inherits nothing, and the same path
+        // expanded as a run walks its whole file.
+        let dep = self.hold.runs_gen.get().get(r.path) ?? 0
+        let hit = self.hold.ran_followed.get().get(read_id(r))
+        if hit != null && hit!.gen == dep {
+            return hit!.reads
+        }
+        let out = self.followed_uncached(store, r)
+        self.hold.ran_followed.put(read_id(r), Followed { reads: out, gen: dep })
+        out
+    }
+
+    /// `followed`'s one expansion, before the per-attempt memo.
+    fn followed_uncached(store: Store, r: RunRead) -> List<RunRead> {
         let words = r.ref.split("~")
         if r.ref.is_empty() || words.length < 4 { return self.ran_directly(store, r.path) }
         match words[1] {

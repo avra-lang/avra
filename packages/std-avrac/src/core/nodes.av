@@ -13,8 +13,13 @@ use @std.relation.{relation, arena}
 
 /// Typed index into the expression arena. A single-field struct, not
 /// an int newtype — see the subset note on newtypes in generic flows.
-@derive(Fingerprint)
 export type ExprId = { index: int }
+
+impl ExprId {
+    fn fingerprint() -> int { derived([fp_str("ExprId"), self.index]) }
+
+    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("ExprId"), ids.of_expr(self.index)]) }
+}
 
 /// Node identity — two ids name one node when their indexes agree.
 export fn same_expr(a: ExprId, b: ExprId) -> bool {
@@ -23,8 +28,13 @@ export fn same_expr(a: ExprId, b: ExprId) -> bool {
 }
 
 /// Typed index into the statement arena.
-@derive(Fingerprint)
 export type StmtId = { index: int }
+
+impl StmtId {
+    fn fingerprint() -> int { derived([fp_str("StmtId"), self.index]) }
+
+    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("StmtId"), ids.of_stmt(self.index)]) }
+}
 
 /// The statement a declaration stands on when it has none — an
 /// empty file's main, a builtin: the first slot, which a builtin
@@ -37,8 +47,13 @@ export const no_stmt: StmtId = StmtId { index: 0 }
 /// In a lone file the two coincide; the workspace makes them differ. `@dense`: its
 /// int means nothing outside this process, so a relation column of it is `@local`.
 @dense
-@derive(Fingerprint)
 export type DeclId = { index: int }
+
+impl DeclId {
+    fn fingerprint() -> int { derived([fp_str("DeclId"), self.index]) }
+
+    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("DeclId"), ids.of_decl(self.index)]) }
+}
 
 /// Statement identity — two ids name one statement when their
 /// indexes agree.
@@ -57,8 +72,13 @@ export fn same_decl(a: DeclId, b: DeclId) -> bool {
 /// before its parse. `@dense`: its int means nothing outside this
 /// process, so a relation column of it is `@local`.
 @dense
-@derive(Fingerprint)
 export type FileId = { index: int }
+
+impl FileId {
+    fn fingerprint() -> int { derived([fp_str("FileId"), self.index]) }
+
+    fn fingerprint_in(ids: Ids) -> int { derived([fp_str("FileId"), ids.of_file(self.index)]) }
+}
 
 export fn same_file(a: FileId, b: FileId) -> bool {
     // LICENSED structs.index_compared: file identity, not type agreement — ids compare by index
@@ -188,6 +208,7 @@ export fn binds_type(kind: DeclKind) -> bool {
 /// wearing that annotation, of any DeclKind, gathered by its
 /// written name alone (a declaration's annotations are a fact of
 /// the declaration, not a word a component index minted).
+@derive(Identity)
 export enum CollectKind {
     Component(word: string)
     UnknownKind(word: string)
@@ -203,6 +224,7 @@ impl CollectKind {
 }
 
 /// Where a `collect` gathers from.
+@derive(Identity)
 export enum CollectScope {
     Self
     Package
@@ -214,9 +236,11 @@ export enum CollectScope {
 /// answers it — `[]` for the bare declaration itself, a fn value.
 /// `path` is a NAME run because the grammar may grow multi-segment
 /// paths; today it holds zero or one.
+@derive(Identity)
 export type ProjField = { field: Plain, path: List<Plain> }
 
 /// A collect's projection: the type it builds, and each field's fill.
+@derive(Identity)
 export type Projection = { ty: TypeRef, fields: List<ProjField> }
 
 /// A MODULE's identity — a directory under the root, interned. `@dense`:
@@ -234,6 +258,7 @@ export type ModuleId = { index: int }
 /// here: the fingerprint table numbers by ordinal-in-spirit and a
 /// renumbering would silently rewrite every memo key.
 @derive(Fingerprint)
+@derive(Identity)
 export enum BinOp { Add, Sub, Mul, Div, Mod, Eq, Ne, Lt, Le, Gt, Ge, And, Or, BitAnd, BitOr, BitXor, Shl, Shr }
 
 /// A jump's surface word — THE one projection: `continue` starts the
@@ -317,6 +342,7 @@ export type Nominal = string
 /// `index, name`; or an `if` filter guarding every clause after it.
 /// Several heads nest (the left outermost); a filter may sit between
 /// them or after the last.
+@derive(Identity)
 export enum CompClause {
     Head(index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?)
     Filter(cond: ExprId)
@@ -333,7 +359,10 @@ export fn comp_clause_reach(c: CompClause) -> List<ExprId> {
 /// module can call what it made — so the union is written beside the
 /// enums it unions.
 export fn node_payload_rows() -> List<PayloadRow> {
-    grammar_payloads_Expr().concat(grammar_payloads_Pat()).concat(grammar_payloads_Stmt())
+    grammar_payloads_Expr()
+        .concat(grammar_payloads_Pat())
+        .concat(grammar_payloads_Stmt())
+        .concat(grammar_payloads_ParamSyntax())
 }
 
 /// Every flat expression variant's maker, read off `Expr` by
@@ -357,13 +386,12 @@ export fn stmt_makers() -> List<Maker<Stmt>> {
 @derive(Grammar)
 @derive(Children)
 @derive(Flow)
-@derive(Identity)
 @derive(Matchable)
 @derive(Exact)
 @derive(Makes)
 @relation
 @arena
-export collect enum Expr = @expr_node in package by it.name
+export collect enum Expr: Identity = @expr_node in package by it.name
 
 /// Marks a record as `Expr`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -397,7 +425,7 @@ export fn literal_form(e: Expr) -> bool {
     match e {
         .Body(word, _, _, _) -> body_literal(word),
         .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BytesLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) or .Range(_, _) -> true,
-        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error or .Env(_) -> false,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Select(_, _) or .WaitArm(_, _, _, _, _) or .ElseArm(_) or .Within(_, _) or .Emit(_) or .Produce(_, _, _) or .Channel(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error or .Env(_) -> false,
     }
 }
 
@@ -520,7 +548,8 @@ export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, spa
 /// A non-empty `alternatives` makes this ref a UNION — `A or B` — and
 /// every other field is unused: the 2+ members are ordinary written
 /// types in their own right, each resolved the usual way.
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
+@derive(Fingerprint)
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, @local span: Span?, marks: List<SeatMark> = [], spliced: bool = false, alternatives: List<TypeRef> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
@@ -597,7 +626,8 @@ export const pronoun_param: Param = Param {
 // `node_value` matches `@std.meta.Node`'s variant names. The
 // mitigation the doctrine names is paid in full: the unknown SPEAKS
 // (workspace's claim law) rather than falling through.
-export type Mark = { name: string, args: List<string>, span: Span? = null, call: ExprId? = null }
+@derive(Identity)
+export type Mark = { name: string, args: List<string>, @local span: Span? = null, call: ExprId? = null }
 
 /// A handler an instance hears an event with: the event it names,
 /// whether the `on` sugar wrote it (a setting that names an event hears
@@ -625,7 +655,15 @@ export enum Unheard {
 /// `says` makes the seat an EVENT a component declares (`on input(text:
 /// string)`): the seats its handler is told, none for an event that
 /// says nothing — and absent on every seat that is not an event.
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null }
+@derive(Identity)
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, @local id: ParamId, marks: List<Mark> = [], state: bool = false, says: List<Param>? = null }
+
+/// What a parameter seat WRITES, as a grammar rule labels it: the
+/// marks are words (`mut`, `const`, `state`, and `isolated` as `unshared`)
+/// present or absent, the rest are the seat's own parts. A rule ending
+/// `-> Record.ParamSyntax` fills this, and the seat's builder reads it.
+@derive(Grammar)
+export type ParamSyntax = { constant: bool = false, mutable: bool = false, state: bool = false, unshared: bool = false, spread: bool = false, name: Scoped, ty: TypeRef?, default: ExprId? }
 
 /// A seat's identity in the store's span table — a fn's param, a
 /// lambda's, a struct's field, an enum variant's payload. Minted
@@ -721,16 +759,19 @@ export fn bound_names(parts: List<FormatPart>) -> List<string> {
 /// One match arm: its alternatives (`a or b`), an optional guard, and
 /// its value. A false guard tries the next arm; a guarded arm covers
 /// nothing, so coverage and repeats never count it.
+@derive(Identity)
 export type Arm = { pats: List<PatId>, guard: ExprId? = null, value: ExprId }
 
 /// One declared variant: its name, what it carries in order — a
 /// single positional payload, or named fields — and the marks
 /// written before it.
-export type Variant = { name: Plain, payloads: List<Param>, span: Span? = null, marks: List<Mark> = [] }
+@derive(Identity)
+export type Variant = { name: Plain, payloads: List<Param>, @local span: Span? = null, marks: List<Mark> = [] }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
-export type Case = { group: string, name: string, body: ExprId, span: Span? = null }
+@derive(Identity)
+export type Case = { group: string, name: string, body: ExprId, @local span: Span? = null }
 
 /// One step of a PLACE — where a mutation lands.
 export enum PlaceStep {
@@ -761,13 +802,12 @@ impl UseParts {
 @derive(Grammar)
 @derive(Children)
 @derive(Flow)
-@derive(Identity)
 @derive(Matchable)
 @derive(Exact)
 @derive(Makes)
 @relation
 @arena
-export collect enum Stmt = @stmt_node in package by it.name
+export collect enum Stmt: Identity = @stmt_node in package by it.name
 
 /// Marks a record as `Stmt`'s variant at `rank` — its fields are the
 /// variant's payload.
@@ -846,34 +886,9 @@ fn hole_fps(p: FormatPart) -> List<int> {
 /// dropped it would hand them one hash.
 fn greed_fp(greedy: bool) -> int { if greedy { 1 } else { 0 } }
 
-/// A SEAT'S CONTRACT IS PART OF WHAT THE SEAT IS: `fn(mut Cx)` is a
-/// different type from `fn(Cx)`, and `const x` a different seat from
-/// `x`, so the marks ride the identity as the interner's key already
-/// says they ride the type.
-fn mark_fp(m: SeatMark) -> int {
-    fp(126, [flagged(m.mutable), flagged(m.settled), flagged(m.unshared)])
-}
-
-/// A written type's identity: absence is its own value, and the `?`,
-/// the `dyn`, the arrow and the seats' marks are all part of what the
-/// type IS — a fingerprint that forgets one of them certifies a
-/// changed program as unchanged.
-fn type_fp(t: TypeRef?) -> int {
-    if t == null { return 0 }
-    let written = t!
-    fp(
-        if written.optional { 101 } else { 100 },
-        [
-            fp_str(written.name),
-            flagged(written.dynamic),
-            flagged(written.arrow),
-            flagged(written.spliced),
-            fp_list([mark_fp(m) for m in written.marks]),
-            fp_list([type_fp(a) for a in written.args]),
-            fp_list([type_fp(a) for a in written.alternatives]),
-        ],
-    )
-}
+/// A written type's identity, absence included: the `?`, the `dyn`, the
+/// arrow and the seats' marks are all part of what the type IS.
+fn type_fp(t: TypeRef?) -> int { t?.fingerprint() ?? 0 }
 
 /// A collect's kind: the ordinal, `fp_binop`'s shape — a plain int
 /// costs no tag; only the payload-carrying variant folds one.
@@ -1016,4 +1031,3 @@ fn exact_format_part(a: FormatPart, b: FormatPart) -> bool {
 fn exact_format_parts(a: List<FormatPart>, b: List<FormatPart>) -> bool {
     a.length == b.length && [i for i in 0..a.length].all(exact_format_part(a[it], b[it]))
 }
-

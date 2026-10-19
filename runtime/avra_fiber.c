@@ -43,6 +43,7 @@
 #define AVRA_KQUEUE 1
 #elif defined(__linux__)
 #include <sys/epoll.h>
+#include <sys/signalfd.h>
 #define AVRA_EPOLL 1
 #else
 #error "the scheduler has no poller for this platform"
@@ -158,9 +159,9 @@ enum { FIBER_RUNNING, FIBER_READY, FIBER_PARKED, FIBER_DONE };
 typedef struct Fiber Fiber;
 
 // A WAITER is one thing a parked task waits on, filed with its source:
-// a descriptor's direction, the timer heap, or a gate. `arm` and
-// `member` are what the task is told when this one wakes it.
-enum { W_FD_READ, W_FD_WRITE, W_AT, W_GATE, W_DEADLINE };
+// a descriptor's direction, the timer heap, a gate, or a signal. `arm`
+// and `member` are what the task is told when this one wakes it.
+enum { W_FD_READ, W_FD_WRITE, W_AT, W_GATE, W_DEADLINE, W_SIG };
 typedef struct Waiter Waiter;
 struct Waiter {
     Waiter* next;
@@ -169,7 +170,7 @@ struct Waiter {
     int32_t arm, member;
     uint32_t kind;
     uint32_t filed;
-    union { int fd; size_t timer; void* gate; } on;   // timer: 1 + its index in the heap
+    union { int fd; size_t timer; void* gate; int sig; } on;   // timer: 1 + its index in the heap
 };
 
 // A waiter past the ones a fiber holds inline.
@@ -214,7 +215,7 @@ struct Fiber {
     uint8_t parked;         // switched out on an unclaimed set
     uint8_t legacy;         // parked by a sleep, a join or a descriptor park: cleared at its claim
     uint8_t deaf;           // a scope's end joining what it owns: no cancel cuts the join
-    uint8_t heeds;          // the task's deadline may claim this set
+    uint8_t heeds;          // the task's deadline may claim this park; every park writes it
     uint8_t timed_out;      // whether the last legacy park ended by time
     uint8_t interrupted;    // whether the last descriptor park ended by an interrupt
     uint8_t unwinding;      // the unwind bit while switched out (`avra_unwinding` while running)
@@ -233,11 +234,13 @@ struct Fiber {
     uint32_t owner;         // the armed scope whose limit is `deadline`
     uint32_t deeper_cap;
     uint32_t tick_turns;    // the seeded back-edge's countdown to its next yield
+    uint32_t rested;        // resting in a scan: RESTING, and the low bits of the fiber count when it parked; else 0
     Scope scope[SCOPES];
     Scope* deeper;          // the scopes past the inline ones
     Waiter held[HELD];
     Waiter due;             // the deadline's own waiter
     Over* more;
+    const char* scan_site;  // where the scan it last began was written: text the record keeps
     Fiber* all_next;        // every live fiber, for a fork and for a dump
     Fiber* all_prev;
     char* base;             // the stack's lowest byte; NULL for main, a virtual task, or one not yet run
@@ -252,13 +255,22 @@ struct Fiber {
 // answer it owns; the list and the fiber are C pointers in unowned
 // cells.
 enum { GATE_HEAD, GATE_TAIL, GATE_OPEN, GATE_CELLS };
-enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_SITE, TASK_FRAMES };
+enum { TASK_FIBER = GATE_CELLS, TASK_BODY, TASK_ANSWER, TASK_AT, TASK_END, TASK_BY, TASK_SITE, TASK_SINCE, TASK_FRAMES };
 // The unwind frames a task has passed: sixteen on the record, the
 // middle dropped and counted once they fill.
 enum { UNWIND_CAP = 16, TASK_FRAMES_N = TASK_FRAMES + UNWIND_CAP, TASK_DROPPED, TASK_CELLS };
 enum { END_LIVE, END_ANSWERED, END_CANCELLED };
 
 static int64_t* task_cells(void* task) { return ((AvraArray*)task)->data; }
+
+// READINESS IS A STAMP, AND THE STAMP IS A COUNTER, NEVER THE CLOCK: 0
+// while a thing is not ready, else when it became so — one count for
+// the process, drawn where a task ends answered, so a seed and a frozen
+// clock change nothing about it. THE LEAST STAMP IS THE OLDEST. A time
+// that has come was never seen coming, so it has no place in the count:
+// its stamp is below zero — before every event — and ordered by its
+// instant among its own.
+static int64_t g_stamp = 0;
 
 // The switch reads these three by their place.
 _Static_assert(offsetof(Fiber, sp) == 0 && offsetof(Fiber, floor) == 8 && offsetof(Fiber, canary) == 16, "the switch reads a fiber's first three words");
@@ -326,11 +338,25 @@ static void fiber_unlisted(Fiber* f) {
 static void fiber_freed(Fiber* f) {
     fiber_unlisted(f);
     free(f->deeper);
+    avra_rc_release((void*)f->scan_site);
+    if (f->virtual) avra_rc_release((void*)f->site);
     f->next = g_fiber_pool;
     g_fiber_pool = f;
 }
 
 static int64_t id_of(const Fiber* f) { return f->local->id; }
+
+// A SITE IS TEXT THE RECORD KEEPS: it takes its own reference and gives
+// up the one it held, so text that is counted outlives whoever wrote it
+// for as long as a listing may say it. The binary's own text and C's
+// are not counted, and a wait that names the same site again costs a
+// compare.
+static void site_kept(const char** held, const char* site) {
+    if (*held == site) return;
+    avra_rc_retain((void*)site);
+    avra_rc_release((void*)*held);
+    *held = site;
+}
 
 // THE TICK: the source's nudge that time passed while tasks were ready.
 // The scheduler reads it — the switch, and a checked back-edge through
@@ -445,6 +471,7 @@ static void traced_waiter(const Fiber* f, const Waiter* w) {
         case W_FD_READ: avra_fmt(line, sizeof line, "park id=%lld src=fd:r:%d arm=%d:%d", (long long)id_of(f), w->on.fd, w->arm, w->member); break;
         case W_FD_WRITE: avra_fmt(line, sizeof line, "park id=%lld src=fd:w:%d arm=%d:%d", (long long)id_of(f), w->on.fd, w->arm, w->member); break;
         case W_GATE: avra_fmt(line, sizeof line, "park id=%lld src=gate:%p arm=%d:%d", (long long)id_of(f), w->on.gate, w->arm, w->member); break;
+        case W_SIG: avra_fmt(line, sizeof line, "park id=%lld src=sig:%d arm=%d:%d", (long long)id_of(f), w->on.sig, w->arm, w->member); break;
         default: avra_fmt(line, sizeof line, "park id=%lld src=at arm=%d:%d", (long long)id_of(f), w->arm, w->member); break;
     }
     traced(line);
@@ -464,15 +491,6 @@ static void traced_join(const Fiber* f, int64_t on) {
     char line[160];
     if (on < 0) avra_fmt(line, sizeof line, "join id=%lld on=unrun", (long long)id_of(f));
     else avra_fmt(line, sizeof line, "join id=%lld on=%lld", (long long)id_of(f), (long long)on);
-    traced(line);
-}
-
-// A joiner readied by the end of the task it waited for.
-__attribute__((noinline, cold))
-static void traced_joined(const Fiber* f, int64_t by) {
-    char line[160];
-    if (by < 0) avra_fmt(line, sizeof line, "claim id=%lld by=unrun arm=0:0", (long long)id_of(f));
-    else avra_fmt(line, sizeof line, "claim id=%lld by=%lld arm=0:0", (long long)id_of(f), (long long)by);
     traced(line);
 }
 
@@ -554,10 +572,19 @@ static void timer_placed(size_t i) {
     else task_cells(t->who)[TASK_AT] = (int64_t)(i + 1);
 }
 
+// Whether the entry is a scope's limit.
+static int limits(const Timer* t) { return t->kind == T_WAITER && ((const Waiter*)t->who)->kind == W_DEADLINE; }
+
 static int timer_before(size_t a, size_t b) {
     const Timer* x = &g_timers[a];
     const Timer* y = &g_timers[b];
-    return x->at < y->at || (x->at == y->at && x->seq < y->seq);
+    if (x->at != y->at) return x->at < y->at;
+    // ON ONE INSTANT THE SCOPE WINS: a limit sorts before an arm's time
+    // and a timer's task, whichever was filed first — so who answers a
+    // tie never depends on whether the task had waited before.
+    int limit_x = limits(x), limit_y = limits(y);
+    if (limit_x != limit_y) return limit_x;
+    return x->seq < y->seq;
 }
 
 static void timer_swap(size_t a, size_t b) {
@@ -674,9 +701,35 @@ typedef struct { Waiter* head[2]; Waiter* tail[2]; int armed; int ready; } FdWai
 
 static int g_poller = -1;
 static void fd_drained(int64_t fd);
+static void sig_disarm(int sig);
 static int64_t g_parked_fds = 0;
 static FdWaits* g_fds = NULL;
 static size_t g_fds_cap = 0;
+
+// A SIGNAL IS NO DESCRIPTOR: its number would collide with a
+// descriptor's in the table above (SIGINT is 2), so its waiters get a
+// list per signal of their own, and the poller's event names the signal
+// rather than a descriptor. `g_sig_armed` is the one registration each
+// signal gets with the poller.
+static Waiter* g_sig_head[NSIG];
+static Waiter* g_sig_tail[NSIG];
+static unsigned char g_sig_armed[NSIG];
+#if AVRA_KQUEUE
+// The disposition each armed signal had before Avra spent it, given back
+// when the last waiter leaves.
+static struct sigaction g_sig_prior[NSIG];
+#else
+// Whether the signal was already blocked before Avra did, so a disarm
+// never unblocks what it did not block.
+static unsigned char g_sig_was_blocked[NSIG];
+#endif
+#if AVRA_EPOLL
+// ONE signalfd FOR THE PROCESS: every armed signal is blocked and named
+// in its mask, and a readable signalfd carries which one arrived.
+static int g_signalfd = -1;
+static sigset_t g_sig_mask;
+static int g_sig_mask_ready = 0;
+#endif
 
 static int pinned(void) { return g_seeded || avra_clock.virtual; }
 
@@ -754,6 +807,28 @@ static int fd_arm(int fd) {
     return ok;
 }
 
+// A LEVEL WAIT ASKS WHETHER A DESCRIPTOR IS READY NOW, and the watch
+// is edge-triggered: a direction that has stayed ready since the last
+// wait reports no new edge, so the edge it holds is re-armed and the
+// poller reports the level again — a writable descriptor claims every
+// arm, not only the one that took the first edge.
+static void fd_refresh(int fd, int64_t writable) {
+    FdWaits* w = fd_waits(fd);
+    int bit = writable ? ARMED_WRITE : ARMED_READ;
+    if (!(w->armed & bit)) return;
+#if AVRA_KQUEUE
+    struct kevent ev;
+    EV_SET(&ev, fd, writable ? EVFILT_WRITE : EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    // the clock: not a wait on time — a change list, no event asked for
+    kevent(g_poller, &ev, 1, NULL, 0, NULL);
+#else
+    // epoll watches both directions with one registration, so MOD is
+    // what re-arms the edge and reports the level it holds now
+    struct epoll_event ev = { .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.fd = fd };
+    epoll_ctl(g_poller, EPOLL_CTL_MOD, fd, &ev);
+#endif
+}
+
 // ── Filing, claiming, retracting ────────────────────────────────
 
 // The two ends of the list a waiter is filed in.
@@ -762,6 +837,9 @@ static void list_of(Waiter* w, Waiter*** head, Waiter*** tail) {
         int64_t* cells = task_cells(w->on.gate);
         *head = (Waiter**)&cells[GATE_HEAD];
         *tail = (Waiter**)&cells[GATE_TAIL];
+    } else if (w->kind == W_SIG) {
+        *head = &g_sig_head[w->on.sig];
+        *tail = &g_sig_tail[w->on.sig];
     } else {
         FdWaits* f = fd_waits(w->on.fd);
         int d = w->kind == W_FD_WRITE;
@@ -801,8 +879,45 @@ static void waiter_out(Waiter* w) {
     if (w->prev) w->prev->next = w->next; else *head = w->next;
     if (w->next) w->next->prev = w->prev; else *tail = w->prev;
     w->next = w->prev = NULL;
+    if (w->kind == W_SIG && !g_sig_head[w->on.sig]) sig_disarm(w->on.sig);
     if (w->kind == W_GATE) avra_rc_release(w->on.gate);
     else g_parked_fds--;
+}
+
+// A WAITER PAST THE FOUR A FIBER HOLDS COMES FROM ONE LIST FOR THE
+// PROCESS, and goes back to it: a task that waits on many things every
+// turn allocates nothing once the list has grown to its widest set, and
+// what the list keeps is bounded by the most waiters ever filed at
+// once, never by how many tasks once waited on many. Where the world
+// idles it is cut back to OVERS_KEPT.
+enum { OVERS_KEPT = 64 };
+static Over* g_overs = NULL;
+static int64_t g_overs_n = 0;
+
+static Over* over_taken(void) {
+    Over* o = g_overs;
+    if (!o) {
+        if (!(o = malloc(sizeof(Over)))) avra_trap("the scheduler ran out of memory for a waiter");
+        return o;
+    }
+    g_overs = o->next;
+    g_overs_n--;
+    return o;
+}
+
+static void over_given(Over* o) {
+    o->next = g_overs;
+    g_overs = o;
+    g_overs_n++;
+}
+
+static void overs_trimmed(void) {
+    while (g_overs_n > OVERS_KEPT) {
+        Over* o = g_overs;
+        g_overs = o->next;
+        g_overs_n--;
+        free(o);
+    }
 }
 
 // THE LOSERS LEAVE AT THE RESUME: every waiter of the set still filed
@@ -814,7 +929,7 @@ static void retract(Fiber* f) {
         Over* after = o->next;
         n += o->w.filed;
         waiter_out(&o->w);
-        free(o);
+        over_given(o);
         o = after;
     }
     f->held_n = 0;
@@ -831,17 +946,18 @@ static int set_claimed(Fiber* f, int32_t arm, int32_t member, int64_t by) {
     f->claimed = 1;
     f->arm = arm;
     f->member = member;
-    // A CANCEL CLAIM IS AN EVALUATED TASK'S UNWIND BIT: it has no
-    // park row to hear the claim after the switch, where a compiled
-    // one calls `cancel_met`. `avra_vtask_unwinding` reads this field.
-    if (arm == -1 && member == 0 && f->virtual) f->unwinding = 1;
+    // A CUT'S CLAIM IS AN EVALUATED TASK'S UNWIND BIT — a cancel's, or
+    // its deadline's: it has no park row to hear the claim after the
+    // switch, where a compiled one calls `cancel_met`.
+    // `avra_vtask_unwinding` reads this field.
+    if (arm == -1 && member <= 1 && f->virtual) f->unwinding = 1;
     if (TRACING) traced_claim(f, by);
     if (f->legacy) {
         f->timed_out = arm != 0;
         f->interrupted = arm == -1 && member == 2;
         f->legacy = 0;
-        f->heeds = 0;
         f->claimed = 0;
+        if (f->virtual) f->deaf = 0;
         retract(f);
     }
     if (f->parked) {
@@ -863,8 +979,7 @@ static Waiter* waiter_new(Fiber* f, uint32_t kind, int64_t arm, int64_t member) 
     Waiter* w;
     if (f->held_n < HELD) w = &f->held[f->held_n++];
     else {
-        Over* o = malloc(sizeof(Over));
-        if (!o) avra_trap("the scheduler ran out of memory for a waiter");
+        Over* o = over_taken();
         o->next = f->more;
         f->more = o;
         w = &o->w;
@@ -921,6 +1036,124 @@ int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing) {
     return (g_fds[fd].ready & bit) != 0;
 }
 
+// A SIGNAL'S WAITERS are claimed: every task filed on that signal, an
+// edge that came once, whoever waited when it came.
+static void sig_ready(int sig) {
+    while (g_sig_head[sig]) waiter_claims(g_sig_head[sig], BY_POLLER);
+}
+
+// The platform's number for a signal KIND: the `Sig` variant index, the
+// one currency a portable Avra enum and this C share. Every kind is
+// named; an unknown one is a defect, never a signal.
+int64_t avra_sig_number(int64_t kind) {
+    switch (kind) {
+        case 0: return SIGHUP;
+        case 1: return SIGINT;
+        case 2: return SIGQUIT;
+        case 3: return SIGTERM;
+        case 4: return SIGUSR1;
+        case 5: return SIGUSR2;
+        case 6: return SIGPIPE;
+        case 7: return SIGALRM;
+        case 8: return SIGCHLD;
+        default: avra_trap("a signal kind the runtime does not know");
+    }
+    return 0;
+}
+
+// The wait over `sig` is done: the poller's registration goes, and the
+// disposition Avra spent is given back, so the signal is the process's
+// own again — a child forked later dies to it as it did before.
+// Idempotent.
+static void sig_disarm(int sig) {
+    if (sig <= 0 || sig >= NSIG || !g_sig_armed[sig]) return;
+    g_sig_armed[sig] = 0;
+#if AVRA_KQUEUE
+    if (g_poller >= 0) {
+        struct kevent ev;
+        EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_DELETE, 0, 0, NULL);
+        kevent(g_poller, &ev, 1, NULL, 0, NULL);
+    }
+    sigaction(sig, &g_sig_prior[sig], NULL);
+#else
+    sigdelset(&g_sig_mask, sig);
+    if (g_signalfd >= 0) (void)signalfd(g_signalfd, &g_sig_mask, SFD_NONBLOCK | SFD_CLOEXEC);
+    if (!g_sig_was_blocked[sig]) {
+        sigset_t set;
+        sigemptyset(&set);
+        sigaddset(&set, sig);
+        sigprocmask(SIG_UNBLOCK, &set, NULL);
+    }
+#endif
+}
+
+// The poller is told to watch `sig` ONCE: kqueue's signal filter reports
+// it, a signalfd reads it. The process ignores (Darwin) or blocks
+// (Linux) the signal while a task waits on it, so its default action is
+// spent on the wait rather than on the process. THE DISPOSITION IS
+// SPENT BEFORE THE WAIT IS FILED: a signal that arrives between the
+// file and the arm would take its default action, so the arm comes
+// first and the filer is the one that races nothing.
+static int sig_arm(int sig) {
+    if (sig <= 0 || sig >= NSIG) return 0;
+    if (g_sig_armed[sig]) return 1;
+#if AVRA_KQUEUE
+    struct sigaction prior;
+    if (sigaction(sig, NULL, &prior) != 0) return 0;
+    signal(sig, SIG_IGN);
+    struct kevent ev;
+    EV_SET(&ev, (uintptr_t)sig, EVFILT_SIGNAL, EV_ADD | EV_CLEAR, 0, 0, NULL);
+    if (kevent(g_poller, &ev, 1, NULL, 0, NULL) != 0) {
+        sigaction(sig, &prior, NULL);
+        return 0;
+    }
+    g_sig_prior[sig] = prior;
+#else
+    if (!g_sig_mask_ready) {
+        sigemptyset(&g_sig_mask);
+        g_sig_mask_ready = 1;
+    }
+    sigset_t set;
+    sigset_t old;
+    sigemptyset(&set);
+    sigaddset(&set, sig);
+    if (sigprocmask(SIG_BLOCK, &set, &old) != 0) return 0;
+    g_sig_was_blocked[sig] = sigismember(&old, sig) ? 1 : 0;
+    sigaddset(&g_sig_mask, sig);
+    if (g_signalfd < 0) {
+        g_signalfd = signalfd(-1, &g_sig_mask, SFD_NONBLOCK | SFD_CLOEXEC);
+        if (g_signalfd < 0) {
+            sigdelset(&g_sig_mask, sig);
+            if (!g_sig_was_blocked[sig]) sigprocmask(SIG_UNBLOCK, &set, NULL);
+            return 0;
+        }
+        struct epoll_event ev = { .events = EPOLLIN | EPOLLET, .data.fd = g_signalfd };
+        if (epoll_ctl(g_poller, EPOLL_CTL_ADD, g_signalfd, &ev) != 0) {
+            close(g_signalfd);
+            g_signalfd = -1;
+            sigdelset(&g_sig_mask, sig);
+            if (!g_sig_was_blocked[sig]) sigprocmask(SIG_UNBLOCK, &set, NULL);
+            return 0;
+        }
+    } else if (signalfd(g_signalfd, &g_sig_mask, SFD_NONBLOCK | SFD_CLOEXEC) < 0) {
+        sigdelset(&g_sig_mask, sig);
+        if (!g_sig_was_blocked[sig]) sigprocmask(SIG_UNBLOCK, &set, NULL);
+        return 0;
+    }
+#endif
+    g_sig_armed[sig] = 1;
+    return 1;
+}
+
+#if AVRA_EPOLL
+// A readable signalfd carries one record per signal; every record names
+// its signal and claims that signal's waiters.
+static void sigfd_drain(void) {
+    struct signalfd_siginfo si;
+    while (read(g_signalfd, &si, sizeof si) == (ssize_t)sizeof si) sig_ready((int)si.ssi_signo);
+}
+#endif
+
 // Waits for the poller up to `timeout_ns` (below zero: forever) and
 // claims whoever it names.
 static void poller_wait(int64_t timeout_ns) {
@@ -936,6 +1169,7 @@ static void poller_wait(int64_t timeout_ns) {
     // the clock: held by the caller whenever this waits (`next_with_world`)
     int n = kevent(g_poller, NULL, 0, evs, BATCH, timeout_ns < 0 ? NULL : &ts);
     for (int i = 0; i < n; i++) {
+        if (evs[i].filter == EVFILT_SIGNAL) { sig_ready((int)evs[i].ident); continue; }
         if (evs[i].filter == EVFILT_READ && (evs[i].flags & EV_EOF)) fd_closed((int)evs[i].ident);
         fd_ready((int)evs[i].ident, evs[i].filter == EVFILT_WRITE);
     }
@@ -946,6 +1180,7 @@ static void poller_wait(int64_t timeout_ns) {
     int n = epoll_wait(g_poller, evs, BATCH, ms);
     for (int i = 0; i < n; i++) {
         int fd = evs[i].data.fd;
+        if (fd == g_signalfd) { sigfd_drain(); continue; }
         uint32_t e = evs[i].events;
         int failed = (e & (EPOLLERR | EPOLLHUP)) != 0;
         if ((e & EPOLLRDHUP) || failed) fd_closed(fd);
@@ -1337,6 +1572,7 @@ static void pool_trimmed(Pool* p) {
 static void pool_trim(void) {
     pool_trimmed(&g_guarded);
     pool_trimmed(&g_shared);
+    overs_trimmed();
 }
 
 __attribute__((noinline, cold))
@@ -1672,7 +1908,7 @@ static void guard_handler_install(void) {
 
 // ── Waiting ─────────────────────────────────────────────────────
 
-static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_t member) {
+static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_t member, int level) {
     if (f->claimed) return;
     if (fd < 0 || fd > INT32_MAX) { set_claimed(f, (int32_t)arm, (int32_t)member, BY_POLLER); return; }
     poller_open();
@@ -1684,6 +1920,9 @@ static void waits_fd(Fiber* f, int64_t fd, int64_t writable, int64_t arm, int64_
     w->on.fd = (int)fd;
     waiter_filed(w);
     parked_unready((int)fd, writable);
+    // A LEVEL WAIT'S DIRECTION HAS NO CONSUMED EDGE, so an
+    // already-watched one is re-armed before the poller is asked.
+    if (level) fd_refresh((int)fd, writable);
     // A descriptor the poller refuses is ready now: the read or write
     // the caller retries reports its own error.
     if (!fd_arm((int)fd)) waiter_claims(w, BY_POLLER);
@@ -1712,6 +1951,25 @@ static void waits_gate(Fiber* f, void* gate, int64_t arm, int64_t member) {
     if (TRACING) traced_waiter(f, w);
 }
 
+// A signal a task waits on: one signal per waiter, so a source watching
+// several files each as its own member. A signal the poller cannot watch
+// is ready now, as a descriptor the poller refuses is.
+static void waits_sig(Fiber* f, int64_t kind, int64_t arm, int64_t member) {
+    if (f->claimed) return;
+    int64_t sig = avra_sig_number(kind);
+    if (sig <= 0 || sig >= NSIG) { set_claimed(f, (int32_t)arm, (int32_t)member, BY_POLLER); return; }
+    poller_open();
+    // THE DISPOSITION IS SPENT BEFORE THE WAITER IS FILED: a signal in the
+    // window between filing and arming would take its default action, and
+    // arming first spends it on the wait — the poller reports it, and the
+    // waiter is filed before the scheduler next polls, so nothing is lost.
+    if (!sig_arm((int)sig)) { set_claimed(f, (int32_t)arm, (int32_t)member, BY_POLLER); return; }
+    Waiter* w = waiter_new(f, W_SIG, arm, member);
+    w->on.sig = (int)sig;
+    waiter_filed(w);
+    if (TRACING) traced_waiter(f, w);
+}
+
 static void unwind_cleared(void);
 
 // A CANCEL MEETS A CANCEL POINT: the running task's unwind bit is set,
@@ -1727,8 +1985,10 @@ static void cancel_met(void) {
 // the scope whose limit passed.
 static int64_t asker_of(const Fiber* f) { return f->cancel_by ? f->cancel_by - 1 : f->scope_by; }
 
-// Whether the claim a task resumed on was a cancel's: `-1:0`.
-static int claimed_by_cancel(const Fiber* f) { return f->arm == -1 && f->member == 0; }
+// Whether the claim a task resumed on cut its wait: a cancel's (`-1:0`)
+// or its deadline's (`-1:1`). An interrupt's (`-1:2`) is a value of the
+// park.
+static int claimed_by_cut(const Fiber* f) { return f->arm == -1 && f->member <= 1; }
 
 // A `within` opened while a `defer` ran shielded: its own limit alone
 // cuts a wait under it, never the task's cancel.
@@ -1736,21 +1996,21 @@ static int shield_scope_stands(const Fiber* f) {
     return f->scopes_n > 0 && scope_at(f, f->scopes_n - 1)->shield;
 }
 
-// A row that predates the wait set, about to park: under a standing
-// cancel it parks nothing and the cancel is met at once — unless a shield
-// scope stands, whose own limit is what the wait is for.
-static int cancel_stands(const Fiber* f) {
-    if (__builtin_expect(f->cancel_by == 0, 1)) return 0;
-    if (shield_scope_stands(f)) return 0;
-    cancel_met();
-    return 1;
+// A request met by a task of either kind: a compiled one's running
+// bit, an evaluated one's own.
+static void cut_met(Fiber* f) {
+    if (f->virtual) f->unwinding = 1;
+    else cancel_met();
 }
 
-// The same question of an evaluated task, whose own bit is the one
-// raised: no compiled task's is touched.
-static int virtual_cancel_stands(Fiber* f) {
-    if (f->cancel_by == 0 || shield_scope_stands(f)) return 0;
-    f->unwinding = 1;
+// A REQUEST THAT STANDS ON A TASK ABOUT TO WAIT — a cancel no shield
+// scope holds off, a scope's own, a limit found passed: it is met at
+// once, on the bit that is the task's, and nothing parks. Under a shield
+// scope a cancel cuts nothing: that scope's own limit is what the wait
+// is for.
+static int request_stands(Fiber* f) {
+    if ((f->cancel_by == 0 || shield_scope_stands(f)) && !deadline_passed(f)) return 0;
+    cut_met(f);
     return 1;
 }
 
@@ -1766,6 +2026,17 @@ static void world_asked(Fiber* f) {
     f->own_turns = 0;
     if (g_timers_len > 0) fire_due_timers(now_ns());
     if (g_parked_fds > 0) poller_wait(0);
+}
+
+// Whether a cancel stands that this task's wait must answer: under a
+// shield scope the wait is the scope's to bound.
+static inline int cancel_heard(const Fiber* f) {
+    return f->cancel_by != 0 && !shield_scope_stands(f);
+}
+
+__attribute__((always_inline))
+static inline void turn_counted(Fiber* f) {
+    if ((g_timers_len > 0 || g_parked_fds > 0) && ++f->own_turns >= FAIR_TURNS) world_asked(f);
 }
 
 // A cut — a cancel, a passed limit — answers in place of the arm a
@@ -1787,8 +2058,8 @@ __attribute__((always_inline))
 static inline int park_begun(Fiber* f) {
     f->heeds = 1;
     if (f->claimed == CLAIMED) return 0;
-    if (f->claimed && (g_timers_len > 0 || g_parked_fds > 0) && ++f->own_turns >= FAIR_TURNS) world_asked(f);
-    if (f->cancel_by != 0 && !shield_scope_stands(f)) { cut_claims(f, 0, f->cancel_by - 1); return 0; }
+    if (f->claimed) turn_counted(f);
+    if (cancel_heard(f)) { cut_claims(f, 0, f->cancel_by - 1); return 0; }
     if ((f->scope_by | f->deadline) != 0 && deadline_passed(f)) { cut_claims(f, 1, BY_DEADLINE); return 0; }
     if (f->claimed) return 0;
     f->parked = 1;
@@ -1799,25 +2070,97 @@ static inline int park_begun(Fiber* f) {
 // The claim, read by its task: `arm << 32 | member`, the set empty after.
 static int64_t claim_taken(Fiber* f) {
     int64_t claim = (int64_t)(((uint64_t)(uint32_t)f->arm << 32) | (uint32_t)f->member);
+    f->rested = 0;
     f->claimed = 0;
-    f->heeds = 0;
     retract(f);
     return claim;
 }
 
-void avra_wait_fd(int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(g_current, fd, writable, arm, member); }
+void avra_wait_fd(int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(g_current, fd, writable, arm, member, 1); }
 
 void avra_wait_until(int64_t at_ns, int64_t arm, int64_t member) { waits_until(g_current, at_ns, arm, member); }
 
 void avra_wait_gate(void* gate, int64_t arm, int64_t member) { waits_gate(g_current, gate, arm, member); }
+
+void avra_wait_sig(int64_t sig, int64_t arm, int64_t member) { waits_sig(g_current, sig, arm, member); }
 
 void avra_wait_task(void* task, int64_t arm, int64_t member) { waits_gate(g_current, task, arm, member); }
 
 int64_t avra_wait_park(void) {
     Fiber* self = g_current;
     if (park_begun(self)) run_next();
-    if (claimed_by_cancel(self)) cancel_met();
+    if (claimed_by_cut(self)) cancel_met();
     return claim_taken(self);
+}
+
+// THE SCAN CHOOSES; THE PARK ONLY WAKES. A wait over several arms reads
+// each arm's readiness as a stamp, takes one by its own rule, and parks
+// only when none is ready — so the claim it wakes on is a hint, and the
+// scan decides again.
+
+// The clock one scan reads, read at most once: 0 until a time is asked.
+static int64_t g_scan_now = 0;
+
+// A SCAN BEGINS, AND A CANCEL OR A PASSED LIMIT IS HEARD BEFORE ANY ARM
+// IS LOOKED AT — whether the set answers a cut. A scan that finds an
+// arm ready switches to nobody, so it counts as a turn for the world as
+// an own claim's park does.
+__attribute__((always_inline))
+static inline int scan_begun(Fiber* f) {
+    alone(f);
+    g_scan_now = 0;
+    turn_counted(f);
+    if (cancel_heard(f)) { set_claimed(f, -1, 0, f->cancel_by - 1); return 1; }
+    if ((f->scope_by | f->deadline) != 0 && deadline_passed(f)) { set_claimed(f, -1, 1, BY_DEADLINE); return 1; }
+    return 0;
+}
+
+// 0, or the claim a park would have answered: `-1:0` a cancel, `-1:1`
+// a limit. `site` is where the wait was written, for a listing to say.
+int64_t avra_wait_enter(const char* site) {
+    Fiber* self = g_current;
+    site_kept(&self->scan_site, site);
+    if (__builtin_expect(!scan_begun(self), 1)) return 0;
+    if (claimed_by_cut(self)) cancel_met();
+    return claim_taken(self);
+}
+
+// When the task answered; 0 while it lives, and for one that ended
+// cancelled.
+int64_t avra_task_since(void* task) { return task_cells(task)[TASK_SINCE]; }
+
+// A time that has come is ready before every event, the earlier
+// instant first; one that has not is not ready.
+int64_t avra_time_since(int64_t at_ns) {
+    if (g_scan_now == 0) g_scan_now = now_ns();
+    return at_ns <= g_scan_now ? (at_ns | INT64_MIN) : 0;
+}
+
+// The next stamp, for a thing found ready that no task's end here
+// stamped — a period found due, and THE END OF A TASK THE EVALUATOR
+// RUNS, whose record is the evaluator's: it queues behind every event
+// before it and ahead of every one after, compiled or evaluated.
+int64_t avra_stamp_next(void) { return ++g_stamp; }
+
+// Whether a park on the set can ever end: an arm is filed, or the set
+// is claimed already.
+static int set_open(const Fiber* f) { return f->held_n != 0 || f->claimed; }
+
+__attribute__((noinline, cold, noreturn))
+static void no_open_arm(void) { avra_trap("a `select` had no open arm"); }
+
+// The task is about to rest in its scan: the fiber count as it stands
+// is a time the park came after, as a task's id is for its spawn.
+enum { RESTING = 1u << 31 };
+static void rests(Fiber* f) { f->rested = RESTING | (uint32_t)g_fiber_seq; }
+
+// THE SCAN FOUND NOTHING READY AND EVERY LIVE ARM IS FILED: the task
+// parks. With nothing filed nothing can wake it, and that is said by
+// name, never waited out.
+int64_t avra_wait_rest(void) {
+    if (!set_open(g_current)) no_open_arm();
+    rests(g_current);
+    return avra_wait_park();
 }
 
 void* avra_gate_new(void) {
@@ -1861,7 +2204,7 @@ static void* task_made(Fiber* f, void* body) {
     avra_array_push(task, 0);
     avra_array_push(task, END_LIVE);
     avra_array_push(task, 0);
-    for (int i = TASK_FRAMES; i < TASK_CELLS; i++) avra_array_push(task, 0);
+    for (int i = TASK_SITE; i < TASK_CELLS; i++) avra_array_push(task, 0);
     return task;
 }
 
@@ -1931,6 +2274,7 @@ static void fiber_start(void) {
     // standing request; a body that answered names itself.
     cells[TASK_END] = avra_unwinding ? END_CANCELLED : END_ANSWERED;
     cells[TASK_BY] = avra_unwinding ? asker_of(self) : id_of(self);
+    cells[TASK_SINCE] = avra_unwinding ? 0 : ++g_stamp;
     gate_opened(task, id_of(self));
     // A TASK THAT ENDS WAITS ON NOTHING: what it registered and never
     // parked on leaves with it, before its record is anyone else's.
@@ -1977,10 +2321,12 @@ static void refuse_join_ring(void* task, Fiber* self) {
     }
 }
 
-// The caller parks by one of the rows that predate the wait set: its
-// waiters are filed, no cancel reaches it, and its claim clears itself.
-static void legacy_parked(Fiber* self) {
+// The caller parks by a sleep or a join: its waiters are filed, and its
+// claim clears itself. `heeds` when its task's deadline may claim it — a
+// scope's end joining what it owns waits its tasks out.
+static void legacy_parked(Fiber* self, int heeds) {
     self->legacy = 1;
+    self->heeds = (uint8_t)heeds;
     self->parked = 1;
     self->state = FIBER_PARKED;
 }
@@ -2001,16 +2347,16 @@ static int64_t* task_awaited(void* task, int deaf) {
     int64_t* cells = task_cells(task);
     if (cells[GATE_OPEN]) return cells;
     Fiber* self = g_current;
-    if (!deaf && cancel_stands(self)) return cells;
+    if (!deaf && request_stands(self)) return cells;
     refuse_join_ring(task, self);
     alone(self);
     if (TRACING) traced_join(self, task_id(task));
     self->joining = task;
     self->deaf = (uint8_t)deaf;
     waits_gate(self, task, 0, 0);
-    legacy_parked(self);
+    legacy_parked(self, !deaf);
     run_next();
-    if (claimed_by_cancel(self)) cancel_met();
+    if (claimed_by_cut(self)) cancel_met();
     self->joining = NULL;
     self->deaf = 0;
     return task_cells(task);
@@ -2125,6 +2471,7 @@ static void task_ended(void* task, int64_t how, int64_t by) {
     int64_t* cells = task_cells(task);
     cells[TASK_END] = how;
     cells[TASK_BY] = by;
+    cells[TASK_SINCE] = how == END_ANSWERED ? ++g_stamp : 0;
     int64_t at = cells[TASK_AT];
     if (at) {
         cells[TASK_AT] = 0;
@@ -2160,6 +2507,7 @@ static void task_fired(void* task) {
     cells[TASK_ANSWER] = (int64_t)(uintptr_t)unit;
     cells[TASK_AT] = 0;
     cells[TASK_END] = END_ANSWERED;
+    cells[TASK_SINCE] = ++g_stamp;
     gate_opened(task, BY_TIMER);
     avra_rc_release(task);
 }
@@ -2179,7 +2527,10 @@ static void fiber_cancelled(Fiber* f, int64_t by) {
         if (TRACING) traced_dropped(f, f->scope_by, by + 1);
         f->scope_by = 0;
     }
-    if (f->deaf && f->joining) { task_cancelled(f->joining, by); return; }
+    if (f->deaf) {
+        if (f->joining) task_cancelled(f->joining, by);
+        return;
+    }
     if (f->parked && !shield_scope_stands(f)) set_claimed(f, -1, 0, by);
 }
 
@@ -2289,12 +2640,12 @@ int64_t avra_vtask_tick_cold(int64_t t) {
 __attribute__((noinline))
 static void slept(int64_t ms) {
     Fiber* self = g_current;
-    if (cancel_stands(self)) return;
+    if (request_stands(self)) return;
     alone(self);
     waits_until(self, deadline_after(ms), 0, 0);
-    legacy_parked(self);
+    legacy_parked(self, 1);
     run_next();
-    if (claimed_by_cancel(self)) cancel_met();
+    if (claimed_by_cut(self)) cancel_met();
 }
 
 // A sleep of no time is a yield, and costs what a yield costs.
@@ -2328,12 +2679,11 @@ static int park_fd_filed(Fiber* f, int64_t fd, int64_t writable, int64_t timeout
     f->timed_out = 0;
     f->interrupted = 0;
     if (fd < 0 || fd > INT32_MAX) return 0;
-    if (f->virtual ? virtual_cancel_stands(f) : cancel_stands(f)) { f->timed_out = 1; return 0; }
+    if (request_stands(f)) { f->timed_out = 1; return 0; }
     alone(f);
-    if (deadline_passed(f)) { f->timed_out = 1; return 0; }
     f->legacy = 1;
     f->heeds = 1;
-    waits_fd(f, fd, writable, 0, 0);
+    waits_fd(f, fd, writable, 0, 0, 0);
     if (!f->legacy) return 0;
     if (timeout_ms >= 0) waits_until(f, deadline_after(timeout_ms), 1, 0);
     f->parked = 1;
@@ -2345,7 +2695,7 @@ int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
     Fiber* self = g_current;
     if (park_fd_filed(self, fd, writable, timeout_ms)) {
         run_next();
-        if (claimed_by_cancel(self)) cancel_met();
+        if (claimed_by_cut(self)) cancel_met();
     }
     return self->timed_out ? 0 : 1;
 }
@@ -2356,7 +2706,17 @@ int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
 
 int64_t avra_scope_end(int64_t id) { return scope_ended(g_current, id); }
 
-int64_t avra_fiber_within_end(int64_t id) { return scope_ended(g_current, id); }
+// A `within`'s LANDING: the scope ends, and an unwind it asked for ends
+// with it — 1, the bit cleared, when the request that stood was this
+// scope's and its task was unwinding. A limit that passed with the block
+// at no cancel point cut nothing: the block answered, and it is 0.
+static int64_t scope_landed(Fiber* f, int64_t id, uint8_t* bit) {
+    if (!scope_ended(f, id) || !*bit) return 0;
+    *bit = 0;
+    return 1;
+}
+
+int64_t avra_fiber_within_end(int64_t id) { return scope_landed(g_current, id, &avra_unwinding); }
 
 // ── The shield ──────────────────────────────────────────────────
 //
@@ -2418,6 +2778,16 @@ void avra_fiber_forked(void) {
     g_ready_head = g_ready_tail = NULL;
     g_parked_fds = 0;
     if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
+    // THE CHILD OWES NO SIGNAL THE PARENT SPENT: every disposition Avra
+    // installed is given back, so a child is the process's own again.
+    for (int i = 1; i < NSIG; i++) sig_disarm(i);
+    memset(g_sig_head, 0, sizeof g_sig_head);
+    memset(g_sig_tail, 0, sizeof g_sig_tail);
+    memset(g_sig_armed, 0, sizeof g_sig_armed);
+#if AVRA_EPOLL
+    if (g_signalfd >= 0) close(g_signalfd);
+    g_signalfd = -1;
+#endif
     // the child is asked under its own id, and owes no ask its parent had
     g_asked = 0;
     tasks_door_named();
@@ -2485,7 +2855,7 @@ void avra_vtask_end(int64_t t) {
 }
 
 void avra_vtask_sited(int64_t t, const char* site) {
-    virtual_at(t)->site = site;
+    site_kept(&virtual_at(t)->site, site);
     if (TRACING) traced_site(virtual_at(t), site, NULL);
 }
 
@@ -2495,17 +2865,6 @@ void avra_vtask_joins(int64_t t, int64_t on) {
     if (TRACING) traced_join(virtual_at(t), on);
 }
 
-__attribute__((noinline, cold))
-static void joined_traced(Fiber* f, int64_t by) {
-    traced_joined(f, by);
-    ready_push(f);
-}
-
-void avra_vtask_joined(int64_t t, int64_t by) {
-    if (TRACING) { joined_traced(virtual_at(t), by); return; }
-    ready_push(virtual_at(t));
-}
-
 // The evaluator's reads of the clock are its host's: when one of its
 // tasks parks, that count begins again.
 static int64_t host_waited(int64_t parked) {
@@ -2513,12 +2872,14 @@ static int64_t host_waited(int64_t parked) {
     return parked;
 }
 
+int64_t avra_vtask_cut(int64_t t) { return request_stands(virtual_at(t)); }
+
 void avra_vtask_sleep(int64_t t, int64_t ms) {
     Fiber* f = virtual_at(t);
-    if (ms < 1) { ready_push(f); return; }
+    if (ms < 1 || request_stands(f)) { ready_push(f); return; }
     alone(f);
     waits_until(f, deadline_after(ms), 0, 0);
-    legacy_parked(f);
+    legacy_parked(f, 1);
     host_waited(1);
 }
 
@@ -2539,7 +2900,7 @@ int64_t avra_vtask_unwinding(int64_t t) { return virtual_at(t)->unwinding; }
 
 int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_at(t), ms); }
 
-int64_t avra_vtask_within_end(int64_t t, int64_t id) { return scope_ended(virtual_at(t), id); }
+int64_t avra_vtask_within_end(int64_t t, int64_t id) { Fiber* f = virtual_at(t); return scope_landed(f, id, &f->unwinding); }
 
 void avra_vtask_shield_enter(int64_t t) { Fiber* f = virtual_at(t); shield_entered(f, &f->unwinding); }
 
@@ -2553,6 +2914,17 @@ int64_t avra_vtask_asker(int64_t t) { return asker_of(virtual_at(t)); }
 
 int64_t avra_vtask_shielded(int64_t t) { return virtual_at(t)->shield_depth != 0; }
 
+// Whether a cancel stands on the task: what an owner's scope end asks
+// before it waits out what it owns, as `avra_task_settle` does.
+int64_t avra_vtask_asked(int64_t t) { return virtual_at(t)->cancel_by != 0; }
+
+// A yield's cancel point, as `avra_fiber_yield` meets it: a cancel that
+// stands raises the task's own bit, unless a deferred call runs shielded.
+void avra_vtask_yield_met(int64_t t) {
+    Fiber* f = virtual_at(t);
+    if (!f->shield_depth && f->cancel_by != 0) f->unwinding = 1;
+}
+
 void avra_vtask_passed(int64_t t, int64_t by) {
     Fiber* f = virtual_at(t);
     cancel_passed(f, by);
@@ -2563,24 +2935,55 @@ int64_t avra_vtask_deadline(int64_t t) { return virtual_at(t)->deadline; }
 
 void avra_vtask_inherits(int64_t t, int64_t from) { scope_inherited(virtual_at(t), virtual_at(from)); }
 
-void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(virtual_at(t), fd, writable, arm, member); }
+void avra_vtask_wait_fd(int64_t t, int64_t fd, int64_t writable, int64_t arm, int64_t member) { waits_fd(virtual_at(t), fd, writable, arm, member, 1); }
 
 void avra_vtask_wait_until(int64_t t, int64_t at_ns, int64_t arm, int64_t member) { waits_until(virtual_at(t), at_ns, arm, member); }
 
 void avra_vtask_wait_gate(int64_t t, void* gate, int64_t arm, int64_t member) { waits_gate(virtual_at(t), gate, arm, member); }
+
+void avra_vtask_wait_sig(int64_t t, int64_t sig, int64_t arm, int64_t member) { waits_sig(virtual_at(t), sig, arm, member); }
 
 int64_t avra_vtask_join(int64_t t, void* task) {
     Fiber* f = virtual_at(t);
     if (task_cells(task)[GATE_OPEN]) return 0;
     alone(f);
     waits_gate(f, task, 0, 0);
-    legacy_parked(f);
+    legacy_parked(f, 1);
+    return host_waited(1);
+}
+
+// A scope's end waiting what it owns out: parked on the task's end as a
+// join is, and deaf — no cancel and no deadline claims it.
+int64_t avra_vtask_settle(int64_t t, void* task) {
+    Fiber* f = virtual_at(t);
+    if (task_cells(task)[GATE_OPEN]) return 0;
+    alone(f);
+    waits_gate(f, task, 0, 0);
+    legacy_parked(f, 0);
+    f->deaf = 1;
     return host_waited(1);
 }
 
 int64_t avra_vtask_park(int64_t t) { return host_waited(park_begun(virtual_at(t))); }
 
 int64_t avra_vtask_claim(int64_t t) { return claim_taken(virtual_at(t)); }
+
+// `avra_wait_enter` for the task `t`: its own unwind bit is the one a
+// cancel raises.
+int64_t avra_vtask_enter(int64_t t, const char* site) {
+    Fiber* f = virtual_at(t);
+    site_kept(&f->scan_site, site);
+    return scan_begun(f) ? claim_taken(f) : 0;
+}
+
+// `avra_wait_rest` for the task `t`: 1 parked, 0 claimed already, -1
+// when nothing is filed — the evaluator's own trap to speak.
+int64_t avra_vtask_rest(int64_t t) {
+    Fiber* f = virtual_at(t);
+    if (!set_open(f)) return -1;
+    rests(f);
+    return host_waited(park_begun(f));
+}
 
 void avra_vtask_cancel(int64_t t, int64_t by) { fiber_cancelled(virtual_at(t), by); }
 
@@ -2714,6 +3117,7 @@ static void waiter_said(FILE* out, Numbered no, const Fiber* f, const Waiter* w)
     if (!w->filed) return;
     if (w->kind == W_AT) { fputs(" waits on a time", out); return; }
     if (w->kind == W_DEADLINE) return;
+    if (w->kind == W_SIG) { fprintf(out, " waits on signal %d", w->on.sig); return; }
     if (w->kind != W_GATE) { fprintf(out, " waits on descriptor %d", w->on.fd); return; }
     if (w->on.gate == f->joining) return;
     if (((AvraArray*)w->on.gate)->len != TASK_CELLS) { fprintf(out, " waits on gate %p", w->on.gate); return; }
@@ -3193,6 +3597,8 @@ int64_t avra_sched_timers(void) { return (int64_t)g_timers_len; }
 
 int64_t avra_sched_fd_waiters(void) { return g_parked_fds; }
 
+int64_t avra_sched_waiters_kept(void) { return g_overs_n; }
+
 int64_t avra_sched_polls(void) { return g_polls; }
 
 int64_t avra_sched_pick_links(void) { return g_pick_links; }
@@ -3266,21 +3672,37 @@ static int64_t spawned_after(uint64_t id) {
 // process alike (`avra trace`, `avra tasks`). The program's own run is
 // task 0 and needs no spawn.
 
+// Whole milliseconds from `now` to `at`; none for a time that has come.
+static int64_t ms_until(int64_t at, int64_t now) { return at > now ? (at - now) / 1000000 : 0; }
+
 // What a waiter waits on, as a trace's `park` line; nothing for a
 // deadline, which is no wait of its own, or a join's gate, which the
 // `join` line says.
-static void waiter_listed(FILE* out, int64_t now, const Fiber* f, const Waiter* w) {
-    if (!w->filed || w->kind == W_DEADLINE) return;
-    if (w->kind == W_GATE && w->on.gate == f->joining) return;
+static int waiter_listed(FILE* out, int64_t now, const Fiber* f, const Waiter* w) {
+    if (!w->filed || w->kind == W_DEADLINE) return 0;
+    if (w->kind == W_GATE && w->on.gate == f->joining) return 0;
     fprintf(out, "ts=%lld park id=%lld src=", (long long)now, (long long)id_of(f));
     switch (w->kind) {
         case W_FD_READ: fprintf(out, "fd:r:%d", w->on.fd); break;
         case W_FD_WRITE: fprintf(out, "fd:w:%d", w->on.fd); break;
         case W_GATE: fprintf(out, "gate:%p", w->on.gate); break;
+        case W_SIG: fprintf(out, "sig:%d", w->on.sig); break;
         case W_AT: fputs("at", out); break;
         case W_DEADLINE: break;
     }
-    fprintf(out, " arm=%d:%d\n", w->arm, w->member);
+    fprintf(out, " arm=%d:%d", w->arm, w->member);
+    if (w->kind == W_AT) fprintf(out, " due_in=%lld", (long long)ms_until(g_timers[w->on.timer - 1].at, now));
+    fputc('\n', out);
+    return 1;
+}
+
+// A time the task's rest in its scan came after: the latest reading
+// taken before the fiber count stood where the park found it.
+static int64_t rested_after(const Fiber* f) {
+    uint64_t low = f->rested & ~(uint32_t)RESTING;
+    uint64_t seq = (g_fiber_seq & ~(uint64_t)(RESTING - 1)) | low;
+    if (seq > g_fiber_seq) seq -= RESTING;
+    return spawned_after(seq);
 }
 
 static void task_listed(FILE* out, const Fiber* f, int64_t now) {
@@ -3294,8 +3716,13 @@ static void task_listed(FILE* out, const Fiber* f, int64_t now) {
         if (on) fprintf(out, "ts=%lld join id=%lld on=%lld\n", (long long)now, id, (long long)id_of(on));
         else fprintf(out, "ts=%lld join id=%lld on=unrun\n", (long long)now, id);
     }
-    for (uint32_t i = 0; i < f->held_n; i++) waiter_listed(out, now, f, &f->held[i]);
-    for (const Over* o = f->more; o; o = o->next) waiter_listed(out, now, f, &o->w);
+    int filed = 0;
+    for (uint32_t i = 0; i < f->held_n; i++) filed += waiter_listed(out, now, f, &f->held[i]);
+    for (const Over* o = f->more; o; o = o->next) filed += waiter_listed(out, now, f, &o->w);
+    // A TASK PARKED ON NOTHING SAYS SO: only a cancel or its limit ends
+    // that wait, and a listing that left it out would read as running.
+    if (!filed && !f->virtual && f->state == FIBER_PARKED && !f->joining) fprintf(out, "ts=%lld park id=%lld src=none arm=0:0\n", (long long)now, id);
+    if (f->rested) fprintf(out, "ts=%lld select id=%lld site=%s for=%lld\n", (long long)now, id, f->scan_site ? f->scan_site : "?", (long long)((now - rested_after(f)) / 1000000));
     if (!f->virtual && f != &g_main) fprintf(out, "ts=%lld age id=%lld ms=%lld\n", (long long)now, id, (long long)((now - spawned_after((uint64_t)id_of(f))) / 1000000));
 }
 

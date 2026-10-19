@@ -1,9 +1,9 @@
 //! The task nodes: variants of `Expr` (core/nodes.av), declared
 //! where their meaning is.
-use core.{expr_node, ExprId, TypeId, Reg}
+use core.{expr_node, ExprId, TypeId, Reg, TypeRef}
 use core.marks.{apart, sequence}
 
-use features.{Meaning, ResolveCx, TypeCx, LowerCx}
+use features.{Meaning, ResolveCx, TypeCx, LowerCx, nothing}
 
 /// `spawn e` — `e` runs as a task beside the spawner; the node is
 /// its task handle. `body` is the zero-seat lambda `e` became.
@@ -35,4 +35,50 @@ impl Meaning for Within {
     }
     fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { within_expr_type(cx, e) }
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg { task_expr_reg(cx, e) }
+}
+
+/// `yield x` — the enclosing `produce`'s sink takes `x`: the emit verb
+/// of a running supply. A statement, so it answers nothing; a `yield`
+/// no producer encloses is refused by name where it types.
+@expr_node
+@sequence
+export type Emit = { value: ExprId }
+
+impl Meaning for Emit {
+    fn resolve(mut cx: ResolveCx, e: ExprId) { nothing() }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { emit_type(cx, e, self.value) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { emit_reg(cx, e) }
+}
+
+/// `produce<T>(cap) { … }` — the block runs as a task, its `yield`s
+/// feed a channel of capacity `cap`, and the node answers the reading
+/// end. `body` is the block, which the builder made a zero-capture
+/// lambda whose one seat is the sink; `elem` pins the element.
+@expr_node
+@apart
+export type Produce = { elem: TypeRef, cap: ExprId?, body: ExprId }
+
+impl Meaning for Produce {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        if self.cap != null { cx.walk(self.cap!) }
+        cx.walk(self.body)
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { produce_type(cx, e, self.elem, self.cap, self.body) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { produce_reg(cx, e) }
+}
+
+/// `channel<T>(cap)` — both ends of one channel, as `@std/task`'s
+/// `Channel<T>`: the sink a writer holds and the source a reader
+/// drains. Unlike `produce`, no task is spawned and nobody closes it
+/// for you: the manual pair ends at `close()`.
+@expr_node
+@apart
+export type Channel = { elem: TypeRef, cap: ExprId? }
+
+impl Meaning for Channel {
+    fn resolve(mut cx: ResolveCx, e: ExprId) {
+        if self.cap != null { cx.walk(self.cap!) }
+    }
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { channel_type(cx, e, self.elem, self.cap) }
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { channel_reg(cx, e) }
 }

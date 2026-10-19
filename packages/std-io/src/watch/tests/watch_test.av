@@ -16,7 +16,7 @@ use @std.io.{
 }
 use @std.io.watch.{Watch, Seen, Moved, Change, watch}
 use @std.text.{from_codepoint}
-use @std.time.{ms, sleep, now_ms}
+use @std.time.{ms, sleep, now_ms, TimedOut}
 
 /// A directory under the scratch with nothing in it — files and empty
 /// directories an earlier run left are removed first.
@@ -62,6 +62,12 @@ fn wt_of(seen: Result<Seen, IoError>, path: string) -> string {
 }
 
 fn wt_or_dash(said: string) -> string { if said == "" { "-" } else { said } }
+
+/// A `within`'s answer for `path`: the block's look, or its own name for
+/// running past the deadline.
+fn wt_timed(r: Result<Result<Seen, IoError>, TimedOut>, path: string) -> string {
+    match r { .Ok(inner) -> wt_of(inner, path), .Err(_) -> "timed out" }
+}
 
 /// How many paths a look named.
 fn wt_count(seen: Result<Seen, IoError>) -> int {
@@ -388,22 +394,22 @@ spec "std/io watch" {
             let _ = w.add("${dir}/f")
             let began = now_ms()
             let writer = spawn wt_appends_later("${dir}/f", "b", 60)
-            let said = wt_of(within ms(5000) { w.next() }, "${dir}/f")
+            let said = wt_timed(within ms(5000) { w.next() }, "${dir}/f")
             let waited = now_ms() - began
             writer.await
             w.close()
             said == "changed" && waited >= 50 && waited < 4000
         }
-        then "a `within` that runs out answers quiet" {
+        then "a `within` that runs out answers `TimedOut`, never quiet" {
             let dir = wt_fresh("within")
             wt_written("${dir}/f", "a")
             let w = wt_watch()
             let _ = w.add("${dir}/f")
             let began = now_ms()
-            let said = wt_of(within ms(80) { w.next() }, "${dir}/f")
+            let said = wt_timed(within ms(80) { w.next() }, "${dir}/f")
             let waited = now_ms() - began
             w.close()
-            said == "-" && waited >= 70 && waited < 2000
+            said == "timed out" && waited >= 70 && waited < 2000
         }
         then "a write made before the wait is not waited for" {
             let dir = wt_fresh("already")
@@ -412,7 +418,7 @@ spec "std/io watch" {
             let _ = w.add("${dir}/f")
             wt_appended("${dir}/f", "b")
             let began = now_ms()
-            let said = wt_of(within ms(5000) { w.next() }, "${dir}/f")
+            let said = wt_timed(within ms(5000) { w.next() }, "${dir}/f")
             w.close()
             said == "changed" && now_ms() - began < 1000
         }
@@ -421,7 +427,10 @@ spec "std/io watch" {
             let w = wt_watch()
             let _ = w.add(dir)
             let closer = spawn wt_closes_later(w, 40)
-            let woke = within ms(5000) { w.next() } is .Err
+            let woke = match within ms(5000) { w.next() } {
+                .Ok(.Err(_)) -> true,
+                .Ok(.Ok(_)) or .Err(_) -> false,
+            }
             closer.await
             woke
         }

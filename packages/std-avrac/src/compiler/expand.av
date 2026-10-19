@@ -105,9 +105,13 @@ impl Workspace {
     fn expanded(f: FileId) -> List<DeclId> {
         // RECURSIVE: `expanded` is demanded from INSIDE a resolve's
         // miss — a two-tier lookup — and the namespace the materializer
-        // walks is itself a dependency of that resolve. The kernel's
-        // recursion guard makes the re-entry a SMALLER view (an empty
-        // expansion for the resolve in flight), never a trap.
+        // walks is itself a dependency of that resolve. The first
+        // re-entry while the file's run is open expands again and keeps
+        // its answer for the run; a later one reads it, so a file is not
+        // expanded once per member that asks.
+        let reentrant = self.relation(Family.Expanded).open(f.index)
+        let settled = if reentrant { self.decls.reentry_answer(f) } else { null }
+        if settled != null { return settled! }
         match self.relation(Family.Expanded).start_recursive(f.index) {
             .Reuse(value) -> { return expanded_of(value) },
             .Compute -> nothing(),
@@ -129,6 +133,7 @@ impl Workspace {
         self
             .relation(Family.Expanded)
             .finish(f.index, DbRow.Expanded(made), fp(31, [d.index for d in made]))
+        if reentrant { self.decls.reentry_kept(f, made) } else { self.decls.reentry_over(f) }
         made
     }
 
@@ -691,6 +696,21 @@ impl Workspace {
     fn admit_code(f: FileId, code: Node, maker: string, ann: string, at: Span?, vis: Namespace) -> List<
         DeclId,
     > {
+        let key = "${f.index}\n${maker}\n${code.text()}"
+        let kept? = self.decls.spliced_before(key) else { return self.spliced_anew(f, code, maker, ann, at, vis, key) }
+        kept
+    }
+
+    /// `admit_code`'s first splice of a code: copied into the store, minted, and remembered under `key`.
+    fn spliced_anew(
+        f: FileId,
+        code: Node,
+        maker: string,
+        ann: string,
+        at: Span?,
+        vis: Namespace,
+        key: string,
+    ) -> List<DeclId> {
         let store = self.decls.store_of(f)
         let before = store.marks()
         let stmts = self.spliced_stmts(f, code)
@@ -708,6 +728,7 @@ impl Workspace {
         self.decls.note_generation(f, Generation { runs: took, at: at })
         let made = self.decls.mint_generated_code(f, store, stmts, before.exprs, maker, ann, at)
         for d in made { self.decls.note_template(d, template_site(code)) }
+        self.decls.splice_kept(key, made)
         made
     }
 

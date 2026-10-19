@@ -164,7 +164,7 @@ fn codec_workspace() -> Workspace {
             {
                 "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
                 "/w/src/main.av": "fn a() { 1 }\n",
-                "/w/src/other.av": "fn b() { 2 }\n",
+                "/w/src/other.av": "component scales {\n    run: fn(int) -> int\n}\nexport scales twice { n -> n * 2 }\nfn b() { 2 }\n",
             },
             ["/w/avra.toml", "/w/src/main.av", "/w/src/other.av"],
         ),
@@ -247,6 +247,7 @@ impl Workspace {
                 seats: [seat],
                 root: null,
             },
+            self.decls.declared_unit(self.codec_instance()),
         ]
     }
 
@@ -255,8 +256,11 @@ impl Workspace {
         [no_wanted, self.codec_wanted_exemplars()]
     }
 
+    /// The fixture's declared instance.
+    fn codec_instance() -> DeclId { self.items(self.file_id("/w/src/other.av")).find((d) -> self.decls.decl(d).name == "twice")! }
+
     fn codec_same_wanted(a: Wanted, b: Wanted) -> bool {
-        self.wanted_wire(a) == self.wanted_wire(b)
+        a.root == b.root && self.wanted_wire(a) == self.wanted_wire(b)
     }
 
     /// The fixture's real declarations: `items` mints every row of the
@@ -395,7 +399,7 @@ fn type_exemplar_labels() -> List<string> {
 }
 
 fn wanted_batch_labels() -> List<string> {
-    ["empty", "no-seat and one-seat rows"]
+    ["empty", "no-seat, one-seat and instance rows"]
 }
 
 // ── `DbRow` — its decoder needs the KIND alongside the wire (the
@@ -411,12 +415,7 @@ fn dbrow_exemplars() -> List<DbRow> {
         DbRow.Licenses("n", "a.av\t7\tstyle.thing"),
         DbRow.Findings("n", "style.thing\ta.av\tsome line"),
         DbRow.Answer("n", "0aff"),
-        DbRow.Decl("n", docfacts_sample()),
     ]
-}
-
-fn docfacts_sample() -> DocFacts {
-    DocFacts.codec_zero() with { answer: "rendered text" }
 }
 
 fn dbrow_check() -> CodecCheck {
@@ -437,10 +436,6 @@ fn dbrow_one(r: DbRow) -> string? {
 
 fn dbrow_same(a: DbRow, b: DbRow) -> bool {
     match a {
-        .Decl(name, facts) -> match b {
-            .Decl(name_b, facts_b) -> name == name_b && facts.codec_same(facts_b),
-            rest -> false,
-        },
         .Sig(name, text) -> match b { .Sig(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
         .Warn(name, text) -> match b { .Warn(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
         .Scan(name, text) -> match b { .Scan(name_b, text_b) -> name == name_b && text == text_b, rest -> false },
@@ -906,22 +901,6 @@ export fn codec_pairs() -> List<CodecCheck> {
             DeclFacts.exemplar_labels(),
             facts_block,
             facts_unblocked,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "db.encoded_filewitness/decoded_filewitness",
-            FileWitness.exemplars(),
-            FileWitness.exemplar_labels(),
-            encoded_filewitness,
-            decoded_filewitness,
-            (x, y) -> x.codec_same(y),
-        ),
-        derived(
-            "db.encoded_docfacts/decoded_docfacts",
-            DocFacts.exemplars(),
-            DocFacts.exemplar_labels(),
-            encoded_docfacts,
-            decoded_docfacts,
             (x, y) -> x.codec_same(y),
         ),
         derived(

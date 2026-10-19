@@ -4,7 +4,7 @@
 //! the rules only; a grammar's name is packaging, not structure.
 
 use util.{quoted_text}
-use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed}
+use ast.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Operators, Tier, Assoc}
 /// The whole grammar, one rule per line, in rule order.
 export fn render_grammar(g: Grammar) -> string {
     [render_rule(r) for r in g.rules].join("\n")
@@ -28,14 +28,36 @@ fn render_seq(s: Seq) -> string {
     if s.recover != null {
         parts.push("@recover(sync_to: ${quoted_text(s.recover!.sync_to)})")
     }
-    if s.build != null {
-        match s.build! {
-            .Var(name) -> parts.push("-> ${name}"),
-            .Call(name, args) -> parts.push("-> ${name}(${args.join(", ")})"),
-            .Node(owner, variant, fixed, _) -> parts.push("-> ${owner}.${variant}${stated_payloads(fixed)}"),
-        }
-    }
+    if s.operators != null { parts.push(render_operators(s.operators!)) }
+    if s.build != null { parts.push("-> ${render_build(s.build!)}") }
     parts.join(" ")
+}
+
+fn render_build(b: Build) -> string {
+    match b {
+        .Var(name) -> name,
+        .Call(name, args) -> "${name}(${args.join(", ")})",
+        .Node(owner, variant, fixed, _) -> "${owner}.${variant}${stated_payloads(fixed)}",
+    }
+}
+
+fn render_operators(o: Operators) -> string {
+    "@operators { ${[render_tier(l) for l in o.tiers].join(" ")} }"
+}
+
+fn render_tier(l: Tier) -> string {
+    let words = [render_word(w) for w in l.words]
+    let suffixes = ["suffix ${quoted_text(x.word)} ${x.rule}" for x in l.suffixes]
+    let build = if l.build == null { [] } else { ["-> ${render_build(l.build!)}"] }
+    [render_assoc(l.assoc)].concat(words).concat(suffixes).concat(build).join(" ")
+}
+
+fn render_assoc(a: Assoc) -> string {
+    match a { .Left -> "left", .Single -> "none", .Unmixed(refusal) -> "unmixed(${refusal})" }
+}
+
+fn render_word(w: List<string>) -> string {
+    if w.length == 1 { quoted_text(w[0]) } else { "(${[quoted_text(t) for t in w].join(" ")})" }
 }
 
 impl Rep {

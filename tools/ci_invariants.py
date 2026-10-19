@@ -27,11 +27,18 @@ lists and refuses by name:
                    never from the event payload; a light run whose compiler is not
                    the published one skips the gate and says so.
   compiler-route   a Sprite run's prep installs a published compiler (or the merge-base's)
-                   before it builds one: the route rides the wire, and the build branch
-                   comes last.
+                   before it builds one: the route rides the wire, the build branch
+                   comes last, and a merge-base compiler too old to read the tree
+                   falls back to the seed (`make bootstrap`).
   path-gate        `runtime-keep` runs on a PR only when prepare's path gate
                    (tools/ci_path_gate.py) says a path it reads changed; main's
                    push and a hand-run owe it always.
+  race-split       a `labeled` run never shares its concurrency group with the other
+                   pull_request runs, so the label and the open of one PR cannot
+                   cancel each other; the run mode is read at run time, so the
+                   runs that remain give one verdict.
+  dup-run          a `labeled` run waits for the full run on its head and mirrors its verdict;
+                   it never runs a second gate beside it (tools/ci_dup_run.py).
   warm-edit        WHERE the DB 07 warm-edit gate exists (Makefile target
                    `warm-edit`), it is one of `KEEPERS` and its measurement
                    skips with a word on a cold store — a claim with no gate
@@ -222,6 +229,54 @@ def check_path_gate(workflow_text):
     return [], ["path-gate: runtime-keep runs on the path gate's decision"]
 
 
+def check_race_split(workflow_text):
+    """The concurrency group separates `labeled` runs from the others, and the
+    run mode is read at run time. Answers (refusals, words)."""
+    m = re.search(r"^concurrency:\s*\n\s*group: (.+)$", workflow_text, re.M)
+    refusals = []
+    if not m:
+        refusals.append("the workflow names no concurrency group")
+    elif "github.event.action == 'labeled'" not in m.group(1):
+        refusals.append("the concurrency group does not split `labeled` runs: a label and an open cancel each other")
+    if "tools/pr_mode.py" not in workflow_text:
+        refusals.append("the run mode is not read at run time")
+    if refusals:
+        return refusals, []
+    return [], ["race-split: a labeled run has its own concurrency group"]
+
+
+def check_dup_run(workflow_text):
+    """The labeled run asks tools/ci_dup_run.py for the verdict and mirrors it, and
+    the test job's light and verdict steps stand down for a mirror. Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    refusals = []
+    if "tools/ci_dup_run.py" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not ask tools/ci_dup_run.py whether a labeled run owes the gate")
+    if "mirror: ${{ steps.plan.outputs.mirror }}" not in jobs.get("prepare", ""):
+        refusals.append("`prepare` does not expose the mirror verdict")
+    test = jobs.get("test", "")
+    if "needs.prepare.outputs.mirror != ''" not in test:
+        refusals.append("`test` does not mirror another run's verdict")
+    if "needs.prepare.outputs.full == '0' && needs.prepare.outputs.mirror == ''" not in test:
+        refusals.append("`test` names a light draft beside a mirrored verdict")
+    if refusals:
+        return refusals, []
+    return [], ["dup-run: a labeled run mirrors the full run on its head"]
+
+
+def check_ready_race(pr_mode_mod):
+    """#701's race: a PR readied while its update runs. Its mode is the PR's state at
+    run time, so the ready run and the synchronize run both read full. Answers (refusals, words)."""
+    refusals = []
+    if pr_mode_mod.mode('{"draft": false, "labels": []}') != "full":
+        refusals.append("a readied PR is not read as full, so a run queued before the ready event would stay light")
+    if pr_mode_mod.mode('{"draft": true, "labels": []}') != "light":
+        refusals.append("a draft without the label is not read as light")
+    if refusals:
+        return refusals, []
+    return [], ["ready-race: a readied PR's run is full whichever event started it"]
+
+
 def check_run_mode(workflow_text):
     """The run mode is decided by tools/pr_mode.py on the PR's API answer, not by
     the event payload, and a light gate on an unpublished compiler is skipped.
@@ -244,18 +299,25 @@ def check_run_mode(workflow_text):
         return refusals, []
     return [], ["run-mode: the PR's mode is read from the API; the light gate skips an unpublished compiler"]
 def check_compiler_route(work_text, remote_text):
-    """The run's compiler route rides the wire, and the Sprite's prep takes a
-    published compiler before it builds one. Answers (refusals, words)."""
+    """The run's compiler route rides the wire, the Sprite's prep takes a
+    published compiler before it builds one, and a merge-base compiler too old
+    to read the tree falls back to the seed. Answers (refusals, words)."""
+    refusals = []
     if 'wire="$wire@$route"' not in work_text or "compiler_route" not in work_text:
         refusals.append("`tools/work run` does not put the compiler route on the wire")
     published = remote_text.find('"${route%%:*}" = published')
     merged = remote_text.find('"${route%%:*}" = mergebase')
     build = remote_text.find("building this tree's compiler")
+    seed = remote_text.find("bootstrapped from the seed")
     if min(published, merged) < 0:
         refusals.append("the Sprite's prep does not install a published compiler for a route")
     elif build < 0 or build < max(published, merged):
         refusals.append("the Sprite's prep builds before it tries the published compiler")
-    return [], ["compiler-route: a published compiler is installed before a build"]
+    if merged >= 0 and (seed < merged or (build >= 0 and seed > build)):
+        refusals.append("a merge-base compiler that cannot read the tree does not fall back to the seed")
+    if refusals:
+        return refusals, []
+    return [], ["compiler-route: a published compiler is installed before a build; a merge-base miss falls back to the seed"]
 
 
 def check_light_draft(workflow_text):
@@ -408,10 +470,13 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
                   lambda: check_run_mode(workflow_text),
+                  lambda: check_race_split(workflow_text),
                   lambda: check_compiler_route(
                       open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read(),
                       open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()),
                   lambda: check_path_gate(workflow_text),
+                  lambda: check_dup_run(workflow_text),
+                  lambda: check_ready_race(__import__("pr_mode")),
                   lambda: check_warm_edit(make_text)):
         r, w = check()
         refusals += r
@@ -614,8 +679,32 @@ rt-header:
     assert ungated_rk != real_wf
     assert any("runtime-keep" in x for x in check_path_gate(ungated_rk)[0]), check_path_gate(ungated_rk)
 
+    real_dup = open(CHECKS, encoding="utf-8").read()
+    assert check_dup_run(real_dup)[0] == [], check_dup_run(real_dup)
+    unmirrored = real_dup.replace("needs.prepare.outputs.mirror != ''", "needs.prepare.outputs.mirror == ''", 1)
+    assert unmirrored != real_dup
+    assert any("mirror" in x for x in check_dup_run(unmirrored)[0]), check_dup_run(unmirrored)
+    import pr_mode as _pm
+    assert check_ready_race(_pm)[0] == [], check_ready_race(_pm)
+
+    # ── compiler route: the real prep passes; a wire with no route, a prep that
+    # builds before it fetches, and a merge-base compiler with no seed behind it
+    # are each refused by name ──
+    real_work = open(os.path.join(ROOT, "tools", "work"), encoding="utf-8").read()
+    real_remote = open(os.path.join(ROOT, "tools", "sprite-remote.sh"), encoding="utf-8").read()
+    assert check_compiler_route(real_work, real_remote)[0] == [], check_compiler_route(real_work, real_remote)
+    no_wire = real_work.replace('wire="$wire@$route"', 'wire="$wire"', 1)
+    assert no_wire != real_work
+    assert any("wire" in x for x in check_compiler_route(no_wire, real_remote)[0]), check_compiler_route(no_wire, real_remote)
+    published_gone = real_remote.replace('"${route%%:*}" = published', '"${route%%:*}" = never', 1)
+    assert published_gone != real_remote
+    assert any("published" in x for x in check_compiler_route(real_work, published_gone)[0]), check_compiler_route(real_work, published_gone)
+    no_seed = real_remote.replace("bootstrapped from the seed", "built anyway", 1)
+    assert no_seed != real_remote
+    assert any("seed" in x for x in check_compiler_route(real_work, no_seed)[0]), check_compiler_route(real_work, no_seed)
+
     print("ci_invariants self-test: release-order, keeper-coverage, watcher-fixtures, "
-          "light-draft, run-mode, path-gate, warm-edit held on fixtures")
+          "light-draft, run-mode, race-split, compiler-route, path-gate, dup-run, ready-race, warm-edit held on fixtures")
     return 0
 
 

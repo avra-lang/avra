@@ -49,8 +49,32 @@ impl Workspace {
         let fns = [x.id for x in self.decls.unheld_decls() if self.cancel_member(x.id)]
         self.decls.clear_cancels(fns)
         self.decls.spread_cancels(fns, [self.cancel_summary(d) for d in fns])
-        self.db.settle(k, fp(1, [fp_list([cancel_word(self.decls.cancel_bits(d)) for d in fns])]))
+        // A reader stands on each member's own answer, never on this survey: settle
+        // every member's bits under `CancelBits(d)` with a digest of the bits alone.
+        for d in fns {
+            let kb = key(Family.CancelBits, d.index)
+            if self.db.ask(kb) is .Compute {
+                self.db.begin(kb)
+                self.db.settle(kb, cancel_word(self.decls.cancels_so_far(d)))
+            }
+        }
+        self
+            .db
+            .settle(k, fp(1, [fp_list([cancel_word(self.decls.cancels_so_far(d)) for d in fns])]))
         fns.length
+    }
+
+    /// One declaration's cancel bits, as the pass settled them: the cell a reader of the
+    /// fn's reach stands on, so a fn whose bits did not move leaves its readers standing
+    /// however the survey moved.
+    fn cancel_bits_of(d: DeclId) -> int {
+        if self.db.family_active(Family.Resolved.ordinal) { return 4 }
+        let k = key(Family.CancelBits, d.index)
+        if !(self.db.ask(k) is .Compute) { return 4 }
+        self.db.begin(k)
+        let _ = self.cancel_reach()
+        self.db.settle(k, cancel_word(self.decls.cancels_so_far(d)))
+        0
     }
 
     /// Whether any fn this compile knows LINKS A SCHEDULER: a member by
@@ -306,9 +330,9 @@ impl Decls {
         for j, d in fns { self.record_cancel(d, sums[j].own) }
         mut at = 0
         while at < reached.length {
-            let r = self.cancel_bits(reached[at]) ?? reaches_nothing()
+            let r = self.cancels_so_far(reached[at]) ?? reaches_nothing()
             for c in callers.at(reached[at].index) ?? [] {
-                let had = self.cancel_bits(c) ?? reaches_nothing()
+                let had = self.cancels_so_far(c) ?? reaches_nothing()
                 if !had.covers(r) {
                     self.record_cancel(c, had.with_reach(r))
                     reached.push(c)

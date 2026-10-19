@@ -1,8 +1,435 @@
-//! No lowering stands: typing refuses every `select`, so one reaching
-//! here is a defect.
-use core.{ExprId, Reg}
+//! The lowering — ONE mechanism: THE SCAN CHOOSES, THE PARK ONLY WAKES.
+//! Each guard, then its head, is read once, in written order — a false
+//! guard reads no head. Then one loop: a scan
+//! begins (where a cancel or a passed limit is heard), the arms are
+//! asked top to bottom, and the first that is ready is taken — its
+//! answer bound, its body run, the loop left. With none ready an `else`
+//! lets the world run and answers; without one each arm is filed and
+//! the task rests, and the claim that wakes it is only a hint: the next
+//! turn scans again.
+use core.{ExprId, Reg, Type, TypeId, BinOp, flatten, some_list}
 use features.{LowerCx}
+use diagnostics.{refusal}
+
+/// What an arm's head is, as the scan reads it — the shapes a lowering
+/// stands for.
+enum WaitKind {
+    Task
+    Tasks
+    Source
+    Ended
+    Timer
+}
+
+impl WaitKind {
+    /// Whether the wait is over a list of tasks — the one kind whose
+    /// scan leaves a pick in a cell.
+    fn listed() -> bool {
+        match self { .Tasks -> true, .Task or .Source or .Ended or .Timer -> false }
+    }
+}
+
+/// One waiting arm as the scan reads it: its place among the arms; its
+/// head — the expression, its register, and the type the head wears
+/// (a task's, a list's, a supply's, or an `.ended` supply's); what it
+/// hands over; its guard's answer when one is written, a false one
+/// leaving the arm dead for the whole `select`; for a list, the cell
+/// the scan leaves its pick in; which names it binds; its body.
+type Wait = {
+    at: int,
+    source: ExprId,
+    head: Reg,
+    head_ty: TypeId,
+    task: TypeId,
+    live: Reg?,
+    pick: Reg?,
+    indexed: bool,
+    bound: bool,
+    value: ExprId,
+    kind: WaitKind,
+}
+
+/// A `select` laid out for its loop: the waiting arms in written order,
+/// the `else` body when one stands, the cell its answer is kept in —
+/// none for a `select` answering nothing — and the loop it runs in.
+type Scan = { waits: List<Wait>, other: ExprId?, answer: Reg?, turn: int }
 
 fn select_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    cx.lower_defect(e, "a `select` survived typing")
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .Select(fair, arms) -> if fair { unlowered(cx, e, "`@fair`") } else { scanned_reg(cx, e, arms) },
+        rest -> cx.lower_defect(e, "a foreign node reached the select lowering"),
+    }
+}
+
+fn arm_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.lower_defect(e, "a `select` arm was lowered apart from its `select`")
+}
+
+/// The heads, then the loop, then the answer the taken arm left.
+fn scanned_reg(mut cx: LowerCx, e: ExprId, arms: List<ExprId>) -> Reg {
+    let ty = cx.type_at(e)
+    let waits = flatten([some_list(wait_of(cx, a, j)) for j, a in arms])
+    let other = flatten([some_list(else_of(cx, a)) for a in arms]).first()
+    // an arm that is neither was refused by name
+    if waits.length + some_list(other).length != arms.length { return cx.result(e) }
+    let answer: Reg? = if cx.view.types.shape_of(ty) is .Void { null } else { cx.seeded_cell(ty, cx.hollow_of(ty)) }
+    let site = cx.const_str(written_at(cx, e))
+    cx.loop_start()
+    let s = Scan { waits: waits, other: other, answer: answer, turn: cx.loops.length - 1 }
+    cx.loop_cond(cx.const_bool(true))
+    let _ = cx.wait_enter(Type.Int, site)
+    asked(cx, s, 0)
+    cx.loop_end()
+    let kept? = answer else { return cx.hollow_of(ty) }
+    cx.loaded(e, kept)
+}
+
+/// Where the `select` was written, `file:line`: the task's record keeps
+/// this text, so a listing says where a task rests.
+fn written_at(cx: LowerCx, e: ExprId) -> string {
+    let at? = cx.view.store.expr_span(e) else { return "" }
+    "${cx.view.decls.file_named(cx.view.file)}:${cx.view.source.linecol(at.lo).line}"
+}
+
+/// A waiting arm read for the scan: its guard and its head lowered
+/// here, once. Null for the `else` arm, and for an arm whose shape no
+/// lowering stands for yet — refused by name.
+fn wait_of(mut cx: LowerCx, arm: ExprId, at: int) -> Wait? {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(arm) {
+        .WaitArm(index, bind, head, guard, value) -> head_wait(cx, at, [index.of, bind.of], head, guard, value),
+        rest -> null,
+    }
+}
+
+/// An arm over a task, a list of tasks, a running supply or its
+/// `.ended`; `names` its index and its binder as written; any other
+/// head is refused by name.
+fn head_wait(
+    mut cx: LowerCx,
+    at: int,
+    names: List<string>,
+    head: ExprId,
+    guard: ExprId?,
+    value: ExprId,
+) -> Wait? {
+    let ended = ended_wait(cx, at, names, head, guard, value)
+    if ended != null { return ended! }
+    let ty = cx.type_at(head)
+    match waited_of(cx.view, ty) {
+        .Task(_) -> waiting(cx, at, names, head, guard, value, ty, WaitKind.Task),
+        .Tasks(_) -> waiting(cx, at, names, head, guard, value, cx.view.types.element(ty) ?? ty, WaitKind.Tasks),
+        .Source(answer) -> waiting(cx, at, names, head, guard, value, answer, WaitKind.Source),
+        .AnyOf(_) -> unwaited(cx, head, "an `AnyOf` arm"),
+        .Ended -> {
+            let _ = cx.lower_defect(head, "an `.ended` arm without its supply survived typing")
+            null
+        },
+        .Deadline -> timer_wait(cx, at, head, guard, value, deadline_instant(cx, head)),
+        .Quiet -> timer_wait(cx, at, head, guard, value, quiet_instant(cx, head)),
+        .Every -> unwaited(cx, head, "an `Every` arm"),
+        .Nothing -> {
+            let _ = cx.lower_defect(head, "an arm that waits on nothing survived typing")
+            null
+        },
+    }
+}
+
+/// An `.ended` arm over a running supply, when the head is written so.
+fn ended_wait(
+    mut cx: LowerCx,
+    at: int,
+    names: List<string>,
+    head: ExprId,
+    guard: ExprId?,
+    value: ExprId,
+) -> Wait? {
+    let subj? = ended_subject(cx.view, head) else { return null }
+    if !is_supply(cx.view, cx.type_at(subj)) { return null }
+    waiting(cx, at, names, subj, guard, value, cx.type_at(subj), WaitKind.Ended)
+}
+
+/// A timer arm: its instant is read here, once — a `Deadline`'s own
+/// `at`, or a `Quiet`'s span counted from this entry.
+fn timer_wait(mut cx: LowerCx, at: int, head: ExprId, guard: ExprId?, value: ExprId, instant: Reg) -> Wait {
+    let live: Reg? = if guard == null { null } else { cx.reg_of(guard!) }
+    Wait {
+        at: at,
+        source: head,
+        head: instant,
+        head_ty: cx.type(int),
+        task: cx.type(int),
+        live: live,
+        pick: null,
+        indexed: false,
+        bound: false,
+        value: value,
+        kind: WaitKind.Timer,
+    }
+}
+
+/// An `after(d)` arm's instant: the deadline's own `at`.
+fn deadline_instant(mut cx: LowerCx, head: ExprId) -> Reg {
+    cx.field_named(cx.reg_of(head), cx.type_at(head), "at", cx.type(int))
+}
+
+/// A `quiet(d)` arm's instant: `d` from this entry, read through
+/// `@std/time`'s own `after`, so the span's arithmetic and the clock
+/// are the library's, never a second copy.
+fn quiet_instant(mut cx: LowerCx, head: ExprId) -> Reg {
+    let quiet_ty = cx.type_at(head)
+    let sig? = cx.fields_of(quiet_ty) else { return cx.lower_defect(head, "a `Quiet` without fields survived typing") }
+    let slot? = sig.slot_of("span") else { return cx.lower_defect(head, "a `Quiet` without its span survived typing") }
+    let span = cx.field_named(cx.reg_of(head), quiet_ty, "span", sig.types[slot])
+    let after? = cx.view.decls.package_decl("@std.time", "after") else { return cx.lower_defect(head, "`@std/time.after` vanished") }
+    let dead_ty? = timer_type(cx.view, "Deadline") else { return cx.lower_defect(head, "`@std/time.Deadline` vanished") }
+    cx
+        .field_named(cx.call_decl(dead_ty, cx.symbol_at(after, head), [span]), dead_ty, "at", cx.type(int))
+}
+
+/// The arm's guard, then its head, read here; a list's pick cell made.
+fn waiting(
+    mut cx: LowerCx,
+    at: int,
+    names: List<string>,
+    head: ExprId,
+    guard: ExprId?,
+    value: ExprId,
+    task: TypeId,
+    kind: WaitKind,
+) -> Wait {
+    let live: Reg? = if guard == null { null } else { cx.reg_of(guard!) }
+    let head_ty = cx.type_at(head)
+    let read = head_under(cx, live, head, head_ty)
+    Wait {
+        at: at,
+        source: head,
+        head: read,
+        head_ty: head_ty,
+        task: task,
+        live: live,
+        pick: if kind.listed() { cx.seeded_cell(cx.type(int), cx.const_int(-1)) } else { null },
+        indexed: named(names[0]),
+        bound: named(names[1]),
+        value: value,
+        kind: kind,
+    }
+}
+
+/// Whether a written name binds: `_` and an unwritten one bind nothing.
+fn named(name: string) -> bool {
+    name != "" && name != "_"
+}
+
+/// A head read under its guard: a false guard reads none.
+fn head_under(mut cx: LowerCx, live: Reg?, head: ExprId, ty: TypeId) -> Reg {
+    let open? = live else { return cx.reg_of(head) }
+    cx.region_as(open, ty) { cx -> cx.reg_of(head) } else { cx -> cx.hollow_of(ty) }
+}
+
+/// The body of an `else` arm; null for an arm that waits.
+fn else_of(cx: LowerCx, arm: ExprId) -> ExprId? {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(arm) { .ElseArm(value) -> value, rest -> null }
+}
+
+/// THE SCAN, from arm `j` down: the first ready arm is taken; past the
+/// last, nothing was.
+fn asked(mut cx: LowerCx, s: Scan, j: int) {
+    if j == s.waits.length { return none_ready(cx, s) }
+    let w = s.waits[j]
+    cx.void_branches(ready(cx, w)) { cx -> taken(cx, s, w) } else { cx -> asked(cx, s, j + 1) }
+}
+
+/// Whether an arm may be taken: it is live, and what it waits on is
+/// ready.
+fn ready(mut cx: LowerCx, w: Wait) -> Reg {
+    let open? = w.live else { return fired(cx, w) }
+    cx.region_as(open, cx.type(bool)) { cx -> fired(cx, w) } else { cx -> cx.const_bool(false) }
+}
+
+/// A task is ready when it has ended, a list when a member answered, a
+/// supply when it has an item, an `.ended` arm when the supply ended.
+fn fired(mut cx: LowerCx, w: Wait) -> Reg {
+    match w.kind {
+        .Task -> ended(cx, w.head),
+        .Tasks -> match w.pick { null -> cx.const_bool(false), p -> first_answered(cx, w, p!) },
+        .Source -> call_supply(cx, w, "ready", [], cx.type(bool)),
+        .Ended -> call_supply(cx, w, "ended", [], cx.type(bool)),
+        .Timer -> cx.bin(Type.Bool, BinOp.Ne, cx.time_since(Type.Int, w.head), cx.const_int(0)),
+    }
+}
+
+/// A LIST ARM FIRES FOR THE MEMBER THAT ANSWERED FIRST — the least
+/// stamp, never the lowest index. A member still running, and one that
+/// ended cancelled, reads no stamp and is passed over. The pick is left
+/// in its cell: the member's index, or -1.
+fn first_answered(mut cx: LowerCx, w: Wait, pick: Reg) -> Reg {
+    let int = cx.type(int)
+    cx.stored(pick, cx.const_int(-1))
+    let least = cx.seeded_cell(int, cx.const_int(0))
+    let walk = cx.opened_reg(w.source, w.head, cx.type_at(w.source), w.task)
+    let at = cx.turn_open(walk)
+    let since = cx.task_since(Type.Int, cx.turn_elem(walk, at))
+    cx
+        .void_region(earlier(cx, since, cx.loaded_as(int, least))) { cx ->
+            cx.stored(least, since)
+            cx.stored(pick, at)
+        }
+    cx.loop_end()
+    cx.bin(Type.Bool, BinOp.Ge, cx.loaded_as(int, pick), cx.const_int(0))
+}
+
+/// Whether a stamp is an answer's, and before the least seen so far.
+fn earlier(mut cx: LowerCx, since: Reg, least: Reg) -> Reg {
+    let answered = cx.bin(Type.Bool, BinOp.Ne, since, cx.const_int(0))
+    cx
+        .region_as(answered, cx.type(bool)) { cx -> before(cx, since, least) } else { cx -> cx.const_bool(false) }
+}
+
+fn before(mut cx: LowerCx, since: Reg, least: Reg) -> Reg {
+    let first = cx.bin(Type.Bool, BinOp.Eq, least, cx.const_int(0))
+    cx
+        .region_as(first, cx.type(bool)) { cx -> cx.const_bool(true) } else { cx -> cx.bin(Type.Bool, BinOp.Lt, since, least) }
+}
+
+/// Whether a task has ended — answered or cancelled, it is ready: the
+/// take joins it, and a cancelled one passes its cancel on there.
+fn ended(mut cx: LowerCx, task: Reg) -> Reg {
+    cx.bin(Type.Bool, BinOp.Ne, cx.task_done(Type.Int, task), cx.const_int(0))
+}
+
+/// One of a supply's fn fields, read as its box — a supply's verbs are
+/// values on the record, so the lowering calls them, never a row.
+type FnSeat = { box: Reg, ty: TypeId }
+
+fn supply_field(mut cx: LowerCx, w: Wait, name: string) -> FnSeat? {
+    let sig? = cx.fields_of(w.head_ty) else { return null }
+    let slot? = sig.slot_of(name) else { return null }
+    FnSeat { box: cx.field_named(w.head, w.head_ty, name, sig.types[slot]), ty: sig.types[slot] }
+}
+
+/// Call one of a supply's verbs through its box: the box rides seat 0
+/// and the code address is slot 0, exactly as a method call does.
+fn call_supply(mut cx: LowerCx, w: Wait, name: string, args: List<Reg>, ret: TypeId) -> Reg {
+    let f? = supply_field(cx, w, name) else {
+        return cx.lower_defect(w.source, "a supply without its `${name}` survived typing")
+    }
+    cx.call_ptr(ret, cx.slot_read(f.box, 0, null), [f.box].concat(args))
+}
+
+/// What a supply's `taken` hands over: its item, the nullable unwrapped
+/// because `ready` was already true when the scan chose the arm.
+fn source_taken(mut cx: LowerCx, w: Wait) -> Reg {
+    // LICENSED compiler.interned_opt: the inner is a computed TypeId — no literal spelling to hand `cx.type(T?)`
+    let nullable = cx.view.types.intern(Type.Opt(w.task))
+    cx.carried_of(call_supply(cx, w, "taken", [], nullable), nullable)
+}
+
+/// A supply's own wake filed for the rest: `arm` registers every wake
+/// the supply needs for this arm index, and the row it calls parks the
+/// task — no new instruction stands here.
+fn filed_supply(mut cx: LowerCx, w: Wait) {
+    let _ = call_supply(cx, w, "arm", [cx.const_int(w.at)], cx.type(void))
+}
+
+/// A ready arm taken: its task joined, the answer bound when named, the
+/// body run, and the loop left with what it answered.
+fn taken(mut cx: LowerCx, s: Scan, w: Wait) {
+    cx.bind_patterns(w.value, taken_binds(cx, w))
+    left_with(cx, s, w.value)
+}
+
+/// The registers an arm's names take, index first: the task joined —
+/// for a list, the member the scan picked; for a supply, what `taken`
+/// hands over (an `.ended` arm hands nothing).
+fn taken_binds(mut cx: LowerCx, w: Wait) -> List<Reg> {
+    match w.kind {
+        .Task -> kept(w.bound, cx.awaited(w.head, w.task)),
+        .Tasks -> {
+            let pick? = w.pick else { return [] }
+            let at = cx.loaded_as(cx.type(int), pick)
+            let got = cx.awaited(cx.elem_read(w.head, at, w.task), w.task)
+            kept(w.indexed, at).concat(kept(w.bound, got))
+        },
+        .Source -> kept(w.bound, source_taken(cx, w)),
+        .Ended or .Timer -> [],
+    }
+}
+
+/// A register, when a name takes it.
+fn kept(named: bool, r: Reg) -> List<Reg> {
+    if named { [r] } else { [] }
+}
+
+/// Nothing is ready. An `else` lets the world run, then answers; with
+/// none, every arm is filed and the task rests until one may be ready.
+fn none_ready(mut cx: LowerCx, s: Scan) {
+    let other? = s.other else { return rested(cx, s) }
+    cx.fiber_yield()
+    left_with(cx, s, other)
+}
+
+fn rested(mut cx: LowerCx, s: Scan) {
+    for w in s.waits { filed(cx, w) }
+    let _ = cx.wait_rest(Type.Int)
+}
+
+/// A live arm filed for the rest.
+fn filed(mut cx: LowerCx, w: Wait) {
+    let open? = w.live else { return awaiting(cx, w) }
+    cx.void_region(open) { cx -> awaiting(cx, w) }
+}
+
+/// What the arm waits on, filed: its task, or each member still
+/// running — one that has ended, either way, can wake nobody; a
+/// supply files its OWN wake through `arm`, so the row call is the
+/// library's and no new instruction is built here.
+fn awaiting(mut cx: LowerCx, w: Wait) {
+    match w.kind {
+        .Task -> cx.wait_task(w.head, cx.const_int(w.at), cx.const_int(0)),
+        .Source or .Ended -> filed_supply(cx, w),
+        .Timer -> cx.wait_until(w.head, cx.const_int(w.at), cx.const_int(0)),
+        .Tasks -> {
+            let walk = cx.opened_reg(w.source, w.head, cx.type_at(w.source), w.task)
+            let at = cx.turn_open(walk)
+            let member = cx.turn_elem(walk, at)
+            let runs = cx.bin(Type.Bool, BinOp.Eq, cx.task_done(Type.Int, member), cx.const_int(0))
+            cx.void_region(runs) { cx -> cx.wait_task(member, cx.const_int(w.at), at) }
+            cx.loop_end()
+        },
+    }
+}
+
+/// A body run as the `select`'s answer, and the loop left.
+fn left_with(mut cx: LowerCx, s: Scan, value: ExprId) {
+    let r = cx.reg_of(value)
+    if s.answer != null { cx.stored(s.answer!, r) }
+    cx.jumped(s.turn, false)
+}
+
+// ── The voices ──
+
+/// An arm no lowering stands for yet: refused by name, and no wait.
+fn unwaited(mut cx: LowerCx, at: ExprId, what: string) -> Wait? {
+    let _ = unlowered(cx, at, what)
+    null
+}
+
+/// A shape that types and has no lowering yet, named by `what`.
+fn unlowered(mut cx: LowerCx, at: ExprId, what: string) -> Reg {
+    cx
+        .out
+        .voices
+        .speak(
+            refusal(
+                "flow.select",
+                cx.view.loc_of(at),
+                "`select` is typed and not yet lowered",
+                "${what} stands here",
+                "wait on one task with `t.await`",
+            ),
+        )
+    cx.result(at)
 }

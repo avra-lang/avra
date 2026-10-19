@@ -22,15 +22,16 @@ use @std.avrac.compiler.{
     Compared,
     Subject,
     Graphed,
-    hex_word,
     Phase,
 }
-use @std.avrac.core.{joined, counted, flatten}
-use @std.relation.engine.{count_reads, read_calls, abandoned_frames}
+use @std.avrac.compiler.store.{Traffic}
+use @std.avrac.core.{joined, counted, flatten, hex_word}
+use @std.relation.engine.{count_reads, read_calls, abandoned_frames, time_frames}
 use @std.json.{Json, Field, field, to_text}
 use @std.path.{relative_path}
 use @std.relation.engine.{Key}
 use @std.text.{pad_left, pad_right}
+use @std.time.{now_ns}
 
 type ExplainCmd = {}
 
@@ -117,13 +118,17 @@ fn answers_named(g: Workspace, subject: Subject) -> Result<List<Key>, List<strin
 fn package_answer(a: Asked, ws: Workspace) -> Lines {
     if a.stats {
         count_reads()
+        // LICENSED input.clock: `--time` output only, never an input of what is built
+        if a.time { time_frames(now_ns) }
         return stats_answer(a, ws.stats_graph())
     }
     let walk = walk_of(ws)?
     let changed = ws.walk_graph().ws.reached_by(walk.moved)
     if a.json { return [to_text(holds_json(walk, changed))] }
     let read = [h for h in walk.holds if !h.held]
-    [files_line(walk), attempts_line(walk), moved_line(walk)]
+    [files_line(walk), attempts_line(walk)]
+        .concat(["  ${turn}" for turn in walk.turns])
+        .concat([moved_line(walk)])
         .concat([line for h in walk.holds for line in text_moved(walk, h)])
         .concat([line for h in walk.holds for line in part_moved(walk, h)])
         .concat([line for h in read for line in hold_lines(walk, h)])
@@ -217,23 +222,64 @@ fn at_root(walk: CacheWalk, file: string) -> string { relative_path(walk.root, f
 /// deriving them spent.
 fn stats_answer(a: Asked, g: Graphed) -> Lines {
     let tally = g.ws.family_counts()
-    if a.json { return [to_text(stats_json(a, g.phases, tally))] }
-    let rows = [["family", "cells", "edges", "p50", "p99", "longest"]]
-        .concat(
-            [[f.family, "${f.cells}", "${f.edges}", "${f.p50}", "${f.p99}", "${f.longest}"] for f in tally.families],
-        )
-        .concat([["total", "${tally.cells}", "${tally.edges}"]])
-    let widths = [widest(rows, column) for column in 0..6]
-    let timed = if a.time { ["${pad_right("time", widths[0])}  ${joined([ph.shown() for ph in g.phases], ", ")}"] } else { [] }
+    if a.json { return [to_text(stats_json(a, g.phases, tally, g.ws))] }
+    let rows = [stats_head(a)]
+        .concat([stats_row(a, f) for f in tally.families])
+        .concat([stats_total(tally)])
+    let widths = [widest(rows, column) for column in 0..rows[0].length]
+    let timed = if a.time { ["${pad_right("time", widths[0])}  ${joined([ph.counted() for ph in g.phases], ", ")}"] } else { [] }
     let reads = if a.time {
         [
             table_row(["read calls", "${read_calls()}"], widths),
             table_row(["abandoned frames", "${abandoned_frames()}"], widths),
+            store_line(g.ws.store_traffic(), widths),
         ]
     } else {
         []
     }
     [table_row(r, widths) for r in rows].concat(reads).concat(timed)
+}
+
+/// The table's header: the answers' counts, then their reads, and under `--time` the time each
+/// family's own frames took.
+fn stats_head(a: Asked) -> List<string> {
+    ["family", "cells", "served", "computed", "edges", "p50", "p99", "longest"]
+        .concat(if a.time { ["ms"] } else { [] })
+}
+
+fn stats_row(a: Asked, f: FamilyCount) -> List<string> {
+    [
+        f.family,
+        "${f.cells}",
+        "${f.served}",
+        "${f.computed}",
+        "${f.edges}",
+        "${f.p50}",
+        "${f.p99}",
+        "${f.longest}",
+    ]
+        .concat(if a.time { ["${f.ns / 1000000}"] } else { [] })
+}
+
+fn stats_total(tally: Counted) -> List<string> {
+    [
+        "total",
+        "${tally.cells}",
+        "${sum([f.served for f in tally.families])}",
+        "${sum([f.computed for f in tally.families])}",
+        "${tally.edges}",
+    ]
+}
+
+fn sum(xs: List<int>) -> int {
+    mut total = 0
+    for x in xs { total = total + x }
+    total
+}
+
+/// What the derivation asked of the store: rows found and not found, values read, bytes read.
+fn store_line(t: Traffic, widths: List<int>) -> string {
+    "${pad_right("store", widths[0])}  hits ${t.hits}, misses ${t.misses}, values ${t.values}, bytes ${t.bytes}"
 }
 
 /// The widest cell of one column, among the rows that reach it.
@@ -470,12 +516,21 @@ fn changed_json(walk: CacheWalk, c: Changed) -> Json {
         )
 }
 
-fn stats_json(a: Asked, phases: List<Phase>, tally: Counted) -> Json {
-    let timed = if a.time { [field("time_ns", Json.Obj([field(ph.name, Json.Int(ph.ns)) for ph in phases]))] } else { [] }
+fn stats_json(a: Asked, phases: List<Phase>, tally: Counted, ws: Workspace) -> Json {
+    let timed = if a.time {
+        [
+            field("time_ns", Json.Obj([field(ph.name, Json.Int(ph.ns)) for ph in phases])),
+            field("mints", Json.Obj([field(ph.name, Json.Int(ph.mints)) for ph in phases])),
+            field("settles", Json.Obj([field(ph.name, Json.Int(ph.settles)) for ph in phases])),
+            store_json(ws.store_traffic()),
+        ]
+    } else {
+        []
+    }
     Json
         .Obj(
             [
-                field("families", Json.Arr([family_json(f) for f in tally.families])),
+                field("families", Json.Arr([family_json(a, f) for f in tally.families])),
                 field("cells", Json.Int(tally.cells)),
                 field("edges", Json.Int(tally.edges)),
             ]
@@ -483,17 +538,35 @@ fn stats_json(a: Asked, phases: List<Phase>, tally: Counted) -> Json {
         )
 }
 
-fn family_json(f: FamilyCount) -> Json {
+fn store_json(t: Traffic) -> Field {
+    field(
+        "store",
+        Json
+            .Obj(
+                [
+                    field("hits", Json.Int(t.hits)),
+                    field("misses", Json.Int(t.misses)),
+                    field("values", Json.Int(t.values)),
+                    field("bytes", Json.Int(t.bytes)),
+                ],
+            ),
+    )
+}
+
+fn family_json(a: Asked, f: FamilyCount) -> Json {
     Json
         .Obj(
             [
                 field("family", Json.Str(f.family)),
                 field("cells", Json.Int(f.cells)),
+                field("served", Json.Int(f.served)),
+                field("computed", Json.Int(f.computed)),
                 field("edges", Json.Int(f.edges)),
                 field("p50", Json.Int(f.p50)),
                 field("p99", Json.Int(f.p99)),
                 field("longest", Json.Int(f.longest)),
-            ],
+            ]
+                .concat(if a.time { [field("ns", Json.Int(f.ns))] } else { [] }),
         )
 }
 
@@ -505,7 +578,7 @@ export command explain {
     flag stats { description: "count the package's answers: cells, reads and how long one answer's reads run, per family" }
     flag why { description: "what moved since the kept state: whether a check holds each file and why not, the way down from an answer to each moved input, and the answers each moved input reaches" }
     flag json { description: "JSON instead of text, every list in the text's order" }
-    flag time { description: "with `--stats`, the time each phase of the derivation took — the one row that differs run to run" }
+    flag time { description: "with `--stats`, the time each phase of the derivation took and what it asked of the store — the rows that differ run to run" }
     run: ExplainCmd {}
 }
 
