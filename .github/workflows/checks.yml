@@ -60,6 +60,10 @@ permissions:
   contents: read
   packages: read
 
+# The PR body, for the speed gates' one waiver line (`SPEED_ACCEPT: <reason>`).
+env:
+  PR_BODY: ${{ github.event.pull_request.body }}
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -514,15 +518,14 @@ jobs:
           restore-keys: speed-main-prepare-
       - if: always()
         name: speed note
-        continue-on-error: true
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && steps.plan.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
+      - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && steps.plan.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
+      - if: success() && steps.plan.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -576,6 +579,16 @@ jobs:
         run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       # WHAT THE RUNNER HAD: the cgroup's ceiling is the number a 137 is
       # measured against, and it is not the VM's published spec.
+      # MAIN'S LAST COLD-COMPILE COUNTS, restored for the census gate (tools/census_ratchet.py):
+      # a PR is held to the less of the committed ceiling and main's last run, so the ceiling
+      # tightens by itself. Only group 1 runs the gate.
+      - if: matrix.group == '1'
+        uses: actions/cache/restore@v4
+        continue-on-error: true
+        with:
+          path: census-main.txt
+          key: census-main-${{ github.sha }}
+          restore-keys: census-main-
       - name: room
         run: |
           echo "room: cpu=$(nproc)"
@@ -603,13 +616,16 @@ jobs:
           WARM_EDIT_SKIP: ${{ inputs.warm_skip }}
         run: |
           a=0
+          # THE ONE WAY TO LET A PR COST MORE: `SPEED_ACCEPT: <reason>` in its body (the squash keeps it).
+          SPEED_ACCEPT=$(printf '%s\n' "$PR_BODY" | sed -n 's/^SPEED_ACCEPT: *//p' | head -n 1)
+          export SPEED_ACCEPT
           # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
           # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
           # skipped with "time: not found". The peak is read from the finished
           # tree's rusage, which needs nothing from the shell.
           peak() {
             peak_label="$1"; shift
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+            python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS" % (sys.argv[1], u.ru_maxrss)); open("speed.log","a").write("speed cpu-%s %d\n" % (re.sub("[^a-z0-9-]+","-",sys.argv[1].lower()).strip("-"), u.ru_utime+u.ru_stime)); sys.exit(rc)' "$peak_label" "$@"
           }
           ta=$(date +%s)
           peak keepers-a${{ matrix.group }} make -s -o avra keepers-a${{ matrix.group }} || a=1
@@ -624,17 +640,25 @@ jobs:
           path: speed-base.metrics
           key: speed-main-keepers-${{ github.sha }}
           restore-keys: speed-main-keepers-
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('build/census-now.txt') != ''
+        name: census counts kept for main
+        run: cp build/census-now.txt census-main.txt
+      - if: matrix.group == '1' && success() && needs.prepare.outputs.main == '1' && hashFiles('census-main.txt') != ''
+        uses: actions/cache/save@v4
+        continue-on-error: true
+        with:
+          path: census-main.txt
+          key: census-main-${{ github.sha }}
       - if: always()
         name: speed note
-        continue-on-error: true
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -671,7 +695,7 @@ jobs:
           # tree's rusage, which needs nothing from the shell.
           peak() {
             peak_label="$1"; shift
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$peak_label" "$@"
+            python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS" % (sys.argv[1], u.ru_maxrss)); open("speed.log","a").write("speed cpu-%s %d\n" % (re.sub("[^a-z0-9-]+","-",sys.argv[1].lower()).strip("-"), u.ru_utime+u.ru_stime)); sys.exit(rc)' "$peak_label" "$@"
           }
           peak keepers-b make -s -o avra keepers-b || exit 1
   # THE COMMITTED SEED STILL BUILDS THIS TREE — a compiler build, the
@@ -702,7 +726,7 @@ jobs:
       - name: seed check
         timeout-minutes: 20
         run: |
-          python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
+          python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[1:]); print("seed-check: peak %d KB max RSS" % resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss); sys.exit(rc)' make -s -o avra seed-check
   # THE BUILD CACHE, ATTACKED. Its own job: it clears the store it builds
   # through, and it runs beside the gate. It runs on the train, on main's own
   # push, and on a PR that reaches the store or the attacks — the three places
@@ -750,15 +774,14 @@ jobs:
           restore-keys: speed-main-cache-attacks-
       - if: always()
         name: speed note
-        continue-on-error: true
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
@@ -873,7 +896,7 @@ jobs:
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            python3 -c 'import resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); print("%s: peak %d KB max RSS" % (sys.argv[1], resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
+            python3 -c 'import re,resource,subprocess,sys; rc=subprocess.call(sys.argv[2:]); u=resource.getrusage(resource.RUSAGE_CHILDREN); print("%s: peak %d KB max RSS" % (sys.argv[1], u.ru_maxrss)); open("speed.log","a").write("speed cpu-%s %d\n" % (re.sub("[^a-z0-9-]+","-",sys.argv[1].lower()).strip("-"), u.ru_utime+u.ru_stime)); sys.exit(rc)' "$p" env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
             # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
@@ -908,15 +931,14 @@ jobs:
           restore-keys: speed-main-suites-${{ strategy.job-index }}-
       - if: always()
         name: speed note
-        continue-on-error: true
         run: |
           sh tools/speed_note.sh collect speed.log > speed-now.metrics
           sh tools/speed_note.sh compare speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-now.metrics') != ''
         name: speed baseline copy
         continue-on-error: true
         run: cp speed-now.metrics speed-base.metrics
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
+      - if: success() && needs.prepare.outputs.main == '1' && hashFiles('speed-base.metrics') != ''
         uses: actions/cache/save@v4
         continue-on-error: true
         with:
