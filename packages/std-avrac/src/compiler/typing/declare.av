@@ -225,13 +225,15 @@ impl TypeCx {
         self.view.types.begin_declare(ty)
         defer { self.view.types.end_declare(ty) }
         let lacking = self.view.decls.lacking(record)
-        let types = [self.field_slot(s, f) for f in fields]
+        let plain = [self.field_type(s, f) for f in fields]
+        let states = [f.state || propped(f.marks) && self.compares_by_value(plain[j]) for j, f in fields]
+        let types = [if states[j] { self.view.types.intern(Type.Cell(plain[j])) } else { plain[j] } for j in 0..fields.length]
         let own = StructSig {
             names: [f.name.of for f in fields],
             types: types,
             defaults: [self.view.decls.default_named(record, f.name.of) for f in fields],
             lacking: lacking,
-            states: [f.state || propped(f.marks) && self.compares_by_value(types[j]) for j, f in fields],
+            states: states,
         }
         let written = if spreads.is_empty() { own } else { self.spread_into(s, owner, own, spreads) }
         let sig = self.with_carried(s, written)
