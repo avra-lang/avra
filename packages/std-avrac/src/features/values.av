@@ -391,7 +391,7 @@ impl LowerCx {
     /// write.
     mut fn leaf_write(box: Reg, at: int, v: Reg) {
         let ty = self.out.type_of_reg(v)
-        if !self.valued(ty) { return self.slot_write(box, self.const_int(at), v) }
+        if !self.valued(ty) { return self.slot_write_proved(box, self.const_int(at), v) }
         let tag = self.extracted(v, 0, self.mint_shape(Type.Int))
         self.slot_set(box, self.const_int(at), tag)
         self
@@ -402,6 +402,15 @@ impl LowerCx {
                 tag,
                 self.const_int(self.view.types.counted_mask(ty)),
             )
+    }
+
+    /// `v` written into the slot at `at` of a box whose shape proves the
+    /// slot exists — a cell's one slot, a record's declared field. A
+    /// scalar nullable keeps its presence beside the word.
+    mut fn slot_write_proved(box: Reg, at: Reg, v: Reg) {
+        let ty = self.out.type_of_reg(v)
+        if self.scalar_nullable(ty) { return self.slot_write(box, at, v) }
+        self.slot_put(box, at, v)
     }
 
     /// `v` written into the slot at `at` — a nullable scalar with its

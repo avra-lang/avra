@@ -668,6 +668,12 @@ fn declare_runtime(lc: ptr, m: ptr) {
     }
 }
 
+/// Whether a symbol the program declares bodiless is a HOST IMPORT. A runtime
+/// row is the runtime's own symbol — declared with every row, linked from the
+/// runtime — whoever else declares it, so only a name no row names is the
+/// host's.
+fn host_import(name: string) -> bool { rt_index().get(name) == null }
+
 /// The program's own host fns, declared like the runtime's rows. ON A NON-HOST
 /// TARGET they are the HOST IMPORTS: a wasm module has no package C to define
 /// one, so each crosses as an import from `avra:rt` under its own symbol — the
@@ -681,7 +687,7 @@ fn declare_externs(
     wasm: bool,
 ) {
     for s in rows {
-        if carries(refs, refs.hosted, s.name) {
+        if host_import(s.name) && carries(refs, refs.hosted, s.name) {
             declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
             // a symbol one of the program's host fns defines is no import
             if wasm && own.get(s.name) == null { avra_llvm_set_import(avra_llvm_get_named_function(m, s.name), "avra:rt", s.name) }

@@ -387,7 +387,7 @@ wasm-archive:
 # `$(shell)` runs on every make, `try` included.
 SUITES = $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: llvm-libs libs-self-test db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
+.PHONY: census-gate census-accept trap-marks llvm-libs libs-self-test db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -917,6 +917,21 @@ wall-accept:
 # loudly. In CI the store rides down from prepare and SPEED_HOST is
 # `ci-warm`, so a runner's CPU never decides whether the gate is judged.
 # On macOS the measurement goes to the lane's Sprite, as speed-ratchet does.
+# THE COLD-COMPILE WORK GATE: a cold `check packages/cli` under the census runtime, its exact
+# retain/release/list counts held per declaration to tools/census.budget. `SPEED_ACCEPT` (the
+# PR body's reason) lets a PR cost more, loudly; see tools/census_ratchet.py. The cold CHECK
+# is the gated workload, not the compiler's own build: the build would need a census-built
+# builder (one more compiler generation, ~+150 s), and the check runs the same front end,
+# lowering and store.
+census-gate:
+	@python3 tools/census_ratchet.py --self-test >/dev/null
+	@sh tools/speed_note.sh --self-test >/dev/null
+	@sh tools/census.sh check --counts packages/cli > build/census-gate.out 2>&1 || { tail -20 build/census-gate.out; exit 1; }
+	@python3 tools/census_ratchet.py --raw build/census-gate.out --main $${CENSUS_MAIN:-census-main.txt}
+census-accept:
+	@sh tools/census.sh check --counts packages/cli > build/census-gate.out 2>&1 || { tail -20 build/census-gate.out; exit 1; }
+	@python3 tools/census_ratchet.py --accept --raw build/census-gate.out
+
 warm-edit:
 	@python3 tools/speed_ratchet.py --self-test >/dev/null
 	@python3 tools/work_ratchet.py --self-test >/dev/null
@@ -1083,10 +1098,10 @@ no-threads:
 KEEPERS_ALONE = runtime-tests runtime-mutations
 # KEEPERS_A is two halves, one CI runner each, balanced by measured seconds
 # (speed-ratchet is the longest keeper, alone it is half the set).
-KEEPERS_A1 = speed-ratchet fmt-lossless hash-door stems
+KEEPERS_A1 = speed-ratchet census-gate fmt-lossless hash-door stems
 KEEPERS_A2 = read-cost warm-edit codecs traps compile-slots witness flow-trace
 KEEPERS_A = $(KEEPERS_A1) $(KEEPERS_A2)
-KEEPERS_B = fingerprints vocab families-left layers libs-self-test hooks-released inputs whole-reads cited http-cites externs suites rt-header rt-ns witnesses dogfooding-rules attack voices defects \
+KEEPERS_B = fingerprints vocab families-left layers libs-self-test hooks-released inputs whole-reads cited http-cites externs trap-marks suites rt-header rt-ns witnesses dogfooding-rules attack voices defects \
             ui-host host-events ui-host-test ui-board ui-browser ui-browser-skip wasm-host-check tool-witnesses footprint tick-object no-threads \
             ci-invariants ci-verdict pr-watcher pipeline-doc
 KEEPERS = clock-holds $(KEEPERS_ALONE) $(KEEPERS_A) $(KEEPERS_B)
@@ -1270,6 +1285,11 @@ voices-accept:
 # that wrong answer, so a program test cannot catch it.
 externs:
 	@python3 tools/externs.py
+
+# THE TRAPS COLUMN'S KEEPER: a row marked `traps: false` reaches no trap the
+# language raises (tools/traps.py).
+trap-marks:
+	@python3 tools/traps.py
 
 # THE WIDTH WITNESS. C bodies that answer NARROWER than 64 bits, read
 # twice from ONE object — by Avra through the extern seam, and by a C
