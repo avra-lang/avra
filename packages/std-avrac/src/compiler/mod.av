@@ -31,7 +31,11 @@ use core.{flatten, PayloadRow, node_payload_rows}
 use @std.meta.{Field}
 use @std.grammar.{Diagnostic, Ready, ready, node_builder_name}
 use grammar.{avra_known_terminals}
+use compiler.format.{rule_scale, worded_nodes}
 use features.{
+    Wording,
+    node_wordings,
+    wording_defects,
     LanguageFeature,
     BuilderRow,
     compose_grammar,
@@ -98,6 +102,8 @@ export type Language = {
     // build through one lookup, where it walked every feature's rows
     builders: Map<string, BuilderRow>,
     syntax: Ready?,
+    // what the printer reads of a node's rule, by `Owner.Variant`
+    wordings: Map<string, Wording>,
     keywords: List<string>,
     rows: LanguageRows,
     dispatch: Dispatch,
@@ -114,19 +120,27 @@ export fn assemble(features: List<LanguageFeature>) -> Language {
     // judged against — a node build names no feature's builder.
     let rows = node_payload_rows()
     let bound = bind_nodes(g, rows)
+    let wordings = node_wordings(g, rows, rule_scale)
     // PREPARED ONCE: validated and indexed here, so a parse pays for
     // neither — and the defects the assembly gates on ARE that
     // validation, asked a single time.
     let rd = ready(bound.g, avra_known_terminals())
     let codes = code_registry(features)
     let defects = flatten(
-        [rd.defects, bound.defects, builder_defects(features, g), code_defects(codes)],
+        [
+            rd.defects,
+            bound.defects,
+            builder_defects(features, g),
+            code_defects(codes),
+            wording_defects(wordings, worded_nodes),
+        ],
     )
     if !defects.is_empty() { return unassembled(features, defects) }
     Language {
         features: features,
         builders: with_nodes(builder_index(features), rows),
         syntax: rd,
+        wordings: wordings,
         keywords: g.keywords(),
         rows: rows_of(features, codes),
         dispatch: new_dispatch(),
@@ -168,6 +182,7 @@ fn unassembled(features: List<LanguageFeature>, defects: List<Diagnostic>) -> La
         features: features,
         builders: {},
         syntax: null,
+        wordings: {},
         keywords: [],
         rows: rows_of(features, []),
         dispatch: new_dispatch(),

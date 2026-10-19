@@ -1,0 +1,69 @@
+//! `Surfaced` — A NODE'S PAYLOADS, READ BY POSITION. The printer walks a
+//! rule's template and needs each hole's value without matching the node:
+//! this answers the node's name and one `Fill` per payload the node
+//! carries, in declaration order — the order a rule's labels fill them in.
+//! A payload no template can place (a list, a record) answers `Other`.
+//!
+//! A `collect enum E: Surfaced` derives it for every member.
+//!
+//! It stands ALONE in this file on purpose (CLAUDE.md).
+use @std.meta.{Type as MetaType, Field, Directive, Code, literal}
+
+/// What a payload holds, as far as a template's hole can say.
+export enum Fill {
+    /// an expression the hole prints at its own tier
+    Value(id: ExprId)
+    /// a name
+    Name(text: string)
+    /// a written type
+    Ty(ty: TypeRef)
+    /// an optional payload that is absent
+    Gone
+    /// a payload no hole reads
+    Other
+}
+
+/// A node's name and its carried payloads' fills.
+export type Surface = { node: string, fills: List<Fill> }
+
+export trait Surfaced {
+    fn surface() -> Surface
+
+    /// `@local` fields stay on the node and are read; `@facet` fields left.
+    static fn marks(t: MetaType) -> List<string> { [local_word, facet_word] }
+
+    static fn derive(t: MetaType) -> List<Directive> {
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl Surfaced for ${t} {
+                        fn surface() -> Surface {
+                            Surface { node: ${literal(t.name)}, fills: ${fills_of(t)} }
+                        }
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// The fills as one list literal, a carried payload each.
+fn fills_of(t: MetaType) -> Code {
+    let parts = [fill_of(f) for f in t.fields if carried(f)]
+    if parts.is_empty() { return quote { [] } }
+    quote { [${..parts}] }
+}
+
+/// One payload's fill, by its type.
+fn fill_of(f: Field) -> Code {
+    match f.ty {
+        "ExprId" -> quote { Fill.Value(self.${f.name}) },
+        "ExprId?" -> quote { if self.${f.name} == null { Fill.Gone } else { Fill.Value(self.${f.name}!) } },
+        "Plain" or "Scoped" -> quote { Fill.Name(self.${f.name}.of) },
+        "TypeRef" -> quote { Fill.Ty(self.${f.name}) },
+        _ -> quote { Fill.Other },
+    }
+}
