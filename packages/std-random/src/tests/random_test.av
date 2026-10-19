@@ -1,0 +1,38 @@
+// The OS's entropy through the language: a draw is as long as it was asked,
+// none is an empty box and never absent, two draws differ, and a token is
+// URL-safe text of the length its bytes encode to.
+use @std.random.{random_bytes, token}
+use @std.text.{codepoints}
+
+/// Whether `s` holds only letters, digits, `-` and `_`.
+fn url_safe(s: string) -> bool {
+    codepoints(s)
+        .all(
+            (c) -> c >= 48 && c <= 57 ||
+                c >= 65 && c <= 90 ||
+                c >= 97 && c <= 122 ||
+                c == 45 ||
+                c == 95,
+        )
+}
+
+spec "std/random — bytes" {
+    given "a length" {
+        then "none is an empty box, not absent" { random_bytes(0)?.length == 0 }
+        then "the draw is as long as it was asked" {
+            random_bytes(1)?.length == 1 &&
+                random_bytes(16)?.length == 16 &&
+                random_bytes(70000)?.length == 70000
+        }
+        then "two draws of sixteen bytes differ" { random_bytes(16) != random_bytes(16) }
+    }
+}
+
+spec "std/random — tokens" {
+    given "a number of bytes" {
+        then "none is the empty token" { token(0) == "" }
+        then "sixteen bytes are twenty-two characters" { token(16)?.length == 22 }
+        then "a token is URL-safe text" { url_safe(token(32)!) }
+        then "two tokens differ" { token(16) != token(16) }
+    }
+}
