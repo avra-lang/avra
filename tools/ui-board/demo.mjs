@@ -213,7 +213,9 @@ spent();
 // A source lands, then the user presses before the frame: the press meets the
 // screen the user saw, so the pending paint is shown first.
 walked = walks();
-const [, dark] = [...(named("Light mode")[0] ?? named("Dark mode")[0]).listeners][0];
+const mode = named("Light mode")[0] ?? named("Dark mode")[0];
+const [, mode_ear] = ears(mode.__avra_id)[0];
+const dark = () => dispatch(mount, mode, mode_ear.event, { bubbles: false });
 fire(sync);
 await settle();
 asked[asked.length - 1].resolve({ status: 200, arrayBuffer: async () => new TextEncoder().encode("1234").buffer });
