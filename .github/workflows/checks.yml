@@ -79,6 +79,7 @@ jobs:
       build: ${{ steps.plan.outputs.build }}
       runtime: ${{ steps.plan.outputs.runtime }}
       runtime_keep: ${{ steps.plan.outputs.runtime_keep }}
+      layout_oracle: ${{ steps.plan.outputs.layout_oracle }}
       cache: ${{ steps.plan.outputs.cache }}
       codecs: ${{ steps.plan.outputs.codecs }}
       key: ${{ steps.plan.outputs.key }}
@@ -133,6 +134,10 @@ jobs:
           # the Makefile rules and the memcap wrapper they run under). Main's push
           # and a hand-run always carry them (tools/ci_path_gate.py).
           runtime_keep=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py runtime-keep --event "$event")
+          # THE LAYOUT SOLVER'S BROWSER ORACLE owes a PR only a change to what it
+          # reads: std-ui, std-text and its own tools. Main's push and a hand-run
+          # always carry it; the wide sweep is the nightly orders run's.
+          layout_oracle=$(git diff --name-only "$runtime_base" HEAD | python3 tools/ci_path_gate.py layout-oracle --event "$event")
           # A PR AND A TRAIN OWE THE SAME CHECK SET: the affected closure. The
           # train adds the suites over it, never a package the PR skipped.
           if [ "$event" = merge_group ] || [ "$event" = pull_request ]; then
@@ -208,7 +213,7 @@ jobs:
             dup=$(GH_TOKEN="$GH_TOKEN" python3 tools/ci_dup_run.py --repo "${{ github.repository }}" \
               --sha "${{ github.event.pull_request.head.sha }}" --run "${{ github.run_id }}") || dup=work
             case "$dup" in
-                mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0 ;;
+                mirror\ *) mirror=${dup#mirror }; full=0; build=0; changed=; pkgs=; codecs=0; cache=0; runtime=0; runtime_keep=0; layout_oracle=0 ;;
             esac
           fi
           # MAIN'S OWN RUN: its push, or the dispatch the watcher sends when a merge's
@@ -225,6 +230,7 @@ jobs:
             echo "build=${build}"
             echo "runtime=${runtime}"
             echo "runtime_keep=${runtime_keep}"
+            echo "layout_oracle=${layout_oracle}"
             echo "cache=${cache}"
             echo "codecs=${codecs}"
             echo "key=avrac-${key}"
@@ -997,11 +1003,33 @@ jobs:
             echo "::error::runtime-keep refused (exit $rc) — $cause"
             exit "$rc"
           fi
+  # THE LAYOUT SOLVER AGAINST THE WEB TARGET, in Firefox: std-ui's `place` and
+  # the page the real html realizer writes, one fixed seed of 300 random trees,
+  # every box in agreement (tools/layout-oracle). Owed only to a change it reads
+  # (tools/ci_path_gate.py); the nine-seed sweep is the nightly orders run's.
+  layout-oracle:
+    needs: [prepare]
+    if: needs.prepare.outputs.layout_oracle == '1' && needs.prepare.outputs.build == '1' && needs.prepare.outputs.full == '1'
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/avra-lang/avra-ci:llvm22
+      credentials: { username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { name: avra-compiler, path: build }
+      - uses: actions/download-artifact@v4
+        with: { name: avra-build }
+      - name: built
+        run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
+      - name: layout oracle
+        run: sh tools/layout_oracle.sh
   # THE ONE REQUIRED CHECK. Every other job is a shard or a step; this passes
   # iff each of them succeeded or was skipped (`always()` so it still reports
   # when a needed job failed, rather than being skipped itself).
   test:
-    needs: [prepare, keepers-a, keepers-b, keepers-static, runtime-keep, seed-check, flow-gate, cache-attacks, codecs, gate, suites]
+    needs: [prepare, keepers-a, keepers-b, keepers-static, runtime-keep, layout-oracle, seed-check, flow-gate, cache-attacks, codecs, gate, suites]
     if: always()
     runs-on: ubuntu-latest
     permissions:
