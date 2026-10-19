@@ -755,7 +755,8 @@ fn witnesses() -> List<CodeWitness> {
         },
         CodeWitness {
             code: "manifest.no_target",
-            witness: Witness.Package({"/w/avra.toml": app_manifest}),
+            witness: Witness
+                .Beyond("it is what `avra run` says of a package with no entry, which a check never asks"),
         },
         CodeWitness {
             code: "manifest.name_mismatch",
@@ -801,6 +802,60 @@ fn witnesses() -> List<CodeWitness> {
         CodeWitness {
             code: "manifest.bad_tool_from",
             witness: manifest(app_manifest + "\n[process.tools]\ngit = { from = \"nowhere\" }\n"),
+        },
+        CodeWitness {
+            code: "resolve.kept_apart",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use util.{g}\ng()\n",
+                        "/w/src/util/a.av": "fn h() -> int { 1 }\n",
+                        "/w/src/util/b.av": "fn h() -> int { 2 }\n",
+                        "/w/src/util/c.av": "export fn g() -> int { h() }\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.private_apart",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "1\n",
+                        "/w/src/util/a.av": "fn h() -> int { 1 }\n",
+                        "/w/src/util/b.av": "fn h() -> int { 2 }\n",
+                        "/w/src/util/tests/u_test.av": "use util.{h}\nspec \"u\" {\n    given \"g\" {\n        then \"t\" { h() == 1 }\n    }\n}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_twice",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "1\n",
+                        "/w/src/util.av": "export fn f() -> int { 1 }\n",
+                        "/w/src/facade.av": "export fn f() -> int { 2 }\nexport use util.{f}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.reexport_unreached",
+            witness: Witness
+                .Package(
+                    {
+                        "/w/avra.toml": app_manifest,
+                        "/w/src/main.av": "use a.{x}\nx\n",
+                        "/w/src/a.av": "export use b.{x}\n",
+                        "/w/src/b.av": "export use a.{x}\n",
+                    },
+                ),
+        },
+        CodeWitness {
+            code: "resolve.block_word",
+            witness: Witness.Source("component box {\n    a: int\n}\nfn box() -> int { 1 }\n1"),
         },
         CodeWitness {
             code: "collect.kind",
