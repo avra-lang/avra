@@ -21,8 +21,98 @@ objects = ["../../build/llvm_wrapper.o", "../../build/ffi.o"]
 # ffi.o resolves the running image's own symbols by name, so a program
 # linking this package keeps every symbol in its dynamic table.
 dynamic_symbols = true
-search  = ["${LLVM_PREFIX}/lib"]
-libs    = ["LLVM"]
+# LLVM IS LINKED STATICALLY (docs/2026_10_18_STATIC_LLVM.md): a shared libLLVM
+# costs every command ~15 ms of relocation before it runs a line, and the
+# compiler stays one binary. The libraries are the components the wrapper
+# needs, in `llvm-config --link-static`'s order — AArch64 and WebAssembly
+# beside X86, so one list serves both hosts; `tools/llvm_link.py --check`
+# holds it to llvm-config and the hand-written clang lines read it from
+# here. The C++ runtime is the platform's, named by AVRA_CXX_RUNTIME (`stdc++`
+# on Linux, `c++` on macOS; the image, the Sprites, the shim and the Makefile
+# set it); AVRA_SYS_SEARCH adds the directory the system's zstd lives in where
+# it is off the default path.
+search  = ["${LLVM_PREFIX}/lib", "${AVRA_SYS_SEARCH}"]
+libs    = [
+    "LLVMAArch64Disassembler",
+    "LLVMAArch64AsmParser",
+    "LLVMAArch64CodeGen",
+    "LLVMAArch64Desc",
+    "LLVMAArch64Utils",
+    "LLVMAArch64Info",
+    "LLVMWebAssemblyDisassembler",
+    "LLVMWebAssemblyAsmParser",
+    "LLVMWebAssemblyCodeGen",
+    "LLVMWebAssemblyUtils",
+    "LLVMWebAssemblyDesc",
+    "LLVMWebAssemblyInfo",
+    "LLVMX86TargetMCA",
+    "LLVMMCA",
+    "LLVMX86Disassembler",
+    "LLVMX86AsmParser",
+    "LLVMX86CodeGen",
+    "LLVMX86Desc",
+    "LLVMX86Info",
+    "LLVMMCDisassembler",
+    "LLVMAsmPrinter",
+    "LLVMPasses",
+    "LLVMIRPrinter",
+    "LLVMHipStdPar",
+    "LLVMCoroutines",
+    "LLVMipo",
+    "LLVMInstrumentation",
+    "LLVMVectorize",
+    "LLVMSandboxIR",
+    "LLVMFrontendOpenMP",
+    "LLVMFrontendDirective",
+    "LLVMFrontendAtomic",
+    "LLVMFrontendOffloading",
+    "LLVMObjectYAML",
+    "LLVMGlobalISel",
+    "LLVMSelectionDAG",
+    "LLVMCodeGen",
+    "LLVMTarget",
+    "LLVMScalarOpts",
+    "LLVMInstCombine",
+    "LLVMObjCARCOpts",
+    "LLVMCodeGenTypes",
+    "LLVMCGData",
+    "LLVMCFGuard",
+    "LLVMAggressiveInstCombine",
+    "LLVMLinker",
+    "LLVMTransformUtils",
+    "LLVMBitWriter",
+    "LLVMAnalysis",
+    "LLVMProfileData",
+    "LLVMSymbolize",
+    "LLVMDebugInfoBTF",
+    "LLVMDebugInfoPDB",
+    "LLVMDebugInfoMSF",
+    "LLVMDebugInfoCodeView",
+    "LLVMDebugInfoGSYM",
+    "LLVMDebugInfoDWARF",
+    "LLVMObject",
+    "LLVMTextAPI",
+    "LLVMMCParser",
+    "LLVMIRReader",
+    "LLVMAsmParser",
+    "LLVMMC",
+    "LLVMDebugInfoDWARFLowLevel",
+    "LLVMBitReader",
+    "LLVMFrontendHLSL",
+    "LLVMCore",
+    "LLVMRemarks",
+    "LLVMBitstreamReader",
+    "LLVMBinaryFormat",
+    "LLVMTargetParser",
+    "LLVMSupport",
+    "LLVMDemangle",
+    "z",
+    "zstd",
+    "${AVRA_CXX_RUNTIME}",
+    "pthread",
+    "dl",
+    "m",
+]
 
 [dependencies]
 "@std/hash" = { path = "../std-hash" }

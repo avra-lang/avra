@@ -1,0 +1,59 @@
+//! The template gaps a derived codec met: a trailing run of statements, a
+//! literal pattern in an arm, a spread into arguments, and an expression
+//! standing as a statement.
+use @std.meta.{Type, Directive, Code, Stmts, Arms}
+
+/// A record's derive: a trailing `List<Stmts>` hole whose parts are
+/// expressions and statements alike, an answering run in a tail, literal
+/// patterns spliced into arms, and a spread into a call's arguments.
+export trait Gaps {
+    static fn derive(t: Type) -> List<Directive> {
+        let steps: List<Stmts> = [
+            quote { out.set(out.get() + 1) },
+            quote { let k = 4 },
+            quote { out.set(out.get() * k) },
+        ]
+        let answering: List<Stmts> = [quote { let a = 20 }, quote { a + 1 }]
+        let arms: List<Arms> = [arm_for(1, 100), arm_for(2, 200), arm_for(3, 300)]
+        let rs: List<Code> = [quote { 1 }, quote { 2 }, quote { 3 }]
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote {
+                    impl ${t} {
+                        fn run(out: Cell<int>) { ${steps} }
+                        fn pick() -> int { ${answering} }
+                        fn tagged(n: int) -> int { match n { ${arms} _ -> 0 } }
+                        fn summed() -> int { add3(..${rs}) }
+                        fn lone() -> int { ${rs[0]} }
+                    }
+                },
+            },
+        ]
+    }
+}
+
+/// One arm over a number: the tag is a literal pattern.
+fn arm_for(tag: int, answer: int) -> Arms {
+    quote { ${tag} -> ${answer} }
+}
+
+/// Where the call's spread lands.
+export fn add3(a: int, b: int, c: int) -> int { a + b * 10 + c * 100 }
+
+/// An enum's derive: a variant built from a spread run.
+export trait Built {
+    static fn derive(t: Type) -> List<Directive> {
+        let parts: List<Code> = [quote { 7 }, quote { 8 }]
+        [
+            Directive {
+                twin: "",
+                name: t.name,
+                at: t.at,
+                source: quote { impl ${t} { static fn made() -> ${t} { .Both(..${parts}) } } },
+            },
+        ]
+    }
+}

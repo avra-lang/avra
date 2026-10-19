@@ -1596,6 +1596,7 @@ impl Machine {
             .Strlen -> Val.I(self.byte_length(vals[0])),
             .ArrayPop -> self.array_pop_val(vals),
             .ArrayConcat -> self.consuming(row, vals, self.array_concat_val(vals)),
+            .ArrayExtend -> self.array_extend_val(vals),
             .ArraySlice -> self.consuming(row, vals, self.array_slice_val(vals)),
             .StrContains -> verdict(self.text_val(vals[0]).contains(self.text_val(vals[1]))),
             .StrStartsWith -> verdict(self.text_val(vals[0]).starts_with(self.text_val(vals[1]))),
@@ -2163,6 +2164,20 @@ impl Machine {
         let b: int? = array_id(vals[1])
         if a == null || b == null { return self.defect_val("a concat over a non-array") }
         self.shared_array(self.arrays[a!].concat(self.arrays[b!]))
+    }
+
+    /// `src`'s slots appended to `dst`, which the caller sized for them.
+    fn array_extend_val(vals: List<Val>) -> Val {
+        let d: int? = array_id(vals[0])
+        let s: int? = array_id(vals[1])
+        if d == null || s == null { return self.defect_val("an extend over a non-array") }
+        self.extended(d!, s!)
+    }
+
+    mut fn extended(d: int, s: int) -> Val {
+        if self.freed(d) { return self.read_freed() }
+        for v in self.arrays[s] { self.arrays[d].push(v) }
+        Val.I(0)
     }
 
     /// The slots from lo up to hi, clamped — worded like the runtime's.
