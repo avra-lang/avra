@@ -1,31 +1,43 @@
-//! THE SEALED BODY — a segment's worth of records folded into one file, and
-//! its index. §6.1's `body-<rev>.pack`: a header, the body's NAMES and
-//! interned READ SETS (compiler/store/names.av), the CONTENT index (value
-//! digest -> offset and length in `body-<rev>.val`), then per family its
-//! META columns — action key, value digest, set id, revisions. The payload
-//! is one commit-marked frame, so a half-written body is torn and never
-//! read. The values are NOT in the frame: a read seeks one value and checks
-//! it against its own digest, so an open reads the index alone.
+//! THE SEALED BODY — a segment's worth of records folded into one file, read
+//! lazily. §6.1's `body-<rev>.pack` is a HEAD, then six sections: the INDEX, the
+//! SLOTS (each referenced value's place in the `.val`, by its digest), the body's NAMES and interned READ SETS (compiler/store/names.av), the REVERSE
+//! section, and the ROWS. The head is one commit-marked frame naming the sections'
+//! places, so a half-written body is torn and never read. The values are NOT in the
+//! file: a row names its value by digest, the slot section places it in
+//! `body-<rev>.val`, and a read seeks one value and checks it against its digest.
 //!
-//! `body-<rev>.idx` is §6.1's S4 lookup: a 256-entry fan-out over the action
-//! keys' first byte, the keys sorted, and a parallel offset per key.
-use @std.io.{read_bytes, write_bytes, append_bytes, list_dir, open_beneath, remove}
+//! THE INDEX is one fixed-width line a row, sorted by key: a newline, the first 32
+//! hex digits of the row's action key, then the row's offset and length in the ROWS
+//! section as zero-padded decimal. A lookup bisects those bytes, so it reads O(log n)
+//! lines; the line's position is the row's ORDINAL, which the reverse section names. An open
+//! reads the head and the index and decodes no row: a hit decodes the rows it asks
+//! for, each checked against the key it was asked by.
+use @std.io.{read_bytes, write_bytes, append_bytes, list_dir, open_beneath, remove, Opened}
 use @std.path.{joined_path}
 use @std.relation.stable.{writer, reader, Writer, Reader}
 use @std.relation.engine.{list_cell, map_cell}
 use @std.text.{parse_int}
-use core.{distinct, flatten, sorted_by, text_before}
+use core.{flatten, sorted_by, text_before, digest_of_octets}
 use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
-const IDX_MAGIC: string = "AVRABIDX"
-const BODY_VERSION: int = 4
+const BODY_VERSION: int = 6
+
+/// An index line: a newline, the action key's leading hex digits, the row's offset and length.
+const KEY_HEX: int = 32
+const OFFSET_WIDTH: int = 10
+const LENGTH_WIDTH: int = 8
+/// The rows section is the last, and each row carries its own check.
+const ROWS_AT: int = 5
+
+const LINE: int = 1 + KEY_HEX + OFFSET_WIDTH + LENGTH_WIDTH
+
+/// A slot line: a newline, a value's whole digest, then its place in the `.val` — at and length.
+const DIGEST_HEX: int = 64
+const SLOT_LINE: int = 1 + DIGEST_HEX + OFFSET_WIDTH + LENGTH_WIDTH
 
 /// The path a sealed body stands at.
 export fn body_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.pack") }
-
-/// The path its index stands at.
-export fn idx_path(dir: string, rev: int) -> string { joined_path(dir, "body-${rev}.idx") }
 
 /// The file name its value bytes stand at, beside the `.pack`.
 export fn val_name(rev: int) -> string { "body-${rev}.val" }
@@ -76,7 +88,7 @@ fn newest_rev(dir: string) -> int {
     best
 }
 
-/// Every body, newest revision first. Each body holds everything its writer
+/// Every body's file name, newest revision first. Each body holds everything its writer
 /// had merged, so the newest whole one is the store.
 fn bodies_newest_first(dir: string) -> List<string> {
     let names = all_body_names(dir)
@@ -84,7 +96,7 @@ fn bodies_newest_first(dir: string) -> List<string> {
     mut rev = newest_rev(dir)
     while rev >= 1 {
         if [n for n in names if rev_of(n) == rev].length > 0 {
-            out = out.concat([body_path(dir, rev)])
+            out = out.concat(["body-${rev}.pack"])
         }
         rev = rev - 1
     }
@@ -108,6 +120,7 @@ fn framed(payload: Bytes) -> Bytes {
 /// leaves the segments as the store.
 export fn seal(pack: Pack) -> bool {
     if newest_rev(pack.dir) > pack.seen_rev.get() { return false }
+    materialized(pack)
     let keys = sorted_by([k for k in pack.records.get().keys() if !withdrawn(pack, k)], text_before)
     if keys.is_empty() { return false }
     let rev = newest_rev(pack.dir) + 1
@@ -124,10 +137,7 @@ export fn seal(pack: Pack) -> bool {
     if rewrite { let _ = remove(path) }
     let placed? = lay(pack, path, laid, if rewrite { 0 } else { size }) else { return false }
     let slots = if rewrite { placed } else { standing.concat(placed) }
-    let payload = body_payload(pack, keys, rev, val_rev, slots)
-    let idx = idx_payload(action_keys(pack, keys), rev)
-    if !wrote(idx_path(pack.dir, rev), idx) { return false }
-    if !wrote(body_path(pack.dir, rev), framed(payload)) { return false }
+    if !wrote(body_path(pack.dir, rev), body_bytes(pack, keys, rev, val_rev, slots)) { return false }
     pack.rev.set(rev)
     pack.seen_rev.set(rev)
     pack.val_rev.set(val_rev)
@@ -205,61 +215,89 @@ fn appended_to(at: string, bytes: Bytes) -> bool {
     match append_bytes(at, bytes) { .Ok(_) -> true, .Err(_) -> false }
 }
 
-/// The sealed keys of rows, sorted: each row's action key, the index's currency.
-fn action_keys(pack: Pack, keys: List<string>) -> List<string> {
-    mut out: List<string> = []
-    for k in keys {
-        let h? = record_of(pack, k) else { continue }
-        out.push(action_key(h.family, h.key))
-    }
-    sorted_by(out, text_before)
-}
-
 fn wrote(at: string, bytes: Bytes) -> bool {
     match write_bytes(at, bytes) { .Ok(_) -> true, .Err(_) -> false }
 }
 
-/// The body's bytes: header · names · sets · content · per-family meta.
-fn body_payload(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: List<Placed>) -> Bytes {
-    let families = sorted_by(
-        distinct([record_of(pack, k)?.family ?? "" for k in keys]),
-        text_before,
-    )
-    let held = [record_of(pack, k)! for fam in families for k in keys if record_of(pack, k)?.family == fam]
+/// The body's bytes: the head, then the index, names, sets, reverse section and rows.
+fn body_bytes(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: List<Placed>) -> Bytes {
+    let held = indexed(pack, keys)
     let reads = [reads_of(pack, h) for h in held]
     let n = names()
     n.filled(flatten(reads))
     let s = sets()
     let set_ids = [s.intern(named_ids(n, r)) for r in reads]
+    let rows = [row_bytes(held[i], set_ids[i]) for i in 0..held.length]
+    let index = index_bytes(held, rows)
+    let sections = [
+        index,
+        slot_bytes(placed),
+        n.encode(),
+        s.encode(),
+        reverse_section(reads),
+        rows.bytes(),
+    ]
+    let head = writer()
+    head.text(BODY_MAGIC)
+    head.int(BODY_VERSION)
+    head.int(rev)
+    head.int(val_rev)
+    head.text(pack.print)
+    head.int(held.length)
+    mut at = 0
+    for i, part in sections {
+        head.int(at)
+        head.int(part.length)
+        head.text(if i == ROWS_AT { "" } else { check_of(part) })
+        at = at + part.length
+    }
+    [framed(head.bytes())].concat(sections).bytes()
+}
+
+/// The live rows in index order: by the leading hex of their action key, the order a lookup bisects.
+fn indexed(pack: Pack, keys: List<string>) -> List<Held> {
+    [record_of(pack, t.substring(KEY_HEX, t.length))! for t in sorted_by(["${index_hex(k)}${k}" for k in keys], text_before)]
+}
+
+/// The leading hex of the action key a record key's index line holds.
+fn index_hex(at: string) -> string { digest_of_octets(at.bytes()).substring(0, KEY_HEX) }
+
+/// One row as the rows section holds it: what a lookup decodes, and checks against its key.
+fn row_bytes(h: Held, set_id: int) -> Bytes {
     let w = writer()
-    w.text(BODY_MAGIC)
-    w.int(BODY_VERSION)
-    w.int(rev)
-    w.int(val_rev)
-    w.text(pack.print)
-    w.octets(n.encode())
-    w.octets(s.encode())
-    w.count(placed.length)
-    for p in placed {
-        w.text(p.digest)
-        w.int(p.at)
-        w.int(p.len)
+    w.text(h.family)
+    w.text(h.key)
+    w.text(h.digest)
+    w.int(set_id)
+    framed(w.bytes())
+}
+
+/// Where each referenced value stands in the `.val`: one line a digest.
+fn slot_bytes(placed: List<Placed>) -> Bytes {
+    ["\n${p.digest}${padded(p.at, OFFSET_WIDTH)}${padded(p.len, LENGTH_WIDTH)}" for p in placed]
+        .join("")
+        .bytes()
+}
+
+/// The index: one line a row, sorted by key — the line's position is the row's ordinal.
+fn index_bytes(held: List<Held>, rows: List<Bytes>) -> Bytes {
+    mut at = 0
+    mut lines: List<string> = []
+    for i, h in held {
+        lines
+            .push(
+                "\n${action_key(h.family, h.key).substring(0, KEY_HEX)}${padded(at, OFFSET_WIDTH)}${padded(rows[i].length, LENGTH_WIDTH)}",
+            )
+        at = at + rows[i].length
     }
-    w.count(families.length)
-    for fam in families {
-        w.text(fam)
-        let mine = [i for i in 0..held.length if held[i].family == fam]
-        w.count(mine.length)
-        for i in mine {
-            w.text(held[i].key)
-            w.text(held[i].digest)
-            w.int(set_ids[i])
-            w.int(rev)
-            w.int(rev)
-        }
-    }
-    w.octets(reverse_section(reads))
-    w.bytes()
+    lines.join("").bytes()
+}
+
+/// `n` in decimal, zero-padded to `width` digits.
+fn padded(n: int, width: int) -> string {
+    let digits = "${n}"
+    let zeros = "0000000000".substring(0, width - digits.length)
+    "${zeros}${digits}"
 }
 
 /// THE REVERSE INDEX, as the body spells it: each input name a row reads, with the ordinals
@@ -294,19 +332,44 @@ fn reverse_section(reads: List<List<string>>) -> Bytes {
     w.bytes()
 }
 
+/// Where a section stands in the file, and the check its head holds for it.
+type Place = { at: int, len: int, check: string }
+
+/// A sealed body, open and lazy: the file's handle, the head's facts, the index in memory
+/// and where each other section stands. No row is decoded until a lookup asks for it.
+export type Sealed = {
+    o: Opened,
+    rev: int,
+    val_rev: int,
+    print: string,
+    count: int,
+    x: Bytes,
+    base: int,
+    slots: Place,
+    names: Place,
+    sets: Place,
+    reverse: Place,
+    rows: Place,
+    /// The slot section, read once by the first value that asks where it stands.
+    slot_table: Cell<List<Bytes>>,
+}
+
 /// The record keys of the sealed rows that read any of `moved`, from the body's reverse
 /// section and its row order; a row since overwritten is left to the live scan.
 export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
-    let r = reader(pack.table_reverse.get())
+    let s? = pack.sealed.get().first() else { return [] }
+    let section? = section_of(s, s.reverse) else { return [] }
+    let r = reader(section)
     let count = ok(r.count()) ?? 0
     mut out: List<string> = []
     for _i in 0..count {
         let name = ok(r.text()) ?? ""
         let run? = ok(r.octets()) else { return out }
         if moved.get(name) == null { continue }
-        let order = pack.order.get()
         for at in run_ordinals(run) {
-            if at < order.length && resident(pack, order[at]) { out.push(order[at]) }
+            let h? = sealed_held_at(pack, s, at) else { continue }
+            let key = record_key(h.family, h.key)
+            if resident_held(pack, key, h) { out.push(key) }
         }
     }
     out
@@ -327,7 +390,155 @@ fn resident(pack: Pack, key: string) -> bool {
     h.set >= 0 && !withdrawn(pack, key)
 }
 
-fn record_of(pack: Pack, at: string) -> Held? { pack.records.get().get(at) }
+/// `resident` for a row already in hand: no second find of what was just decoded.
+fn resident_held(pack: Pack, key: string, h: Held) -> bool {
+    let held = pack.records.get().get(key) ?? h
+    held.set >= 0 && !withdrawn(pack, key)
+}
+
+/// A row by its record key: this process's own (a segment, a write) over the sealed body's.
+fn record_of(pack: Pack, at: string) -> Held? {
+    let held = pack.records.get().get(at)
+    if held != null { return held }
+    let s? = pack.sealed.get().first() else { return null }
+    sealed_held(pack, s, at)
+}
+
+/// The sealed body's row under a record key: found in the index, decoded, and held to the
+/// key it was asked by — a row that decodes to another key is no answer.
+fn sealed_held(pack: Pack, s: Sealed, at: string) -> Held? {
+    let want = index_hex(at)
+    mut ordinal = first_from(pack, s, want)
+    while ordinal < s.count && index_line_hex(pack, s, ordinal) == want {
+        let h? = sealed_held_at(pack, s, ordinal) else { return null }
+        if record_key(h.family, h.key) == at { return h }
+        ordinal = ordinal + 1
+    }
+    null
+}
+
+/// The first ordinal whose line holds `want` or more: a bisection of the key-sorted index,
+/// one line read a step.
+fn first_from(pack: Pack, s: Sealed, want: string) -> int {
+    mut lo = 0
+    mut hi = s.count
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if text_before(index_line_hex(pack, s, mid), want) { lo = mid + 1 } else { hi = mid }
+    }
+    lo
+}
+
+/// The leading key hex one index line holds, counted as a probe.
+fn index_line_hex(pack: Pack, s: Sealed, ordinal: int) -> string {
+    let t = pack.traffic.get()
+    pack.traffic.set(t with { probes: t.probes + 1 })
+    let line = ordinal * LINE
+    s.x.slice(line + 1, line + 1 + KEY_HEX).text() ?? ""
+}
+
+/// One row of the sealed body by ordinal, decoded from its span of the rows section; its
+/// value's place joins the open slots. Absent when the row does not decode.
+fn sealed_held_at(pack: Pack, s: Sealed, ordinal: int) -> Held? {
+    if ordinal < 0 || ordinal >= s.count { return null }
+    let line = ordinal * LINE
+    let offset? = parse_int(
+        s.x.slice(line + 1 + KEY_HEX, line + 1 + KEY_HEX + OFFSET_WIDTH).text() ?? "",
+    ) else {
+        return null
+    }
+    let length? = parse_int(s.x.slice(line + 1 + KEY_HEX + OFFSET_WIDTH, line + LINE).text() ?? "") else { return null }
+    let raw = match s.o.span(s.base + s.rows.at + offset, length) {
+        .Ok(b) -> b,
+        .Err(_) -> { return null },
+    }
+    let h? = decoded_row(reader(raw)) else { return null }
+    if traced() { qtrace("Q\tstore\trow\t${ordinal}\n") }
+    let t = pack.traffic.get()
+    pack.traffic.set(t with { rows: t.rows + 1 })
+    h
+}
+
+fn decoded_row(framed_row: Reader) -> Held? {
+    let payload? = read_frame(framed_row) else { return null }
+    let r = reader(payload)
+    let family? = ok(r.text()) else { return null }
+    let key? = ok(r.text()) else { return null }
+    let digest? = ok(r.text()) else { return null }
+    let set? = ok(r.int()) else { return null }
+    Held { family: family, key: key, digest: digest, read: [], set: set, stamp: 0 }
+}
+
+/// Where the sealed body keeps a value: found by its digest in the slot section, which the
+/// first ask reads. A line that does not parse is no answer.
+export fn sealed_slot(pack: Pack, digest: string) -> ValueSlot? {
+    let s? = pack.sealed.get().first() else { return null }
+    let slot_lines? = slot_table_of(s) else { return null }
+    let needle = "\n${digest}".bytes()
+    mut from = 0
+    while from < slot_lines.length {
+        let found = slot_lines.index_of(needle, from)
+        if found < 0 { return null }
+        if found % SLOT_LINE == 0 { return slot_at(slot_lines, found / SLOT_LINE) }
+        from = found + 1
+    }
+    null
+}
+
+fn slot_table_of(s: Sealed) -> Bytes? {
+    let known = s.slot_table.get().first()
+    if known != null { return known }
+    let slot_lines? = section_of(s, s.slots) else { return null }
+    s.slot_table.set([slot_lines])
+    slot_lines
+}
+
+/// The place the slot section's line `k` names.
+fn slot_at(slot_lines: Bytes, k: int) -> ValueSlot? {
+    let line = k * SLOT_LINE + 1 + DIGEST_HEX
+    let at? = parse_int(slot_lines.slice(line, line + OFFSET_WIDTH).text() ?? "") else { return null }
+    let len? = parse_int(
+        slot_lines.slice(line + OFFSET_WIDTH, line + OFFSET_WIDTH + LENGTH_WIDTH).text() ?? "",
+    ) else {
+        return null
+    }
+    ValueSlot { at: at, len: len }
+}
+
+/// A section of the sealed body, read whole from its place and held to the check its head
+/// holds for it — a damaged section answers absent.
+fn section_of(s: Sealed, place: Place) -> Bytes? { bytes_of(s.o, s.base, place) }
+
+/// A place's bytes, held to its check.
+fn bytes_of(o: Opened, base: int, place: Place) -> Bytes? {
+    let bytes = match o.span(base + place.at, place.len) { .Ok(b) -> b, .Err(_) -> { return null } }
+    if place.check != "" && check_of(bytes) != place.check { return null }
+    bytes
+}
+
+/// EVERY SEALED ROW LIFTED INTO THE OPEN INDEX, once: a seal folds all the rows, so a writer
+/// reads them all. Rows this process wrote since stand over the sealed ones.
+fn materialized(pack: Pack) {
+    if pack.whole.get() { return }
+    pack.whole.set(true)
+    let s? = pack.sealed.get().first() else { return }
+    let _ = tables_of(pack)
+    let rows? = section_of(s, s.rows) else { return }
+    let r = reader(rows)
+    for _k in 0..s.count {
+        let h? = decoded_row(r) else { return }
+        let at = record_key(h.family, h.key)
+        if pack.records.get().get(at) == null { pack.records.put(at, h) }
+    }
+    let slot_lines? = slot_table_of(s) else { return }
+    let count = slot_lines.length / SLOT_LINE
+    for k in 0..count {
+        let line = k * SLOT_LINE
+        let digest? = slot_lines.slice(line + 1, line + 1 + DIGEST_HEX).text() else { continue }
+        let slot? = slot_at(slot_lines, k) else { continue }
+        pack.slots.put(digest, slot)
+    }
+}
 
 /// The keys a row read: its own list, or its set in the open body's tables —
 /// decoded on the first ask, since an open reads values and never read sets.
@@ -349,9 +560,10 @@ fn reads_known(pack: Pack, h: Held) -> List<string>? {
 fn tables_of(pack: Pack) -> Tables? {
     let known = pack.tables.get().first()
     if known != null { return known }
-    let n? = names_from(pack.table_names.get()) else { return null }
-    let s? = sets_from(pack.table_sets.get()) else { return null }
-    let made = Tables { names: n, sets: s }
+    let s? = pack.sealed.get().first() else { return null }
+    let n? = names_from(section_of(s, s.names) ?? "".bytes()) else { return null }
+    let sets? = sets_from(section_of(s, s.sets) ?? "".bytes()) else { return null }
+    let made = Tables { names: n, sets: sets }
     pack.tables.set([made])
     made
 }
@@ -360,57 +572,108 @@ fn named_ids(n: Names, read: List<string>) -> List<int> {
     [n.id_of(r) ?? 0 for r in read]
 }
 
-/// The index: a 256 fan-out (cumulative), the action keys sorted, one offset
-/// each.
-fn idx_payload(keys: List<string>, rev: int) -> Bytes {
-    let counts: Cell<List<int>> = list_cell()
-    for _k in 0..256 { counts.push(0) }
-    for k in keys {
-        let b = first_byte(k)
-        counts.set_at(b, counts.get()[b] + 1)
-    }
-    let w = writer()
-    w.text(IDX_MAGIC)
-    w.int(BODY_VERSION)
-    w.int(rev)
-    w.int(keys.length)
-    mut acc = 0
-    for b in 0..256 {
-        acc = acc + counts.get()[b]
-        w.int(acc)
-    }
-    for k in keys { w.text(k) }
-    for i, k in keys.enumerate() { w.int(i) }
-    w.bytes()
-}
-
-/// The byte an action key's first two hex characters spell.
-fn first_byte(k: string) -> int {
-    if k.length < 2 { return 0 }
-    hex_val(k.substring(0, 1)) * 16 + hex_val(k.substring(1, 2))
-}
-
-fn hex_val(c: string) -> int { "0123456789abcdef".index_of(c) }
-
 // ── Reading ──
 
-/// Read ONE sealed revision into the pack — the time-travel read (§6.7). A
+/// How much of a body's start is read to find its head: the head is a few hundred octets.
+const HEAD_WINDOW: int = 16384
+
+/// A body opened lazily: its head and index read, nothing decoded. Absent for a file that is
+/// missing, torn, of another version, or whose index does not match what its head says.
+fn sealed_open(dir: string, name: string) -> Sealed? {
+    // LICENSED input.store_io: the store's own body, opened to read its head and index
+    let o = match open_beneath(dir, name) { .Ok(o) -> o, .Err(_) -> { return null } }
+    let size = o.size
+    let head = match o.span(0, if size < HEAD_WINDOW { size } else { HEAD_WINDOW }) {
+        .Ok(b) -> b,
+        .Err(_) -> {
+            o.close()
+            return null
+        },
+    }
+    let framed_head = reader(head)
+    let payload? = read_frame(framed_head) else {
+        o.close()
+        return null
+    }
+    let s? = sealed_from(o, payload, framed_head.at.get(), size) else {
+        o.close()
+        return null
+    }
+    s
+}
+
+/// A head decoded and its index read and checked.
+fn sealed_from(o: Opened, payload: Bytes, base: int, size: int) -> Sealed? {
+    let r = reader(payload)
+    let magic? = ok(r.text()) else { return null }
+    if magic != BODY_MAGIC { return null }
+    let version? = ok(r.int()) else { return null }
+    if version != BODY_VERSION { return null }
+    let rev? = ok(r.int()) else { return null }
+    let val_rev? = ok(r.int()) else { return null }
+    let print? = ok(r.text()) else { return null }
+    let count? = ok(r.int()) else { return null }
+    mut places: List<Place> = []
+    for _i in 0..6 {
+        let at? = ok(r.int()) else { return null }
+        let len? = ok(r.int()) else { return null }
+        let check? = ok(r.text()) else { return null }
+        places.push(Place { at: at, len: len, check: check })
+    }
+    if !r.done() { return null }
+    let last = places[ROWS_AT]
+    if base + last.at + last.len > size { return null }
+    let x? = bytes_of(o, base, places[0]) else { return null }
+    if x.length != count * LINE { return null }
+    Sealed {
+        o: o,
+        rev: rev,
+        val_rev: val_rev,
+        print: print,
+        count: count,
+        x: x,
+        base: base,
+        slots: places[1],
+        names: places[2],
+        sets: places[3],
+        reverse: places[4],
+        rows: places[5],
+        slot_table: list_cell(),
+    }
+}
+
+/// How many rows the open sealed body holds, none when no body is open.
+fn sealed_count(pack: Pack) -> int { pack.sealed.get().first()?.count ?? 0 }
+
+/// The pack's one sealed body: its value file named, its rows lazy.
+fn adopted(pack: Pack, s: Sealed) {
+    for old in pack.sealed.get() { old.o.close() }
+    pack.sealed.set([s])
+    pack.rev.set(s.rev)
+    pack.val_rev.set(s.val_rev)
+}
+
+/// Open ONE sealed revision into the pack — the time-travel read (§6.7). A
 /// missing or torn revision answers false; `pack` is reset to hold only this
 /// body's rows, so use a fresh pack and leave the live open alone.
 export fn body_scan_rev(pack: Pack, rev: int) -> bool {
-    let at = body_path(pack.dir, rev)
-    // LICENSED input.store_io: the store's own body, read to answer a past revision
-    let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> { return false } }
-    let payload? = read_frame(reader(raw)) else {
+    let s? = sealed_open(pack.dir, "body-${rev}.pack") else {
         torn_at(pack, 0)
         return false
     }
     pack.records.set({})
-    pack.order.set([])
     pack.slots.set({})
     pack.withdrawn.set({})
     pack.tables.set([])
-    body_read(pack, payload)
+    pack.whole.set(false)
+    adopted(pack, s)
+    true
+}
+
+/// Every row of the open sealed body, in body order — what `explain` reads to say what changed.
+export fn sealed_rows(pack: Pack) -> List<Held> {
+    let s? = pack.sealed.get().first() else { return [] }
+    [h! for k in 0..s.count for h in [sealed_held_at(pack, s, k)] if h != null]
 }
 
 /// The print the newest whole body was made under — what a compaction folds
@@ -421,86 +684,29 @@ export fn store_print(dir: string) -> string? {
     body_print_of(dir, newest)
 }
 
-/// Read the newest whole body into the pack, before the segments so a later
+/// Open the newest whole body into the pack, before the segments so a later
 /// segment wins. Only that body is read: each body holds everything its
 /// writer had merged. A torn or foreign body is skipped, and says so once.
 export fn body_scan(pack: Pack) {
-    for at in bodies_newest_first(pack.dir) {
-        // LICENSED input.store_io: the store's own body, read to merge it
-        let raw = match read_bytes(at) { .Ok(b) -> b, .Err(_) -> "".bytes() }
-        if traced() { qtrace("Q\tstore\tbody\t${at}\t${raw.length}\n") }
-        let r = reader(raw)
-        let payload = read_frame(r)
-        if payload == null {
+    for name in bodies_newest_first(pack.dir) {
+        let s? = sealed_open(pack.dir, name) else {
             torn_at(pack, 0)
             continue
         }
-        if body_read(pack, payload!) { return }
+        if traced() { qtrace("Q\tstore\tbody\t${joined_path(pack.dir, name)}\t${s.x.length}\n") }
+        adopted(pack, s)
+        return
     }
 }
 
-fn body_read(pack: Pack, payload: Bytes) -> bool {
-    let r = reader(payload)
-    let magic? = ok(r.text()) else { return false }
-    if magic != BODY_MAGIC { return false }
-    let version? = ok(r.int()) else { return false }
-    if version != BODY_VERSION { return false }
-    let rev? = ok(r.int()) else { return false }
-    let val_rev? = ok(r.int()) else { return false }
-    let _print? = ok(r.text()) else { return false }
-    let names_bytes? = ok(r.octets()) else { return false }
-    let sets_bytes? = ok(r.octets()) else { return false }
-    let slots? = ok(r.count()) else { return false }
-    mut placed: Map<string, ValueSlot> = {}
-    for _s in 0..slots {
-        let digest? = ok(r.text()) else { return false }
-        let at? = ok(r.int()) else { return false }
-        let len? = ok(r.int()) else { return false }
-        placed.set(digest, ValueSlot { at: at, len: len })
-    }
-    let families? = ok(r.count()) else { return false }
-    mut rows: List<Held> = []
-    for _f in 0..families {
-        let fam? = ok(r.text()) else { return false }
-        let count? = ok(r.count()) else { return false }
-        for _m in 0..count {
-            let key? = ok(r.text()) else { return false }
-            let digest? = ok(r.text()) else { return false }
-            let sid? = ok(r.int()) else { return false }
-            let _changed? = ok(r.int()) else { return false }
-            let _verified? = ok(r.int()) else { return false }
-            rows.push(Held { family: fam, key: key, digest: digest, read: [], set: sid, stamp: 0 })
-        }
-    }
-    let reverse_bytes? = ok(r.octets()) else { return false }
-    if !r.done() { return false }
-    for d, slot in placed { pack.slots.put(d, slot) }
-    pack.table_names.set(names_bytes)
-    pack.table_sets.set(sets_bytes)
-    pack.tables.set([])
-    pack.table_reverse.set(reverse_bytes)
-    pack.order.set([record_key(h.family, h.key) for h in rows])
-    for h in rows { pack.records.put(record_key(h.family, h.key), h) }
-    pack.rev.set(rev)
-    pack.val_rev.set(val_rev)
-    true
-}
-
-/// A sealed body's header past its frame: the value revision it names and the
-/// compiler print it was made under — none when the body cannot be read.
+/// A sealed body's head: the value revision it names and the compiler print it was made
+/// under — none when the body cannot be read.
 type BodyHead = { val_rev: int, print: string }
 
 fn head_of(dir: string, name: string) -> BodyHead? {
-    // LICENSED input.store_io: the store's own body, read for its header
-    let raw = match read_bytes(joined_path(dir, name)) { .Ok(b) -> b, .Err(_) -> { return null } }
-    let payload? = read_frame(reader(raw)) else { return null }
-    let r = reader(payload)
-    let _magic? = ok(r.text()) else { return null }
-    let _version? = ok(r.int()) else { return null }
-    let _rev? = ok(r.int()) else { return null }
-    let val_rev? = ok(r.int()) else { return null }
-    let print? = ok(r.text()) else { return null }
-    BodyHead { val_rev: val_rev, print: print }
+    let s? = sealed_open(dir, name) else { return null }
+    s.o.close()
+    BodyHead { val_rev: s.val_rev, print: s.print }
 }
 
 fn body_print_of(dir: string, name: string) -> string? { head_of(dir, name)?.print }
