@@ -132,6 +132,8 @@ extern const char avra_rt_held_avra_str_crossing __asm__(AVRA_RT_LABEL(avra_str_
 extern const char avra_rt_held_avra_int_div __asm__(AVRA_RT_LABEL(avra_int_div));
 extern const char avra_rt_held_avra_int_mod __asm__(AVRA_RT_LABEL(avra_int_mod));
 extern const char avra_rt_held_avra_float_text __asm__(AVRA_RT_LABEL(avra_float_text));
+extern const char avra_rt_held_avra_float_to_bits __asm__(AVRA_RT_LABEL(avra_float_to_bits));
+extern const char avra_rt_held_avra_float_of_bits __asm__(AVRA_RT_LABEL(avra_float_of_bits));
 extern const char avra_rt_held_avra_float_text_bits __asm__(AVRA_RT_LABEL(avra_float_text_bits));
 extern const char avra_rt_held_avra_int_and __asm__(AVRA_RT_LABEL(avra_int_and));
 extern const char avra_rt_held_avra_int_or __asm__(AVRA_RT_LABEL(avra_int_or));
@@ -348,6 +350,8 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_int_div,
     &avra_rt_held_avra_int_mod,
     &avra_rt_held_avra_float_text,
+    &avra_rt_held_avra_float_to_bits,
+    &avra_rt_held_avra_float_of_bits,
     &avra_rt_held_avra_float_text_bits,
     &avra_rt_held_avra_int_and,
     &avra_rt_held_avra_int_or,
@@ -635,6 +639,10 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_mod(AVRA_RT_I64,
     "avra_int_mod: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_float_text(AVRA_RT_F64)) == AVRA_RT_POINTER,
     "avra_float_text: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_float_to_bits(AVRA_RT_F64)), int64_t),
+    "avra_float_to_bits: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_float_of_bits(AVRA_RT_I64)), double),
+    "avra_float_of_bits: its row answers f64, so its C body answers double");
 _Static_assert(__builtin_classify_type(avra_float_text_bits(AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_float_text_bits: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_and(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
