@@ -2120,8 +2120,17 @@ impl Decls {
     /// declaration's flatness is read.
     fn declared_first(t: TypeId) {
         match self.types.shape_of(t) {
-            .Struct(r, _) or .Enum(r, _) -> {
-                for sealer in self.mut_seat_sealers(self.decl(r).name) { touch(self.sig(sealer)) }
+            .Struct(r, _) -> {
+                let _ = self.sig(r)
+                // only a record that is NATURALLY flat (all-scalar fields, flat now or boxed by a seal already landed) can be sealed
+                // boxed by a `mut` seat: one with a pointer-riding field never is, and asking every fn that seats it `mut` would
+                // sign them all (hundreds, each asking the rest back). Never the sealed state alone, which a seal is about to change.
+                if self.types.peek_flat(t) || self.types.peek_boxed_flat(t) {
+                    for sealer in self.mut_seat_sealers(self.decl(r).name) { touch(self.sig(sealer)) }
+                }
+            },
+            // an enum keeps the layout its declaration made, under any `mut` seat
+            .Enum(r, _) -> {
                 let _ = self.sig(r)
             },
             rest -> nothing_asked(),
