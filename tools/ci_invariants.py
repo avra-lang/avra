@@ -324,6 +324,22 @@ def check_compiler_route(work_text, remote_text):
     return [], ["compiler-route: a published compiler is installed before a build; a merge-base miss falls back to the seed"]
 
 
+def check_hold_label(auto_merge_text):
+    """auto-merge.yml honours the `hold` label as it honours the DO NOT MERGE title: it reads the
+    labels fresh from the PR (not the event payload), runs again when a label is added, and a held
+    PR is disarmed. Answers (refusals, words)."""
+    bad = []
+    if not re.search(r"types:\s*\[[^\]]*\blabeled\b", auto_merge_text):
+        bad.append("auto-merge.yml does not run on `labeled`, so a label added after creation never disarms")
+    if "gh pr view" not in auto_merge_text or "labels" not in auto_merge_text or "' hold '" not in auto_merge_text:
+        bad.append("auto-merge.yml does not read the PR's `hold` label fresh")
+    if "--disable-auto" not in auto_merge_text:
+        bad.append("auto-merge.yml never disarms a held PR")
+    if "github.event.pull_request.labels" in auto_merge_text:
+        bad.append("auto-merge.yml judges labels from the event payload, which a later label misses")
+    return bad, ([] if bad else ["hold-label: auto-merge reads the label fresh, reruns on `labeled`, and disarms"])
+
+
 def check_light_draft(workflow_text):
     """Every heavy leg `test` owes is gated on the full flag, and `test`
     refuses a light run. Answers (refusals, words)."""
@@ -473,6 +489,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_keeper_coverage(make_text, workflow_text),
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
+                  lambda: check_hold_label(open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()),
                   lambda: check_run_mode(workflow_text),
                   lambda: check_race_split(workflow_text),
                   lambda: check_compiler_route(
@@ -654,6 +671,11 @@ rt-header:
     # light run is refused ──
     real = open(CHECKS, encoding="utf-8").read()
     assert check_light_draft(real)[0] == [], check_light_draft(real)
+    am = open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
+    assert check_hold_label(am)[0] == [], check_hold_label(am)
+    assert any("`labeled`" in x for x in check_hold_label(am.replace(", labeled]", "]"))[0])
+    assert any("never disarms" in x for x in check_hold_label(am.replace("--disable-auto", ""))[0])
+    assert any("payload" in x for x in check_hold_label(am + "\n# ${{ github.event.pull_request.labels }}")[0])
     ungated = real.replace("    if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'",
                            "    if: needs.prepare.outputs.cache == '1'")
     assert ungated != real
