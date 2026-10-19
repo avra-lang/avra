@@ -29,7 +29,7 @@ if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
 fi
 # each fixture is built for the host too, and a gate job may hold only the compiler: the host
 # runtime AND the package C objects and archives a fixture's `[link]` rows name (std_time.o)
-( cd "$tree" && make -s -o avra libs ) || { say "the host package objects did not build"; exit 1; }
+sh "$here/wasm-host-objects.sh" "$tree"
 # each fixture is built for the host too, and a gate job may hold only the compiler
 if [ ! -f "$tree/build/libavra_runtime.a" ]; then
     ( cd "$tree" && make -s build/libavra_runtime.a ) || { say "the host runtime archive did not build"; exit 1; }

@@ -25,6 +25,7 @@ clang --print-targets 2>/dev/null | grep -q wasm32 || skip "clang has no wasm32 
 [ -f "$tree/build/wasm32/libavra_runtime.a" ] || ( cd "$tree" && make -s wasm-runtime ) || skip "the wasm runtime archive did not build"
 # the host half links the host's own runtime, which a gate job may not hold yet
 [ -f "$tree/build/libavra_runtime.a" ] || ( cd "$tree" && make -s build/libavra_runtime.a ) || { say "the host runtime archive did not build"; exit 1; }
+sh "$(dirname "$0")/wasm-host-objects.sh" "$tree"
 
 mkdir -p "$pkg/src/words"
 printf '[package]\nname    = "app"\nversion = "0.1.0"\n\n[bin]\nname = "app"\npath = "src/main.av"\n' > "$pkg/avra.toml"
