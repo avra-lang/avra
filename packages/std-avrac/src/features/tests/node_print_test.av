@@ -29,6 +29,7 @@ fn rows() -> List<PayloadRow> {
         row("F", [field("flag", "bool"), field("x", "ExprId")]),
         row("Z", []),
         row("O", [field("x", "ExprId?")]),
+        row("Y", [field("name", "Scoped"), field("ty", "TypeRef")]),
         row("M", [field("name", "Plain"), field("bind", "Scoped")]),
     ]
 }
@@ -81,6 +82,19 @@ spec "features/node_print — what a rule reads as" {
             worded("p = \".\" name:NAME -> E.N\n", "E.N") == "E.N@13: \".\" \$0@-1"
         }
     }
+    given "a mark with a layout row" {
+        then "= and -> stand apart from both sides" {
+            worded("p = \"let\" \"_\" \"=\" x:e END -> E.A\n", "E.A") == "E.A@13: \"let\" _ \"_\" _ \"=\" _ \$0@0" &&
+                worded("p = x:e \"->\" y:e -> E.B\n", "E.B") == "E.B@13: \$0@0 _ \"->\" _ \$1@0"
+        }
+        then ": and , hug what precedes them and space after" {
+            worded("p = name:NAME \":\" ty:type_atom -> E.Y\n", "E.Y") == "E.Y@13: \$0@-1 \":\" _ \$1@-1" &&
+                worded("p = x:e \",\" y:e -> E.B\n", "E.B") == "E.B@13: \$0@0 \",\" _ \$1@0"
+        }
+        then "an optional run led by one keeps the space after it inside" {
+            worded("p = name:NAME ( \":\" ty:type )? -> E.Y\n", "E.Y") == "E.Y@13: \$0@-1 [\$1? \":\" _ \$1@-1]"
+        }
+    }
     given "an optional run" {
         then "around one hole prints with that payload" {
             worded("p = \"c\" \"<\" ty:type \">\" \"(\" ( cap:e )? \")\" -> E.T\n", "E.T") == "E.T@13: \"c\" \"<\" \$0@-1 \">\" \"(\" [\$1? \$1@0] \")\""
@@ -103,8 +117,8 @@ spec "features/node_print — what a rule reads as" {
         then "has none for a literal that fills a payload" {
             worded("p = f:\"mut\" x:e -> E.F\n", "E.F") == "none"
         }
-        then "has none for punctuation the layout of is not stated" {
-            worded("p = x:e \"->\" y:e -> E.B\n", "E.B") == "none"
+        then "has none for a mark no layout row lists" {
+            worded("p = x:e \"{\" y:e -> E.B\n", "E.B") == "none"
         }
         then "has none when the hole's rule is not on the scale" {
             worded("p = \"!\" x:other -> E.A\n", "E.A") == "none"
@@ -137,12 +151,15 @@ spec "features/node_print — the language's own nodes" {
                 shown(w.get("Expr.NullLit")!),
                 shown(w.get("Expr.Receiver")!),
                 shown(w.get("Expr.Channel")!),
+                shown(w.get("Expr.Ident")!),
                 shown(w.get("Stmt.Return")!),
                 shown(w.get("Stmt.Fail")!),
+                shown(w.get("Stmt.Discard")!),
                 shown(w.get("Pat.Wild")!),
                 shown(w.get("Pat.Member")!),
+                shown(w.get("Pat.Typed")!),
             ]
-                .join(" | ") == "Expr.Not@10: \"!\" \$0@10 | Expr.Range@13: \"(\" \$0@0 \"..\" \$1@0 \")\" | Expr.NullLit@13: \"null\" | Expr.Receiver@13: \"self\" | Expr.Channel@13: \"channel\" \"<\" \$0@-1 \">\" \"(\" [\$1? \$1@0] \")\" | Stmt.Return@-1: \"return\" [\$0? _ \$0@0] | Stmt.Fail@-1: \"fail\" _ \$0@0 | Pat.Wild@-1: \"_\" | Pat.Member@-1: \".\" \$0@-1 _ \"as\" _ \$1@-1"
+                .join(" | ") == "Expr.Not@10: \"!\" \$0@10 | Expr.Range@13: \"(\" \$0@0 \"..\" \$1@0 \")\" | Expr.NullLit@13: \"null\" | Expr.Receiver@13: \"self\" | Expr.Channel@13: \"channel\" \"<\" \$0@-1 \">\" \"(\" [\$1? \$1@0] \")\" | Expr.Ident@13: \$0@-1 | Stmt.Return@-1: \"return\" [\$0? _ \$0@0] | Stmt.Fail@-1: \"fail\" _ \$0@0 | Stmt.Discard@-1: \"let\" _ \"_\" _ \"=\" _ \$0@0 | Pat.Wild@-1: \"_\" | Pat.Member@-1: \".\" \$0@-1 _ \"as\" _ \$1@-1 | Pat.Typed@-1: \$0@-1 \":\" _ \$1@-1"
         }
     }
 }
@@ -180,6 +197,14 @@ spec "features/node_print — a node printed from its rule" {
         }
         then "print a bare return with no space after it" {
             projected("fn f() { return }") == "fn f() {\n    return\n}"
+        }
+    }
+    given "a discard" {
+        then "prints its equals with a space each side" { projected("let _ = f(x)") == "let _ = f(x)" }
+    }
+    given "a typed pattern" {
+        then "hugs its colon and spaces its type" {
+            projected("fn f(s: S) -> int {\n    match s { n: int -> n, _ -> 0 }\n}") == "fn f(s: S) -> int {\n    match s { n: int -> n, _ -> 0 }\n}"
         }
     }
     given "a member pattern and a wildcard" {

@@ -437,15 +437,6 @@ impl SourceText {
                 ]
             },
             .ExprStmt(value) -> [source_line(depth, self.expression(value, loosest_tier, depth))],
-            .Discard(value) -> {
-                let prefix = "let _ = "
-                [
-                    source_line(
-                        depth,
-                        "${prefix}${self.expression(value, loosest_tier, depth, col_after(prefix, depth * 4))}",
-                    ),
-                ]
-            },
             .FnDecl(name, tparams, params, ret, body) -> {
                 let head = "${exported}${self.fn_mark(s)}fn ${source_name(name.of)}${self.type_params(tparams)}"
                 let sig = "${head}${self.params_wrapped(params, depth, col_after(head, depth * 4))}"
@@ -479,7 +470,7 @@ impl SourceText {
                         ),
                 ]
             },
-            .Return(_) or .Fail(_) -> [source_line(depth, self.worded_stmt(s, depth))],
+            .Return(_) or .Fail(_) or .Discard(_) -> [source_line(depth, self.worded_stmt(s, depth))],
             .ImplDecl(of, target, fns) -> {
                 let itp = self.store.impl_tparams_of(s)
                 [
@@ -1331,9 +1322,8 @@ impl SourceText {
             .FloatLit(bits) -> numeric(avra_float_text_bits(bits), parent),
             .StrLit(value) -> grouped(self.str_lit_text(id, value), atom_tier, parent),
             .BytesLit(spelled) -> grouped("b\"${spelled}\"", atom_tier, parent),
-            .Range(_, _) or .Not(_) or .NullLit or .Receiver or .Channel(_, _) -> self.worded(id, parent, depth, c),
+            .Range(_, _) or .Not(_) or .NullLit or .Receiver or .Channel(_, _) or .Ident(_) -> self.worded(id, parent, depth, c),
             .BoolLit(value) -> grouped(if value { "true" } else { "false" }, atom_tier, parent),
-            .Ident(name) -> grouped(source_name(name.of), atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth, c),
             .LetPattern(pat, subject, otherwise, held) -> grouped(
                 self.let_pattern_text(pat, subject, otherwise, held, depth),
@@ -2296,14 +2286,13 @@ impl SourceText {
 
     mut fn pattern(id: PatId, depth: int) -> string {
         match self.store.pat(id) {
-            .Wild or .Member(_, _) -> self.worded_pat(id, depth),
+            .Wild or .Member(_, _) or .Typed(_, _) -> self.worded_pat(id, depth),
             .Rest -> "rest",
             .Bind(name) -> source_name(name.of),
             .Variant(name, args) -> ".${source_name(name.of)}${if args.is_empty() { "" } else { "(${joined([self.pattern(p, depth) for p in args], ", ")})" }}",
             .Lit(value) -> self.pattern_lit(value, depth),
             .Format(head, parts) -> format_source(head, parts),
             .Quote(body) -> self.expression(body, loosest_tier, depth),
-            .Typed(name, ty) -> "${source_name(name.of)}: ${self.type_ref_wrapped(ty, depth)}",
             .Seq(before, middle, after) -> self.seq_pattern(before, middle, after, depth),
             .Fields(name, fields, args, open) -> self.fields_pattern(name.of, [f.of for f in fields], args, open, depth),
         }
@@ -2331,10 +2320,10 @@ impl SourceText {
     }
 
     /// The pieces in order, each hole printed from the column the words
-    /// before it end at.
+    /// before it end at — or from no column, where none is known.
     mut fn pieces_text(pieces: List<Piece>, fills: List<Fill>, depth: int, col: int) -> string {
         mut text = ""
-        for p in pieces { text = "${text}${self.piece_text(p, fills, depth, col_after(text, col))}" }
+        for p in pieces { text = "${text}${self.piece_text(p, fills, depth, if col < 0 { col } else { col_after(text, col) })}" }
         text
     }
 
@@ -2354,7 +2343,7 @@ impl SourceText {
         match f {
             .Value(id) -> self.expression(id, tier, depth, col),
             .Name(text) -> source_name(text),
-            .Ty(ty) -> spelled(ty),
+            .Ty(ty) -> self.type_ref_wrapped(ty, depth, col),
             .Gone or .Other -> {
                 wreck("defect: a template hole reads a payload that is absent or no hole can read")
                 ""
@@ -2794,10 +2783,13 @@ export const worded_nodes: List<string> = [
     "Expr.NullLit",
     "Expr.Receiver",
     "Expr.Channel",
+    "Expr.Ident",
     "Stmt.Return",
     "Stmt.Fail",
+    "Stmt.Discard",
     "Pat.Wild",
     "Pat.Member",
+    "Pat.Typed",
 ]
 
 /// The language's wordings, held for the process: the printer asks once
