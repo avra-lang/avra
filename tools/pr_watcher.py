@@ -236,7 +236,7 @@ def _ahead(prs, front):
     return f"#{landing[0]} (landing)" if landing else "the order"
 
 
-def plan(prs, runs, state, trunk=None, held=None, now=None):
+def plan(prs, runs, state, trunk=None, held=None, now=None, seen_at=None):
     """The actions a pass owes. See the module docstring for the rules.
 
     `prs`: number, isDraft, state, mergeable, mergeStateStatus, title,
@@ -267,10 +267,15 @@ def plan(prs, runs, state, trunk=None, held=None, now=None):
         branch = r.get("headBranch")
         if not branch or branch in open_branches:
             continue
+        # A RUN NEWER THAN THE PR LIST WAS READ CANNOT BE JUDGED BY IT: the pass reads every PR first
+        # (slowly) and the runs last, so a PR opened in between has runs and no row. A PR created
+        # seconds before its runs was "no longer open" and both of its runs were cancelled.
+        if seen_at and (r.get("createdAt") or "") > seen_at:
+            continue
         key = f"cancel:{r['databaseId']}"
         if key in told:
             continue
-        acts.append({"do": "cancel", "run": r["databaseId"], "key": key,
+        acts.append({"do": "cancel", "run": r["databaseId"], "branch": branch, "key": key,
                      "mark": ("told", key),
                      "text": f"cancelling run {r['databaseId']} on "
                              f"{branch} — its PR is no longer open"})
@@ -569,7 +574,7 @@ def open_prs(repo):
 def _runs(repo):
     return _gh_json(["run", "list", "-R", repo, "-L", "100",
                      "--json", "databaseId,status,conclusion,headBranch,event,"
-                               "headSha,workflowName"])
+                               "headSha,workflowName,createdAt"])
 
 
 def main_state(repo, runs):
@@ -654,6 +659,7 @@ DETAIL_CAP = 6
 
 def collect(repo, state):
     told = state[TOLD]
+    seen_at = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     prs = []
     for raw in open_prs(repo):
         p = dict(raw)
@@ -702,7 +708,7 @@ def collect(repo, state):
             if (r.get("event") or "") == PR
             and (r.get("workflowName") or "") == "checks"
             and (r.get("conclusion") or "") == "action_required"]
-    return {"prs": prs, "runs": runs, "held": held, "main": main_state(repo, every)}
+    return {"prs": prs, "runs": runs, "held": held, "main": main_state(repo, every), "seen_at": seen_at}
 
 
 # ---- doing the actions (gh) --------------------------------------------
@@ -730,6 +736,14 @@ def do_action(a, repo, run):
     elif a["do"] == "refresh":
         run(["pr", "update-branch", str(a["pr"]), "-R", repo])
     elif a["do"] == "cancel":
+        # asked again at the moment of the act: a PR that stands for this branch now keeps its run
+        # (the list the plan used may be minutes old)
+        if a.get("branch"):
+            open_now = (run(["pr", "list", "-R", repo, "--head", a["branch"], "--state", "open",
+                             "--json", "number", "--jq", "length"]) or "").strip()
+            if open_now not in ("", "0"):
+                print(f"pr-watcher: run {a['run']} kept — a PR for {a['branch']} is open now")
+                return
         run(["run", "cancel", str(a["run"]), "-R", repo])
     elif a["do"] == "disarm":
         run(["pr", "merge", str(a["pr"]), "-R", repo, "--disable-auto"])
@@ -1144,6 +1158,31 @@ def selftest():
     if sent != [["workflow", "run", "checks.yml", "-R", "avra-lang/avra", "--ref", "main"]]:
         sys.exit(f"pr-watcher: self-test — the dispatch was sent as {sent}")
 
+    # A DOOMED RUN IS ONE THE PR LIST COULD JUDGE: a run created after the list was read belongs to a PR
+    # the list may simply not hold yet (two runs of a PR opened mid-pass were both cancelled).
+    old = {"databaseId": 7, "status": "in_progress", "event": PR, "headBranch": "new-lane", "createdAt": "2026-10-19T21:00:00Z"}
+    newer = dict(old, databaseId=8, createdAt="2026-10-19T21:16:20Z")
+    got = [(a["do"], a["run"]) for a in plan([], [old, newer], _empty_state(), seen_at="2026-10-19T21:15:18Z")]
+    if got != [("cancel", 7)]:
+        sys.exit(f"pr-watcher: self-test — a run newer than the PR list was judged doomed: {got}")
+    # two runs of one head started 2 s apart, the PR not yet in the list: neither is cancelled, so the head keeps a live run
+    twin = dict(newer, databaseId=9, createdAt="2026-10-19T21:16:22Z")
+    if plan([], [newer, twin], _empty_state(), seen_at="2026-10-19T21:15:18Z"):
+        sys.exit("pr-watcher: self-test — a fresh PR's two runs were cancelled")
+    # and the act asks again: a PR open for the branch now keeps the run
+    sent = []
+    open_now = {"v": "1"}
+    def fake(args):
+        sent.append(args)
+        return open_now["v"] if args[:2] == ["pr", "list"] else ""
+    execute([{"do": "cancel", "run": 7, "branch": "new-lane", "text": "x"}], "avra-lang/avra", run=fake)
+    if any(a[:2] == ["run", "cancel"] for a in sent):
+        sys.exit("pr-watcher: self-test — a run whose PR is open now was cancelled")
+    open_now["v"] = "0"
+    sent.clear()
+    execute([{"do": "cancel", "run": 7, "branch": "gone-lane", "text": "x"}], "avra-lang/avra", run=fake)
+    if not any(a[:2] == ["run", "cancel"] for a in sent):
+        sys.exit("pr-watcher: self-test — a run whose PR is closed was kept")
     # FOLLOW: a pass that sees a PR about to land polls main and runs a pass when its head moves.
     def drive(heads, landings):
         log = {"sleeps": [], "steps": 0}
@@ -1341,7 +1380,7 @@ def run_pass(world, state, state_path, repo, execute_fn=execute, label="pr-watch
     """One live pass. State is committed and SAVED in a `finally`:
     whatever an action or the pass itself does, the marks of what
     SUCCEEDED stand and the next pass retries only what failed."""
-    acts = plan(world["prs"], world["runs"], state, world.get("main"), world.get("held"))
+    acts = plan(world["prs"], world["runs"], state, world.get("main"), world.get("held"), seen_at=world.get("seen_at"))
     for a in acts:
         print(label, a["do"], a.get("pr", a.get("run", "")), a.get("text", ""))
     failed = []
@@ -1383,7 +1422,7 @@ def main(argv):
     state = load_state(state_path)
     world = collect(repo, state)
     if "--dry-run" in argv:
-        acts = plan(world["prs"], world["runs"], state, world.get("main"), world.get("held"))
+        acts = plan(world["prs"], world["runs"], state, world.get("main"), world.get("held"), seen_at=world.get("seen_at"))
         armed = sum(1 for a in acts if a["do"] == "arm")
         refreshed = sum(1 for a in acts if a["do"] == "refresh")
         cancelled = sum(1 for a in acts if a["do"] == "cancel")
