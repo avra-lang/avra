@@ -23,6 +23,9 @@ use core.{
     FnParts,
     ImplParts,
     TypeRef,
+    SeatMark,
+    mark_at,
+    plain_mark,
     source_spelled,
     named_ref,
     spelled,
@@ -50,7 +53,16 @@ use features.{
     Generation,
     Decl,
 }
-use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind, arg_text}
+use features.{
+    meta_mark,
+    meta_of_fn,
+    meta_of_type,
+    meta_of_named,
+    meta_of_trait,
+    kind_of,
+    no_kind,
+    arg_text,
+}
 use @std.meta.{
     Directive,
     Node,
@@ -60,6 +72,7 @@ use @std.meta.{
     Trait as MetaTrait,
     Param as MetaParam,
     Field as MetaField,
+    Spelled as MetaSpelled,
     Variant as MetaVariant,
     Kind,
     Annotation as MetaAnnotation,
@@ -1239,7 +1252,38 @@ impl Workspace {
     /// fields a `..Record` spread placed, which the declaration never
     /// wrote, so the two runs do not share positions.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
-        [crossed_field(v, p, self.field_kind(d, p.name.of)) for p in v.store.declared_fields(s)]
+        [self.crossed(v, p, self.field_kind(d, p.name.of)) for p in v.store.declared_fields(s)]
+    }
+
+    /// One field as a `Field` value: the one door every crossed field takes.
+    fn crossed(v: FileView, p: Param, kind: Kind) -> MetaField {
+        crossed_field(v, p, kind, self.spelled_field(v.file, p.ty))
+    }
+
+    fn spelled_field(f: FileId, written: TypeRef?) -> MetaSpelled? {
+        let t? = written else { return null }
+        self.spelled_in(f, t, plain_mark)
+    }
+
+    /// A written type whole, each name met with the module declaring it and
+    /// each argument with the seat mark the spelling gave it.
+    fn spelled_in(f: FileId, t: TypeRef, mark: SeatMark) -> MetaSpelled {
+        MetaSpelled {
+            name: t.name,
+            module: self.declaring_module(f, t.name),
+            args: [self.spelled_in(f, a, mark_at(t.marks, j)) for j, a in t.args],
+            optional: t.optional,
+            dynamic: t.dynamic,
+            arrow: t.arrow,
+            alternatives: [self.spelled_in(f, a, plain_mark) for a in t.alternatives],
+            mark: meta_mark(mark),
+        }
+    }
+
+    fn declaring_module(f: FileId, name: string) -> string? {
+        let d? = self.type_decl_named(f, name) else { return null }
+        if self.decls.is_builtin(d) { return null }
+        self.decls.qualified_module(d)
     }
 
     /// An enum's variants: name, payload spellings, and the payload
@@ -1281,7 +1325,7 @@ impl Workspace {
             name: m.name,
             payload: [written_spelling(p.ty) for p in fields if !faceted(p.marks)],
             at: placed(v, v.store.stmt_span(m.stmt)),
-            fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in fields],
+            fields: [self.crossed(v, p, kind_at(kinds, j)) for j, p in fields],
             marks: crossed_marks(v, self.decls.member_marks(m.id, gathering)),
             doc: self.decl_doc_text(m.id),
             annotations: self.decl_annotations(v, m.id),
@@ -1301,7 +1345,7 @@ impl Workspace {
             name: va.name.of,
             payload: [written_spelling(p.ty) for p in va.payloads if !faceted(p.marks)],
             at: placed(v, va.span),
-            fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads],
+            fields: [self.crossed(v, p, kind_at(kinds, j)) for j, p in va.payloads],
             marks: crossed_marks(v, va.marks),
             doc: null,
             annotations: crossed_annotations(v, va.marks),
