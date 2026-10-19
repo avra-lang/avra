@@ -187,15 +187,20 @@ impl Screen {
             return
         }
         let end = self.now.get() + span.ms
+        self.shown.app.holding.set(true)
         self.settled()
         while true {
             let next? = self.wants.next_by(end) else { break }
-            if next.due > self.now.get() { self.now.set(next.due) }
+            if next.due > self.now.get() {
+                self.framed()
+                self.now.set(next.due)
+            }
             self.fire(next)
             self.settled()
         }
+        self.framed()
+        self.shown.app.holding.set(false)
         self.now.set(end)
-        let _ = self.shown.app.flush()
     }
 
     /// What sources have left runs, in the order it was left, and what left
@@ -221,8 +226,7 @@ impl Screen {
 
     /// The display's frame comes: the screen shows the state as it stands.
     fn framed() {
-        self.shown.app.frames.set(self.shown.app.frames.get() + 1)
-        let _ = self.shown.app.flush()
+        if self.shown.app.flush() { self.shown.app.frames.set(self.shown.app.frames.get() + 1) }
     }
 
     fn turned(act: Act, owner: string?) {
