@@ -148,7 +148,7 @@ fn lane_of(k: Key) -> Lane {
     match k {
         .Escape or .Chord(_, _, _) or .PageUp or .PageDown or .Top or .Bottom -> .Before,
         .Enter -> .After,
-        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) -> .Never,
+        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) or .Shortcut -> .Never,
     }
 }
 
@@ -162,7 +162,7 @@ fn chord_of(k: Key) -> Chord? {
         .Top -> parsed("Home"),
         .Bottom -> parsed("End"),
         .Chord(text, ctrl, alt) -> parsed("${if ctrl { "ctrl+" } else { "" }}${if alt { "alt+" } else { "" }}${text}"),
-        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) -> null,
+        .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) or .Shortcut -> null,
     }
 }
 
@@ -204,7 +204,7 @@ fn slid(c: Control, by: int) -> bool {
 /// no other control hears it, whatever the words in it say.
 fn pasted(c: Control, text: string) -> bool {
     match c.node.prim {
-        .Field -> c.says(.Input, Said.Text(said_of(c.node.attrs).value + one_line(text))),
+        .Field -> c.says(Said.Text(said_of(c.node.attrs).value + one_line(text))),
         .Text or .Heading or .Button or .Link or .Image or .Checkbox or .Row or .Column or .Dialog or .Divider or .Icon or .Surface or .List or .Item or .Card or .Progress or .Alert or .Spinner or .Form or .Switch or .Slider or .Key -> false,
     }
 }
@@ -562,6 +562,7 @@ impl Terminal {
                 self.kitty_asked()
                 false
             },
+            .Shortcut -> false,
             .Enter -> self.act(entered),
             .Erase -> self.act(erased),
             .Char(ch) -> self.act((c: Control) -> typed(c, ch)),
