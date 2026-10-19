@@ -6,10 +6,10 @@
 //! file: a row names its value by digest, the slot section places it in
 //! `body-<rev>.val`, and a read seeks one value and checks it against its digest.
 //!
-//! THE INDEX is one fixed-width line a row, in body order: a newline, the first 32
+//! THE INDEX is one fixed-width line a row, sorted by key: a newline, the first 32
 //! hex digits of the row's action key, then the row's offset and length in the ROWS
-//! section as zero-padded decimal. A lookup is one `index_of` over those bytes; the
-//! line's position is the row's ORDINAL, which the reverse section names. An open
+//! section as zero-padded decimal. A lookup bisects those bytes, so it reads O(log n)
+//! lines; the line's position is the row's ORDINAL, which the reverse section names. An open
 //! reads the head and the index and decodes no row: a hit decodes the rows it asks
 //! for, each checked against the key it was asked by.
 use @std.io.{read_bytes, write_bytes, append_bytes, list_dir, open_beneath, remove, Opened}
@@ -17,11 +17,11 @@ use @std.path.{joined_path}
 use @std.relation.stable.{writer, reader, Writer, Reader}
 use @std.relation.engine.{list_cell, map_cell}
 use @std.text.{parse_int}
-use core.{distinct, flatten, sorted_by, text_before, digest_of_octets}
+use core.{flatten, sorted_by, text_before, digest_of_octets}
 use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
-const BODY_VERSION: int = 5
+const BODY_VERSION: int = 6
 
 /// An index line: a newline, the action key's leading hex digits, the row's offset and length.
 const KEY_HEX: int = 32
@@ -221,11 +221,7 @@ fn wrote(at: string, bytes: Bytes) -> bool {
 
 /// The body's bytes: the head, then the index, names, sets, reverse section and rows.
 fn body_bytes(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: List<Placed>) -> Bytes {
-    let families = sorted_by(
-        distinct([record_of(pack, k)?.family ?? "" for k in keys]),
-        text_before,
-    )
-    let held = [record_of(pack, k)! for fam in families for k in keys if record_of(pack, k)?.family == fam]
+    let held = indexed(pack, keys)
     let reads = [reads_of(pack, h) for h in held]
     let n = names()
     n.filled(flatten(reads))
@@ -258,6 +254,14 @@ fn body_bytes(pack: Pack, keys: List<string>, rev: int, val_rev: int, placed: Li
     [framed(head.bytes())].concat(sections).bytes()
 }
 
+/// The live rows in index order: by the leading hex of their action key, the order a lookup bisects.
+fn indexed(pack: Pack, keys: List<string>) -> List<Held> {
+    [record_of(pack, t.substring(KEY_HEX, t.length))! for t in sorted_by(["${index_hex(k)}${k}" for k in keys], text_before)]
+}
+
+/// The leading hex of the action key a record key's index line holds.
+fn index_hex(at: string) -> string { digest_of_octets(at.bytes()).substring(0, KEY_HEX) }
+
 /// One row as the rows section holds it: what a lookup decodes, and checks against its key.
 fn row_bytes(h: Held, set_id: int) -> Bytes {
     let w = writer()
@@ -275,7 +279,7 @@ fn slot_bytes(placed: List<Placed>) -> Bytes {
         .bytes()
 }
 
-/// The index: one line a row, in body order — the line's position is the row's ordinal.
+/// The index: one line a row, sorted by key — the line's position is the row's ordinal.
 fn index_bytes(held: List<Held>, rows: List<Bytes>) -> Bytes {
     mut at = 0
     mut lines: List<string> = []
@@ -365,7 +369,7 @@ export fn sealed_readers(pack: Pack, moved: Map<string, bool>) -> List<string> {
         for at in run_ordinals(run) {
             let h? = sealed_held_at(pack, s, at) else { continue }
             let key = record_key(h.family, h.key)
-            if resident(pack, key) { out.push(key) }
+            if resident_held(pack, key, h) { out.push(key) }
         }
     }
     out
@@ -386,6 +390,12 @@ fn resident(pack: Pack, key: string) -> bool {
     h.set >= 0 && !withdrawn(pack, key)
 }
 
+/// `resident` for a row already in hand: no second find of what was just decoded.
+fn resident_held(pack: Pack, key: string, h: Held) -> bool {
+    let held = pack.records.get().get(key) ?? h
+    held.set >= 0 && !withdrawn(pack, key)
+}
+
 /// A row by its record key: this process's own (a segment, a write) over the sealed body's.
 fn record_of(pack: Pack, at: string) -> Held? {
     let held = pack.records.get().get(at)
@@ -397,18 +407,34 @@ fn record_of(pack: Pack, at: string) -> Held? {
 /// The sealed body's row under a record key: found in the index, decoded, and held to the
 /// key it was asked by — a row that decodes to another key is no answer.
 fn sealed_held(pack: Pack, s: Sealed, at: string) -> Held? {
-    let needle = "\n${digest_of_octets(at.bytes()).substring(0, KEY_HEX)}".bytes()
-    mut from = 0
-    while from < s.x.length {
-        let found = s.x.index_of(needle, from)
-        if found < 0 { return null }
-        if found % LINE == 0 {
-            let h? = sealed_held_at(pack, s, found / LINE) else { return null }
-            if record_key(h.family, h.key) == at { return h }
-        }
-        from = found + 1
+    let want = index_hex(at)
+    mut ordinal = first_from(pack, s, want)
+    while ordinal < s.count && index_line_hex(pack, s, ordinal) == want {
+        let h? = sealed_held_at(pack, s, ordinal) else { return null }
+        if record_key(h.family, h.key) == at { return h }
+        ordinal = ordinal + 1
     }
     null
+}
+
+/// The first ordinal whose line holds `want` or more: a bisection of the key-sorted index,
+/// one line read a step.
+fn first_from(pack: Pack, s: Sealed, want: string) -> int {
+    mut lo = 0
+    mut hi = s.count
+    while lo < hi {
+        let mid = (lo + hi) / 2
+        if text_before(index_line_hex(pack, s, mid), want) { lo = mid + 1 } else { hi = mid }
+    }
+    lo
+}
+
+/// The leading key hex one index line holds, counted as a probe.
+fn index_line_hex(pack: Pack, s: Sealed, ordinal: int) -> string {
+    let t = pack.traffic.get()
+    pack.traffic.set(t with { probes: t.probes + 1 })
+    let line = ordinal * LINE
+    s.x.slice(line + 1, line + 1 + KEY_HEX).text() ?? ""
 }
 
 /// One row of the sealed body by ordinal, decoded from its span of the rows section; its
