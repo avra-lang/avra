@@ -46,25 +46,62 @@ help: it could begin with `yield`, PKG, `component`, COMPONENT, `use`, `export`,
 
 input remains after the program ended
 
-No witness yet.
+No witness here: it is the grammar engine's word for a start rule that matched short, and Avra's `program` rule and every sublanguage block name what was expected instead — `expected EOF`, `unexpected input after` — so no program reaches it.
 
 ## build.failed
 
 a builder rejected its captures
 
-No witness yet.
+```avra
+component tally {
+    n: int
+}
+tally Span { n: 2 } { n: 3 }
+0
+```
+
+```
+error[build.failed]: the brace after an instance's head opens the instance's block, so `Span { … }` is no record literal here — a record literal as the head stands in parentheses: `tally (Span { … })`
+  ╭─[witness.av:4:1]
+4 │ tally Span { n: 2 } { n: 3 }
+  · ┬
+──╯
+```
 
 ## language.defect
 
 the language definition itself is defective
 
-No witness yet.
+No witness here: it is the compiler blaming its own grammar or builders, which no program can cause.
 
 ## block.parse
 
 a sublanguage block parses by its grammar
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+"@x/c" = { path = "vendor/c" }
+
+// /w/src/main.av
+use @x.c.{sql, Select}
+let q: Select = sql { garbage }
+0
+```
+
+```
+error[block.parse]: expected `SELECT` while parsing `select`
+  ╭─[/w/src/main.av:2:23]
+2 │ let q: Select = sql { garbage }
+  ·                       ┬
+──╯
+help: the block is parsed by the grammar its word declares — write the shape that grammar names
+```
 
 ## resolve.unresolved
 
@@ -846,7 +883,36 @@ help: change the instance's settings, or the library's `check` that refuses them
 
 a `Format` head is `@std.meta`'s pattern type
 
-No witness yet.
+```
+// /w/avra.toml
+[package]
+name = "app"
+version = "0.1.0"
+
+[dependencies]
+"@std/meta" = { path = "vendor/meta" }
+
+// /w/src/main.av
+use @std.meta.{Code}
+type Format = { n: int }
+component loose(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { ${self.body} }
+    }
+}
+0
+```
+
+```
+error[type.component_format]: a `Format` head is `@std.meta`'s pattern type, and `path`'s `Format` names another
+  ╭─[/w/src/main.av:3:1]
+3 │ component loose(path: Format) {
+  · ┬
+  · ╰── this component
+──╯
+help: `use @std.meta.{Format}`, or rename the other type
+```
 
 ## type.component_event
 
@@ -1683,7 +1749,7 @@ help: a re-export names a declaration — import `x` from the module that declar
 
 a re-export never closes a package cycle
 
-No witness yet.
+No witness here: it needs two packages whose re-exports close a package cycle, a graph the memory host cannot stand up in one witness.
 
 ## resolve.nested_use
 
@@ -3854,12 +3920,6 @@ error[loop.label]: `break` names a loop by its `for` binder, and `y` is no enclo
 help: a `while` has no name — `break` alone ends the innermost loop
 ```
 
-## flow.source_loop
-
-a `for` over a `Source` walks a running supply
-
-No witness yet.
-
 ## type.quote_hole
 
 a hole takes what its seat takes
@@ -4040,7 +4100,23 @@ help: put a fixed node between them, or merge them into one run
 
 a named grammar's action names a fn of its own module, with its arity
 
-No witness yet.
+```avra
+fn f(c: string) -> string { c }
+grammar bad {
+    select = "A" x:nothing -> f(x)
+}
+0
+```
+
+```
+error[type.syntax_action]: references undefined rule `nothing`
+  ╭─[witness.av:2:1]
+2 │ grammar bad {
+  · ┬
+  · ╰── in this grammar
+──╯
+help: write the shape the grammar names — the block is parsed by the grammar its word declares
+```
 
 ## resolve.block_word
 
