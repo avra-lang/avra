@@ -7,7 +7,7 @@
 //! A FIELD SHOWS WHAT THE VIEW SAYS IT HOLDS: a typed character says the
 //! held text and the character, and a view that does not keep what it was
 //! told shows none of it.
-use @std.text.{codepoints, from_codepoints}
+use @std.text.{ascii_lower, codepoints, from_codepoints}
 use app.{Act, Shown, running, shown, stood, notice_node}
 use tree.controls.{Control}
 use tree.node.{Said, Node, Attribute}
@@ -146,7 +146,7 @@ enum Lane {
 /// A key's lane. Every key spelled.
 fn lane_of(k: Key) -> Lane {
     match k {
-        .Escape or .Chord(_, _, _) or .PageUp or .PageDown or .Top or .Bottom -> .Before,
+        .Escape or .Chord(_, _, _, _) or .PageUp or .PageDown or .Top or .Bottom -> .Before,
         .Enter -> .After,
         .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) or .Shortcut -> .Never,
     }
@@ -161,7 +161,9 @@ fn chord_of(k: Key) -> Chord? {
         .PageDown -> parsed("PageDown"),
         .Top -> parsed("Home"),
         .Bottom -> parsed("End"),
-        .Chord(text, ctrl, alt) -> parsed("${if ctrl { "ctrl+" } else { "" }}${if alt { "alt+" } else { "" }}${text}"),
+        .Chord(text, ctrl, alt, shift) -> parsed(
+            "${if ctrl { "ctrl+" } else { "" }}${if alt { "alt+" } else { "" }}${if shift { "shift+" } else { "" }}${ascii_lower(text)}",
+        ),
         .Next or .Back or .Erase or .Char(_) or .End or .Click(_, _, _, _, _) or .Wheel(_, _, _) or .Paste(_) or .FocusIn or .FocusOut or .Reports(_) or .Shortcut -> null,
     }
 }
@@ -535,8 +537,8 @@ impl Terminal {
                 false
             },
             .Escape -> false,
-            .Chord(text, ctrl, alt) -> {
-                if text == "c" && ctrl && !alt { (self.interrupts)() }
+            .Chord(text, ctrl, alt, shift) -> {
+                if text == "c" && ctrl && !alt && !shift { (self.interrupts)() }
                 false
             },
             .Click(x, y, _, _, _) -> self.click(x, y),

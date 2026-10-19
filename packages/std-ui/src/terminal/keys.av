@@ -134,20 +134,25 @@ fn mouse_key(params: string, down: bool) -> List<Key> {
 fn kitty_key(params: string) -> List<Key> {
     if params.starts_with("?") { return [Key.Reports(parse_int(params.replace("?", "")) ?? 0)] }
     let parts = params.split(";")
-    let code = parse_int(parts[0].split(":")[0]) ?? -1
+    let keys = parts[0].split(":")
+    let code = parse_int(keys[0]) ?? -1
+    let place = if keys.length > 2 { parse_int(keys[2]) ?? code } else { code }
     let mods = if parts.length > 1 { parts[1].split(":") } else { ["1"] }
     let bits = (parse_int(mods[0]) ?? 1) - 1
     let let_go = mods.length > 1 && mods[1] == "3"
     if let_go || bits / 8 > 0 || code < 0 { return [] }
-    chorded(code, bits % 2 == 1, bits / 2 % 2 == 1, bits / 4 % 2 == 1)
+    chorded(code, place, bits % 2 == 1, bits / 2 % 2 == 1, bits / 4 % 2 == 1)
 }
 
-/// The key a kitty code and its Shift, Alt and Ctrl bits spell. A key with
+/// The key a kitty code and its Shift, Alt and Ctrl bits spell. A chord is
+/// named by the key's place (the base-layout key the terminal reports), so it
+/// is the same on every layout; a terminal without the protocol reports only
+/// the layout's key. A key with
 /// Ctrl or Alt is a chord, told from the control character it would be in
 /// the legacy encoding (which spells a control octet the same way). Ctrl-D ends
 /// the input as its octet does; Ctrl-C is a chord, since a terminal in cbreak
 /// mode turns it into a signal before it reaches the keys.
-fn chorded(code: int, shift: bool, alt: bool, ctrl: bool) -> List<Key> {
+fn chorded(code: int, place: int, shift: bool, alt: bool, ctrl: bool) -> List<Key> {
     when {
         code == tab && (ctrl || alt) -> []
         code == tab && shift -> [Key.Back]
@@ -157,7 +162,7 @@ fn chorded(code: int, shift: bool, alt: bool, ctrl: bool) -> List<Key> {
         code == delete || code == backspace -> [Key.Erase]
         code < space -> []
         ctrl && !alt && code == letter_d -> [Key.End]
-        ctrl || alt -> [Key.Chord(from_codepoint(code), ctrl, alt)]
+        ctrl || alt -> [Key.Chord(from_codepoint(place), ctrl, alt, shift)]
         _ -> [Key.Char(from_codepoint(code))]
     }
 }
@@ -266,7 +271,7 @@ fn read(b: Bytes, at: int, cap: int) -> Read {
         c == tab -> one([Key.Next], at)
         c == backspace || c == delete -> one([Key.Erase], at)
         c == end_of_input -> one([Key.End], at)
-        c >= 1 && c <= control_z -> one([Key.Chord(from_codepoint(c + 96), true, false)], at)
+        c >= 1 && c <= control_z -> one([Key.Chord(from_codepoint(c + 96), true, false, false)], at)
         c < space -> one([], at)
         _ -> character(b, at)
     }
@@ -322,9 +327,10 @@ export fn modes_off() -> string {
     "${esc}[?1004l${esc}[?2004l${esc}[?1006l${esc}[?1000l"
 }
 
-/// The kitty keyboard protocol turned on (disambiguated escape codes) once
-/// the terminal has answered its query, and its flags put back.
-export fn kitty_on() -> string { "${from_codepoint(27)}[>1u" }
+/// The kitty keyboard protocol turned on (disambiguated escape codes, and the
+/// base-layout key of each key reported) once the terminal has answered its
+/// query, and its flags put back.
+export fn kitty_on() -> string { "${from_codepoint(27)}[>5u" }
 
 export fn kitty_off() -> string { "${from_codepoint(27)}[<u" }
 
