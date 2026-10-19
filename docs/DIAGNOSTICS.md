@@ -6089,7 +6089,21 @@ help: a file in a package sees the prelude — or walk the pairs, `for k, v in m
 
 `put` needs a cell holding a map
 
-No witness yet.
+```avra
+let c = Cell.new(1)
+c.put("k", 1)
+1
+```
+
+```
+error[type.cell_map]: `put` inserts into the map a cell holds, and this cell holds `int`
+  ╭─[witness.av:2:1]
+2 │ c.put("k", 1)
+  · ┬
+  · ╰── not a map
+──╯
+help: put values in through a `Cell<Map<string, V>>`
+```
 
 ## type.interp_hole
 
