@@ -1042,6 +1042,7 @@ ui-board:
 # UI_BROWSER_SKIP=<reason> stands it down; ui-browser-skip holds that contract.
 ui-browser:
 	@sh tools/ui_board_browser.sh
+	@sh tools/ui_board_browser_refuses.sh
 
 ui-browser-skip:
 	@sh tools/ui_board_browser.sh --self-test

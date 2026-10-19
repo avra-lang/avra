@@ -11,9 +11,13 @@
 # missing: a run that examined nothing is no pass. Only a hand-set
 # UI_BROWSER_SKIP=<reason> stands it down on a local machine, loudly; on the
 # checks' machine (CI=true) nothing does. UI_BOARD_TARGET names one wasm triple (default `wasm`);
-# UI_BROWSER_SHOTS names a directory the run leaves screenshots in. UI_BROWSER_ENGINES names the engines
-# to run, in order (default `firefox`; the checks name `firefox webkit`); UI_BROWSER_DEVICE names a Playwright device
-# ("iPhone 15") for the WebKit run: a touch screen and a phone's window.
+# UI_BROWSER_SHOTS names a directory the run leaves screenshots in; UI_BOARD_DIR
+# names the board's directory (default tools/ui-board). UI_BROWSER_ENGINES names
+# the engines to run, in order (default `firefox`; the checks name `firefox webkit`);
+# UI_BROWSER_DEVICE names a Playwright device ("iPhone 15") for the WebKit run: a
+# touch screen and a phone's window. A build that fails is REFUSED at once with
+# the build's words: `avra dev` keeps serving nothing, and a page that never
+# mounts would wait out the bound.
 set -eu
 
 # Whether a browser stands at the path `$1`.
@@ -85,13 +89,12 @@ skip() {
 command -v node >/dev/null 2>&1 || skip "no \`node\` on this machine"
 node -e 'process.exit(typeof WebSocket === "function" ? 0 : 1)' || skip "this \`node\` has no WebSocket of its own (22 or later has)"
 node --input-type=module -e "import { firefoxBinary } from '$here/ui-board/firefox.mjs'; process.exit(firefoxBinary() ? 0 : 1)" || skip "no Firefox on this machine (FIREFOX names one)"
-if [ ! -f "$tree/build/wasm32/libavra_runtime.a" ]; then
-    ( cd "$tree" && make -s wasm-runtime wasm-packages ) >/dev/null 2>&1 || skip "the wasm runtime archive did not build"
-fi
+# Incremental, so it is cheap when current: what the board links is built by dependency.
+( cd "$tree" && make -s wasm-runtime wasm-packages ) >"$work/make.out" 2>&1 || skip "the wasm runtime did not build: $(tail -3 "$work/make.out" | tr '\n' ' ')"
 
 # A COPY is served, so the run edits no file of the tree's.
 mkdir -p "$work/tools"
-cp -R "$tree/tools/ui-board" "$work/tools/ui-board"
+cp -R "${UI_BOARD_DIR:-$tree/tools/ui-board}" "$work/tools/ui-board"
 "$avra" dev --target "$target" --port 0 "$work/tools/ui-board" >"$work/dev.out" 2>"$work/dev.err" &
 dev=$!
 trap 'kill "$dev" 2>/dev/null || true' EXIT
@@ -107,6 +110,13 @@ until grep -q '^dev: .* at http' "$work/dev.out" 2>/dev/null; do
     sleep 0.1
 done
 url=$(sed -n 's/^dev: .* at \(http[^ ]*\).*$/\1/p' "$work/dev.out" | head -1)
+# `avra dev` answers 503 with the build's words while its last build has failed.
+status=$(node -e 'fetch(process.argv[1]).then(async (r) => { process.stdout.write(`${r.status}\n${await r.text()}`) })' "$url")
+if [ "$(echo "$status" | head -1)" = 503 ]; then
+    echo "$status" | tail -n +2
+    echo "ui-browser: the board's build failed (the page answers 503) — ran 0 claims"
+    exit 1
+fi
 
 # THE ENGINES: Firefox, and WebKit — the engine every iOS browser is, which reads what Firefox
 # tolerates differently (a `showModal` on a dialog already open, an import encoding Firefox
