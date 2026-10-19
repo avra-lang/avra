@@ -35,13 +35,15 @@ impl WaitKind {
 }
 
 /// Whether a head's tasks are made where it is written, and so owned by no
-/// binding: anything but a read of a name or of a path under one. Such tasks
-/// are joined as the frame closes, and cancelled first when that frame is
-/// leaving because its task was cancelled — as a bound `spawn` is.
+/// binding: only a head whose node says it makes one — a call, a method, a
+/// spawn, a record, a select. A node that says nothing (`.None`, a plain name
+/// among them) is a read of something a binding owns. Such tasks are joined as
+/// the frame closes, and cancelled first when that frame is leaving because its
+/// task was cancelled — as a bound `spawn` is.
 fn made_here(probe: WaitProbe) -> bool {
     match probe {
-        .Read or .Chain -> false,
-        .None or .Call or .Method or .Value or .Spawn or .Record or .Select -> true,
+        .Call or .Method or .Value or .Spawn or .Record or .Select -> true,
+        .None or .Read or .Chain -> false,
     }
 }
 
