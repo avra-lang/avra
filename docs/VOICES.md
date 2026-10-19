@@ -11,22 +11,22 @@ which only shrinks.
 | family | kinds | witnessed | help | fix |
 |---|---|---|---|---|
 | lex | 1 | 1 | 1 | 0 |
-| parse | 2 | 1 | 1 | 0 |
+| parse | 1 | 1 | 1 | 0 |
 | build | 1 | 1 | 0 | 0 |
 | language | 1 | 0 | 0 | 0 |
 | block | 1 | 1 | 1 | 0 |
-| resolve | 33 | 31 | 31 | 2 |
+| resolve | 33 | 32 | 32 | 2 |
 | lower | 8 | 7 | 7 | 0 |
-| type | 134 | 85 | 85 | 6 |
-| flow | 17 | 11 | 11 | 0 |
-| annotation | 17 | 8 | 8 | 0 |
-| manifest | 30 | 20 | 20 | 0 |
+| type | 133 | 122 | 122 | 6 |
+| flow | 16 | 12 | 12 | 0 |
+| annotation | 17 | 12 | 12 | 0 |
+| manifest | 30 | 28 | 28 | 0 |
 | collect | 14 | 14 | 14 | 0 |
 | collect_enum | 7 | 7 | 7 | 0 |
 | const | 6 | 6 | 6 | 0 |
 | shape | 1 | 0 | 0 | 0 |
 | loop | 2 | 2 | 2 | 0 |
-| **all** | 275 | 187 | 187 | 8 |
+| **all** | 272 | 246 | 245 | 8 |
 
 ## Rules
 
