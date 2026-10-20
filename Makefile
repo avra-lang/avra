@@ -575,7 +575,7 @@ SHA_SRC_llvm_wrapper := backend/llvm_wrapper.c runtime/avra_box.h runtime/avra_h
 SHA_SRC_ffi := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
 # EVERY STAMP IN ONE PROCESS, SETTLED WHILE MAKE READS THIS FILE:
-# tools/stamps.py is handed every source's stamp — its sources and its
+# tools/stamps.sh is handed every source's stamp — its sources and its
 # flags — and rewrites only those whose digest moved, before make looks
 # at any object's mtime, so the first build after a change sees it. One
 # process where six a stamp ran, and the same content-hash law.
@@ -1133,7 +1133,8 @@ keepers keepers-alone keepers-a keepers-a1 keepers-a2 keepers-b:
 # THE TOOLS' OWN WITNESSES: each instrument the gate and the lanes lean
 # on, proved on its fixtures — none reads the compiler.
 # One witness per line, so a lane adding an instrument appends a line.
-TOOL_WITNESSES = capped.sh\ --self-test \
+TOOL_WITNESSES = stamps.sh\ --self-test \
+                 capped.sh\ --self-test \
                  failed_tail_test.sh \
                  host_fn_edit_attack.sh\ --self-test \
                  gate_receipt.sh\ --self-test \
@@ -1504,4 +1505,4 @@ scaffold-check: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 
 # THE STAMPS SETTLE LAST, once every flag they read is defined (see
 # `stamp_args`, above): an earlier settling would hash a flag still empty.
-STAMPS_SETTLED := $(shell python3 tools/stamps.py $(foreach c,$(TREE_C),$(call stamp_args,$(basename $(notdir $(c))),$(c))))
+STAMPS_SETTLED := $(shell sh tools/stamps.sh $(foreach c,$(TREE_C),$(call stamp_args,$(basename $(notdir $(c))),$(c))))
