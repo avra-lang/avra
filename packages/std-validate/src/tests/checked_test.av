@@ -3,7 +3,7 @@
 // issue at its field, every refusal is kept in field order, and a
 // nullable field that holds nothing has nothing to judge.
 use @std.meta.{derive}
-use @std.validate.{Checked, Issues, checked, range, length, one_of}
+use @std.validate.{Checked, Issues, Value, checked, range, length, one_of}
 
 @derive(Checked)
 type Nothing = {}
@@ -20,6 +20,11 @@ type Account = {
     @range(13, 130) age: int,
     @length(max: 3) nick: string? = null,
     @one_of(["a", "b"]) mode: string = "a",
+}
+
+@derive(Checked)
+type Vault = {
+    @secret @length(min: 8) pin: string,
 }
 
 /// A rule over the whole record, run once its fields are held.
@@ -75,6 +80,18 @@ spec "std/validate checked" {
             }
         }
         then "and passes a record that satisfies it" { checked(Span { lo: 1, hi: 5 }) is .Ok }
+        then "a refusal shows what the field held, as a decode would" {
+            match checked(account("", 3, null, "a")) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all[0].received?.shown() == "\"\"" && e.all[1].received?.shown() == "3",
+            }
+        }
+        then "and shows nothing for a secret" {
+            match checked(Vault { pin: "abc" }) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all.length == 1 && e.all[0].received == null,
+            }
+        }
         then "a rule's own words are the issue's message" {
             match checked(account("", 36, null, "a")) {
                 .Ok(_) -> false,

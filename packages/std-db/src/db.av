@@ -38,14 +38,16 @@ use @std.meta.{
 use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
-use @std.validate.{Checked, Issues, checker}
+use @std.validate.{Checked, Issues, checker, decoder, stripped}
 use error.{ModelError, UniqueField, or_attributed, or_invalid}
 
 export trait Model {
     static fn derive(t: Type) -> List<Directive> {
+        let read = stripped(t, claimed(t))
         [
             Directive { twin: "", name: t.name, at: t.at, source: generated(t) },
-            Directive { twin: "", name: t.name, at: t.at, source: checks(t) },
+            Directive { twin: "", name: t.name, at: t.at, source: checks(read) },
+            Directive { twin: "", name: t.name, at: t.at, source: decodes(read) },
         ]
     }
 
@@ -97,11 +99,20 @@ fn shape_ok(t: Type) -> bool {
     t.variants.is_empty() && has_id_field(t) && t.fields.length <= MAX_FIELDS
 }
 
-/// The rules the type declares, run over a row before any SQL. The
-/// marks the model owns (`@unique`, `@model`) are no rules.
+/// The annotations a model owns — its marks and its own — which are no
+/// rule of the validation it brings.
+fn claimed(t: Type) -> List<string> { Model.marks(t).concat(["model"]) }
+
+/// The rules the type declares, run over a row before any SQL.
 fn checks(t: Type) -> Decls {
     if !shape_ok(t) { return quote { impl ${t} { } } }
-    checker(t, ["unique", "model"])
+    checker(t)
+}
+
+/// The type read from a body by the same rules: one door in.
+fn decodes(t: Type) -> Decls {
+    if !shape_ok(t) { return quote { impl ${t} { } } }
+    decoder(t)
 }
 
 fn generated(t: Type) -> Decls {

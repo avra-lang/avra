@@ -10,6 +10,7 @@
 use derive.{Checked}
 use validate.{Refusal}
 use issue.{Issue, Issues, Path}
+use value.{Value}
 
 /// The value, or every rule it breaks.
 export fn checked<T: Checked>(v: T) -> Result<T, Issues> {
@@ -27,16 +28,19 @@ impl Checking {
 /// A rule's verdict at the place it filed: what the rule answered, or
 /// null with its refusal filed — the rule named `rule` unless its
 /// issue names one.
-export fn filed<T, E: Refusal>(mut c: Checking, at: Path, rule: string, verdict: Result<T, E>) -> T? {
+export fn filed<T, E: Refusal>(
+    mut c: Checking,
+    at: Path,
+    seen: Value?,
+    rule: string,
+    verdict: Result<T, E>,
+) -> T? {
     match verdict {
         .Ok(v) -> v,
         .Err(e) -> {
             for i in e.issues() {
-                c
-                    .found
-                    .push(
-                        i with { path: i.path.under(at), rule: if i.rule.is_empty() { rule } else { i.rule } },
-                    )
+                let placed = i with { path: i.path.under(at), rule: if i.rule.is_empty() { rule } else { i.rule }, received: i.received ?? seen }
+                c.found.push(placed)
             }
             null
         },

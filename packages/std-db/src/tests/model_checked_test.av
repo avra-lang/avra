@@ -6,7 +6,7 @@ use @std.db.{model}
 use @std.db.error.{ModelError, modeled}
 use @std.sqlite.{Db, sql}
 use @std.sqlite.error.{SqlError}
-use @std.validate.{length, range}
+use @std.validate.{checked, length, range}
 
 @model
 type Plain = {
@@ -19,6 +19,13 @@ type Member = {
     id: int = 0,
     @unique @length(min: 3) email: string,
     @range(13, 130) age: int,
+}
+
+/// One type through every door: the table, the body, the value.
+@model
+type Login = {
+    id: int = 0,
+    @unique @length(min: 3) email: string,
 }
 
 fn seeded() -> Result<Db, SqlError> {
@@ -72,7 +79,27 @@ fn taken_email() -> Result<string, ModelError> {
     }
 }
 
+/// A body read as a `Login`: it, or every issue as `path rule`.
+fn read(text: string) -> string {
+    match Login.from_json(text) {
+        .Ok(l) -> "ok ${l.email}",
+        .Err(e) -> [i.path.text() + " " + i.rule for i in e.all].join(", "),
+    }
+}
+
 spec "std/db checked on write" {
+    given "a model that is also decoded" {
+        then "a body that passes its rules decodes" { read("{\"email\": \"ada@x.com\"}") == "ok ada@x.com" }
+        then "a body that breaks one is refused, @unique being no rule" {
+            read("{\"email\": \"ab\"}") == "email length"
+        }
+        then "and the decoded value checks too" {
+            match checked(Login { email: "ab" }) {
+                .Ok(_) -> false,
+                .Err(e) -> e.all.length == 1 && e.all[0].rule == "length",
+            }
+        }
+    }
     given "a model with no rules" {
         then "an insert lands whatever the fields hold" { plain_lands() is .Ok }
     }
