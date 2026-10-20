@@ -941,6 +941,30 @@ the brace after an instance's head opens the instance's block
 
 No witness here: an instance's component is another file's, which a lone source cannot import — the golden is features/components/tests/components_head_test.av.
 
+## type.component_row
+
+a repeated row that keeps state wears a key
+
+```avra
+component tick(label: string) {
+    key: string? = null
+    state n: int = 0
+}
+let rs = ["a", "b"]
+[tick r for r in rs].length
+
+```
+
+```
+error[type.component_row]: a repeated `tick` keeps state and wears no key, so its state stays with its place and lands on whichever row holds that place next
+  ╭─[witness.av:6:2]
+6 │ [tick r for r in rs].length
+  ·  ┬
+  ·  ╰── repeated here
+──╯
+help: give each row its own key — `tick … { key: … }`, with what tells the row apart
+```
+
 ## flow.no_fate
 
 a handler that can fail must name a fate for its failure
