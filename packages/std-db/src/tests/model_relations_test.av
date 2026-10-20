@@ -71,11 +71,13 @@ fn board(mut db: Db, name: string) -> Result<Board, ModelError> {
     Board { name: name }.insert(db)
 }
 
-/// Whether a refusal is a foreign-key one. A `RESTRICT` arrives as SQLite's
-/// trigger-class constraint (extended 1811), its message still naming the key.
-fn foreign(e: SqlError) -> bool {
-    match e.cause {
-        .Constraint(v) -> (v == Violation.ForeignKey || v == Violation.Trigger) && e.message.contains("FOREIGN KEY"),
+/// Whether a removal was refused by a key, exactly: constraint 787, the code
+/// `ON DELETE NO ACTION` answers. (`RESTRICT` would be 1811, SQLite's
+/// trigger code, as it builds that action from a trigger.)
+fn held(e: ModelError) -> bool {
+    match e {
+        .Referenced(_, sql) -> sql.extended == 787 &&
+            match sql.cause { .Constraint(v) -> v == Violation.ForeignKey, rest -> false },
         rest -> false,
     }
 }
@@ -124,21 +126,21 @@ fn refused() -> Result<string, ModelError> {
     let _ = Card { title: "a", board: b }.insert(db)?
     match b.remove(db) {
         .Ok(_) -> "removed",
-        .Err(e) -> "${foreign(e)} ${modeled(count(db, "Board"))?}",
+        .Err(e) -> "${held(e)} ${modeled(count(db, "Board"))?}",
     }
 }
 
 fn removable() -> Result<string, ModelError> {
     mut db = modeled(seeded())?
     let b = board(db, "bare")?
-    "${modeled(b.remove(db))?} ${modeled(count(db, "Board"))?}"
+    "${b.remove(db)?} ${modeled(count(db, "Board"))?}"
 }
 
 fn cascaded() -> Result<string, ModelError> {
     mut db = modeled(seeded())?
     let b = board(db, "gone")?
     let _ = Pin { label: "p", board: b }.insert(db)?
-    let _ = modeled(b.remove(db))?
+    let _ = b.remove(db)?
     "${modeled(count(db, "Board"))?} ${modeled(count(db, "Pin"))?}"
 }
 
@@ -146,7 +148,7 @@ fn nulled() -> Result<string, ModelError> {
     mut db = modeled(seeded())?
     let b = board(db, "gone")?
     let m = Memo { text: "m", board: b }.insert(db)?
-    let _ = modeled(b.remove(db))?
+    let _ = b.remove(db)?
     let back = modeled(Memo.find(db, m.id))?!
     "${back.board == null} ${modeled(count(db, "Memo"))?}"
 }
@@ -155,7 +157,7 @@ fn soft_cascade() -> Result<string, ModelError> {
     mut db = modeled(seeded())?
     let c = Crate { label: "c" }.insert(db)?
     let _ = Item { name: "i", crate: c }.insert(db)?
-    let _ = modeled(c.remove(db))?
+    let _ = c.remove(db)?
     "${modeled(count(db, "Crate"))?} ${modeled(count(db, "Item"))?}"
 }
 

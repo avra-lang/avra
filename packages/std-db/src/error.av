@@ -27,6 +27,9 @@ export enum ModelError {
     Ambiguous(fields: List<UniqueField>, model: string, sql: SqlError)
     /// The row breaks a rule its type declares: no SQL ran.
     Invalid(issues: Issues)
+    /// A removal refused because other rows still hold this one by a key
+    /// (`ON DELETE` left at its default, `NO ACTION`): the model removed.
+    Referenced(model: string, sql: SqlError)
     /// Every other `SqlError` — wrapped, never rewritten.
     Other(sql: SqlError)
 }
@@ -37,13 +40,14 @@ impl Error for ModelError {
             .Unique(f, model, _) -> info("db.constraint.unique", unique_message(f, model)),
             .Ambiguous(fs, model, _) -> info("db.constraint.unique", ambiguous_message(fs, model)),
             .Invalid(found) -> found.describe(),
+            .Referenced(model, _) -> info("db.constraint.referenced", referenced_message(model)),
             .Other(sql) -> sql.describe(),
         }
     }
 
     fn cause() -> dyn Error? {
         match self {
-            .Unique(_, _, sql) or .Ambiguous(_, _, sql) or .Other(sql) -> sql,
+            .Unique(_, _, sql) or .Ambiguous(_, _, sql) or .Referenced(_, sql) or .Other(sql) -> sql,
             .Invalid(_) -> null,
         }
     }
@@ -57,12 +61,17 @@ impl ModelError {
             .Invalid(found) -> found,
             .Unique(f, _, _) -> Issues { all: [taken(f)] },
             .Ambiguous(fs, _, _) -> Issues { all: [taken(f) for f in fs] },
+            .Referenced(_, _) -> Issues { all: [held()] },
             .Other(_) -> Issues { all: [] },
         }
     }
 }
 
 // ── Voices — a refusal's whole wording lives here, once. ───────────
+
+fn referenced_message(model: string) -> string {
+    "`${model}` is still held by other rows through a key — remove them first, or mark their link `@cascade` or `@set_null`"
+}
 
 fn unique_message(f: UniqueField, model: string) -> string {
     "`${f.name}` must be unique — declared @unique on `${model}.${f.name}`${at_suffix(f.at)}"
@@ -81,6 +90,10 @@ fn at_suffix(at: Loc?) -> string {
         loc? -> " at ${loc.file ?? "?"}:${loc.lo}"
         null -> ""
     }
+}
+
+fn held() -> Issue {
+    Issue { path: root(), rule: "referenced", message: "is still held by other rows" }
 }
 
 fn taken(f: UniqueField) -> Issue {
@@ -177,4 +190,21 @@ export fn parent_of<T>(
     }
     cache.set("${key}", parent)
     parent
+}
+
+/// A removal's outcome as the model speaks it. A refusal by a key is
+/// SQLite's constraint code 787 (`SQLITE_CONSTRAINT_FOREIGNKEY`): it is
+/// what `ON DELETE NO ACTION` answers. `RESTRICT` would answer 1811, the
+/// trigger code, because SQLite builds that action out of a trigger.
+export fn removed(r: Result<int, SqlError>, model: string) -> Result<int, ModelError> {
+    match r {
+        .Ok(n) -> .Ok(n),
+        .Err(e) -> .Err(
+            if is_foreign_key_violation(e.cause) { ModelError.Referenced(model, e) } else { ModelError.Other(e) },
+        ),
+    }
+}
+
+fn is_foreign_key_violation(cause: Cause) -> bool {
+    match cause { .Constraint(v) -> v == Violation.ForeignKey, rest -> false }
 }

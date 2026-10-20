@@ -43,7 +43,7 @@ use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
 use @std.time.{now_ms}
-use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of}
+use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled, parent_of, removed}
 
 /// The phantom a one-to-many relation is held as. `cards: Many<Card>`
 /// stores nothing: the derive reads the rows through the child's own link
@@ -196,7 +196,7 @@ fn generated(t: Type) -> Decls {
 
             ${where_decl(t)}
 
-            fn remove(mut db: Db) -> Result<int, SqlError> {
+            fn remove(mut db: Db) -> Result<int, ModelError> {
                 ${removal(t)}
             }
 
@@ -370,13 +370,15 @@ fn nullable_filter(f: Field) -> Stmts {
 /// What `remove` does: a soft-delete model stamps the time and keeps
 /// the row; any other deletes it.
 fn removal(t: Type) -> Code {
-    if soft_field(t) == null { return quote { db.run(sql(${literal(delete_sql_of(t))}, [.Int(self.id)])) } }
+    if soft_field(t) == null {
+        return quote { removed(db.run(sql(${literal(delete_sql_of(t))}, [.Int(self.id)])), ${literal(table_name_of(t))}) }
+    }
     quote {
-        let opened = db.begin_unless_open()?
+        let opened = modeled(db.begin_unless_open())?
         defer db.finish_if_opened(opened)
         ${[cascade_stmt(f) for f in cascading(t)]}
-        let changed = db.run(sql(${literal(soft_remove_sql_of(t))}, [.Int(now_ms()), .Int(self.id)]))?
-        if opened { let _ = db.commit()? }
+        let changed = modeled(db.run(sql(${literal(soft_remove_sql_of(t))}, [.Int(now_ms()), .Int(self.id)])))?
+        if opened { let _ = modeled(db.commit())? }
         changed
     }
 }
@@ -415,7 +417,7 @@ fn child_cascades(t: Type, f: Field) -> bool {
 
 fn cascade_stmt(f: Field) -> Stmts {
     quote {
-        for kid in self.${f.name}(db)? { let _ = kid.remove(db)? }
+        for kid in modeled(self.${f.name}(db))? { let _ = kid.remove(db)? }
     }
 }
 
@@ -591,12 +593,14 @@ fn column_ddl(f: Field) -> string {
 }
 
 /// What removing a parent does to this child: `@cascade` removes it,
-/// `@set_null` clears the link, and neither refuses the removal.
+/// `@set_null` clears the link, and neither refuses the removal
+/// (`NO ACTION`, which answers constraint code 787; `RESTRICT` would
+/// answer the trigger code 1811, SQLite building it from a trigger).
 fn on_delete(f: Field) -> string {
     when {
         is_mark(f, "cascade") -> " ON DELETE CASCADE"
         is_mark(f, "set_null") -> " ON DELETE SET NULL"
-        _ -> " ON DELETE RESTRICT"
+        _ -> " ON DELETE NO ACTION"
     }
 }
 
