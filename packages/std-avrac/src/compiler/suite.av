@@ -5,9 +5,9 @@
 //! there first, and a disagreement stops the run before a binary exists.
 use core.{sorted_texts, joined, flatten, distinct, module_path, TypeRegistry, counted, FileId}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized, under_dir}
-use @std.io.{make_dirs, read_text, write_text}
+use @std.io.{make_dirs}
 use compiler.backend.{run_scheduled}
-use compiler.store.{Store, Stored, Reading, node_key, reads_hold}
+use compiler.store.{Store, Stored, Reading, node_key}
 use compiler.lower.{Lowered, program_symbol}
 
 /// How many schedules a suite runs, and the one its i-th run uses — the
@@ -126,7 +126,7 @@ impl Workspace {
         let kept = self.kept_binary(self.program_key(under.named, under.beside), binary, tools)
         if kept != null { return .Ok(kept! with { refuses: refuses }) }
         let store = self.opened_store()
-        let owed = [path for path in programs if !self.native_only(path) && !self.proved(path)]
+        let owed = [path for path in programs if !self.native_only(path) && !self.proved(store, path)]
         let calls = [self.program_call(path, told_from) for path in programs]
         let began = self.clock()
         let d = self
@@ -229,8 +229,7 @@ impl Workspace {
 
     /// The evaluator agreed with each: remembered under what the program can see.
     fn agreed(store: Store, d: Derived, owed: List<string>) -> Derived {
-        let _ = make_dirs(self.proofs_dir())
-        for path in owed { let _ = write_text(self.proof_file(path), joined(self.proof_reads(store, path), "\n")) }
+        for path in owed { self.prove(store, path) }
         d
     }
 
@@ -285,41 +284,28 @@ impl Workspace {
         )
     }
 
-    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: a proof file named by the program under
-    /// the compiler that agreed, and holding what the agreement READ — the program, the text
-    /// it must print and every file it can reach, each at its digest (a BODY moves a run, so
-    /// an interface digest would not do, and a compiler can move the answer). A proof is a
-    /// FILE, one per name: a directory of them moves between machines and runs by itself,
-    /// which a packed store's rows do not. It stands while every read still has its digest.
-    fn proof_file(path: string) -> string {
-        joined_path(self.proofs_dir(), node_key(Stored.Unit, ["proved", self.compiler_id(), path]))
-    }
+    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: a named answer under the compiler that
+    /// agreed (`proof_row`), kept with what the agreement READ — the program, the text it must
+    /// print and every file it can reach, each at its digest (a BODY moves a run, so an
+    /// interface digest would not do, and a compiler can move the answer). It stands while
+    /// every read still has its digest (`Store.get_valid`), and nothing else judges it.
+    fn proof_row(path: string) -> string { node_key(Stored.Unit, ["proved", self.compiler_id(), path]) }
 
     /// The names a program's agreement stands on.
     fn proof_names(store: Store, path: string) -> List<string> {
         distinct([path, beside(path, "expected")].concat(self.seen_files(store, path)))
     }
 
-    /// What a program's agreement read, spelled as a row's list spells it.
-    fn proof_reads(store: Store, path: string) -> List<string> {
-        [read_line(n) for n in self.proof_names(store, path)]
+    /// The evaluator agreed with `path`: kept with what it read.
+    fn prove(store: Store, path: string) {
+        let reads = [Reading { name: n, digest: current_read_digest(n) ?? "-" } for n in self.proof_names(store, path)]
+        let _ = store.keep_reading(Stored.Unit, self.proof_row(path), "proved", reads)
     }
-
-    fn proofs_dir() -> string { joined_path(build_cache_root(self), "proofs") }
 
     // LICENSED input.test_setting: a proof only skips a test run, never an input of what is built
-    fn proved(path: string) -> bool {
-        match read_text(self.proof_file(path)) {
-            .Ok(text) -> reads_hold(text.split("\n").filter(!it.is_empty()), current_read_digest),
-            .Err(_) -> false,
-        }
+    fn proved(store: Store, path: string) -> bool {
+        store.get_valid(Stored.Unit, self.proof_row(path), current_read_digest) != null
     }
-}
-
-/// One read as a proof's list spells it: the name's digest now, then the name.
-fn read_line(name: string) -> string {
-    let r = Reading { name: name, digest: current_read_digest(name) ?? "-" }
-    r.spelled()
 }
 
 /// The file beside a program that wears its stem and this extension.
