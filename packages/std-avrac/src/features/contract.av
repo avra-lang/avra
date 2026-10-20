@@ -397,6 +397,8 @@ export type LowerCx = {
     // runs and drops its own, an early exit runs them all
     deferred: List<Deferred>,
     depth: int,
+    // the cleanup regions this body has opened: the next one's `id`
+    cleanups: int = 0,
     // the open `collect`s' lists, innermost last — a lambda's body is
     // its own context, so none reaches through one
     gathers: List<Reg> = [],
@@ -483,7 +485,10 @@ impl Deferral {
 /// or a host row's (`host`) — answering `ret`, which the call drops.
 export type DirectCall = { callee: string, host: bool, args: List<Reg>, ret: TypeId }
 
-export type Deferred = { work: Deferral, depth: int, on_error: bool }
+/// One entry of a frame: what it runs, the frame's depth, whether only a failure
+/// runs it, and the `id` of the cleanup region it opened for a trap's unwind
+/// (`-1` for an entry that calls nothing).
+export type Deferred = { work: Deferral, depth: int, on_error: bool, cleanup: int = 0 - 1 }
 
 /// A syntax node's meaning at resolve, typing and lowering, delegated
 /// over `Expr`: each record writes its own impl.

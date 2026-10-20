@@ -165,6 +165,14 @@ export enum Ins {
     /// A scope YIELDS like a branch does: `gives` escapes upward —
     /// released never here, adopted by the enclosing scope.
     ScopeExit(gives: Reg?)
+    /// A CLEANUP REGION, the landing a trap unwinding through the frame enters:
+    /// its instructions run ONE deferred entry — emitted by the verb every exit
+    /// of the frame uses — and a `ScopeExit` closes it. Normal flow skips it; an
+    /// unwind runs it, newest first, over every call from its close to the end of
+    /// the enclosing scope (`cleanups_open`). `id` names the entry within the body:
+    /// an EMPTY region of the same `id` RETIRES it where an exit is about to run
+    /// that entry itself.
+    Cleanup(id: int)
     /// A TWO-arm region on a bool — the special case of the region
     /// shape below.
     IfStart(cond: Reg)
@@ -274,6 +282,7 @@ impl Ins {
             .OnceCommit(sym, value) -> derived([fp_str("Ins"), 32, fp_str(sym), value.fingerprint()]),
             .FlagRead(dst, flag) -> derived([fp_str("Ins"), 34, dst.fingerprint(), flag.fingerprint()]),
             .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
+            .Cleanup(id) -> derived([fp_str("Ins"), 35, id]),
             .ScopeExit(gives) -> derived(
                 [
                     fp_str("Ins"),
@@ -353,6 +362,7 @@ fn ins_words(i: Ins) -> InsWords {
         .OnceCommit(sym, value) -> InsWords { tag: 32, ints: [value.index], texts: [sym] },
         .FlagRead(dst, flag) -> InsWords { tag: 34, ints: [dst.index, flag.fingerprint()], texts: [] },
         .ScopeEnter(tier) -> InsWords { tag: 12, ints: [tier.fingerprint()], texts: [] },
+        .Cleanup(id) -> InsWords { tag: 35, ints: [id], texts: [] },
         .ScopeExit(gives) -> InsWords { tag: 13, ints: if gives == null { [0] } else { [1, gives!.index] }, texts: [] },
         .IfStart(cond) -> InsWords { tag: 14, ints: [cond.index], texts: [] },
         .SwitchStart(selector, cases) -> InsWords { tag: 15, ints: [selector.index, cases.length].concat(cases), texts: [] },
@@ -404,6 +414,7 @@ export fn remapped(i: Ins, m: fn(Reg) -> Reg) -> Ins {
         .OnceCommit(sym, value) -> Ins.OnceCommit(sym, m(value)),
         .FlagRead(dst, flag) -> Ins.FlagRead(m(dst), flag),
         .ScopeEnter(tier) -> Ins.ScopeEnter(tier),
+        .Cleanup(id) -> Ins.Cleanup(id),
         .ScopeExit(gives) -> Ins.ScopeExit(remapped_opt(gives, m)),
         .IfStart(cond) -> Ins.IfStart(m(cond)),
         .SwitchStart(selector, cases) -> Ins.SwitchStart(m(selector), cases),
@@ -437,7 +448,7 @@ export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
         .OnceRead(dst, sym) -> Ins.OnceRead(dst, s(sym)),
         .OnceCommit(sym, value) -> Ins.OnceCommit(s(sym), value),
         .Call(dst, callee, args) -> Ins.Call(dst, s(callee), args),
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .Cleanup(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> i,
     }
 }
 
@@ -445,7 +456,7 @@ export fn resymbolled(i: Ins, s: fn(string) -> string) -> Ins {
 export fn symbols_of(i: Ins) -> List<string> {
     match i {
         .FnAddr(_, sym) or .StaticAddr(_, sym) or .OnceRead(_, sym) or .OnceCommit(sym, _) or .Call(_, sym, _) -> [sym],
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .ScopeEnter(_) or .ScopeExit(_) or .Cleanup(_) or .IfStart(_) or .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> [],
     }
 }
 
@@ -786,6 +797,7 @@ export fn same_ins(a: Ins, b: Ins) -> bool {
         .OnceCommit(s1, v1) -> match b { .OnceCommit(s2, v2) -> s1 == s2 && same_reg(v1, v2), rest -> false },
         .FlagRead(d1, f1) -> match b { .FlagRead(d2, f2) -> same_reg(d1, d2) && f1 == f2, rest -> false },
         .ScopeEnter(t1) -> match b { .ScopeEnter(t2) -> t1 == t2, rest -> false },
+        .Cleanup(i1) -> match b { .Cleanup(i2) -> i1 == i2, rest -> false },
         .ScopeExit(g1) -> match b { .ScopeExit(g2) -> same_reg_opt(g1, g2), rest -> false },
         .IfStart(c1) -> match b { .IfStart(c2) -> same_reg(c1, c2), rest -> false },
         .SwitchStart(s1, cs1) -> match b { .SwitchStart(s2, cs2) -> same_reg(s1, s2) && same_fps(cs1, cs2), rest -> false },
@@ -1275,3 +1287,74 @@ export fn static_symbol(i: Ins) -> string? {
     match i { .StaticAddr(_, sym) -> sym, rest -> null }
 }
 
+/// The cleanup regions open at each position of `ins`, as the positions of
+/// their openers, outermost first: the list at `p` is the state before
+/// instruction `p` runs, and the one at `ins.length` the state at the end. A
+/// cleanup covers every position from its region's close to the end of the
+/// scope, arm or loop that holds it, until an empty region of its `id` retires
+/// it; the positions inside a cleanup region are covered by none. THE ONE
+/// DEFINITION of what a call is covered by: the evaluator's unwind and the
+/// backend's landings both ask it.
+export fn cleanups_open(ins: List<Ins>) -> List<List<int>> {
+    mut brackets: List<Bracket> = [Bracket { open: [], region: 0 - 1 }]
+    mut out: List<List<int>> = []
+    for at, i in ins {
+        out.push(covering(brackets))
+        brackets = bracketed(brackets, ins, at, i)
+    }
+    out.push(covering(brackets))
+    out
+}
+
+/// One open bracket: the cleanups opened in it (a retirement is a negative
+/// entry naming the opener it ends, `-1 - position`), and, when the bracket is
+/// a cleanup region's own body, the position of its opener.
+type Bracket = { open: List<int>, region: int }
+
+/// The cleanups standing over a position: none inside a cleanup region's body.
+fn covering(brackets: List<Bracket>) -> List<int> {
+    if brackets.any(it.region >= 0) { return [] }
+    let all = flatten([b.open for b in brackets])
+    [j for j in all if j >= 0 && !all.contains(0 - 1 - j)]
+}
+
+/// The brackets after `i` at `at`: a scope, region or loop opens one, an arm
+/// ends one and starts the next, a close drops the innermost — a cleanup
+/// region's close adds its opener to the bracket below — and an opener of a
+/// cleanup region starts one marked with its position. An empty region retires
+/// the opener of its `id` in the bracket below it.
+fn bracketed(brackets: List<Bracket>, ins: List<Ins>, at: int, i: Ins) -> List<Bracket> {
+    let outer = brackets.slice(0, brackets.length - 1)
+    let top = brackets.last()!
+    let fresh = Bracket { open: [], region: 0 - 1 }
+    match i {
+        .ScopeEnter(_) or .IfStart(_) or .SwitchStart(_, _) or .LoopStart -> brackets.concat([fresh]),
+        .Cleanup(id) -> if retires(ins, at) {
+            outer.concat([top with { open: top.open.concat([0 - 1 - opened_at(ins, id)]) }, fresh])
+        } else {
+            brackets.concat([Bracket { open: [], region: at }])
+        },
+        .ArmEnd(_) -> outer.concat([fresh]),
+        .ScopeExit(_) or .RegionEnd(_, _) or .LoopEnd -> closed(outer, top),
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .FlagRead(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .OnceRead(_, _) or .OnceCommit(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopCond(_) or .LoopJump(_, _) or .Retain(_) or .Release(_) or .Ret(_) -> brackets,
+    }
+}
+
+/// The bracket list after `top` closes over `outer`: a cleanup region's
+/// opener joins the bracket it sat in.
+fn closed(outer: List<Bracket>, top: Bracket) -> List<Bracket> {
+    if top.region < 0 { return outer }
+    let below = outer.last()!
+    outer.slice(0, outer.length - 1).concat([below with { open: below.open.concat([top.region]) }])
+}
+
+/// Whether the `Cleanup` at `at` is a retirement: its region is empty.
+export fn retires(ins: List<Ins>, at: int) -> bool {
+    at + 1 < ins.length && match ins[at + 1] { .ScopeExit(_) -> true, rest -> false }
+}
+
+/// The position of the cleanup region of `id` that opens a body.
+fn opened_at(ins: List<Ins>, id: int) -> int {
+    [at for at, i in ins if match i { .Cleanup(j) -> j == id && !retires(ins, at), rest -> false }]
+        .first() ?? 0 - 1
+}
