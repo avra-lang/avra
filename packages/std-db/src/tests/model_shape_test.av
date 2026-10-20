@@ -27,6 +27,7 @@ type Pair_ba = {
     a: int,
 }
 
+/// Two fields on purpose: a one-field model used as a link type trips a compiler defect (avra-8sb5.57.296).
 @model
 type Parent = {
     id: int = 0,
@@ -102,6 +103,16 @@ fn recorded(db: Db, named: string) -> Result<string, SqlError> {
         .text()
 }
 
+/// Whether the database itself refuses a NULL: in the required column it does, in the nullable one it does not.
+fn nulls_refused() -> Result<string, SqlError> {
+    mut db = Db.memory()?
+    V_base.create_table(db)?
+    V_null.create_table(db)?
+    let required = db.run(sql("INSERT INTO \"V_base\" (\"x\") VALUES (NULL)"))
+    let nullable = db.run(sql("INSERT INTO \"V_null\" (\"x\") VALUES (NULL)"))
+    "${required is .Err} ${nullable is .Ok}"
+}
+
 fn at_creation() -> Result<string, SqlError> {
     mut db = Db.memory()?
     Empty.create_table(db)?
@@ -146,6 +157,7 @@ fn same_as_base() -> int {
     let base = body(V_base.shape())
     let others = [
         V_type.shape(),
+        V_null.shape(),
         V_unique.shape(),
         V_auto.shape(),
         V_name.shape(),
@@ -187,17 +199,15 @@ spec "std/db shape" {
         then "and the table's name leads the text" { Pair_ab.shape().starts_with("Pair_ab\n") }
     }
     given "one fact about a column that differs" {
-        then "reads differently: its type, uniqueness, default, name and link" {
+        then "reads differently: its type, nullability, uniqueness, default, name and link" {
             same_as_base() == 0
         }
         then "and a link's nullability and what removing its parent does differ from each other" {
             link_texts_apart()
         }
     }
-    given "a nullable scalar and a required one" {
-        then "read alike, since neither column is NOT NULL today (tightening it is a migration the owner decides)" {
-            body(V_null.shape()) == body(V_base.shape())
-        }
+    given "a required column" {
+        then "refuses NULL in the database, a nullable one takes it" { (nulls_refused() catch "") == "true true" }
     }
     given "the registry" {
         then "records the shape when the table is created" { (at_creation() catch "") == "true" }
