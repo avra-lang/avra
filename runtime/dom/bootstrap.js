@@ -111,9 +111,52 @@ function with_seat(mine, def) {
   return rest.length === 0 ? def : [...rest, def];
 }
 
+// Whether the page's engine sends a dialog away on its own word, `closedby`.
+const knowsClosedby = (doc) => {
+  const dialog = doc.defaultView?.HTMLDialogElement;
+  return typeof dialog === "function" && "closedBy" in dialog.prototype;
+};
+
+// A DIALOG THAT SAYS `closedby="any"` IS SENT AWAY BY A PRESS OUTSIDE IT: one
+// that starts and ends outside its box. It hears `cancel` as Escape makes it,
+// and closes unless that is stopped. An engine that knows the word does this
+// itself; where `sends` is true the page does it, by the same rule. AND A PRESS
+// THAT SENDS A DIALOG AWAY REACHES NOTHING BEHIND IT: a touch's click comes
+// after the dialog is gone, where it stood, so the press's click is stopped.
+export function dialogPresses(doc, sends) {
+  const away = (ev) => {
+    const d = ev.target;
+    if (!d || String(d.tagName).toLowerCase() !== "dialog" || !d.open || d.getAttribute("closedby") !== "any") return null;
+    const r = d.getBoundingClientRect();
+    return ev.clientX < r.left || ev.clientX >= r.right || ev.clientY < r.top || ev.clientY >= r.bottom ? d : null;
+  };
+  let pressed = null;
+  let dismissed = false;
+  doc.addEventListener("pointerdown", (ev) => {
+    dismissed = false;
+    pressed = sends ? away(ev) : null;
+  }, true);
+  doc.addEventListener("pointerup", (ev) => {
+    const d = pressed;
+    pressed = null;
+    if (d === null || away(ev) !== d) return;
+    if (typeof d.requestClose === "function") d.requestClose();
+    else if (d.dispatchEvent(new Event("cancel", { cancelable: true }))) d.close();
+  }, true);
+  doc.addEventListener("keydown", () => { dismissed = false; }, true);
+  doc.addEventListener("cancel", (ev) => { if (String(ev.target?.tagName).toLowerCase() === "dialog") dismissed = true; }, true);
+  doc.addEventListener("click", (ev) => {
+    if (!dismissed) return;
+    dismissed = false;
+    ev.preventDefault();
+    ev.stopPropagation();
+  }, true);
+}
+
 // Build the applier over one document (a real one in a browser, a stub in a
 // test) and one mount element. `send(id, kind, said)` is the echo.
 export function createApplier(doc, mount, send = () => {}, styleEl = null) {
+  dialogPresses(doc, !knowsClosedby(doc));
   // THE PAGE'S TABLES ARE KEYED BY ID, AND IDS ARE DENSE: `nodes[id]` is the
   // element, `hears[id]` what it hears — the shared definition of its one
   // seat, or a list of them for a second — so an element costs no object here.

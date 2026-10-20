@@ -249,6 +249,38 @@ const into = guarded((e) => caught.push(e.message));
 check("a guarded callback answers what it answers", into((a, b) => a + b)(2, 3), 5);
 into(() => { throw new Error("the module trapped"); })();
 check("a throw inside one is handed to the page's reporter, whole, never left to the browser", caught, ["the module trapped"]);
+// ── a press outside a dialog that says `closedby` ──
+const o = page();
+o.apply(frame(create(0, "dialog"), setAttr(0, "closedby", "any"), listen(0, 9, "cancel", SAYS.nothing, "", false), place(0, NO_ID, NO_ID)));
+const shownDialog = o.mount.childNodes[0];
+shownDialog.open = true;
+shownDialog.getBoundingClientRect = () => ({ left: 10, top: 10, right: 50, bottom: 50 });
+shownDialog.close = () => { shownDialog.open = false; };
+shownDialog.dispatchEvent = (ev) => { dispatch(o.mount, shownDialog, ev.type, { bubbles: false }); return !ev.defaultPrevented; };
+const pointer = (type, x, y) => o.doc.listeners.get(type)({ target: shownDialog, clientX: x, clientY: y });
+pointer("pointerdown", 20, 20);
+pointer("pointerup", 20, 20);
+check("a press inside a closedby dialog keeps it open", [shownDialog.open, o.sent.length], [true, 0]);
+pointer("pointerdown", 20, 20);
+pointer("pointerup", 2, 2);
+check("a press that starts inside it and ends outside keeps it open", [shownDialog.open, o.sent.length], [true, 0]);
+pointer("pointerdown", 2, 2);
+pointer("pointerup", 2, 2);
+check("a press outside it sends it away, heard as its cancel", [shownDialog.open, o.sent], [false, [[0, 9, null]]]);
+let reached = 0;
+const clicked = { preventDefault: () => { reached--; }, stopPropagation: () => {} };
+o.doc.listeners.get("cancel")({ target: shownDialog });
+o.doc.listeners.get("click")(clicked);
+check("the click of the press that sent it away is stopped", reached, -1);
+pointer("pointerdown", 2, 2);
+o.doc.listeners.get("click")(clicked);
+check("the next press's click is not", reached, -1);
+// A dismissal by a key fires no click where the dialog stood, so nothing
+// clears what it set: the press after it is a press, and reaches its control.
+o.doc.listeners.get("cancel")({ target: shownDialog });
+pointer("pointerdown", 2, 2);
+o.doc.listeners.get("click")(clicked);
+check("a press after a dismissal whose click never came reaches its control", reached, -1);
 
 // ── the wire itself ──
 let refused = false;
