@@ -688,7 +688,12 @@ jobs:
         run: tar -xzf avra-build.tar.gz && chmod +x build/avra && find build -type f -exec touch {} +
       # THE BROWSER LEG'S LIBRARIES, here and nowhere else: `make ui-browser` also runs the board in
       # Playwright's WebKit, whose host libraries (.github/ci/packages-browser.txt) no other job needs.
+      # This costs about 40-60 s of apt per run of this job, by design: the image stays lean and the
+      # job that proves the board in a browser carries the browser.
       - name: browser libraries
+        timeout-minutes: 10
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update -qq
           apt-get install -y -qq --no-install-recommends $(grep -v '^#' .github/ci/packages-browser.txt | tr '\n' ' ')
@@ -696,7 +701,10 @@ jobs:
       # the one `tools/ui_board_browser.sh` installs by.
       - name: playwright pin
         id: playwright
-        run: echo "version=$(sed -n 's/^playwright_version=//p' tools/ui_board_browser.sh)" >> "$GITHUB_OUTPUT"
+        run: |
+          v=$(sed -n 's/^playwright_version=//p' tools/ui_board_browser.sh)
+          [ -n "$v" ] || { echo "::error::tools/ui_board_browser.sh names no playwright_version, so the cache would be keyed by nothing"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: build/playwright
@@ -706,6 +714,8 @@ jobs:
         env:
           # the landing tool's supervisor checks need a machine with an init
           AVRA_NO_SUPERVISOR_TESTS: "1"
+          # CI always proves both engines; a lane's own run proves Firefox unless it asks for more
+          UI_BROWSER_ENGINES: "firefox webkit"
         run: |
           # A CONTAINER STEP'S SHELL IS `sh`, WHICH HAS NO time BUILTIN and no
           # TIMEFORMAT — a first cut wrote `time ... %M` and every make was
