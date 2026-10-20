@@ -196,6 +196,11 @@ type Machine = {
     statics: Map<string, Val>,
     // the array and map handles a static's boxes were built as
     frozen: Map<string, bool> = {},
+    // the boxes a site watches, each with the turn it last logged under
+    // (0: not yet), the turn's stamp, and the keys written under it
+    watched: Map<string, int> = {},
+    turn: int = 1,
+    changed: List<int> = [],
     out: List<string>,
     // LIVE: a printed line goes to stdout as it is printed, as a
     // native program's does; otherwise it is captured in `out`
@@ -1481,7 +1486,10 @@ impl Machine {
     fn frame_left(b: Body) {
         let frame? = self.frames.last() else { return }
         for at in self.slots_of(b) {
-            match frame[at] ?? Val.N { .C(id) -> self.idle_cells.push(id), rest -> nothing() }
+            match frame[at] ?? Val.N {
+                .C(id) -> { if !self.watched.has("${box_key(Val.C(id))}") { self.idle_cells.push(id) } },
+                rest -> nothing(),
+            }
         }
         let _ = self.frames.pop()
     }
@@ -1505,7 +1513,10 @@ impl Machine {
     fn store_step(slot: Reg, src: Reg, pc: int) -> int {
         let v = self.value(src)
         match self.value(slot) {
-            .C(id) -> { self.cells.set(id, v) },
+            .C(id) -> {
+                self.touched(Val.C(id))
+                self.cells.set(id, v)
+            },
             _ -> self.defect("a store through a non-cell"),
         }
         pc + 1
@@ -1677,6 +1688,11 @@ impl Machine {
             .ErrnoText -> Val.S(avra_errno_text(self.whole(vals[0]))),
             // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
             .NowNs -> Val.I(avra_now_ns()),
+            .BoxObserve -> self.box_observe_val(vals[0]),
+            .BoxUnobserve -> self.box_unobserve_val(vals[0]),
+            .BoxKey -> Val.I(box_key(vals[0])),
+            .TurnNext -> self.turn_next_val(),
+            .ChangesTake -> self.changes_take_val(),
             // LICENSED input.evaluator_effect: the interpreted program's own effect, never an input of what is built
             .HostEnv -> Val.S(avra_host_env(self.text_val(vals[0]))),
             .Eputs -> self.eputs_row(vals),
@@ -2350,6 +2366,7 @@ impl Machine {
     fn cell_unique_val(vals: List<Val>) -> Val {
         match vals[0] {
             .C(id) -> {
+                self.touched(Val.C(id))
                 let held = self.cells[id]
                 if !self.shared(held) { return held }
                 let fresh = self.cloned_val(held)
@@ -2390,6 +2407,7 @@ impl Machine {
         let n = self.arrays[id].length
         if at < 0 || at >= n { return self.out_of_bounds(at, n) }
         let old = self.arrays[id][at]
+        self.touched(Val.A(id))
         self.arrays[id].set(at, v)
         self.releases_val(old)
         Val.I(0)

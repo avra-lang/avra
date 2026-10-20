@@ -1,0 +1,55 @@
+// AN EVENT A COMPOSITION DECLARES IS FIRED OR HANDED ON, or the compiler
+// says so at the declaration: its body or a method of it reads
+// `self.<event>`; a body that never does leaves an instance's handler
+// with nothing that can run it. A component with no body is fired from
+// outside it, and says nothing.
+
+use @std.avrac.testing.{provided}
+use @std.avrac.compiler.{Program}
+
+/// The library whose trait composes a body: the words a component says.
+fn kit() -> string {
+    "use @std.meta.{Type, Directive, Declared, composes}\n\nexport type Tagged = { tag: string = \"\" }\n\nexport component words {\n    items: List<string> = []\n}\n\n@composes(Tagged)\nexport trait Says {\n    fn kit() -> string\n\n    static fn derive(t: Type) -> Declared {\n        let body? = t.body else { return Declared { made: [] } }\n        Declared {\n            made: [\n                Directive {\n                    twin: \"\",\n                    name: t.name,\n                    at: t.at,\n                    source: quote {\n                        impl Says for \${t} {\n                            fn kit() -> string {\n                                words made {\n                                    \${body}\n                                }\n                                made.items.join(\" \")\n                            }\n                        }\n                    },\n                },\n            ],\n        }\n    }\n}\n\nexport fn said_by(s: dyn Says) -> string { s.says() }\n"
+}
+
+fn built(main: string) -> Program { provided("use @x.c.{said_by}\n" + main, kit()) }
+
+fn feed(events: string, body: string, fns: string) -> string {
+    "component feed(name: string) {\n" + events + body + fns + "}\n0"
+}
+
+fn heard(events: string, body: string, fns: string) -> string {
+    built(feed(events, body, fns)).warnings()
+}
+
+const unheard = "event `message` is declared and nothing in `feed` calls it or hands it on"
+const message = "    on message(text: string)\n"
+const reads_pick = "    fn fire() {\n        let f? = self.pick else { return }\n        f()\n    }\n"
+const reads_message = "    fn fire() {\n        let f? = self.message else { return }\n        f(\"x\")\n    }\n"
+
+spec "features/components — an event nothing fires" {
+    given "a composition whose body never reads its event" {
+        then "is warned at the declaration, naming the event and the component" {
+            heard(message, "    self.name\n", "").contains(unheard)
+        }
+        then "is warned for the event it leaves unread, and for that one alone" {
+            let out = heard(message + "    on pick\n", "    self.name\n", reads_pick)
+            out.contains(unheard) && !out.contains("event `pick`")
+        }
+        then "is a warning of its kind, never a refusal" {
+            heard(message, "    self.name\n", "").contains("warning[type.component_event]")
+        }
+    }
+    given "a composition that reads its event" {
+        then "through a method, is not warned" {
+            !heard(message, "    self.name\n", reads_message).contains(unheard)
+        }
+    }
+    given "a component with no body" {
+        then "is not warned, its events fired from outside it" {
+            !built("component panel {\n    on press\n}\n0")
+                .report()
+                .contains("declared and nothing")
+        }
+    }
+}

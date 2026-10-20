@@ -7,8 +7,8 @@
 //! the pack itself runs. Reads are the spine's property ladder (a
 //! slot read at the field's compile-time index) — zero new
 //! instructions anywhere.
-use core.{ExprId, Reg, TypeId, filled, spread_entry}
-use features.{LowerCx, StructSig, slot_want}
+use core.{ExprId, StmtId, Reg, TypeId, Binding, filled, spread_entry}
+use features.{LowerCx, StructSig, slot_want, StatePlace, site_places_of, structural_places_of}
 use features.cells.{cell_holding}
 
 /// The copy: values evaluate in written order, then the record whole
@@ -155,8 +155,14 @@ export fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -
                     .site_of(cx.view.file, cx.view.store.site_fingerprint(e), cx.view.store.literal_turn(e)),
             )
     }
-    let d? = sig.defaults[slot] else { return cx.lower_defect(e, "a literal missing a field without a default survived typing") }
-    cx.call_decl(cx.viewed(slot_want(cx.view.types, sig, slot)), cx.symbol_at(d, e), [])
+    if cx.view.decls.words_slot(sig, slot) {
+        let lam? = minted_closure(cx, e) else { return default_reg(cx, e, sig, slot) }
+        return cx.reg_of(lam)
+    }
+    if cx.view.decls.cells_slot(sig, slot) { return cells_reg(cx, sig.types[slot], placed_cells(cx, e)) }
+    if cx.view.decls.structural_slot(sig, slot) { return cells_reg(cx, sig.types[slot], structural_cells(cx, e)) }
+    if cx.view.decls.opaque_slot(sig, slot) { return cx.const_bool(opaque_frame(cx)) }
+    default_reg(cx, e, sig, slot)
 }
 
 /// A value written to slot `slot`: unchanged for a plain field, the
@@ -186,4 +192,109 @@ fn slot_written(mut cx: LowerCx, sig: StructSig, name: string, v: Reg) -> Reg {
 // LICENSED fns.dead_parameter: a row's rule wears the row's signature
 export fn lower_named_of(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg {
     r
+}
+
+/// A list of cells packed into the slot's own type.
+fn cells_reg(mut cx: LowerCx, ty: TypeId, regs: List<Reg>) -> Reg {
+    let size = cx.box_size(regs.length)
+    cx.grown_box(cx.view.types.shape_of(cx.viewed(ty)), size, regs)
+}
+
+/// The cell of each place the literal's closure reads, or none at all when any
+/// place has no cell to hand over here.
+fn placed_cells(mut cx: LowerCx, e: ExprId) -> List<Reg> {
+    let lam? = minted_closure(cx, e) else { return [] }
+    let parts? = cx.view.store.lambda_parts(lam) else { return [] }
+    let places = site_places_of(cx.view, cx.names, parts.body, cx.decl_places)
+    let regs: List<Reg?> = [cell_of_place(cx, lam, p) for p in places]
+    if regs.any(it == null) { return [] }
+    [r! for r in regs]
+}
+
+/// The closure the builder minted beside a literal: the node that extends it
+/// and is a lambda.
+fn minted_closure(cx: LowerCx, e: ExprId) -> ExprId? {
+    cx.view.store.extended_by(e).find((v) -> closes(cx, v))
+}
+
+/// Whether a node is a closure the builder minted for an instance.
+fn closes(cx: LowerCx, v: ExprId) -> bool {
+    cx.view.store.minted_for(v) != null && cx.view.store.lambda_parts(v) != null
+}
+
+/// Whether a binding is the definition `s`.
+fn is_def(b: Binding, s: StmtId) -> bool {
+    match b { .Def(t) -> t == s, rest -> false }
+}
+
+/// The cell a place names in this body: a top-level state's, or a local
+/// that the closure captured.
+fn cell_of_place(mut cx: LowerCx, lam: ExprId, p: StatePlace) -> Reg? {
+    match p {
+        .Global(d) -> cx.state_decl_cell(d),
+        .Local(_, s) -> {
+            let cap? = cx.names.capture(lam) else { return null }
+            let src? = cap.sources.find((b) -> is_def(b, s)) else { return null }
+            cx.state_cell_of(lam, src)
+        },
+        .Unknown -> null,
+    }
+}
+
+/// The places this frame reads at paint time that no reading answers for;
+/// `Unknown` for a frame whose code is not one expression.
+fn structural_set(cx: LowerCx) -> List<StatePlace> {
+    let roots? = cx.roots else { return [StatePlace.Unknown] }
+    [p for r in roots for p in structural_places_of(cx.view, cx.names, r, cx.decl_structural)]
+}
+
+/// The cells of the frame's structural places, when every one can be handed
+/// over here.
+fn structural_cells(mut cx: LowerCx, e: ExprId) -> List<Reg> {
+    if opaque_frame(cx) { return [] }
+    let regs: List<Reg?> = [local_cell(cx, e, p) for p in structural_set(cx)]
+    [r! for r in regs]
+}
+
+/// Whether a page cannot place this frame's structural reads: one is a place
+/// with no name, or has no cell to hand over here. Such a subtree is always
+/// painted whole.
+fn opaque_frame(cx: LowerCx) -> bool {
+    !structural_set(cx).all((p) -> placeable(cx, p))
+}
+
+/// Whether a place has a cell in THIS body: a top-level state always, a local
+/// only when the body itself defines it.
+fn placeable(cx: LowerCx, p: StatePlace) -> bool {
+    match p {
+        .Global(_) -> true,
+        .Local(f, s) -> f == cx.view.file && cx.body.slot_of(s) != null,
+        .Unknown -> false,
+    }
+}
+
+/// The cell a placeable place has in this body.
+fn local_cell(mut cx: LowerCx, e: ExprId, p: StatePlace) -> Reg? {
+    match p {
+        .Global(d) -> cx.state_decl_cell(d),
+        .Local(_, s) -> cx.state_cell_of(e, Binding.Def(s)),
+        .Unknown -> null,
+    }
+}
+
+/// What an omitted slot with no role holds: the literal's own site for a
+/// `Site`, else its default.
+fn default_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
+    if cx.view.decls.sited_slot(sig, slot) {
+        return cx
+            .const_int_as(
+                cx.viewed(sig.types[slot]),
+                cx
+                    .view
+                    .decls
+                    .site_of(cx.view.file, cx.view.store.expr_fingerprint(e), cx.view.store.literal_turn(e)),
+            )
+    }
+    let d? = sig.defaults[slot] else { return cx.lower_defect(e, "a literal missing a field without a default survived typing") }
+    cx.call_decl(cx.viewed(slot_want(cx.view.types, sig, slot)), cx.symbol_at(d, e), [])
 }

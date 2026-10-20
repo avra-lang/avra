@@ -596,6 +596,7 @@ impl Rebuilder {
             self.made_exprs = self.made_exprs.concat(minted)
             self.made_from = self.made_from.concat([e for _m in minted])
         }
+        self.extended(e, id)
         let ip: PayloadIs? = self.src.payload_marked(e)
         if ip != null { self.dst.mark_is_payload(id, self.pat(ip!.pat), ip!.has_else) }
         let targs = self.src.struct_targs_of(e)
@@ -613,6 +614,17 @@ impl Rebuilder {
             self.made_from.push(e)
         }
         id
+    }
+
+    /// The nodes `e` is extended by, copied beside its copy `id`.
+    mut fn extended(e: ExprId, id: ExprId) {
+        let roots = self.src.extended_by(e)
+        if roots.is_empty() { return }
+        let made = self.made_exprs.length
+        let holed = self.holed_exprs.length
+        let copies = [self.expr(r) for r in roots]
+        let minted = self.made_exprs.drop(made).concat(self.holed_exprs.drop(holed))
+        self.dst.extend(id, self.src.means_note(e) ?? "", copies, minted)
     }
 
     mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {
