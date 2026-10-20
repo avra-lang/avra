@@ -380,12 +380,12 @@ wasm-archive:
 	sh tools/wasm-archive.sh
 
 # Every package that carries tests, in dependency order — DERIVED from
-# the manifests (tools/suites.py), never listed: a hand-kept list is a
+# the manifests (tools/src/commands/suites.av), never listed: a hand-kept list is a
 # registry that forgets its next member, and the gate would report
 # green over a suite it never ran. `suites` is the keeper that speaks.
 # DEFERRED, so only a recipe that reads it pays for the walk — an immediate
 # `$(shell)` runs on every make, `try` included.
-SUITES = $(shell python3 tools/suites.py 2>/dev/null)
+SUITES = $(shell sh tools/avra_tools.sh suites 2>/dev/null)
 
 .PHONY: tools-suite census-gate census-accept trap-marks speed-note llvm-libs libs-self-test read-lists db-corpus try edit-loop footprint footprint-accept tick-object no-threads flow-gate flow-gate-accept ui-host ui-host-test ui-fuzz ui-board ui-browser ui-browser-skip host-events layout-oracle wasm-host-check wasm-tasks-mutations h2spec objects census census-types sizes traps compile-slots runtime-tests hash-door cache-attacks cache-attacks-a cache-attacks-b cache-attacks-b1 cache-attacks-b2 store-attacks code-hash-attacks turn-memory-attack test tested clean seed-check gate externs idioms cited http-cites fuzz-http soak-http dogfooding-rules rule-examples idioms-accept bench bench-collections fuzz scaffold-check vocab stems runtime-mutations sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope families-left layers hooks-released inputs inputs-accept whole-reads whole-reads-accept read-cost \
         check run ir emit build-native native-check avra suites install sprite sprite-check codecs codecs-static keepers voices voices-accept defects tool-witnesses pipeline-status pipeline-doc ci-invariants pr-watcher wasm-runtime wasm-packages wasm-check wasm-seam wasm-archive wasm-refuses wasm-cache wasm-size wasm-body wasm-size-guard wasm-size-accept speed-ratchet speed-accept wall-ratchet wall-accept warm-edit warm-accept work-accept
@@ -787,8 +787,8 @@ libs: avra $(PACKAGE_OBJS)
 suites:
 	@python3 tools/shards.py --self-test
 	@python3 tools/shards.py --check-splits
-	@python3 tools/suites.py --self-test
-	@python3 tools/suites.py --report
+	@sh tools/suites_links.sh
+	@sh tools/avra_tools.sh suites --report
 
 # The idiom bar is NATIVE now: every idiom the language can state is
 # a `rule` (packages/std-avrac's compiler/idioms.av and each
