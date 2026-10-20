@@ -441,8 +441,8 @@ jobs:
           [ ! -d proofs-kept ] || cp -R proofs-kept/. .avra-cache/proofs/
           echo "proofs: $(ls .avra-cache/proofs | wc -l) kept row(s) handed down"
       # THE SHARDS' STORE ROWS RIDE UP AND DOWN TOO. A store segment is one writer's frames and a reader
-      # merges every segment at open, so main's shards hand their segments up (`suite-timing` keeps
-      # the newest prints) and every run restores them here: a run whose compiler is main's (the same
+      # merges every segment at open, so each main shard hands up the rows it added (`avra cache export`,
+      # one segment), `suite-timing` keeps the newest prints, and every run restores them here: a run whose compiler is main's (the same
       # print) reads the rows each shard made, and any other print never reads them.
       - if: steps.plan.outputs.build == '1'
         uses: actions/cache/restore@v4
@@ -995,15 +995,16 @@ jobs:
             mv .avra-cache "${RUNNER_TEMP:-/tmp}/aside/" 2>/dev/null || :
             echo "cold pass: the hand-down store is set aside; every suite runs from nothing"
           fi
+          # The store as the hand-down left it is the BASE a main shard's export is measured against.
+          mkdir -p store-base
+          [ ! -d .avra-cache/store ] || cp -R .avra-cache/store store-base/store
           for p in ${{ join(matrix.shard, ' ') }}; do
             [ -d "packages/${p%%/*}/src" ] || continue
             echo "::group::$p"
             t=$(date +%s)
             # The memory pass's L2 proof rides the suite run: a use-after-free
             # in the pass's own output fails the gate instead of hiding behind it.
-            # On main the store keeps every frame in the segments (no seal folds them away), so the
-            # segments the shard hands up hold everything it wrote.
-            python3 tools/step_cpu.py --state "$p" -- env AVRA_SOUND_CHECK=1 $([ "${{ needs.prepare.outputs.main }}" != 1 ] || echo AVRA_STORE_SEAL_FRAMES=1000000000) build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
+            python3 tools/step_cpu.py --state "$p" -- env AVRA_SOUND_CHECK=1 build/avra test --time $(python3 tools/shards.py --paths "$p") || { fail=1; echo "::error::suite $p failed"; }
             echo "::endgroup::"
             echo "$(echo "$p" | tr / _) $(( $(date +%s) - t ))s" | tee -a speed.log
             # What the packer learns from (tools/shards.py --merge-times): the suite's own seconds,
@@ -1029,12 +1030,20 @@ jobs:
           include-hidden-files: true
           retention-days: 1
 
-      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('.avra-cache/store/seg-*.log') != ''
+      # THE ROWS THIS SHARD ADDED over the store it started from, as one segment: sealing stays on, and
+      # a segment is a copy-merge that can never collide with a body.
+      - if: always() && needs.prepare.outputs.main == '1' && inputs.cold != '1'
+        name: export the store rows this shard added
+        run: |
+          [ -d .avra-cache/store ] || exit 0
+          chmod +x build/avra
+          build/avra cache export store-base store-out || echo "::warning::avra cache export failed"
+          echo "export: $(ls store-out/store 2>/dev/null | grep -c '^seg-') segment(s), $(du -sk store-out 2>/dev/null | cut -f1) KB"
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('store-out/store/seg-*.log') != ''
         uses: actions/upload-artifact@v4
         with:
           name: store-segs-${{ strategy.job-index }}
-          path: .avra-cache/store/seg-*.log
-          include-hidden-files: true
+          path: store-out/store/seg-*.log
           retention-days: 1
 
       - name: speed baseline

@@ -32,19 +32,23 @@ impl Runnable for CacheCmd {
         if action == "clean" { return cache_clean(store) }
         if action == "log" { return cache_log(store) }
         if action == "show" { return cache_show(store, args.arg("rev")) }
-        eprintln("avra cache: `clean`, `log` or `show <rev>`")
+        if action == "export" { return cache_export(store, args.arg("rev"), args.arg("into")) }
+        eprintln("avra cache: `clean`, `log`, `show <rev>` or `export <base> <into>`")
         2
     }
 }
 
 export command cache {
-    description: "The compiler store: reclaim it and sweep the shared content store (`clean`), list its sealed revisions (`log`), answer one (`show <rev>`)"
+    description: "The compiler store: reclaim it and sweep the shared content store (`clean`), list its sealed revisions (`log`), answer one (`show <rev>`), write what it holds over a base as one segment (`export <base> <into>`)"
     arg action {
-        description: "`clean`, `log` or `show`"
+        description: "`clean`, `log`, `show` or `export`"
         required: true
     }
     arg rev {
-        description: "the revision `show` answers, as `log` lists it"
+        description: "the revision `show` answers, as `log` lists it; for `export`, the base cache root"
+    }
+    arg into {
+        description: "the cache root `export` writes its segment under, after the base"
     }
     run: CacheCmd {}
 }
@@ -115,3 +119,12 @@ fn cache_show(store: Store, raw: string) -> int {
     0
 }
 
+/// `export` writes the rows this store holds over a base cache root into one segment under another.
+fn cache_export(store: Store, base: string, into: string) -> int {
+    if base == "" || into == "" {
+        eprintln("avra cache export: name the base cache root, then the root to write")
+        return 2
+    }
+    println("avra cache export: ${store.exported(rooted(base), rooted(into))} row(s) over the base")
+    0
+}

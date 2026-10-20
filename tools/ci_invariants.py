@@ -358,18 +358,20 @@ def check_ladder(workflow_text):
 
 
 def check_store_handup(workflow_text):
-    """The shards' store rows travel: main's shards stop the seal and upload their segments, the
+    """The shards' store rows travel: main's shards export the rows they added as one segment and upload it, the
     suite-timing job merges them, prepare restores them. Answers (refusals, words)."""
     bad = []
-    if "AVRA_STORE_SEAL_FRAMES=" not in workflow_text:
-        bad.append("a main shard still seals, so the segments it uploads miss what a seal folded into a body")
+    if "build/avra cache export store-base store-out" not in workflow_text:
+        bad.append("a main shard never exports the rows it added over its base store")
+    if "AVRA_STORE_SEAL_FRAMES" in workflow_text:
+        bad.append("a shard stops the seal: sealing stays on, and the export carries the rows")
     if "name: store-segs-${{ strategy.job-index }}" not in workflow_text:
         bad.append("no shard uploads its store segments")
     if "tools/store_segments.py --merge" not in workflow_text:
         bad.append("`suite-timing` never merges the shards' store segments")
     if "name: place store segments" not in workflow_text:
         bad.append("`prepare` never places the kept store segments")
-    return bad, ([] if bad else ["store-handup: shards stop the seal and upload segments, suite-timing merges them, prepare places them"])
+    return bad, ([] if bad else ["store-handup: shards export their added rows, suite-timing merges the segments, prepare places them"])
 
 
 def check_light_draft(workflow_text):
@@ -706,7 +708,7 @@ rt-header:
     real = open(CHECKS, encoding="utf-8").read()
     assert check_light_draft(real)[0] == [], check_light_draft(real)
     assert check_store_handup(real)[0] == [], check_store_handup(real)
-    assert any("still seals" in x for x in check_store_handup(real.replace("AVRA_STORE_SEAL_FRAMES=", ""))[0])
+    assert any("never exports" in x for x in check_store_handup(real.replace("cache export store-base", "cache x"))[0])
     assert any("never merges" in x for x in check_store_handup(real.replace("tools/store_segments.py --merge", ""))[0])
     assert any("never places" in x for x in check_store_handup(real.replace("name: place store segments", ""))[0])
     am = open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
