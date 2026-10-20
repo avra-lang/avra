@@ -60,5 +60,15 @@ const alertsOf = (s) => s.alerts.map((el) => ({ role: el.attrs.role, text: el.te
   check("an error after the page started says it hit one, not that it did not start", later[0].text.startsWith("The page hit an error:"), true);
   check("an error with no error object is told with where it came from", later[0].text.includes("Script error. (http://x/app.js:12:7)"), true);
 }
+{
+  const s = stage();
+  let failed = null;
+  const load = (path) => Promise.resolve(path.endsWith("bootstrap.js") ? { run: async (_source, host) => { failed = host.failed; } } : { wasiPreview1: () => ({}) });
+  await page(s.document, s.addEventListener, load);
+  const thrown = new Error("index 9 is out of bounds (length 3)");
+  failed(thrown);
+  const said = alertsOf(s);
+  check("a throw inside the module after it started is told by the page itself, its stack whole", [said.length, said[0].text.startsWith("The page hit an error:"), said[0].text.includes(thrown.stack)], [1, true, true]);
+}
 console.log(`page: ${fails === 0 ? "all hold" : fails + " failed"}`);
 process.exit(fails === 0 ? 0 : 1);

@@ -2,7 +2,7 @@
 // and decides nothing: the frames below say what moved, what is a property
 // and what an event says. Op numbers come from the generated table, so a
 // wire the program changed is the wire this test speaks.
-import { createApplier, createFetches, createFrames, createTimers, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
+import { createApplier, createFetches, createFrames, createTimers, guarded, parseFrame, parseRequest, sendAnswer, sendEvent, run, HOST, ROWS, WIRE_VERSION } from "./bootstrap.js";
 import { AFTER, NO_ID, OP, SAYS, TAGS } from "./wire.gen.js";
 import v8 from "node:v8";
 import vm from "node:vm";
@@ -242,6 +242,13 @@ check("a call asks the element for the verb the patch named", shown, 1);
 let verbless = "";
 try { d.apply(frame(call(0, "levitate"))); } catch (e) { verbless = e.message; }
 check("a verb the element does not have refuses by name", verbless, "a patch calls levitate on element 0, which has no such verb");
+
+// ── a throw where the page enters the module ──
+const caught = [];
+const into = guarded((e) => caught.push(e.message));
+check("a guarded callback answers what it answers", into((a, b) => a + b)(2, 3), 5);
+into(() => { throw new Error("the module trapped"); })();
+check("a throw inside one is handed to the page's reporter, whole, never left to the browser", caught, ["the module trapped"]);
 
 // ── the wire itself ──
 let refused = false;
