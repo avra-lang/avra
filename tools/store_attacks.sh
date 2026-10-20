@@ -240,6 +240,14 @@ agrees foreign "a foreign format"
 say "§6.8 another compiler (a one-query rebuild recomputes that query only)"
 fail "stage 1 keys a segment by the compiler PRINT, so a rebuild that changed one query is a whole-store miss — the per-query recompute needs S2's query code hash"
 
+say "§6.8 another compiler, another C: a compiler whose runtime C differs reads none of the first one's module records"
+steps=$((steps+1))
+if sh tools/db06_step5_witness.sh > "$R/step5.log" 2>&1; then
+    [ "$(tail -1 "$R/step5.log")" = PASS ] || { fails=$((fails+1)); echo "FAIL  §6.8 another compiler, another C: the witness ended without its verdict"; }
+else
+    fails=$((fails+1)); echo "FAIL  §6.8 another compiler, another C: $(tail -1 "$R/step5.log")"
+fi
+
 # ── §6.8 a claim conflict ──
 # Two segments with DIFFERENT content digests for THE SAME action key trigger
 # the conflict detector. We hold the compaction lock externally while a second
