@@ -213,7 +213,9 @@ baseline. Enums, generic model derives, record spreads, and arbitrary maps
 remain unsupported by this graph slice and need explicit standard-library
 and graph integration work. The graph itself has no fixed field-count limit.
 
-`@std/db`'s `@model` derives per-model table CRUD for a flat record with an
+The protocol's request parser is hand-written because `@derive(Decode)` over a
+tagged enum is still open (`avra-8sb5.63.15`); model validation itself is
+derived. `@std/db`'s `@model` derives per-model table CRUD for a flat record with an
 `int` id, at most six scalar columns, and no references, lists, or nullable
 fields. It is the right tool for ordinary rows and the wrong storage for this
 graph: evidence, support, conflicts, and history are one generic claim table,
