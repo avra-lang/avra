@@ -636,6 +636,15 @@ run() {
     }
     [ -z "$live" ] || busy "$live"
     sync_tree
+    want=$(provision_hash)
+    have=$(printf '%s\n' "$info" | sed -n 's/^provision_hash=//p')
+    if [ "$have" != "$want" ]; then
+        echo "work: $sprite — provisioned from ${have:-nothing}, this tree provisions from $want: provisioning again" >&2
+        reproved=$(remote "$sprite" 900 reprovision "$want" "$remote_tree") || {
+            echo "work: SPRITE — $sprite could not provision again: ${reproved:-no answer}. Nothing was started; \`sh tools/work sprites --fix $sprite\` repairs it" >&2
+            exit 75
+        }
+    fi
     if printf '%s\n' "$info" | grep -q '^holds=no' && ! sx "$sprite" 20 test -x "$remote_tree/build/avra" 2>/dev/null; then
         seed "$sprite" "$remote_tree" "$tree" "$hash"
     fi

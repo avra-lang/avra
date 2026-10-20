@@ -207,6 +207,12 @@ begin fresh 60 true > /dev/null
 settled fresh 20
 check "$(res fresh)|$(res bound)|$(res nobody)" "status 0|gone|gone" "a new run clears the ended ones; a run with no record is gone"
 
+# ══ THE HASH A SPRITE WAS PROVISIONED FROM is recorded only by a provisioning, and status reports it
+st() { remote status - | sed -n 's/^provision_hash=//p'; }
+check "$(st)" "none" "a Sprite never provisioned reports no hash"
+check "$(remote reprovision abc123 "$scratch/tree")|$(st)" "reprovisioned=abc123|abc123" "a provisioning records the hash it came from, and status reports it"
+check "$(remote reprovision def456 "$scratch/tree" >/dev/null; st)" "def456" "a later provisioning replaces the record"
+
 echo "----------------------------------------"
 echo "sprite_remote_test: $total checks, $failed failed"
 [ "$failed" -eq 0 ]
