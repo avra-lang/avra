@@ -1,6 +1,6 @@
 use @std.json.{Json}
 use data.{as_value}
-use store.publish.{Publication, Record}
+use store.publish.{Publication, Record, RecordMode}
 
 export enum Operation {
     Schema
@@ -95,9 +95,23 @@ export fn operation(j: Json) -> Result<Operation, string> {
 }
 
 fn record(j: Json) -> Result<Record, string> {
-    closed(j, ["id", "model", "value"])?
+    closed(j, ["id", "model", "value", "mode"])?
     let value? = j.get("value") else { fail "record needs value" }
-    Record { id: text(j, "id")?, model: text(j, "model")?, value: as_value(value) }
+    Record {
+        id: text(j, "id")?,
+        model: text(j, "model")?,
+        value: as_value(value),
+        mode: record_mode(j)?,
+    }
+}
+
+fn record_mode(j: Json) -> Result<RecordMode, string> {
+    if j.get("mode") == null { return RecordMode.Complete }
+    match text(j, "mode")? {
+        "complete" -> RecordMode.Complete,
+        "partial" -> RecordMode.Partial,
+        rest -> { fail "record mode must be complete or partial" },
+    }
 }
 
 fn closed(j: Json, allowed: List<string>) -> Result<int, string> {

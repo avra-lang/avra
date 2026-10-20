@@ -1,5 +1,7 @@
 # Model-driven graph
 
+See [ROADMAP.md](ROADMAP.md) for the full implementation sequence and status.
+
 ## Scope
 
 A standalone Avra project under `graph/`, outside `packages/`. The
@@ -118,12 +120,13 @@ The package name is now stable; this issue remains open.
 The first executable slice includes collected model metadata and standard
 validation, SQLite persistence, observations and immutable input history,
 atomic producer/scope replacement, replay and stale-publication checks,
-typed reference indexes, candidate/conflict reads, validated record reads,
-bounded traversal, explanations, and a shared CLI/HTTP protocol.
+typed reference indexes, candidate/conflict reads, partial property
+assertions, validated record reads, bounded traversal, explanations, and a
+shared CLI/HTTP protocol.
 
 Schema installation conservatively invalidates all older interpretations;
 it preserves their claims, support, and source payloads. `dirty` exposes
-reprocessing work but does not run a classifier. Property-level partial
-assertions, alias/merge identity management, compatibility migrations,
-multi-input derivations, and relation-backed incremental projections remain
-separate slices. `README.md` describes the actual protocol and guarantees.
+reprocessing work but does not run a classifier. Alias/merge identity
+management, evidence locators, compatibility migrations, multi-input
+derivations, and relation-backed incremental projections remain separate
+slices. `README.md` describes the actual protocol and guarantees.

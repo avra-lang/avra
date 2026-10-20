@@ -5,7 +5,26 @@ use catalog.{Catalog}
 use data.{as_json, encoded, digest, json_safe}
 use store.open.{Graph, storage, cell_text, cell_int}
 
-export type Record = { id: string, model: string, value: Value }
+export enum RecordMode { Complete, Partial }
+
+export type Record = { id: string, model: string, value: Value, mode: RecordMode = .Complete }
+
+impl Record {
+    fn request_value() -> Json {
+        let fields = [
+            field("id", Json.Str(self.id)),
+            field("model", Json.Str(self.model)),
+            field("value", as_json(self.value)),
+        ]
+        Json
+            .Obj(
+                match self.mode {
+                    .Complete -> fields,
+                    .Partial -> fields.concat([field("mode", Json.Str("partial"))]),
+                },
+            )
+    }
+}
 
 /// A successful replacement of one producer's contribution in one scope.
 export type Publication = {
@@ -35,20 +54,7 @@ impl Publication {
                             field("input_revision", Json.Int(self.input_revision)),
                             field("schema", Json.Str(self.schema)),
                             field("expected_revision", Json.Int(self.expected_revision)),
-                            field(
-                                "records",
-                                Json
-                                    .Arr(
-                                        [Json
-                                            .Obj(
-                                                [
-                                                    field("id", Json.Str(r.id)),
-                                                    field("model", Json.Str(r.model)),
-                                                    field("value", as_json(r.value)),
-                                                ],
-                                            ) for r in self.records],
-                                    ),
-                            ),
+                            field("records", Json.Arr([r.request_value() for r in self.records])),
                         ],
                     ),
             ),
@@ -107,7 +113,11 @@ impl Graph {
     fn checked(record: Record) -> Result<Record, string> {
         if record.id.is_empty() { fail "entity ids must be nonempty" }
         let model = self.catalog.model(record.model)?
-        match (model.check)(record.value) {
+        let checked = match record.mode {
+            .Complete -> (model.check)(record.value),
+            .Partial -> (model.check_fields)(record.value),
+        }
+        match checked {
             .Ok(value) -> {
                 if !json_safe(value) { fail "model normalization produced a non-finite number" }
                 record with { value: observed(record.value, value) }

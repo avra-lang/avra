@@ -1,0 +1,26 @@
+use @std.meta.{Type, Directive, Code, Kind, name, literal, list_of}
+use @std.validate.{Decode, Value, Entry}
+
+export trait Fields {
+    static fn derive(t: Type) -> List<Directive> {
+        let entries = list_of(
+            [quote {
+            Entry { key: ${literal(f.name)}, value: ${written(f.kind, name(f.name))} }
+        } for f in t.fields],
+        )
+        Decode.fields(t, quote { Value.Map(${entries}) })
+    }
+}
+
+fn written(k: Kind, v: Code) -> Code {
+    let text = match k {
+        .Str or .Opt(.Str) -> quote { Value.Text(value) },
+        rest -> quote { unsupported_test_projection() },
+    }
+    quote {
+        match ${v} {
+            value? -> ${text}
+            null -> Value.Null
+        }
+    }
+}

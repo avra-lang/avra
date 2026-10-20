@@ -55,6 +55,27 @@ def main():
         assert cli({"op": "schema"})["revision"] == published["revision"]
         assert "error" in cli({"op": "get", "id": "bad-person"}, success=False)
 
+        partial = {
+            **publication, "id": "partial:status", "producer": "status-agent", "scope": "partial:w2",
+            "expected_revision": published["revision"],
+            "records": [{"id": "w2", "model": "WorkItem", "mode": "partial", "value": {"status": "done"}}],
+        }
+        partial_revision = cli(partial)
+        assert cli(partial) == partial_revision
+        assert set(cli({"op": "get", "id": "w2"})["fields"]) == {"status"}
+        assert "error" in cli({"op": "value", "id": "w2"}, success=False)
+        title = {
+            **partial, "id": "partial:title", "producer": "title-agent",
+            "expected_revision": partial_revision["revision"],
+            "records": [{"id": "w2", "model": "WorkItem", "mode": "partial", "value": {"title": "Review"}}],
+        }
+        title_revision = cli(title)
+        assert cli({"op": "value", "id": "w2"})["status"] == "done"
+        assert "error" in cli({
+            **title, "id": "bad:mode", "expected_revision": title_revision["revision"],
+            "records": [{"id": "w2", "model": "WorkItem", "mode": "patch", "value": {"title": "Review"}}],
+        }, success=False)
+
         token = "test-only-token-for-local-graph-smoke"
         token_file = root / "token"
         token_file.write_text(token)
@@ -95,6 +116,14 @@ def main():
             assert http({"op": "unknown"})[0] == 400
             status, body = http({"op": "value", "id": "w1"})
             assert status == 200 and json.loads(body)["assignee"] == "p1"
+            status, body = http({
+                **partial, "id": "partial:http", "producer": "http-agent",
+                "expected_revision": title_revision["revision"],
+                "records": [{"id": "w2", "model": "WorkItem", "mode": "partial", "value": {"assignee": None}}],
+            })
+            assert status == 200, body
+            status, body = http({"op": "get", "id": "w2"})
+            assert status == 200 and json.loads(body)["fields"]["assignee"][0]["value"] is None
         finally:
             server.terminate()
             try:
@@ -106,10 +135,10 @@ def main():
         changed = cli({"op": "observe", "id": "mail:1", "payload": "The message was edited."})
         assert changed["input_revision"] == 2
         assert cli({"op": "find", "model": "WorkItem"}) == []
-        assert len(cli({"op": "dirty"})) == 1
+        assert len(cli({"op": "dirty"})) == 4
         assert not cli({"op": "explain", "id": "p1", "property": "name"})[0]["active"]
         assert "error" in cli({**publication, "id": "stale", "expected_revision": changed["revision"]}, success=False)
-    print("native smoke: persistence, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
+    print("native smoke: persistence, partial assertions, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
 
 
 if __name__ == "__main__":

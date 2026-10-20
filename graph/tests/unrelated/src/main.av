@@ -1,5 +1,5 @@
 use models.{models, Shelf, Specimen}
-use @avra.graph.{Graph, Record, Publication, Ref}
+use @avra.graph.{Graph, Record, RecordMode, Publication, Ref}
 
 fn proof() -> Result<string, string> {
     mut graph = Graph.memory(models)?
@@ -43,7 +43,42 @@ fn proof() -> Result<string, string> {
         .Ok(s) -> s.score == 80 && s.shelf.id == "s1" && s.tags.length == 1,
         .Err(_) -> false,
     }
-    "${models.length} ${valid} ${(graph.edges("s1", incoming: true)?).length} ${(graph.traverse("x1", depth: 10)?).length}"
+    let before = (graph.edges("s1", incoming: true)?).length
+    graph
+        .publish(
+            Publication {
+                id: "partial-run",
+                producer: "partial-agent",
+                scope: "sample-x2",
+                input: "lab:1",
+                input_revision: 1,
+                schema: graph.catalog.fingerprint,
+                expected_revision: graph.revision()?,
+                records: [
+                    Record {
+                        id: "x2",
+                        model: "Specimen",
+                        mode: .Partial,
+                        value: Specimen {
+                            name: "Invalid",
+                            shelf: Ref { id: "s1" },
+                            score: 10,
+                            tags: ["one", "two"],
+                            measured: 1.0,
+                            viable: true,
+                            notes: null,
+                            aliases: [],
+                        }
+                            .graph_value(),
+                    },
+                ],
+            },
+        )?
+    let deferred = match graph.value("x2") {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("a viable specimen needs"),
+    }
+    "${models.length} ${valid} ${before} ${(graph.traverse("x1", depth: 10)?).length} ${deferred}"
 }
 
 proof() catch e -> "failed: ${e}"

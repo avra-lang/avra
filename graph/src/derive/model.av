@@ -26,10 +26,12 @@ export fn model(t: Type) -> Declared {
     Declared {
         made: Decode
             .derive(clean)
+            .concat(Decode.fields(clean, projected(t)))
             .concat(
                 [
                     Directive { twin: "", name: t.name, at: t.at, source: generated(t) },
                     Directive { twin: "", name: t.name, at: t.at, source: checked(t) },
+                    Directive { twin: "", name: t.name, at: t.at, source: fields_checked(t) },
                     Directive { twin: "", name: t.name, at: t.at, source: factory(t) },
                 ],
             ),
@@ -79,6 +81,7 @@ fn generated(t: Type) -> Decls {
 fn factory(t: Type) -> Decls {
     let descriptor = "${t.name}_graph_model"
     let validator = "${t.name}_graph_checked"
+    let assertion_validator = "${t.name}_graph_fields_checked"
     let properties = list_of([property(f) for f in t.fields])
     quote {
         @registered
@@ -90,7 +93,34 @@ fn factory(t: Type) -> Decls {
                 rules: ${rules([a for a in t.annotations if a.name != "model"])},
                 check: ${name(validator)},
                 validator_hash: code_hash(${name(validator)}),
+                check_fields: ${name(assertion_validator)},
+                assertion_hash: code_hash(${name(assertion_validator)}),
             }
+        }
+    }
+}
+
+fn projected(t: Type) -> Code {
+    let entries = list_of(
+        [quote {
+        Entry {
+            key: ${literal(f.name)},
+            value: ${written(nullable(f.kind), name(f.name), 0)},
+        }
+    } for f in t.fields],
+    )
+    quote { Value.Map(${entries}) }
+}
+
+fn nullable(k: Kind) -> Kind {
+    match k { .Opt(_) -> k, rest -> Kind.Opt(k) }
+}
+
+fn fields_checked(t: Type) -> Decls {
+    let validator = "${t.name}_graph_fields_checked"
+    quote {
+        fn ${validator}(v: Value) -> Result<Value, Issues> {
+            ${name(t.name)}.decode_fields(v)
         }
     }
 }

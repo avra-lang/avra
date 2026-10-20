@@ -6,6 +6,9 @@ integration, queries, CLI, and HTTP contain no domain model names.
 
 This is an executable first slice, not a completed inference platform.
 
+The full milestones, current checkpoint, and acceptance criteria are in
+[ROADMAP.md](ROADMAP.md).
+
 ## Application surface
 
 The models module declares ordinary types and collects their generated
@@ -109,12 +112,21 @@ A classifier failure must not be published as an empty success.
 }
 ```
 
-The empty object above is schematic: `value` must satisfy that model's
-standard decoder. Use application-owned, preferably namespaced stable
-ids; ids are global across models. References can target identities from
-the same publication regardless of record order, or previously committed
-identities. Target models must match. Identity existence is distinct from
-having current supported properties.
+The empty object above is schematic. A record's `mode` is `"complete"`
+(the default) or `"partial"`. A complete `value` must satisfy that
+model's whole-record decoder. A partial `value` is validated field by
+field: supplied properties use the same shapes, annotations, sibling
+rules, and issue paths as the complete decoder, while missing properties
+stay missing and defaults are not applied as evidence. Record-level
+validators run only when a complete record is assembled. Partial records
+still replace the producer/scope contribution; `mode` is part of the
+replay fingerprint.
+
+Use application-owned, preferably namespaced stable ids; ids are global
+across models. References can target identities from the same publication
+regardless of record order, or previously committed identities. Target
+models must match. Identity existence is distinct from having current
+supported properties.
 
 Read schema, record an observation, classify against its revision, then
 publish against the latest graph revision. A stale graph revision calls
@@ -145,7 +157,12 @@ their order, including duplicate reference positions.
 Defaults construct complete records but omitted top-level fields are not
 extracted evidence. Only supplied properties become claims; an explicitly
 supplied list or embedded record is one normalized atomic value, including
-its constructed elements. Normalizers should be idempotent. Changing an observation immediately
+its constructed elements. Partial records claim exactly the properties they
+supply: no defaults, no required-field errors for omitted fields, and no
+record-level rule until `value` assembles a complete record. An explicit
+`null` on a nullable property is evidence; `null` on a required property is
+refused rather than read as missing. Normalizers should be idempotent.
+Changing an observation immediately
 excludes its old interpretations from current queries. Historical payloads
 and explanations remain available. Empty successful interpretations also
 appear in `dirty` after an input changes.
@@ -166,6 +183,7 @@ runtime upgrades require an explicit application/schema revision policy.
 ## Verify
 
 ```sh
+sh tools/watch.sh 3500 ./build/avra test graph/src/tests/partial_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/storage_test.av
 sh tools/watch.sh 3500 ./build/avra build graph
 python3 graph/tests/smoke.py
@@ -175,15 +193,15 @@ graph/tests/unrelated/src/main
 
 The smoke test uses private temporary files and stops its local server.
 The unrelated library consumer has only shelf/specimen models, a cycle,
-and an eight-field record. Expected output: `2 true 2 2`.
+and an eight-field record. Expected output: `2 true 2 2 true`.
 Interpreter execution of SQLite programs additionally needs the package's
 shared library (`python3 tools/libs.py --build std-sqlite` after building
 its native objects). Native builds link those objects directly.
 
 ## Next slices
 
-- Partial-property assertions without manufacturing required fields;
-  preserve record-level validation separately from property validation.
+- Generic evidence locators: source offsets, sections, attachments, and
+  other source-native locations tied to immutable input revisions.
 - External identity aliases, explicit merge/split operations, and deletion
   policy; ids currently come from the feeding agent.
 - Durable pending work and multi-input dependency tracking; `dirty` is
