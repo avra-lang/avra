@@ -6,16 +6,14 @@
 //! — and its answer is dropped, so a body answering a `Result` is
 //! refused: nobody would hear it fail. A body that only names a
 //! value is refused too: deferring it does nothing.
-use features.{LanguageFeature, BuilderRow}
-use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use features.{LanguageFeature}
+// LICENSED modules.unused_import: `Fixed` and `Term` are named by GENERATED code, not by this
+// file — a rule that states a payload writes a `Fixed` literal, and one that builds a node in
+// place writes a `Term`. Resolve needs the names the source never spells.
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn defers() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name            | build
-        "defer_stmt"    | build_defer
-        "errdefer_stmt" | build_errdefer
-    }
     let codes = table<DiagCode> {
         kind                     | summary
         "type.defer"             | "`defer` drops its body's answer — a `Result` there would fail unheard"
@@ -25,11 +23,10 @@ export fn defers() -> LanguageFeature {
     }
     LanguageFeature defers {
         gram: grammar {
-            stmt = "defer" v:expression END @recover(sync_to: "END") -> defer_stmt(v)
-            stmt = "errdefer" v:expression END @recover(sync_to: "END") -> errdefer_stmt(v)
+            stmt = "defer" body:expression END @recover(sync_to: "END") -> Stmt.Defer(body = Expr.Lambda(body = body), on_error = false)
+            stmt = "errdefer" body:expression END @recover(sync_to: "END") -> Stmt.Defer(body = Expr.Lambda(body = body), on_error = true)
         }
         diags: codes
-        builders: rows
     }
     defers
 }

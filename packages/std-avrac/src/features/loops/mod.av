@@ -7,15 +7,15 @@
 //! or the `for` whose name follows the word (`break row`).
 use features.{LanguageFeature, BuilderRow}
 use features.loops.{push_loop, index_walk, branched_push_loop}
-use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Expect, Recover}
+// LICENSED modules.unused_import: `Term` is named by GENERATED code, not by this file — a rule
+// that builds a node in place writes a `Term`. Resolve needs the name the source never spells.
+use @std.grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Term, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn loops() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name            | build
-        "for_stmt"      | build_for
-        "break_stmt"    | build_break
-        "continue_stmt" | build_continue
+        name       | build
+        "for_stmt" | build_for
     }
     let codes = table<DiagCode> {
         kind         | summary
@@ -25,9 +25,9 @@ export fn loops() -> LanguageFeature {
     LanguageFeature loops {
         gram: grammar {
             stmt = "while" cond:expression "{" ( stmts:stmt | BREAK )* "}" END @recover(sync_to: "END") -> Stmt.While @head(cond) | "for" ( "(" index:NAME "," name:NAME ")" | index:NAME "," name:NAME | name:NAME ) "in" subject:expression "{" ( stmts:stmt | BREAK )* "}" END -> Stmt.ForEach @head(subject) | "for" n:NAME "in" lo:expression ".." hi:expression "{" ( s:stmt | BREAK )* "}" END @recover(sync_to: "END") -> for_stmt(n, lo, hi, s) @head(lo) @head(hi)
-            stmt = "break" l:NAME END -> break_stmt(l)
+            stmt = "break" label:NAME END -> Stmt.Jump(label = Expr.Ident(name = label), again = false)
             stmt = "break" END @expect("END", "`break` ends its line, or names its loop — `break row`") @recover(sync_to: "END") -> Stmt.Jump(again = false)
-            stmt = "continue" l:NAME END -> continue_stmt(l)
+            stmt = "continue" label:NAME END -> Stmt.Jump(label = Expr.Ident(name = label), again = true)
             stmt = "continue" END @expect("END", "`continue` ends its line, or names its loop — `continue row`") @recover(sync_to: "END") -> Stmt.Jump(again = true)
         }
         builders: rows
