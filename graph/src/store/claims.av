@@ -2,7 +2,7 @@ use @std.validate.{Value}
 use @std.sqlite.{Db}
 use data.{encoded, digest}
 use store.open.{Graph, stored, modeled}
-use store.engine.{EntityRow, RunRow, ClaimRow, SupportRow, EdgeRow, AliasRow}
+use store.engine.{EntityRow, RunRow, ClaimRow, SupportRow, EdgeRow, AliasRow, ConfidenceRow}
 use store.identity.{Identity}
 use store.publish.{Link}
 
@@ -47,6 +47,14 @@ impl Graph {
             )?,
             rest -> { fail "support stamp is not unique: ${key}" },
         }
+    }
+
+    fn confided(mut db: Db, support: SupportRow, value: float) -> Result<int, string> {
+        let key = stamp(["confidence", "${support.id}"])
+        if (stored(ConfidenceRow.where(db, stamp: key))?).is_empty() {
+            let _ = modeled(ConfidenceRow { support: support, value: value, stamp: key }.insert(db))?
+        }
+        0
     }
 
     fn attained(link: Link) -> Result<int, string> {

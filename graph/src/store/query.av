@@ -159,6 +159,7 @@ impl Graph {
         let claims = self.claims_of(entities)?
         let supports = stored(SupportRow.in_claim(self.db, claims))?
         let trails = stored(RunTrailRow.in_run(self.db, supports.map(it.run)))?
+        let confidence = stored(ConfidenceRow.in_support(self.db, supports))?
         let scheme = self.catalog.fingerprint
         mut rows: List<Json> = []
         for s in supports {
@@ -180,11 +181,19 @@ impl Graph {
                                 field("active", Json.Bool(self.contributes(s, trails, scheme))),
                                 field("published_revision", Json.Int(s.run.revision)),
                                 field("locator", self.locator(s)?),
+                                field("confidence", self.confidence_of(s, confidence)),
                             ],
                         ),
                 )
         }
         Json.Arr(rows)
+    }
+
+    fn confidence_of(s: SupportRow, rows: List<ConfidenceRow>) -> Json {
+        match rows.find(it.support.id == s.id) {
+            found? -> Json.Float(found.value)
+            null -> Json.Null
+        }
     }
 
     fn locator(s: SupportRow) -> Result<Json, string> {
