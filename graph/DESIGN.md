@@ -80,6 +80,25 @@ After durable commit, update tracked inputs for incremental queries.
 `@std/relation` is a computation dependency system, not an automatic
 SQLite backend. Its cache must be reconstructible from durable data.
 
+## What `@std` provides, and what this engine owns
+
+| Need | The library | What the graph still owns |
+| --- | --- | --- |
+| SQL access, rows, values | `@std/sqlite` — used directly | the engine's DDL, joins, and migrations |
+| Typed validation and decoders | `@std/validate` `@derive(Decode)` — used | partial-field projections (this slice) and descriptors |
+| Per-model rows and CRUD | `@std/db` `@model` — one flat table per record, `int` id, ≤6 scalar columns | not usable: claims, support, history, and composite keys are the storage |
+| Indexed rows, owners, replacement, tombstones, dependency queries | `@std/relation` — in-memory under a `Db`; durable answers only | read projection and incremental rules (milestone 5); SQLite remains the authority |
+| SQL text parsing | `@std/sql` — a parser/resolver, not a query builder | parameterized statements |
+| CLI and HTTP | `@std/cli`, `@std/http` — used | the generic operation dispatch; enum `Decode` is still open (avra-8sb5.63.15) |
+
+The point of the engine is exactly the part no library owns: durable,
+multi-producer, temporal evidence. A derived row CRUD would store one current
+row per entity; it cannot say that two producers support the same value, that
+one scope withdrew its support, or that a value was interpreted under an
+older schema. That is why the write path is explicit SQL. The read path is a
+different matter: it is a projection, and it belongs on `@std/relation` once
+its workload is measured.
+
 ## Delivery sequence
 
 1. Prove standard validation composition, typed references, generated
