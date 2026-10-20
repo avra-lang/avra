@@ -26,9 +26,9 @@
 //! moved, or one this compiler has never seen, pays for either.
 use @std.cli.{CliResult, Runnable, command, flag, arg}
 use @std.io.{write_text}
-use @std.avrac.compiler.{Workspace, Phase, phase_total}
-use @std.avrac.compiler.store.{Store}
-use @std.avrac.core.{FileId, digest_of, joined, distinct, sorted_texts}
+use @std.avrac.compiler.{Workspace, Phase, phase_total, current_read_digest}
+use @std.avrac.compiler.store.{Store, Stored, Reading, node_key}
+use @std.avrac.core.{FileId, digest_of, joined, distinct}
 use @std.avrac.features.{BlockWords}
 use @std.path.{dir_of, joined_path}
 use @std.time.{now_ns}
@@ -69,35 +69,40 @@ impl Runnable for FmtCmd {
 
 // ── --check / --write: one process over a tree ──
 
-/// This compiler's answer, remembered against the file's OWN bytes —
-/// never the path, which a rename would falsely invalidate, and
-/// never mtime, which a checkout without one would falsely trust —
-/// and against the compiler's OWN print, since "canonical" is this
-/// formatter's verdict and a later formatter's rules may disagree.
-/// ALSO against the provider words its `use` lines read (§6.5, avra-8sb5.57.9.6):
-/// a file's parse depends on the block words OTHER modules export, so a
-/// provider that drops or changes one must un-canonicalize every importer
-/// whose own bytes never moved.
-fn canon_key(ws: Workspace, f: FileId, text: string) -> string {
-    digest_of(
-        "fmt.canonical\n${ws.compiler_id()}\n${block_word_key(ws, ws.block_words(f, ws.parsed(f)))}\n${text}",
-    )
+/// WHERE THE VERDICT "ALREADY CANONICAL" IS REMEMBERED: a named answer under this
+/// compiler (`canonical_row`), kept with what it read — the file's own bytes, and the
+/// provider files its `use` lines take block words from (§6.5, avra-8sb5.57.9.6: a
+/// provider that drops or changes a word must un-canonicalize every importer whose own
+/// bytes never moved). The row holds while every read still has its digest
+/// (`Store.get_valid`), and nothing else judges it: a later compiler asks another row,
+/// and a file that moved reads a different digest.
+fn canonical_row(ws: Workspace, path: string) -> string {
+    node_key(Stored.Rows, ["fmt.canonical", ws.compiler_id(), path])
 }
 
-/// A file's block words, folded to ONE stable string — sorted, since
-/// nothing about `use`-line order or a provider's own file order is a
-/// property `canon_key` may depend on. Each PROVIDER FILE's own current
-/// text stands in for its content: a word's own name never moves when
-/// a grammar's internal rule changes, only the file that declares it
-/// does, so the origin's bytes are what `canon_key` must depend on.
-fn block_word_key(ws: Workspace, bw: BlockWords) -> string {
-    let origins = distinct(
-        [g.origin for g in bw.grammars].concat([c.origin for c in bw.components]),
-    )
-    let names = sorted_texts(["${c.word}:${c.declared}" for c in bw.components])
-        .concat(sorted_texts(["${i.name}:${i.declared}" for i in bw.instances]))
-    let provider_texts = sorted_texts([ws.source(ws.file_id(origin)).text for origin in origins])
-    joined(names.concat(provider_texts), "\n")
+/// The files a canonical verdict stood on, each at its digest: the file as it stands (or
+/// as `own` says it will, for a file about to be written), then every provider file.
+fn canonical_reads(ws: Workspace, f: FileId, path: string, own: string) -> List<Reading> {
+    [Reading { name: path, digest: digest_of(own) }]
+        .concat(
+            [Reading { name: p, digest: current_read_digest(p) ?? "-" } for p in provider_origins(ws.block_words(f, ws.parsed(f)))],
+        )
+}
+
+/// The files a file's block words come from, each once.
+fn provider_origins(bw: BlockWords) -> List<string> {
+    distinct([g.origin for g in bw.grammars].concat([c.origin for c in bw.components]))
+}
+
+/// Whether the saved verdict still holds: no parse, no print.
+fn canonical_kept(store: Store, ws: Workspace, path: string) -> bool {
+    store.get_valid(Stored.Rows, canonical_row(ws, path), current_read_digest) != null
+}
+
+/// Remember `path` as canonical with the bytes `own` it stands on.
+fn canonical_keep(store: Store, ws: Workspace, f: FileId, path: string, own: string) {
+    let _ = store
+        .keep_reading(Stored.Rows, canonical_row(ws, path), "canonical", canonical_reads(ws, f, path, own))
 }
 
 /// examined, differing (written, under `--write`), refused, which paths
@@ -280,8 +285,7 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
     let source_ns = now_ns() - t0
     // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
     let t1 = now_ns()
-    let key = canon_key(ws, f, src.text)
-    let hit = ws.db.canon(store, key) != null
+    let hit = canonical_kept(store, ws, path)
     let base = [
         Phase { name: "source", ns: source_ns },
         // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
@@ -299,7 +303,7 @@ fn checked_one(store: Store, ws: Workspace, path: string, write: bool) -> Checke
             if matches {
                 // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
                 let t3 = now_ns()
-                ws.db.insert_canon(store, key, "")
+                canonical_keep(store, ws, f, path, src.text)
                 Checked1 {
                     outcome: Outcome.Canonical,
                     // LICENSED input.clock: a fmt phase's duration is timing, never an input of what is built
@@ -326,7 +330,7 @@ fn written_one(
     match ws.write_checked_source(f) {
         .Ok(text) -> {
             let after = "${text}\n"
-            ws.db.insert_canon(store, canon_key(ws, f, after), "")
+            canonical_keep(store, ws, f, path, after)
             if after == before { return ended(Outcome.Canonical, base) }
             match write_text(path, after) {
                 .Ok(_) -> ended(Outcome.Differs, base),
