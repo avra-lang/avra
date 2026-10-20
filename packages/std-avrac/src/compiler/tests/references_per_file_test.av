@@ -62,3 +62,41 @@ spec "compiler/references — one answer per file" {
         ws.references() == 0
     }
 }
+
+/// A package whose three files the test can edit, its references pass run once.
+type Turned = { ws: Workspace, files: Cell<Map<string, string>> }
+
+fn turned() -> Turned {
+    let files: Cell<Map<string, string>> = Cell.new(refs_files())
+    let names: Cell<List<string>> = Cell.new(["main.av", "a.av", "b.av"])
+    let ws = test_workspace(shifting(files, names), "/w")
+    let _ = ws.analyze_file("/w/src/main.av")
+    let _ = ws.references()
+    Turned { ws: ws, files: files }
+}
+
+/// How many times the references pass filed a file's rows: its owner's run in the relation.
+fn filed_runs(ws: Workspace, path: string) -> int {
+    let db = ws.decls.rows_db.get()
+    db.runs.get()[db.owner_named("references:${path}")]
+}
+
+/// A file's filings before and after the edit of b's body, the world read again between.
+fn filed_around_edit(path: string) -> string {
+    let t = turned()
+    let before = filed_runs(t.ws, path)
+    t.files.put("/w/src/b.av", "use a.{one}\n\nexport fn two() -> int { one() + 2 }\n")
+    let _ = t.ws.world_moved()
+    let _ = t.ws.analyze_file("/w/src/main.av")
+    let _ = t.ws.references()
+    "${before}-${filed_runs(t.ws, path)}"
+}
+
+spec "compiler/references — an edit re-surveys the files it moved" {
+    then "the edited file's rows are filed again" {
+        filed_around_edit("/w/src/b.av") == "1-2"
+    }
+    then "a file the edit never reached stands as it was filed" {
+        filed_around_edit("/w/src/a.av") == "1-1"
+    }
+}
