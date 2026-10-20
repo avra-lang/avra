@@ -16,6 +16,12 @@ type Grove = { id: int, name: string, tree: Tree }
 @relation
 type Drawing = { id: int, shape: Shape, note: string }
 
+/// A record carried as a column of its own, read back field by field.
+type Spot = { line: int, col: int }
+
+@relation
+type Call = { id: int, name: string, at: Spot }
+
 fn branch(label: string, kids: List<Tree>) -> Tree { Tree { label: label, kids: kids } }
 
 fn sample_tree() -> Tree { branch("root", [branch("l", []), branch("r", [branch("rr", [])])]) }
@@ -34,6 +40,16 @@ fn tree_round_trips() -> bool {
     let g = Grove { id: 0, name: "g", tree: sample_tree() }
     match Grove.decoded(g.encoded()) {
         .Ok(back) -> back.name == "g" && same_tree(back.tree, g.tree) && back.stable_hash() == g.stable_hash(),
+        .Err(_) -> false,
+    }
+}
+
+fn same_spot(a: Spot, b: Spot) -> bool { a.line == b.line && a.col == b.col }
+
+fn column_round_trips() -> bool {
+    let c = Call { id: 0, name: "c", at: Spot { line: 3, col: 9 } }
+    match Call.decoded(c.encoded()) {
+        .Ok(back) -> back.name == "c" && same_spot(back.at, c.at) && back.stable_hash() == c.stable_hash(),
         .Err(_) -> false,
     }
 }
@@ -64,6 +80,11 @@ spec "std/relation — the codec grows recursion and payloads" {
         }
         then "a deeper tree still round-trips" {
             deeper_tree_round_trips()
+        }
+    }
+    given "a record carried as a column" {
+        then "its columns survive encode and decode" {
+            column_round_trips()
         }
     }
     given "an enum whose variants carry payloads" {

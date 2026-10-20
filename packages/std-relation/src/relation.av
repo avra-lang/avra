@@ -355,19 +355,39 @@ fn dense_under(k: Kind, shapes: fn(string) -> NamedShape, seen: List<string>) ->
     }
 }
 
-/// Whether a kind reads back from its record: a nested record never does
-/// yet — its columns carry, and reading one back arrives with its own
-/// stored shape.
-fn decodable(k: Kind) -> bool {
+/// Whether a kind reads back from its record: a record does when every
+/// field carries — a `@local` one is never written, so no literal can
+/// rebuild it — and when it is read at a field of its own, never as a
+/// sequence's element, where the reader is a lambda whose answer is
+/// inferred and so carries no `?`. A record that reaches itself needs a
+/// generated helper, which a query's answer has no owner for.
+fn decodable(k: Kind) -> bool { decodable_in(k, false, []) }
+
+fn decodable_in(k: Kind, under_seq: bool, seen: List<string>) -> bool {
     match k {
         .Int or .Bool or .Str -> true,
-        .Opt(inner) -> decodable(inner),
-        .List(elem) -> decodable(elem),
+        .Opt(inner) -> decodable_in(inner, true, seen),
+        .List(elem) -> decodable_in(elem, true, seen),
         .Named(n, _) -> match named_shape(n) {
             .Tagged(_) -> true,
-            .Dense(_) or .Record(_) or .Over(_) or .Plain or .Payload(_) -> false,
+            .Record(fs) -> if under_seq || seen.contains(n) || fs.any((f: Field) -> marked(f, "local")) {
+                false
+            } else {
+                fs.all((f: Field) -> decodable_in(f.kind, false, seen.concat([n])))
+            },
+            .Dense(_) or .Over(_) or .Plain or .Payload(_) -> false,
         },
         .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+/// Whether a kind is a record read back as a whole value — the answer a
+/// query keeps where its reader is a lambda a typed `let` pins.
+fn record_answer(k: Kind) -> bool {
+    if !decodable(k) { return false }
+    match k {
+        .Named(n, _) -> match named_shape(n) { .Record(_) -> true, rest -> false },
+        rest -> false,
     }
 }
 
@@ -1162,10 +1182,33 @@ fn read_value(k: Kind, owner: string) -> Code {
         .Named(n, _) -> if kind_needs(k, []) {
             quote { ${name(owner)}.read_${helper_id(n)}(rd)? }
         } else {
-            quote { ${tag_read(quote { rd }, k)}? }
+            match named_shape(n) {
+                .Record(fs) -> record_read(n, fs, owner),
+                rest -> quote { ${tag_read(quote { rd }, k)}? },
+            }
         },
         rest -> quote { a_relation_field_kind_with_no_stable_encoding() },
     }
+}
+
+/// A record's reader, bound where its answer is kept. The binding is built
+/// beside `read_value` because a spliced reader resolves `rd` where its
+/// template was built, never where the reader is used.
+fn record_reader_let(name: string, ty: string, answer: string, fs: List<Field>) -> List<Stmts> {
+    [
+        quote {
+            let ${name}: fn(Reader) -> Result<${answer}, CodecFault> = (rd: Reader) -> {
+                .Ok(${record_read(ty, fs, answer)})
+            }
+        },
+    ]
+}
+
+/// A record rebuilt from its columns in declared order, read through
+/// `rd` — `written_all`'s mirror.
+fn record_read(n: string, fs: List<Field>, owner: string) -> Code {
+    let reads = [quote { W { ${f.name}: ${read_value(f.kind, owner)} } } for f in columns(fs)]
+    quote { ${n} { ..${reads} } }
 }
 
 /// The lambda that reads one value of kind `k`, `write_each`'s mirror.
