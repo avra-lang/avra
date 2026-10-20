@@ -32,6 +32,8 @@ use @std.meta.{
     Declared,
     Code,
     Decls,
+    Stmts,
+    name,
     literal,
     refuse_as_at,
 }
@@ -39,7 +41,8 @@ use @std.errors.{Loc}
 use @std.sqlite.{Db, SqlValue, sql, prepared}
 use @std.sqlite.error.{SqlError}
 use @std.validate.{Checked, Issues, checker, decoder, stripped}
-use error.{ModelError, UniqueField, or_attributed, or_invalid}
+use @std.time.{now_ms}
+use error.{ModelError, UniqueField, or_attributed, or_invalid, modeled}
 
 export trait Model {
     static fn derive(t: Type) -> List<Directive> {
@@ -51,8 +54,10 @@ export trait Model {
         ]
     }
 
-    /// The one mark this derive reads: `@unique` on a field.
-    static fn marks(t: Type) -> List<string> { ["unique"] }
+    /// The marks this derive reads: `@unique` makes a column unique,
+    /// `@soft_delete` makes `remove` keep the row, `@auto` makes a column
+    /// the database's to set.
+    static fn marks(t: Type) -> List<string> { ["unique", "soft_delete", "auto"] }
 }
 
 /// `@model` — the library's own name for `@derive(Model)`, so the
@@ -72,7 +77,8 @@ fn shape_problems(t: Type) -> List<Diagnostic> {
     if t.variants.length > 0 { return [enum_not_supported(t)] }
     if !has_id_field(t) { return [no_id_field(t)] }
     if t.fields.length > MAX_FIELDS { return [too_many_fields(t)] }
-    []
+    [soft_delete_kind(f) for f in t.fields if is_mark(f, "soft_delete") && !nullable_int(f.kind)]
+        .concat([auto_kind(f) for f in t.fields if is_mark(f, "auto") && !plain_int(f.kind)])
 }
 
 // ── The shape a model must have ──────────────────────────────────
@@ -80,6 +86,14 @@ fn shape_problems(t: Type) -> List<Diagnostic> {
 /// The FIRST field, required, or `@model` refuses with `no_id_field`.
 fn has_id_field(t: Type) -> bool {
     !t.fields.is_empty() && t.fields[0].name == "id" && t.fields[0].kind is .Int
+}
+
+fn nullable_int(k: Kind) -> bool {
+    match k { .Opt(.Int) -> true, rest -> false }
+}
+
+fn plain_int(k: Kind) -> bool {
+    match k { .Int -> true, rest -> false }
 }
 
 /// The widest row this derive can build a constructor for — `row_ctor`
@@ -96,7 +110,10 @@ const MAX_FIELDS: int = 6
 /// refusal; this is what stops a second, silent, unrelated pile of
 /// errors from speaking over it.
 fn shape_ok(t: Type) -> bool {
-    t.variants.is_empty() && has_id_field(t) && t.fields.length <= MAX_FIELDS
+    t.variants.is_empty() &&
+        has_id_field(t) &&
+        t.fields.length <= MAX_FIELDS &&
+        shape_problems(t).is_empty()
 }
 
 /// The annotations a model owns — its marks and its own — which are no
@@ -142,9 +159,9 @@ fn generated(t: Type) -> Decls {
             fn insert(mut db: Db) -> Result<${t}, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
-                ${[push_bound(f) for f in non_id_fields(t)]}
+                ${[push_bound(f) for f in written_fields(t)]}
                 or_attributed(db.run(sql(${literal(insert_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})?
-                self with { id: db.last_insert_rowid() }
+                ${inserted_row(t)}
             }
 
             static fn find(db: Db, id: int) -> Result<${t}?, SqlError> {
@@ -156,16 +173,128 @@ fn generated(t: Type) -> Decls {
             fn update(mut db: Db) -> Result<int, ModelError> {
                 let _ = or_invalid(self.check())?
                 mut args: List<SqlValue> = []
-                ${[push_bound(f) for f in non_id_fields(t)]}
+                ${[push_bound(f) for f in written_fields(t)]}
                 args.push(.Int(self.id))
                 or_attributed(db.run(sql(${literal(update_sql_of(t))}, args)), ${literal(table_name_of(t))}, ${unique_fields_code(t)})
             }
 
-            fn delete(mut db: Db) -> Result<int, SqlError> {
-                db.run(sql(${literal(delete_sql_of(t))}, [.Int(self.id)]))
+            /// The rows, in the order they were inserted.
+            static fn all(db: Db) -> Result<List<${t}>, SqlError> {
+                ${name(t.name)}.where(db)
             }
+
+            ${where_decl(t)}
+
+            fn remove(mut db: Db) -> Result<int, SqlError> {
+                ${removal(t)}
+            }
+
+            ${soft_decls(t)}
         }
     }
+}
+
+// ── Reading and removing by the fields. ──
+
+/// The columns a request writes: every one but the key and the ones the
+/// database sets.
+fn written_fields(t: Type) -> List<Field> { [f for f in non_id_fields(t) if !is_mark(f, "auto")] }
+
+fn is_mark(f: Field, word: string) -> bool { f.marks.any(it.name == word) }
+
+fn soft_field(t: Type) -> Field? { t.fields.find(is_mark(it, "soft_delete")) }
+
+/// The row as the database holds it once written: re-read when it has
+/// columns the database set, else the value written with its new key.
+fn inserted_row(t: Type) -> Code {
+    if t.fields.all(!is_mark(it, "auto")) { return quote { self with { id: db.last_insert_rowid() } } }
+    quote {
+        {
+            let key = db.last_insert_rowid()
+            let held = modeled(${name(t.name)}.find(db, key))?
+            held ?? (self with { id: key })
+        }
+    }
+}
+
+/// `where`: a row per match of every field named, none named is every
+/// row. A soft-delete model's reads skip what was removed. A nullable
+/// field filters by its value; null names no filter.
+fn where_decl(t: Type) -> Decls {
+    let fs = t.fields
+    match fs.length {
+        1 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        2 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        3 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null, ${fs[2].name}: ${param_type(fs[2])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        4 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null, ${fs[2].name}: ${param_type(fs[2])} = null, ${fs[3].name}: ${param_type(fs[3])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        5 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null, ${fs[2].name}: ${param_type(fs[2])} = null, ${fs[3].name}: ${param_type(fs[3])} = null, ${fs[4].name}: ${param_type(fs[4])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        6 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null, ${fs[2].name}: ${param_type(fs[2])} = null, ${fs[3].name}: ${param_type(fs[3])} = null, ${fs[4].name}: ${param_type(fs[4])} = null, ${fs[5].name}: ${param_type(fs[5])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        rest -> quote { static fn a_model_with_more_than_six_fields_needs_a_wider_where() { } },
+    }
+}
+
+/// A filter's seat: the field's value type, nullable so that leaving it
+/// out names no filter.
+fn param_type(f: Field) -> string { "${filter_kind(f.kind).spelled()}?" }
+
+fn filter_kind(k: Kind) -> Kind {
+    match k { .Opt(inner) -> inner, rest -> k }
+}
+
+fn where_body(t: Type) -> Stmts {
+    quote {
+        mut clauses: List<string> = ${clauses_code(live_clause(t))}
+        mut args: List<SqlValue> = []
+        ${[filter_stmt(f) for f in t.fields]}
+        let where_text = if clauses.is_empty() { "" } else { " WHERE " + clauses.join(" AND ") }
+        let s = prepared(db, sql(${literal(select_prefix_sql_of(t))} + where_text + ${literal(order_suffix_sql())}, args))?
+        defer s.reset()
+        mut rows: List<${t}> = []
+        while s.step()? { rows.push(${row_ctor(t)}) }
+        rows
+    }
+}
+
+fn clauses_code(live: string) -> Code {
+    if live.is_empty() { quote { [] } } else { quote { [${literal(live)}] } }
+}
+
+fn filter_stmt(f: Field) -> Stmts {
+    quote {
+        if ${name(f.name)} != null {
+            clauses.push(${literal("${quoted(f.name)} = ?")})
+            args.push(${bound_value(filter_kind(f.kind), quote { ${name(f.name)}! })})
+        }
+    }
+}
+
+/// What `remove` does: a soft-delete model stamps the time and keeps
+/// the row; any other deletes it.
+fn removal(t: Type) -> Code {
+    if soft_field(t) == null { return quote { db.run(sql(${literal(delete_sql_of(t))}, [.Int(self.id)])) } }
+    quote { db.run(sql(${literal(soft_remove_sql_of(t))}, [.Int(now_ms()), .Int(self.id)])) }
+}
+
+/// The trash and its undo, for a soft-delete model alone.
+fn soft_decls(t: Type) -> List<Decls> {
+    if soft_field(t) == null { return [] }
+    [
+        quote {
+            /// The rows that were removed, in the order they were inserted.
+            static fn trash(db: Db) -> Result<List<${t}>, SqlError> {
+                let s = prepared(db, sql(${literal(trash_sql_of(t))}, []))?
+                defer s.reset()
+                mut rows: List<${t}> = []
+                while s.step()? { rows.push(${row_ctor(t)}) }
+                rows
+            }
+
+            /// A removed row, back among the living.
+            fn restore(mut db: Db) -> Result<int, SqlError> {
+                db.run(sql(${literal(restore_sql_of(t))}, [.Int(self.id)]))
+            }
+        },
+    ]
 }
 
 // ── `@model`'s refusals — each a `Diagnostic` at the type's own
@@ -209,6 +338,24 @@ fn too_many_fields(t: Type) -> Diagnostic {
     )
 }
 
+fn soft_delete_kind(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "soft_delete_kind",
+        f.at,
+        "`@soft_delete` holds the time a row was removed, a nullable integer, and `${f.name}` is `${f.ty}`",
+        "declare it `${f.name}: int? = null`",
+    )
+}
+
+fn auto_kind(f: Field) -> Diagnostic {
+    refuse_as_at(
+        "auto_kind",
+        f.at,
+        "`@auto` is a time the database sets, an integer, and `${f.name}` is `${f.ty}`",
+        "declare it `${f.name}: int`",
+    )
+}
+
 // ── The DDL, built once from the fields — plain string assembly at
 // derive time, never a quote hole (a run of columns has no expression
 // position to splice into; a string is just a value). ──
@@ -242,8 +389,12 @@ fn version_column_ddl() -> string { "${quoted(VERSION_COLUMN)} INTEGER NOT NULL 
 
 fn column_ddl(f: Field) -> string {
     if f.name == "id" { return "${quoted(f.name)} INTEGER PRIMARY KEY AUTOINCREMENT" }
+    if is_mark(f, "auto") { return "${quoted(f.name)} INTEGER NOT NULL DEFAULT ${auto_default()}" }
     "${quoted(f.name)} ${sql_type_of(f.kind)}${unique_suffix(f)}"
 }
+
+/// Milliseconds since the epoch, as the database reads its own clock.
+fn auto_default() -> string { "(CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))" }
 
 fn is_unique(f: Field) -> bool { f.marks.any(it.name == "unique") }
 
@@ -295,6 +446,7 @@ fn sql_type_of(k: Kind) -> string {
         .Int or .Bool -> "INTEGER",
         .Float -> "REAL",
         .Str -> "TEXT",
+        .Opt(inner) -> sql_type_of(inner),
         rest -> "a_model_field_kind_this_derive_has_no_sql_type_for",
     }
 }
@@ -303,23 +455,51 @@ fn sql_type_of(k: Kind) -> string {
 /// list SQLite will accept — `INSERT INTO t () VALUES ()` is a syntax
 /// error, so the zero-column case is its own, still-honest SQL.
 fn insert_sql_of(t: Type) -> string {
-    let fs = non_id_fields(t)
+    let fs = written_fields(t)
     if fs.is_empty() { return "INSERT INTO ${quoted_table(t)} DEFAULT VALUES" }
     let names = [quoted(f.name) for f in fs].join(", ")
     let marks = ["?" for f in fs].join(", ")
     "INSERT INTO ${quoted_table(t)} (${names}) VALUES (${marks})"
 }
 
-fn select_by_id_sql_of(t: Type) -> string {
+fn select_prefix_sql_of(t: Type) -> string {
     let names = [quoted(f.name) for f in t.fields].join(", ")
-    "SELECT ${names} FROM ${quoted_table(t)} WHERE ${quoted("id")} = ?"
+    "SELECT ${names} FROM ${quoted_table(t)}"
+}
+
+fn order_suffix_sql() -> string { " ORDER BY ${quoted("id")}" }
+
+/// A soft-delete model's reads skip what was removed.
+fn live_clause(t: Type) -> string {
+    let f? = soft_field(t) else { return "" }
+    "${quoted(f.name)} IS NULL"
+}
+
+fn select_by_id_sql_of(t: Type) -> string {
+    let live = live_clause(t)
+    "${select_prefix_sql_of(t)} WHERE ${quoted("id")} = ?${if live.is_empty() { "" } else { " AND " + live }}"
+}
+
+fn trash_sql_of(t: Type) -> string {
+    let f? = soft_field(t) else { return "" }
+    "${select_prefix_sql_of(t)} WHERE ${quoted(f.name)} IS NOT NULL${order_suffix_sql()}"
+}
+
+fn soft_remove_sql_of(t: Type) -> string {
+    let f? = soft_field(t) else { return "" }
+    "UPDATE ${quoted_table(t)} SET ${quoted(f.name)} = ?, ${version_bump_clause()} WHERE ${quoted("id")} = ? AND ${quoted(f.name)} IS NULL"
+}
+
+fn restore_sql_of(t: Type) -> string {
+    let f? = soft_field(t) else { return "" }
+    "UPDATE ${quoted_table(t)} SET ${quoted(f.name)} = NULL, ${version_bump_clause()} WHERE ${quoted("id")} = ?"
 }
 
 /// The version bump is always in `SET`, so a column-free model still
 /// gets a syntactically valid `UPDATE` with no special case — unlike
 /// `insert_sql_of`, which has no such column to fall back on.
 fn update_sql_of(t: Type) -> string {
-    let sets = [set_clause(f) for f in non_id_fields(t)].concat([version_bump_clause()]).join(", ")
+    let sets = [set_clause(f) for f in written_fields(t)].concat([version_bump_clause()]).join(", ")
     "UPDATE ${quoted_table(t)} SET ${sets} WHERE ${quoted("id")} = ?"
 }
 
@@ -363,12 +543,17 @@ fn collision_message(t: Type) -> string {
 // ── Binding a field OUT (a value crossing to SQLite) and reading one
 // IN (a column crossing back) — one exhaustive dispatch each way. ──
 
-fn bound(f: Field) -> Code {
-    match f.kind {
-        .Int -> quote { .Int(self.${f.name}) },
-        .Bool -> quote { .Int(if self.${f.name} { 1 } else { 0 }) },
-        .Float -> quote { .Real(self.${f.name}) },
-        .Str -> quote { .Text(self.${f.name}) },
+fn bound(f: Field) -> Code { bound_value(f.kind, quote { self.${f.name} }) }
+
+/// A value of kind `k`, as the column holds it; a nullable one is NULL
+/// when absent.
+fn bound_value(k: Kind, v: Code) -> Code {
+    match k {
+        .Int -> quote { .Int(${v}) },
+        .Bool -> quote { .Int(if ${v} { 1 } else { 0 }) },
+        .Float -> quote { .Real(${v}) },
+        .Str -> quote { .Text(${v}) },
+        .Opt(inner) -> quote { if ${v} == null { .Null } else { ${bound_value(inner, quote { ${v}! })} } },
         rest -> quote { a_model_field_kind_this_derive_does_not_bind_yet() },
     }
 }
@@ -381,12 +566,15 @@ fn push_bound(f: Field) -> Code {
 /// `Row`/`SqlValue`, which `first_as` (std-sqlite's `sql.av`) is what
 /// buys this: a found row costs no values list, no per-cell box, and
 /// no `Row` record, only the scalars the struct literal actually holds.
-fn read_at(f: Field, i: int) -> Code {
-    match f.kind {
+fn read_at(f: Field, i: int) -> Code { read_kind(f.kind, i) }
+
+fn read_kind(k: Kind, i: int) -> Code {
+    match k {
         .Int -> quote { s.int_at(${i})? },
         .Bool -> quote { s.int_at(${i})? != 0 },
         .Float -> quote { s.real_at(${i})? },
         .Str -> quote { s.text_at(${i})? },
+        .Opt(inner) -> quote { if s.class_at(${i})? is .Null { null } else { ${read_kind(inner, i)} } },
         rest -> quote { a_model_field_kind_this_derive_does_not_read_yet() },
     }
 }
