@@ -15,7 +15,10 @@ const told = (e) => {
   const words = document.createElement("pre");
   words.setAttribute("role", "alert");
   words.style.cssText = "white-space:pre-wrap;color:#b00020;font:14px/1.4 monospace;padding:16px";
-  words.textContent = `${started ? "The page hit an error:" : "The page did not start:"}\n${e?.stack ?? e?.message ?? e}`;
+  // What went wrong first, then where: a stack names frames and carries no
+  // message line outside V8, so both are said.
+  const said = [e?.message, e?.stack].filter((part) => typeof part === "string" && part !== "").join("\n");
+  words.textContent = `${started ? "The page hit an error:" : "The page did not start:"}\n${said || String(e)}`;
   document.body.prepend(words);
 };
 addEventListener("error", (ev) => told(ev.error ?? `${ev.message} (${ev.filename}:${ev.lineno}:${ev.colno})`));
@@ -28,6 +31,7 @@ try {
     mount: document.getElementById("app"),
     style: document.getElementById("avra-style"),
     wasi: (memory) => wasiPreview1(memory, (code) => { throw new Error(`the program exited ${code}`); }),
+    failed: told,
   });
   started = true;
 } catch (e) { told(e); }

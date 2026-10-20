@@ -456,13 +456,14 @@ export function createFrames(raf, painted) {
 // preview1 rows over the module's memory; `sent(bytes)` sees each frame
 // before it is applied. A module that is no `@std/ui` web app REFUSES by
 // the name it lacks.
-export async function run(source, { document, mount, style = null, wasi, sent = () => {}, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb) }) {
+export async function run(source, { document, mount, style = null, wasi, sent = () => {}, failed = (e) => { throw e; }, clock = globalThis, fetch: fetchFn = (...a) => globalThis.fetch(...a), raf = (cb) => globalThis.requestAnimationFrame(cb) }) {
   let mod = null;
-  const timers = createTimers(clock, (token) => mod[HOST.fired](BigInt(token)));
-  const frames = createFrames(raf, () => mod[HOST.painted]());
-  const fetches = createFetches(fetchFn, (token, status, octets) => sendAnswer(mod, token, status, octets), clock);
-  const windows = createWindows(document, mount, (path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin));
-  const apply = createApplier(document, mount, (who, what, said) => sendEvent(mod, who, what, said), style);
+  const into = guarded(failed);
+  const timers = createTimers(clock, into((token) => mod[HOST.fired](BigInt(token))));
+  const frames = createFrames(raf, into(() => mod[HOST.painted]()));
+  const fetches = createFetches(fetchFn, into((token, status, octets) => sendAnswer(mod, token, status, octets)), clock);
+  const windows = createWindows(document, mount, into((path, from, to, extent, pin) => sendScrolled(mod, path, from, to, extent, pin)));
+  const apply = createApplier(document, mount, into((who, what, said) => sendEvent(mod, who, what, said)), style);
   mod = await instantiate(source, {
     wasi: wasi(() => mod.memory),
     // The seat is a Bytes: the pointer names its box, and the LENGTH comes
@@ -486,6 +487,16 @@ export async function run(source, { document, mount, style = null, wasi, sent = 
   const code = mod[HOST.entry]();
   if (code !== 0) throw new Error(`the program's statements answered ${code}`);
   return { mod, ears: apply.ears };
+}
+
+// EVERY WAY THE PAGE ENTERS THE MODULE — an event, a timer, a frame, an
+// answer, a scroll — runs under `into(fn)`: a throw is handed to `failed`
+// whole, its stack with it, where the browser's own report of an uncaught
+// error may hide its words ("Script error.").
+export function guarded(failed) {
+  return (fn) => (...args) => {
+    try { return fn(...args); } catch (e) { failed(e); }
+  };
 }
 
 // The bytes a frame seat points at, read through the RUNTIME'S OWN length
