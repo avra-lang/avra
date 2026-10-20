@@ -11,8 +11,9 @@
 # Resolved in order:
 #   1. build/avra-tools/<key>/avra-tools, already here;
 #   2. the published asset for the key, fetched;
-#   3. built here by $AVRA_TOOLS_COMPILER (main's published compiler), for a
-#      tree whose tools/ differs from anything published;
+#   3. built here by $AVRA_TOOLS_COMPILER, else by main's published compiler
+#      (tools/fetch_compiler.sh, into $dir/compiler), for a tree whose tools/
+#      differs from anything published;
 #   4. the Python tool of the same name (tools/<command with _>.py), while no
 #      binary answers — said on stderr, so a fallback is never silent.
 set -eu
@@ -25,6 +26,10 @@ bin=$dir/avra-tools
 if [ ! -x "$bin" ]; then
     mkdir -p "$dir"
     python3 tools/compiler_release.py --asset avra-tools fetch "tools-$key" "$bin" >/dev/null 2>&1 && chmod +x "$bin" || true
+fi
+if [ ! -x "$bin" ] && [ -z "${AVRA_TOOLS_COMPILER:-}" ]; then
+    # no compiler named: main's published one, installed beside (never over) the standing build/avra
+    FETCH_BUILD="$dir/compiler" sh tools/fetch_compiler.sh >/dev/null 2>&1 && AVRA_TOOLS_COMPILER="$dir/compiler/avra" || true
 fi
 if [ ! -x "$bin" ] && [ -n "${AVRA_TOOLS_COMPILER:-}" ] && [ -x "$AVRA_TOOLS_COMPILER" ]; then
     built=$("$AVRA_TOOLS_COMPILER" build tools | tail -n 1) && cp "$built" "$bin" && chmod +x "$bin" || true
