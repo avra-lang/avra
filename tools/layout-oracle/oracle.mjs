@@ -38,12 +38,16 @@ const PROP = args.face === "prop";
 // The engine the boxes are read from: firefox (default) or webkit (Playwright's, PLAYWRIGHT_DIR).
 const ENGINE = args.browser ?? "firefox";
 
-// How far a browser's box may stand from ours, in solver units. Cells are exact. A proportional
-// face is laid out in each engine's own quantum (Gecko 1/60 px a glyph, WebKit 1/64, Blink floats),
-// so an edge that falls on a half may snap either way: one unit is agreement. Further — a line
-// more or fewer, a box a word wider — is a defect whichever engine shows it.
-const TOLERANCE = PROP ? 1 : 0;
-const agrees = (got, want) => got.length === want.length && got.every((b, i) => b.every((v, k) => Math.abs(v - want[i][k]) <= TOLERANCE));
+// How far a browser's box may stand from ours, on EVERY face: one OUTPUT PIXEL, which is 60 of
+// `fine`'s sixtieths — a solver box is whole pixels, rounded once at its edge. The tolerance is on
+// POSITION alone: a fractional space (SpaceAround's half gap) is distributed at sub-pixel precision,
+// so each engine snaps the final pixel its own way and two correct engines may legitimately differ
+// there. COUNT and SIZE are exact: a line more or fewer, or a box a word wider, is a defect
+// whichever engine shows it.
+const TOLERANCE = 1;
+const agrees = (got, want) =>
+  got.length === want.length &&
+  got.every((b, i) => b[2] === want[i][2] && b[3] === want[i][3] && Math.abs(b[0] - want[i][0]) <= TOLERANCE && Math.abs(b[1] - want[i][1]) <= TOLERANCE);
 const FACE = { units: 64, advances: { i: 96, m: 272, W: 320, " ": 128 }, fallback: 205 };
 const LINE = 16;
 
