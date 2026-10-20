@@ -51,7 +51,7 @@ use compiler.lower.{Body, program_symbol, FieldPlan}
 use compiler.store.{Store, Stored, Producer, node_key, producer_of}
 use compiler.host.{Host}
 use @std.meta.{code_hash}
-use @std.path.{dir_of, joined_path, normalized, relative_path}
+use @std.path.{relative_path}
 
 impl Workspace {
     /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
@@ -94,19 +94,8 @@ impl Workspace {
 /// producer's stamp folds the bytes themselves. Absent when the host cannot read them,
 /// which keeps the rows their writer's own.
 export fn runtime_bodies(host: Host) -> string? {
-    let beside? = host.compiler else { return null }
-    let dir = dir_of(beside)
-    let checked_out = octets_at(host, joined_path(dir, "libavra_runtime.a"))
-    let installed = octets_at(host, normalized(joined_path(dir, "../lib/avra/libavra_runtime.a")))
-    let octets? = checked_out ?? installed else { return null }
+    let octets? = host.runtime_archive() else { return null }
     digest_of_octets(octets)
-}
-
-/// THE OCTETS AT A PATH, through the host's own file door — the runtime archive's bytes,
-/// read as the store opens.
-fn octets_at(host: Host, at: string) -> Bytes? {
-    // LICENSED compiler.host_asked_directly: the store's own identity — the C the running compiler carries, read once as it opens its store, never a query's read
-    match (host.octets)(at) { .Bytes(octets) -> octets, rest -> null }
 }
 
 /// A MODULE'S RECORD IS KEPT BY ITS INTERFACE: the row under `record_key` holds
