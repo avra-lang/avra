@@ -19,7 +19,7 @@ import time
 import urllib.request
 
 WORKFLOW = "checks"
-FULL_JOB = "keepers-a"  # a full run runs this job; a light run does not
+FULL_JOB = "keepers-a"  # a full run runs this job; a light run lists it, skipped
 WAIT_S = 30
 GIVE_UP_S = 45 * 60
 
@@ -39,6 +39,12 @@ def decide(own, others):
     return "mirror %s %s" % (newest["conclusion"], newest["id"])
 
 
+def ran_full(jobs):
+    """A run gave the full gate when its `keepers-a` job RAN: a light run lists the job too, as
+    skipped, and a skipped job is no verdict."""
+    return any(j["name"].startswith(FULL_JOB) and j.get("conclusion") != "skipped" for j in jobs)
+
+
 def fetch(url, token):
     req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token,
                                                "Accept": "application/vnd.github+json"})
@@ -56,7 +62,7 @@ def others_on(repo, sha, own, token):
         jobs = fetch("https://api.github.com/repos/%s/actions/runs/%d/jobs?per_page=100"
                      % (repo, r["id"]), token).get("jobs", [])
         rows.append({"id": r["id"], "status": r["status"], "conclusion": r.get("conclusion") or "",
-                     "full": any(j["name"].startswith(FULL_JOB) for j in jobs)})
+                     "full": ran_full(jobs)})
     return rows
 
 
@@ -97,12 +103,23 @@ def self_test():
          [{"id": 4, "status": "completed", "conclusion": "success", "full": True},
           {"id": 5, "status": "completed", "conclusion": "cancelled", "full": True}], "mirror success 4"),
     ]
-    bad = [(name, got, want) for name, rows, want in cases for got in [decide({"id": 9}, rows)] if got != want]
+    jobs_cases = [
+        ("a light run lists keepers-a skipped: not a full run",
+         [{"name": "prepare", "conclusion": "success"}, {"name": "keepers-a", "conclusion": "skipped"}], False),
+        ("a sharded full run ran keepers-a",
+         [{"name": "keepers-a (1)", "conclusion": "success"}, {"name": "keepers-a (2)", "conclusion": "failure"}], True),
+        ("a keepers-a still running counts as the full run's",
+         [{"name": "keepers-a", "conclusion": None}], True),
+        ("no keepers-a at all: not a full run",
+         [{"name": "prepare", "conclusion": "success"}], False),
+    ]
+    bad = [(name, got, want) for name, jobs, want in jobs_cases for got in [ran_full(jobs)] if got != want]
+    bad += [(name, got, want) for name, rows, want in cases for got in [decide({"id": 9}, rows)] if got != want]
     for name, got, want in bad:
         print("ci_dup_run: FAILED — %s: got %r, wanted %r" % (name, got, want))
     if bad:
         return 1
-    print("ci_dup_run: self-test clean — %d case(s)" % len(cases))
+    print("ci_dup_run: self-test clean — %d case(s)" % (len(cases) + len(jobs_cases)))
     return 0
 
 
