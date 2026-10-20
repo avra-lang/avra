@@ -1140,6 +1140,7 @@ TOOL_WITNESSES = capped.sh\ --self-test failed_tail_test.sh host_fn_edit_attack.
                  witness_fmt_changed.sh witness_gate_changed.sh witness_work_wait.sh witness_work_run.sh witness_compiler_release.sh witness_ci_wall.sh witness_warm_edit.sh shim_guard_test.sh work_test.sh reclaim_test.sh keepers_loop.sh\ --self-test rungs.sh\ --self-test ladder.sh\ --self-test
 tool-witnesses:
 	@python3 tools/pipeline_status.py --self-test
+	@python3 tools/store_segments.py --self-test
 	@fail=""; for w in $(TOOL_WITNESSES); do sh tools/$$w || fail="$$fail [$$w]"; done; \
 	 [ -z "$$fail" ] || { echo "tool-witnesses: refused —$$fail"; exit 1; }
 
