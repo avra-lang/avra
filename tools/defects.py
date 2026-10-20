@@ -17,8 +17,14 @@ a user's malformed program like any other, but its `run` is judged by
 voices alone — a mutant's own runtime trap or loop is the program's — and
 happens only where every std package it imports is a pure one.
 
+`--timings FILE` writes one `name<TAB>seconds` line per program (check, run and
+build together), and the log ends with the five slowest. `--previous FILE` is
+the timings of the last green run: a program that times out names the seconds
+it took there, so a timeout reads against what it normally costs.
+
 usage: defects.py [--avra PATH] [--only NAME] [--list] [--show]
-                  [--generate N] [--seed S]
+                  [--generate N] [--seed S] [--timings FILE] [--previous FILE]
+       defects.py --self-test
 """
 import argparse
 import glob
@@ -38,7 +44,7 @@ BAD = re.compile(
     r"language\.defect|survived typing|out of bounds|Segmentation|internal error|panicked",
     re.M,
 )
-TIMEOUT = 60
+TIMEOUT = int(os.environ.get("AVRA_DEFECT_TIMEOUT", "60"))
 # a mutant is linked one in this many: a link costs seconds, and check has lowered it already
 BUILD_EVERY = 4
 # @mutate adds the case's mutations; @check runs only `check` — a program
@@ -226,7 +232,30 @@ def verdict(code, out, lenient=False):
     return "voice %r" % hit.group(0).strip() if hit else None
 
 
+def read_timings(path):
+    """{name: seconds} from a timings file; empty when there is none."""
+    try:
+        rows = (line.rstrip("\n").split("\t") for line in open(path, encoding="utf-8") if "\t" in line)
+        return {name: float(sec) for name, sec in rows}
+    except (OSError, ValueError):
+        return {}
+
+
+def timeout_words(name, previous):
+    """The words of a program that ran out the clock, against its last green seconds when known."""
+    last = previous.get(name)
+    return "timed out after %ds (last green run: %s)" % (TIMEOUT, "%.1fs" % last if last is not None else "not known")
+
+
+def slowest(taken, n=5):
+    """The n slowest programs as report lines, slowest first."""
+    return ["defects: slowest %d. %s %.1fs" % (i + 1, name, sec)
+            for i, (name, sec) in enumerate(sorted(taken.items(), key=lambda kv: (-kv[1], kv[0]))[:n])]
+
+
 def main():
+    if "--self-test" in sys.argv:
+        return self_test()
     ap = argparse.ArgumentParser()
     ap.add_argument("--avra", default=os.path.join(ROOT, "avra"))
     ap.add_argument("--only")
@@ -236,8 +265,13 @@ def main():
     ap.add_argument("--dump", metavar="NAME", help="print one program's text and stop")
     ap.add_argument("--progress", type=int, default=0, metavar="K", help="say where it is every K programs")
     ap.add_argument("--show", action="store_true", help="print every run's output")
+    ap.add_argument("--timings", metavar="FILE", help="write one name<TAB>seconds line per program")
+    ap.add_argument("--previous", metavar="FILE", help="the last green run's timings")
+    ap.add_argument("--corpus", default=CORPUS, metavar="FILE")
     a = ap.parse_args()
-    all_cases = cases(open(CORPUS, encoding="utf-8").read())
+    previous = read_timings(a.previous) if a.previous else {}
+    taken = {}
+    all_cases = cases(open(a.corpus, encoding="utf-8").read())
     work = []
     for name, flags, body in all_cases:
         verbs = ["check"] if "@check" in flags else ["check", "run"]
@@ -286,8 +320,9 @@ def main():
                 t0 = time.time()
                 code, out = run(a.avra, verb, d)
                 clean = clean or (verb == "check" and code == 0)
-                why = verdict(code, out, lenient=mutant and verb == "run")
+                why = timeout_words(n, previous) if code == 124 else verdict(code, out, lenient=mutant and verb == "run")
                 with lock:
+                    taken[n] = taken.get(n, 0.0) + time.time() - t0
                     if a.progress and time.time() - t0 > 10:
                         print("defects: slow %s (%s) %ds" % (n, verb, time.time() - t0), flush=True)
                     if a.show:
@@ -303,9 +338,66 @@ def main():
             t.start()
         for t in threads:
             t.join()
+    print("\n".join(slowest(taken)))
+    if a.timings:
+        os.makedirs(os.path.dirname(os.path.abspath(a.timings)), exist_ok=True)
+        with open(a.timings, "w", encoding="utf-8") as f:
+            f.write("".join("%s\t%.2f\n" % (n, sec) for n, sec in sorted(taken.items())))
+        print("defects: %d program timing(s) in %s" % (len(taken), a.timings))
     print("defects: %d worker(s), %.0fs" % (jobs, time.time() - started))
     print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len({n for n, _ in bad})))
     return 1 if bad else 0
+
+
+def self_test():
+    """A fake `avra` that is slow for some programs and never answers for one: the log must list
+    the slowest, the timings file must hold every program, and the timeout must name its last green seconds."""
+    import shutil
+    d = tempfile.mkdtemp(prefix="avra-defects-self-")
+    try:
+        fake = os.path.join(d, "avra")
+        with open(fake, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\nm=$(cat "$2/src/main.av")\ncase "$m" in\n'
+                    '*hang*) sleep 30 ;;\n*slow*) sleep 1 ;;\n*medium*) sleep 0.4 ;;\nesac\nexit 0\n')
+        os.chmod(fake, 0o755)
+        corpus = os.path.join(d, "corpus.txt")
+        with open(corpus, "w", encoding="utf-8") as f:
+            f.write("### quick\nquick\n### medium\nmedium\n### slow\nslow\n### hang\nhang\n")
+        prev = os.path.join(d, "prev.tsv")
+        with open(prev, "w", encoding="utf-8") as f:
+            f.write("hang\t0.40\nquick\t0.01\n")
+        out_file = os.path.join(d, "timings.tsv")
+        got = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--avra", fake, "--corpus", corpus,
+             "--timings", out_file, "--previous", prev],
+            env=dict(os.environ, AVRA_DEFECT_TIMEOUT="2"), capture_output=True, text=True)
+        text = got.stdout + got.stderr
+        rows = read_timings(out_file)
+        fails = []
+        if got.returncode != 1:
+            fails.append("a timeout is a refusal (exit %d)" % got.returncode)
+        if "hang (check) — timed out after 2s (last green run: 0.4s)" not in text:
+            fails.append("the timeout does not name its last green seconds")
+        order = [l.split()[3] for l in text.split("\n") if l.startswith("defects: slowest")]
+        if order != ["hang", "slow", "medium", "quick"]:
+            fails.append("the slowest list is %r" % order)
+        if sorted(rows) != ["hang", "medium", "quick", "slow"] or not (rows["hang"] >= 2.0 and rows["slow"] >= 3.0):
+            fails.append("the timings file holds %r" % rows)
+        # a program with no earlier green timing says so
+        none = subprocess.run(
+            [sys.executable, os.path.abspath(__file__), "--avra", fake, "--corpus", corpus, "--only", "hang"],
+            env=dict(os.environ, AVRA_DEFECT_TIMEOUT="2"), capture_output=True, text=True)
+        if "last green run: not known" not in none.stdout + none.stderr:
+            fails.append("a timeout with no earlier timing does not say so")
+        for m in fails:
+            print("defects self-test: FAILED — " + m)
+        if fails:
+            print(text)
+            return 1
+        print("defects self-test: slowest list, timings file and timeout comparison hold on a slow fake check")
+        return 0
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":
