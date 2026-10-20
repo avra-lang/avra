@@ -1,7 +1,7 @@
 //! A BODY'S TYPING FACTS KEPT: a declaration typed in one process is read back in the next,
 //! while every answer it stood on has the digest it had. A body that spoke is never kept, so a
 //! restored body says nothing it did not say when typed.
-use core.{DeclId}
+use core.{DeclId, qtrace, traced}
 use core.digest.{hex, unhex}
 use compiler.store.{Store, Stored, node_key}
 use compiler.families.{Family}
@@ -17,7 +17,12 @@ impl Workspace {
         let store? = self.store.get() else { return null }
         if self.db.active(key(Family.Expanded, x.file.index)) { return null }
         let rdb = self.decls.rows_db.get()
-        let text? = store.get_valid(Stored.Unit, self.typed_row(x.id), (n) -> rdb.leaf_digest(n)) else { return null }
+        let text? = store.get_valid(Stored.Unit, self.typed_row(x.id), (n) -> rdb.leaf_digest(n)) else {
+            if traced() { qtrace(
+                    "Q\ttyped-miss\t${x.name}\t${store.has(Stored.Unit, self.typed_row(x.id))}\t${self.first_moved(store, self.typed_row(x.id), (n) -> rdb.leaf_digest(n))}\n",
+                ) }
+            return null
+        }
         let bytes? = unhex(text) else { return null }
         match TypeFacts.decoded_in(facts_scope(self, x.lo, x.stmt_lo), bytes) {
             .Ok(facts) -> facts,
@@ -32,9 +37,17 @@ impl Workspace {
         for arg in 0..self.decls.decl_count() {
             if self.hold.typed_made.at(arg) == null { continue }
             let d = DeclId { index: arg }
-            let leaves? = rdb.leaves_of(self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))) else { continue }
+            let leaves? = rdb.leaves_of(self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg))) else {
+                if traced() { qtrace(
+                        "Q\ttyped-keep\tunnamed\t${[self.family_name(k.family) for k in self.db.kernel.deps_of(key_at(Family.Typed.ordinal, arg)) if rdb.leaves_at(k) == null].join(",")}\n",
+                    ) }
+                continue
+            }
             let facts = self.typed(d)
-            if !facts.voices.list.is_empty() { continue }
+            if !facts.voices.list.is_empty() {
+                if traced() { qtrace("Q\ttyped-keep\tspoke\t${self.decls.decl(d).name}\n") }
+                continue
+            }
             let at = facts_scope(self, facts.of_expr.lo, facts.binding_types.lo)
             let _ = store
                 .keep_reading(Stored.Unit, self.typed_row(d), hex(facts.encoded_in(at)), saved_reads(leaves))
