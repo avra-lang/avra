@@ -8,6 +8,9 @@
 # sweep whose failures are read elsewhere). Every face runs on every browser
 # (LAYOUT_ORACLE_BROWSERS, LAYOUT_ORACLE_FACES): the counts all print, and the
 # status is a failure if any face in any browser disagreed.
+# A tree licensed BY NAME in oracle.mjs (a break the engines themselves differ
+# on, WebKit only, capped at two) prints its own two answers, is named in the
+# table, and is not counted as agreeing: the COUNT is exact in every other tree.
 #
 # It needs the compiler and Firefox (FIREFOX names one that is not in a usual
 # place). Where one is absent the run FAILS, naming what is missing: a run that
@@ -44,6 +47,7 @@ faces=${LAYOUT_ORACLE_FACES:-cell prop}
 total=0
 failed=
 summary=
+licensed_total=0
 # EVERY face runs on EVERY browser, and every count is printed: a run that
 # stopped at the first failing face would report one count and hide the rest,
 # and cannot be read as green. The status is the run's verdict, the table its
@@ -57,12 +61,16 @@ for browser in $browsers; do
         for seed in $seeds; do
             out=$(AVRA="$avra" node "$here/layout-oracle/oracle.mjs" --browser "$browser" --face "$face" --cases "$cases" --seed "$seed" --show "$show" 2>&1) && st=0 || st=$?
             echo "$out"
-            counts=$(echo "$out" | tail -1 | sed -n 's/^layout-oracle: \([0-9]*\) of \([0-9]*\) trees agree.*/\1 \2/p')
+            counts=$(printf '%s\n' "$out" | sed -n 's/^layout-oracle: \([0-9]*\) of \([0-9]*\) trees agree.*/\1 \2/p' | tail -1)
+            licensed=$(printf '%s\n' "$out" | sed -n 's/^layout-oracle: licensed \([0-9]*\) .*/\1/p' | tail -1)
             agree=0 of=0
             [ -z "$counts" ] || { agree=${counts% *}; of=${counts#* }; }
-            summary="${summary}layout-oracle: ${browser} ${face} seed ${seed} — ${agree} of ${of} trees agree
+            said=
+            [ -z "$licensed" ] || said=", ${licensed} licensed"
+            summary="${summary}layout-oracle: ${browser} ${face} seed ${seed} — ${agree} of ${of} trees agree${said}
 "
             total=$((total + agree))
+            licensed_total=$((licensed_total + ${licensed:-0}))
             [ "$st" = 0 ] || failed="${failed} ${browser}/${face}/seed ${seed}"
         done
     done
@@ -73,4 +81,8 @@ if [ -n "$failed" ]; then
     exit 1
 fi
 [ "$total" -gt 0 ] || { echo "layout-oracle: ran 0 trees — FAILED: no seed compared a single tree"; exit 1; }
-echo "layout-oracle: $total trees agree between std-ui's solver and the real html target in: $browsers"
+if [ "$licensed_total" = 0 ]; then
+    echo "layout-oracle: $total trees agree between std-ui's solver and the real html target in: $browsers"
+else
+    echo "layout-oracle: $total of $((total + licensed_total)) trees agree between std-ui's solver and the real html target in: $browsers; $licensed_total licensed by name, and the count is exact in every other tree"
+fi
