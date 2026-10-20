@@ -1,0 +1,63 @@
+//! `place/lines.av` — text as lines of a width, in any unit. A target hands in
+//! how wide a run is (`width`) and how much room a line has (`avail`, in that
+//! same unit), and the lines come back: so one breaker lays text out in terminal
+//! cells and in sixty-fourths of a pixel alike.
+use @std.text.{graphemes}
+
+/// The text as lines of at most `avail`, breaking at spaces. A newline starts a
+/// fresh paragraph, a blank one keeping its blank line; runs of spaces collapse;
+/// a word longer than the line is cut between clusters. "" has no lines.
+export fn lines_in(text: string, avail: int, width: fn(string) -> int) -> List<string> {
+    [l for p in text.split("\n") for l in paragraph(p, avail, width)]
+}
+
+fn paragraph(p: string, avail: int, width: fn(string) -> int) -> List<string> {
+    let words = [piece for word in p.split(" ") if word != "" for piece in cut_in(word, avail, width)]
+    if words.is_empty() { return [""] }
+    filled(words, avail, width)
+}
+
+/// The words on lines of at most `avail`, a space between, each line taking
+/// words until the next would pass it.
+fn filled(words: List<string>, avail: int, width: fn(string) -> int) -> List<string> {
+    let space = width(" ")
+    mut out: List<string> = []
+    mut line = ""
+    for word in words {
+        if line != "" && width(line) + space + width(word) <= avail {
+            line = "${line} ${word}"
+        } else {
+            if line != "" { out.push(line) }
+            line = word
+        }
+    }
+    out.concat([line])
+}
+
+/// `s` in runs of at most `avail`, cut between clusters; whole when it already
+/// fits. A cluster wider than the line stands alone.
+export fn cut_in(s: string, avail: int, width: fn(string) -> int) -> List<string> {
+    if width(s) <= avail { [s] } else { packed(graphemes(s), avail, width) }
+}
+
+fn packed(gs: List<string>, avail: int, width: fn(string) -> int) -> List<string> {
+    mut out: List<string> = []
+    mut line = ""
+    mut used = 0
+    for g in gs {
+        let n = width(g)
+        if used + n > avail && line != "" {
+            out.push(line)
+            line = ""
+            used = 0
+        }
+        line = line + g
+        used = used + n
+    }
+    if line == "" { out } else { out.concat([line]) }
+}
+
+/// The widest word of `s`: the narrowest a text can be laid without cutting one.
+export fn longest_in(s: string, width: fn(string) -> int) -> int {
+    [width(w) for p in s.split("\n") for w in p.split(" ")].max() ?? 0
+}
