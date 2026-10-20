@@ -133,7 +133,7 @@ claim("and it opens again after that too", await read(`${dialog}.open`));
 await press(named("Close"));
 await press(named("Light mode"));
 
-await outsidePresses(page, "", claim, named);
+await outsidePresses({ ...page, escape: () => type(KEY.escape) }, "", claim, named);
 
 // ── the keyboard ────────────────────────────────────────────────
 await read(`${named("Dark mode")}.focus(), 1`);
@@ -202,7 +202,7 @@ await page.close();
 const unaware = await openPage(firefoxBinary(), url, { prefs: { "dom.dialog.light-dismiss.enabled": false } });
 await unaware.read(`new Promise((ready) => { const look = setInterval(() => { if (document.querySelector("li")) { clearInterval(look); ready(1); } }, 20); })`);
 claim("this engine knows no `closedby`", await unaware.read(`!("closedBy" in HTMLDialogElement.prototype)`));
-await outsidePresses(unaware, ", where the engine knows no `closedby`", claim, named);
+await outsidePresses({ ...unaware, escape: () => unaware.type(KEY.escape) }, ", where the engine knows no `closedby`", claim, named);
 claim("nothing reached that page's console", unaware.complaints().length === 0, unaware.complaints());
 await unaware.close();
 console.log(failed === 0 ? "ui-browser: every claim holds" : `ui-browser: ${failed} claim(s) FAILED`);
