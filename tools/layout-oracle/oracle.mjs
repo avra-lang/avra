@@ -296,7 +296,11 @@ async function main() {
   const cases = args.tree ? [JSON.parse(args.tree)] : (PROP ? PROP_CASES : FIXED_CASES).concat(Array.from({ length: CASES }, () => rooted(generate(rand, 3))));
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-oracle-"));
   const binary = firefoxBinary();
-  if (!binary) { console.log("layout-oracle: ran 0 trees — FAILED: no Firefox on this machine (FIREFOX names one)"); process.exit(1); }
+  if (!binary) {
+    const skipped = process.argv.includes("--skip-if-absent");
+    console.log(`layout-oracle: ran 0 trees — ${skipped ? "SKIPPED" : "FAILED"}: no Firefox on this machine (FIREFOX names one)`);
+    process.exit(skipped ? 0 : 1);
+  }
   const page = fs.mkdtempSync(path.join(os.tmpdir(), "avra-layout-page-"));
   fs.writeFileSync(path.join(page, "index.html"), PAGE);
   const browser = await openPage(binary, "file://" + path.join(page, "index.html"), { width: 1200, height: 900 });
@@ -314,6 +318,7 @@ async function main() {
     }
   }
   await browser.close();
+  if (cases.length === 0) { console.log("layout-oracle: ran 0 trees — FAILED: no tree was compared"); process.exit(1); }
   console.log(`layout-oracle: ${cases.length - failing.length} of ${cases.length} trees agree (seed ${SEED}, width ${WIDTH})`);
   process.exit(failing.length === 0 ? 0 : 1);
 }
