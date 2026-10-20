@@ -1,0 +1,39 @@
+// The solver in a typeface's own units: text laid by advances summed in
+// sixty-fourths of a pixel and rounded once, where a box's size leaves.
+use @std.ui.env.{Env}
+use @std.ui.tree.node.{Node}
+use @std.ui.style.layout.{Layout}
+use @std.ui.place.measure.{Cells}
+use @std.ui.place.metrics.{Table}
+use @std.ui.place.solve.{place}
+use @std.ui.place.describe.{describe}
+use @std.ui.place.text.{Text}
+use @std.ui.realize.tests.support.{boxed, text_node}
+
+/// A face of pixels: `i` 1.5 wide, `m` 4.25, `W` 5, a space 2, everything else
+/// 205/64 (3.203); a line 16 high.
+fn face() -> Table {
+    Table { advances: {"i": 96, "m": 272, "W": 320, " ": 128}, fallback: 205, up: 768, down: 256 }
+}
+
+fn pixels() -> Text { Text { metrics: face(), theme: Env {}.theme, rest: Cells {} } }
+
+/// `s` as a text hugging its content in a row, `width` across.
+fn in_row(s: string, width: int) -> string {
+    let root = boxed(.Row, Layout {}, [text_node(s)])
+    describe(root, place(root, pixels(), width))
+}
+
+spec "place/text — the solver in a typeface's units" {
+    given "a text that just fits" {
+        then "takes one line of its advances' sum, rounded once" { in_row("ii ii", 8) == "row 0,0 8x16\n  text 0,0 8x16" }
+    }
+    given "a text a pixel short" {
+        then "wraps at the space" { in_row("ii ii", 7) == "row 0,0 7x32\n  text 0,0 7x32" }
+    }
+    given "twenty glyphs of 205/64 across 64 pixels" {
+        then "wrap before the twentieth, which whole-pixel advances would not" {
+            in_row("xxxxxxxxxxxxxxxxxxxx", 64) == "row 0,0 64x32\n  text 0,0 64x32"
+        }
+    }
+}
