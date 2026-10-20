@@ -52,27 +52,48 @@ const ENGINE = args.browser ?? "firefox";
 // and engines measure in their own quantum (Gecko 1/60 px a glyph, WebKit 1/64). Naming the
 // contended quantity is what keeps the decided size strict without failing the measured one.
 const TOLERANCE = 1;
-const hugsOn = (n) => [
-  n.layout.width === undefined || n.layout.width === "Hug",
-  n.layout.height === undefined || n.layout.height === "Hug",
-];
-/// Each box's contended axes, in the page's own pre-order.
-function contended(spec) {
-  return [hugsOn(spec), ...spec.kids.flatMap(contended)];
-}
-/// The same for a tree: its root's width is the host's, which the layout does not decide, so the
-/// root's width is exact. Only the ROOT — a per-node adjustment here would out-vote every hug.
+const hugOn = (n, axis) => {
+  const s = n.layout[axis];
+  return s === undefined || s === "Hug" || (typeof s === "object" && s.percent !== undefined);
+};
+/// A size the layout DERIVES from room it was given: a box that fills, or takes a grow share, on
+/// that parent axis. Its size is decided from numbers that may themselves be contended.
+const derivesOn = (n, axis, parent) =>
+  n.layout[axis] === "Fill" || (parent !== null && (parent.prim === "Row" ? "width" : "height") === axis && (n.layout.grow ?? 0) > 0);
+
+/// Each box's contended axes, in the page's own pre-order, read from the node's own `layout`:
+/// a HUG axis is contended (its size is the extent the engine measures), and so is a DERIVED size
+/// that reads a contended number — its parent's size on that axis, or a sibling that hugs there.
+/// That second half is safe only because the LINE COUNT is compared as a count, at 0: a line more
+/// or fewer is refused before any size is read, so a measured extent's 1px can be licensed without
+/// licensing the defect it could otherwise hide.
 function contended_tree(spec) {
-  const flags = contended(spec);
+  const flags = [];
+  const visit = (n, parent, parentContended) => {
+    const pair = ["width", "height"].map((axis) => {
+      const hug = hugOn(n, axis);
+      const siblingHug = parent !== null && parent.kids.some((k) => k !== n && hugOn(k, axis));
+      return hug || (parentContended !== null && parentContended[axis === "width" ? 0 : 1]) || (derivesOn(n, axis, parent) && siblingHug);
+    });
+    flags.push(pair);
+    for (const k of n.kids) visit(k, n, pair);
+  };
+  visit(spec, null, null);
   flags[0][0] = false;
   return flags;
 }
 const within = (a, b, hug) => (hug ? Math.abs(a - b) <= TOLERANCE : a === b);
+/// A box is [x, y, w, h, lines]: position may stand a pixel apart, size by the contended law, and
+/// the LINE COUNT is a count — exact, on every face.
 const agrees = (got, want, flags) =>
   got.length === want.length &&
   got.every(
     (b, i) =>
-      Math.abs(b[0] - want[i][0]) <= TOLERANCE && Math.abs(b[1] - want[i][1]) <= TOLERANCE && within(b[2], want[i][2], flags[i][0]) && within(b[3], want[i][3], flags[i][1]),
+      Math.abs(b[0] - want[i][0]) <= TOLERANCE &&
+      Math.abs(b[1] - want[i][1]) <= TOLERANCE &&
+      within(b[2], want[i][2], flags[i][0]) &&
+      within(b[3], want[i][3], flags[i][1]) &&
+      b[4] === want[i][4],
   );
 const FACE = { units: 64, advances: { i: 96, m: 272, W: 320, " ": 128 }, fallback: 205 };
 const LINE = 16;
@@ -204,12 +225,37 @@ use @std.ui.env.{Env}
 use @std.ui.style.layout.{Layout, Edge}
 use @std.ui.style.tokens.{Size}
 use @std.ui.style.theme.{Theme}
-use @std.ui.place.measure.{Measure, Extent, Cells}
-use @std.ui.place.metrics.{Table}
+use @std.ui.place.measure.{Measure, Extent, Cells, fine}
+use @std.ui.place.metrics.{Table, run_width_in}
+use @std.ui.place.lines.{lines_in}
 use @std.ui.place.text.{Text}
 use @std.ui.place.solve.{place, Placed}
+use @std.ui.realize.tui.layout.{own_lines}
 use @std.ui.realize.html.html.{render}
 use @std.ui.realize.tests.support.{boxed, placed, text_node}
+
+/// The target's measure, wrapped to COUNT: the solver's own line structure for a text is what its
+/// own lines_in answers at the width the solver hands it, so the count is read, never inferred
+/// from a height. kept is handed the solver's path for the node whose content is measured next.
+type Counting = { inner: dyn Measure, seen: Cell<Map<string, int>>, at: Cell<string> }
+
+impl Measure for Counting {
+    fn own(n: Node, avail: int) -> Extent {
+        if n.prim is .Text { self.seen.put(self.at.get(), count_lines(n, avail)) }
+        self.inner.own(n, avail)
+    }
+    fn kept(n: Node, path: string) -> int {
+        self.at.set(path)
+        self.inner.kept(n, path)
+    }
+    fn hidden(n: Node) -> bool { self.inner.hidden(n) }
+    fn holds(n: Node) -> bool { self.inner.holds(n) }
+    fn min_own(n: Node) -> int { self.inner.min_own(n) }
+    fn gap_x(z: Size) -> int { self.inner.gap_x(z) }
+    fn gap_y(z: Size) -> int { self.inner.gap_y(z) }
+    fn pad_x(z: Size) -> int { self.inner.pad_x(z) }
+    fn pad_y(z: Size) -> int { self.inner.pad_y(z) }
+}
 
 type Pixels = { theme: Theme }
 
@@ -225,21 +271,37 @@ impl Measure for Pixels {
     fn pad_y(z: Size) -> int { self.theme.space_of(z) }
 }
 
-${PROP ? `fn typeface() -> Text {
-    Text {
-        metrics: Table { advances: { ${Object.entries(FACE.advances).map(([c, u]) => `"${c}": ${u}`).join(", ")} }, fallback: ${FACE.fallback}, up: ${LINE * 48}, down: ${LINE * 16} },
-        theme: Env {}.theme,
-        rest: Cells {},
-    }
+${PROP ? `fn face_metrics() -> Table {
+    Table { advances: { ${Object.entries(FACE.advances).map(([c, u]) => `"${c}": ${u}`).join(", ")} }, fallback: ${FACE.fallback}, up: ${LINE * 48}, down: ${LINE * 16} }
 }
-` : ""}
+
+fn typeface() -> Text { Text { metrics: face_metrics(), theme: Env {}.theme, rest: Cells {} } }
+
+fn count_lines(n: Node, avail: int) -> int {
+    lines_in(n.words(), avail, (s: string) -> run_width_in(face_metrics(), s, fine)).length
+}
+` : `fn count_lines(n: Node, avail: int) -> int { own_lines(n, avail / fine).length }
+`}
 fn rows_of(p: Placed) -> List<string> {
     ["\${p.rect.x} \${p.rect.y} \${p.rect.w} \${p.rect.h}"].concat([l for k in p.kids for l in rows_of(k)])
 }
 
+fn count_of(c: Counting, n: Node, path: string) -> int {
+    when { n.prim is .Text -> c.seen.get().get(path) ?? 0, _ -> 0 }
+}
+
+fn counts(c: Counting, n: Node, path: string) -> List<int> {
+    [count_of(c, n, path)].concat([v for i, k in n.children for v in counts(c, k, "\${path}.\${i}")])
+}
+
 fn show(i: int, n: Node) {
+    let seen: Cell<Map<string, int>> = Cell.new({})
+    let at: Cell<string> = Cell.new("")
+    let c = Counting { inner: ${PROP ? "typeface()" : "Pixels { theme: Env {}.theme }"}, seen: seen, at: at }
     println("case \${i}")
-    for l in rows_of(place(n, ${PROP ? "typeface()" : "Pixels { theme: Env {}.theme }"}, ${WIDTH})) { println(l) }
+    for l in rows_of(place(n, c, ${WIDTH})) { println(l) }
+    println("lines \${i}")
+    println(["\${v}" for v in counts(c, n, "0")].join(" "))
     println("html \${i}")
     println(render(n, Env {}).replace("\\n", " "))
     println("end \${i}")
@@ -256,15 +318,19 @@ function solved(cases, work) {
   const avra = process.env.AVRA ?? path.join(tree, "build/avra");
   const ran = spawnSync(avra, ["run", work], { encoding: "utf8", maxBuffer: 1 << 28 });
   if (ran.status !== 0) { console.error(ran.stdout.slice(-2000), ran.stderr.slice(-4000)); process.exit(2); }
-  const out = [], pages = [];
+  const out = [], pages = [], counts = [];
   let reading = null;
   for (const l of ran.stdout.split("\n")) {
     if (l.startsWith("case ")) { out.push([]); reading = "rects"; }
+    else if (l.startsWith("lines ")) reading = "lines";
     else if (l.startsWith("html ")) reading = "html";
     else if (l.startsWith("end ")) reading = null;
     else if (reading === "rects" && /^-?\d/.test(l)) out[out.length - 1].push(l.split(" ").map(Number));
+    else if (reading === "lines" && /^-?\d/.test(l)) counts.push(l.split(" ").map(Number));
     else if (reading === "html") pages.push(l);
   }
+  // The solver's line count joins its box as the fifth number, read beside the browser's own.
+  out.forEach((boxes, i) => boxes.forEach((b, k) => b.push(counts[i]?.[k] ?? 0)));
   return { out, pages };
 }
 
@@ -275,6 +341,9 @@ const PAGE = `<!doctype html><meta charset=utf-8><style>@font-face{font-family:c
 // The page the realizer wrote is laid in a host WIDTH wide. Each box is read
 // as the browser paints it: its edges, from the root's corner, snapped to the
 // nearest whole unit, halves up — the law the solver hands its boxes back by.
+// Each box is [left, top, width, height, lines]: the last is the element's OWN line count, read from
+// its text's line boxes — never its height divided by a line height. An element holding text counts
+// the lines that text is painted on; every other element counts zero.
 const BROWSER = `(html, widthPx) => {
   const host = document.createElement("div");
   host.style.cssText = "position:absolute;left:0;top:0;width:" + widthPx + "px";
@@ -283,10 +352,23 @@ const BROWSER = `(html, widthPx) => {
   const root = host.lastElementChild;
   const origin = root.getBoundingClientRect();
   const out = [];
+  const lineCount = (el) => {
+    const node = el.firstChild;
+    if (!node || node.nodeType !== 3 || el.children.length > 0) return 0;
+    const range = document.createRange();
+    let lines = 0, last = -1e9;
+    for (let i = 0; i < node.textContent.length; i++) {
+      range.setStart(node, i); range.setEnd(node, i + 1);
+      const rect = range.getClientRects()[0];
+      if (!rect) continue;
+      if (rect.top - last > 0.5) { lines++; last = rect.top; }
+    }
+    return lines;
+  };
   const walk = (el) => {
     const r = el.getBoundingClientRect();
     const l = Math.round(r.x - origin.x), t = Math.round(r.y - origin.y);
-    out.push([l, t, Math.round(r.x + r.width - origin.x) - l, Math.round(r.y + r.height - origin.y) - t]);
+    out.push([l, t, Math.round(r.x + r.width - origin.x) - l, Math.round(r.y + r.height - origin.y) - t, lineCount(el)]);
     for (const k of el.children) walk(k);
   };
   walk(root);
@@ -371,7 +453,8 @@ async function main() {
     console.log(`MISMATCH case ${i} (seed ${SEED}), shrunk:\n${JSON.stringify(small)}`);
     const n = Math.max(v.got.length, v.want.length);
     for (let k = 0; k < n; k++) {
-      const a = JSON.stringify(v.want[k]), b = JSON.stringify(v.got[k]);
+      const rect = (b) => `[${b.slice(0, 4).join(",")}] lines ${b[4]}`;
+      const a = rect(v.want[k]), b = rect(v.got[k]);
       const flags = contended_tree(small);
       console.log(`  box ${k}: solver ${a}  browser ${b}${v.want[k] && v.got[k] && agrees([v.got[k]], [v.want[k]], [flags[k] ?? [false, false]]) ? "" : "   <--"}`);
     }
