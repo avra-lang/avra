@@ -39,13 +39,8 @@ impl TypeCx {
     fn keeps_state(e: ExprId) -> bool {
         let word? = self.view.store.instance_parts(e)?.word else { return false }
         let d? = type_named(self.names, word) else { return false }
-        let at = self.view.decls.decl(d)
-        let store = self.view.decls.store(d)
-        // a declaration another file holds is read where its statement still
-        // stands in that file's parse, and only as the component it names
-        if at.stmt.index >= store.stmts.count() { return false }
-        let c? = store.component_parts(at.stmt) else { return false }
-        c.name == at.name && c.fields().any(it.state)
+        let c? = self.view.decls.store(d).component_parts(self.view.decls.decl(d).stmt) else { return false }
+        c.fields().any(it.state)
     }
 }
 
