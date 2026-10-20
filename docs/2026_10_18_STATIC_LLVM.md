@@ -46,7 +46,7 @@ compiler's own build, never a user's program.
   serves both hosts, then `z`, `zstd`, `${AVRA_CXX_RUNTIME}`, `pthread`, `dl`, `m`.
   `[link]` takes library NAMES only (a dependency's option would otherwise reach the
   linker), so no flag and no response file rides it.
-- `tools/llvm_link.py --words` gives those words to the hand-written clang lines
+- `tools/llvm_link.sh --words` gives those words to the hand-written clang lines
   (`make recover`, `make seed-check`) from the same manifest row; `--check` (`make
   llvm-libs`, part of `gate`) holds the list to `llvm-config` and the archives on disk.
 - `AVRA_CXX_RUNTIME` is `stdc++` (Linux) or `c++` (macOS), set by the Makefile, the `./avra`
