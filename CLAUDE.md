@@ -2343,7 +2343,7 @@ doctrine it expands.
   `now == peak` and looks exactly like a total leak; the same run
   unguarded peaks at 1 MB with every category zero at exit. A lane
   nearly reported the instrument as the defect. `AVRA_RC_GUARD=1` only on
-  small programs: its log is bounded but a guarded compiler run
+  small programs (the shim refuses it over a directory; `AVRA_GUARDED_PACKAGE=1` is the way past): its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.
   AND A PROBE LIVES OUTSIDE THE TREE: `./avra check build/scratch/x.av`

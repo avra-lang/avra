@@ -2,6 +2,7 @@
 //! including newlines and NULs, can round trip without an escape language.
 use features.{Settled, MetaVal, MetaHeap, MetaMap}
 use core.{ExprId, is_digit, joined}
+use compiler.store.{cas_big, cas_blob, cas_ref_of, cas_value}
 
 fn wire_field(s: string) -> string { "${s.length}:${s}" }
 
@@ -9,14 +10,27 @@ fn wire_value(v: MetaVal) -> string {
     match v {
         .Int(n) -> wire_field("i") + wire_field("${n}"),
         .Float(bits) -> wire_field("f") + wire_field("${bits}"),
-        .Text(s) -> wire_field("t") + wire_field(s),
-        .Octets(xs) -> wire_field("o") + wire_field(["${x}" for x in xs].join(",")),
+        .Text(s) -> text_value_wire(s),
+        .Octets(xs) -> octets_value_wire(["${x}" for x in xs].join(",")),
         .Bool(b) -> wire_field("b") + wire_field(if b { "1" } else { "0" }),
         .Absent -> wire_field("a"),
         .Gone -> wire_field("g"),
         .Node(i) -> wire_field("n") + wire_field("${i}"),
         .Map(i) -> wire_field("m") + wire_field("${i}"),
     }
+}
+
+/// A text over the shared store's cut is written as the reference to its blob, put there as
+/// it is written: the same text is the same field in every worktree, so the row names the
+/// content and the blob is held once. A text the store cannot take stays in the row.
+fn text_value_wire(s: string) -> string {
+    if cas_big(s) && cas_blob(s) { wire_field("c") + wire_field(cas_ref_of(s)) } else { wire_field("t") + wire_field(s) }
+}
+
+/// Octets are written as their decimal list, and a list over the shared store's cut is the
+/// reference to its blob, on the same terms as a text.
+fn octets_value_wire(listed: string) -> string {
+    if cas_big(listed) && cas_blob(listed) { wire_field("d") + wire_field(cas_ref_of(listed)) } else { wire_field("o") + wire_field(listed) }
 }
 
 /// One map's own wire form: its key count, then each key paired with
@@ -111,7 +125,15 @@ impl WireReader {
         if tag == "g" { return MetaVal.Gone }
         let data? = self.field() else { return null }
         if tag == "t" { return MetaVal.Text(data) }
+        if tag == "c" {
+            let text? = cas_value(data) else { return null }
+            return MetaVal.Text(text)
+        }
         if tag == "o" { return octets_of(data) }
+        if tag == "d" {
+            let listed? = cas_value(data) else { return null }
+            return octets_of(listed)
+        }
         if tag == "b" { return MetaVal.Bool(data == "1") }
         let n? = wire_number(data) else { return null }
         match tag {
