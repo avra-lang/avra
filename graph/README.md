@@ -86,7 +86,7 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `publish` | See below | Committed graph revision |
 | `get` | `id` | Supported candidates per property, including conflicts |
 | `value` | `id` | Validated complete record, or refusal |
-| `find` | `model`, optional `limit` | Active entity ids |
+| `find` | `model`, optional `limit` | Live entity ids, one per merge group |
 | `edges` | `id`, optional `incoming` | Typed reference paths |
 | `traverse` | `id`, optional `depth`, `limit` | Breadth-first reachable ids |
 | `explain` | `id`, `property` | All historical supporting runs and their locators |
@@ -95,6 +95,9 @@ CLI request files and HTTP use exactly the same JSON operations:
 | `merge` | `id`, `left`, `right`, `decider` | Committed graph revision |
 | `split` | `id` | Withdraw a merge decision; the entities read apart |
 | `merges` | optional `id` | Decisions, active or withdrawn, touching that entity |
+| `tombstone` | `id`, `entity`, `decider` | A decision hiding that entity and its group |
+| `revive` | `id` | Withdraw a tombstone decision |
+| `tombstones` | optional `id` | Tombstone decisions touching that entity |
 | `dirty` | — | Latest interpretations with stale input or schema |
 
 A publication replaces one producer's whole contribution in one scope,
@@ -156,6 +159,14 @@ withdraws the decision and the entities read apart again, with the decision
 and its revisions kept as provenance. References and aliases are unaffected
 by the group until read through it.
 
+A tombstone decision hides an entity and its merge group from live reads:
+`get`, `value`, `find`, `edges`, `traverse`, `aliases`, and `resolve` treat
+it as absent, references to it do not surface as live edges, and
+publications onto or into it are refused. Nothing is deleted: observations,
+claims, support, explanations, and the decision itself stay readable, so
+`explain` still traces the evidence. `revive` withdraws the decision and the
+entity reads again.
+
 Use application-owned, preferably namespaced stable ids; ids are global
 across models. References can target identities from the same publication
 regardless of record order, or previously committed identities. Target
@@ -176,8 +187,8 @@ invocation, retries, scheduling, and the meaning of scopes.
 
 SQLite is the authority, with fixed generic tables for catalog revisions,
 entity identities, versioned observations, producer runs, claims, support,
-evidence locators, external identities, merge decisions, and reference
-indexes. Model properties never become SQL columns. WAL, foreign keys, immediate write
+evidence locators, external identities, merge and tombstone decisions, and
+reference indexes. Model properties never become SQL columns. WAL, foreign keys, immediate write
 transactions, and explicit storage-format versioning are used. Failed
 publications roll back identities, support withdrawals, claims, references,
 aliases, and the revision together.
@@ -204,9 +215,9 @@ input changes.
 
 Editing models and rebuilding changes the catalog fingerprint. The
 fingerprint includes metadata, constraint calls, defaults, and compiler
-code hashes of the validators. Storage formats 2 through 4 add the evidence,
-alias, and merge tables; opening an older database migrates it additively in
-place, keeping every row, and only an unknown format is refused. Installing
+code hashes of the validators. Storage formats 2 through 5 add the evidence,
+alias, merge, and tombstone tables; opening an older database migrates it
+additively in place, keeping every row, and only an unknown format is refused. Installing
 the new catalog advances the graph revision and quarantines old-schema
 interpretations; `dirty` names work to reprocess. No data is deleted or
 destructively migrated. Existing handles reject publication after another
@@ -226,6 +237,7 @@ sh tools/watch.sh 3500 ./build/avra test graph/src/tests/identity_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/merge_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/partial_test.av
 sh tools/watch.sh 3500 ./build/avra test graph/src/tests/storage_test.av
+sh tools/watch.sh 3500 ./build/avra test graph/src/tests/tombstone_test.av
 sh tools/watch.sh 3500 ./build/avra build graph
 python3 graph/tests/smoke.py
 sh tools/watch.sh 3500 ./build/avra build graph/tests/unrelated/src/main.av
@@ -241,8 +253,9 @@ its native objects). Native builds link those objects directly.
 
 ## Next slices
 
-- Deletion and tombstone policy, plus declared selection policy; merges are
-  explicit and reversible, but nothing removes evidence yet.
+- Declared selection policy (source priority, explicit user choice, recency
+  where asked) and confidence as evidence metadata. Tombstones define
+  deletion; nothing removes evidence yet.
 - Durable pending work and multi-input dependency tracking; `dirty` is
   one-input, whole-scope invalidation, not a background scheduler.
 - Generic, declared conflict-resolution policies; the default deliberately

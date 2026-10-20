@@ -82,6 +82,22 @@ def main():
         assert set(cli({"op": "get", "id": "p2"})["fields"]) == {"email"}
         assert cli({"op": "merges", "id": "p1"})[0]["active"] is False
         assert cli({"op": "split", "id": "merge:1"})["revision"] == split["revision"]
+
+        cli({"op": "tombstone", "id": "gone:1", "entity": "p2", "decider": "smoke"})
+        assert "error" in cli({"op": "get", "id": "p2"}, success=False)
+        assert "error" in cli({"op": "value", "id": "p2"}, success=False)
+        assert cli({"op": "find", "model": "Person"}) == ["p1"]
+        assert "error" in cli({"op": "resolve", "namespace": "mail", "key": "grace@example.com"}, success=False)
+        assert cli({"op": "tombstones", "id": "p2"})[0]["active"] is True
+        assert "error" in cli({"op": "publish", "id": "onto-gone", "producer": "other-agent", "scope": "other:2",
+                               "input": "mail:1", "input_revision": 1, "schema": schema["fingerprint"],
+                               "expected_revision": cli({"op": "schema"})["revision"],
+                               "records": [{"id": "p2", "model": "Person", "mode": "partial",
+                                            "value": {"email": "grace@example.com"}}]}, success=False)
+        revived = cli({"op": "revive", "id": "gone:1"})
+        assert cli({"op": "find", "model": "Person"}) == ["p1", "p2"]
+        assert cli({"op": "tombstones", "id": "p2"})[0]["active"] is False
+        assert cli({"op": "revive", "id": "gone:1"})["revision"] == revived["revision"]
         settled = cli({"op": "schema"})["revision"]
 
         invalid = {**publication, "id": "bad", "expected_revision": settled,
@@ -178,18 +194,19 @@ def main():
 
         import sqlite3
         with sqlite3.connect(database) as raw:
-            for table in ("evidence", "aliases", "merges"):
+            for table in ("evidence", "aliases", "merges", "tombstones"):
                 raw.execute("DROP TABLE " + table)
             raw.execute("UPDATE graph_meta SET value='1' WHERE key='format'")
         assert cli({"op": "schema"})["fingerprint"] == schema["fingerprint"]
         with sqlite3.connect(database) as raw:
-            assert raw.execute("SELECT value FROM graph_meta WHERE key='format'").fetchone()[0] == "4"
-            for table in ("evidence", "aliases", "merges"):
+            assert raw.execute("SELECT value FROM graph_meta WHERE key='format'").fetchone()[0] == "5"
+            for table in ("evidence", "aliases", "merges", "tombstones"):
                 assert raw.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
         assert cli({"op": "explain", "id": "p1", "property": "name"})[0]["locator"] is None
         assert cli({"op": "aliases", "id": "p1"}) == []
         assert cli({"op": "merges"}) == []
-    print("native smoke: persistence, partial assertions, evidence locators, external identities, merge/split, format migration, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
+        assert cli({"op": "tombstones"}) == []
+    print("native smoke: persistence, partial assertions, evidence locators, external identities, merge/split, tombstones, format migration, replay, validation, rollback, traversal, HTTP auth, and stale-input invalidation passed")
 
 
 if __name__ == "__main__":

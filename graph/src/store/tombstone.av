@@ -1,0 +1,124 @@
+use @std.json.{Json, field}
+use @std.sqlite.{SqlValue}
+use store.open.{Graph, storage, cell_text, cell_int}
+
+/// One explicit decision that an entity is absent, kept for revival.
+export type Tombstone = {
+    id: string,
+    entity: string,
+    decider: string,
+    revision: int = 0,
+    until_revision: int = 0,
+}
+
+impl Tombstone {
+    fn active() -> bool { self.until_revision == 0 }
+
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(self.id)),
+                    field("entity", Json.Str(self.entity)),
+                    field("decider", Json.Str(self.decider)),
+                    field("revision", Json.Int(self.revision)),
+                    field("until_revision", Json.Int(self.until_revision)),
+                    field("active", Json.Bool(self.active())),
+                ],
+            )
+    }
+}
+
+impl Graph {
+    /// Every entity a live tombstone hides, including each entity's group.
+    fn hidden_members() -> Result<List<string>, string> {
+        [cell_text(r, 0)? for r in self
+            .rows(
+                "WITH RECURSIVE hidden(node) AS (SELECT entity FROM tombstones WHERE until_revision IS NULL UNION SELECT m.right_entity FROM merges m JOIN hidden h ON h.node=m.left_entity WHERE m.until_revision IS NULL UNION SELECT m.left_entity FROM merges m JOIN hidden h ON h.node=m.right_entity WHERE m.until_revision IS NULL) SELECT DISTINCT node FROM hidden",
+                [],
+            )?]
+    }
+
+    fn hidden(id: string) -> Result<bool, string> {
+        (self.hidden_members()?).contains(id)
+    }
+
+    /// Hide an entity and its group; `decision.id` names the decision.
+    fn tombstone(decision: Tombstone) -> Result<int, string> {
+        if decision.id.is_empty() || decision.decider.is_empty() { fail "a tombstone needs an id and a decider" }
+        storage(self.db.begin())?
+        defer { let _ = self.db.finish() }
+        let revision = self.current()?
+        let existing = self
+            .rows("SELECT entity, decider, revision FROM tombstones WHERE id=?", [.Text(decision.id)])?
+        if !existing.is_empty() {
+            let same = cell_text(existing[0], 0)? == decision.entity &&
+                cell_text(existing[0], 1)? == decision.decider
+            if !same { fail "tombstone id was already used with a different decision" }
+            return cell_int(existing[0], 2)
+        }
+        let named = self.rows("SELECT model FROM entities WHERE id=?", [.Text(decision.entity)])?
+        if named.is_empty() { fail "unknown entity: ${decision.entity}" }
+        if self.hidden(decision.entity)? { fail "entity is already tombstoned: ${decision.entity}" }
+        self
+            .execute(
+                "INSERT INTO tombstones VALUES (?, ?, ?, ?, NULL)",
+                [
+                    .Text(decision.id),
+                    .Text(decision.entity),
+                    .Text(decision.decider),
+                    .Int(revision + 1),
+                ],
+            )?
+        self.advance()?
+        storage(self.db.commit())?
+        revision + 1
+    }
+
+    /// Withdraw one tombstone; the entity reads again.
+    fn revive(decision: string) -> Result<int, string> {
+        storage(self.db.begin())?
+        defer { let _ = self.db.finish() }
+        let revision = self.current()?
+        let existing = self
+            .rows("SELECT COALESCE(until_revision, 0) FROM tombstones WHERE id=?", [.Text(decision)])?
+        if existing.is_empty() { fail "unknown tombstone decision: ${decision}" }
+        if cell_int(existing[0], 0)? != 0 { return revision }
+        self
+            .execute(
+                "UPDATE tombstones SET until_revision=? WHERE id=?",
+                [.Int(revision + 1), .Text(decision)],
+            )?
+        self.advance()?
+        storage(self.db.commit())?
+        revision + 1
+    }
+
+    /// Every tombstone, or only those naming one entity or its group.
+    fn tombstones(entity: string = "") -> Result<List<Tombstone>, string> {
+        self.current()?
+        let rows = if entity.is_empty() {
+            self
+                .rows(
+                    "SELECT id, entity, decider, revision, COALESCE(until_revision, 0) FROM tombstones ORDER BY revision",
+                    [],
+                )?
+        } else {
+            let members = self.group(entity)?
+            let marks = ["?" for _m in members].join(",")
+            let values: List<SqlValue> = [.Text(m) for m in members]
+            self
+                .rows(
+                    "SELECT id, entity, decider, revision, COALESCE(until_revision, 0) FROM tombstones WHERE entity IN (${marks}) ORDER BY revision",
+                    values,
+                )?
+        }
+        [Tombstone {
+            id: cell_text(r, 0)?,
+            entity: cell_text(r, 1)?,
+            decider: cell_text(r, 2)?,
+            revision: cell_int(r, 3)?,
+            until_revision: cell_int(r, 4)?,
+        } for r in rows]
+    }
+}

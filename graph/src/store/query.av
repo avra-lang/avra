@@ -41,6 +41,7 @@ impl Graph {
         let revision = self.current()?
         let named = self.rows("SELECT model FROM entities WHERE id=?", [.Text(id)])?
         if named.is_empty() { fail "unknown entity: ${id}" }
+        if self.hidden(id)? { fail "entity is tombstoned: ${id}" }
         let members = self.group(id)?
         let marks = ["?" for _m in members].join(",")
         let values: List<SqlValue> = [.Text(m) for m in members]
@@ -82,17 +83,21 @@ impl Graph {
                 "SELECT DISTINCT e.id FROM entities e JOIN (${active}) a ON a.entity=e.id WHERE e.model=? ORDER BY e.id LIMIT ?",
                 [.Text(model), .Int(limit)],
             )?]
-        let roots = [self.group(id)?[0] for id in found]
-        [id for i, id in found if !roots.slice(0, i).contains(roots[i])]
+        let hidden = self.hidden_members()?
+        let live = [id for id in found if !hidden.contains(id)]
+        let roots = [self.group(id)?[0] for id in live]
+        [id for i, id in live if !roots.slice(0, i).contains(roots[i])]
     }
 
     fn edges(id: string, incoming: bool = false) -> Result<List<Edge>, string> {
         self.current()?
+        let hidden = self.hidden_members()?
+        if hidden.contains(id) { fail "entity is tombstoned: ${id}" }
         let members = self.group(id)?
         let marks = ["?" for _m in members].join(",")
         let values: List<SqlValue> = [.Text(m) for m in members]
         let restriction = if incoming { "ed.target IN (${marks})" } else { "a.entity IN (${marks})" }
-        [Edge {
+        let found = [Edge {
             entity: cell_text(r, 0)?,
             property: cell_text(r, 1)?,
             target: cell_text(r, 2)?,
@@ -102,6 +107,7 @@ impl Graph {
                 "SELECT DISTINCT a.entity, a.property, ed.target, ed.path FROM (${active}) a JOIN edges ed ON ed.claim=a.id WHERE ${restriction} ORDER BY a.entity, a.property, ed.path",
                 values,
             )?]
+        [edge for edge in found if !hidden.contains(edge.target)]
     }
 
     /// Breadth-first reachability; a hard node budget bounds cyclic graphs.

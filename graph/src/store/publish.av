@@ -163,6 +163,7 @@ impl Graph {
     fn identify(record: Record, revision: int) -> Result<int, string> {
         let old = self.rows("SELECT model FROM entities WHERE id=?", [.Text(record.id)])?
         if !old.is_empty() && cell_text(old[0], 0)? != record.model { fail "an entity's model cannot change: ${record.id}" }
+        if !old.is_empty() && self.hidden(record.id)? { fail "a tombstoned entity cannot receive publications: ${record.id}" }
         self
             .execute(
                 "INSERT OR IGNORE INTO entities VALUES (?, ?, ?)",
@@ -219,6 +220,7 @@ impl Graph {
     fn reference(link: Link) -> Result<int, string> {
         let targets = self.rows("SELECT model FROM entities WHERE id=?", [.Text(link.target)])?
         if targets.is_empty() || cell_text(targets[0], 0)? != link.model { fail "${link.path} must refer to an existing ${link.model}: ${link.target}" }
+        if self.hidden(link.target)? { fail "reference targets a tombstoned entity: ${link.target}" }
         0
     }
 }

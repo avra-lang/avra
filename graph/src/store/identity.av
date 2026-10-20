@@ -32,9 +32,10 @@ impl Graph {
     /// The one entity an external identity names.
     fn resolve(namespace: string, key: string) -> Result<string, string> {
         self.current()?
+        let hidden = self.hidden_members()?
         match self.bound(namespace, key)? {
             [] -> { fail "unknown identity: ${namespace}/${key}" },
-            [only] -> only,
+            [only] -> if hidden.contains(only) { fail "identity names a tombstoned entity: ${namespace}/${key}" } else { only },
             rest -> { fail "identity names more than one entity: ${namespace}/${key}" },
         }
     }
@@ -42,6 +43,7 @@ impl Graph {
     /// The active external identities of an entity and its group.
     fn aliases(id: string) -> Result<List<Identity>, string> {
         self.current()?
+        if self.hidden(id)? { fail "entity is tombstoned: ${id}" }
         let members = self.group(id)?
         let marks = ["?" for _m in members].join(",")
         let values: List<SqlValue> = [.Text(m) for m in members]

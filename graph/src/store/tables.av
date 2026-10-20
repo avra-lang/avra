@@ -12,6 +12,7 @@ export const ddl: List<string> = [
     evidence,
     aliases,
     merges,
+    tombstones,
     "CREATE INDEX IF NOT EXISTS supports_active ON supports(claim, until_revision)",
     "CREATE INDEX IF NOT EXISTS runs_owner ON runs(producer, scope)",
     "CREATE INDEX IF NOT EXISTS claims_entity ON claims(entity, property)",
@@ -21,6 +22,7 @@ export const ddl: List<string> = [
     aliases_entity,
     merges_left,
     merges_right,
+    tombstones_active,
 ]
 
 /// A producer's external name for an entity, owned by the run that asserted it.
@@ -41,6 +43,12 @@ export const merges: string = "CREATE TABLE IF NOT EXISTS merges (id TEXT PRIMAR
 /// A group walk reads decisions from both sides.
 export const merges_left: string = "CREATE INDEX IF NOT EXISTS merges_left ON merges(left_entity, until_revision)"
 export const merges_right: string = "CREATE INDEX IF NOT EXISTS merges_right ON merges(right_entity, until_revision)"
+
+/// One explicit decision that an entity is absent, kept for revival and history.
+export const tombstones: string = "CREATE TABLE IF NOT EXISTS tombstones (id TEXT PRIMARY KEY, entity TEXT NOT NULL REFERENCES entities(id), decider TEXT NOT NULL, revision INTEGER NOT NULL, until_revision INTEGER)"
+
+/// A tombstone is read from the entity side.
+export const tombstones_active: string = "CREATE INDEX IF NOT EXISTS tombstones_active ON tombstones(entity, until_revision)"
 
 /// Active external names, under the same revision laws as `active`.
 export const active_alias: string = "SELECT a.namespace, a.external_key, a.entity FROM aliases a JOIN runs r ON r.id=a.run JOIN observations o ON o.id=r.input_id JOIN graph_meta m ON m.key='schema' AND m.value=r.schema WHERE a.until_revision IS NULL AND o.revision=r.input_revision"

@@ -64,11 +64,17 @@ split withdraws the decision, so the evidence is never rewritten. Groups are
 walked from the decision table at read time.
 
 `@std/db`'s `@model` derives per-model table CRUD, which is not this
-storage: it owns one flat table per model with an `int` primary key and a
-small scalar field ceiling, while evidence, conflicts, and history live in
-one generic claim table with joins and recursive group walks. The graph
-reuses standard validation (`@derive(Decode)`) and carries its own
-descriptor derive instead.
+storage: it owns one flat table per model with an `int` primary key, at most
+six scalar columns, and no nullable, reference, or list fields, while
+evidence, conflicts, and history live in one generic claim table with joins
+and recursive group walks. The graph reuses standard validation
+(`@derive(Decode)`) and carries its own descriptor derive instead.
+
+The engine tables are therefore hand-written DDL, in one list in
+`store/tables.av`, not per-model tables: they need text primary keys,
+composite keys, nullable history columns, more than six fields, and foreign
+keys. A derive could own them only by replacing that row model; their shape
+is infrastructure, not ontology.
 
 After durable commit, update tracked inputs for incremental queries.
 `@std/relation` is a computation dependency system, not an automatic
@@ -132,11 +138,11 @@ validation, SQLite persistence, observations and immutable input history,
 atomic producer/scope replacement, replay and stale-publication checks,
 typed reference indexes, candidate/conflict reads, partial property
 assertions, opaque per-record evidence locators, producer-owned external
-identities, explicit reversible merges, validated record reads, bounded
+identities, explicit reversible merges and tombstones, validated record reads, bounded
 traversal, explanations, and a shared CLI/HTTP protocol.
 
 Schema installation conservatively invalidates all older interpretations;
 it preserves their claims, support, and source payloads. `dirty` exposes
-reprocessing work but does not run a classifier. Tombstone/deletion
-decisions, compatibility-aware migrations, multi-input derivations, and
-relation-backed incremental projections remain separate slices. `README.md` describes the actual protocol and guarantees.
+reprocessing work but does not run a classifier. Declared selection policy,
+confidence metadata, compatibility-aware migrations, multi-input derivations,
+and relation-backed incremental projections remain separate slices. `README.md` describes the actual protocol and guarantees.

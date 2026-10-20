@@ -69,18 +69,38 @@ impl Graph {
         if rows.is_empty() { fail "graph storage has no format" }
         let version = cell_text(rows[0], 0)?
         let owed = match version {
-            "4" -> [],
-            "3" -> [merges, merges_left, merges_right],
-            "2" -> [aliases, aliases_active, aliases_entity, merges, merges_left, merges_right],
-            "1" -> [evidence, aliases, aliases_active, aliases_entity, merges, merges_left, merges_right],
+            "5" -> [],
+            "4" -> [tombstones, tombstones_active],
+            "3" -> [merges, merges_left, merges_right, tombstones, tombstones_active],
+            "2" -> [
+                aliases,
+                aliases_active,
+                aliases_entity,
+                merges,
+                merges_left,
+                merges_right,
+                tombstones,
+                tombstones_active,
+            ],
+            "1" -> [
+                evidence,
+                aliases,
+                aliases_active,
+                aliases_entity,
+                merges,
+                merges_left,
+                merges_right,
+                tombstones,
+                tombstones_active,
+            ],
             rest -> { fail unsupported_format },
         }
         for step in owed { self.execute(step)? }
-        if version == "4" { 0 } else { self.stamp_format()? }
+        if version == "5" { 0 } else { self.stamp_format()? }
     }
 
     fn stamp_format() -> Result<int, string> {
-        self.execute("UPDATE graph_meta SET value='4' WHERE key='format'")?
+        self.execute("UPDATE graph_meta SET value='5' WHERE key='format'")?
         0
     }
 
@@ -118,11 +138,11 @@ impl Graph {
         defer { let _ = self.db.finish() }
         self.execute(ddl[0])?
         let version = self.rows("SELECT value FROM graph_meta WHERE key='format'")?
-        if !version.is_empty() && !["1", "2", "3", "4"].contains(cell_text(version[0], 0)?) { fail unsupported_format }
+        if !version.is_empty() && !["1", "2", "3", "4", "5"].contains(cell_text(version[0], 0)?) { fail unsupported_format }
         for text in ddl { self.execute(text)? }
         self
             .execute(
-                "INSERT INTO graph_meta VALUES ('format', '4') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                "INSERT INTO graph_meta VALUES ('format', '5') ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             )?
         self
             .execute(
