@@ -42,14 +42,16 @@ out=$(build/avra cache clean 2>&1); echo "$out" | grep -q "shared store kept .* 
 [ "$(blobs)" = 0 ] && say "no blob stands" || fail "$(blobs) blobs after the sweep"
 # A 5 MB file `embed`ded by two worktrees: the settled const names ONE blob between them.
 E="$D/embed"; mkdir -p "$E"
+# a program's answers are kept in the tree's own store by its source, so each run's programs differ
+stamp="$$-$(date +%s)"
 for w in a b; do
     mkdir -p "$E/$w/src"
     printf '[package]\nname = "embeds"\nversion = "0.1.0"\n' > "$E/$w/avra.toml"
     head -c 5242880 /dev/zero | tr '\0' 'x' > "$E/$w/src/big.txt"
-    printf 'use @std.meta.{embed}\nconst A: string = embed("big.txt")\nprintln("${A.length}")\n' > "$E/$w/src/main.av"
+    printf 'use @std.meta.{embed}\nconst A: string = embed("big.txt")\nprintln("${A.length}")\n// %s\n' "$stamp" > "$E/$w/src/main.av"
 done
 mkdir -p "$E/c/src"; cp "$E/a/avra.toml" "$E/c/avra.toml"; cp "$E/a/src/big.txt" "$E/c/src/big.txt"
-printf 'use @std.meta.{embed}\nconst B: Bytes = embed("big.txt").bytes()\nprintln("${B.length}")\n' > "$E/c/src/main.av"
+printf 'use @std.meta.{embed}\nconst B: Bytes = embed("big.txt").bytes()\nprintln("${B.length}")\n// %s\n' "$stamp" > "$E/c/src/main.av"
 built() { AVRA_CACHE_DIR="$E/cache" AVRA_CLOCK=real build/avra build "$E/$1" 2>&1; "$E/$1/src/main"; }
 [ "$(built a | tail -1)" = 5242880 ] && [ "$(built b | tail -1)" = 5242880 ] && say "both worktrees build the embedding program" || fail "an embedding program did not build"
 n=$(find "$E/cache/cas" -mindepth 2 -maxdepth 2 -type f -size +1000k | wc -l | tr -d ' ')
