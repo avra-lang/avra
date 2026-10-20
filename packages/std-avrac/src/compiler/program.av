@@ -545,10 +545,11 @@ impl Program {
     fn report() -> string {
         let moved: string? = self.ws.decls.meta_disagreement()
         if moved != null { return self.rendered([foreign_package(moved!)]) }
-        let files = [self.rendered(ds) for ds in [reported(a) for a in self.files] if !ds.is_empty()]
+        let errored = [self.rendered(a.diagnostics) for a in self.files if unclean(a)]
+        let pointers = [self.rendered(ns) for ns in [notes_of(a) for a in self.files] if !ns.is_empty()]
         let heads: List<string> = if self.voices.is_empty() { [] } else { [self.rendered(self.voices)] }
         let tails: List<string> = if self.defects.is_empty() { [] } else { [self.rendered(self.defects)] }
-        joined(heads.concat(files).concat(tails), "\n\n")
+        joined(heads.concat(errored).concat(pointers).concat(tails), "\n\n")
     }
 
     /// Diagnostics rendered over EVERY loaded source — a frame's
@@ -793,9 +794,8 @@ impl Program {
     }
 }
 
-/// What a failed build's report shows of a file: everything a file with an
-/// error says, and of a clean file its notes, each pointing at an error
-/// said elsewhere.
-fn reported(a: Analysis) -> List<Diag> {
-    if unclean(a) { a.diagnostics } else { [d for d in a.diagnostics if is_note(d)] }
+/// A clean file's notes: each points at an error said elsewhere, so a
+/// failed build's report says them after every file with an error.
+fn notes_of(a: Analysis) -> List<Diag> {
+    if unclean(a) { [] } else { [d for d in a.diagnostics if is_note(d)] }
 }
