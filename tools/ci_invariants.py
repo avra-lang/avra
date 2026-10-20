@@ -340,6 +340,23 @@ def check_hold_label(auto_merge_text):
     return bad, ([] if bad else ["hold-label: auto-merge reads the label fresh, reruns on `labeled`, and disarms"])
 
 
+def check_store_handup(workflow_text):
+    """The shards' store rows travel: main's shards export the rows they added as one segment and upload it, the
+    suite-timing job merges them, prepare restores them. Answers (refusals, words)."""
+    bad = []
+    if "build/avra cache export store-base store-out" not in workflow_text:
+        bad.append("a main shard never exports the rows it added over its base store")
+    if "AVRA_STORE_SEAL_FRAMES" in workflow_text:
+        bad.append("a shard stops the seal: sealing stays on, and the export carries the rows")
+    if "name: store-segs-${{ strategy.job-index }}" not in workflow_text:
+        bad.append("no shard uploads its store segments")
+    if "tools/store_segments.py --merge" not in workflow_text:
+        bad.append("`suite-timing` never merges the shards' store segments")
+    if "name: place store segments" not in workflow_text:
+        bad.append("`prepare` never places the kept store segments")
+    return bad, ([] if bad else ["store-handup: shards export their added rows, suite-timing merges the segments, prepare places them"])
+
+
 def check_light_draft(workflow_text):
     """Every heavy leg `test` owes is gated on the full flag, and `test`
     refuses a light run. Answers (refusals, words)."""
@@ -489,6 +506,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_keeper_coverage(make_text, workflow_text),
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
+                  lambda: check_store_handup(workflow_text),
                   lambda: check_hold_label(open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()),
                   lambda: check_run_mode(workflow_text),
                   lambda: check_race_split(workflow_text),
@@ -671,6 +689,10 @@ rt-header:
     # light run is refused ──
     real = open(CHECKS, encoding="utf-8").read()
     assert check_light_draft(real)[0] == [], check_light_draft(real)
+    assert check_store_handup(real)[0] == [], check_store_handup(real)
+    assert any("never exports" in x for x in check_store_handup(real.replace("cache export store-base", "cache x"))[0])
+    assert any("never merges" in x for x in check_store_handup(real.replace("tools/store_segments.py --merge", ""))[0])
+    assert any("never places" in x for x in check_store_handup(real.replace("name: place store segments", ""))[0])
     am = open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()
     assert check_hold_label(am)[0] == [], check_hold_label(am)
     assert any("`labeled`" in x for x in check_hold_label(am.replace(", labeled]", "]"))[0])

@@ -377,6 +377,22 @@ jobs:
           mkdir -p .avra-cache/proofs
           [ ! -d proofs-kept ] || cp -R proofs-kept/. .avra-cache/proofs/
           echo "proofs: $(ls .avra-cache/proofs | wc -l) kept row(s) handed down"
+      # THE SHARDS' STORE ROWS RIDE UP AND DOWN TOO. A store segment is one writer's frames and a reader
+      # merges every segment at open, so each main shard hands up the rows it added (`avra cache export`,
+      # one segment), `suite-timing` keeps the newest prints, and every run restores them here: a run whose compiler is main's (the same
+      # print) reads the rows each shard made, and any other print never reads them.
+      - if: steps.plan.outputs.build == '1'
+        uses: actions/cache/restore@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-restore-only-${{ github.run_id }}
+          restore-keys: store-segs-
+      - if: steps.plan.outputs.build == '1'
+        name: place store segments
+        run: |
+          mkdir -p .avra-cache/store
+          [ ! -d store-segs-kept ] || cp -p store-segs-kept/seg-*.log .avra-cache/store/ 2>/dev/null || :
+          echo "store segments: $(ls .avra-cache/store | grep -c '^seg-') handed down"
       # THE CACHE'S MACHINE CODE IS BOUNDED BY SIZE. `.avra-cache/obj` and `bin` are
       # restored by prefix from the run before and saved again, and an entry keyed to
       # a compiler that no longer exists is never read, so they only grow (1.1 GB, 621 MB
@@ -900,6 +916,9 @@ jobs:
             mv .avra-cache "${RUNNER_TEMP:-/tmp}/aside/" 2>/dev/null || :
             echo "cold pass: the hand-down store is set aside; every suite runs from nothing"
           fi
+          # The store as the hand-down left it is the BASE a main shard's export is measured against.
+          mkdir -p store-base
+          [ ! -d .avra-cache/store ] || cp -R .avra-cache/store store-base/store
           for p in ${{ join(matrix.shard, ' ') }}; do
             [ -d "packages/${p%%/*}/src" ] || continue
             echo "::group::$p"
@@ -930,6 +949,22 @@ jobs:
           name: proofs-${{ strategy.job-index }}
           path: .avra-cache/proofs
           include-hidden-files: true
+          retention-days: 1
+
+      # THE ROWS THIS SHARD ADDED over the store it started from, as one segment: sealing stays on, and
+      # a segment is a copy-merge that can never collide with a body.
+      - if: always() && needs.prepare.outputs.main == '1' && inputs.cold != '1'
+        name: export the store rows this shard added
+        run: |
+          [ -d .avra-cache/store ] || exit 0
+          chmod +x build/avra
+          build/avra cache export store-base store-out || echo "::warning::avra cache export failed"
+          echo "export: $(ls store-out/store 2>/dev/null | grep -c '^seg-') segment(s), $(du -sk store-out 2>/dev/null | cut -f1) KB"
+      - if: always() && needs.prepare.outputs.main == '1' && hashFiles('store-out/store/seg-*.log') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: store-segs-${{ strategy.job-index }}
+          path: store-out/store/seg-*.log
           retention-days: 1
 
       - name: speed baseline
@@ -1003,6 +1038,22 @@ jobs:
         with:
           path: proofs-kept
           key: proofs-${{ github.run_id }}
+      # THE STORE SEGMENTS every shard of a main run wrote, merged over the set kept before: the
+      # newest two prints and at most 150 MB (tools/store_segments.py), for every run's `prepare`.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: store-segs-*, path: store-segs-in, merge-multiple: true }
+      - uses: actions/cache/restore@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-${{ github.run_id }}
+          restore-keys: store-segs-
+      - name: merge store segments
+        run: python3 tools/store_segments.py --merge store-segs-kept store-segs-in
+      - uses: actions/cache/save@v4
+        with:
+          path: store-segs-kept
+          key: store-segs-${{ github.run_id }}
   # THE COMPILER-FREE FLOOR ON A PULL REQUEST. The gate runs these too, but a
   # PR runs them FIRST and for nothing, so a keeper that reads only the tree
   # refuses on the PR instead of after the objects build. The set is
