@@ -19,10 +19,10 @@ use @std.time.{
 spec "std/time" {
     given "durations" {
         then "the constructors agree on milliseconds" {
-            secs(2).ms == 2000 && mins(1).ms == 60000 && ms(7).ms == 7
+            secs(2).ms() == 2000 && mins(1).ms() == 60000 && ms(7).ms() == 7
         }
         then "plus adds" {
-            secs(1).plus(ms(500)).ms == 1500
+            secs(1).plus(ms(500)).ms() == 1500
         }
         then "zero is zero" {
             ms(0).is_zero() && !secs(1).is_zero()
@@ -54,7 +54,7 @@ spec "std/time" {
     given "a deadline that passed" {
         then "carries the span it was given and the frames the task stood in" {
             let t: TimedOut = TimedOut { after: secs(2), at: [] }
-            t.after.ms == 2000 && t.at.is_empty()
+            t.after.ms() == 2000 && t.at.is_empty()
         }
     }
     given "a deadline" {
@@ -69,15 +69,15 @@ spec "std/time" {
         }
         then "before it is due, something is left and nothing is late" {
             let d = after(secs(5))
-            !d.due() && d.left().ms > 4000 && d.left().ms <= 5000 && d.late().is_zero()
+            !d.due() && d.left().ms() > 4000 && d.left().ms() <= 5000 && d.late().is_zero()
         }
         then "once due, nothing is left and the lateness is counted" {
             let d = after(ms(-7))
-            d.due() && d.left().is_zero() && d.late().ms >= 7
+            d.due() && d.left().is_zero() && d.late().ms() >= 7
         }
         then "what is left rounds up, so zero means due" {
             let d = after(ms(1))
-            d.left().ms == 1
+            d.left().ms() == 1
         }
         then "a span past spelling is the farthest instant, never one already due" {
             let d = after(ms(9223372036854775807))
@@ -85,7 +85,7 @@ spec "std/time" {
         }
         then "a span past spelling the other way is the clock's origin, long due" {
             let d = after(ms(0 - 9223372036854775807))
-            d.at == 0 && d.due() && d.late().ms > 0 && d.plus(ms(0 - 5)).at == 0
+            d.at == 0 && d.due() && d.late().ms() > 0 && d.plus(ms(0 - 5)).at == 0
         }
         then "what is left rebuilds it in another process's terms" {
             let d = after(secs(3))
@@ -106,11 +106,11 @@ spec "std/time" {
             let d = after(ms(30))
             sleep(ms(20))
             d.wait()
-            d.late().ms < 20
+            d.late().ms() < 20
         }
     }
     given "a quiet" {
-        then "holds the span it was given" { quiet(ms(200)).span.ms == 200 }
+        then "holds the span it was given" { quiet(ms(200)).span.ms() == 200 }
     }
     given "a period" {
         then "no tick is due before the first period ends" {
