@@ -1,0 +1,77 @@
+// The repeated-row law: a component that keeps state, written where a
+// repetition makes it once a turn, wears a key — or its state stays with
+// its place and lands on whichever row holds that place next.
+use @std.avrac.testing.{provided, refused_in, refused_n, answered}
+
+/// A component that keeps state, one that keeps none, both keyable.
+fn rows() -> string {
+    "export component tick(label: string) {\n    key: string? = null\n    state n: int = 0\n}\nexport component plain(label: string) {\n    key: string? = null\n}\n"
+}
+
+/// The refusal's words, whole.
+const said = "error[type.component_row]: a repeated `tick` keeps state and wears no key, so its state stays with its place and lands on whichever row holds that place next"
+
+spec "features/components — a repeated row that keeps state" {
+    given "an unkeyed row a comprehension makes" {
+        then "is refused at the row, with the key as the remedy" {
+            let p = provided(
+                "use @x.c.{tick}\nlet rs = [\"a\", \"b\"]\nlet made = [tick r for r in rs]\nmade.length",
+                rows(),
+            )
+            refused_in(p, said) &&
+                p.report().contains("main.av:3") &&
+                p
+                    .report()
+                    .contains(
+                        "help: give each row its own key — `tick … { key: … }`, with what tells the row apart",
+                    )
+        }
+    }
+    given "an unkeyed row a loop makes" {
+        then "is refused at the row" {
+            refused_in(
+                provided(
+                    "use @x.c.{tick}\nlet rs = [\"a\", \"b\"]\nmut out: List<tick> = []\nfor r in rs {\n    out.push(tick r)\n}\nout.length",
+                    rows(),
+                ),
+                said,
+            )
+        }
+        then "inside another loop, once" {
+            refused_n(
+                provided(
+                    "use @x.c.{tick}\nlet gs = [[\"a\"], [\"b\"]]\nmut out: List<tick> = []\nfor g in gs {\n    for r in g {\n        out.push(tick r)\n    }\n}\nout.length",
+                    rows(),
+                ),
+                said,
+                1,
+            )
+        }
+    }
+    given "a row the law lets stand" {
+        then "a keyed one" {
+            answered(
+                provided(
+                    "use @x.c.{tick}\nlet rs = [\"a\", \"b\"]\n[tick r { key: r } for r in rs].length",
+                    rows(),
+                ),
+            ) == "2"
+        }
+        then "one that keeps no state" {
+            answered(
+                provided(
+                    "use @x.c.{plain}\nlet rs = [\"a\", \"b\"]\n[plain r for r in rs].length",
+                    rows(),
+                ),
+            ) == "2"
+        }
+        then "one a helper makes, which no row in the loop shows — the runtime's to refuse" {
+            answered(
+                provided(
+                    "use @x.c.{tick}\nfn made(r: string) -> tick {\n    tick r\n}\nlet rs = [\"a\", \"b\"]\n[made(r) for r in rs].length",
+                    rows(),
+                ),
+            ) == "2"
+        }
+    }
+}
