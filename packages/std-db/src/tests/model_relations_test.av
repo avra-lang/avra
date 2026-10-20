@@ -1,0 +1,180 @@
+// A model links to another by holding it: the column is the parent's key,
+// a read fetches the parent, and the parent reaches its children through
+// the child's link. Removing a parent refuses while children stand,
+// unless the child's link says what becomes of them.
+use @std.db.{model, Many}
+use @std.db.error.{ModelError, modeled}
+use @std.sqlite.{Db, sql}
+use @std.sqlite.error.{SqlError, Cause, Violation}
+
+@model
+type Board = {
+    id: int = 0,
+    name: string,
+    cards: Many<Card> = Many {},
+    pins: Many<Pin> = Many {},
+    memos: Many<Memo> = Many {},
+}
+
+@model
+type Card = {
+    id: int = 0,
+    title: string,
+    board: Board,
+}
+
+@model
+type Pin = {
+    id: int = 0,
+    label: string,
+    @cascade board: Board,
+}
+
+@model
+type Memo = {
+    id: int = 0,
+    text: string,
+    @set_null board: Board?,
+}
+
+@model
+type Crate = {
+    id: int = 0,
+    label: string,
+    @soft_delete removed_at: int? = null,
+    items: Many<Item> = Many {},
+}
+
+@model
+type Item = {
+    id: int = 0,
+    name: string,
+    @cascade crate: Crate,
+}
+
+fn seeded() -> Result<Db, SqlError> {
+    mut db = Db.memory()?
+    Board.create_table(db)?
+    Card.create_table(db)?
+    Pin.create_table(db)?
+    Memo.create_table(db)?
+    Crate.create_table(db)?
+    Item.create_table(db)?
+    db
+}
+
+fn count(db: Db, name: string) -> Result<int, SqlError> {
+    (db.scalar(sql("select count(*) from \"${name}\""))?).int()
+}
+
+fn board(mut db: Db, name: string) -> Result<Board, ModelError> {
+    Board { name: name }.insert(db)
+}
+
+/// Whether a removal was refused by a key, exactly: constraint 787, the code
+/// `ON DELETE NO ACTION` answers. (`RESTRICT` would be 1811, SQLite's
+/// trigger code, as it builds that action from a trigger.)
+fn held(e: ModelError) -> bool {
+    match e {
+        .Referenced(_, sql) -> sql.extended == 787 &&
+            match sql.cause { .Constraint(v) -> v == Violation.ForeignKey, rest -> false },
+        rest -> false,
+    }
+}
+
+fn titles(rows: List<Card>) -> string { [c.title for c in rows].join(",") }
+
+fn no_children() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let b = board(db, "empty")?
+    "${titles(modeled(b.cards(db))?)}|${(modeled(Card.where(db, board: b))?).length}"
+}
+
+fn hydrated() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let b = board(db, "work")?
+    let c = Card { title: "a", board: b }.insert(db)?
+    let back = modeled(Card.find(db, c.id))?!
+    "${back.board.name} ${back.board.id == b.id}"
+}
+
+fn by_parent() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let one = board(db, "one")?
+    let two = board(db, "two")?
+    let _ = Card { title: "a", board: one }.insert(db)?
+    let _ = Card { title: "b", board: two }.insert(db)?
+    let _ = Card { title: "c", board: one }.insert(db)?
+    "${titles(modeled(Card.where(db, board: one))?)}|${titles(modeled(one.cards(db))?)}|${titles(modeled(two.cards(db))?)}"
+}
+
+fn batched() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let one = board(db, "one")?
+    let two = board(db, "two")?
+    let three = board(db, "three")?
+    let _ = Card { title: "a", board: one }.insert(db)?
+    let _ = Card { title: "b", board: two }.insert(db)?
+    let _ = Card { title: "c", board: one }.insert(db)?
+    let groups = modeled(Board.with_cards(db, [one, two, three]))?
+    "${[titles(g) for g in groups].join("|")}"
+}
+
+fn refused() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let b = board(db, "held")?
+    let _ = Card { title: "a", board: b }.insert(db)?
+    match b.remove(db) {
+        .Ok(_) -> "removed",
+        .Err(e) -> "${held(e)} ${modeled(count(db, "Board"))?}",
+    }
+}
+
+fn removable() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let b = board(db, "bare")?
+    "${b.remove(db)?} ${modeled(count(db, "Board"))?}"
+}
+
+fn cascaded() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let b = board(db, "gone")?
+    let _ = Pin { label: "p", board: b }.insert(db)?
+    let _ = b.remove(db)?
+    "${modeled(count(db, "Board"))?} ${modeled(count(db, "Pin"))?}"
+}
+
+fn nulled() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let b = board(db, "gone")?
+    let m = Memo { text: "m", board: b }.insert(db)?
+    let _ = b.remove(db)?
+    let back = modeled(Memo.find(db, m.id))?!
+    "${back.board == null} ${modeled(count(db, "Memo"))?}"
+}
+
+fn soft_cascade() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let c = Crate { label: "c" }.insert(db)?
+    let _ = Item { name: "i", crate: c }.insert(db)?
+    let _ = c.remove(db)?
+    "${modeled(count(db, "Crate"))?} ${modeled(count(db, "Item"))?}"
+}
+
+spec "std/db relations" {
+    given "a parent with no children" {
+        then "reads answer nothing, by the accessor and by where" { (no_children() catch "") == "|0" }
+    }
+    given "a child" {
+        then "reads its parent" { (hydrated() catch "") == "work true" }
+        then "is found by its parent, and the parent finds it" { (by_parent() catch "") == "a,c|a,c|b" }
+        then "comes with its siblings for many parents in one query" { (batched() catch "") == "a,c|b|" }
+    }
+    given "removing a parent" {
+        then "refuses while a child stands" { (refused() catch "") == "true 1" }
+        then "removes a childless one" { (removable() catch "") == "1 0" }
+        then "takes a @cascade child with it" { (cascaded() catch "") == "0 0" }
+        then "clears a @set_null link" { (nulled() catch "") == "true 1" }
+        then "a soft parent keeps its row and removes its @cascade children" { (soft_cascade() catch "") == "1 0" }
+    }
+}
