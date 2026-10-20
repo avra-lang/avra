@@ -1,0 +1,186 @@
+use models.{models, Person, Message, WorkItem}
+use schema.{Ref}
+use store.open.{Graph, stored}
+use store.engine.{EntityRow}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use @std.validate.{Value}
+use data.{encoded}
+
+fn person(id: string, name: string) -> Record {
+    Record { id: id, model: "Person", value: Person { name: name, email: null }.graph_value() }
+}
+
+fn message(id: string, author: string) -> Record {
+    Record {
+        id: id,
+        model: "Message",
+        value: Message { author: Ref { id: author }, recipients: [], body: "hello", sent_at: null }
+            .graph_value(),
+    }
+}
+
+fn run(graph: Graph, id: string, producer: string, records: List<Record>, input_revision: int = 1) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "inbox:1",
+        input: "inbox:1",
+        input_revision: input_revision,
+        schema: graph.catalog.fingerprint,
+        expected_revision: graph.revision()?,
+        records: records,
+    }
+}
+
+fn replay() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "raw message")?
+    let p = run(g, "run-1", "agent", [person("p1", "Ada"), message("m1", "p1")])?
+    let first = g.publish(p)?
+    let second = g.publish(p)?
+    first == second && g.revision()? == first && (g.edges("p1", incoming: true)?).length == 1
+}
+
+fn rollback() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "raw message")?
+    let before = g.revision()?
+    let p = run(g, "bad", "agent", [person("p1", "Ada"), message("m1", "missing")])?
+    let rejected = match g.publish(p) { .Ok(_) -> false, .Err(_) -> true }
+    rejected &&
+        g.revision()? == before &&
+        (g.find("Person")?).is_empty() &&
+        (stored(EntityRow.all(g.db))?).is_empty()
+}
+
+fn competing_support() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "raw message")?
+    g.publish(run(g, "one", "agent-a", [person("p1", "Ada")])?)?
+    g.publish(run(g, "two", "agent-b", [person("p1", "Ada")])?)?
+    let shared = (g.entity("p1")?).fields.find(it.property == "name")?.candidates?.length == 1
+    g.publish(run(g, "three", "agent-a", [person("p1", "Augusta")])?)?
+    let conflict = (g.entity("p1")?).fields.find(it.property == "name")?.candidates?.length == 2
+    let refused = match g.value("p1") { .Ok(_) -> false, .Err(_) -> true }
+    g.publish(run(g, "four", "agent-a", [])?)?
+    shared && conflict && refused && encoded(g.value("p1")?) == encoded(person("p1", "Ada").value)
+}
+
+fn stale_input() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "version one")?
+    g.publish(run(g, "one", "agent", [person("p1", "Ada")])?)?
+    let pending = run(g, "pending", "agent", [person("p1", "Old")])?
+    g.observe("inbox:1", "version two")?
+    let rejected = match g.publish(pending) { .Ok(_) -> false, .Err(_) -> true }
+    rejected &&
+        (g.find("Person")?).is_empty() &&
+        (g.dirty()?).items().length == 1 &&
+        (g.explain("p1", "name")?).item(0).member("active").truth() == false
+}
+
+fn defaults_are_not_evidence() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "raw task")?
+    let value = stored_value("{\"title\":\"Reply\"}")?
+    g.publish(run(g, "one", "agent", [Record { id: "w1", model: "WorkItem", value: value }])?)?
+    let evidence = g.entity("w1")?
+    let defaulted = match WorkItem.decode(g.value("w1")?) {
+        .Ok(item) -> item.status == "open",
+        .Err(_) -> false,
+    }
+    evidence.fields.length == 1 && defaulted
+}
+
+fn model_mismatch() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "raw")?
+    g.publish(run(g, "one", "agent", [person("p1", "Ada")])?)?
+    let p = run(g, "two", "agent", [message("p1", "p1")])?
+    match g.publish(p) { .Ok(_) -> false, .Err(_) -> true }
+}
+
+fn failed_replacement() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "raw")?
+    g.publish(run(g, "one", "agent", [person("p1", "Ada")])?)?
+    let before = g.revision()?
+    let rejected = match g.publish(run(g, "bad", "agent", [message("m1", "missing")])?) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    rejected &&
+        g.revision()? == before &&
+        encoded(g.value("p1")?) == encoded(person("p1", "Ada").value)
+}
+
+fn stale_and_collision() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "raw")?
+    let original = run(g, "one", "agent", [person("p1", "Ada")])?
+    g.publish(original)?
+    let collision = match g.publish(original with { producer: "another" }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    let stale = match g.publish(original with { id: "two" }) { .Ok(_) -> false, .Err(_) -> true }
+    let schema = match g
+        .publish(original with { id: "three", schema: "unknown", expected_revision: g.revision()? }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    collision && stale && schema
+}
+
+fn observation_noop() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    let first = g.observe("inbox:1", "raw")?
+    let revision = g.revision()?
+    let second = g.observe("inbox:1", "raw")?
+    first == second && g.revision()? == revision
+}
+
+fn empty_interpretation() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "not relevant")?
+    g.publish(run(g, "one", "agent", [])?)?
+    g.observe("inbox:1", "now relevant")?
+    (g.dirty()?).items().length == 1
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph evidence store" {
+    given "a model-only ontology" {
+        then "collect discovers models" { models.length == 3 }
+        then "replay is idempotent and same-run references work" { passed(replay()) }
+        then "bad references roll back identities and revision" { passed(rollback()) }
+        then "replacement preserves independent support and conflicts" { passed(competing_support()) }
+        then "new observations invalidate old interpretations" { passed(stale_input()) }
+        then "defaults are construction, not evidence" { passed(defaults_are_not_evidence()) }
+        then "an entity cannot change models" { passed(model_mismatch()) }
+        then "failed replacement preserves old evidence" { passed(failed_replacement()) }
+        then "stale revisions and run collisions are refused" { passed(stale_and_collision()) }
+        then "identical observations do not advance revision" { passed(observation_noop()) }
+        then "empty interpretations are also invalidated" { passed(empty_interpretation()) }
+    }
+}

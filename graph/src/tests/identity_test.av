@@ -1,0 +1,333 @@
+use models.{models}
+use store.open.{Graph, stored}
+use store.engine.{EntityRow}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.identity.{Identity}
+use data.{encoded}
+use @std.validate.{Value}
+
+fn named(id: string, model: string, value: string, identities: List<Identity>) -> Result<
+    Record,
+    string,
+> {
+    Record { id: id, model: model, value: stored_value(value)?, identities: identities }
+}
+
+fn published(g: Graph, id: string, producer: string, records: List<Record>) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "input:1",
+        input: "input:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn claiming(id: string, model: string, identities: List<Identity>) -> Record {
+    Record { id: id, model: model, value: Value.Map([]), mode: .Partial, identities: identities }
+}
+
+fn external(namespace: string, key: string) -> Identity {
+    Identity { namespace: namespace, external_key: key }
+}
+
+fn resolving() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [
+                    named(
+                        "p1",
+                        "Person",
+                        "{\"name\":\"Ada\"}",
+                        [external("mail", "ada@example.com")],
+                    )?,
+                ],
+            )?,
+        )?
+    let target = g.resolve("mail", "ada@example.com")?
+    let aliases = g.aliases("p1")?
+    target == "p1" &&
+        aliases.length == 1 &&
+        aliases[0].namespace == "mail" &&
+        aliases[0].external_key == "ada@example.com"
+}
+
+fn unknown_identity() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    match g.resolve("mail", "nobody@example.com") {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("unknown identity"),
+    }
+}
+
+fn conflict_is_atomic() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [
+                    named(
+                        "p1",
+                        "Person",
+                        "{\"name\":\"Ada\"}",
+                        [external("mail", "ada@example.com")],
+                    )?,
+                ],
+            )?,
+        )?
+    let revision = g.revision()?
+    let refused = match g
+        .publish(
+            published(
+                g,
+                "two",
+                "other-agent",
+                [
+                    named(
+                        "p2",
+                        "Person",
+                        "{\"name\":\"Grace\"}",
+                        [external("mail", "ada@example.com")],
+                    )?,
+                ],
+            )?,
+        ) { .Ok(_) -> false, .Err(_) -> true }
+    refused &&
+        g.revision()? == revision &&
+        g.resolve("mail", "ada@example.com")? == "p1" &&
+        (stored(EntityRow.all(g.db))?).length == 1
+}
+
+fn one_publication_one_name() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    match g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [
+                    named(
+                        "p1",
+                        "Person",
+                        "{\"name\":\"Ada\"}",
+                        [external("mail", "same@example.com")],
+                    )?,
+                    named(
+                        "p2",
+                        "Person",
+                        "{\"name\":\"Grace\"}",
+                        [external("mail", "same@example.com")],
+                    )?,
+                ],
+            )?,
+        ) { .Ok(_) -> false, .Err(e) -> e.contains("cannot name two entities") }
+}
+
+fn duplicate_on_one_record() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    match g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [
+                    named(
+                        "p1",
+                        "Person",
+                        "{\"name\":\"Ada\"}",
+                        [external("mail", "ada@example.com"), external("mail", "ada@example.com")],
+                    )?,
+                ],
+            )?,
+        ) { .Ok(_) -> false, .Err(e) -> e.contains("declares an identity twice") }
+}
+
+fn empty_identity() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    let revision = g.revision()?
+    match g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [named("p1", "Person", "{\"name\":\"Ada\"}", [external("", "ada@example.com")])?],
+            )?,
+        ) { .Ok(_) -> false, .Err(_) -> g.revision()? == revision }
+}
+
+fn replacement_withdraws_its_name() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [
+                    named(
+                        "p1",
+                        "Person",
+                        "{\"name\":\"Ada\"}",
+                        [external("mail", "ada@example.com")],
+                    )?,
+                ],
+            )?,
+        )?
+    g
+        .publish(
+            published(
+                g,
+                "two",
+                "directory-agent",
+                [claiming("p1", "Person", [external("directory", "ada")])],
+            )?,
+        )?
+    g
+        .publish(
+            published(
+                g,
+                "three",
+                "mail-agent",
+                [named("p1", "Person", "{\"name\":\"Ada Lovelace\"}", [])?],
+            )?,
+        )?
+    let mail = match g.resolve("mail", "ada@example.com") { .Ok(_) -> false, .Err(_) -> true }
+    mail && g.resolve("directory", "ada")? == "p1"
+}
+
+fn identity_is_identity() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    let record = named("p1", "Person", "{\"name\":\"Ada\"}", [external("mail", "ada@example.com")])?
+    let p = published(g, "one", "mail-agent", [record])?
+    let revision = g.publish(p)?
+    let replay = g.publish(p)? == revision
+    let moved = match g
+        .publish(p with { records: [record with { identities: [external("mail", "grace@example.com")] }] }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    replay && moved && g.revision()? == revision
+}
+
+fn replacement_rebinds_its_name() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [
+                    named(
+                        "p1",
+                        "Person",
+                        "{\"name\":\"Ada\"}",
+                        [external("mail", "ada@example.com")],
+                    )?,
+                ],
+            )?,
+        )?
+    g
+        .publish(
+            published(
+                g,
+                "two",
+                "mail-agent",
+                [
+                    named(
+                        "p2",
+                        "Person",
+                        "{\"name\":\"Ada Lovelace\"}",
+                        [external("mail", "ada@example.com")],
+                    )?,
+                ],
+            )?,
+        )?
+    g.resolve("mail", "ada@example.com")? == "p2" &&
+        (g.aliases("p1")?).is_empty() &&
+        (g.aliases("p2")?).length == 1
+}
+
+fn names_are_not_evidence() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    g
+        .publish(
+            published(
+                g,
+                "one",
+                "mail-agent",
+                [
+                    named(
+                        "p1",
+                        "Person",
+                        "{\"name\":\"Ada\"}",
+                        [external("mail", "ada@example.com")],
+                    )?,
+                ],
+            )?,
+        )?
+    let fields = (g.entity("p1")?).fields
+    fields.length == 1 &&
+        fields[0].property == "name" &&
+        encoded(g.value("p1")?).contains("\"name\":\"Ada\"")
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph external identities" {
+    given "a producer names an entity in its own namespace" {
+        then "an external name resolves to its entity" { passed(resolving()) }
+        then "an unknown external name is absent" { passed(unknown_identity()) }
+        then "a name already bound elsewhere refuses the whole publication" { passed(conflict_is_atomic()) }
+        then "one publication cannot bind a name to two entities" { passed(one_publication_one_name()) }
+        then "one record cannot declare a name twice" { passed(duplicate_on_one_record()) }
+        then "an identity needs a nonempty namespace and key" { passed(empty_identity()) }
+        then "replacement withdraws the name its run owned" { passed(replacement_withdraws_its_name()) }
+        then "a replacement may rebind the name its producer owned" { passed(replacement_rebinds_its_name()) }
+        then "identities are part of the replay identity" { passed(identity_is_identity()) }
+        then "names are lookups, never extracted properties" { passed(names_are_not_evidence()) }
+    }
+}

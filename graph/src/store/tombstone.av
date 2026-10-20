@@ -1,0 +1,103 @@
+use @std.json.{Json, field}
+use @std.sqlite.{Db}
+use store.open.{Graph, stored, modeled}
+use store.engine.{EntityRow, TombstoneRow, TombstoneEndRow}
+
+/// One explicit decision that an entity is absent, kept for revival.
+export type Tombstone = {
+    id: string,
+    entity: string,
+    decider: string,
+    revision: int = 0,
+    until_revision: int = 0,
+}
+
+impl Tombstone {
+    fn active() -> bool { self.until_revision == 0 }
+
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(self.id)),
+                    field("entity", Json.Str(self.entity)),
+                    field("decider", Json.Str(self.decider)),
+                    field("revision", Json.Int(self.revision)),
+                    field("until_revision", Json.Int(self.until_revision)),
+                    field("active", Json.Bool(self.active())),
+                ],
+            )
+    }
+}
+
+impl Graph {
+    /// Hide an entity and its group; `decision.id` names the decision.
+    fn tombstone(decision: Tombstone) -> Result<int, string> {
+        if decision.id.is_empty() || decision.decider.is_empty() { fail "a tombstone needs an id and a decider" }
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let found = stored(TombstoneRow.where(db, decision: decision.id))?
+        match found {
+            [one] -> {
+                if one.entity.name != decision.entity || one.decider != decision.decider {
+                    fail "tombstone id was already used with a different decision"
+                }
+                return one.revision
+            },
+            [] -> self.hid(db, decision, revision)?,
+            rest -> { fail "tombstone decision is not unique: ${decision.id}" },
+        }
+        self.advanced()?
+        stored(db.commit())?
+        revision + 1
+    }
+
+    fn hid(mut db: Db, decision: Tombstone, revision: int) -> Result<int, string> {
+        let entity = self.entity_named(decision.entity)?
+        if self.hidden(decision.entity)? { fail "entity is already tombstoned: ${decision.entity}" }
+        modeled(
+            TombstoneRow {
+                decision: decision.id,
+                entity: entity,
+                decider: decision.decider,
+                revision: revision + 1,
+            }
+                .insert(db),
+        )?
+        0
+    }
+
+    /// Withdraw one tombstone; the entity reads again.
+    fn revive(decision: string) -> Result<int, string> {
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let row = match stored(TombstoneRow.where(db, decision: decision))? {
+            [only] -> only,
+            [] -> { fail "unknown tombstone decision: ${decision}" },
+            rest -> { fail "tombstone decision is not unique: ${decision}" },
+        }
+        if !(stored(TombstoneEndRow.where(db, tombstone: row))?).is_empty() { return revision }
+        modeled(TombstoneEndRow { tombstone: row, until: revision + 1 }.insert(db))?
+        self.advanced()?
+        stored(db.commit())?
+        revision + 1
+    }
+
+    /// Every tombstone, or only those naming one entity or its group.
+    fn tombstones(entity: string = "") -> Result<List<Tombstone>, string> {
+        self.current()?
+        let ended = stored(TombstoneEndRow.all(self.db))?
+        let names = if entity.is_empty() { [] } else { self.group(entity)? }
+        [Tombstone {
+            id: t.decision,
+            entity: t.entity.name,
+            decider: t.decider,
+            revision: t.revision,
+            until_revision: ended.find(it.tombstone.id == t.id)?.until ?? 0,
+        } for t in stored(TombstoneRow.all(self.db))? if entity.is_empty() || names.contains(t.entity.name)]
+    }
+}

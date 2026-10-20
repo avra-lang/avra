@@ -1,0 +1,112 @@
+use @std.json.{Json, field}
+use @std.sqlite.{Db}
+use store.open.{Graph, stored, modeled}
+use store.engine.{EntityRow, MergeRow, MergeEndRow}
+
+/// One explicit decision joining two entities into one read group.
+export type Merge = {
+    id: string,
+    left: string,
+    right: string,
+    decider: string,
+    revision: int = 0,
+    until_revision: int = 0,
+}
+
+impl Merge {
+    fn active() -> bool { self.until_revision == 0 }
+
+    fn json() -> Json {
+        Json
+            .Obj(
+                [
+                    field("id", Json.Str(self.id)),
+                    field("left", Json.Str(self.left)),
+                    field("right", Json.Str(self.right)),
+                    field("decider", Json.Str(self.decider)),
+                    field("revision", Json.Int(self.revision)),
+                    field("until_revision", Json.Int(self.until_revision)),
+                    field("active", Json.Bool(self.active())),
+                ],
+            )
+    }
+}
+
+impl Graph {
+    /// Merge two entities; `decision.id` names the decision and replays it.
+    fn merge(decision: Merge) -> Result<int, string> {
+        if decision.id.is_empty() || decision.decider.is_empty() { fail "a merge needs an id and a decider" }
+        if decision.left == decision.right { fail "cannot merge an entity with itself" }
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let found = stored(MergeRow.where(db, decision: decision.id))?
+        match found {
+            [one] -> {
+                if one.left.name != decision.left ||
+                    one.right.name != decision.right ||
+                    one.decider != decision.decider {
+                    fail "merge id was already used with a different decision"
+                }
+                return one.revision
+            },
+            [] -> self.made(db, decision, revision)?,
+            rest -> { fail "merge decision is not unique: ${decision.id}" },
+        }
+        self.advanced()?
+        stored(db.commit())?
+        revision + 1
+    }
+
+    fn made(mut db: Db, decision: Merge, revision: int) -> Result<int, string> {
+        let left = self.entity_named(decision.left)?
+        let right = self.entity_named(decision.right)?
+        if left.model != right.model { fail "only entities of one model can merge" }
+        if self.hidden(decision.left)? || self.hidden(decision.right)? { fail "a tombstoned entity cannot merge" }
+        if (self.group(decision.left)?).contains(decision.right) { fail "the entities already form one group" }
+        modeled(
+            MergeRow {
+                decision: decision.id,
+                left: left,
+                right: right,
+                decider: decision.decider,
+                revision: revision + 1,
+            }
+                .insert(db),
+        )?
+        0
+    }
+
+    /// Withdraw one merge decision; the entities read apart again.
+    fn split(decision: string) -> Result<int, string> {
+        mut db = self.db
+        stored(db.begin())?
+        defer { let _ = db.finish() }
+        let revision = self.current()?
+        let row = match stored(MergeRow.where(db, decision: decision))? {
+            [only] -> only,
+            [] -> { fail "unknown merge decision: ${decision}" },
+            rest -> { fail "merge decision is not unique: ${decision}" },
+        }
+        if !(stored(MergeEndRow.where(db, merge: row))?).is_empty() { return revision }
+        modeled(MergeEndRow { merge: row, until: revision + 1 }.insert(db))?
+        self.advanced()?
+        stored(db.commit())?
+        revision + 1
+    }
+
+    /// Every decision, or only those touching one entity, in commit order.
+    fn merges(entity: string = "") -> Result<List<Merge>, string> {
+        self.current()?
+        let ended = stored(MergeEndRow.all(self.db))?
+        [Merge {
+            id: m.decision,
+            left: m.left.name,
+            right: m.right.name,
+            decider: m.decider,
+            revision: m.revision,
+            until_revision: ended.find(it.merge.id == m.id)?.until ?? 0,
+        } for m in stored(MergeRow.all(self.db))? if entity.is_empty() || m.left.name == entity || m.right.name == entity]
+    }
+}

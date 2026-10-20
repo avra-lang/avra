@@ -1,0 +1,199 @@
+use @std.meta.{
+    Type,
+    Field,
+    Kind,
+    Annotation,
+    Code,
+    Decls,
+    Declared,
+    Directive,
+    Diagnostic,
+    literal,
+    name,
+    list_of,
+    refuse_as_at,
+    applied,
+    code_hash,
+}
+use @std.validate.{Decode, Value, Entry, Issues}
+use schema.{Model, Property, Shape, registered}
+
+/// The declaration supplies validation, serialization, and graph metadata.
+export fn model(t: Type) -> Declared {
+    let problems = shape_problems(t)
+    if !problems.is_empty() { return Declared { made: [], problems: problems } }
+    let clean = t with { annotations: [a for a in t.annotations if a.name != "model"] }
+    Declared {
+        made: Decode
+            .derive(clean)
+            .concat(Decode.fields(clean, projected(t)))
+            .concat(
+                [
+                    Directive { twin: "", name: t.name, at: t.at, source: generated(t) },
+                    Directive { twin: "", name: t.name, at: t.at, source: checked(t) },
+                    Directive { twin: "", name: t.name, at: t.at, source: fields_checked(t) },
+                    Directive { twin: "", name: t.name, at: t.at, source: factory(t) },
+                ],
+            ),
+    }
+}
+
+fn shape_problems(t: Type) -> List<Diagnostic> {
+    if !t.variants.is_empty() || !t.spreads.is_empty() || t.fields.is_empty() {
+        return [
+            refuse_as_at(
+                "record_required",
+                t.at,
+                "a graph model is a nonempty record with explicit fields",
+                null,
+            ),
+        ]
+    }
+    [refuse_as_at(
+        "unsupported_property",
+        f.at,
+        "`${f.name}` must be a scalar, model, Ref<Model>, optional, or list",
+        null,
+    ) for f in t.fields if !supported(f.kind)]
+}
+
+fn supported(k: Kind) -> bool {
+    match k {
+        .Int or .Float or .Bool or .Str -> true,
+        .Opt(inner) or .List(inner) -> supported(inner),
+        .Named("Ref", [.Named(_, [])]) or .Named(_, []) -> true,
+        .Named(_, _) or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
+}
+
+fn generated(t: Type) -> Decls {
+    let entries = list_of(
+        [quote { Entry { key: ${literal(f.name)}, value: ${written(f.kind, quote { self.${f} }, 0)} } } for f in t.fields],
+    )
+    quote {
+        impl ${t} {
+            fn graph_value() -> Value { Value.Map(${entries}) }
+        }
+
+    }
+}
+
+fn factory(t: Type) -> Decls {
+    let descriptor = "${t.name}_graph_model"
+    let validator = "${t.name}_graph_checked"
+    let assertion_validator = "${t.name}_graph_fields_checked"
+    let properties = list_of([property(f) for f in t.fields])
+    quote {
+        @registered
+        export fn ${descriptor}() -> Model {
+            Model {
+                name: ${literal(t.name)},
+                description: ${literal(t.doc ?? "")},
+                properties: ${properties},
+                rules: ${rules([a for a in t.annotations if a.name != "model"])},
+                check: ${name(validator)},
+                validator_hash: code_hash(${name(validator)}),
+                check_fields: ${name(assertion_validator)},
+                assertion_hash: code_hash(${name(assertion_validator)}),
+            }
+        }
+    }
+}
+
+fn projected(t: Type) -> Code {
+    let entries = list_of(
+        [quote {
+        Entry {
+            key: ${literal(f.name)},
+            value: ${written(nullable(f.kind), name(f.name), 0)},
+        }
+    } for f in t.fields],
+    )
+    quote { Value.Map(${entries}) }
+}
+
+fn nullable(k: Kind) -> Kind {
+    match k { .Opt(_) -> k, rest -> Kind.Opt(k) }
+}
+
+fn fields_checked(t: Type) -> Decls {
+    let validator = "${t.name}_graph_fields_checked"
+    quote {
+        fn ${validator}(v: Value) -> Result<Value, Issues> {
+            ${name(t.name)}.decode_fields(v)
+        }
+    }
+}
+
+fn checked(t: Type) -> Decls {
+    let validator = "${t.name}_graph_checked"
+    quote {
+        fn ${validator}(v: Value) -> Result<Value, Issues> {
+            let got = ${name(t.name)}.decode(v)?
+            got.graph_value()
+        }
+    }
+}
+
+fn property(f: Field) -> Code {
+    let default_source = if f.default == null { quote { null } } else { literal(f.default!.text()) }
+    quote {
+        Property {
+            name: ${literal(f.name)},
+            shape: ${shape(f.kind)},
+            description: ${literal(f.doc ?? "")},
+            rules: ${rules(f.annotations)},
+            default_source: ${default_source},
+        }
+    }
+}
+
+fn rules(annotations: List<Annotation>) -> Code {
+    list_of(
+        [literal(applied(a, name("value"))?.text() ?? "${a.name}(${a.args.join(",")})") for a in annotations],
+    )
+}
+
+fn shape(k: Kind) -> Code {
+    match k {
+        .Int -> quote { Shape.Integer },
+        .Float -> quote { Shape.Number },
+        .Bool -> quote { Shape.Boolean },
+        .Str -> quote { Shape.Text },
+        .Opt(inner) -> quote { Shape.Optional(${shape(inner)}) },
+        .List(inner) -> quote { Shape.Many(${shape(inner)}) },
+        .Named("Ref", [.Named(target, [])]) -> quote { Shape.Reference(${literal(target)}) },
+        .Named(n, []) -> quote { Shape.Embedded(${literal(n)}) },
+        rest -> quote { unsupported_shape() },
+    }
+}
+
+fn written(k: Kind, v: Code, depth: int) -> Code {
+    match k {
+        .Int -> quote { Value.Int(${v}) },
+        .Float -> quote { Value.Float(${v}) },
+        .Bool -> quote { Value.Bool(${v}) },
+        .Str -> quote { Value.Text(${v}) },
+        .Named(_, _) -> quote { ${v}.graph_value() },
+        .Opt(inner) -> optional_value(inner, v, depth),
+        .List(inner) -> list_value(inner, v, depth),
+        rest -> quote { unsupported_value() },
+    }
+}
+
+fn optional_value(inner: Kind, v: Code, depth: int) -> Code {
+    let x = "present${depth}"
+    let out = written(inner, name(x), depth + 1)
+    quote {
+        match ${v} {
+            ${x}? -> ${out}
+            null -> Value.Null
+        }
+    }
+}
+
+fn list_value(inner: Kind, v: Code, depth: int) -> Code {
+    let x = "item${depth}"
+    let out = written(inner, name(x), depth + 1)
+    quote { Value.List([${out} for ${x} in ${v}]) }
+}
