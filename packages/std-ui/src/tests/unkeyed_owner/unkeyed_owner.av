@@ -1,14 +1,16 @@
-// proves: work a row asks belongs to its row. A row of an unkeyed dynamic list
-// is told by order even while it stands alone, so its work is refused and
-// said; a keyed row keeps its own across a replace, a prepend and a removal
-// before it. Before: a lone unkeyed row's answer landed on the row that took
-// its place. eval == native.
+// proves: work a row asks belongs to its row, and a row drawn by a COMPOSITION is
+// told by order as a primitive is: among unkeyed siblings one site made, the work
+// is refused and said, never landed on the row that later holds its place; a keyed
+// row keeps its own across a removal before it. The rows are made through a
+// helper, so this is the runtime's half — what no literal in the loop shows the
+// compiler. eval == native.
 use @std.ui.components.{button, item, text}
 use @std.ui.headless.{headless}
 use @std.ui.app.{later}
 use @std.time.{ms}
 
-state rows: List<string> = ["a"]
+state rows: List<string> = []
+state keyed: bool = false
 
 component pending(label: string) {
     state got: string = "none"
@@ -29,21 +31,28 @@ component pending(label: string) {
     }
 }
 
-state keyed: bool = false
-
-fn view() -> item {
-    if keyed { return item { items: [pending r { key: r } for r in rows] } }
-    item { items: [pending r for r in rows] }
+/// A row, made where the loop cannot show it.
+fn row(r: string) -> pending {
+    if keyed { return pending r { key: r } }
+    pending r
 }
 
-fn case(name: string, before: List<string>, after: List<string>, by_key: bool = false) {
+fn view() -> item { item { items: [row(r) for r in rows] } }
+
+fn case(
+    name: string,
+    before: List<string>,
+    pressed: string,
+    after: List<string>,
+    by_key: bool = false,
+) {
     rows = before
     keyed = by_key
     let screen = headless(view)
     screen
         .running(
             () -> {
-                let _ = screen.press("ask ${before.last()!}")
+                let _ = screen.press("ask ${pressed}")
                 let refused = screen.shown.app.warnings().any(it.contains("does not outlive"))
                 let _ = screen
                     .turn(
@@ -59,10 +68,13 @@ fn case(name: string, before: List<string>, after: List<string>, by_key: bool = 
         )
 }
 
-case("one, then replaced", ["a"], ["z"])
-case("one, then one prepended", ["a"], ["z", "a"])
-case("one, then one appended", ["a"], ["a", "z"])
-case("two, last pressed, first removed", ["a", "b"], ["b"])
-case("keyed: one, then replaced", ["a"], ["z"], by_key: true)
-case("keyed: one, then one prepended", ["a"], ["z", "a"], by_key: true)
-case("keyed: two, last pressed, first removed", ["a", "b"], ["b"], by_key: true)
+case("two, last pressed, first removed", ["a", "b"], "b", ["b"])
+case("two, first pressed, last removed", ["a", "b"], "a", ["a"])
+case("keyed: two, last pressed, first removed", ["a", "b"], "b", ["b"], by_key: true)
+case(
+    "keyed: two, first pressed, then one prepended",
+    ["a", "b"],
+    "a",
+    ["z", "a", "b"],
+    by_key: true,
+)
