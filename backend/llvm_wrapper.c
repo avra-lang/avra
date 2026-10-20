@@ -1417,7 +1417,11 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level, cons
         // pass marks its merges with a COMDAT, and WebAssembly accepts only
         // SelectionKind::Any — lowering refuses the module outright.
         if (!off_host) LLVMPassBuilderOptionsSetMergeFunctions(opts, 1);
-        LLVMErrorRef ran = LLVMRunPasses(m, passes, tm, opts);
+        // Equal exit tails merge before the pipeline hoists them: an unwinding
+        // call (`invoke`) keeps each tail apart until its callee is known
+        // nounwind, and the default order hoists first.
+        LLVMErrorRef ran = LLVMRunPasses(m, "cgscc(function-attrs),function(simplifycfg<sink-common-insts>)", tm, opts);
+        if (!ran) ran = LLVMRunPasses(m, passes, tm, opts);
         LLVMDisposePassBuilderOptions(opts);
         if (ran) {
             char* why = LLVMGetErrorMessage(ran);
