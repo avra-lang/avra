@@ -85,7 +85,7 @@ use http.{
     completes,
 }
 use wire.{Transport, WireError, Secure, plainly, wire_timely}
-use route.{Route, compiled, dispatch}
+use route.{Route, Routes, compiled, dispatch, gathered}
 use h2.{H2Conn, H2Error, Exchange, Arrived, h2_server, preface}
 use h2_serve.{Pour, request_of, answered_on, refused_on, scheme_of, stream_body, handed_on}
 
@@ -206,7 +206,7 @@ export component server {
     port: int = 8080
     tls: Secure? = null
     layers: List<layer> = []
-    routes: List<Route> = []
+    routes: List<dyn Routes> = []
 }
 
 /// `layer auth { req, next -> … }` — a fn every request passes through
@@ -232,7 +232,7 @@ impl server {
     /// table every connection dispatches through.
     fn listening() -> Result<Server<Stateless>, NetError> {
         let l = listen(self.host, self.port)?
-        let routed = compiled(self.routes)
+        let routed = compiled(gathered(self.routes))
         let handled = through(self.layers, (q: Request<Unrouted>) -> dispatch(routed, q))
         let plain = served(l, () -> Stateless {}, limits(), timing()) { _none, q -> handled(q) }
         let opener? = self.tls else { return .Ok(plain) }
