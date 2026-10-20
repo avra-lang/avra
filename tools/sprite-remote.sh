@@ -126,6 +126,7 @@ status() {
     hash=${1:--}
     [ "$#" -eq 0 ] || shift
     [ "$#" -eq 0 ] || echo "missing=$(lacking "$@")"
+    echo "provision_hash=$(cat "$home/.avra-provisioned" 2>/dev/null || echo none)"
     echo "pruning=$(flock -n /tmp/.avra-prune.lock true 2>/dev/null && echo no || echo yes)"
     set -- $(cat /proc/loadavg)
     echo "load=$1"
@@ -186,6 +187,19 @@ provision() {
     mkdir -p "$runs" "$compilers" "$trees"
     test -e "$llvm/lib/libLLVM.so" || { echo "unprovisioned=libLLVM.so"; return 1; }
     echo "provisioned=yes"
+}
+
+# Provisions again from a tree's own script and records the hash it came from; the record is written
+# only once the script succeeded, so a failed one is asked again by the next run. A moved home is a
+# fixture's: the system is not touched.
+reprovision() {
+    want=$1
+    tree=$2
+    if [ -z "${AVRA_SPRITE_HOME:-}" ]; then
+        sh "$tree/tools/sprite-provision.sh" --toolchain || { echo "unprovisioned=sprite-provision.sh"; return 1; }
+    fi
+    printf '%s' "$want" > "$home/.avra-provisioned"
+    echo "reprovisioned=$want"
 }
 
 # Keeps the newest compilers, and the trees and scratch used within the
@@ -595,6 +609,7 @@ case $verb in
     manifest) manifest "$@" ;;
     unlink) unlink_ "$@" ;;
     provision) provision "$@" ;;
+    reprovision) reprovision "$@" ;;
     prune) prune "$@" ;;
     prune-now) prune_now "$@" ;;
     keeper) keeper "$@" ;;
