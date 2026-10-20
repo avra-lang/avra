@@ -9,7 +9,8 @@ use tree.node.{Node}
 use tree.view.{View}
 use style.theme.{Theme}
 
-/// An app and the page it is painted on.
+/// An app and the page it is painted on. The page owns the one standing the
+/// app walks, so the instances the page watches are the ones the app draws.
 export type Paged = { app: App, page: Live }
 
 /// `view` under `theme` on `page`: each paint's patches go to `send` as
@@ -23,11 +24,12 @@ export fn paged<V: View>(view: fn() -> V, theme: fn() -> Theme, page: Live, send
             view,
             theme,
             (root: Node, worn: Theme) -> {
-                let patches = page.patches(root, worn, notice.get())
+                let patches = page.patches_drawn(root, worn, notice.get())
                 standing.set(page.owners())
                 if !patches.is_empty() { send(frame(patches, page.told)) }
             },
             standing,
+            page.stands,
         ),
         page: page,
     }

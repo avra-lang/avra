@@ -52,6 +52,7 @@ use json.{
 }
 use value.{Value}
 use issue.{Issues, root}
+use check.{Checking, filed}
 
 export trait Decode {
     static fn derive(t: Type) -> List<Directive> {
@@ -65,10 +66,87 @@ export trait Decode {
     }
 }
 
+/// `@derive(Checked)` — the type's rules run over a value of it. A
+/// generic type, a named shape and an enum have no value to judge
+/// field by field, so they derive nothing and `checked` refuses them
+/// where it is called.
+export trait Checked {
+    /// Every issue the value's rules find, each at its field's path.
+    fn check() -> Issues
+
+    static fn derive(t: Type) -> List<Directive> {
+        if generic(t) || names_a_shape(t) || !t.variants.is_empty() { return [] }
+        [Directive { twin: "", name: t.name, at: t.at, source: checker(t) }]
+    }
+
+    /// Every annotation on a field is a rule this derive calls.
+    static fn marks(t: Type) -> List<string> {
+        flatten([[a.name for a in f.annotations] for f in t.fields])
+    }
+}
+
+/// The `check` of a record: each field's rules over the field as
+/// held, then the record's own rules over the whole value. An
+/// annotation the compiler handed no call for is no rule — a storage
+/// constraint like `@unique` is read by its own derive.
+export fn checker(t: Type) -> Decls {
+    quote {
+        impl Checked for ${t} {
+            fn check() -> Issues {
+                mut c = Checking {}
+                ${[field_check(f) for f in t.fields]}
+                let at = root()
+                let seen: Value? = null
+                let got: ${t}? = self
+                ${[judging(a, checking_ruling) for a in rules(t)]}
+                c.issues()
+            }
+        }
+    }
+}
+
+/// A field's rules over its value as held; a nullable field that is
+/// null has nothing to judge. What a rule refuses shows what the field
+/// held unless it is secret.
+fn field_check(f: Field) -> Stmts {
+    quote {
+        let ${f.name} = {
+            let at = root().field(${literal(f.name)})
+            let got: ${inner(f.kind).spelled()}? = self.${f.name}
+            let seen: Value? = ${shown(f, inner(f.kind))}
+            ${[judging(a, checking_ruling) for a in field_rules(f)]}
+            got
+        }
+    }
+}
+
+/// The field's value as a `Value`, when it is a scalar a person can
+/// read in a report; null for a secret and for any shape that is not.
+fn shown(f: Field, k: Kind) -> Code {
+    if f.annotations.any(is_secret(it)) { return quote { null } }
+    match k {
+        .Str -> quote { if got == null { null } else { Value.Text(got!) } },
+        .Int -> quote { if got == null { null } else { Value.Int(got!) } },
+        .Float -> quote { if got == null { null } else { Value.Float(got!) } },
+        .Bool -> quote { if got == null { null } else { Value.Bool(got!) } },
+        .Ptr or .Void or .List(_) or .Cell(_) or .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Named(_, _) or .Var(_) or .Unspelled(_) -> quote { null },
+    }
+}
+
+/// A verdict filed at the place the check judged.
+fn checking_ruling(rule: Code, call: Code) -> Code { quote { filed(c, at, seen, ${rule}, ${call}) } }
+
+/// The type as another derive reads it: without the annotations that
+/// derive CLAIMS (its `marks`) — a storage constraint like `@unique` is
+/// no rule, and a derive that bundles this one passes what it owns.
+export fn stripped(t: Type, apart: List<string>) -> Type {
+    t with { annotations: [a for a in t.annotations if !apart.contains(a.name)], fields: [f with { annotations: [a for a in f.annotations if !apart.contains(a.name)] } for f in t.fields] }
+}
+
 /// The type's `decode`/`decoded` over a `Value` and its
 /// `from_json`/`read_json` over JSON text, the two shapes every kind
 /// of type answers with its own bodies.
-fn decoder(t: Type) -> Decls {
+export fn decoder(t: Type) -> Decls {
     let b = body(t)
     let j = direct(t)
     quote {
@@ -154,7 +232,7 @@ fn whole(t: Type, fields: Stmts, at: Code, ruling: fn(Code, Code) -> Code) -> Bo
         ${built(t)}
         let at = ${at}
         let got: ${t}? = made
-        ${[checked(a, ruling) for a in rules(t)]}
+        ${[judging(a, ruling) for a in rules(t)]}
     }
     Body { lines: lines, answer: quote { got } }
 }
@@ -165,7 +243,7 @@ fn wrapping(t: Type, at: Code, read: Code, ruling: fn(Code, Code) -> Code) -> Bo
     let lines = quote {
         let at = ${at}
         let got: ${t.over.spelled()}? = ${read}
-        ${[checked(a, ruling) for a in rules(t)]}
+        ${[judging(a, ruling) for a in rules(t)]}
     }
     Body { lines: lines, answer: wrapped(t) }
 }
@@ -210,7 +288,7 @@ fn field_read(f: Field) -> Stmts {
         let ${f.name} = {
             let at = ${slot(f)}
             let got: ${inner(f.kind).spelled()}? = ${reader(inner(f.kind))}
-            ${[checked(a, tree_ruling) for a in field_rules(f)]}
+            ${[judging(a, tree_ruling) for a in field_rules(f)]}
             got
         }
     }
@@ -231,7 +309,7 @@ fn is_secret(a: Annotation) -> bool { a.name == "secret" }
 /// The value is bound where the rule's call lands, under a name no
 /// program can spell, so the call reads it and every refusal about it
 /// points at the annotation.
-fn checked(a: Annotation, ruling: fn(Code, Code) -> Code) -> Stmts {
+fn judging(a: Annotation, ruling: fn(Code, Code) -> Code) -> Stmts {
     let call? = applied(a, name(judged)) else { return quote { let got = got } }
     quote {
         let got = if got == null {
@@ -432,7 +510,7 @@ fn take(t: Type, f: Field, i: int, entry: Code) -> Code {
             ${name(at)} = at
             let ${hidden} = ${secret_code(f)}
             let got: ${inner(f.kind).spelled()}? = ${reading(inner(f.kind), quote { depth + 1 }, required_code(f), name(hidden))}
-            ${[checked(a, json_ruling) for a in early(t, f)]}
+            ${[judging(a, json_ruling) for a in early(t, f)]}
             ${mine("${f.name}_read")} = got
             d.filed(${mine("mark")}, ${i}, ${literal(f.name)})
         }
@@ -465,7 +543,7 @@ fn settled(t: Type, f: Field, i: int) -> Stmts {
             let at = ${at}
             let ${hidden} = ${secret_code(f)}
             let got: ${inner(f.kind).spelled()}? = if at < 0 { ${absent(f)} } else { ${mine("${f.name}_read")} }
-            ${[checked(a, json_ruling) for a in rest]}
+            ${[judging(a, json_ruling) for a in rest]}
             d.filed(${mine("mark")}, ${i}, ${literal(f.name)})
             got
         }

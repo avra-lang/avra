@@ -338,6 +338,23 @@ def check_hold_label(auto_merge_text):
     if "github.event.pull_request.labels" in auto_merge_text:
         bad.append("auto-merge.yml judges labels from the event payload, which a later label misses")
     return bad, ([] if bad else ["hold-label: auto-merge reads the label fresh, reruns on `labeled`, and disarms"])
+def check_ladder(workflow_text):
+    """A run's rungs reach the compiler step, and the seed check speaks when they do: `prepare` reads the
+    rungs, the compiler step builds them through tools/ladder.sh before HEAD, and `seed-check` says it
+    skipped (spoken), never silently. Answers (refusals, words)."""
+    jobs = parse_jobs(workflow_text)
+    bad = []
+    if "steps.rungs.outputs.list" not in jobs.get("prepare", "") or "tools/rungs.sh" not in jobs.get("prepare", ""):
+        bad.append("`prepare` does not read the run's rungs (tools/rungs.sh)")
+    comp = re.search(r"name: compiler\n        id: compiler\n.*?(?=\n      - |\n  [a-z])", jobs.get("prepare", ""), re.S)
+    if not comp or "tools/ladder.sh" not in comp.group(0):
+        bad.append("the compiler step does not build a run's rungs through tools/ladder.sh")
+    seed = jobs.get("seed-check", "")
+    if "needs.prepare.outputs.rungs" not in seed or "SKIPPED, SPOKEN" not in seed:
+        bad.append("`seed-check` does not speak when the run carries rungs")
+    if "rungs:" not in re.search(r"^    outputs:\n(.*?)^    steps:", jobs.get("prepare", ""), re.S | re.M).group(1):
+        bad.append("`prepare` does not expose `rungs` as an output")
+    return bad, ([] if bad else ["ladder: rungs are read, built through tools/ladder.sh before HEAD, and the seed check says it skipped"])
 
 
 def check_light_draft(workflow_text):
@@ -490,6 +507,7 @@ def run(make_text=None, workflow_text=None):
                   lambda: check_watcher_wired(make_text),
                   lambda: check_light_draft(workflow_text),
                   lambda: check_hold_label(open(os.path.join(ROOT, ".github", "workflows", "auto-merge.yml"), encoding="utf-8").read()),
+                  lambda: check_ladder(workflow_text),
                   lambda: check_run_mode(workflow_text),
                   lambda: check_race_split(workflow_text),
                   lambda: check_compiler_route(
@@ -676,6 +694,10 @@ rt-header:
     assert any("`labeled`" in x for x in check_hold_label(am.replace(", labeled]", "]"))[0])
     assert any("never disarms" in x for x in check_hold_label(am.replace("--disable-auto", ""))[0])
     assert any("payload" in x for x in check_hold_label(am + "\n# ${{ github.event.pull_request.labels }}")[0])
+    assert check_ladder(real)[0] == [], check_ladder(real)
+    assert any("tools/ladder.sh" in x for x in check_ladder(real.replace("tools/ladder.sh", "tools/other.sh"))[0])
+    assert any("seed-check" in x for x in check_ladder(real.replace("SKIPPED, SPOKEN", "skipped"))[0])
+    assert any("rungs" in x for x in check_ladder(real.replace("tools/rungs.sh", "tools/none.sh"))[0])
     ungated = real.replace("    if: needs.prepare.outputs.cache == '1' && needs.prepare.outputs.full == '1'",
                            "    if: needs.prepare.outputs.cache == '1'")
     assert ungated != real

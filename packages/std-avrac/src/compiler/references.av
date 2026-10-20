@@ -65,33 +65,27 @@ use features.{
 use compiler.families.{Family}
 use compiler.store.{Store}
 
+const HELD_OWNER: string = "references"
+
+/// What one file's references pass filed: the rows as stored, whether the relation refused
+/// the replacement, and whether the rows still stand filed.
+type Surveyed = { rows: List<Ref>, refused: bool, filed: bool }
+
 impl Workspace {
-    /// THE PASS: every admitted file's own rows, folded into one
-    /// relation.
+    /// THE PASS: every admitted file's own rows, gathered — each surveyed file stands on
+    /// its own `FileRefs` answer, and this one reads those and the held files' kept rows.
     fn references() -> int {
         if self.db.family_active(Family.Resolved.ordinal) { return 0 }
         let k = key(Family.References, 0)
         if !(self.db.ask(k) is .Compute) { return 0 }
-        // THE RELATION SETTLES AFTER TYPING. Computed while a file is
-        // still typing, or while a compile-time run is lowering, its
-        // walk would read `folded`'s smaller recursive view for that
-        // file and settle the whole program's rows on an incomplete
-        // one — permanently, since a settled answer is never redone.
-        // An ask that reuses the settled rows reads nothing new, so only
-        // a COMPUTE there is the defect this names.
-        if self.db.family_active(Family.Typed.ordinal) ||
-            self.db.family_active(Family.Folded.ordinal) ||
-            self.comptime_active() {
-            avra_trap(
-                "defect: the references relation settles after typing, and something asked for it while a file was still typing",
-            )
-        }
+        self.stand_after_typing()
         self.db.begin(k)
         let all_files = self.decls.all_files()
         let files = [x.id for x in all_files if !self.is_held(x.id) && self.reads_as_source(x.path)]
         let held = [x.id for x in all_files if self.is_held(x.id)]
         self.hold.held_refs.set({})
-        let surveyed = [self.file_refs(f) for f in files]
+        let surveyed = [self.file_references(f) for f in files]
+        self.leaving_owners([self.refs_owner(f) for f in files])
         // A HELD FILE'S BODY IS NOT SURVEYED — its outgoing references come
         // from its own kept record instead (`restored_refs`), written the
         // last time it was fresh (`ref_lines`, interface.av's `record_of`).
@@ -99,23 +93,75 @@ impl Workspace {
         // rows are readable; with none attached (a lone check with nothing
         // held) `held` is empty and this changes nothing.
         let store: Store? = self.store.get()
-        let restored = if store == null { [] } else { [self.restored_refs(store!)] }
-        // THE RELATION IS ONE VALUE: every row stands before one is filed,
-        // so nothing asked here lands among the rows it writes.
-        let found = flatten(surveyed.concat(restored))
+        let restored = if store == null { [] } else { self.restored_refs(store!) }
         let db = self.decls.rows_db.get()
         // A REPLACEMENT THAT LANDS IS ONE WRITE on the Db's own count,
         // whatever it hands over; a refused one is none — so a refusal of
         // no rows at all is seen as one too.
         let before = db.written.get()
-        let rows = Ref.replaced(db, "references", found)
+        let kept = Ref.replaced(db, HELD_OWNER, restored)
         let refused = db.written.get() == before
-        if refused { self.defect(references_refused(found.length)) }
+        if refused { self.defect(references_refused(restored.length)) }
         // refused, the relation holds the LAST pass's rows: no "used nowhere" is read off it
-        self.decls.mark_refs_incomplete(refused || store == null && !held.is_empty())
+        self
+            .decls
+            .mark_refs_incomplete(refused || surveyed.any(it.refused) || store == null && !held.is_empty())
+        let rows = flatten([s.rows for s in surveyed]).concat(kept)
         self.decls.record_read_flags(rows)
         self.db.settle(k, fp(41, [fp_list([ref_fp(r) for r in rows])]))
         rows.length
+    }
+
+    /// One file's own rows, filed under the file's owner and kept for the gathering pass.
+    fn file_references(f: FileId) -> Surveyed {
+        let at = self.refs_owner(f)
+        let kept: Surveyed? = self.hold.file_refs.get().get(at)
+        if self.db.family_active(Family.Resolved.ordinal) { return kept ?? Surveyed { rows: [], refused: true, filed: false } }
+        let k = key(Family.FileRefs, f.index)
+        if !(self.db.ask(k) is .Compute) && kept?.filed ?? false { return kept! }
+        self.stand_after_typing()
+        self.db.begin(k)
+        let found = self.file_refs(f)
+        let db = self.decls.rows_db.get()
+        let before = db.written.get()
+        let rows = Ref.replaced(db, at, found)
+        let refused = db.written.get() == before
+        if refused { self.defect(references_refused(found.length)) }
+        self.hold.refs_owners.push(at)
+        let made = Surveyed { rows: rows, refused: refused, filed: true }
+        self.hold.file_refs.put(at, made)
+        self.db.settle(k, fp(316, [fp_list([ref_fp(r) for r in rows])]))
+        made
+    }
+
+    /// The owner a file's reference rows are filed under.
+    fn refs_owner(f: FileId) -> string { "references:${self.decls.file(f).path}" }
+
+    /// The files filed before and no longer surveyed — withdrawn, held, or gone — leave no rows.
+    fn leaving_owners(standing: List<string>) {
+        let db = self.decls.rows_db.get()
+        for owner in self.hold.refs_owners.get() {
+            if !standing.contains(owner) {
+                let _ = Ref.replaced(db, owner, [])
+                self.hold.file_refs.put(owner, Surveyed { rows: [], refused: false, filed: false })
+            }
+        }
+        self.hold.refs_owners.set(distinct(standing))
+    }
+
+    /// THE RELATION SETTLES AFTER TYPING. Computed while a file is still typing, or while a
+    /// compile-time run is lowering, its walk would read `folded`'s smaller recursive view
+    /// for that file and settle on an incomplete one — permanently, since a settled answer is
+    /// never redone. An ask that reuses the settled rows reads nothing new, so only a COMPUTE
+    /// there is the defect this names.
+    fn stand_after_typing() {
+        if self.db.family_active(Family.Typed.ordinal) ||
+            self.db.family_active(Family.Folded.ordinal) ||
+            self.comptime_active() {
+            avra_trap(
+                "defect: the references relation settles after typing, and something asked for it while a file was still typing",
+            )
+        }
     }
 
     /// Whether a declaration is read as a value anywhere, as the pass settled it: the cell a

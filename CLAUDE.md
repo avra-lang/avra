@@ -2413,16 +2413,28 @@ doctrine it expands.
   therefore `seed-check` and `make bootstrap` alike. THE BRANCH CANNOT
   GATE BY CONSTRUCTION, and the first buildable point is a tree
   carrying BOTH the row and a seed that knows it.
-  THE LADDER IS TWO LANDINGS, not two builds. FIRST the row alone,
-  hosted `Unhosted` — which is TRUE, since the evaluator has no arm
-  yet — plus the C body and whatever keeper table names it; that
-  gates on the standing seed because nothing declares it. The seed is
-  refreshed on landing. THEN the declaration, the `RtHost` variant and
-  its arm, and the callers; that gates because the seed now knows the
-  row. Splitting it is not ceremony: a single landing leaves main
-  unbuildable between the merge and the refresh, and an integrator
-  that gates the LANE hits the same wall one step later with the
-  landing dead.
+  THE LADDER IS TWO RUNGS, ONE LANDING. The row alone, hosted
+  `Unhosted` — which is TRUE, since the evaluator has no arm yet —
+  with its C body and whatever keeper table names it, is ONE commit,
+  marked with a `Rung: <why>` trailer; the declaration, the `RtHost`
+  variant and its arm, and the callers are the next. CI builds the tree
+  at each mark with the product of the one before it (tools/ladder.sh,
+  the one definition CI and a Sprite share), never with a compiler that
+  cannot read it, and HEAD last, twice, as for any tree; the whole
+  ladder is capped at fifteen minutes and costs about one generation
+  per rung. A rung's product is cached per PR, so a re-push that leaves
+  the marked commits alone pays only HEAD. The squash merge drops the
+  rung trees, so main's own run reads `(#N)` from the title and replays
+  the ladder from `refs/pull/N/head`, which GitHub keeps. `seed-check`
+  is SPOKEN as skipped on a run that carries rungs — the seed cannot
+  build a tree whose reader needs the row it lacks, by construction —
+  and the seed refresh is owed after the landing, not before it. A
+  tree whose compiler failed to build a rung says which rung and shows
+  its log: the way out is a rung boundary one commit earlier, never a
+  bypass. Before the ladder this took two landings with a seed refresh
+  between them; the law that survives is the first sentence of this
+  entry: no single TREE can be gated by a compiler that lacks its row,
+  only a chain of trees can.
   AND A ROW WHOSE SEAT TAKES A BOX HAS THREE RUNGS: the row, its arm,
   its declaration. `crossing_law` exempts a row only when it is ARMED
   — an arm is what materialises the aggregate — so a compiler that

@@ -3214,6 +3214,14 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 ## Sugar Backlog — Feature Requests and Language Asks
 
+### Interim record — `Cell<T>` has no spelled form in a pass
+
+A type in a pass is spelled (`cx.type(List<string?>)`), but `types.type(Cell<ty>)` is
+refused ("`Cell<…>` names a declaration — name that binding instead"), so `declare.av`'s `slot_of`
+(the ONE place a `state` field's slot becomes its `Cell`) still spells it by hand,
+`intern(Type.Cell(ty))`, which `style.interned_by_hand` ratchets. The want: `Cell<hole>` in a
+type literal, the way `List`, `Map` and `Opt` already stand, so the wrap reads like the others.
+
 ### Interim record — a record literal has no field shorthand
 
 `Size { width, height }` for `Size { width: width, height: height }` is F0100 "expected BREAK
@@ -3228,6 +3236,20 @@ the idiom ratchet refuses). Wanting sites: `terminal.av`'s `wheel` and `slid` (t
 held inside the rows there are), both through its one `clamped(x, lo, hi)`; the same helper is
 written in `compiler/backend/interp_host.av` and `@std/compress`. The want: the method on `int`,
 and the three copies die.
+
+### Interim record — a quote wants a PARAMETER LIST and a record literal over a field list
+
+Two holes, one cause: a `quote` splices a statement run, a name, a type or
+an expression, never a fn's parameter list or a record literal's entries.
+`@std/db` is the wanting site, and its 6-field cap is exactly this and
+nothing else (SQLite binds any count): `where_decl` hand-spells one
+`static fn where(db, <field>: <T>? = null, …)` per count so that
+`Job.where(db, done: true)` names the model's own fields, and `row_ctor`
+hand-spells the row literal per count. With the two holes the derive emits
+ONE `where` and ONE row constructor and the cap goes. Also wanted beside
+them: `@std/time` has no `Time` instant, so `@soft_delete`'s `removed_at`
+and `@auto`'s `created` are `int` milliseconds (`now_ms()`); the eventual
+spelling is `removed_at: Time? = null`.
 
 ### Interim record — a quote wants a record literal over a computed field list
 

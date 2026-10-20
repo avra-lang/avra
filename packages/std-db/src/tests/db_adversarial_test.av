@@ -123,10 +123,10 @@ fn update_nonexistent_id() -> Result<int, ModelError> {
     ghost.update(db)
 }
 
-fn delete_nonexistent_id() -> Result<int, SqlError> {
-    mut db = seeded_user()?
+fn delete_nonexistent_id() -> Result<int, ModelError> {
+    mut db = modeled(seeded_user())?
     let ghost = User { id: 999999, email: "z@z.com", name: "Z" }
-    ghost.delete(db)
+    ghost.remove(db)
 }
 
 fn seeded_user() -> Result<Db, SqlError> {
@@ -165,7 +165,7 @@ fn double_insert_same_row_value() -> Result<string, ModelError> {
 fn insert_after_delete_id_advances() -> Result<string, ModelError> {
     mut db = modeled(seeded_user())?
     let a = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
-    modeled(a.delete(db))?
+    a.remove(db)?
     let b = User { id: 0, email: "b@x.com", name: "B" }.insert(db)?
     "${a.id}|${b.id}"
 }
@@ -338,7 +338,7 @@ fn rollback_undoes_model_delete() -> Result<int, ModelError> {
     mut db = modeled(seeded_user())?
     let u = User { id: 0, email: "a@x.com", name: "A" }.insert(db)?
     modeled(db.begin())?
-    modeled(u.delete(db))?
+    u.remove(db)?
     modeled(db.rollback())?
     let v = modeled(db.scalar(sql("select count(*) from User")))?
     modeled(v.int())
@@ -577,24 +577,42 @@ spec "std/db @model at the @unique field cap" {
 }
 
 // Every @model field is declared non-nullable at the Avra type level,
-// but the DDL puts no `NOT NULL` on an ordinary column (only on the
-// hidden version column) — so raw SQL, a hand-written migration, or an
-// older row can still put a SQL NULL where `find`'s generated reader
-// assumes a scalar.
+// and a table made now says so: the column is NOT NULL, so raw SQL or a
+// hand-written migration cannot put a NULL there. A table made BEFORE
+// that (an older database, whose columns carry no `NOT NULL`) can still
+// hold one where `find`'s generated reader assumes a scalar, and the
+// reader refuses it cleanly.
 fn find_over_sql_null_column() -> string {
     match find_after_raw_null_insert() { .Ok(_) -> "no refusal", .Err(e) -> e.describe().kind }
 }
 
 fn find_after_raw_null_insert() -> Result<User?, SqlError> {
-    mut db = seeded_user()?
+    mut db = Db.memory()?
+    db
+        .run(
+            sql(
+                "CREATE TABLE \"User\" (\"id\" INTEGER PRIMARY KEY AUTOINCREMENT, \"email\" TEXT UNIQUE, \"name\" TEXT, \"__avra_version__\" INTEGER NOT NULL DEFAULT 1)",
+            ),
+        )?
     db.run(sql("insert into User (id, email, name) values (1, null, null)"))?
     User.find(db, 1)
 }
 
-spec "std/db @model reading a SQL NULL in a column the type declares non-nullable" {
-    given "a row inserted through raw SQL, bypassing the model's own insert" {
+fn new_table_refuses_raw_null() -> bool {
+    match raw_null_into_new_table() { .Ok(_) -> false, .Err(_) -> true }
+}
 
+fn raw_null_into_new_table() -> Result<int, SqlError> {
+    mut db = seeded_user()?
+    db.run(sql("insert into User (id, email, name) values (1, null, null)"))
+}
+
+spec "std/db @model reading a SQL NULL in a column the type declares non-nullable" {
+    given "a row inserted through raw SQL into a table made before required columns were NOT NULL" {
         then "find refuses cleanly with a class mismatch, never a crash or a wrong value" { find_over_sql_null_column() == "sqlite.mismatch" }
+    }
+    given "a table made now" {
+        then "the database refuses the NULL itself" { new_table_refuses_raw_null() }
     }
 }
 

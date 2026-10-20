@@ -287,6 +287,10 @@ type Hold = {
     held_refs: Cell<Map<string, List<Ref>>>,
     /// A held file's `ref` lines off its module's kept record, decoded once a process.
     kept_refs: Cell<Map<string, List<List<string>>>>,
+    /// What each surveyed file's references pass filed, by the file's index.
+    file_refs: Cell<Map<string, Surveyed>>,
+    /// The owners the references pass has filed rows under.
+    refs_owners: Cell<List<string>>,
     /// The files held because their kept rows stand: their object keys are the rows', never re-derived.
     standing: Cell<Map<string, bool>>,
     /// The plain free fn names a module's forms moved by, from the forms a row stood on: per `module<TAB>digest`.
@@ -380,6 +384,8 @@ fn new_hold() -> Hold {
         refs_by_target: Cell.new(no_producers),
         held_refs: map_cell(),
         kept_refs: map_cell(),
+        file_refs: map_cell(),
+        refs_owners: list_cell(),
         standing: map_cell(),
         forms_moved: map_cell(),
         lite_runs: map_cell(),
@@ -816,6 +822,11 @@ fn references_verified(ws: Workspace, arg: int) -> int {
     touch(ws.references())
     ws.db.changed_at(key(Family.References, arg))
 }
+// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
+fn file_refs_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.file_references(file_at(arg)))
+    ws.db.changed_at(key(Family.FileRefs, arg))
+}
 fn failures_verified(ws: Workspace, arg: int) -> int {
     touch(ws.failures())
     ws.db.changed_at(key(Family.Failures, arg))
@@ -915,6 +926,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .Expanded -> expanded_verified(ws, arg),
         .Plain -> plain_verified(ws, arg),
         .References -> references_verified(ws, arg),
+        .FileRefs -> file_refs_verified(ws, arg),
         .Failures -> failures_verified(ws, arg),
         .HeldSig -> held_sig_verified(ws, arg),
         .Raised -> raised_verified(ws, arg),
@@ -2624,6 +2636,7 @@ export fn family_code_hash(f: Family) -> string {
         .Expanded -> code_hash(expanded_verified) ?? "",
         .Plain -> code_hash(plain_verified) ?? "",
         .References -> code_hash(references_verified) ?? "",
+        .FileRefs -> code_hash(file_refs_verified) ?? "",
         .Failures -> code_hash(failures_verified) ?? "",
         .HeldSig -> code_hash(held_sig_verified) ?? "",
         .Raised -> code_hash(raised_verified) ?? "",

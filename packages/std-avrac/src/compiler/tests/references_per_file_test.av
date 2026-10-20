@@ -1,0 +1,104 @@
+//! THE REFERENCES RELATION STANDS ON ONE ANSWER PER FILE. Each surveyed file's own uses are
+//! its `FileRefs` answer, filed under the file's owner, and `References` gathers those
+//! answers and nothing else: no answer reads the whole program's declarations, so an edit
+//! re-surveys one file and the gathering reads a number of cells that follows the files.
+use @std.avrac.testing.{test_workspace}
+use compiler.{Workspace}
+use compiler.families.{Family}
+use compiler.host.{memory_host}
+use core.{DeclKind, same_decl}
+use features.{Ref}
+use @std.relation.engine.{Key}
+
+fn refs_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/w/src/main.av": "use a.{one}\nuse b.{two}\n\nprintln(\"\${one() + two()}\")\n",
+        "/w/src/a.av": "export fn one() -> int { 1 }\n",
+        "/w/src/b.av": "use a.{one}\n\nexport fn two() -> int { one() + 1 }\n",
+    }
+}
+
+fn refs_paths() -> List<string> { ["/w/avra.toml", "/w/src/main.av", "/w/src/a.av", "/w/src/b.av"] }
+
+/// A workspace whose references pass has run over the three files.
+fn referenced() -> Workspace {
+    let ws = test_workspace(memory_host(refs_files(), refs_paths()), "/w")
+    let _ = ws.analyze_file("/w/src/main.av")
+    let _ = ws.references()
+    ws
+}
+
+fn gathered(ws: Workspace) -> List<Key> { ws.db.edges_by_reader(Key { family: Family.References.ordinal, arg: 0 }) }
+
+spec "compiler/references — one answer per file" {
+    then "the gathering reads at least one file answer per file" {
+        gathered(referenced()).length >= 3
+    }
+    then "and beside them only the file table it walks" {
+        [k for k in gathered(referenced()) if k.family != Family.FileRefs.ordinal].length <= 1
+    }
+    then "a file's answer reads no other file's references" {
+        let ws = referenced()
+        gathered(ws)
+            .all(
+                (k: Key) -> ws
+                    .db
+                    .edges_by_reader(k)
+                    .all(
+                        it.family != Family.FileRefs.ordinal &&
+                            it.family != Family.References.ordinal,
+                    ),
+            )
+    }
+    then "a file's rows are the ones it wrote, and b's use of `one` is among them" {
+        let ws = referenced()
+        let b = ws.file_id("/w/src/b.av")
+        let one = ws.decls.named_decl("/w/src/a.av", DeclKind.Fn, "one")!
+        Ref.by_file(ws.decls.rows_db.get(), b).any(same_decl(it.decl, one))
+    }
+    then "asked again in the same revision, the pass computes nothing" {
+        let ws = referenced()
+        ws.references() == 0
+    }
+}
+
+/// A package whose three files the test can edit, its references pass run once.
+type Turned = { ws: Workspace, files: Cell<Map<string, string>> }
+
+fn turned() -> Turned {
+    let files: Cell<Map<string, string>> = Cell.new(refs_files())
+    let names: Cell<List<string>> = Cell.new(["main.av", "a.av", "b.av"])
+    let ws = test_workspace(shifting(files, names), "/w")
+    let _ = ws.analyze_file("/w/src/main.av")
+    let _ = ws.references()
+    Turned { ws: ws, files: files }
+}
+
+/// The revision a file's references last changed at.
+fn refs_changed_at(ws: Workspace, path: string) -> int {
+    ws.db.changed_at(Key { family: Family.FileRefs.ordinal, arg: ws.file_id(path).index })
+}
+
+/// A file's references' last change before and after b's body gains a second use of `one`,
+/// the world read again between.
+fn changed_around_edit(path: string) -> List<int> {
+    let t = turned()
+    let before = refs_changed_at(t.ws, path)
+    t.files.put("/w/src/b.av", "use a.{one}\n\nexport fn two() -> int { one() + one() }\n")
+    let _ = t.ws.world_moved()
+    let _ = t.ws.analyze_file("/w/src/main.av")
+    let _ = t.ws.references()
+    [before, refs_changed_at(t.ws, path)]
+}
+
+spec "compiler/references — an edit re-surveys the files it moved" {
+    then "the edited file's references move" {
+        let seen = changed_around_edit("/w/src/b.av")
+        seen[1] > seen[0]
+    }
+    then "a file the edit never reached stands as it was" {
+        let seen = changed_around_edit("/w/src/a.av")
+        seen[1] == seen[0]
+    }
+}

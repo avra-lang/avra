@@ -17,7 +17,8 @@
 //! stamp that is already spent.
 use tree.identity.{NodeId}
 use tree.sites.{Reading}
-use realize.html.element.{Element, Tagged}
+use realize.html.element.{Element, Tagged, words_part, control_part}
+use realize.html.tags.{HtmlAttrName}
 use realize.dom.patch.{Patch}
 
 extern fn avra_box_observe(cell: ptr) -> int
@@ -31,7 +32,7 @@ extern fn avra_rc_release(p: ptr)
 
 /// A reading the page has placed: the number it gave the text's run, the
 /// reading, and the words the page was last told.
-export type Placed = { node: NodeId, reading: Reading, shown: Cell<string> }
+export type Placed = { node: NodeId, host: NodeId, says: List<HtmlAttrName>, reading: Reading, shown: Cell<string> }
 
 /// The readings a paint placed, in page order: each text element that carries
 /// readings, the run it holds first.
@@ -45,11 +46,33 @@ fn placed_of(e: Element) -> List<Placed> {
         .concat([p for k in el.kids for p in placed_of(k)])
 }
 
+/// The element that holds an element's words: itself, or the span a labelled
+/// control puts them in.
+fn words_host(el: Tagged) -> Tagged {
+    let span? = el.kids.find(it.seat() == words_part) else { return el }
+    span.tagged() ?? el
+}
+
+/// The element that wears the attributes a node's words repeat: itself, or
+/// the control a labelled one holds.
+fn named_host(el: Tagged) -> Tagged {
+    let control? = el.kids.find(it.seat() == control_part) else { return el }
+    control.tagged() ?? el
+}
+
 /// A reading with the text run its element holds.
 fn run_placed(el: Tagged, r: Reading) -> List<Placed> {
-    let k? = el.kids.first() else { return [] }
+    let k? = words_host(el).kids.first() else { return [] }
     match k {
-        .Text(run) -> [Placed { node: run.id, reading: r, shown: Cell.new(run.content) }],
+        .Text(run) -> [
+            Placed {
+                node: run.id,
+                host: named_host(el).id,
+                says: el.says,
+                reading: r,
+                shown: Cell.new(run.content),
+            },
+        ],
         .Tag(_) -> [],
     }
 }
@@ -68,9 +91,28 @@ fn structural_of(e: Element) -> List<ptr> {
 /// was drawn by a composition.
 fn opaque_in(page: List<Element>) -> bool { page.any(opaque_element(it)) }
 
+/// Each node the page could not place, by its tag and its path among siblings.
+fn opaque_paths(page: List<Element>, at: string) -> List<string> {
+    [p for i, e in page for p in opaque_paths_of(e, "${at}${i}")]
+}
+
+fn opaque_paths_of(e: Element, path: string) -> List<string> {
+    let el? = e.tagged() else { return [] }
+    if el.opaque.of { ["${el.tag.word()} ${path}"] } else { [] }
+        .concat(opaque_paths(el.kids, "${path}."))
+}
+
 fn opaque_element(e: Element) -> bool {
     let el? = e.tagged() else { return false }
     el.opaque.of || el.kids.any(opaque_element(it))
+}
+
+/// How many readings the page's elements carry, placed or not.
+fn readings_in(page: List<Element>) -> int { [reading_count(e) for e in page].sum() }
+
+fn reading_count(e: Element) -> int {
+    let el? = e.tagged() else { return 0 }
+    el.sites.length + [reading_count(k) for k in el.kids].sum()
 }
 
 /// The placed readings a page watches, the keys filed under them (a cell's
@@ -82,6 +124,8 @@ export type Watch = {
     under: Map<string, List<int>>,
     structural: List<ptr>,
     opaque: bool,
+    said: Cell<string>,
+    cause: string,
 }
 
 fn key_of(cell: ptr) -> string { "${avra_box_key(cell)}" }
@@ -101,7 +145,14 @@ export fn watching(page: List<Element>) -> Watch {
             index.set(key, (index.get(key) ?? []).concat([at]))
         }
     }
-    Watch { placed: placed, under: index, structural: structural, opaque: opaque_in(page) }
+    Watch {
+        placed: placed,
+        under: index,
+        structural: structural,
+        opaque: opaque_in(page) || placed.length != readings_in(page),
+        said: Cell.new(""),
+        cause: "${opaque_paths(page, "").join(", ")} (${placed.length} of ${readings_in(page)} readings placed)",
+    }
 }
 
 impl Watch {
@@ -121,7 +172,7 @@ impl Watch {
         let now = (p.reading.words)()
         if now == p.shown.get() { return [] }
         p.shown.set(now)
-        [Patch.SetText(p.node, now)]
+        [Patch.SetText(p.node, now)].concat([Patch.SetAttr(p.host, name, now) for name in p.says])
     }
 
     /// Every cell observed again after the stamp wrapped: a cell stamped a
@@ -147,7 +198,15 @@ impl Watch {
     fn turn() -> List<Patch>? {
         if avra_turn_next() == 1 { self.observed_again() }
         let changed = taken()
-        if self.opaque || self.structural_among(changed) { return null }
+        if self.opaque {
+            self.said.set("the page holds a node the compiler could not place: ${self.cause}")
+            return null
+        }
+        if self.structural_among(changed) {
+            self.said.set("a cell its frame reads outside a reading was written")
+            return null
+        }
+        self.said.set("")
         [p for at in self.affected(changed) for p in self.refreshed(at)]
     }
 
