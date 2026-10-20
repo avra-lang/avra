@@ -26,7 +26,7 @@ use compiler.host.{memory_host}
 use core.{FileId}
 use @std.relation.engine.{Key}
 
-fn references_key() -> Key { Key { family: family_ordinal("References"), arg: 0 } }
+fn references_key(f: FileId) -> Key { Key { family: family_ordinal("FileRefs"), arg: f.index } }
 
 fn resolved_key(f: FileId) -> Key { Key { family: family_ordinal("Resolved"), arg: f.index } }
 
@@ -47,24 +47,24 @@ fn facts_workspace(main: string) -> Workspace {
 
 spec "compiler/references — a foreign resolved/folded read depends on their own file, not per node (M5b slice 4)" {
     given "references() over a file with two fns, one calling the other" {
-        then "its dependency list names the file's Resolved directly" {
+        then "the file's references name its Resolved directly" {
             let ws = facts_workspace("fn a() -> int {\n    1\n}\nfn b() -> int {\n    a()\n}\n")
             let f = ws.file_id("/w/src/main.av")
             let _ = ws.items(f)
             let _ = ws.references()
             ws
                 .db
-                .edges_by_reader(references_key())
+                .edges_by_reader(references_key(f))
                 .any((k: Key) -> k.family == resolved_key(f).family && k.arg == resolved_key(f).arg)
         }
-        then "its dependency list names the file's Folded directly, never a per-declaration Typed" {
+        then "and its Folded directly, never a per-declaration Typed" {
             let ws = facts_workspace("fn a() -> int {\n    1\n}\nfn b() -> int {\n    a()\n}\n")
             let f = ws.file_id("/w/src/main.av")
             let _ = ws.items(f)
             let _ = ws.references()
             ws
                 .db
-                .edges_by_reader(references_key())
+                .edges_by_reader(references_key(f))
                 .any((k: Key) -> k.family == folded_key(f).family && k.arg == folded_key(f).arg)
         }
     }
