@@ -2,6 +2,9 @@ use models.{models}
 use store.open.{Graph}
 use @std.sqlite.{Db, sql}
 use @std.io.{remove}
+use @std.time.{stamp}
+
+fn temp_base(name: string) -> string { "/tmp/avra-graph-${name}-${stamp()}.db" }
 
 fn opened(path: string) -> Result<Db, string> {
     match Db.open(path) {
@@ -11,7 +14,7 @@ fn opened(path: string) -> Result<Db, string> {
 }
 
 fn legacy_store_refused() -> Result<bool, string> {
-    let path = "/tmp/avra-graph-legacy-store.db"
+    let path = temp_base("legacy")
     let _ = remove(path)
     mut db = opened(path)?
     let _ = db
@@ -24,9 +27,9 @@ fn legacy_store_refused() -> Result<bool, string> {
 }
 
 fn fresh_store_opens() -> Result<bool, string> {
-    let path = "/tmp/avra-graph-fresh-store.db"
+    let path = temp_base("fresh")
     let _ = remove(path)
-    mut g = match Graph.open(path, models) {
+    let g = match Graph.open(path, models) {
         .Ok(graph) -> graph,
         .Err(e) -> { fail "a fresh store must open: ${e}" },
     }

@@ -67,9 +67,7 @@ fn supported(k: Kind) -> bool {
 }
 
 fn generated(t: Type) -> Decls {
-    let entries = list_of(
-        [quote { Entry { key: ${literal(f.name)}, value: ${written(f.kind, quote { self.${f} }, 0)} } } for f in t.fields],
-    )
+    let entries = list_of([entry(f, written(f.kind, quote { self.${f} }, 0)) for f in t.fields])
     quote {
         impl ${t} {
             fn graph_value() -> Value { Value.Map(${entries}) }
@@ -101,15 +99,13 @@ fn factory(t: Type) -> Decls {
 }
 
 fn projected(t: Type) -> Code {
-    let entries = list_of(
-        [quote {
-        Entry {
-            key: ${literal(f.name)},
-            value: ${written(nullable(f.kind), name(f.name), 0)},
-        }
-    } for f in t.fields],
-    )
+    let entries = list_of([entry(f, written(nullable(f.kind), name(f.name), 0)) for f in t.fields])
     quote { Value.Map(${entries}) }
+}
+
+/// A field's entry in a descriptor map.
+fn entry(f: Field, value: Code) -> Code {
+    quote { Entry { key: ${literal(f.name)}, value: ${value} } }
 }
 
 fn nullable(k: Kind) -> Kind {

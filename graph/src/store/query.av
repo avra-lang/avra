@@ -94,8 +94,7 @@ impl Graph {
             if hidden.contains(e.name) { continue }
             if !(self.standing(self.claims_of([e])?)?).is_empty() { live.push(e.name) }
         }
-        mut roots: List<string> = []
-        for name in live { roots.push(self.root(name)?) }
+        let roots = [self.root(name)? for name in live]
         [name for i, name in live if !roots.slice(0, i).contains(roots[i])].slice(0, limit)
     }
 
@@ -109,32 +108,25 @@ impl Graph {
             for e in stored(EdgeRow.in_target(self.db, members))? {
                 if hidden.contains(e.target.name) { continue }
                 if (self.standing([e.claim])?).is_empty() { continue }
-                found
-                    .push(
-                        Edge {
-                            entity: e.claim.entity.name,
-                            property: e.claim.property,
-                            target: e.target.name,
-                            path: e.path,
-                        },
-                    )
+                found.push(self.edge_of(e))
             }
         } else {
             let live = [s.claim for s in self.standing(self.claims_of(members)?)?]
             for e in stored(EdgeRow.in_claim(self.db, live))? {
                 if hidden.contains(e.target.name) { continue }
-                found
-                    .push(
-                        Edge {
-                            entity: e.claim.entity.name,
-                            property: e.claim.property,
-                            target: e.target.name,
-                            path: e.path,
-                        },
-                    )
+                found.push(self.edge_of(e))
             }
         }
         found
+    }
+
+    fn edge_of(e: EdgeRow) -> Edge {
+        Edge {
+            entity: e.claim.entity.name,
+            property: e.claim.property,
+            target: e.target.name,
+            path: e.path,
+        }
     }
 
     /// Breadth-first reachability; a hard node budget bounds cyclic graphs.
@@ -215,7 +207,9 @@ impl Graph {
         mut rows: List<Json> = []
         for r in runs {
             if runs
-                .any(it.producer == r.producer && it.scope == r.scope && it.revision > r.revision) { continue }
+                .any(it.producer == r.producer && it.scope == r.scope && it.revision > r.revision) {
+                continue
+            }
             if !self.stale(r, trails, scheme) { continue }
             rows
                 .push(
