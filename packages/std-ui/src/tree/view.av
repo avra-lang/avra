@@ -381,9 +381,9 @@ impl Vocabulary {
             return refused(no_attribute(m, word, [a.name for a in self.attributes]))
         }
         let carried? = v.fields.first() else { return refused(bare_attribute(m, v.name)) }
-        if carried.kind.spelled() != filled_by(f.kind).spelled() { return refused(attribute_misfit(m, v.name, carried.kind, f)) }
+        if carried.kind.spelled() != filled_by(said_kind(f)).spelled() { return refused(attribute_misfit(m, v.name, carried.kind, f)) }
         let said = [Saying { word: v.name, content: is_content(v), at: m }]
-        if carried.kind.spelled() == f.kind.spelled() {
+        if carried.kind.spelled() == said_kind(f).spelled() {
             return Part { attrs: [quote { Attribute.${v.name}(self.${f.name}) }], said_attrs: said }
         }
         Part {
@@ -406,7 +406,7 @@ impl Vocabulary {
         let over? = self.style.find(it.name == word) else {
             return refused(no_style(m, word, [s.name for s in self.style]))
         }
-        if filled_by(over.kind).spelled() != f.kind.spelled() { return refused(style_misfit(m, over, f)) }
+        if filled_by(over.kind).spelled() != said_kind(f).spelled() { return refused(style_misfit(m, over, f)) }
         Part {
             styles: [Laid { over: word, member: f }],
             said_styles: [Saying { word: word, content: false, at: m }],
@@ -563,9 +563,16 @@ fn filled_by(k: Kind) -> Kind {
     match k { .Opt(inner) -> inner, rest -> k }
 }
 
+/// What a member SAYS: a `state`, or a prop the compiler made a cell of, is
+/// kept in a cell — and a read of it wears the element, so a mark judges the
+/// element too. The cell is how the member is held, never what it says.
+fn said_kind(f: Field) -> Kind {
+    match f.kind { .Cell(inner) -> inner, rest -> f.kind }
+}
+
 /// `@children items` → each child's own `describe`.
 fn children(f: Field, m: Mark) -> Part {
-    match f.kind {
+    match said_kind(f) {
         .List(.Dyn(_)) -> Part { children: [quote { self.${f.name} }] },
         rest -> refused(not_children(m, f)),
     }
