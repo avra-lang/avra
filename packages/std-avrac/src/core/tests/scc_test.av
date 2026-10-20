@@ -1,0 +1,58 @@
+// The call graph under test: 4 calls 0, 0 calls 1, 1 and 2 call each other, 2 calls 3.
+use @std.avrac.core.{DeclId, scc_walk, scc_fixpoint}
+
+fn calls(d: DeclId) -> List<DeclId> {
+    let to: List<int> = match d.index { 4 -> [0], 0 -> [1], 1 -> [2], 2 -> [1, 3], _ -> [] }
+    [DeclId { index: i } for i in to]
+}
+
+fn sets_from(root: int, done: List<int>) -> List<string> {
+    let order: Cell<List<string>> = Cell.new([])
+    let solved: Cell<List<int>> = Cell.new(done)
+    scc_walk(
+        DeclId { index: root },
+        calls,
+        (d: DeclId) -> solved.get().contains(d.index),
+        (members: List<DeclId>) -> {
+            order.push(joined_indexes(members))
+            solved.set(solved.get().concat([m.index for m in members]))
+        },
+    )
+    order.get()
+}
+
+fn joined_indexes(members: List<DeclId>) -> string { ["${m.index}" for m in members].join(",") }
+
+fn written(members: List<DeclId>) -> List<bool> {
+    scc_fixpoint(
+        members,
+        (_d: DeclId) -> false,
+        (d: DeclId, read: fn(DeclId) -> bool) -> read(d) ||
+            d.index == 3 ||
+            calls(d).any((c: DeclId) -> read(c)),
+        (a: bool, b: bool) -> a == b,
+        (c: DeclId) -> c.index == 3,
+    )
+}
+
+spec "core/scc" {
+    given "a walk from a root" {
+        then "each set follows the sets it calls" {
+            sets_from(4, []).join(" ") == "3 2,1 0 4"
+        }
+        then "a settled node is never entered again" {
+            sets_from(4, [3, 2, 1]).join(" ") == "0 4"
+        }
+        then "a root with nothing unsettled below it is its own set" {
+            sets_from(3, []).join(" ") == "3"
+        }
+    }
+    given "the fixpoint of a set" {
+        then "a cycle takes what a member outside it answers" {
+            written([DeclId { index: 2 }, DeclId { index: 1 }]).all(it)
+        }
+        then "a set that reaches nothing written stays unwritten" {
+            !written([DeclId { index: 0 }]).any(it)
+        }
+    }
+}

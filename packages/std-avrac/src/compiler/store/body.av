@@ -17,7 +17,7 @@ use @std.path.{joined_path}
 use @std.relation.stable.{writer, reader, Writer, Reader}
 use @std.relation.engine.{list_cell, map_cell}
 use @std.text.{parse_int}
-use core.{flatten, sorted_by, text_before, digest_of_octets}
+use core.{flatten, sorted_by, text_before, digest_of_octets, distinct}
 use core.debug.{qtrace, traced}
 
 const BODY_MAGIC: string = "AVRABODY"
@@ -145,6 +145,20 @@ export fn seal(pack: Pack) -> bool {
     for p in slots { pack.slots.put(p.digest, ValueSlot { at: p.at, len: p.len }) }
     pack.content.set({})
     true
+}
+
+/// The shared-store blobs this pack's live rows name: what a collection must keep for it.
+export fn pack_cas_refs(pack: Pack) -> List<string> {
+    opened_at(pack, true)
+    materialized(pack)
+    mut refs: List<string> = []
+    for k in pack.records.get().keys() {
+        if withdrawn(pack, k) { continue }
+        let h? = record_of(pack, k) else { continue }
+        let v? = content_of(pack, h.digest) else { continue }
+        refs = refs.concat(cas_named_in(v))
+    }
+    distinct(refs)
 }
 
 /// The places the open value file already holds for these digests.

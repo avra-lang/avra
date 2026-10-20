@@ -14,7 +14,7 @@
 use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
 use @std.path.{joined_path}
 use @std.relation.engine.{map_cell}
-use core.{digest_of, joined}
+use core.{digest_of, joined, flatten}
 use core.debug.{qtrace, traced}
 use core.runtime_header.{runtime_header}
 
@@ -493,3 +493,11 @@ impl Store {
 
 /// A row's lines, none for an empty list.
 fn lines_of(text: string) -> List<string> { text.split("\n").filter(!it.is_empty()) }
+
+/// The shared-store blobs every live reader names — what a collection must keep. A reader is
+/// a store root that put a reference there and whose store still stands.
+export fn cas_live() -> List<string> {
+    flatten(
+        [pack_cas_refs(pack_at(root, store_print(store_dir_of(root)) ?? "")) for root in cas_readers()],
+    )
+}

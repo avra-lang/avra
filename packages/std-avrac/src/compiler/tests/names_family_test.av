@@ -1,7 +1,7 @@
 // `Family.Names` (COMPILER DB townhall §6.11): a foreign reader of a
 // body's names depends on that declaration's own slice, never on the
 // file's whole `Resolved`. `Family` is compiler-internal, so this file
-// names the stable, append-only ordinals: `Visible` is 4, `Receivers`
+// names the stable, append-only ordinals: `Visible` is 4, `WriteSummary`
 // is 16, `Names` is 26 (compiler/workspace.av's `ordinal`).
 use @std.avrac.testing.{test_workspace}
 use compiler.{Workspace}
@@ -9,7 +9,7 @@ use compiler.host.{memory_host}
 use core.{DeclId}
 use @std.relation.engine.{Key}
 
-fn names_receivers_key() -> Key { Key { family: family_ordinal("Receivers"), arg: 0 } }
+fn names_summary_key(d: DeclId) -> Key { Key { family: family_ordinal("WriteSummary"), arg: d.index } }
 
 fn names_key(d: DeclId) -> Key { Key { family: family_ordinal("Names"), arg: d.index } }
 
@@ -36,33 +36,34 @@ fn names_source(a_body: string, b_body: string) -> string {
     "fn one() -> int {\n    1\n}\nfn a() -> int {\n    ${a_body}\n}\nfn b() -> int {\n    ${b_body}\n}\n"
 }
 
-/// `b`'s name slice after `receivers()` has read it.
+/// `b`'s name slice after its write summary has read it.
 fn names_slice_of_b(ws: Workspace) -> int {
     let _ = ws.items(ws.file_id("/w/src/main.av"))
-    let _ = ws.receivers()
+    let _ = ws.summary_of(names_decl_named(ws, "b"))
     ws.name_slice(names_decl_named(ws, "b"))
 }
 
 spec "compiler/workspace — Family.Names is declaration-grain" {
-    given "`receivers()` over a program with plain fns" {
+    given "`b`'s write summary over a program with plain fns" {
         then "its dependency list names `b`'s Names directly" {
             let ws = names_workspace(names_source("1", "2"))
             let _ = ws.items(ws.file_id("/w/src/main.av"))
-            let _ = ws.receivers()
             let b = names_decl_named(ws, "b")
+            let _ = ws.summary_of(b)
             ws
                 .db
-                .edges_by_reader(names_receivers_key())
+                .edges_by_reader(names_summary_key(b))
                 .any((k: Key) -> k.family == names_key(b).family && k.arg == names_key(b).arg)
         }
         then "and names the file's Visible, which carries the namespace the slice leaves out" {
             let ws = names_workspace(names_source("1", "2"))
             let _ = ws.items(ws.file_id("/w/src/main.av"))
-            let _ = ws.receivers()
+            let b = names_decl_named(ws, "b")
+            let _ = ws.summary_of(b)
             let v = names_visible_key(ws)
             ws
                 .db
-                .edges_by_reader(names_receivers_key())
+                .edges_by_reader(names_summary_key(b))
                 .any((k: Key) -> k.family == v.family && k.arg == v.arg)
         }
     }

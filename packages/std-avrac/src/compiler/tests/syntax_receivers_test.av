@@ -1,8 +1,7 @@
-// M5b slice 2: `receivers()` (compiler/receivers.av) reads every seated
+// M5b slice 2: a write summary (compiler/receivers.av) reads a seated
 // fn's nodes through `self.decls.store(d)` — a table read the Kernel's
 // `ask` never sees (`features/bypass.av`'s `Bypassed.Store`) — for
-// declarations that are never its own (`Family.Receivers` is the
-// whole-program pass, never the owner of any one fn's body). It now
+// declarations that are never its own. It now
 // calls `touch(self.syntax(d))` first, so that foreign read depends on
 // `d`'s own declaration-grain `Family.Syntax`, never only on the
 // file's whole `Parsed` (COMPILER DB townhall §6.11 rule 2). `Family`
@@ -15,7 +14,7 @@ use compiler.host.{memory_host}
 use core.{DeclId}
 use @std.relation.engine.{Key}
 
-fn receivers_key() -> Key { Key { family: family_ordinal("Receivers"), arg: 0 } }
+fn summary_key(d: DeclId) -> Key { Key { family: family_ordinal("WriteSummary"), arg: d.index } }
 
 fn syntax_key(d: DeclId) -> Key { Key { family: family_ordinal("Syntax"), arg: d.index } }
 
@@ -37,34 +36,34 @@ fn receivers_decl_named(ws: Workspace, name: string) -> DeclId {
 }
 
 /// `a`'s body is the only thing this varies; `b` never moves. Both are
-/// plain fns, so `receivers()`'s own `seated` predicate takes both.
+/// plain fns, so the write walk's own `seated` predicate takes both.
 fn receivers_source(a_body: string, b_body: string) -> string {
     "fn a() -> int {\n    ${a_body}\n}\nfn b() -> int {\n    ${b_body}\n}\n"
 }
 
-/// Runs `receivers()` over the file and answers `b`'s own syntax hash —
-/// the value a downstream reader that depends on `Family.Receivers`
+/// Runs `b`'s write summary and answers `b`'s own syntax hash —
+/// the value a downstream reader that depends on the summary
 /// would settle on.
 fn receivers_synced_b(ws: Workspace) -> int {
     let _ = ws.items(ws.file_id("/w/src/main.av"))
-    let _ = ws.receivers()
+    let _ = ws.summary_of(receivers_decl_named(ws, "b"))
     ws.syntax(receivers_decl_named(ws, "b"))
 }
 
 spec "compiler/receivers — a foreign store_of read depends on the declaration's own Syntax (M5b slice 2)" {
-    given "`receivers()` over a program with two plain fns" {
+    given "`b`'s write summary over a program with two plain fns" {
         then "its own dependency list names `b`'s Syntax directly, not only the file's Parsed" {
             let ws = receivers_workspace(receivers_source("1", "2"))
             let _ = ws.items(ws.file_id("/w/src/main.av"))
-            let _ = ws.receivers()
             let b = receivers_decl_named(ws, "b")
+            let _ = ws.summary_of(b)
             ws
                 .db
-                .edges_by_reader(receivers_key())
+                .edges_by_reader(summary_key(b))
                 .any((k: Key) -> k.family == syntax_key(b).family && k.arg == syntax_key(b).arg)
         }
     }
-    given "a reader that depends on `b`'s syntax through `receivers()`, in a file where `a` is edited" {
+    given "a reader that depends on `b`'s syntax through its summary, in a file where `a` is edited" {
         then "it is reused — `b`'s hash does not move" {
             receivers_synced_b(receivers_workspace(receivers_source("1", "2"))) == receivers_synced_b(receivers_workspace(receivers_source("1 + 1", "2")))
         }
