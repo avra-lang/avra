@@ -1,0 +1,35 @@
+// proves: a derive sees which head props of a stateful component the compiler
+// made cells: `Field.state` is the SIGNATURE's word, so a prop whose type
+// compares by value reads `state` (and wears the `prop` mark), while one that
+// does not stays a plain field, and a `state` the author wrote is unmarked.
+use @std.meta.{Type, Diagnostic, refuse}
+
+fn cells_are_seen(t: Type) -> List<Diagnostic> {
+    let label = t.fields[0]
+    let tags = t.fields[1]
+    let n = t.fields[2]
+    let ok = label.name == "label" &&
+        label.state &&
+        label.marks.any(it.name == "prop") &&
+        tags.name == "tags" &&
+        !tags.state &&
+        n.name == "n" &&
+        n.state &&
+        !n.marks.any(it.name == "prop")
+    if ok {
+        []
+    } else {
+        [
+            refuse(
+                "a prop's cell was not seen: label.state=${label.state} tags.state=${tags.state} n.state=${n.state}",
+            ),
+        ]
+    }
+}
+
+@cells_are_seen
+component badge(label: string, tags: List<string>) {
+    state n: int = 0
+}
+
+println("ok")

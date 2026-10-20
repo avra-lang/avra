@@ -23,6 +23,8 @@ use core.{
     settled_mark,
     Static,
     StaticBox,
+    flatten,
+    some_list,
 }
 use diagnostics.{loc_at, refusal, Diag}
 use features.lists.{listed}
@@ -917,22 +919,21 @@ impl LowerCx {
     /// lambda, whose type is a box, and a captured `int` is not.
     fn capture_regs(e: ExprId) -> List<Reg> {
         let cap? = self.names.capture(e) else { return [] }
-        mut out: List<Reg> = []
-        for j, b in cap.sources {
-            // A `state` source packs its CELL, never the value the name
-            // reads: a capture is a copy, and a Cell's copy SHARES the
-            // place — that is what lets the lambda outlive the frame.
-            let r: Reg? = match b {
-                .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(e, s, self.def_ty(s)),
-                rest -> self.read_wearing(e, b, self.capture_ty(e, j)),
-            }
-            if r == null {
-                self.out.defect("a capture without a value survived resolve")
-            } else {
-                out.push(r!)
-            }
+        flatten([some_list(self.capture_reg(e, j)) for j in 0..cap.sources.length])
+    }
+
+    /// The register of capture `j` of the closure `lam`, read in THIS body. A
+    /// `state` source packs its CELL, never the value the name reads: a capture
+    /// is a copy, and a Cell's copy SHARES the place — that is what lets the
+    /// lambda outlive the frame.
+    fn capture_reg(lam: ExprId, j: int) -> Reg? {
+        let cap? = self.names.capture(lam) else { return null }
+        let r: Reg? = match cap.sources[j] {
+            .Def(s) if self.view.store.is_state_stmt(s) -> self.defined_reg(lam, s, self.def_ty(s)),
+            rest -> self.read_wearing(lam, cap.sources[j], self.capture_ty(lam, j)),
         }
-        out
+        if r == null { self.out.defect("a capture without a value survived resolve") }
+        r
     }
 
     /// The box a call goes THROUGH, when the callee is a fn-typed

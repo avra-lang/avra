@@ -40,6 +40,7 @@ use @std.meta.{
     Declared,
     Diagnostic,
     Code,
+    Stmts,
     list_of,
     literal,
     refuse_as_at,
@@ -136,6 +137,7 @@ fn refused_view(t: Type) -> Directive {
 
 /// A view's tree standing ALONE: no paint came before it and none
 /// follows, so every instance in it is new.
+/// A page that persists paints through `Live.paint_view`.
 export fn tree_of(v: dyn View) -> Node { rooted(v.describe(standing())) }
 
 /// A TREE HAS ONE ROOT. What a view drew, as a tree: its one node — or,
@@ -162,11 +164,9 @@ export fn made_of(at: Standing, items: List<dyn View>, key: string?) -> List<Nod
 }
 
 /// A node as a composition drew it: stepped through `via` where it was
-/// drawn through nothing yet, wearing `key` where it wears none. A composition
-/// reads state in a frame of its own that no node of its drawing answers for,
-/// so what it draws is opaque to a page that patches exactly.
+/// drawn through nothing yet, wearing `key` where it wears none.
 fn drawn_through(n: Node, via: string?, key: string?) -> Node {
-    n with { box: n.box with { via: n.box.via ?? via, key: n.box.key ?? key, opaque: true } }
+    n with { box: n.box with { via: n.box.via ?? via, key: n.box.key ?? key } }
 }
 
 /// What each of `items` draws, standing under `at` at its own step.
@@ -247,13 +247,21 @@ impl Vocabulary {
     fn standing_instance(t: Type, seat: string) -> Code {
         mut carried = quote { held }
         for name in self.prop_names(t) { carried = quote { ${carried} with { ${name}: self.${name} } } }
+        let synced: List<Stmts> = [quote { if held.${p} != self.${p} { held.${p} = self.${p} } } for p in self.cell_props(t)]
         quote {
             match stood(${seat}(), at, self) {
-                held? -> ${carried}
+                held? -> {
+                    ${synced}
+                    ${carried}
+                }
                 null -> self
             }
         }
     }
+
+    /// The props the compiler made cells of: a later instance writes each into
+    /// the one that stands, only where its value moved.
+    fn cell_props(t: Type) -> List<string> { [f.name for f in t.fields if f.state && f.prop] }
 
     /// The members a later instance hands the one that stands: every one
     /// that is no `state`, and where it says it stands.
@@ -602,6 +610,8 @@ fn sites_code(t: Type) -> Code {
 /// the closure that says the words again and the cells it reads.
 const said_type = "Words"
 const cells_type = "Cells"
+
+/// The mark the compiler gives a composition's head prop it made a cell of.
 
 /// Whether a field is one the compiler fills to carry a reading, which no
 /// attribute, child or style says.

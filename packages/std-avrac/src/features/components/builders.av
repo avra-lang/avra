@@ -25,6 +25,7 @@ use core.{
     Span,
     TypeRef,
     Param,
+    Mark,
     Unheard,
     sorted_by,
     same_stmt,
@@ -68,15 +69,21 @@ fn build_component_decl(b: Builder) -> Result<LangNode, string> {
         (x: Param, y: Param) -> b.written_at(x) < b.written_at(y),
     )
     let records = record_spreads([b.written_at(m) for m in members], b.tokens(7)?, b.type_refs(8)?)?
+    let head = if members.any(it.state) { [propped_param(p) for p in params_at(b.args, 3)] } else { params_at(b.args, 3) }
     let s = b
         .store
         .alloc_stmt(
-            Stmt
-                .ComponentDecl(Scoped(n.text), [Plain(t.text) for t in tp], params_at(b.args, 3), members, fns),
+            Stmt.ComponentDecl(Scoped(n.text), [Plain(t.text) for t in tp], head, members, fns),
             b.span,
         )
     if !records.is_empty() { b.store.spread_fields(s, records) }
     .Ok(LangNode.NStmt(s))
+}
+
+/// A head param of a STATEFUL composition marked a prop: the signature makes
+/// it a cell its parent writes at every paint where its type compares by value.
+fn propped_param(p: Param) -> Param {
+    p with { prop: true }
 }
 
 /// `on name(seat: T, …)` — an event, as the member that holds its
