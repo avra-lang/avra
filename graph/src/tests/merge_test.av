@@ -207,6 +207,28 @@ fn names_cross_the_group() -> Result<bool, string> {
     (g.aliases("p1")?).length == 2 && (g.aliases("p2")?).length == 2
 }
 
+fn withdrawn_decision_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    g.merge(decision("m1", "p1", "p2"))?
+    g.split("m1")?
+    let replay = match g.merge(decision("m1", "p1", "p2")) { .Ok(_) -> false, .Err(_) -> true }
+    let history = g.merges("")?
+    replay && history.length == 1 && !history[0].active()
+}
+
+fn unknown_decisions_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "two sources")?
+    two_people(g)?
+    let split = match g.split("never") { .Ok(_) -> false, .Err(_) -> true }
+    let unknown = match g.merge(decision("m1", "p1", "nobody")) { .Ok(_) -> false, .Err(_) -> true }
+    split && unknown && (g.merges("")?).is_empty()
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -225,5 +247,7 @@ spec "graph explicit merges" {
         then "find lists one id per group" { passed(find_collapses_groups()) }
         then "references and traversal cross the group" { passed(edges_cross_the_group()) }
         then "external names cross the group" { passed(names_cross_the_group()) }
+        then "a withdrawn decision cannot be replayed as if it still stood" { passed(withdrawn_decision_refused()) }
+        then "unknown decisions and entities are refused" { passed(unknown_decisions_refused()) }
     }
 }

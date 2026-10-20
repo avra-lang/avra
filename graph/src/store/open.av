@@ -1,4 +1,4 @@
-use @std.sqlite.{Db, OpenConfig, Mode}
+use @std.sqlite.{Db, OpenConfig, Mode, sql, SqlValue}
 use @std.sqlite.error.{SqlError}
 use @std.db.error.{ModelError}
 use @std.errors.{Error}
@@ -88,6 +88,7 @@ impl Graph {
         mut db = self.db
         stored(db.begin())?
         defer { let _ = db.finish() }
+        if self.meta("format").is_empty() && self.legacy() { fail "old hand-table graph store; start a new file" }
         self.initialized()?
         if self.meta("format").is_empty() {
             modeled(Meta { key: "revision", value: "0" }.insert(db))?
@@ -111,6 +112,16 @@ impl Graph {
         if self.meta("format") != "6" { fail "graph storage is not a std-first store" }
         if self.meta("schema") != self.catalog.fingerprint { fail "schema changed; reopen with the current models" }
         self.revision()
+    }
+
+    /// The one shape check that has no model: an old hand-table store.
+    fn legacy() -> bool {
+        match self
+            .db
+            .scalar(sql("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='graph_meta'")) {
+            .Ok(value) -> match value { .Int(n) -> n > 0, rest -> false },
+            .Err(_) -> false,
+        }
     }
 
     fn meta(key: string) -> string {

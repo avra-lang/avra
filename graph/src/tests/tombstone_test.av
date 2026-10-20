@@ -186,6 +186,18 @@ fn merge_refused_when_gone() -> Result<bool, string> {
     }
 }
 
+fn withdrawn_tombstone_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("input:1", "mail:1")?
+    populated(g)?
+    g.tombstone(gone("t1", "p1"))?
+    g.revive("t1")?
+    let replay = match g.tombstone(gone("t1", "p1")) { .Ok(_) -> false, .Err(_) -> true }
+    let unknown = match g.revive("never") { .Ok(_) -> false, .Err(_) -> true }
+    replay && unknown && (g.tombstones("")?).length == 1
+}
+
 fn passed(answer: Result<bool, string>) -> bool {
     answer catch e -> {
         println(e)
@@ -203,5 +215,6 @@ spec "graph tombstones" {
         then "a merge group is hidden and revived as one" { passed(group_hides_together()) }
         then "a decision id replays; a repeat or unknown target is refused" { passed(decisions_replay()) }
         then "a tombstoned entity cannot merge" { passed(merge_refused_when_gone()) }
+        then "a revived decision cannot be replayed as if it still stood" { passed(withdrawn_tombstone_refused()) }
     }
 }

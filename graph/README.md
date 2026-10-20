@@ -218,8 +218,8 @@ input changes.
 Editing models and rebuilding changes the catalog fingerprint. The
 fingerprint includes metadata, constraint calls, defaults, and compiler
 code hashes of the validators. The std-first store writes format `6` in
-`Meta`; a database from the earlier hand-table prototype is not migrated and
-`attach` refuses it. Installing the new catalog advances the graph revision
+`Meta`; a database from the earlier hand-table prototype is not migrated —
+`attach` and `open` both refuse it. Installing the new catalog advances the graph revision
 and quarantines old-schema interpretations; `dirty` names work to reprocess. No data is deleted or
 destructively migrated. Existing handles reject publication after another
 catalog is installed. `attach` opens without installing a catalog; the server
