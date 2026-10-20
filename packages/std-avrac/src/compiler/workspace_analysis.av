@@ -310,13 +310,11 @@ impl Workspace {
         let p = self.parsed(f)
         let names = self.resolved(f)
         let facts = self.folded(f)
-        let path = self.decls.file(f).path
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
             facts: facts,
-            decl_reads: (d: DeclId) -> self.decl_reads_state(d),
-            decl_places: (d: DeclId) -> self.decl_places(d),
+            ws: self,
             lang: self.lang,
             diagnostics: flatten(
                 [
@@ -327,7 +325,6 @@ impl Workspace {
                     facts.voices.list,
                 ],
             ),
-            program: () -> self.program(path),
         }
     }
 
@@ -345,16 +342,13 @@ impl Workspace {
         mut out = new_type_facts(0, p.store.exprs.count(), 0 - 1, 0, p.store.stmts.count(), hole)
         out.absorb(own)
         let facts = out with { voices: own.voices }
-        let path = self.decls.file(f).path
         Analysis {
             view: file_view(self.lang, p, self.decls, f),
             names: names,
             facts: facts,
-            decl_reads: (x: DeclId) -> self.decl_reads_state(x),
-            decl_places: (x: DeclId) -> self.decl_places(x),
+            ws: self,
             lang: self.lang,
             diagnostics: flatten([p.voices.list, names.voices.list, facts.voices.list]),
-            program: () -> self.program(path),
         }
     }
 
