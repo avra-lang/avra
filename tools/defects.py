@@ -38,7 +38,7 @@ BAD = re.compile(
     r"language\.defect|survived typing|out of bounds|Segmentation|internal error|panicked",
     re.M,
 )
-TIMEOUT = 60
+TIMEOUT = int(os.environ.get("AVRA_DEFECT_TIMEOUT", "60"))
 # a mutant is linked one in this many: a link costs seconds, and check has lowered it already
 BUILD_EVERY = 4
 # @mutate adds the case's mutations; @check runs only `check` — a program
@@ -194,6 +194,13 @@ ENV = dict(os.environ, AVRA_WATCH_HELD="1")
 def run(avra, verb, package):
     """(exit, output); a run past the clock is killed with everything it
     started, and answers 124."""
+    code, out, _ = timed(avra, verb, package)
+    return code, out
+
+
+def timed(avra, verb, package):
+    """(exit, output, seconds) of one run."""
+    began = time.time()
     p = subprocess.Popen(
         [avra, verb, package],
         env=ENV,
@@ -206,8 +213,8 @@ def run(avra, verb, package):
     except subprocess.TimeoutExpired:
         os.killpg(p.pid, signal.SIGKILL)
         p.communicate()
-        return 124, "timed out after %ds" % TIMEOUT
-    return p.returncode, out.decode("utf-8", "replace")
+        return 124, "timed out after %ds" % TIMEOUT, time.time() - began
+    return p.returncode, out.decode("utf-8", "replace"), time.time() - began
 
 
 # The compile limiter's own queue notice is no voice of the compiler.
@@ -226,6 +233,36 @@ def verdict(code, out, lenient=False):
     return "voice %r" % hit.group(0).strip() if hit else None
 
 
+def self_test():
+    """The retry's two paths and its neighbours, against a fake `avra` that hangs on demand."""
+    global TIMEOUT
+    TIMEOUT = 1
+    d = tempfile.mkdtemp(prefix="avra-defects-self-")
+
+    def fake(name, body):
+        path = os.path.join(d, name)
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n" + body + "\n")
+        os.chmod(path, 0o755)
+        return path
+
+    work = [("probe", ["check"], "1\n", False, False)]
+    count = os.path.join(d, "count")
+    once = fake("once", 'n=$(cat "%s" 2>/dev/null || echo 0); echo $((n+1)) > "%s"; [ "$n" = 0 ] && sleep 4; exit 0' % (count, count))
+    bad, notes = survey(once, work, 1)
+    assert not bad and len(notes) == 1 and "finished alone — not a hang" in notes[0], (bad, notes)
+    hangs = fake("hangs", "sleep 4")
+    bad, notes = survey(hangs, work, 1)
+    assert [b[0] for b in bad] == ["probe"] and "timed out twice" in bad[0][1] and not notes, (bad, notes)
+    quick = fake("quick", "exit 0")
+    assert survey(quick, work, 1) == ([], []), "a program that finishes was retried or refused"
+    voiced = fake("voiced", "echo 'language.defect: a row without its seat survived typing'; exit 0")
+    bad, notes = survey(voiced, work, 1)
+    assert {b[0] for b in bad} == {"probe"} and all("voice" in b[1] for b in bad) and not notes, (bad, notes)
+    print("defects: self-test passed — a timeout finishing alone stands down, one that hangs twice fails with both durations, a voice still fails")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--avra", default=os.path.join(ROOT, "avra"))
@@ -236,7 +273,10 @@ def main():
     ap.add_argument("--dump", metavar="NAME", help="print one program's text and stop")
     ap.add_argument("--progress", type=int, default=0, metavar="K", help="say where it is every K programs")
     ap.add_argument("--show", action="store_true", help="print every run's output")
+    ap.add_argument("--self-test", action="store_true")
     a = ap.parse_args()
+    if a.self_test:
+        return self_test()
     all_cases = cases(open(CORPUS, encoding="utf-8").read())
     work = []
     for name, flags, body in all_cases:
@@ -261,41 +301,75 @@ def main():
     if not work:
         print("defects: examined nothing")
         return 1
-    bad = []
     started = time.time()
     jobs = max(1, min(WORKERS, len(work)))
+    bad, notes = survey(a.avra, work, jobs, a.progress, a.show)
+    for line in notes:
+        print(line, flush=True)
+    print("defects: %d worker(s), %.0fs" % (jobs, time.time() - started))
+    print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len({n for n, _ in bad})))
+    return 1 if bad else 0
+
+
+def examine(avra, d, k, case, alone, say):
+    """Every verb over one program: ([(verb, why, output)] for each refusal, the run that passed
+    the clock or None). A run past the clock abandons the program; a program that runs ALONE keeps
+    the refusals it had earned before the verb that hung."""
+    n, verbs, body, mutant, as_manifest = case
+    os.makedirs(os.path.join(d, "src"), exist_ok=True)
+    for name, text in (("avra.toml", body if as_manifest else MANIFEST), ("src/main.av", "1\n" if as_manifest else body)):
+        with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+            f.write(text)
+    refused, clean = [], False
+    for verb in verbs + ["build"]:
+        if verb == "build" and not (clean and (not mutant or k % BUILD_EVERY == 0)):
+            continue
+        code, out, secs = timed(avra, verb, d)
+        if code == 124:
+            return ([] if not alone else refused), (verb, secs)
+        clean = clean or (verb == "check" and code == 0)
+        say(n, verb, code, out, secs)
+        why = verdict(code, out, lenient=mutant and verb == "run")
+        if why:
+            refused.append((verb, why, out))
+    return refused, None
+
+
+def survey(avra, work, jobs, progress=0, show=False):
+    """(refusals, notes) over every program. A program that timed out beside the other workers is
+    run again ALONE after they finish: a timeout there is the verdict, named with both durations,
+    and one that finishes stands the first down (a loaded runner's queue is no defect)."""
+    bad, notes, retry = [], [], []
     lock = threading.Lock()
     queue = list(reversed(list(enumerate(work))))
 
+    def say(n, verb, code, out, secs):
+        with lock:
+            if progress and secs > 10:
+                print("defects: slow %s (%s) %ds" % (n, verb, secs), flush=True)
+            if show:
+                print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
+
+    def refuse(n, verb, why, out):
+        with lock:
+            bad.append((n, why))
+            print("defects: %s (%s) — %s" % (n, verb, why), flush=True)
+            print("    " + "\n    ".join(out.strip().split("\n")[:6]), flush=True)
+
     def attack(d):
-        os.makedirs(os.path.join(d, "src"))
         while True:
             with lock:
                 if not queue:
                     return
-                k, (n, verbs, body, mutant, as_manifest) = queue.pop()
-                if a.progress and k % a.progress == 0:
+                k, case = queue.pop()
+                if progress and k % progress == 0:
                     print("defects: %d/%d" % (k, len(work)), flush=True)
-            for name, text in (("avra.toml", body if as_manifest else MANIFEST), ("src/main.av", "1\n" if as_manifest else body)):
-                with open(os.path.join(d, name), "w", encoding="utf-8") as f:
-                    f.write(text)
-            clean = False
-            for verb in verbs + ["build"]:
-                if verb == "build" and not (clean and (not mutant or k % BUILD_EVERY == 0)):
-                    continue
-                t0 = time.time()
-                code, out = run(a.avra, verb, d)
-                clean = clean or (verb == "check" and code == 0)
-                why = verdict(code, out, lenient=mutant and verb == "run")
+            refused, timed_out = examine(avra, d, k, case, False, say)
+            if timed_out:
                 with lock:
-                    if a.progress and time.time() - t0 > 10:
-                        print("defects: slow %s (%s) %ds" % (n, verb, time.time() - t0), flush=True)
-                    if a.show:
-                        print("== %s (%s) exit %d\n%s" % (n, verb, code, out.strip()))
-                    if why:
-                        bad.append((n, why))
-                        print("defects: %s (%s) — %s" % (n, verb, why), flush=True)
-                        print("    " + "\n    ".join(out.strip().split("\n")[:6]), flush=True)
+                    retry.append((k, case, timed_out))
+            for verb, why, out in refused:
+                refuse(case[0], verb, why, out)
 
     with tempfile.TemporaryDirectory(prefix="avra-defects-") as root:
         threads = [threading.Thread(target=attack, args=(os.path.join(root, str(i)),)) for i in range(jobs)]
@@ -303,9 +377,15 @@ def main():
             t.start()
         for t in threads:
             t.join()
-    print("defects: %d worker(s), %.0fs" % (jobs, time.time() - started))
-    print("defects: %d program(s) examined, %d answered with a defect voice or a trap" % (len(work), len({n for n, _ in bad})))
-    return 1 if bad else 0
+        for k, case, (verb, first) in sorted(retry, key=lambda r: r[0]):
+            refused, hung = examine(avra, os.path.join(root, "alone"), k, case, True, say)
+            for v, why, out in refused:
+                refuse(case[0], v, why, out)
+            if hung:
+                refuse(case[0], hung[0], "timed out twice — %.0fs beside %d workers, %.0fs alone" % (first, jobs, hung[1]), "")
+            else:
+                notes.append("defects: %s (%s) timed out after %.0fs beside %d workers and finished alone — not a hang" % (case[0], verb, first, jobs))
+    return bad, notes
 
 
 if __name__ == "__main__":
