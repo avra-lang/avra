@@ -269,6 +269,12 @@ check("the click of the press that sent it away is stopped", reached, -1);
 pointer("pointerdown", 2, 2);
 o.doc.listeners.get("click")(clicked);
 check("the next press's click is not", reached, -1);
+// A dismissal by a key fires no click where the dialog stood, so nothing
+// clears what it set: the press after it is a press, and reaches its control.
+o.doc.listeners.get("cancel")({ target: shownDialog });
+pointer("pointerdown", 2, 2);
+o.doc.listeners.get("click")(clicked);
+check("a press after a dismissal whose click never came reaches its control", reached, -1);
 
 // ── the wire itself ──
 let refused = false;
