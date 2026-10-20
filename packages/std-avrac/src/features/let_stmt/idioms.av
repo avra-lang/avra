@@ -27,8 +27,8 @@ use @std.meta.{name}
 @keeps("fn f() {\n    mut n = 0\n    n = n + 1\n}")
 @keeps("type B = { x: int }\ntype Row = { build: fn(mut B) -> int }\nfn via(r: Row) -> int {\n    mut world = B { x: 1 }\n    r.build(world)\n}")
 @keeps("trait Grow {\n    mut fn grow()\n}\ntype R = { n: int }\nimpl Grow for R {\n    mut fn grow() { self.n = self.n + 1 }\n}\nfn f(d: dyn Grow) {\n    mut q = d\n    q.grow()\n}")
-@keeps("type Conn = { n: int }\ntype Table = { id: int }\nimpl Table {\n    static fn setup(mut c: Conn) -> int { 0 }\n}\nfn f() -> int {\n    mut c = Conn { n: 1 }\n    Table.setup(c)\n}")
-@fixes("type Conn = { n: int }\ntype Table = { id: int }\nimpl Table {\n    static fn peek(c: Conn) -> int { 0 }\n}\nfn f() -> int {\n    mut c = Conn { n: 1 }\n    Table.peek(c)\n}", "let c = Conn { n: 1 }")
+@keeps("fn f() -> int {\n    mut c = Conn { n: 1 }\n    Table.setup(c)\n}\ntype Conn = { n: int }\ntype Table = { id: int }\nimpl Table {\n    static fn setup(mut c: Conn) -> int { 0 }\n}")
+@fixes("fn f() -> int {\n    mut c = Conn { n: 1 }\n    Table.peek(c)\n}\ntype Conn = { n: int }\ntype Table = { id: int }\nimpl Table {\n    static fn peek(c: Conn) -> int { 0 }\n}", "let c = Conn { n: 1 }")
 @keeps("fn f() {\n    quote {\n        mut args: List<int> = []\n        \${quote { args.push(1) }}\n    }\n}")
 @law("dropping `mut` from a binding nothing ever writes changes no later read — the memory pass opens a cell unique only for a write it will never make, exactly as `type.mut_fn_unused` already reads for a `mut fn`; a write reached through a `dyn` receiver is the same write, so `mut q = d` keeps its `mut` when `q`'s own trait method is declared `mut fn` — never `let`, which would ALIAS `d` instead of the copy spec 11.5 promises (features/tests/borrow_dyn)")
 export rule unmutated_mut { quote { ${m} } if m.is_unwritten_mut() -> unmutated_mut_fix(m) }
