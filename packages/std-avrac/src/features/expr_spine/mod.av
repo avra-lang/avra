@@ -18,9 +18,10 @@
 //! — the type in its own spelling, folded once by the receiver; a
 //! name that spells no shape is a hole, the id it names.
 use features.{LanguageFeature, BuilderRow}
-// LICENSED modules.unused_import: `Operators`' tables are named by GENERATED
+// LICENSED modules.unused_import: `Operators`' tables and `Fixed` are named by GENERATED
 // code, not by this file — the `grammar { }` expansion writes `Tier`,
-// `Assoc`, `Suffix` and the `operators_of` call here for the table
+// `Assoc`, `Suffix` and the `operators_of` call here for the table, and a
+// `Fixed` literal for a stated payload
 use @std.grammar.{
     Grammar,
     Rule,
@@ -30,6 +31,7 @@ use @std.grammar.{
     Prim,
     Rep,
     Build,
+    Fixed,
     Expect,
     Recover,
     Tier,
@@ -58,7 +60,6 @@ export fn expr_spine() -> LanguageFeature {
         "catch_any"          | build_catch
         "trailing"           | build_trailing
         "asked_bind"         | build_asked_bind
-        "spread_arg"         | build_spread_arg
     }
     let codes = table<DiagCode> {
         kind                | summary                              | remedy
@@ -69,8 +70,8 @@ export fn expr_spine() -> LanguageFeature {
     LanguageFeature expr_spine {
         gram: grammar {
             expression = l:climbed ( ck:"catch" ( "{" BREAK ( "." cv:NAME ( "(" cb:NAME ")" )? "->" ca:expression BREAK )* "}" | "{" BREAK ( tb:NAME ":" tn:NAME "->" ta:expression BREAK )+ "}" | "." sv:NAME ( "(" sb:NAME ")" )? "->" sa:expression | ub:NAME ":" un:NAME "->" ua:expression | eb:NAME "->" ea:expression | rv:expression ) )? -> catch_any(l, ck, cv, cb, ca, sv, sb, sa, eb, ea, rv, tb, tn, ta, ub, un, ua)
-            argument = name:NAME ":" value:expression -> Expr.Named | ".." v:postfix -> spread_arg(v) | expression
-            element = ".." v:postfix -> spread_arg(v) | expression
+            argument = name:NAME ":" value:expression -> Expr.Named | ".." value:postfix -> Expr.Named(name = "..", value = value) | expression
+            element = ".." value:postfix -> Expr.Named(name = "..", value = value) | expression
             trailing = "{" ( ps:trailing_seat ( "," ps:trailing_seat )* ","? "->" )? ( ts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the trailing block") -> trailing(ps, ts)
             trailing_seat = ( constant:"const" )? ( mutable:"mut" )? name:NAME -> Record.ParamSyntax
             stmt = lp:"|>" -> leading_pipe(lp)
