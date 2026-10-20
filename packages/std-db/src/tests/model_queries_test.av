@@ -141,11 +141,35 @@ fn spare_row() -> Result<string, ModelError> {
     "${back.label != null} ${back.count != null} ${back.ratio != null} ${back.flag != null} ${held(back)}"
 }
 
+fn labelled(mut db: Db, label: string?, count: int?) -> Result<Reading, ModelError> {
+    Reading { label: label, count: count, ratio: null, flag: null }.insert(db)
+}
+
+fn labels(rows: List<Reading>) -> string { [r.label ?? "~" for r in rows].join(",") }
+
+fn null_filter() -> Result<string, ModelError> {
+    mut db = modeled(seeded())?
+    let _ = labelled(db, null, null)?
+    let _ = labelled(db, "", 0)?
+    let _ = labelled(db, "x", 5)?
+    let absent = labels(modeled(Reading.where(db, label: .Is(null)))?)
+    let empty = labels(modeled(Reading.where(db, label: .Is("")))?)
+    let named = labels(modeled(Reading.where(db, label: .Is("x")))?)
+    let given_nothing = labels(modeled(Reading.where(db))?)
+    let two = labels(modeled(Reading.where(db, label: .Is(null), count: .Is(5)))?)
+    "${absent}|${empty}|${named}|${given_nothing}|${two}"
+}
+
 spec "std/db queries" {
     given "nullable columns" {
         then "absence is read back as absence in every kind" { (absent_row() catch "") == "true true true true" }
         then "the empty value of each kind is present, never absent" {
             (spare_row() catch "") == "true true true true |0|0.0|false"
+        }
+    }
+    given "a filter on a nullable column" {
+        then "omitted means no filter, Is(null) means NULL, and the empty value is a value" {
+            (null_filter() catch "") == "~||x|~,,x|"
         }
     }
     given "an empty table" {

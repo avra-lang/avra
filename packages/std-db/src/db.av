@@ -51,7 +51,9 @@ export trait Model {
             Directive { twin: "", name: t.name, at: t.at, source: generated(t) },
             Directive { twin: "", name: t.name, at: t.at, source: checks(read) },
             Directive { twin: "", name: t.name, at: t.at, source: decodes(read) },
-        ]
+        ].concat(
+            [Directive { twin: "", name: filter_name(t, f), at: t.at, source: filter_enum(t, f) } for f in filtered_fields(t)],
+        )
     }
 
     /// The marks this derive reads: `@unique` makes a column unique,
@@ -223,19 +225,49 @@ fn inserted_row(t: Type) -> Code {
 fn where_decl(t: Type) -> Decls {
     let fs = t.fields
     match fs.length {
-        1 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        2 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        3 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null, ${fs[2].name}: ${param_type(fs[2])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        4 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null, ${fs[2].name}: ${param_type(fs[2])} = null, ${fs[3].name}: ${param_type(fs[3])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        5 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null, ${fs[2].name}: ${param_type(fs[2])} = null, ${fs[3].name}: ${param_type(fs[3])} = null, ${fs[4].name}: ${param_type(fs[4])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
-        6 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(fs[0])} = null, ${fs[1].name}: ${param_type(fs[1])} = null, ${fs[2].name}: ${param_type(fs[2])} = null, ${fs[3].name}: ${param_type(fs[3])} = null, ${fs[4].name}: ${param_type(fs[4])} = null, ${fs[5].name}: ${param_type(fs[5])} = null) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        1 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        2 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        3 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        4 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        5 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}, ${fs[4].name}: ${param_type(t, fs[4])} = ${param_default(fs[4])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
+        6 -> quote { static fn where(db: Db, ${fs[0].name}: ${param_type(t, fs[0])} = ${param_default(fs[0])}, ${fs[1].name}: ${param_type(t, fs[1])} = ${param_default(fs[1])}, ${fs[2].name}: ${param_type(t, fs[2])} = ${param_default(fs[2])}, ${fs[3].name}: ${param_type(t, fs[3])} = ${param_default(fs[3])}, ${fs[4].name}: ${param_type(t, fs[4])} = ${param_default(fs[4])}, ${fs[5].name}: ${param_type(t, fs[5])} = ${param_default(fs[5])}) -> Result<List<${t}>, SqlError> { ${where_body(t)} } },
         rest -> quote { static fn a_model_with_more_than_six_fields_needs_a_wider_where() { } },
     }
 }
 
-/// A filter's seat: the field's value type, nullable so that leaving it
-/// out names no filter.
-fn param_type(f: Field) -> string { "${filter_kind(f.kind).spelled()}?" }
+/// A filter's seat. A column that cannot hold null filters by its value,
+/// the seat nullable so that leaving it out names no filter; a nullable
+/// column takes a `Filter`, since null is itself a value to match.
+fn param_type(t: Type, f: Field) -> string {
+    if nullable(f.kind) { return filter_name(t, f) }
+    "${f.kind.spelled()}?"
+}
+
+/// The enum a nullable column's filter seat takes, generated beside
+/// the model so it needs no import: `Any` names no filter, `Is(v)` the
+/// value it must equal, `Is(null)` the rows where it IS NULL — null is a
+/// value to match there, so it cannot also mean "not given".
+fn filter_name(t: Type, f: Field) -> string { "${t.name}_${f.name}_filter" }
+
+fn filter_enum(t: Type, f: Field) -> Decls {
+    quote {
+        enum ${filter_name(t, f)} {
+            Any
+            Is(value: ${f.kind.spelled()})
+        }
+    }
+}
+
+fn param_default(f: Field) -> Code {
+    if nullable(f.kind) { quote { .Any } } else { quote { null } }
+}
+
+/// The columns whose `where` seat is a generated filter enum.
+fn filtered_fields(t: Type) -> List<Field> { if shape_ok(t) { [f for f in t.fields if nullable(f.kind)] } else { [] } }
+
+fn nullable(k: Kind) -> bool {
+    match k { .Opt(_) -> true, rest -> false }
+}
 
 fn filter_kind(k: Kind) -> Kind {
     match k { .Opt(inner) -> inner, rest -> k }
@@ -260,10 +292,26 @@ fn clauses_code(live: string) -> Code {
 }
 
 fn filter_stmt(f: Field) -> Stmts {
+    if nullable(f.kind) { return nullable_filter(f) }
     quote {
         if ${name(f.name)} != null {
             clauses.push(${literal("${quoted(f.name)} = ?")})
-            args.push(${bound_value(filter_kind(f.kind), quote { ${name(f.name)}! })})
+            args.push(${bound_value(f.kind, quote { ${name(f.name)}! })})
+        }
+    }
+}
+
+/// `Any` names no filter; `Is(null)` keeps the rows where the column is
+/// NULL, `Is(v)` those equal to `v`.
+fn nullable_filter(f: Field) -> Stmts {
+    quote {
+        if ${name(f.name)} is .Is(wanted) {
+            if wanted == null {
+                clauses.push(${literal("${quoted(f.name)} IS NULL")})
+            } else {
+                clauses.push(${literal("${quoted(f.name)} = ?")})
+                args.push(${bound_value(filter_kind(f.kind), quote { wanted! })})
+            }
         }
     }
 }
