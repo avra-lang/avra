@@ -246,6 +246,9 @@ type Followed = { reads: List<RunRead>, gen: int }
 /// makes the standing stale.
 type ViewStand = { files: int, asks: int, stands: bool }
 
+/// The name buckets one answer's run read, held for the group cell that stands for them.
+type Group = { owner: int, id: int, buckets: List<int> }
+
 @identity
 type Hold = {
     forced: Cell<Map<string, Reads>>,
@@ -309,10 +312,11 @@ type Hold = {
     gathered: Cell<List<HeldGather>>,
     lowering: Cell<List<int>>,
     unit_asks: Cell<Map<string, Cell<Map<string, ConstAsk>>>>,
-    /// The family a settlement's name reads stand under as one read, and the buckets each
-    /// settlement read, by its id.
+    /// The family a frame's gathered name reads stand under as one read, the groups minted
+    /// for it, and each group's place by its owner's family and id.
     closure: Cell<int>,
-    closures: Cell<Map<string, List<int>>>,
+    groups: Cell<List<Group>>,
+    group_index: Cell<Map<string, int>>,
     owners: Cell<Map<string, DeclId>>,
     serving: Cell<bool>,
     warm: Cell<bool>,
@@ -404,7 +408,8 @@ fn new_hold() -> Hold {
         lowering: list_cell(),
         unit_asks: map_cell(),
         closure: Cell.new(0 - 1),
-        closures: map_cell(),
+        groups: list_cell(),
+        group_index: map_cell(),
         owners: map_cell(),
         serving: Cell.new(false),
         warm: Cell.new(false),
@@ -1098,7 +1103,7 @@ fn built(
         if ws.db.family() != f.ordinal { ws.defect("defect: the families registered out of ordinal order") }
         ws.db.kernel.named(f.ordinal, f.name)
     }
-    ws.hold.closure.set(ws.db.kernel.hashed_family((settled: int) -> ws.closure_print(settled)))
+    ws.hold.closure.set(ws.db.kernel.hashed_family((group: int) -> ws.group_print(group)))
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_seats((d: DeclId) -> ws.seats_ensured(d))

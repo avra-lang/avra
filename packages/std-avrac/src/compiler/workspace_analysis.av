@@ -893,23 +893,34 @@ impl Workspace {
         cyclic
     }
 
-    /// THE NAMES A SETTLEMENT'S RUN READ stand as one read: the declarations its code reaches
-    /// are looked up by name, thousands of them, and each bucket read alone would make the
-    /// answer's read list the size of the program. The buckets are held by the settlement's
-    /// id and the one cell it reads is their digest, live: it moves exactly when a bucket
-    /// does.
-    fn closed_over(settled: int, buckets: List<int>) {
+    /// THE NAMES AN ANSWER'S RUN READ stand as one read: the declarations a run's code
+    /// reaches are looked up by name, thousands of them, and each bucket read alone would
+    /// make the answer's read list the size of the program. The buckets are held under the
+    /// owner's family and its own id for the answer, and the one cell it reads is their
+    /// digest, live: it moves exactly when a bucket does.
+    fn grouped(owner: Family, id: int, buckets: List<int>) {
         if buckets.is_empty() { return }
-        self.hold.closures.put("${settled}", buckets)
-        let k = Key { family: self.hold.closure.get(), arg: settled }
+        let at = self.group_at(owner, id)
+        self.hold.groups.set_at(at, self.hold.groups.get()[at] with { buckets: buckets })
+        let k = Key { family: self.hold.closure.get(), arg: at }
         let _ = self.db.kernel.verified(k.family, k.arg)
         self.db.record_dep(k)
     }
 
-    /// The digest of the buckets a settlement read, as they stand.
-    fn closure_print(settled: int) -> int {
-        self.decls.buckets_print(self.hold.closures.get().get("${settled}") ?? [])
+    /// The group of an owner's answer, minted on first sight.
+    fn group_at(owner: Family, id: int) -> int {
+        let name = "${owner.ordinal}:${id}"
+        let known? = self.hold.group_index.get().get(name) else {
+            let at = self.hold.groups.get().length
+            self.hold.groups.push(Group { owner: owner.ordinal, id: id, buckets: [] })
+            self.hold.group_index.put(name, at)
+            return at
+        }
+        known
     }
+
+    /// The digest of a group's buckets, as they stand.
+    fn group_print(at: int) -> int { self.decls.buckets_print(self.hold.groups.get()[at].buckets) }
 
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
         match self.relation(Family.Settled).ask(id) {
@@ -920,7 +931,7 @@ impl Workspace {
         let ask = self.settle_asks.get()[id]
         self.decls.gather_open()
         let r = self.settle_result(ask)
-        self.closed_over(id, self.decls.gather_close())
+        self.grouped(Family.Settled, id, self.decls.gather_close())
         // every file `embed` read is this query's input, a held answer's too
         match r {
             .Ok(value) -> { for path in value.embeds { let _ = self.embedded(path, EmbedKind.Octets) } },

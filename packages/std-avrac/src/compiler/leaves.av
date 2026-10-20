@@ -287,8 +287,8 @@ impl Workspace {
         rdb.answer_known(self.named_closures())
     }
 
-    /// The closures: the name reads of one settlement's run, held as one cell, spelled by the
-    /// settlement they belong to.
+    /// The groups: the name reads of one answer's run, held as one cell, spelled by the
+    /// answer they belong to.
     fn named_closures() -> AnswerRef {
         let ws = self
         let ordinal = self.hold.closure.get()
@@ -297,18 +297,21 @@ impl Workspace {
             family: () -> ordinal,
             spelled: (arg: int) -> ws.spelled_closure(arg),
             arg: (spelled: string) -> ws.closure_arg(spelled),
-            hash: (arg: int) -> ws.closure_print(arg),
+            hash: (arg: int) -> ws.group_print(arg),
         }
     }
 
     fn spelled_closure(arg: int) -> string? {
-        let settled? = self.spelled_settle(arg) else { return null }
+        let g? = self.hold.groups.get().get(arg) else { return null }
+        if g.owner != Family.Settled.ordinal { return null }
+        let settled? = self.spelled_settle(g.id) else { return null }
         "${CLOSURE_OF}${settled}"
     }
 
     fn closure_arg(spelled: string) -> int? {
         if !spelled.starts_with(CLOSURE_OF) { return null }
-        self.settle_arg(spelled.substring(CLOSURE_OF.length, spelled.length))
+        let settled? = self.settle_arg(spelled.substring(CLOSURE_OF.length, spelled.length)) else { return null }
+        self.hold.group_index.get().get("${Family.Settled.ordinal}:${settled}")
     }
 
     /// The lifted units, spelled by their wanted and digested with arena ids folded by durable
