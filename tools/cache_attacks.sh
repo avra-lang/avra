@@ -909,6 +909,8 @@ printf 'use many.{f0, f5}\nprintln("${f0(1)} ${f5(2)}")\n' > $R/tp/src/main.av
 ./avra check $R/tp >/dev/null 2>&1
 ed $R/tp/src/many.av 'v5 ' 'w5 '
 TP "tp: one literal of one body moves — only that body is typed" 2
+fi
+
 if section rx; then
 # A NAME REACHED THROUGH A RE-EXPORT KEYS ON THE RE-EXPORTING FILE TOO: `show.av`
 # names `twice` from `@rt/rxl`, whose `lib.av` re-exports it, so the importer's
