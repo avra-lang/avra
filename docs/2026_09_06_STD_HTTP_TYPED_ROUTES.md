@@ -1,8 +1,9 @@
 # Typed routes — one format, two directions
 
 Status: proposed semantics, 2026-09-06. Companion to
-`2026_09_06_STD_HTTP_DESIGN.md`. No new syntax or runtime behavior is
-implemented by this document.
+`2026_09_06_STD_HTTP_DESIGN.md`. Nothing here adds syntax; routing by
+specificity is implemented (that section names the code), while the typed
+capture spelling is still a proposal.
 
 ## The inherited idea
 
@@ -104,6 +105,55 @@ Opaque custom code receives an explicit unknown result from proof queries;
 unknown is never reported as proven. The URI Template standard also limits
 reverse matching to suitable delimiter structures.
 [RFC 6570 §1.4](https://www.rfc-editor.org/rfc/rfc6570.html#section-1.4)
+
+## Routing is decided by specificity
+
+A route's specificity is its pattern's, compared segment by segment from the
+first. One position at a time the ladder is:
+
+| rank | the segment | e.g. |
+| --- | --- | --- |
+| 0 | a literal | `ideas` |
+| 1 | a hole whose type refuses what any text takes | `{id: int}` |
+| 2 | a hole any span answers | `{slug}` |
+| 3 | the rest-taking hole | `{path...}` |
+
+Two patterns are ordered at the first position whose ranks differ. A hole's
+rank is its TYPE's, read from the segment's own spelling — the pattern's text
+is all a route carries of its grammar — so `{id: int}` answers `7` and
+`{slug}` answers `abc` however the two are written. Written order decides
+only a true tie, which is what makes a route set position-free: embedding a
+list of routes (a router, a group) never changes which one answers, and
+`users` beside `tasks/{id}` resolves alike in either embedding order.
+
+Two routes of ONE specificity AND method that may answer a common target are
+ONE fault, never a pattern to order around — an `Overlap(first, second)`
+naming both by method and path. Only two literals can be told disjoint, so
+a hole of a rank is taken to meet every hole of its own rank: a hole's span
+is not a set a
+declaration can enumerate, and an invented disjointness proof would let a
+route shadow one nobody can see it shadow, which is the same law the attack
+table below states for custom codecs. A more specific route is no overlap —
+it answers first wherever it stands — and where the earlier route covers
+every target the later does the refusal says so (`is unreachable`), else that
+the two are equally specific and meet on some targets.
+
+The fault is a STARTUP refusal, because it is a property of the table and
+not of any request. `route_faults` reads the routes alone; `listening()`
+answers `Result<Server<Stateless>, ServeError>` with
+`ServeError = .Net(NetError) | .Routes(List<RouteFault>)`, so the faults are
+spoken before the port binds and no request can discover a table the server
+should not have started with. A reach that disagrees with the pattern's own
+`...` mark is the other two faults, `Unmarked` and `Unclaimed`. A wrong table
+is refused by `avra check` only once an annotation can judge a component
+instance's body (`avra-8sb5.11.388`); until then startup is the floor and a
+program test that links and runs the server is the witness.
+
+Implemented in `packages/std-http/src/route.av` (PR #1117,
+`http-specificity`, stacked on the router); witnesses `tests/route_test.av`
+(the ladder and the overlap cases), `tests/route_adversarial_test.av` (the
+scan oracle ranks by type too), and `tests/http_specificity` (the ladder over
+the wire, eval == native).
 
 ## HTTP framing stays byte-oriented
 
@@ -277,7 +327,7 @@ These are design cases, not a completed executable `/red-team` pass.
 | Missing, empty, and malformed `limit` | Absence/default handled separately from invalid data |
 | Literal plus versus `%20` | Different values under generic URI decoding |
 | Invalid UTF-8 in a textual capture | Codec refusal without changing raw framing |
-| A static route overlaps a capture route | Declared specificity or a compile diagnostic, never incidental registration order |
+| A static route overlaps a capture route | Specificity decides (`literal > narrow hole > text hole > rest`); one specificity meeting on a target is a startup `RouteFault`, never incidental registration order |
 | Two custom capture codecs have unknown overlap | Proof result is unknown; no invented disjointness proof |
 | Every split point in a streamed request target | Same result as the complete-buffer case |
 | A capture escapes and the receive buffer is reused | Stable captured value, no dangling view |
