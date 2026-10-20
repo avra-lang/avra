@@ -38,7 +38,7 @@ autonomous extraction or inference system.
 | Model-only ontology; generated registration | Working |
 | Standard validation and generated codecs | Working |
 | Scalars, optionals, lists, embedded records, typed references | Working |
-| Std-first SQLite storage (`@std/db` engine models) | Working; format 6 |
+| Std-first SQLite storage (`@std/db` engine models) | Working; format 7 |
 | Immutable observation history | Working |
 | Atomic replacement, replay, stale input/schema/revision rejection | Working |
 | Independent support, conflicts, and explanations | Working |
@@ -49,6 +49,7 @@ autonomous extraction or inference system.
 | Partial assertions | Working; field rules only, record rules on assembly |
 | Evidence locators | Working; opaque per-record JSON, returned by `explain` |
 | External identities | Working; namespace/key names, owned by producer and scope |
+| Confidence metadata | Working; finite 0..1, returned by `explain`, never authority |
 | Merge/split | Working; explicit decisions, read groups, reversible split |
 | Deletion/tombstones | Working; hides live reads, history and revival kept |
 | Selection policy, derived rules | Not in baseline |
@@ -117,14 +118,14 @@ traced to a specific place in the source.
 ## Milestone 2 — identity and conflict policy
 
 Status: external names, merge/split, and tombstones implemented; selection
-policy and confidence metadata remain.
+selection policy remains.
 
 - [x] Resolve `(namespace, external_key)` identities and aliases.
 - [x] Add explicit, reversible merge/split decisions with provenance.
 - [x] Define tombstones, deletion, and dangling-reference behavior.
 - [ ] Declare generic selection policies: source priority, explicit user
   choice, and recency only where the model/policy asks for it.
-- [ ] Store confidence as evidence metadata, separate from authority.
+- [x] Store confidence as evidence metadata, separate from authority.
 
 Exit: different sources can identify the same entity without silent
 duplication or irreversible automatic merging. No domain-specific merge code.

@@ -1,0 +1,115 @@
+use models.{models, Person}
+use store.open.{Graph, stored}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.engine.{EntityRow}
+use @std.json.{Json}
+
+fn person(id: string, name: string, confidence: float?) -> Result<Record, string> {
+    Record {
+        id: id,
+        model: "Person",
+        value: Person { name: name, email: null }.graph_value(),
+        confidence: confidence,
+    }
+}
+
+fn publication(g: Graph, id: string, producer: string, records: List<Record>) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "in:1",
+        input: "in:1",
+        input_revision: 1,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn recorded() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("in:1", "raw")?
+    g.publish(publication(g, "one", "agent", [person("p1", "Ada", 0.8)?])?)?
+    (g.explain("p1", "name")?).item(0).member("confidence").float() == 0.8
+}
+
+fn unweighted() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("in:1", "raw")?
+    g.publish(publication(g, "one", "agent", [person("p1", "Ada", null)?])?)?
+    match (g.explain("p1", "name")?).item(0).member("confidence") { .Null -> true, rest -> false }
+}
+
+fn two_sources() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("in:1", "raw")?
+    g.publish(publication(g, "one", "agent-a", [person("p1", "Ada", 0.9)?])?)?
+    g.publish(publication(g, "two", "agent-b", [person("p1", "Ada", 0.2)?])?)?
+    let rows = (g.explain("p1", "name")?).items()
+    let a = rows.find(it.member("run").text() == "one")
+    let b = rows.find(it.member("run").text() == "two")
+    rows.length == 2 &&
+        match a {
+            row? -> row.member("confidence").float() == 0.9
+            null -> false
+        } &&
+        match b {
+            row? -> row.member("confidence").float() == 0.2
+            null -> false
+        }
+}
+
+fn invalid() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("in:1", "raw")?
+    let before = g.revision()?
+    let high = match g.publish(publication(g, "high", "agent", [person("p1", "Ada", 1.5)?])?) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    let low = match g.publish(publication(g, "low", "agent", [person("p1", "Ada", 0.0 - 0.1)?])?) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    high && low && g.revision()? == before && (stored(EntityRow.all(g.db))?).is_empty()
+}
+
+fn identity() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("in:1", "raw")?
+    let record = person("p1", "Ada", 0.7)?
+    let p = publication(g, "one", "agent", [record])?
+    let revision = g.publish(p)?
+    let replay = g.publish(p)? == revision
+    let changed = match g.publish(p with { records: [record with { confidence: 0.2 }] }) {
+        .Ok(_) -> false,
+        .Err(_) -> true,
+    }
+    replay && changed && g.revision()? == revision
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph confidence metadata" {
+    given "a producer may state how sure it is" {
+        then "confidence returns through explain" { passed(recorded()) }
+        then "no stated confidence stays absent" { passed(unweighted()) }
+        then "each source's confidence is its own" { passed(two_sources()) }
+        then "a confidence outside zero to one refuses the publication" { passed(invalid()) }
+        then "confidence is part of the replay identity" { passed(identity()) }
+    }
+}

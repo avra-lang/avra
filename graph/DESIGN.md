@@ -39,7 +39,8 @@ its table, columns, keys, links, and CRUD are derived from the declaration
 in `store/engine.av`. Model properties never become SQL columns — user
 ontology values are rows in the generic `Claim` model. A model's `Many<T>`
 and links give batched reads (`with_<many>`, `in_<link>`, `where`) without
-hand SQL; `Support.until` and the `*End` models carry history.
+hand SQL; `Support.until` and the `*End` models carry history; a `ConfidenceRow` holds
+the evidence metadata a producer stated, never an authority.
 
 Statements and their evidence are distinct. Several contributions may
 support one statement. A successful replacement closes only the old
@@ -167,5 +168,5 @@ shared CLI/HTTP protocol.
 Schema installation conservatively invalidates all older interpretations;
 it preserves their claims, support, and source payloads. `dirty` exposes
 reprocessing work but does not run a classifier. Declared selection policy,
-confidence metadata, compatibility-aware migrations, multi-input derivations,
+compatibility-aware migrations, multi-input derivations,
 and relation-backed incremental projections remain separate slices. `README.md` describes the actual protocol and guarantees.

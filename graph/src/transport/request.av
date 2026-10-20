@@ -154,11 +154,18 @@ export fn operation(j: Json) -> Result<Operation, string> {
 }
 
 fn record(j: Json) -> Result<Record, string> {
-    closed(j, ["id", "model", "value", "mode", "locator", "identities"])?
+    closed(j, ["id", "model", "value", "mode", "locator", "identities", "confidence"])?
     let value? = j.get("value") else { fail "record needs value" }
     let locator = match j.get("locator") {
         found? -> as_value(found)
         null -> Value.Null
+    }
+    let confidence = match j.get("confidence") {
+        found? -> {
+            let number? = found.float() else { fail "confidence must be a number" }
+            number
+        }
+        null -> null
     }
     Record {
         id: text(j, "id")?,
@@ -167,6 +174,7 @@ fn record(j: Json) -> Result<Record, string> {
         mode: record_mode(j)?,
         locator: locator,
         identities: identities(j)?,
+        confidence: confidence,
     }
 }
 

@@ -26,6 +26,7 @@ export type Record = {
     mode: RecordMode = .Complete,
     locator: Value = Value.Null,
     identities: List<Identity> = [],
+    confidence: float? = null,
 }
 
 impl Record {
@@ -44,7 +45,8 @@ impl Record {
                 fields
                     .concat(mode)
                     .concat(located(self.locator))
-                    .concat(identified(self.identities)),
+                    .concat(identified(self.identities))
+                    .concat(stated(self.confidence)),
             )
     }
 }
@@ -52,6 +54,17 @@ impl Record {
 /// No locator means no field, so a locator-free run keeps its identity.
 fn located(locator: Value) -> List<Field> {
     match locator { .Null -> [], found -> [field("locator", as_json(found))] }
+}
+
+/// No confidence means no field, so an unweighted run keeps its identity.
+fn stated(confidence: float?) -> List<Field> {
+    if confidence == null { [] } else { [field("confidence", Json.Float(confidence!))] }
+}
+
+/// A stated confidence is finite and between zero and one.
+fn confident_ok(confidence: float?) -> bool {
+    if confidence == null { return true }
+    confidence! >= 0.0 && confidence! <= 1.0 && json_safe(Value.Float(confidence!))
 }
 
 /// No identity means no field, so an identity-free run keeps its identity.
@@ -100,6 +113,7 @@ impl Graph {
     fn publish(publication: Publication) -> Result<int, string> {
         let p = publication
         if p.records.any(!json_safe(it.value) || !json_safe(it.locator)) { fail "graph values must contain only finite numbers" }
+        if p.records.any(!confident_ok(it.confidence)) { fail "confidence must be a finite number between 0 and 1" }
         if p.records.any(it.identities.any(it.namespace.is_empty() || it.external_key.is_empty())) { fail "an identity needs a nonempty namespace and key" }
         if p.id.is_empty() || p.producer.is_empty() || p.scope.is_empty() { fail "run id, producer, and scope must be nonempty" }
         mut db = self.db
@@ -213,7 +227,8 @@ impl Graph {
             let links = property.shape.links(self.catalog, entry.value, entry.key)?
             for link in links { self.attained(link)? }
             let claim = self.claimed(db, entity, property.name, entry.value, p.schema)?
-            let _ = self.supported(db, run, claim, r.locator)?
+            let support = self.supported(db, run, claim, r.locator)?
+            if r.confidence != null { let _ = self.confided(db, support, r.confidence!)? }
             for link in links { self.referenced(db, claim, link)? }
         }
         for a in r.identities { self.named_by(db, entity, a, run)? }

@@ -121,7 +121,8 @@ an empty success.
       "model": "declared-model-name",
       "value": {},
       "locator": {"section": "body", "span": [12, 18]},
-      "identities": [{"namespace": "mail", "key": "ada@example.com"}]
+      "identities": [{"namespace": "mail", "key": "ada@example.com"}],
+      "confidence": 0.82
     }
   ]
 }
@@ -144,6 +145,11 @@ Binding a name an active run already binds elsewhere refuses the whole
 publication. A replacement withdraws the names its run owned, so a producer
 may correct or rebind its own name while another producer's binding survives.
 Names are lookups, never extracted properties.
+
+A record's optional `confidence` is a finite number in `0..1`. It is
+evidence metadata, never authority: it is stored beside the support the run
+created, returned by `explain`, and never used to pick a winner. It is part
+of the run's replay identity.
 
 A record's optional `locator` is opaque JSON: the engine stores it beside
 every claim that record supports and returns it through `explain`, but never
@@ -217,7 +223,7 @@ input changes.
 
 Editing models and rebuilding changes the catalog fingerprint. The
 fingerprint includes metadata, constraint calls, defaults, and compiler
-code hashes of the validators. The std-first store writes format `6` in
+code hashes of the validators. The std-first store writes format `7` in
 `Meta`; a database from the earlier hand-table prototype is not migrated —
 `attach` and `open` both refuse it. Installing the new catalog advances the graph revision
 and quarantines old-schema interpretations; `dirty` names work to reprocess. No data is deleted or
@@ -260,8 +266,8 @@ its native objects). Native builds link those objects directly.
 ## Next slices
 
 - Declared selection policy (source priority, explicit user choice, recency
-  where asked) and confidence as evidence metadata. Tombstones define
-  deletion; nothing removes evidence yet.
+  where asked). Confidence is evidence metadata now; tombstones define
+  deletion, and nothing removes evidence yet.
 - Durable pending work and multi-input dependency tracking; `dirty` is
   one-input, whole-scope invalidation, not a background scheduler.
 - Generic, declared conflict-resolution policies; the default deliberately
