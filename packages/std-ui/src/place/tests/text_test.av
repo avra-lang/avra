@@ -2,7 +2,7 @@
 // sixty-fourths of a pixel and rounded once, where a box's size leaves.
 use @std.ui.env.{Env}
 use @std.ui.tree.node.{Node}
-use @std.ui.style.layout.{Layout}
+use @std.ui.style.layout.{Layout, Align, Sizing}
 use @std.ui.place.measure.{Cells}
 use @std.ui.place.metrics.{Table}
 use @std.ui.place.solve.{place}
@@ -24,6 +24,12 @@ fn in_row(s: string, width: int) -> string {
     describe(root, place(root, pixels(), width))
 }
 
+/// `s` as a text in a 36-wide column that lays it against the end edge.
+fn at_end(s: string) -> string {
+    let root = boxed(.Column, Layout { align: .End, width: .Fixed(36) }, [text_node(s)])
+    describe(root, place(root, pixels(), 300))
+}
+
 spec "place/text — the solver in a typeface's units" {
     given "a text that just fits" {
         then "takes one line of its advances' sum, rounded once" { in_row("ii ii", 8) == "row 0,0 8x16\n  text 0,0 8x16" }
@@ -39,6 +45,16 @@ spec "place/text — the solver in a typeface's units" {
     given "twenty glyphs of 205/64, a word 64.06 pixels wide, across 64" {
         then "keep one line, the box holding the fraction the way a browser's does" {
             in_row("xxxxxxxxxxxxxxxxxxxx", 64) == "row 0,0 64x16\n  text 0,0 64x16"
+        }
+    }
+    given "a text 114.45 pixels wide by its clusters' sixtieths (114.5 by the exact sum)" {
+        then "is a box 114 wide, as Firefox lays it" {
+            in_row("mmxaWix xmmiaiaW iimxi xi xmximaxai aax", 300) == "row 0,0 300x16\n  text 0,0 114x16"
+        }
+    }
+    given "a text 34.5 pixels wide against the end edge of a 36-wide column" {
+        then "starts at 1.5, which snaps up to 2, ending at 36" {
+            at_end("xixxixam mW") == "column 0,0 36x16\n  text 2,0 34x16"
         }
     }
 }
