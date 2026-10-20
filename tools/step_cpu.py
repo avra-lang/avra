@@ -12,6 +12,7 @@ that prints no `held` line has no state and keeps the bare name; only a step ask
 reads one (a suite does; a keeper's own `held` lines are a different question).
 """
 import os
+import platform
 import re
 import resource
 import subprocess
@@ -28,9 +29,23 @@ def state_of(text):
     return "warm" if any(n > 0 for n in seen) else "cold"
 
 
-def metric(label, state):
+def cpu_tag(cpuinfo=None):
+    """The runner's CPU model, short and name-safe (`epyc-7763`), or the machine word when none is read.
+    A step's CPU seconds are only comparable on one model, so the model rides the metric's name."""
+    if cpuinfo is None:
+        try:
+            with open("/proc/cpuinfo") as f:
+                cpuinfo = f.read()
+        except OSError:
+            cpuinfo = ""
+    line = next((l for l in cpuinfo.splitlines() if l.lower().startswith("model name")), "")
+    words = re.findall(r"epyc|xeon|platinum|gold|silver|ryzen|neoverse|\d{3,5}[a-z]*", line.split(":", 1)[-1].lower())
+    return "-".join(words[:3]) or platform.machine().lower() or "unknown"
+
+
+def metric(label, state, tag=""):
     stem = re.sub("[^a-z0-9-]+", "-", label.lower()).strip("-")
-    return "cpu-%s%s" % (stem, "-" + state if state else "")
+    return "cpu-%s%s%s" % (tag + "-" if tag else "", stem, "-" + state if state else "")
 
 
 def self_test():
@@ -39,7 +54,11 @@ def self_test():
     assert state_of("no timing lines here") == ""
     assert metric("std-avrac/@features-a", "cold") == "cpu-std-avrac-features-a-cold"
     assert metric("keepers-a1", "") == "cpu-keepers-a1"
-    print("step_cpu: self-test passed — warm/cold/none read from the held lines, the state rides the name")
+    assert metric("std-path", "cold", "epyc-7763") == "cpu-epyc-7763-std-path-cold"
+    assert cpu_tag("processor : 0\nmodel name\t: AMD EPYC 7763 64-Core Processor\n") == "epyc-7763"
+    assert cpu_tag("model name : Intel(R) Xeon(R) Platinum 8272CL CPU @ 2.60GHz") == "xeon-platinum-8272cl"
+    assert cpu_tag("nothing here") == platform.machine().lower()
+    print("step_cpu: self-test passed — warm/cold/none read from the held lines, the state and the CPU model ride the name")
     return 0
 
 
@@ -63,7 +82,7 @@ def main(argv):
     u = resource.getrusage(resource.RUSAGE_CHILDREN)
     print("%s: peak %d KB max RSS" % (label, u.ru_maxrss))
     with open("speed.log", "a") as f:
-        f.write("speed %s %d\n" % (metric(label, state_of("".join(seen)) if stated else ""), u.ru_utime + u.ru_stime))
+        f.write("speed %s %d\n" % (metric(label, state_of("".join(seen)) if stated else "", cpu_tag()), u.ru_utime + u.ru_stime))
     return rc
 
 
