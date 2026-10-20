@@ -30,6 +30,8 @@ fn rows() -> List<PayloadRow> {
         row("Z", []),
         row("O", [field("x", "ExprId?")]),
         row("Y", [field("name", "Scoped"), field("ty", "TypeRef")]),
+        row("W", [field("x", "ExprId")]),
+        row("G", [field("x", "ExprId"), field("y", "ExprId")]),
         row("M", [field("name", "Plain"), field("bind", "Scoped")]),
     ]
 }
@@ -93,6 +95,19 @@ spec "features/node_print — what a rule reads as" {
             worded("p = name:NAME ( \":\" ty:type )? -> E.Y\n", "E.Y") == "E.Y@13: \$0@-1 [\$1? \":\" _ \$1@-1]"
         }
     }
+    given "the turns of a fold" {
+        then "lead with the seed's hole, at the tier of the rule the fold stands in" {
+            worded("p = x:q ( \"!\" -> E.W | \"[\" y:e \"]\" -> E.G )* @fold(x) -> x\n", "E.W") == "E.W@13: \$0@13 \"!\"" &&
+                worded("p = x:q ( \"!\" -> E.W | \"[\" y:e \"]\" -> E.G )* @fold(x) -> x\n", "E.G") == "E.G@13: \$0@13 \"[\" \$1@0 \"]\""
+        }
+        then "have none when the seed names no payload, or one that is no expression" {
+            worded("p = x:q ( \"!\" -> E.W )* @fold(zz) -> x\n", "E.W") == "none" &&
+                worded("p = x:q ( \".\" -> E.N )* @fold(name) -> x\n", "E.N") == "none"
+        }
+        then "have none when the rule the fold stands in is unranked" {
+            worded("q = x:q ( \"!\" -> E.W )* @fold(x) -> x\n", "E.W") == "none"
+        }
+    }
     given "an optional run" {
         then "around one hole prints with that payload" {
             worded("p = \"c\" \"<\" ty:type \">\" \"(\" ( cap:e )? \")\" -> E.T\n", "E.T") == "E.T@13: \"c\" \"<\" \$0@-1 \">\" \"(\" [\$1? \$1@0] \")\""
@@ -152,6 +167,8 @@ spec "features/node_print — the language's own nodes" {
                 shown(w.get("Expr.Receiver")!),
                 shown(w.get("Expr.Channel")!),
                 shown(w.get("Expr.Ident")!),
+                shown(w.get("Expr.Index")!),
+                shown(w.get("Expr.Force")!),
                 shown(w.get("Stmt.Return")!),
                 shown(w.get("Stmt.Fail")!),
                 shown(w.get("Stmt.Discard")!),
@@ -159,7 +176,7 @@ spec "features/node_print — the language's own nodes" {
                 shown(w.get("Pat.Member")!),
                 shown(w.get("Pat.Typed")!),
             ]
-                .join(" | ") == "Expr.Not@10: \"!\" \$0@10 | Expr.Range@13: \"(\" \$0@0 \"..\" \$1@0 \")\" | Expr.NullLit@13: \"null\" | Expr.Receiver@13: \"self\" | Expr.Channel@13: \"channel\" \"<\" \$0@-1 \">\" \"(\" [\$1? \$1@0] \")\" | Expr.Ident@13: \$0@-1 | Stmt.Return@-1: \"return\" [\$0? _ \$0@0] | Stmt.Fail@-1: \"fail\" _ \$0@0 | Stmt.Discard@-1: \"let\" _ \"_\" _ \"=\" _ \$0@0 | Pat.Wild@-1: \"_\" | Pat.Member@-1: \".\" \$0@-1 _ \"as\" _ \$1@-1 | Pat.Typed@-1: \$0@-1 \":\" _ \$1@-1"
+                .join(" | ") == "Expr.Not@10: \"!\" \$0@10 | Expr.Range@13: \"(\" \$0@0 \"..\" \$1@0 \")\" | Expr.NullLit@13: \"null\" | Expr.Receiver@13: \"self\" | Expr.Channel@13: \"channel\" \"<\" \$0@-1 \">\" \"(\" [\$1? \$1@0] \")\" | Expr.Ident@13: \$0@-1 | Expr.Index@12: \$0@12 \"[\" \$1@0 \"]\" | Expr.Force@12: \$0@12 \"!\" | Stmt.Return@-1: \"return\" [\$0? _ \$0@0] | Stmt.Fail@-1: \"fail\" _ \$0@0 | Stmt.Discard@-1: \"let\" _ \"_\" _ \"=\" _ \$0@0 | Pat.Wild@-1: \"_\" | Pat.Member@-1: \".\" \$0@-1 _ \"as\" _ \$1@-1 | Pat.Typed@-1: \$0@-1 \":\" _ \$1@-1"
         }
     }
 }
@@ -197,6 +214,19 @@ spec "features/node_print — a node printed from its rule" {
         }
         then "print a bare return with no space after it" {
             projected("fn f() { return }") == "fn f() {\n    return\n}"
+        }
+    }
+    given "an index and a force" {
+        then "abut their subject and brackets" {
+            projected("let a = b[1]\nlet c = d!") == "let a = b[1]\nlet c = d!"
+        }
+        then "chain with the postfix forms about them" {
+            projected("let a = b.c[0]!") == "let a = b.c[0]!" &&
+                projected("let a = b[c[0]]") == "let a = b[c[0]]"
+        }
+        then "group a subject that binds looser than a postfix" {
+            projected("let a = (b + c)[0]") == "let a = (b + c)[0]" &&
+                projected("let a = (!b)!") == "let a = (!b)!"
         }
     }
     given "a discard" {

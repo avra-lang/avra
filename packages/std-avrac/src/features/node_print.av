@@ -59,6 +59,8 @@ export type Layout = { mark: string, before: bool, after: bool }
 const layouts: List<Layout> = [
     Layout { mark: "(", before: false, after: false },
     Layout { mark: ")", before: false, after: false },
+    Layout { mark: "[", before: false, after: false },
+    Layout { mark: "]", before: false, after: false },
     Layout { mark: "<", before: false, after: false },
     Layout { mark: ">", before: false, after: false },
     Layout { mark: ".", before: false, after: false },
@@ -83,7 +85,7 @@ export fn node_wordings(g: Grammar, rows: List<PayloadRow>, scale: List<RuleTier
     Wording,
 > {
     let readings = flatten(
-        [[read_branch(r.name, s, rows, scale) for s in r.body.branches] for r in g.rules],
+        [flatten([read_all(r.name, s, rows, scale) for s in r.body.branches]) for r in g.rules],
     )
     mut out: Map<string, Wording> = {}
     for node in distinct([x.node for x in readings if x.node != ""]) {
@@ -97,31 +99,65 @@ export fn node_wordings(g: Grammar, rows: List<PayloadRow>, scale: List<RuleTier
 /// A branch that builds no node.
 fn unread() -> Reading { Reading { node: "", wording: null } }
 
+/// A branch's own reading, and its fold's turns: each turn of a branch
+/// that folds on a seed builds a node from that seed and its own items.
+fn read_all(rule: string, s: Seq, rows: List<PayloadRow>, scale: List<RuleTier>) -> List<Reading> {
+    [read_branch(rule, s, null, rows, scale)]
+        .concat([read_branch(rule, t, s.fold, rows, scale) for t in turns_of(s)])
+}
+
+/// The branches inside a folding branch's repeated groups.
+fn turns_of(s: Seq) -> List<Seq> {
+    if s.fold == null { return [] }
+    flatten([m.prim.group_alt()?.branches ?? [] for m in s.items])
+}
+
 /// A branch that builds a node with no stated payloads, read as a
-/// template; a branch that builds none reads as no node at all.
-fn read_branch(rule: string, s: Seq, rows: List<PayloadRow>, scale: List<RuleTier>) -> Reading {
+/// template; a branch that builds none reads as no node at all. A turn
+/// of a fold carries the fold's `seed`: the payload the node holds the
+/// value so far in.
+fn read_branch(rule: string, s: Seq, seed: string?, rows: List<PayloadRow>, scale: List<RuleTier>) -> Reading {
     let built? = s.build else { return unread() }
     match built {
         .Node(owner, variant, fixed, slots) -> Reading {
             node: node_builder_name(owner, variant),
-            wording: worded(rule, s, row_for(rows, owner, variant), fixed.is_empty() && slots == null, scale),
+            wording: worded(
+                rule,
+                s,
+                seed,
+                row_for(rows, owner, variant),
+                fixed.is_empty() && slots == null,
+                scale,
+            ),
         },
         rest -> unread(),
     }
 }
 
-/// The template a branch reads as, when its items fit.
-fn worded(rule: string, s: Seq, row: PayloadRow?, plain: bool, scale: List<RuleTier>) -> Wording? {
+/// The template a branch reads as, when its items fit: the seed's hole
+/// first, at the tier of the rule the fold stands in.
+fn worded(rule: string, s: Seq, seed: string?, row: PayloadRow?, plain: bool, scale: List<RuleTier>) -> Wording? {
     if !plain || row == null || s.operators != null || s.fold != null { return null }
     let held = [f for f in row!.payloads if carried(f)]
+    let lead? = seeded(seed, held, rule, scale) else { return null }
     let parts = [item_pieces(m, held, scale) for m in s.items]
     if parts.any(it == null) { return null }
-    let pieces? = spaced(flatten([p! for p in parts])) else { return null }
+    let pieces? = spaced(lead.concat(flatten([p! for p in parts]))) else { return null }
     Wording {
         node: node_builder_name(row!.owner, row!.variant),
         tier: tier_of(scale, rule) ?? no_tier,
         pieces: pieces,
     }
+}
+
+/// The hole a fold's seed leads with: nothing without a seed, else the
+/// payload it names, an expression at the tier of the rule it stands in.
+fn seeded(seed: string?, held: List<Field>, rule: string, scale: List<RuleTier>) -> List<Piece>? {
+    let name? = seed else { return [] }
+    let at? = found_at([f.name for f in held], name) else { return null }
+    let tier? = tier_of(scale, rule) else { return null }
+    if !valued(held[at]) { return null }
+    [Piece.Hole(at, tier)]
 }
 
 /// One item's pieces, or nothing when no template can say it.
