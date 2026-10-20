@@ -3357,3 +3357,16 @@ filed. Both carry an `Example:` and a `Callsite:`.
   `Example: when { a is .V(r) -> r, _ -> 0 }`; `Callsite:` any scan
   that would rather choose than branch. To be filed as its own ask
   when the tasks server returns.
+
+### Deadline — the change log watches cells, never a whole collection
+
+A box is logged when a slot of it is written in place; length changes
+(`push`, `pop`, extend) and map writes are not slot writes. A Cell and
+a List are one native kind, so `avra_box_observe` cannot refuse a
+collection, and observing one directly misses those writes. Holds
+while the only box observed is a cell (std-ui's exact.av). Expires at
+the first consumer that watches a whole collection. Then: (A) touch
+every collection write (one inline byte compare per write, census it),
+or (D) a header bit set for `Type.Cell` boxes that observe requires.
+The evaluator's hooks mirror the law; flipping it flips both engines
+and the `files nothing` cases in `compiler/tests/changes_take_*`.

@@ -511,15 +511,16 @@ def c_signatures(sources, wanted):
 
 
 def split_params(text):
-    """A C parameter list, one entry per seat. Nested parens belong to
-    a function-pointer seat and never separate one."""
+    """A parameter list, one entry per seat. Nested parens belong to a
+    function-pointer seat and nested angles to a generic type's
+    arguments; neither separates one."""
     if text.strip() in ("void", ""):
         return []
     out, depth, cur = [], 0, ""
     for ch in text:
-        if ch in "([":
+        if ch in "([<":
             depth += 1
-        if ch in ")]":
+        if ch in ")]" or (ch == ">" and not cur.endswith("-")):
             depth -= 1
         if ch == "," and depth == 0:
             out.append(cur.strip())
@@ -1283,6 +1284,21 @@ PTR_CASES = [
     (("avra_now_ns", "int", "x.av"), True, False),
 ]
 
+SPLIT_CASES = [
+    # (parameter list, seats)
+    ("m: Map<string, int>, key: string, v: int", 3),
+    ("f: fn(List<int>, int) -> int, x: int", 2),
+    ("a: Map<string, List<int>>", 1),
+    ("void", 0),
+]
+
+def split_self_test():
+    bad = [(t, n) for t, n in SPLIT_CASES if len(split_params(t)) != n]
+    for text, n in bad:
+        print(f"externs: SELF-TEST — `{text}` should split into {n} seat(s)")
+    return len(bad)
+
+
 def ptr_self_test():
     for row, readable, want in PTR_CASES:
         bodies = {row[0]: ("void*", "r.c", 1)} if readable else {}
@@ -1561,7 +1577,7 @@ def inert_self_test():
     return 0
 
 def main():
-    if self_test() + seat_self_test() + fault_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test() + inert_self_test() + host_self_test():
+    if self_test() + seat_self_test() + fault_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + split_self_test() + keep_self_test() + inert_self_test() + host_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
