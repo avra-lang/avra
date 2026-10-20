@@ -1,7 +1,8 @@
-//! `place/measure.av` — what the solver asks a target about size. The
-//! solver knows no unit: a target answers in its own (terminal cells, or
-//! pixels from a typeface's metrics), always whole numbers, so one
-//! algorithm places a tree on every surface.
+//! `place/measure.av` — what the solver asks a target about size. A target
+//! answers a content's size in SIXTIETHS of its unit (terminal cells, or
+//! pixels from a typeface's metrics) as a browser carries a length, and the
+//! solver rounds a box once, at its edge — so one algorithm places a tree on
+//! every surface and no fraction is lost before a box is made.
 use @std.text.{cells}
 use tree.node.{Node}
 use style.tokens.{Size}
@@ -17,11 +18,10 @@ use realize.tui.layout.{
     pad_cols,
 }
 
-/// A size in the target's unit.
+/// A size in sixtieths of the target's unit.
 export type Extent = { w: int, h: int }
 
-/// Parts to the unit that `own_fine` and `min_own_fine` speak: the solver's
-/// own, sixtieths, as a browser carries a length.
+/// Parts to the unit that `own` and `min_own` speak.
 export const fine = 60
 
 /// The questions the solver asks. `own` is the node's content before its
@@ -34,11 +34,6 @@ export const fine = 60
 /// `pad_x`/`pad_y` what a spacing step is along each axis.
 export trait Measure {
     fn own(n: Node, avail: int) -> Extent
-    fn own_fine(n: Node, avail: int) -> Extent {
-        let e = self.own(n, avail / fine)
-        Extent { w: e.w * fine, h: e.h * fine }
-    }
-    fn min_own_fine(n: Node) -> int { self.min_own(n) * fine }
     fn kept(n: Node, path: string) -> int
     fn hidden(n: Node) -> bool
     fn holds(n: Node) -> bool
@@ -54,11 +49,11 @@ export trait Measure {
 export type Cells = { focus: string = "" }
 
 impl Measure for Cells {
-    fn own(n: Node, avail: int) -> Extent { extent_of(own_lines(n, avail)) }
+    fn own(n: Node, avail: int) -> Extent { extent_of(own_lines(n, avail / fine)) }
     fn kept(n: Node, path: string) -> int { kept_cells(n) + if path == self.focus { pointer_cells } else { 0 } }
     fn hidden(n: Node) -> bool { closed_node(n) }
     fn holds(n: Node) -> bool { holds_children(n) }
-    fn min_own(n: Node) -> int { unbreakable_cells(n) }
+    fn min_own(n: Node) -> int { unbreakable_cells(n) * fine }
     fn gap_x(z: Size) -> int { gap_cols(z) }
     fn gap_y(z: Size) -> int { gap_rows(z) }
     fn pad_x(z: Size) -> int { pad_cols(z) }
@@ -66,4 +61,4 @@ impl Measure for Cells {
 }
 
 /// The widest line and the line count.
-fn extent_of(ls: List<string>) -> Extent { Extent { w: [cells(l) for l in ls].max() ?? 0, h: ls.length } }
+fn extent_of(ls: List<string>) -> Extent { Extent { w: ([cells(l) for l in ls].max() ?? 0) * fine, h: ls.length * fine } }
