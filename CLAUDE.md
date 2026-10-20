@@ -2291,7 +2291,17 @@ doctrine it expands.
   comparison) silently compares one binary's real run against the
   other's cache hit, byte-identical checksums included. `rm -rf
   .avra-cache` before every run whose ANSWER is being compared, not
-  only before the first.
+  only before the first. AND A CACHE FILLED BY A BINARY BUILT FROM
+  ANOTHER SHAPE IS NOT STALE — IT IS WRONG, AND IT TRAPS: bootstrapping
+  a tree through a temporary edit (a type carrying a second field so an
+  older builder could read it) left 3.6 GB of entries keyed by a
+  compiler whose IR assumed that layout, and the finished compiler read
+  them and lowered a suite that trapped on `index 1 is out of bounds
+  (length 1)` — deterministically, in a clean program, while the same
+  source in a cache-less tree was green. A stale entry costs a re-run;
+  one built from a different TYPE SHAPE costs an afternoon, so a lane
+  that bootstraps through any shape it will revert clears `.avra-cache`
+  before the run whose ANSWER it reads.
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
   watchdog: `sh tools/watch.sh 6000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this
