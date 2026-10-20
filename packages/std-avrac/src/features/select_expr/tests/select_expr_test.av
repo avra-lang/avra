@@ -13,8 +13,9 @@ use @std.avrac.testing.{
     ir_of,
     said,
 }
-use compiler.{Program}
+use compiler.{Program, avra}
 use compiler.backend.{render_ir}
+use @std.avrac.diagnostics.{new_source_file}
 
 /// Whether `source` is its own canonical form — it parsed, and the
 /// printer said it back unchanged.
@@ -113,29 +114,60 @@ spec "features/select_expr" {
                 "a `select` has no catch-all — `else ->` runs when nothing is ready",
             )
         }
-        then "an `else` arm that is not last" {
+        then "another mark" {
             refused_with(
-                "select {\n    else -> 1\n    stop -> 2\n}",
-                "the `else` arm ends a `select` — move it last",
+                "let v = @slow select {\n    stop -> 1\n}",
+                "a `select` reads one mark, `@fair` — `@slow` is not it",
             )
         }
-        then "two `else` arms" {
-            refused_with(
-                "select {\n    stop -> 0\n    else -> 1\n    else -> 2\n}",
-                "a `select` has ONE `else` arm",
-            )
-        }
+    }
+    given "the arm set" {
         then "no arm at all" {
             refused_with("select { }", "a `select` needs an arm to wait on")
         }
         then "`else` alone" {
             refused_with("select {\n    else -> 1\n}", "a `select` needs an arm to wait on")
         }
-        then "another mark" {
-            refused_with(
-                "let v = @slow select {\n    stop -> 1\n}",
-                "a `select` reads one mark, `@fair` — `@slow` is not it",
+        then "an `else` arm that is not last" {
+            refuses(
+                "select {\n    else -> 1\n    job -> 2\n}",
+                "the `else` arm ends a `select` — move it last",
             )
+        }
+        then "two `else` arms" {
+            refuses(
+                "select {\n    job -> 0\n    else -> 1\n    else -> 2\n}",
+                "a `select` has ONE `else` arm",
+            )
+        }
+        then "two `else` arms and no arm that waits break one law, not two" {
+            refusals("select {\n    else -> 1\n    else -> 2\n}") == 1
+        }
+        then "an `else` that is not last renders at its own arm, with the remedy" {
+            let expected = """error[flow.select]: the `else` arm ends a `select` — move it last
+  ╭─[arm_set.av:6:5]
+6 │     else -> 1
+  ·     ┬
+  ·     ╰── an arm waits after it
+──╯
+help: move `else` below every arm that waits"""
+            avra()
+                .check(
+                    new_source_file(
+                        "arm_set.av",
+                        "fn one() -> int {\n    1\n}\nlet job = spawn one()\nselect {\n    else -> 1\n    job -> 2\n}",
+                    ),
+                ) == expected
+        }
+        then "an arm set with nothing to wait on names what every arm is" {
+            let expected = """error[flow.select]: a `select` needs an arm to wait on
+  ╭─[arm_set.av:1:1]
+1 │ select { }
+  · ┬
+  · ╰── every arm here is `else`
+──╯
+help: wait on a task, a source or a timer — `else` runs when no arm is ready"""
+            avra().check(new_source_file("arm_set.av", "select { }")) == expected
         }
     }
     given "what an arm binds" {
