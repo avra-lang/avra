@@ -7,6 +7,8 @@
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
 use core.{
+    cleanups_open,
+    Ins,
     sorted_by,
     flatten,
     text_before,
@@ -54,12 +56,35 @@ type Emit = {
     vals: List<ptr>,
     frames: List<Region>,
     loops: List<LoopFrame>,
+    // the open scopes, innermost last
+    scopes: List<Open>,
+    // THE BODY'S UNWIND COVER (a wasm module has none: `unwinds` is false there and
+    // every call is plain): its instructions, the cleanup regions open at each
+    // position (`cleanups_open`), the instruction being emitted, and the blocks
+    // built so far for the unwind — a region's, a landing's, the resume — by name
+    ins: List<Ins>,
+    unwinds: bool,
+    open: List<List<int>>,
+    at: int,
+    blocks: Map<string, ptr>,
+    ends: List<Closing>,
     externs: List<RtSig>,
     // the runtime's rows by name, built once per module
     rt: Map<string, RtSig>,
     // whether each box a row mints is counted by its type (AVRA_CENSUS_TYPES)
     census: bool,
 }
+
+/// One open scope: a plain one, or a cleanup region and the block the walk
+/// returns to when it closes.
+enum Open {
+    Plain
+    Cleanup(resume: ptr, at: int)
+}
+
+/// A cleanup region's last block, whose end waits for the fn to know whether
+/// anything unwinds into it, and the position of the region's opener.
+type Closing = { block: ptr, at: int }
 
 /// One open loop: where the back edge returns and where false exits.
 type LoopFrame = { header: ptr, exit: ptr }
@@ -360,7 +385,7 @@ fn emit_mode(l: Lowered, ix: EmitIndex, path: string, which: Owned, form: Writte
         let bd = l.fns[p]
         if mine.get(bd.name) != null {
             let f = avra_llvm_get_named_function(m, mangled(bd.name))
-            let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
+            let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f, !wasm)
             if failure != null { return wreck(m, path, failure!) }
             if bd.weak { avra_llvm_set_weak_odr(f) }
             // a wasm module runs no task, so it files no site
@@ -518,7 +543,17 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>, targe
     if !is_wasm(target) { declare(m, RUN_ENDED, avra_llvm_int32_type(lc), [avra_llvm_int32_type(lc)], false) }
     declare(m, HOST_ENTRY, avra_llvm_int32_type(lc), [], false)
     let entry = avra_llvm_get_named_function(m, HOST_ENTRY)
-    let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
+    let failure: string? = emit_body(
+        lc,
+        m,
+        b,
+        l.types,
+        l.externs,
+        rt,
+        l.entry,
+        entry,
+        !is_wasm(target),
+    )
     if failure != null { return failure }
     open_main(lc, m, b, entry, target)
 }
@@ -599,6 +634,7 @@ fn emit_body(
     rt: Map<string, RtSig>,
     bd: Body,
     f: ptr,
+    unwinds: bool,
 ) -> string? {
     mut vals: List<ptr> = []
     // LICENSED loops.push_loop: a RANGE walk — comprehensions iterate lists only
@@ -613,12 +649,23 @@ fn emit_body(
         vals: vals,
         frames: [],
         loops: [],
+        scopes: [],
+        ins: bd.ins,
+        unwinds: unwinds,
+        open: if unwinds { cleanups_open(bd.ins) } else { [] },
+        at: 0,
+        blocks: {},
+        ends: [],
         externs: externs,
         rt: rt,
         census: avra_llvm_census_types() != 0,
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
-    for i in bd.ins { em.emit_ins(i) }
+    for at, i in bd.ins {
+        em.at = at
+        em.emit_ins(i)
+    }
+    em.finished()
     if avra_llvm_verify_function(f) != 0 {
         return "internal compiler error: LLVM verification failed for ${bd.name}"
     }
@@ -665,6 +712,7 @@ fn declare_runtime(lc: ptr, m: ptr) {
     // the duplication actually lives, and those are still filtered.
     for s in rt_sigs() {
         declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+        if !s.traps { avra_llvm_set_nounwind(avra_llvm_get_named_function(m, s.name)) }
     }
 }
 
