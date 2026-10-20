@@ -93,7 +93,7 @@ WORLD = {
     "http": {
         "get": "fetch", "server": E, "directory": "read", "event_stream": E,
         "compiled": P, "dispatch": P, "fixed": P, "framed": P, "limits": P, "text": P,
-        "quiet_default": P,
+        "mounted": P, "quiet_default": P,
         "Request": T, "Unrouted": T, "Response": T, "Pulled": T, "Header": T, "Route": T,
         "Event": T, "Next": T, "Source": T, "Resume": T, "Method": T, "Files": T, "Body": T,
     },
