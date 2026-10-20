@@ -55,7 +55,7 @@ impl Workspace {
         if !self.writes_member(d) { return self.writes_held(d, k) }
         if self.walking.get() { return 0 }
         self.walking.set(true)
-        let walk = self.walk_key()
+        let walk = self.frame_in(self.walk_family)
         self.db.begin(walk)
         scc_walk(
             d,
@@ -159,14 +159,14 @@ impl Workspace {
         fp(20, [f.from, f.to, fp_str(Decl.key_text(self.decls.raw_decl(f.callee).key()))])
     }
 
-    /// The scratch frame the walk's own reads land in: a read made while finding the sets
-    /// belongs to no member, and never to whoever asked.
-    fn walk_key() -> Key {
-        let known = self.walk_family.get()
+    /// The scratch frame a walk's own reads land in, minted once into `family`: a read made
+    /// while finding the sets belongs to no member, and never to whoever asked.
+    fn frame_in(family: Cell<int>) -> Key {
+        let known = family.get()
         if known >= 0 { return Key { family: known, arg: 0 } }
         let minted = self.db.kernel.family()
         self.db.kernel.set_verify(minted, (_arg: int) -> 0)
-        self.walk_family.set(minted)
+        family.set(minted)
         Key { family: minted, arg: 0 }
     }
 }

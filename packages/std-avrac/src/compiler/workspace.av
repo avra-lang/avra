@@ -568,6 +568,9 @@ export type Workspace = {
     summaries: Table<Summary>,
     walking: Cell<bool>,
     walk_family: Cell<int>,
+    cancel_summaries: Table<CancelEvidence>,
+    cancel_walking: Cell<bool>,
+    cancel_walk_family: Cell<int>,
     /// The whole-program read-reach fixpoint over the declarations' call
     /// graph — which `state` places each declaration reads, transitively,
     /// as sorted `place_key`s (`features/read_set.av`).
@@ -878,9 +881,10 @@ fn component_names_verified(ws: Workspace, arg: int) -> int {
     touch(component_names(ws, ws.input_names.get()[arg].key))
     ws.db.changed_at(key(Family.ComponentNames, arg))
 }
-fn cancel_reach_verified(ws: Workspace, arg: int) -> int {
-    touch(ws.cancel_reach())
-    ws.db.changed_at(key(Family.CancelReach, arg))
+// LICENSED compiler.free_state_verb: a dispatch ROW holds this fn as a value, and a method is none — the verified table's own arm.
+fn cancel_summary_verified(ws: Workspace, arg: int) -> int {
+    touch(ws.cancel_evidence_of(decl_at_arg(arg)))
+    ws.db.changed_at(key(Family.CancelSummary, arg))
 }
 
 /// The per-family dispatch: the ONE fn value the kernel holds, never a
@@ -931,7 +935,7 @@ fn dispatch_verified(ws: Workspace, family: int, arg: int) -> int {
         .BlockScan -> block_scan_verified(ws, arg),
         .ComponentScan -> component_scan_verified(ws, arg),
         .ComponentNames -> component_names_verified(ws, arg),
-        .CancelReach -> cancel_reach_verified(ws, arg),
+        .CancelSummary -> cancel_summary_verified(ws, arg),
     }
 }
 
@@ -1067,6 +1071,9 @@ fn built(
         summaries: new_table<Summary>(),
         walking: Cell.new(false),
         walk_family: Cell.new(0 - 1),
+        cancel_summaries: new_table<CancelEvidence>(),
+        cancel_walking: Cell.new(false),
+        cancel_walk_family: Cell.new(0 - 1),
         read_fixpoint: new_fixpoint<List<int>>(kernel, Family.DeclReads.ordinal, [], places_join, places_fp),
         input_index: map_cell(),
         input_names: list_cell(),
@@ -2637,6 +2644,6 @@ export fn family_code_hash(f: Family) -> string {
         .BlockScan -> code_hash(block_scan_verified) ?? "",
         .ComponentScan -> code_hash(component_scan_verified) ?? "",
         .ComponentNames -> code_hash(component_names_verified) ?? "",
-        .CancelReach -> code_hash(cancel_reach_verified) ?? "",
+        .CancelSummary -> code_hash(cancel_summary_verified) ?? "",
     }
 }
