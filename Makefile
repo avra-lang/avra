@@ -1138,11 +1138,11 @@ ci-invariants:
 	@python3 tools/ci_path_gate.py --self-test
 
 # THE AGGREGATE VERDICT'S FIXTURES: the `test` job's arithmetic is a script
-# (tools/ci_verdict.py), and these prove it counts what it claims — a skipped
+# (tools/ci_verdict.sh), and these prove it counts what it claims — a skipped
 # leg green, a failure named with its count, a job the gate owed but the run
 # never reported refused — before it judges a run.
 ci-verdict:
-	@python3 tools/ci_verdict.py --self-test
+	@sh tools/ci_verdict.sh --self-test
 
 # THE WATCHER'S DECISION IS A KEEPER: its fixtures run wherever the gate
 # runs, so a change to what the watcher may do refuses before it can land,
