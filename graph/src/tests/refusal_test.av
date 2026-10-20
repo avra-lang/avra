@@ -1,0 +1,99 @@
+use models.{models, Person}
+use store.open.{Graph, stored}
+use store.publish.{Record, Publication}
+use store.query.{stored_value}
+use store.merge.{Merge}
+use store.engine.{EntityRow}
+
+fn person(id: string, name: string) -> Result<Record, string> {
+    Record { id: id, model: "Person", value: Person { name: name, email: null }.graph_value() }
+}
+
+fn run(g: Graph, id: string, producer: string, records: List<Record>, input_revision: int) -> Result<
+    Publication,
+    string,
+> {
+    Publication {
+        id: id,
+        producer: producer,
+        scope: "inbox:1",
+        input: "inbox:1",
+        input_revision: input_revision,
+        schema: g.catalog.fingerprint,
+        expected_revision: g.revision()?,
+        records: records,
+    }
+}
+
+fn stale_claim_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "one")?
+    g.observe("inbox:1", "two")?
+    let before = g.revision()?
+    let refused = match g
+        .publish(run(g, "stale", "agent", [person("p1", "Ada")?], input_revision: 1)?) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("stale or missing observation"),
+    }
+    refused && g.revision()? == before && (stored(EntityRow.all(g.db))?).is_empty()
+}
+
+fn stale_schema_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "one")?
+    let before = g.revision()?
+    let p = run(g, "schema", "agent", [person("p1", "Ada")?], input_revision: 1)?
+    let refused = match g.publish(p with { schema: "not-this-tree" }) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("stale schema"),
+    }
+    refused && g.revision()? == before && (stored(EntityRow.all(g.db))?).is_empty()
+}
+
+fn decision_replayed_with_other_rows() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "three people")?
+    g
+        .publish(
+            run(
+                g,
+                "one",
+                "agent",
+                [person("p1", "Ada")?, person("p2", "Grace")?, person("p3", "Lin")?],
+                input_revision: 1,
+            )?,
+        )?
+    g.merge(Merge { id: "m1", left: "p1", right: "p2", decider: "user" })?
+    g.split("m1")?
+    let refused = match g.merge(Merge { id: "m1", left: "p1", right: "p3", decider: "user" }) {
+        .Ok(_) -> false,
+        .Err(e) -> e.contains("different decision"),
+    }
+    refused && (g.merges("")?).length == 1
+}
+
+fn unknown_split_refused() -> Result<bool, string> {
+    mut g = Graph.memory(models)?
+    defer { let _ = g.close() }
+    g.observe("inbox:1", "one")?
+    match g.split("never") { .Ok(_) -> false, .Err(e) -> e.contains("unknown merge decision") }
+}
+
+fn passed(answer: Result<bool, string>) -> bool {
+    answer catch e -> {
+        println(e)
+        false
+    }
+}
+
+spec "graph refusals" {
+    given "a store fed only correct input would be an untested instrument" {
+        then "a claim at a stale input revision is refused and writes nothing" { passed(stale_claim_refused()) }
+        then "a claim under another schema is refused and writes nothing" { passed(stale_schema_refused()) }
+        then "a decision id cannot be replayed against rows it never saw" { passed(decision_replayed_with_other_rows()) }
+        then "an unknown decision is refused" { passed(unknown_split_refused()) }
+    }
+}
